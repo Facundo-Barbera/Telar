@@ -201,3 +201,20 @@ test("the first nextRunAt is the ENGINE's, never the caller's (#543)", () => {
   const odd = store.putSchedule({ sessionId: "session_one", prompt: "x", rule: { kind: "interval", everyMs: HOUR }, zone: "Mars/Olympus" });
   expect(odd.zone).toBe("UTC");
 });
+
+test("a session with an enabled schedule reads as scheduled, dated by its soonest wake", () => {
+  // It used to read `idle`, exactly like a session nothing will ever wake.
+  const { store } = setup();
+  expect(store.getSession("session_one").activity).toBe("idle");
+  const hourly = store.putSchedule({ sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
+  store.putSchedule({ sessionId: "session_one", prompt: "digest", rule: { kind: "interval", everyMs: 3 * HOUR }, zone: "UTC" });
+  const revision = store.sessionsRevision();
+  expect(store.getSession("session_one")).toMatchObject({ activity: "scheduled", activityDetail: { kind: "schedule", at: hourly.nextRunAt } });
+
+  // A disabled or deleted row wakes nothing, and the rail is told.
+  store.putSchedule({ id: hourly.id, sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC", enabled: false });
+  expect(store.sessionsRevision()).toBeGreaterThan(revision);
+  expect(store.getSession("session_one").activityDetail).toMatchObject({ kind: "schedule", at: START + 3 * HOUR });
+  for (const row of store.listSchedules("session_one")) store.deleteSchedule(row.id);
+  expect(store.getSession("session_one").activity).toBe("idle");
+});

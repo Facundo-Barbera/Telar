@@ -2391,6 +2391,61 @@ test("once the turn ends, a backgrounded agent reads as monitoring, and paused o
   expect(store.getSession("session_one").activity).toBe("idle");
 });
 
+test("background work is counted, agents apart from processes", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claimed = store.claimNextTurn("worker_one")!;
+  const token = claimed.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_a", kind: "agent", backgrounded: true, state: "running" } },
+    { kind: "task.started", task: { id: "task_b", kind: "agent", backgrounded: true, state: "running" } },
+    { kind: "task.started", task: { id: "task_c", kind: "background", backgrounded: true, state: "running" } },
+    // Neither of these is activity, so neither is counted.
+    { kind: "task.started", task: { id: "task_d", kind: "background", backgrounded: true, state: "waiting" } },
+    { kind: "task.started", task: { id: "task_e", kind: "background", backgrounded: true, ambient: true, state: "running" } },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "Launched" });
+  expect(store.getSession("session_one")).toMatchObject({ activity: "monitoring", activityDetail: { kind: "background", tasks: 3, agents: 2 } });
+});
+
+test("a session subscribed to one that is still going reads as waiting on it — and only while it is", () => {
+  /**
+   * A coordinator that handed out work and ended its turn used to read `idle`,
+   * the same as one that was finished. It is waiting on an answer that will
+   * wake it.
+   */
+  const { store } = readyStore();
+  store.createSession({ id: "session_two", projectId: "project_one", title: "Fix the parser" });
+  const before = store.sessionsRevision();
+  store.subscribe("session_one", { targetSessionId: "session_two" });
+  // Subscribing must redraw the subscriber's row.
+  expect(store.sessionsRevision()).toBeGreaterThan(before);
+  // The target is doing nothing: the subscription promises nothing yet.
+  expect(store.getSession("session_one").activity).toBe("idle");
+
+  store.submitTurn("session_two", { runId: "run_two", input: "Go" });
+  expect(store.getSession("session_one")).toMatchObject({
+    activity: "waiting",
+    activityDetail: { kind: "session", sessionId: "session_two", title: "Fix the parser", sessions: 1 },
+  });
+
+  const claimed = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_two", "run_two", claimed.turn.claim!.token);
+  store.completeTurn("session_two", "run_two", claimed.turn.claim!.token, { text: "Done" });
+  expect(store.getSession("session_one").activity).not.toBe("waiting");
+});
+
+test("two sessions subscribed to each other fold without recursing", () => {
+  const { store } = readyStore();
+  store.createSession({ id: "session_two", projectId: "project_one" });
+  store.subscribe("session_one", { targetSessionId: "session_two" });
+  store.subscribe("session_two", { targetSessionId: "session_one" });
+  store.submitTurn("session_two", { runId: "run_two", input: "Go" });
+  expect(store.getSession("session_one").activity).toBe("waiting");
+  expect(store.getSession("session_two").activity).toBe("queued");
+});
+
 test("a close the level signal inferred yields to the notification that says the task failed", () => {
   /**
    * THE SDK SENDS THE LEVEL BEFORE THE BOOKEND. `background_tasks_changed`

@@ -2215,7 +2215,9 @@ export class EngineStore {
       if (path.basename(file) !== "items.json") this.listRevision = this.nextRevision();
       return;
     }
-    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox) {
+    // `subscriptions` because a subscription is what makes a session read as
+    // `waiting` (`withActivityFrom`): subscribing must redraw the row.
+    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox || file === this.paths.subscriptions) {
       this.listRevision = this.nextRevision();
     }
   }
@@ -8331,13 +8333,69 @@ export class EngineStore {
       // number worth showing is how long this has been going, not when the most
       // recent thing joined it. Dated off the SAME predicate that classified it,
       // or `activityAt` describes a paused task the badge did not count.
-      const since = Math.min(...tasks.filter(countsAsActivity).map((task) => task.startedAt));
-      return { ...base, activity: live === "working" ? "working" : "monitoring", activityAt: since };
+      const counted = tasks.filter(countsAsActivity);
+      const since = Math.min(...counted.map((task) => task.startedAt));
+      if (live === "working") return { ...base, activity: "working", activityAt: since };
+      const background = counted.filter(isBackgroundWork);
+      return {
+        ...base,
+        activity: "monitoring",
+        activityAt: since,
+        activityDetail: { kind: "background", tasks: background.length, agents: background.filter((task) => task.kind === "agent").length },
+      };
     }
+    /**
+     * WAITING ON ANOTHER SESSION: this one asked to be woken by a session that
+     * is still going. Only a target that is BUSY counts — a subscription to a
+     * session that already finished promises nothing, and a coordinator that
+     * kept one would otherwise read as waiting for ever.
+     */
+    const awaited = this.subscriptionsOf(session.id).flatMap((subscription) => {
+      const busySince = this.busySince(subscription.targetSessionId);
+      return busySince === undefined ? [] : [{ subscription, busySince }];
+    });
+    if (awaited.length > 0) {
+      const longest = awaited.reduce((a, b) => (b.busySince < a.busySince ? b : a));
+      // `busySince` already proved the target exists.
+      const title = this.requireSession(longest.subscription.targetSessionId).title;
+      return {
+        ...base,
+        activity: "waiting",
+        // Since this session started waiting, not since the target started work.
+        activityAt: Math.min(...awaited.map((each) => each.subscription.createdAt)),
+        activityDetail: { kind: "session", sessionId: longest.subscription.targetSessionId, ...(title ? { title } : {}), sessions: awaited.length },
+      };
+    }
+    const wake = this.listSchedules(session.id).filter((schedule) => schedule.enabled).reduce<number | undefined>((soonest, schedule) => (soonest === undefined || schedule.nextRunAt < soonest ? schedule.nextRunAt : soonest), undefined);
+    if (wake !== undefined) return { ...base, activity: "scheduled", activityDetail: { kind: "schedule", at: wake } };
     // `activityAt` is deliberately absent on idle: there is no event to date.
     // How long ago the session last did anything is `updatedAt`, which every
     // caller already has.
     return { ...base, activity: "idle" };
+  }
+
+  /**
+   * When a session's current work began, or `undefined` if it is doing nothing
+   * a subscriber could be woken by.
+   *
+   * NOT `withActivityFrom` on the target, deliberately: that fold reads
+   * subscriptions, so two sessions subscribed to each other would recurse. This
+   * asks the three questions that mean "an answer is still coming" — an open
+   * turn, a live request, live tasks — and none that could loop.
+   */
+  private busySince(sessionId: string): number | undefined {
+    let turns: Turn[];
+    try {
+      if (this.requireSession(sessionId).state !== "active") return undefined;
+      turns = this.readQueue(sessionId).turns;
+    } catch {
+      return undefined;
+    }
+    const open = turns.filter((turn) => turn.state === "running" || turn.state === "claimed" || turn.state === "steering" || (turn.state === "queued" && !turn.held));
+    if (open.length > 0) return Math.min(...open.map((turn) => turn.startedAt ?? turn.acceptedAt));
+    const tasks = [...this.readTasks(sessionId).values()].filter(countsAsActivity);
+    if (tasks.length > 0) return Math.min(...tasks.map((task) => task.startedAt));
+    return undefined;
   }
 
   /**
@@ -12173,7 +12231,24 @@ export class EngineStore {
   }
 
   private writeSubscriptions(subscriptions: Subscription[]): void {
+    this.subscriptionsBySubscriber = undefined;
     this.writeDocument(this.paths.subscriptions, { version: STATE_VERSION, subscriptions });
+  }
+
+  /**
+   * THE ACTIVITY FOLD'S VIEW OF `subscriptions.json`, grouped by subscriber
+   * and kept until the next write. The fold runs per session per list read,
+   * and without this every row would re-read and re-parse the one engine-wide
+   * file to find out, almost always, that it subscribes to nothing.
+   */
+  private subscriptionsBySubscriber: Map<string, Subscription[]> | undefined;
+  private subscriptionsOf(subscriberSessionId: string): readonly Subscription[] {
+    if (!this.subscriptionsBySubscriber) {
+      const grouped = new Map<string, Subscription[]>();
+      for (const each of this.readSubscriptions()) grouped.set(each.subscriberSessionId, [...(grouped.get(each.subscriberSessionId) ?? []), each]);
+      this.subscriptionsBySubscriber = grouped;
+    }
+    return this.subscriptionsBySubscriber.get(subscriberSessionId) ?? [];
   }
 
   /** A session that is gone can neither wake nor be woken: both directions go. */
@@ -12723,7 +12798,7 @@ export class EngineStore {
           // SKIPPED, AND SAID SO. Without the recorded instant the boundary —
           // "Telar was not running at 09:00" — is invisible, and an invisible
           // boundary is indistinguishable from a broken scheduler.
-          store.writeSchedule({ ...row, nextRunAt: decision.nextRunAt, lastRunStatus: "skipped", lastSkippedAt: decision.skipped ?? row.nextRunAt });
+          this.writeScheduleRow(store, { ...row, nextRunAt: decision.nextRunAt, lastRunStatus: "skipped", lastSkippedAt: decision.skipped ?? row.nextRunAt });
           acted.push(row.id);
           continue;
         }
@@ -12734,7 +12809,7 @@ export class EngineStore {
           origin: "schedule",
           scheduleOrigin: { scheduleId: row.id, dueAt: row.nextRunAt },
         });
-        store.writeSchedule({ ...row, nextRunAt: decision.nextRunAt, lastRunAt: now, lastRunId: runId, lastRunStatus: "fired" });
+        this.writeScheduleRow(store, { ...row, nextRunAt: decision.nextRunAt, lastRunAt: now, lastRunId: runId, lastRunStatus: "fired" });
         acted.push(row.id);
       } catch {
         /**
@@ -12744,7 +12819,7 @@ export class EngineStore {
          * one deleted session into a permanent tick.
          */
         try {
-          store.writeSchedule({ ...row, enabled: false, nextRunAt: this.scheduleParkedAt(row.nextRunAt, now) });
+          this.writeScheduleRow(store, { ...row, enabled: false, nextRunAt: this.scheduleParkedAt(row.nextRunAt, now) });
         } catch {
           /* the store itself is unhappy; the next sweep tries again */
         }
@@ -12791,12 +12866,25 @@ export class EngineStore {
       ...(existing?.lastRunStatus === undefined ? {} : { lastRunStatus: existing.lastRunStatus }),
       ...(existing?.lastSkippedAt === undefined ? {} : { lastSkippedAt: existing.lastSkippedAt }),
     };
-    store.writeSchedule(row);
+    this.writeScheduleRow(store, row);
     return row;
   }
 
   deleteSchedule(id: string): boolean {
-    return this.executionStore?.deleteSchedule(id) ?? false;
+    const deleted = this.executionStore?.deleteSchedule(id) ?? false;
+    if (deleted) this.listRevision = this.nextRevision();
+    return deleted;
+  }
+
+  /**
+   * A SCHEDULE ROW IS PART OF THE ANSWER NOW — a session's `scheduled` state
+   * and its wake time are read off these rows — so a write to one moves the
+   * list's revision. The rows live in their own table, outside `writeDocument`,
+   * so nothing else would: a rail would keep showing a wake that was deleted.
+   */
+  private writeScheduleRow(store: ExecutionStore, row: ScheduleRow): void {
+    store.writeSchedule(row);
+    this.listRevision = this.nextRevision();
   }
 
   sweepSnoozeWakes(): string[] {
