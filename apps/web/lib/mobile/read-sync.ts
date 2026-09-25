@@ -108,3 +108,34 @@ export function readSyncDelivery(record: MobileRegistration, sessions: readonly 
     collapseId: crypto.createHash("sha256").update(`read:${record.hostId}`).digest("hex"),
     payload: { aps: { "content-available": 1 }, read: { host: record.hostId, sessions: [...sessions] } } };
 }
+
+/** At most this many ids per reconcile: a phone asks only about sessions it
+ *  still shows alerts for, and more than this is a phone nobody is reading. */
+export const READ_STATE_MAX = 64;
+
+/** The ids of a `/api/mobile/read-state?ids=a,b` query, or undefined when it
+ *  is malformed or over the bound. */
+export function parseReadStateIds(query: string | null): string[] | undefined {
+  const ids = [...new Set((query ?? "").split(",").filter(Boolean))];
+  if (ids.length === 0 || ids.length > READ_STATE_MAX || !ids.every(id => ID.test(id))) return undefined;
+  return ids;
+}
+
+/**
+ * THE LAUNCH RECONCILE'S ANSWER: which of these sessions' alerts may go.
+ *
+ * The same `readCleared` rule as the silent push, so the two can never
+ * disagree. A session the engine no longer has is cleared too (its alert
+ * opens nothing); any other failure leaves it out, because keeping an alert
+ * is the safe mistake.
+ */
+export async function clearedSessions(
+  ids: readonly string[],
+  read: (id: string) => Promise<Pick<SessionSignal, "activity" | "lastTurnSequence" | "lastReadTurnSequence"> | undefined>,
+): Promise<string[]> {
+  const answers = await Promise.all(ids.map(async id => {
+    try { const session = await read(id); return session === undefined || readCleared(session) ? id : undefined; }
+    catch { return undefined; }
+  }));
+  return answers.filter((id): id is string => id !== undefined);
+}
