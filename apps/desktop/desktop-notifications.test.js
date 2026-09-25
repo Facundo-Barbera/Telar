@@ -4,7 +4,8 @@ const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED,
+  DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE,
+  ACTIVE_IDLE_SECONDS, PRESENCE_BEAT_MS, presenceMessage, createPresenceReporter,
   parseNotice, routeOf, shouldNotifyDesktop, createDesktopNotifier,
 } = require("./desktop-notifications");
 
@@ -51,7 +52,7 @@ const notice = (patch = {}) => ({
 describe("the channel's contract", () => {
   test("both halves spell the env var and message types the same", () => {
     const server = fs.readFileSync(path.join(__dirname, "../web/lib/mobile/desktop.ts"), "utf8");
-    for (const [name, value] of Object.entries({ DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED })) {
+    for (const [name, value] of Object.entries({ DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE })) {
       expect(server).toContain(`export const ${name} = "${value}";`);
     }
   });
@@ -60,6 +61,21 @@ describe("the channel's contract", () => {
     const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
     expect(main).toContain("[DESKTOP_NOTIFICATIONS_ENV]: \"1\"");
     expect(main).toContain("serverChild.on(\"message\", (message) => desktopNotifier.handleServerMessage(message));");
+  });
+
+  test("main.js reports presence to that same child, and stops when it exits", () => {
+    const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+    expect(main).toContain("powerMonitor.getSystemIdleState(ACTIVE_IDLE_SECONDS)");
+    for (const edge of ["\"lock-screen\"", "\"unlock-screen\"", "\"browser-window-focus\"", "\"did-navigate-in-page\""]) expect(main).toContain(edge);
+    expect(main).toContain("watchPresence();");
+    expect(main).toContain("presenceReporter.stop();");
+  });
+
+  test("the server's staleness window outlasts the shell's beat", () => {
+    const server = fs.readFileSync(path.join(__dirname, "../web/lib/mobile/desktop.ts"), "utf8");
+    const stale = Number(/export const PRESENCE_STALE_MS = ([\d_]+);/.exec(server)?.[1].replaceAll("_", ""));
+    // Two missed beats are tolerated; a third means the shell is gone.
+    expect(stale).toBeGreaterThanOrEqual(PRESENCE_BEAT_MS * 3);
   });
 
   test("a notice must be well formed, and its path must stay inside the app", () => {
@@ -84,6 +100,46 @@ describe("shouldNotifyDesktop", () => {
   test("the viewing path is the window's route", () => {
     expect(routeOf("http://127.0.0.1:3000/projects/p1/sessions/s1?panel=diff")).toBe("/projects/p1/sessions/s1");
     expect(routeOf("not a url")).toBeNull();
+  });
+});
+
+describe("presence", () => {
+  test("active is recent input and an unlocked screen; the viewed route only while active and focused", () => {
+    const path = "/projects/p1/sessions/s1";
+    expect(presenceMessage({ idleState: "active", locked: false, focused: true, viewingPath: path })).toEqual({ type: DESKTOP_PRESENCE, active: true, viewingPath: path });
+    expect(presenceMessage({ idleState: "active", locked: false, focused: false, viewingPath: path })).toEqual({ type: DESKTOP_PRESENCE, active: true, viewingPath: null });
+    // Walked away with the session open: not active, and not "viewing" either.
+    for (const away of [{ idleState: "idle" }, { idleState: "locked" }, { idleState: "unknown" }, { idleState: "active", locked: true }]) {
+      expect(presenceMessage({ focused: true, viewingPath: path, ...away })).toEqual({ type: DESKTOP_PRESENCE, active: false, viewingPath: null });
+    }
+    // Only an in-app path is ever reported.
+    expect(presenceMessage({ idleState: "active", focused: true, viewingPath: "https://evil.example" }).viewingPath).toBeNull();
+    expect(ACTIVE_IDLE_SECONDS).toBe(120);
+  });
+
+  test("the reporter sends at once, on every beat and on demand, and stops cleanly", () => {
+    const sent = [];
+    const timers = [];
+    let sample = { idleState: "active", locked: false, focused: false, viewingPath: null };
+    const reporter = createPresenceReporter({
+      sample: () => sample,
+      send: (message) => sent.push(message),
+      setInterval: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; },
+      clearInterval: (t) => { t.cleared = true; },
+    });
+    reporter.start();
+    reporter.start();
+    expect(timers).toHaveLength(1);
+    expect(timers[0].ms).toBe(PRESENCE_BEAT_MS);
+    expect(sent).toEqual([{ type: DESKTOP_PRESENCE, active: true, viewingPath: null }]);
+    sample = { ...sample, idleState: "idle" };
+    timers[0].fn();
+    expect(sent.at(-1).active).toBe(false);
+    sample = { ...sample, idleState: "active", locked: true };
+    reporter.report();
+    expect(sent.at(-1).active).toBe(false);
+    reporter.stop();
+    expect(timers[0].cleared).toBe(true);
   });
 });
 
