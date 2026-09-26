@@ -29,6 +29,7 @@ import { createEngineApi } from "@/lib/engine/client";
 import { useAppearance } from "@/lib/appearance";
 import { decideFollow, readAppliedStamp, useFollowHost, wearPublication, writeAppliedStamp } from "@/lib/host-follow";
 import { isHostWindow } from "@/lib/host-window";
+import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
 import { useTheme } from "@/components/theme-provider";
 
 const api = createEngineApi();
@@ -76,14 +77,13 @@ export function HostLookFollower(): null {
 
     void ask();
     const timer = window.setInterval(() => void ask(), POLL_MS);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void ask();
-    };
-    document.addEventListener("visibilitychange", onVisible);
+    const unsubscribe = subscribeHostVisibility(() => {
+      if (hostVisible()) void ask();
+    });
     return () => {
       live = false;
       window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
+      unsubscribe();
     };
     // The effect re-arms only when following starts or stops: the wear writes
     // the composition store directly rather than through anything this

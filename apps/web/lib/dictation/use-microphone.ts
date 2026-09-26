@@ -46,6 +46,7 @@ import {
   type AudioInput,
   type MicrophoneChoice,
 } from "./devices";
+import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
 import type { DictationBox } from "./interim";
 import { createLevelMeter, type LevelMeter } from "./level";
 import { microphoneRefusal } from "./refusal";
@@ -284,15 +285,15 @@ export function useMicrophoneTest(): MicrophoneTest {
    * recording light nobody asked for. Stopping rather than pausing, because a
    * dictation resumed from the middle of a sentence is words out of order.
    */
-  useEffect(() => {
-    const onHidden = (): void => {
-      if (document.visibilityState !== "hidden") return;
-      stopMeter();
-      if (demoPhase !== "idle") toggleDictation();
-    };
-    document.addEventListener("visibilitychange", onHidden);
-    return () => document.removeEventListener("visibilitychange", onHidden);
-  }, [demoPhase, toggleDictation, stopMeter]);
+  useEffect(
+    () =>
+      subscribeHostVisibility(() => {
+        if (hostVisible()) return;
+        stopMeter();
+        if (demoPhase !== "idle") toggleDictation();
+      }),
+    [demoPhase, toggleDictation, stopMeter],
+  );
 
   return {
     level,
