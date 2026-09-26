@@ -385,7 +385,7 @@ const STATUS = `Working, waiting (on a person, a session or a tool), background,
 
 const STOP = `Stop a session's work now: the running turn ends where it stands and the queue is settled. Nothing is undone — what it wrote stays written and a command it ran may have finished. Then idle, not paused.`;
 
-const SETTLE = `Shelve a session out of the active list, or settled: false to bring it back. Settling closes its terminals and stops its background tasks; nothing is deleted and a new message lifts it back. Housekeeping, not acceptance.`;
+const SETTLE = `Shelve a session out of the active list, or settled: false to bring it back. Settling closes all its terminals, the person's own shells too, and stops its background tasks; the answer counts them. Nothing is deleted and a new message lifts it back. Housekeeping, not acceptance.`;
 
 /** " It ended 2 terminals and 1 background task." — or nothing, when it ended nothing. */
 function endedNote(ended: SessionSettleEnded | undefined): string {
