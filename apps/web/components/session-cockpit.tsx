@@ -41,7 +41,7 @@ import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { projectLabel } from "@/lib/hosts/host-projects";
-import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, wakeLabel, type SettleableSession, type SettlingActivity } from "@/lib/session-settling";
+import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity } from "@/lib/session-settling";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
 import { useInboxPolicy } from "@/lib/inbox-policy";
@@ -346,7 +346,11 @@ function SessionMasthead({
    * Absent on a fresh canvas. There is no session to act on, so there is no
    * menu, no chevron and no right-click.
    */
-  menu?: Omit<SessionActionMenuState, "actions"> & { actions: Omit<SessionActionHandlers, "rename"> };
+  menu?: Omit<SessionActionMenuState, "actions"> & {
+    actions: Omit<SessionActionHandlers, "rename">;
+    /** The menu is opening: the moment to ask what Settle would close (#883). */
+    onOpen?: () => void;
+  };
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -383,6 +387,10 @@ function SessionMasthead({
    */
   const [menuOpen, setMenuOpen] = useState(false);
   const menuItems = menu ? buildSessionActionMenuItems({ ...menu, actions: { ...menu.actions, rename: beginRename } }) : undefined;
+  const openMenu = (open: boolean) => {
+    setMenuOpen(open);
+    if (open) menu?.onOpen?.();
+  };
 
   /**
    * CLICK OPENS THE MENU, DOUBLE-CLICK RENAMES, AND THE RACE IS HANDLED RATHER
@@ -435,7 +443,7 @@ function SessionMasthead({
       {/* RIGHT-CLICK ANYWHERE IN THE BREADCRUMB, not only on the title: the
           whole crumb is "this session", and a context menu that works on half
           of a phrase is a context menu people stop trying. */}
-      <SessionActionContextMenu items={menuItems}>
+      <SessionActionContextMenu items={menuItems} {...(menu?.onOpen ? { onOpen: menu.onOpen } : {})}>
         <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
           {/* Only mounts while the rail is hidden, leaving the workspace at true
               full width when it is not. The folder glyph stands in for it so the
@@ -480,7 +488,7 @@ function SessionMasthead({
               }}
             />
           ) : (
-            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+            <DropdownMenu open={menuOpen} onOpenChange={openMenu}>
               <span className="group/title inline-flex min-w-0 items-center gap-1 font-semibold">
                 {menuItems ? (
                   <button
@@ -499,10 +507,10 @@ function SessionMasthead({
                       // `detail === 0`: Enter or Space, where no second press is
                       // coming and waiting for one would just feel broken.
                       if (event.detail === 0) {
-                        setMenuOpen(true);
+                        openMenu(true);
                         return;
                       }
-                      pendingOpen.current = window.setTimeout(() => setMenuOpen(true), TITLE_MENU_CLICK_DELAY_MS);
+                      pendingOpen.current = window.setTimeout(() => openMenu(true), TITLE_MENU_CLICK_DELAY_MS);
                     }}
                     onDoubleClick={() => {
                       cancelPendingOpen();
@@ -3830,9 +3838,29 @@ export function SessionCockpit({
       );
     }
   };
+  /**
+   * WHAT SETTLE WOULD CLOSE — issue #883. Asked of the engine (and so of the
+   * terminal host, the person's shells included) each time the menu opens,
+   * never on a timer; keyed by session so it never speaks for another.
+   */
+  const [menuTerminals, setMenuTerminals] = useState<{ sessionId: string; open: number }>();
+  const countMenuTerminals = () => {
+    if (!sessionId) return;
+    const asked = sessionId;
+    // Nothing said until the host answers: a stale count is worse than none.
+    setMenuTerminals(undefined);
+    void menuApi
+      .sessionTerminals(asked)
+      .then((answer) => setMenuTerminals({ sessionId: asked, open: answer.open }))
+      // An engine that predates the route, or cannot reach the host: Settle
+      // simply says nothing extra.
+      .catch(() => setMenuTerminals(undefined));
+  };
+  const openTerminals = menuTerminals && menuTerminals.sessionId === sessionId ? menuTerminals.open : 0;
   const headerMenu: React.ComponentProps<typeof SessionMasthead>["menu"] =
     session && sessionId
       ? {
+          onOpen: countMenuTerminals,
           session: {
             id: session.id,
             title: session.title,
@@ -3849,6 +3877,7 @@ export function SessionCockpit({
             settled,
             ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
             ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+            ...(openTerminals > 0 ? { terminals: openTerminals } : {}),
             archived: session.state === "archived",
             updatedAt: session.updatedAt,
           },
@@ -3884,6 +3913,15 @@ export function SessionCockpit({
             // nothing would not stamp `updatedAt` or restart the clock.
             settle: (next) =>
               void (next ? patchFromMenu({ settledOverride: "settled" }, "Could not settle the session.") : unsettle()),
+            // A settled conversation still running something: the person ends
+            // it, and the engine records the close as theirs (#883).
+            closeTerminals: () =>
+              void menuApi
+                .closeSessionTerminals(sessionId)
+                .then(() => setMenuTerminals({ sessionId, open: 0 }))
+                .catch((cause: unknown) =>
+                  setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not close the session's terminals.")),
+                ),
             snooze: (until) => void snoozeFromMenu(until),
             copy: (text) => void navigator.clipboard.writeText(text).catch(() => window.alert("The browser refused to copy that.")),
             projectSettings: ({ projectId: target }) => router.push(projectSettingsHref(target)),
@@ -4274,7 +4312,12 @@ export function SessionCockpit({
           {...(newestUsage ? { usage: newestUsage } : {})}
           backgroundTasks={backgroundTasks}
           settled={settled}
-          {...(settled && settleEnded && settleEnded.sessionId === sessionId ? { settledEnded: settleEnded.text } : {})}
+          {...(settled && settleEnded && settleEnded.sessionId === sessionId
+            ? { settledEnded: settleEnded.text }
+            : settled && session && terminalsClosedHint(session)
+              ? // Telar closed what it left running while it sat settled (#883).
+                { settledEnded: `${terminalsClosedHint(session)}.` }
+              : {})}
           onUnsettle={() => void unsettle()}
           {...(snoozedUntil === undefined
             ? {}

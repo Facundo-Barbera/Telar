@@ -9,12 +9,35 @@ import {
   isShelved,
   isSnoozed,
   raisedHandWhileSnoozed,
+  settleClosesText,
   settleEndedText,
   settlingActivityOf,
+  terminalsClosedHint,
   snoozePresets,
   wakeLabel,
   wokeAt,
 } from "./session-settling";
+
+describe("what settling closes, said before and after (#883)", () => {
+  test("settleClosesText counts terminals, and is nothing at zero", () => {
+    expect(settleClosesText(2)).toBe("closes 2 terminals");
+    expect(settleClosesText(1)).toBe("closes 1 terminal");
+    expect(settleClosesText(0)).toBeUndefined();
+    expect(settleClosesText(undefined)).toBeUndefined();
+  });
+
+  test("terminalsClosedHint speaks only for the current stay on the shelf", () => {
+    const limit = { at: 2_000, terminals: 2, reason: "limit" as const };
+    expect(terminalsClosedHint({ updatedAt: 1_000, terminalsClosed: limit })).toContain("Telar closed its 2 terminals");
+    expect(terminalsClosedHint({ updatedAt: 1_000, terminalsClosed: limit })).toContain("limit in Settings");
+    expect(terminalsClosedHint({ updatedAt: 1_000, terminalsClosed: { ...limit, terminals: 1, reason: "grace" } })).toBe(
+      "Telar closed its 1 terminal 30 minutes after it settled on its own",
+    );
+    // Worked on since: history, and not said.
+    expect(terminalsClosedHint({ updatedAt: 3_000, terminalsClosed: limit })).toBeUndefined();
+    expect(terminalsClosedHint({ updatedAt: 1_000 })).toBeUndefined();
+  });
+});
 
 describe("settleEndedText (#883)", () => {
   test("says what settling ended, and nothing when it ended nothing", () => {

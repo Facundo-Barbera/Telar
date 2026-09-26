@@ -41,6 +41,7 @@ import { LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { canvasHref, sessionKey, type SidebarSession } from "@/lib/session-list";
 import {
+  closeRowTerminals,
   deleteSession,
   mutateRow,
   patchSession,
@@ -85,6 +86,7 @@ function menuTarget(session: SidebarSession, settled?: boolean): SessionActionTa
     ...(settled === undefined ? {} : { settled }),
     ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
     ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+    ...(session.terminals ? { terminals: session.terminals } : {}),
     archived: session.archived,
     updatedAt: session.updatedAt,
   };
@@ -189,6 +191,8 @@ function useSessionRowMenu({ session, activity = {}, now, settled, active, onRen
         if (session.settledOverride !== "settled") await patchSession(session, { settledOverride: "active" });
         return patchSession(session, { settledOverride: null });
       }),
+    // The person asked, so the close is theirs (#883).
+    closeTerminals: () => void closeRowTerminals({ row: session, onRowChanged: onRowChanged ?? (() => {}) }),
     snooze: (until) => void mutate({ row: withSnooze(session, until) }, () => patchSession(session, { snoozedUntil: until })),
     rename: () => onRename?.(),
     copy: (text) => void copyToClipboard(text),

@@ -131,6 +131,37 @@ export function wakeLabel(snoozedUntil: number, now: number): string {
  * person who pressed Settle is told what that took. `undefined` when it ended
  * nothing, or the engine did not say.
  */
+const terminalsWord = (count: number) => `${count} terminal${count === 1 ? "" : "s"}`;
+
+/**
+ * WHAT SETTLE WILL CLOSE, SAID BEFORE THE PRESS — issue #883. "closes 2
+ * terminals" beside Settle, from every place it is offered; nothing at all
+ * when there are none, because a settle that ends nothing has nothing to warn.
+ */
+export function settleClosesText(terminals: number | undefined): string | undefined {
+  return terminals && terminals > 0 ? `closes ${terminalsWord(terminals)}` : undefined;
+}
+
+/** A settled row's count, explained on hover. */
+export function settledTerminalsHint(terminals: number): string {
+  return `${terminalsWord(terminals)} still open in this settled conversation, shells you opened included`;
+}
+
+/**
+ * WHY A SETTLED ROW'S TERMINALS ARE GONE, when Telar closed them rather than
+ * the person — `Session.terminalsClosed`. Only while it describes this stay on
+ * the shelf: any later work or decision moves `updatedAt` past it.
+ */
+export function terminalsClosedHint(
+  session: { updatedAt: number; terminalsClosed?: { at: number; terminals: number; reason: "grace" | "limit" } },
+): string | undefined {
+  const closed = session.terminalsClosed;
+  if (!closed || closed.at < session.updatedAt) return undefined;
+  return closed.reason === "limit"
+    ? `Telar closed its ${terminalsWord(closed.terminals)}: settled conversations had more open than the limit in Settings, and this one was settled longest ago`
+    : `Telar closed its ${terminalsWord(closed.terminals)} 30 minutes after it settled on its own`;
+}
+
 export function settleEndedText(ended: { terminals: number; backgroundTasks: number } | undefined): string | undefined {
   if (!ended) return undefined;
   const parts = [
