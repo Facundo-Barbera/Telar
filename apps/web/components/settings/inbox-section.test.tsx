@@ -42,6 +42,13 @@ test("both rows revert to the shared default, and the defaults are the protocol'
   expect(DEFAULT_INBOX_POLICY.autoSettleAfterHours).not.toBe(DEFAULT_SETTLE_DELEGATED_AFTER_HOURS);
 });
 
+test("the settled terminal limit is one count, patched alone, with its detail behind the ⓘ (#883)", () => {
+  expect(source).toContain('label="Terminals settled sessions may keep open"');
+  expect(source).toContain("save({ settledTerminalLimit: next })");
+  expect(source).toContain("info=");
+  expect(DEFAULT_INBOX_POLICY.settledTerminalLimit).toBe(5);
+});
+
 test("the two duration inputs are labelled apart", () => {
   // They are the same component twice. Without distinct labels a screen reader
   // meets two identical spinners and cannot tell which clock it is setting.

@@ -37,6 +37,8 @@ export async function PATCH(request: Request) {
         ...("settleDelegatedAfterHours" in body
           ? { settleDelegatedAfterHours: body.settleDelegatedAfterHours as number | null }
           : {}),
+        // What settled sessions may keep open (#883), by the same rule.
+        ...("settledTerminalLimit" in body ? { settledTerminalLimit: body.settledTerminalLimit as number } : {}),
       }),
     );
   } catch (error) {

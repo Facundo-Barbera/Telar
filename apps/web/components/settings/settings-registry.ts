@@ -178,6 +178,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             keywords: ["hours", "days", "window"],
             icon: TimerIcon,
           },
+          {
+            title: "Terminals settled sessions may keep open",
+            hint: "Past it, the session settled longest ago has its terminals closed first.",
+            keywords: ["terminal", "process", "dev server", "shell", "limit", "cap", "running", "settled"],
+            icon: TimerIcon,
+          },
         ],
       },
       /**

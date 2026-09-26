@@ -533,7 +533,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
-    setInbox: (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null }) =>
+    setInbox: (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null; settledTerminalLimit?: number }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
     /** Whether Telar may tell an agent where it is — the preamble and the
      *  `telar` skill. One answer for every client of this engine. */
