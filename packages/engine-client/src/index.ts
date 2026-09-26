@@ -677,6 +677,14 @@ export type LiveSessionsAnswer = {
    * band the rows it holds or must ask again.
    */
   settledCount?: number;
+  /**
+   * HOW MANY TERMINALS EACH SESSION IN THIS ANSWER HOLDS OPEN, WHOEVER OPENED
+   * THEM — issue #883, keyed like `assignments` and only for a session with one
+   * or more. As the terminal host last told the engine: on every settle and
+   * close, on each of the engine's own terminals opening or ending, and on the
+   * five-minute settled sweep. Absent from an engine that predates it.
+   */
+  terminals?: Record<string, number>;
   /** The discriminant, present only so `unchanged` narrows this union in a
    *  caller rather than needing a cast. Never sent on the wire. */
   unchanged?: false;
@@ -1125,6 +1133,8 @@ export class EngineClient {
     autoSettleAfterHours?: number | null;
     /** The delegation grace — see `InboxPolicy`. `null` turns it off. */
     settleDelegatedAfterHours?: number | null;
+    /** How many terminals settled sessions may keep open (#883). */
+    settledTerminalLimit?: number;
   }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
   }
@@ -3056,6 +3066,23 @@ export class EngineClient {
    */
   stopBackgroundTasks(sessionId: string): Promise<{ stopped: number }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop-background`, {});
+  }
+
+  /**
+   * HOW MANY TERMINALS THIS SESSION HOLDS OPEN NOW, whoever opened them — what
+   * Settle would close (#883). One question to the terminal host, asked when a
+   * surface is about to offer the settle; never on a timer.
+   */
+  sessionTerminals(sessionId: string): Promise<{ open: number }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/terminals`);
+  }
+
+  /**
+   * CLOSE EVERY TERMINAL THIS SESSION HOLDS, AS THE PERSON — the settled row's
+   * "end them" (#883). The same host close a settle makes; `closed` counts them.
+   */
+  closeSessionTerminals(sessionId: string): Promise<{ closed: number }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/terminals/close`, {});
   }
 
   /** Deprecated compatibility alias for session Stop; never creates a latch. */

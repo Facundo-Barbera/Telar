@@ -68,7 +68,7 @@
  */
 
 import { sessionHref } from "@/lib/session-list";
-import { canSettle, canSnooze, isSnoozed, snoozePresets, wakeLabel, type SettlingActivity } from "@/lib/session-settling";
+import { canSettle, canSnooze, isSnoozed, settleClosesText, snoozePresets, wakeLabel, type SettlingActivity } from "@/lib/session-settling";
 
 /**
  * An icon TOKEN rather than a component, so this module stays free of React
@@ -82,6 +82,7 @@ export type SessionActionIcon =
   | "unpin"
   | "settle"
   | "unsettle"
+  | "terminal"
   | "snooze"
   | "wake"
   | "rename"
@@ -160,6 +161,12 @@ export type SessionActionTarget = {
   settled?: boolean;
   snoozedUntil?: number;
   snoozedAt?: number;
+  /**
+   * HOW MANY TERMINALS IT HOLDS OPEN, whoever opened them (#883): what Settle
+   * will close, and on a settled session what is still running. Absent is none
+   * known, and says nothing extra.
+   */
+  terminals?: number;
   /** The conversation is over — `Session.state === "archived"`. */
   archived: boolean;
   /** Not read by any item. It is here because `isSnoozed` takes a whole
@@ -212,6 +219,11 @@ export type SessionActionHandlers = {
    *  `false` clears the pin. */
   pin: (pinned: boolean) => void;
   settle: (settled: boolean) => void;
+  /**
+   * CLOSE A SETTLED SESSION'S TERMINALS, as the person (#883). Absent where a
+   * surface cannot, and then the item is not in the list.
+   */
+  closeTerminals?: () => void;
   /** `null` wakes it now. */
   snooze: (until: number | null) => void;
   rename: () => void;
@@ -345,6 +357,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
     });
 
     const settled = session.settled ?? session.settledOverride === "settled";
+    const closes = settled ? undefined : settleClosesText(session.terminals);
     items.push({
       id: "settle",
       label: settled ? "Un-settle" : "Settle",
@@ -358,8 +371,28 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
        * the refusal is about shelving a session someone still needs.
        */
       disabled: settled ? false : settleRefusal(activity),
+      /**
+       * WHAT THE PRESS WILL END, SAID BEFORE IT (#883). Settling closes the
+       * session's terminals, the person's shells too; with none, nothing here.
+       */
+      ...(closes ? { detail: closes } : {}),
       run: () => actions.settle(!settled),
     });
+
+    /**
+     * A SETTLED SESSION STILL RUNNING SOMETHING — its automatic settle's grace,
+     * or a shell opened since. Ending it is the person's call, one item away.
+     */
+    const terminals = session.terminals ?? 0;
+    if (settled && terminals > 0 && actions.closeTerminals) {
+      const closeTerminals = actions.closeTerminals;
+      items.push({
+        id: "close-terminals",
+        label: terminals === 1 ? "Close its terminal" : `Close its ${terminals} terminals`,
+        icon: "terminal",
+        run: closeTerminals,
+      });
+    }
 
     const snoozing = isSnoozed(session, activity, { now });
     if (snoozing) {

@@ -48,6 +48,7 @@ import {
   HOLD_REPORTS,
   MAX_AUTO_SETTLE_HOURS,
   MAX_REPORT_WINDOW_MINUTES,
+  MAX_SETTLED_TERMINAL_LIMIT,
   STALLED_AFTER_MS,
   MIN_AUTO_SETTLE_HOURS,
   MIN_REPORT_WINDOW_MINUTES,
@@ -1255,6 +1256,8 @@ const liveRow = (session: Session): LiveSessionRow => ({
   ...(session.settledOverride === undefined ? {} : { settledOverride: session.settledOverride }),
   ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
   ...(session.settledBy === undefined ? {} : { settledBy: session.settledBy }),
+  // A settled row's hover says why its terminals are gone (#883).
+  ...(session.terminalsClosed === undefined ? {} : { terminalsClosed: session.terminalsClosed }),
   ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
   ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
   // ON THE WIRE DELIBERATELY, unlike `title`/`branch` on the index row: this is
@@ -1891,7 +1894,13 @@ export type AttachedBrowser = {
 export type AttachedTerminals = {
   openCount(sessionId: string): number;
   openSessions(): string[];
-  closeSession(sessionId: string): Promise<number>;
+  /** `by` is "person" only when the person asked; Telar otherwise. */
+  closeSession(sessionId: string, by?: "telar" | "person"): Promise<number>;
+  /**
+   * The HOST's count per session, the person's shells included (#883). Absent
+   * means this engine's own terminals are all there are.
+   */
+  sessionCounts?(): Promise<Record<string, number>>;
 };
 
 /**
@@ -2725,6 +2734,134 @@ export class EngineStore {
   }
 
   /**
+   * WHAT THE TERMINAL HOST LAST SAID EACH SESSION HOLDS — issue #883.
+   *
+   * The rail draws it, Settle counts it, and the settled limit sums it, so it
+   * is asked for when something changes rather than per row or on a timer: a
+   * settle or close, one of the engine's own terminals opening or ending (the
+   * daemon wires `RunManager.watch`), and the five-minute settled sweep. A
+   * shell the person opens is seen at the next of those; `terminalCount` also
+   * takes the engine's own live records, so a run is never under-counted.
+   */
+  private terminalCensus = new Map<string, number>();
+  private censusTask?: Promise<void>;
+  private censusAgain = false;
+
+  /** Ask the host again. Callers in flight share one read, and one more if they arrived during it. */
+  refreshTerminalCensus(): Promise<void> {
+    if (!this.terminals) return Promise.resolve();
+    if (this.censusTask) {
+      this.censusAgain = true;
+      return this.censusTask;
+    }
+    this.censusTask = (async () => {
+      do {
+        this.censusAgain = false;
+        const terminals = this.terminals!;
+        let counts: Record<string, number>;
+        try {
+          counts = terminals.sessionCounts
+            ? await terminals.sessionCounts()
+            : Object.fromEntries(terminals.openSessions().map((sessionId) => [sessionId, terminals.openCount(sessionId)]));
+        } catch {
+          // The host is out of reach: what it last said stands.
+          return;
+        }
+        this.applyTerminalCensus(counts);
+      } while (this.censusAgain);
+    })().finally(() => {
+      this.censusTask = undefined;
+    });
+    return this.censusTask;
+  }
+
+  private applyTerminalCensus(counts: Record<string, number>): void {
+    const changed = new Set<string>();
+    for (const [sessionId, count] of this.terminalCensus) if ((counts[sessionId] ?? 0) !== count) changed.add(sessionId);
+    for (const [sessionId, count] of Object.entries(counts)) if ((this.terminalCensus.get(sessionId) ?? 0) !== count) changed.add(sessionId);
+    this.terminalCensus = new Map(Object.entries(counts).filter(([, count]) => count > 0));
+    // A count is on the row's answer, so a change must move the cursor of the
+    // list that row is on, or a conditional read would call it unchanged.
+    const at = this.settlingClock();
+    for (const sessionId of changed) {
+      try {
+        const row = indexRow(this.getSession(sessionId));
+        if (row.state !== "active" || rowIsShelved(row, at)) this.shelvedRevision = this.nextRevision();
+        else this.unshelvedRevision = this.nextRevision();
+      } catch {
+        // A session the host knows and this store does not is not on any list.
+      }
+    }
+  }
+
+  /** Every session the host or the engine says has a terminal open. */
+  private censusSessions(): string[] {
+    return [...new Set([...this.terminalCensus.keys(), ...(this.terminals?.openSessions() ?? [])])];
+  }
+
+  /** How many terminals this session holds, whoever opened them, as last known. */
+  terminalCount(sessionId: string): number {
+    return Math.max(this.terminalCensus.get(sessionId) ?? 0, this.terminals?.openCount(sessionId) ?? 0);
+  }
+
+  /** The census for the rows of one answer: sessions with one or more, only. */
+  private terminalsFor(sessionIds: Iterable<string>): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const sessionId of sessionIds) {
+      const count = this.terminalCount(sessionId);
+      if (count > 0) counts[sessionId] = count;
+    }
+    return counts;
+  }
+
+  /**
+   * WHAT SETTLE WOULD CLOSE, ASKED NOW — the cockpit's menu, as it opens (#883).
+   * One read of the host; the answer also refreshes what the rail is told.
+   */
+  async sessionTerminalCount(sessionId: string): Promise<number> {
+    this.getSession(sessionId);
+    await this.refreshTerminalCensus();
+    return this.terminalCount(sessionId);
+  }
+
+  /**
+   * THE PERSON CLOSES A SESSION'S TERMINALS — a settled row's "close them"
+   * (#883). The host's `/close-session`, as a settle makes it, but recorded as
+   * the person's: they pressed it, and an agent that was watching one of them
+   * is told so on its next turn, as for any close of theirs.
+   */
+  async closeSessionTerminals(sessionId: string): Promise<number> {
+    this.getSession(sessionId);
+    if (!this.terminals) return 0;
+    let closed: number;
+    try {
+      closed = await this.terminals.closeSession(sessionId, "person");
+    } catch (error) {
+      throw new EngineStateError("conflict", `Telar could not close this session's terminals: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await this.refreshTerminalCensus();
+    return closed;
+  }
+
+  /**
+   * SAY THAT TELAR CLOSED THEM, ON THE SESSION ITSELF — `Session.terminalsClosed`.
+   * Written like `applyDelegationSettle` writes its reason: `updatedAt` is not
+   * touched, because closing a settled session's terminals is not work it did
+   * and must not pull it off the shelf.
+   */
+  private recordTerminalsClosed(sessionId: string, terminals: number, reason: "grace" | "limit"): void {
+    if (terminals <= 0) return;
+    try {
+      const next: Session = { ...this.getSession(sessionId), terminalsClosed: { at: this.now(), terminals, reason } };
+      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
+      this.appendEvent(sessionId, { type: "session.updated", session: next });
+    } catch {
+      // The terminals are closed either way; a record that could not be kept
+      // costs the explanation, not the close.
+    }
+  }
+
+  /**
    * The daemon's kernel host, attached like the browser and for the same
    * reason: the store must build in a test without spawning Python. Absent
    * means every kernel verb refuses with "no kernel host".
@@ -3234,7 +3371,7 @@ export class EngineStore {
    * the bound belongs next to the schema that states it, not spelled a second
    * time in the route that happens to be the way in today.
    */
-  setInboxPolicy(patch: { autoSettleAfterHours?: unknown; settleDelegatedAfterHours?: unknown }): InboxPolicy {
+  setInboxPolicy(patch: { autoSettleAfterHours?: unknown; settleDelegatedAfterHours?: unknown; settledTerminalLimit?: unknown }): InboxPolicy {
     const next: InboxPolicy = { ...this.getInboxPolicy() };
     /** The same bound twice, stated once: both windows are hours in 1..90 days. */
     const window = (value: unknown, what: string): number | null => {
@@ -3254,7 +3391,18 @@ export class EngineStore {
     if (patch.settleDelegatedAfterHours !== undefined) {
       next.settleDelegatedAfterHours = window(patch.settleDelegatedAfterHours, "delegation grace");
     }
+    if (patch.settledTerminalLimit !== undefined) {
+      const parsed = InboxPolicySchema.shape.settledTerminalLimit.safeParse(patch.settledTerminalLimit);
+      if (!parsed.success) {
+        throw new EngineStateError("invalid_request", `settled terminal limit must be a whole number between 0 and ${MAX_SETTLED_TERMINAL_LIMIT}`);
+      }
+      next.settledTerminalLimit = parsed.data;
+    }
     this.writeDocument(this.paths.inbox, { version: STATE_VERSION, ...next });
+    // A lower limit applies now rather than at the next sweep (#883).
+    if (patch.settledTerminalLimit !== undefined && this.terminals) {
+      void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
+    }
     return { ...next };
   }
 
@@ -9093,6 +9241,8 @@ export class EngineStore {
     inbox: InboxPolicy;
     revision: number;
     settledCount: number;
+    /** Open terminals per session in this answer, whoever opened them (#883). */
+    terminals: Record<string, number>;
   } {
     /**
      * THE REVISION IS READ FIRST, so a write that lands mid-fold is reported by
@@ -9138,6 +9288,7 @@ export class EngineStore {
         inbox,
         revision,
         settledCount: indexed.settledCount,
+        terminals: this.terminalsFor(full.sessions.map((session) => session.id)),
       };
     }
     const full = this.liveSessions();
@@ -9174,6 +9325,7 @@ export class EngineStore {
       inbox,
       revision,
       settledCount: shelved.size,
+      terminals: this.terminalsFor(sessions.map((session) => session.id)),
     };
   }
 
@@ -13165,6 +13317,9 @@ export class EngineStore {
       // The desktop's terminal host is out of reach. Quitting Telar closes
       // every terminal it holds, so nothing is left for ever.
     }
+    // The row's count goes to nothing. The settled limit is not checked here:
+    // this settle only lowered the total it sums.
+    await this.refreshTerminalCensus();
     return { terminals, backgroundTasks };
   }
 
@@ -13182,15 +13337,19 @@ export class EngineStore {
    * from shelving a session at all, so such a session is never "settled" here
    * and keeps its terminals for as long as that work runs.
    *
-   * ONLY SESSIONS WITH A TERMINAL THE ENGINE OPENED ARE LOOKED AT, because
-   * those are the only ones it knows are open. Answers the sessions it closed.
+   * THE HOST IS ASKED WHICH SESSIONS HOLD TERMINALS, not only the engine's own
+   * records: a session whose only open terminal is a shell the person opened
+   * is closed at the end of its grace too, which the engine alone cannot see.
+   * Then the settled limit is checked (`enforceSettledTerminalLimit`). Answers
+   * the sessions whose grace closed them.
    */
   async sweepSettledTerminals(): Promise<string[]> {
     if (!this.terminals) return [];
+    await this.refreshTerminalCensus();
     const now = this.now();
     const window = this.getInboxPolicy().autoSettleAfterHours;
     const due: string[] = [];
-    for (const sessionId of this.terminals.openSessions()) {
+    for (const sessionId of this.censusSessions()) {
       try {
         const row = indexRow(this.getSession(sessionId));
         if (!rowIsShelved(row, { now, autoSettleAfterHours: window })) continue;
@@ -13206,12 +13365,79 @@ export class EngineStore {
     }
     for (const sessionId of due) {
       try {
-        await this.terminals.closeSession(sessionId);
+        const closed = await this.terminals.closeSession(sessionId);
+        this.recordTerminalsClosed(sessionId, closed, "grace");
       } catch {
         // The next tick tries again.
       }
     }
+    if (due.length > 0) await this.refreshTerminalCensus();
+    await this.enforceSettledTerminalLimit();
     return due;
+  }
+
+  /**
+   * NO MORE THAN `settledTerminalLimit` TERMINALS ACROSS SETTLED SESSIONS — the
+   * machine-wide half of #883. Past it, the session settled longest ago has its
+   * terminals closed first, as Telar, and says so (`terminalsClosed`), until the
+   * rest fit.
+   *
+   * CHECKED ON THE FIVE-MINUTE SWEEP AND RIGHT AFTER A DELEGATION SETTLE, and on
+   * no clock of its own. Those are the moments the settled total can grow that
+   * the engine hears of: the inactivity clock shelves a session by time passing,
+   * which only the sweep notices, and the delegation rule shelves one by a write.
+   * A person's or an agent's settle closes that session's terminals, so it only
+   * ever lowers the total. A shell opened in a settled session waits for the
+   * next sweep.
+   *
+   * "SETTLED LONGEST AGO" is `settledAt` for a decision, and for the clock the
+   * moment its window ran out: last activity plus the window. Answers the
+   * sessions it closed.
+   */
+  enforceSettledTerminalLimit(): Promise<string[]> {
+    // One check at a time: two overlapping would both close the same oldest session.
+    this.limitTask ??= this.checkSettledTerminalLimit().finally(() => {
+      this.limitTask = undefined;
+    });
+    return this.limitTask;
+  }
+
+  private limitTask?: Promise<string[]>;
+
+  private async checkSettledTerminalLimit(): Promise<string[]> {
+    if (!this.terminals) return [];
+    const limit = this.getInboxPolicy().settledTerminalLimit;
+    const at = this.settlingClock();
+    const windowMs = (at.autoSettleAfterHours ?? 0) * 60 * 60_000;
+    const settled: Array<{ sessionId: string; count: number; since: number }> = [];
+    for (const sessionId of this.censusSessions()) {
+      const count = this.terminalCount(sessionId);
+      if (count === 0) continue;
+      try {
+        const row = indexRow(this.getSession(sessionId));
+        if (row.state === "active" && !rowIsShelved(row, at)) continue;
+        const since = row.settledOverride === "settled" ? (row.settledAt ?? row.updatedAt) : row.updatedAt + windowMs;
+        settled.push({ sessionId, count, since });
+      } catch {
+        // A session that cannot be read is not closed on a guess.
+      }
+    }
+    let total = settled.reduce((sum, entry) => sum + entry.count, 0);
+    const closed: string[] = [];
+    for (const entry of settled.sort((a, b) => a.since - b.since)) {
+      if (total <= limit) break;
+      try {
+        const ended = await this.terminals.closeSession(entry.sessionId);
+        this.recordTerminalsClosed(entry.sessionId, Math.max(ended, entry.count), "limit");
+        total -= entry.count;
+        closed.push(entry.sessionId);
+      } catch {
+        // The host is out of reach; the next check tries again.
+        break;
+      }
+    }
+    if (closed.length > 0) await this.refreshTerminalCensus();
+    return closed;
   }
 
   /**
@@ -13720,6 +13946,9 @@ export class EngineStore {
     this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
     this.appendEvent(sessionId, { type: "session.settled", settledBy });
     this.appendEvent(sessionId, { type: "session.updated", session: next });
+    // A shelf that just grew by a session keeping its terminals (#883). After
+    // the command that settled it, never inside it.
+    if (this.terminals) void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
   }
 
   /** Rewrite a still-queued wake about the same child run with newer words. True when one was found. */

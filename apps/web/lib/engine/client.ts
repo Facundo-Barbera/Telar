@@ -413,6 +413,9 @@ export type LiveSessionsPage = {
    *  behind `?all=1`. Absent from an engine that predates the filter, which
    *  means "you have everything", never "the shelf is empty". */
   settledCount?: number;
+  /** Open terminals per session in this answer, whoever opened them (#883).
+   *  Absent from an older engine, which reads as "none known". */
+  terminals?: Record<string, number>;
   unchanged?: false;
 };
 
@@ -533,7 +536,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
-    setInbox: (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null }) =>
+    setInbox: (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null; settledTerminalLimit?: number }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
     /** Whether Telar may tell an agent where it is — the preamble and the
      *  `telar` skill. One answer for every client of this engine. */
@@ -1549,6 +1552,12 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ session: Session; released: number; already: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/resume`, {}),
     stopBackgroundTasks: (sessionId: string) =>
       request<{ stopped: number }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop-background`, {}),
+    /** What Settle would close, asked as a menu opens (#883). */
+    sessionTerminals: (sessionId: string) =>
+      request<{ open: number }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/terminals`),
+    /** Close a session's terminals, as the person (#883). */
+    closeSessionTerminals: (sessionId: string) =>
+      request<{ closed: number }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/terminals/close`, {}),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
     /** Run a message recovery held, now that a person has re-read it. Dropping

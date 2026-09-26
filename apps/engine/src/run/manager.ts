@@ -1056,6 +1056,21 @@ export class RunManager {
   }
 
   /**
+   * HOW MANY TERMINALS EACH SESSION HOLDS, WHOEVER OPENED THEM — issue #883.
+   *
+   * On the desktop the host answers, because the person's shells are terminals
+   * of the session too and only the host knows them. The pipe fallback has no
+   * host; its children are every terminal there is. Throws when the host cannot
+   * be asked, so a caller keeps what it last knew rather than hearing "none".
+   */
+  async sessionCounts(): Promise<Record<string, number>> {
+    if (this.launcher.sessionCounts) return this.launcher.sessionCounts();
+    const counts: Record<string, number> = {};
+    for (const sessionId of this.openSessions()) counts[sessionId] = this.openCount(sessionId);
+    return counts;
+  }
+
+  /**
    * CLOSE EVERYTHING A SESSION HAS OPEN, AS TELAR — settling it (#883).
    *
    * On the desktop this is ONE call to the host's `/close-session`, because the
@@ -1066,15 +1081,19 @@ export class RunManager {
    * note for them. The pipe fallback has no host; its children are all there is.
    *
    * Answers how many terminals were closed, the person's shells included.
+   *
+   * `by` IS "person" ONLY WHEN THE PERSON PRESSED FOR IT — a settled row's
+   * "close them" (#883). Then the ending is theirs, and so is the note an agent
+   * that was watching one gets on its next turn.
    */
-  async closeSession(sessionId: string): Promise<number> {
+  async closeSession(sessionId: string, by: RunClosedBy = "telar"): Promise<number> {
     const open = [...this.runs.values()].filter((run) => run.sessionId === sessionId && !isTerminal(run.status));
     if (!this.launcher.closeSession) {
-      await Promise.allSettled(open.map((run) => this.close(run.terminalId, "telar")));
+      await Promise.allSettled(open.map((run) => this.close(run.terminalId, by)));
       return open.length;
     }
     const stamped = open.filter((run) => !run.closeTask);
-    for (const run of stamped) run.closing = "telar";
+    for (const run of stamped) run.closing = by;
     let closed: number;
     try {
       closed = await this.launcher.closeSession(sessionId);

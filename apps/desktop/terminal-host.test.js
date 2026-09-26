@@ -886,6 +886,15 @@ describe("a terminal's session and origin", () => {
     expect(killed.some(([pid]) => pid === other.pid)).toBe(false);
   });
 
+  test("countBySession counts every owner's terminals per session, and none in no session (#883)", () => {
+    const { host } = sessionHost();
+    host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
+    host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
+    host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_b" });
+    host.open({ shell: "/bin/zsh", env: {} });
+    expect(host.countBySession()).toEqual({ s_a: 2, s_b: 1 });
+  });
+
   test("killBySession can be narrowed to one owner", async () => {
     const { host, killed, finished } = sessionHost();
     host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });

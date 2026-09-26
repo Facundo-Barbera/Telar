@@ -91,7 +91,7 @@ export async function GET(request: Request) {
 async function compose(live: LiveSessionsAnswer, etag?: string): Promise<Response> {
   try {
     const client = await engineClient();
-    const { sessions, assignments, layout, daemonId, inbox, revision, settledCount } = live;
+    const { sessions, assignments, layout, daemonId, inbox, revision, settledCount, terminals } = live;
     const { projects } = await client.listProjects();
     return Response.json({
       sessions,
@@ -124,6 +124,9 @@ async function compose(live: LiveSessionsAnswer, etag?: string): Promise<Respons
       // Absent from an engine that predates the filter, which reads as "you have
       // everything" rather than as an empty shelf.
       ...(settledCount === undefined ? {} : { settledCount }),
+      // WHAT EACH ROW STILL HAS OPEN (#883) — Settle's count and a settled
+      // row's mark, on the read the rail makes anyway. Same revision as the rows.
+      ...(terminals ? { terminals } : {}),
     }, {
       // THE ENGINE'S TAG, HANDED STRAIGHT BACK (#457) — so the caller's next
       // `If-None-Match` is a tag this engine will recognise. Absent from an

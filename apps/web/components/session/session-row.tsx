@@ -33,11 +33,13 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleDotIcon,
+  CircleStopIcon,
   HardDriveIcon,
   ClockIcon,
   GitBranchIcon,
   MonitorIcon,
   PinIcon,
+  SquareTerminalIcon,
   UndoIcon,
 } from "lucide-react";
 import type { LiveSessionRow } from "@telar/engine-client";
@@ -48,8 +50,8 @@ import { canvasHref, sessionHref, sessionKey, settledHint, settlingActivity, typ
 import { claimPrefetch, PREFETCH_INTENT_MS, PREFETCH_MARGIN, releasePrefetch, warmConversation } from "@/lib/rail-prefetch";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu, SessionRowContextMenu, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
-import { mutateRow, patchSession, withSettling, withSnooze, withTitle, type SessionRowChanged } from "@/lib/session-mutations";
-import { canSettle, canSnooze, snoozePresets, wakeLabel } from "@/lib/session-settling";
+import { closeRowTerminals, mutateRow, patchSession, withSettling, withSnooze, withTitle, type SessionRowChanged } from "@/lib/session-mutations";
+import { canSettle, canSnooze, settleClosesText, settledTerminalsHint, snoozePresets, terminalsClosedHint, wakeLabel } from "@/lib/session-settling";
 import type { RailJumpSlot } from "@/lib/session-groups";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -667,6 +669,28 @@ export function SessionRow({
     ) : null;
 
   /**
+   * A SETTLED CONVERSATION STILL RUNNING SOMETHING — issue #883. Its automatic
+   * settle's half-hour grace, or a shell opened since. The count is off the
+   * live read the rail already makes (`terminals`), explained on hover, and
+   * the hover actions carry the way to end them. An active row wears nothing:
+   * its terminals are the work, and its Settle says what it would close.
+   */
+  const heldTerminals = unsettles && !session.archived ? (session.terminals ?? 0) : 0;
+  const terminalMark =
+    heldTerminals > 0 ? (
+      <span
+        role="img"
+        aria-label={settledTerminalsHint(heldTerminals)}
+        title={settledTerminalsHint(heldTerminals)}
+        className="inline-flex shrink-0 items-center gap-0.5 text-2xs tabular-nums text-sidebar-foreground/60"
+      >
+        <SquareTerminalIcon className="size-3" />
+        {heldTerminals}
+      </span>
+    ) : null;
+  const settleCloses = settleClosesText(session.terminals);
+
+  /**
    * WHICH MAC, when it is not this one. A remote row says so on its header
    * line, after the project, in the same weight — it is an address, not a
    * status. Local rows carry nothing: the local engine is the default, and
@@ -691,6 +715,7 @@ export function SessionRow({
       <span className="flex min-w-0 items-center gap-1.5">
         {wakeMark}
         {pinMark}
+        {terminalMark}
         {showProject && session.projectName ? (
           <>
             {/* The project's OWN mark when its checkout carries one — a
@@ -764,6 +789,9 @@ export function SessionRow({
     <>
       {wakeMark}
       {pinMark}
+      {/* Leading, like the two marks above, so the hover actions that end
+          them never cover the count they explain. */}
+      {terminalMark}
       {/* A SETTLED ROW WEARS ITS PROJECT, not its provider. Whose work this was
           is what you scan the tail for; the provider is identity that already
           lives in the hover card. Falls back to the provider mark only when the
@@ -875,6 +903,8 @@ export function SessionRow({
         [
           session.stale === undefined ? undefined : `Last read ${fmtAgo(session.stale, renderedAt)}`,
           settledHint(session),
+          // Telar closed what it left running, and why (#883).
+          unsettles ? terminalsClosedHint(session) : undefined,
         ]
           .filter(Boolean)
           .join(" · ") || undefined
@@ -1016,9 +1046,10 @@ export function SessionRow({
               variant="ghost"
               size="icon-xs"
               aria-label={unsettles ? "Return to the list" : "Settle session"}
-              // Warned in place, never asked (#883): settling ends what the
-              // conversation left running, and returning it brings none of that back.
-              title={unsettles ? "Return to the list" : "Settle — closes its terminals and stops its background tasks"}
+              // Warned in place, never asked (#883): settling closes the
+              // conversation's terminals, and the button says how many before
+              // the press. With none, it says nothing more than what it is.
+              title={unsettles ? "Return to the list" : settleCloses ? `Settle — ${settleCloses}` : "Settle"}
               disabled={!unsettles && !canSettle(sessionActivity)}
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
@@ -1027,6 +1058,20 @@ export function SessionRow({
               }}
             >
               {unsettles ? <UndoIcon /> : <CircleCheckIcon />}
+            </Button>
+          )}
+          {/* THE WAY TO END WHAT THE COUNT SHOWS (#883), beside Return. The
+              person pressed it, so the engine records the close as theirs. */}
+          {heldTerminals > 0 && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={heldTerminals === 1 ? "Close its terminal" : `Close its ${heldTerminals} terminals`}
+              title={heldTerminals === 1 ? "Close its terminal" : `Close its ${heldTerminals} terminals`}
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => void closeRowTerminals({ row: session, onRowChanged })}
+            >
+              <CircleStopIcon />
             </Button>
           )}
           {/**

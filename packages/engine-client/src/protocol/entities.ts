@@ -1110,6 +1110,17 @@ export const Session = z.object({
    */
   settledBy: SessionSettledBy.optional(),
   /**
+   * TELAR CLOSED THIS SETTLED SESSION'S TERMINALS ON ITS OWN — issue #883.
+   * `grace` is the half hour an automatic settle keeps them; `limit` is
+   * `InboxPolicy.settledTerminalLimit`, reached with this session settled
+   * longest ago. Written without touching `updatedAt`, so it describes the
+   * current stay on the shelf only while `at >= updatedAt`: any later work or
+   * decision makes it history, and a surface stops saying it.
+   */
+  terminalsClosed: z
+    .object({ at: Timestamp, terminals: z.number().int().positive(), reason: z.enum(["grace", "limit"]) })
+    .optional(),
+  /**
    * ERRANDS A HUMAN TOOK BACK OFF THE SHELF, by `SessionAssignment.taskRunId`.
    *
    * A settle the reader undid is an argument the engine does not get to have
@@ -1315,6 +1326,22 @@ export const DEFAULT_AUTO_SETTLE_HOURS = 3 * 24;
 export const DEFAULT_SETTLE_DELEGATED_AFTER_HOURS = 1;
 
 /**
+ * HOW MANY TERMINALS SETTLED SESSIONS MAY KEEP OPEN, ACROSS THIS MAC — #883.
+ *
+ * Settling a session yourself closes its terminals at once, so what this bounds
+ * is the rest: an automatic settle's 30-minute grace, a shell opened in a
+ * settled conversation, a settle the terminal host missed. Past it, the
+ * terminals of the session settled longest ago close first.
+ *
+ * FIVE. Most such terminals are a dev server or a watcher, a few hundred MB
+ * each; five is a couple of conversations' servers kept through their grace,
+ * and not a day of ~50 settles quietly becoming the machine's load. 0 means a
+ * settled session keeps nothing past the next check.
+ */
+export const DEFAULT_SETTLED_TERMINAL_LIMIT = 5;
+export const MAX_SETTLED_TERMINAL_LIMIT = 99;
+
+/**
  * HOW THE READER WANTS THEIR LIST BANDED — the POLICY half of settling.
  *
  * The per-session half (`settledOverride`, `snoozedUntil`) is a decision about
@@ -1352,12 +1379,20 @@ export const InboxPolicy = z.object({
     .max(MAX_AUTO_SETTLE_HOURS)
     .nullable()
     .default(DEFAULT_SETTLE_DELEGATED_AFTER_HOURS),
+  /**
+   * THE THIRD FIELD, AND IT IS ABOUT WHAT SETTLING DOES RATHER THAN WHAT THE
+   * INBOX SHOWS (#883): kept here because it is the settling policy's other
+   * half, read by the same Settings group, and a document of its own would be
+   * one more route for one number. `.default` for the reason above.
+   */
+  settledTerminalLimit: z.number().int().min(0).max(MAX_SETTLED_TERMINAL_LIMIT).default(DEFAULT_SETTLED_TERMINAL_LIMIT),
 });
 export type InboxPolicy = z.infer<typeof InboxPolicy>;
 
 export const DEFAULT_INBOX_POLICY: InboxPolicy = {
   autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS,
   settleDelegatedAfterHours: DEFAULT_SETTLE_DELEGATED_AFTER_HOURS,
+  settledTerminalLimit: DEFAULT_SETTLED_TERMINAL_LIMIT,
 };
 
 /**

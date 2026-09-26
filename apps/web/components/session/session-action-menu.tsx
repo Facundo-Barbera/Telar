@@ -31,6 +31,7 @@ import {
   PinOffIcon,
   SettingsIcon,
   SquarePenIcon,
+  SquareTerminalIcon,
   Trash2Icon,
   UndoIcon,
 } from "lucide-react";
@@ -67,6 +68,7 @@ const ICONS: Record<SessionActionIcon, ComponentType<{ className?: string }>> = 
   unpin: PinOffIcon,
   settle: CircleCheckIcon,
   unsettle: UndoIcon,
+  terminal: SquareTerminalIcon,
   snooze: AlarmClockIcon,
   wake: AlarmClockIcon,
   rename: PencilIcon,
@@ -194,10 +196,19 @@ export function SessionActionMenuItems({ items, parts }: { items: readonly Sessi
  * act on, and a right-click that opens a blank card is worse than one that does
  * the browser's usual thing.
  */
-export function SessionActionContextMenu({ items, children }: { items?: readonly SessionActionItem[]; children: ReactNode }) {
+export function SessionActionContextMenu({
+  items,
+  children,
+  onOpen,
+}: {
+  items?: readonly SessionActionItem[];
+  children: ReactNode;
+  /** Told as the menu opens — the cockpit asks what Settle would close then (#883). */
+  onOpen?: () => void;
+}) {
   if (!items || items.length === 0) return <>{children}</>;
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={(open) => open && onOpen?.()}>
       <ContextMenuTrigger render={<div className="contents" />}>{children}</ContextMenuTrigger>
       {/* `w-(--anchor-width)` is the primitive's default, which would size the
           popup to the width of whatever was right-clicked — a rail row, or the

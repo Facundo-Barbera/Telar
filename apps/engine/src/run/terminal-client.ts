@@ -224,6 +224,21 @@ export class RunTerminalClient {
     return answer?.closed === true;
   }
 
+  /**
+   * HOW MANY TERMINALS EACH SESSION HOLDS, WHOEVER OPENED THEM (#883) — the
+   * person's shells included, as counts and never as ids. One read, no cache.
+   */
+  async sessionCounts(): Promise<Record<string, number>> {
+    const answer = (await this.request("GET", "/sessions")) as { sessions?: unknown };
+    const counts: Record<string, number> = {};
+    if (answer?.sessions && typeof answer.sessions === "object") {
+      for (const [sessionId, count] of Object.entries(answer.sessions)) {
+        if (typeof count === "number" && Number.isInteger(count) && count > 0) counts[sessionId] = count;
+      }
+    }
+    return counts;
+  }
+
   /** Close every terminal a session owns, whoever opened it. How many. */
   async closeSession(sessionId: string): Promise<number> {
     const answer = (await this.post("/close-session", { sessionId })) as { closed?: number };

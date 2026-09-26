@@ -69,6 +69,10 @@ export function patchedRow(row: SidebarSession, answered: LiveSessionRow): Sideb
     row.projectRemote,
     row.projectIconName,
     row.settledForTitle,
+    row.projectAvailability,
+    // The count is the read's too (#883), and survives any change but the one
+    // that ended it: `withSettling` drops it when a settle closes them.
+    row.terminals,
   );
 }
 
@@ -121,7 +125,7 @@ export function withSettling(row: SidebarSession, override: "settled" | "active"
     // beside an engine settle (#378), so a person settling or un-settling by
     // hand must not leave "settled after its work for X was delivered" hanging
     // off the row they just decided about.
-    ...without(row, ["settledOverride", "settledAt", "settledBy", "settledForTitle"]),
+    ...without(row, ["settledOverride", "settledAt", "settledBy", "settledForTitle", ...(override === "settled" ? (["terminals"] as const) : [])]),
     updatedAt: at,
     ...(override === null ? {} : { settledOverride: override }),
     ...(override === "settled" ? { settledAt: at } : {}),
@@ -160,7 +164,7 @@ export function withSnooze<T extends SnoozableRow>(row: T, until: number | null,
  * every one of them. A guess that disagreed about that would be the one row in
  * the rail whose shape is not the shape the poll produces.
  */
-type ClearableField = "settledOverride" | "settledAt" | "settledBy" | "settledForTitle";
+type ClearableField = "settledOverride" | "settledAt" | "settledBy" | "settledForTitle" | "terminals";
 
 function without(row: SidebarSession, fields: readonly ClearableField[]): SidebarSession {
   const next = { ...row };
@@ -249,6 +253,33 @@ export async function deleteSession(session: Pick<SidebarSession, "id" | "hostId
   const response = await sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" });
   if (!response.ok) throw new Error(await patchFailureMessage(response));
   return undefined;
+}
+
+/**
+ * CLOSE A SETTLED ROW'S TERMINALS, AS THE PERSON — issue #883.
+ *
+ * `mutateRow`'s three states for a verb that answers a count rather than a
+ * record: the count goes at once, stays gone on success, and comes back with
+ * the reason on a refusal. The session record does not change, so nothing
+ * else on the row does either.
+ */
+export async function closeRowTerminals({
+  row,
+  onRowChanged,
+  report = alertReporter,
+}: {
+  row: SidebarSession;
+  onRowChanged: SessionRowChanged;
+  report?: MutationReporter;
+}): Promise<void> {
+  onRowChanged({ row: without(row, ["terminals"]) });
+  try {
+    const response = await sessionFetch(row, `/api/sessions/${encodeURIComponent(row.id)}/terminals/close`, { method: "POST" });
+    if (!response.ok) throw new Error(await patchFailureMessage(response));
+  } catch (cause) {
+    onRowChanged({ row });
+    report(cause instanceof Error ? cause.message : "The engine could not close those terminals.");
+  }
 }
 
 export async function patchFailureMessage(response: Response): Promise<string> {

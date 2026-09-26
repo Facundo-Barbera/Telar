@@ -69,6 +69,9 @@ function fakeHost() {
       this.asked.push(options);
       return [{ id: "term_1", sessionId: "s_1", origin: "run", active: true, processes: 1, command: "bun run dev" }];
     },
+    countBySession() {
+      return { s_1: 2, s_2: 1 };
+    },
     list(owner) {
       this.listedAs.push(owner);
       return this.opened.map((_, index) => ({ id: `term_${index + 1}`, pid: 4200 + index + 1 }));
@@ -142,6 +145,7 @@ test("every route needs the token, and a wrong one is refused before anything ru
     ["POST", "/resize"],
     ["GET", "/events"],
     ["GET", "/state"],
+    ["GET", "/sessions"],
   ]) {
     const response = await fetch(`${url}${path}`, { method, headers: { authorization: "Bearer wrong" } });
     expect(response.status).toBe(401);
@@ -294,6 +298,13 @@ test("close-session closes a whole session and answers how many", async () => {
   // Passed as given: the host is what refuses a missing session id.
   await (await fetch(`${url}/close-session`, { method: "POST", headers: auth, body: "{}" })).json();
   expect(host.sessionsClosed).toEqual(["s_1", undefined]);
+});
+
+test("sessions answers each session's terminal count, whoever opened them (#883)", async () => {
+  const { url } = await serve();
+  const response = await fetch(`${url}/sessions`, { headers: auth });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ sessions: { s_1: 2, s_2: 1 } });
 });
 
 test("active answers for the engine's own terminals, narrowed by ids", async () => {

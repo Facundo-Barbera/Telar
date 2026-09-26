@@ -2833,7 +2833,7 @@ test("the inbox policy is one document, defaulted rather than absent", () => {
   // so the desktop shell and a browser tab band the same sessions the same way.
   const { store } = readyStore();
   // The delegation grace rides the same document (#378) and defaults with it.
-  const grace = { settleDelegatedAfterHours: 1 };
+  const grace = { settleDelegatedAfterHours: 1, settledTerminalLimit: 5 };
   expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72, ...grace });
 
   expect(store.setInboxPolicy({ autoSettleAfterHours: 14 })).toEqual({ autoSettleAfterHours: 14, ...grace });
@@ -2854,7 +2854,7 @@ test("the inbox policy is one document, defaulted rather than absent", () => {
 
 test("a days-shaped inbox document from before the hours move still means what it said", () => {
   const { store, root: stateRoot } = readyStore();
-  const grace = { settleDelegatedAfterHours: 1 };
+  const grace = { settleDelegatedAfterHours: 1, settledTerminalLimit: 5 };
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterDays":2}');
   expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 48, ...grace });
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterDays":null}');
@@ -2868,7 +2868,7 @@ test("a policy written before the delegation grace keeps its own window — #378
   // somebody chose with 72 hours.
   const { store, root: stateRoot } = readyStore();
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterHours":6}');
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 6, settleDelegatedAfterHours: 1 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 6, settleDelegatedAfterHours: 1, settledTerminalLimit: 5 });
 });
 
 test("the standing session defaults round-trip, and refuse a mode that is not one", () => {
@@ -2991,7 +2991,7 @@ test("a malformed inbox document costs the preference, never the sidebar", () =>
   // server is a server that must not run. A malformed settling window is a
   // preference, and the worst it can do is band a list wrongly.
   const { store, root: stateRoot } = readyStore();
-  const whole = { autoSettleAfterHours: 72, settleDelegatedAfterHours: 1 };
+  const whole = { autoSettleAfterHours: 72, settleDelegatedAfterHours: 1, settledTerminalLimit: 5 };
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":1,"autoSettleAfterDays":"soon"}');
   expect(store.getInboxPolicy()).toEqual(whole);
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), "not json at all");

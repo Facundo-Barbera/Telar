@@ -1258,6 +1258,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   // Settling closes a session's terminals and an open one holds its checkout
   // busy (#883), and both of those are the store's rules.
   store.attachTerminals(runMount.manager);
+  // What the rail counts per session (#883): asked once now, and again when
+  // one of the engine's own terminals changes — an event, never a timer.
+  void store.refreshTerminalCensus();
+  runMount.manager.watch(() => void store.refreshTerminalCensus());
   const pluginStatuses = await pluginHost.startAll();
   /**
    * The host is the authority on which of its tools are reads. Installed here
@@ -1928,6 +1932,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // `InboxPolicy`. Its own key because it is its own question: one
             // window guesses from silence, the other counts from a delivery.
             ...("settleDelegatedAfterHours" in input ? { settleDelegatedAfterHours: input.settleDelegatedAfterHours } : {}),
+            ...("settledTerminalLimit" in input ? { settledTerminalLimit: input.settledTerminalLimit } : {}),
           }),
         });
         return;
@@ -5205,6 +5210,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // task outlives its turn, so this is a different verb from /stop.
         if (request.method === "POST" && session.tail === "/stop-background") {
           writeJson(response, 200, { stopped: store.stopBackgroundTasks(session.sessionId) });
+          return;
+        }
+        /**
+         * THE SESSION'S TERMINALS, WHOEVER OPENED THEM — issue #883. `GET` is
+         * what Settle would close, asked as a menu opens; `close` is a settled
+         * row's "close them", recorded as the person's.
+         */
+        if (request.method === "GET" && session.tail === "/terminals") {
+          writeJson(response, 200, { open: await store.sessionTerminalCount(session.sessionId) });
+          return;
+        }
+        if (request.method === "POST" && session.tail === "/terminals/close") {
+          await body(request);
+          writeJson(response, 200, { closed: await store.closeSessionTerminals(session.sessionId) });
           return;
         }
         /**

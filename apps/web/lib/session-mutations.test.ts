@@ -25,6 +25,7 @@ import type { LiveSessionRow } from "@telar/engine-client";
 import type { SidebarSession } from "./session-list";
 import {
   applyRowChange,
+  closeRowTerminals,
   deleteSession,
   newSessionId,
   mutateRow,
@@ -227,6 +228,36 @@ describe("the three states of a mutation", () => {
     expect(changes[0]).toEqual({ removed: "session_one" });
     expect(changes[1]).toEqual({ row: before });
     expect(said).toEqual(["a turn is in flight"]);
+  });
+});
+
+describe("a settled row's terminals (#883)", () => {
+  test("closing them drops the count at once, in one POST, and reads no list", async () => {
+    const before = row({ settledOverride: "settled", terminals: 2 });
+    answer = () => Response.json({ closed: 2 });
+    const changes: SessionRowChange[] = [];
+    await closeRowTerminals({ row: before, onRowChanged: (change) => changes.push(change), report: () => {} });
+    expect(asked).toEqual(["POST /api/sessions/session_one/terminals/close"]);
+    expect(changes).toHaveLength(1);
+    expect("row" in changes[0]! && changes[0].row.terminals).toBeUndefined();
+    expect(liveListReads()).toEqual([]);
+  });
+
+  test("a refusal brings the count back and says why", async () => {
+    const before = row({ settledOverride: "settled", terminals: 2 });
+    answer = () => Response.json({ error: { message: "the terminal host is not answering" } }, { status: 409 });
+    const changes: SessionRowChange[] = [];
+    const said: string[] = [];
+    await closeRowTerminals({ row: before, onRowChanged: (change) => changes.push(change), report: (message) => said.push(message) });
+    expect(changes[1]).toEqual({ row: before });
+    expect(said).toEqual(["the terminal host is not answering"]);
+  });
+
+  test("settling drops the count, since the settle closes them; other changes keep it", () => {
+    const before = row({ terminals: 2 });
+    expect(withSettling(before, "settled", 5_000).terminals).toBeUndefined();
+    expect(withSettling(before, "active", 5_000).terminals).toBe(2);
+    expect(patchedRow(before, record()).terminals).toBe(2);
   });
 });
 
