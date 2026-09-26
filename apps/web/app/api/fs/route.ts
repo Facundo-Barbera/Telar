@@ -39,6 +39,9 @@ export async function GET(request: Request) {
     // Absent means home, which is where both browsers start.
     path: query.get("path"),
     hidden: query.get("hidden") === "1",
+    // A pasted path that is a file, or no longer there, opens its nearest
+    // existing folder instead of a refusal. The phone never sends it.
+    nearest: query.get("nearest") === "1",
   });
   if (isDirectoryFailure(listed)) {
     return Response.json({ error: listed }, { status: listed.code === "not_found" ? 404 : 400 });
