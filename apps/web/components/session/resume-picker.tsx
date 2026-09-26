@@ -48,12 +48,19 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
-/** The bold half of a row — what the person actually reads it as. Same
- *  fallback order everywhere it is needed, so the row, its `title=` attribute
- *  and the search below it cannot disagree about what a conversation is
- *  called. */
+/** The bold half of a row — the NAME the CLI's own `/resume` shows (a
+ *  `/rename`, else its auto-title), because that is what a person searches for
+ *  after seeing it in their terminal. Leading with the opening prompt instead
+ *  hid `triage-2` behind "/clear" and made it unfindable by the name they knew. */
 function titleOf(conversation: ClaudeConversation): string {
-  return conversation.firstPrompt?.trim() || conversation.customTitle || conversation.title || conversation.sessionId;
+  return conversation.customTitle?.trim() || conversation.title.trim() || conversation.firstPrompt?.trim() || conversation.sessionId;
+}
+
+/** The opening prompt, shown under the name only when it says something the
+ *  name does not — which is what still tells six "PINEAPPLE-7742"s apart. */
+function promptOf(conversation: ClaudeConversation): string | undefined {
+  const prompt = conversation.firstPrompt?.trim();
+  return prompt && prompt !== titleOf(conversation) ? prompt : undefined;
 }
 
 export function ResumePicker({
@@ -149,8 +156,8 @@ function ConversationList({
     if (!conversations) return conversations;
     const needle = query.trim().toLowerCase();
     if (!needle) return conversations;
-    return conversations.filter(
-      (conversation) => titleOf(conversation).toLowerCase().includes(needle) || (conversation.cwd?.toLowerCase().includes(needle) ?? false),
+    return conversations.filter((conversation) =>
+      [titleOf(conversation), conversation.firstPrompt, conversation.cwd, conversation.sessionId].some((field) => field?.toLowerCase().includes(needle)),
     );
   }, [conversations, query]);
 
@@ -239,6 +246,7 @@ export function ConversationRow({
   onPick: () => void;
 }) {
   const title = titleOf(conversation);
+  const prompt = promptOf(conversation);
   // Age, branch, size — the three facts on one muted line, joined only where
   // each one actually exists. A conversation from `main` with no branch
   // recorded must not read as a stray dot.
@@ -256,17 +264,20 @@ export function ConversationRow({
         "hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
       )}
     >
-      {/* THE PERSON'S OWN OPENING WORDS, because that is what a conversation IS
-          to them — a name they chose or the CLI generated is the fallback, in
-          `titleOf`. TRUNCATED MID-WORD IS THE BUG THIS FIXES: `truncate` cuts
-          wherever the box ends, and the FULL title lives in `title=` so
-          hovering (or a screen reader) still gets the whole sentence. */}
+      {/* THE NAME THE CLI SHOWS, then the person's opening words under it.
+          `truncate` cuts wherever the box ends, so the FULL text lives in
+          `title=` for hovering (or a screen reader). */}
       <span className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm" title={title}>
           {title}
         </span>
         {busy && <Spinner className="shrink-0" />}
       </span>
+      {prompt && (
+        <span className="truncate text-xs text-muted-foreground" title={prompt}>
+          {prompt}
+        </span>
+      )}
       {/* AGE · BRANCH · SIZE — one muted line, not three facts run together
           with no separator. */}
       {meta.length > 0 && <span className="truncate text-3xs text-muted-foreground tabular-nums">{meta.join(" · ")}</span>}
