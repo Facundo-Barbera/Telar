@@ -31,6 +31,7 @@ const { ChordScopes } = require("./chord-scope");
 const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
+const { watchWindowVisibility, windowVisible } = require("./window-visibility");
 const { provisionPushRelay } = require("./push-relay");
 const { ACTIVE_IDLE_SECONDS, DESKTOP_NOTIFICATIONS_ENV, createDesktopNotifier, createPresenceReporter, routeOf } = require("./desktop-notifications");
 const { watchVolumes } = require("./volume-watch");
@@ -1257,6 +1258,9 @@ function createWindow(url) {
       backgroundThrottling: false,
     },
   });
+  // Which is also why the page cannot see itself hidden — this process tells
+  // it instead (window-visibility.js, #834).
+  watchWindowVisibility(win);
   // NAMED BROWSER PROFILES (browser-profiles.js): the registry is read once
   // from userData; a bad file is a startup error, not a silent fallback to the
   // shared jar.
@@ -3621,6 +3625,10 @@ ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
 // The last thing the watchdog said, for a window that mounted between polls —
 // see `broadcastRunawayNotice`. Same shape as the push.
 ipcMain.handle("telar:metrics:runaway", () => lastRunawayNotice);
+
+// Whether the asking window can be seen, for a renderer that mounted after the
+// last edge — see window-visibility.js. One boolean; nothing to guard.
+ipcMain.handle("telar:window:visibility", (event) => windowVisible(BrowserWindow.fromWebContents(event.sender)));
 
 /**
  * A SECOND WINDOW ON A PAGE OF THE APP — "Open in a new window", from the
