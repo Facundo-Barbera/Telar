@@ -432,7 +432,7 @@ type ClaudeSdk = {
        * options proper, which is why it is threaded separately from `model` and
        * `effort` despite being the same kind of choice to a human.
        */
-      settings?: { fastMode?: boolean };
+      settings?: { fastMode?: boolean; ultracode?: boolean };
       /** How hard to think. A CLOSED vocabulary here, unlike `DriverRun.effort`
        *  — see `claudeEffort` below. */
       effort?: ClaudeEffort;
@@ -1297,6 +1297,7 @@ export function createClaudeDriver(
       model,
       effort,
       fastMode,
+      ultracode,
       attachments,
       mcpServers: userMcpServers,
       env,
@@ -2602,6 +2603,7 @@ export function createClaudeDriver(
         env: canonicalEnvPatch(defaultEnv, env, contextEnv),
         effort: sdkEffort ?? null,
         fastMode: fastMode ?? null,
+        ultracode: ultracode ?? null,
         executable: executable ?? null,
         /**
          * ID AND SPEC ONLY, deduplicated and sorted — never the whole record.
@@ -2856,7 +2858,16 @@ export function createClaudeDriver(
             // Absent unless asked for: a settings override is a request for
             // non-default behaviour, and inventing one would make every session
             // inherit a choice nobody made.
-            ...(fastMode === undefined ? {} : { settings: { fastMode } }),
+            // Ultracode rides the same layer — `Settings.ultracode`, which the
+            // CLI documents as xhigh effort plus standing workflow orchestration.
+            ...(fastMode === undefined && ultracode === undefined
+              ? {}
+              : {
+                  settings: {
+                    ...(fastMode === undefined ? {} : { fastMode }),
+                    ...(ultracode === undefined ? {} : { ultracode }),
+                  },
+                }),
             // COLD START ONLY. Continuity between turns is now the live
             // process's own; `resume` is what a NEW process uses to pick up a
             // conversation an old one carried.

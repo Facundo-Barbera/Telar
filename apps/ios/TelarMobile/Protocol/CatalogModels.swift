@@ -25,6 +25,17 @@ struct ProviderModel: Decodable, Identifiable, Equatable {
     /// The manifest says this generation is history. Decoded only — this
     /// picker does not fold generations. Optional: older engines omit it.
     var legacy: Bool?
+    /// The speed/price tiers the provider offers for this model. Absent or
+    /// empty means no choice — every row but some Codex ones.
+    var serviceTiers: [ServiceTier]?
+    /// The tier a turn runs at when none is picked, where the provider said.
+    var defaultServiceTier: String?
+}
+
+struct ServiceTier: Decodable, Identifiable, Equatable, Hashable {
+    var id: String
+    var name: String
+    var description: String?
 }
 
 struct ModelCatalogue: Decodable {

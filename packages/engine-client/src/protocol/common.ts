@@ -156,10 +156,24 @@ export const ModelSelection = z
      * every Claude model — the catalogue says which (`ProviderModel.fastMode`).
      */
     fastMode: z.boolean().optional(),
+    /**
+     * WHICH SERVICE TIER, where the provider sells more than one — Codex's
+     * `serviceTier` on `turn/start`. An id from the model's own
+     * `ProviderModel.serviceTiers`; absent is the model's default tier.
+     */
+    serviceTier: z.string().min(1).optional(),
+    /**
+     * Claude's ultracode: xhigh effort plus standing workflow orchestration.
+     * Reaches the Agent SDK as `settings: { ultracode }`, like `fastMode`, and
+     * needs a model that offers `xhigh`.
+     */
+    ultracode: z.boolean().optional(),
   })
-  .refine((value) => value.model !== undefined || value.effort !== undefined || value.fastMode !== undefined, {
-    message: "a model selection must name at least one of model, effort or fast mode",
-  });
+  .refine(
+    (value) =>
+      value.model !== undefined || value.effort !== undefined || value.fastMode !== undefined || value.serviceTier !== undefined || value.ultracode !== undefined,
+    { message: "a model selection must name at least one of model, effort, fast mode, service tier or ultracode" },
+  );
 export type ModelSelection = z.infer<typeof ModelSelection>;
 
 /**
@@ -1495,6 +1509,14 @@ export const ProviderModel = z.object({
    * a model that does not is a control that silently does nothing.
    */
   fastMode: z.boolean(),
+  /**
+   * The service tiers this model is sold at, as the provider lists them —
+   * Codex's `model/list` `serviceTiers`. Absent or empty means the provider
+   * offers no choice, which is every Claude and OpenCode row.
+   */
+  serviceTiers: z.array(z.object({ id: z.string().min(1), name: z.string().min(1), description: z.string().optional() })).optional(),
+  /** The tier a turn runs at when none is picked, where the provider said. */
+  defaultServiceTier: z.string().min(1).optional(),
   /**
    * THE PERSON WHO CONFIGURED THIS ENGINE SAID "not this one" — which is a
    * different sentence from `hidden` above, and the two must not share a field.

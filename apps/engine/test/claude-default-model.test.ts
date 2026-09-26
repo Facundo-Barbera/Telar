@@ -103,11 +103,13 @@ test("an OLD session saved with no model is covered at claim, with its history u
   expect(engine.getSession("session_old").model).toBeUndefined();
 });
 
-test("an EXPLICIT model keeps its exact semantics — known normalised, unknown untouched", async () => {
+test("an EXPLICIT model runs as named — a bare id is its standard window, and 1M is picked by its row", async () => {
   const engine = engineWith([model("claude-opus-5", true)]);
-  // A known bare id gains its default window: 1M for Opus, and Sonnet's 200k
-  // is the bare id already.
-  expect(await claimedModel(engine, { sessionModel: { instanceId: "claude", model: "claude-opus-5" } })).toBe("claude-opus-5[1m]");
+  // The 200k row is a choice again, so a bare id is a pick of it rather than
+  // an old record to be rewritten to 1M.
+  expect(await claimedModel(engine, { sessionModel: { instanceId: "claude", model: "claude-opus-5" } })).toBe("claude-opus-5");
+  const long = engineWith([model("claude-opus-5", true)]);
+  expect(await claimedModel(long, { sessionModel: { instanceId: "claude", model: "claude-opus-5[1m]" } })).toBe("claude-opus-5[1m]");
   const sonnet = engineWith([model("claude-opus-5", true)]);
   expect(await claimedModel(sonnet, { sessionModel: { instanceId: "claude", model: "claude-sonnet-5" } })).toBe("claude-sonnet-5");
 

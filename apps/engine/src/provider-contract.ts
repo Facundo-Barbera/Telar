@@ -205,6 +205,10 @@ export type DriverRun = {
   effort?: string;
   /** Latency over quality, where the provider offers it. Claude-only. */
   fastMode?: boolean;
+  /** The service tier to run at, by the provider's own id. Codex-only. */
+  serviceTier?: string;
+  /** Xhigh effort plus workflow orchestration. Claude-only. */
+  ultracode?: boolean;
   /**
    * WHAT THIS AGENT IS TOLD ABOUT WHERE IT IS — the orientation paragraph,
    * already resolved by the engine (see `orientation.ts` and

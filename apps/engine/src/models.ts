@@ -298,6 +298,25 @@ async function withClaudeDefaultEfforts(session: ClaudeModelQuery, rows: Provide
 }
 
 /**
+ * The service tiers a Codex row is sold at — `serviceTiers` and
+ * `defaultServiceTier` on `model/list`. A tier needs an id and a name to be
+ * offered; the list is omitted when there is nothing to choose.
+ */
+function codexServiceTiers(row: Record<string, unknown>): Pick<ProviderModel, "serviceTiers" | "defaultServiceTier"> {
+  const tiers = Array.isArray(row.serviceTiers)
+    ? row.serviceTiers.flatMap((entry) => {
+        const tier = entry as { id?: unknown; name?: unknown; description?: unknown };
+        if (typeof tier?.id !== "string" || !tier.id || typeof tier.name !== "string" || !tier.name) return [];
+        return [{ id: tier.id, name: tier.name, ...(typeof tier.description === "string" && tier.description ? { description: tier.description } : {}) }];
+      })
+    : [];
+  return {
+    ...(tiers.length > 0 ? { serviceTiers: tiers } : {}),
+    ...(typeof row.defaultServiceTier === "string" && row.defaultServiceTier ? { defaultServiceTier: row.defaultServiceTier } : {}),
+  };
+}
+
+/**
  * `model/list`'s rows, narrowed to what a picker needs.
  *
  * DEFENSIVE ABOUT EVERY FIELD, because this crosses a version boundary: the
@@ -334,6 +353,7 @@ export function parseCodexModels(payload: unknown): ProviderModel[] {
         ...(typeof row.defaultReasoningEffort === "string" && row.defaultReasoningEffort
           ? { defaultEffort: row.defaultReasoningEffort }
           : {}),
+        ...codexServiceTiers(row),
         // Codex has no fast mode. Reported as false rather than omitted so the
         // field means the same thing on both providers: "this model does not
         // offer it", not "nobody said".

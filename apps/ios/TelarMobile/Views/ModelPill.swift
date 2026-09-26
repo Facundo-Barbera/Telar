@@ -29,19 +29,25 @@ struct ProviderIconView: View {
 }
 
 /// What will run the next turn, whole: provider, model, effort, window, fast
-/// mode — the web cockpit's fused control, phone-sized.
+/// mode, service tier, ultracode — the web cockpit's fused control, phone-sized.
 struct ModelChoice: Equatable {
     var driver: String
     var model: String?
     var effort: String?
     var fastMode: Bool?
+    var serviceTier: String? = nil
+    var ultracode: Bool? = nil
+
+    /// Anything beyond the provider's own defaults — worth sending.
+    var isTouched: Bool {
+        model != nil || effort != nil || fastMode != nil || serviceTier != nil || ultracode != nil
+    }
 }
 
 /// ONE pill for provider + model + per-turn knobs. The menu lists model
 /// FAMILIES (the window is a setting, not a row), then Reasoning, Context
-/// window (only when the family comes in more than one), and Fast mode
-/// (only when the model offers it) — options a model does not publish are
-/// simply not there.
+/// window, Fast mode and Service tier — each only when the chosen model
+/// publishes it, with the provider's default marked "Default".
 struct ModelPillView: View {
     /// Catalogues by driver. The pill shows what has loaded; menus say
     /// "Loading…" for the rest.
@@ -88,7 +94,7 @@ struct ModelPillView: View {
     /// person who was on 200k. A single-window model still prints nothing.
     private var label: String {
         var parts: [String] = [selectedFamily?.label ?? "Model"]
-        if let effort = choice.effort { parts.append(ModelFamilies.effortLabel(effort)) }
+        if let level = ModelOptions.levelLabel(choice: choice, row: selectedRow) { parts.append(level) }
         if ModelFamilies.windows(of: selectedFamily).count > 1 { parts.append(window.label) }
         if choice.fastMode == true { parts.append("Fast") }
         return parts.joined(separator: " · ")
@@ -103,42 +109,12 @@ struct ModelPillView: View {
             } else {
                 familySection(nil, driver: choice.driver)
             }
-            if let row = selectedRow, !row.efforts.isEmpty {
-                Section("Reasoning") {
-                    Button { change { $0.effort = nil } } label: { check("Auto", choice.effort == nil) }
-                    ForEach(row.efforts, id: \.self) { level in
-                        Button { change { $0.effort = level } } label: {
-                            check(ModelFamilies.effortLabel(level), choice.effort == level)
-                        }
-                    }
-                }
-            }
-            if let family = selectedFamily {
-                let windows = ModelFamilies.windows(of: family)
-                if windows.count > 1 {
-                    Section("Context window") {
-                        ForEach(windows, id: \.self) { option in
-                            let row = ModelFamilies.row(for: family, window: option)
-                            Button {
-                                if let row { select(row, driver: choice.driver) }
-                            } label: {
-                                // "1M · Default" — the provider's own default window
-                                // for this model, a fact to read; the tap still
-                                // sends the row you pick.
-                                check(row?.defaultWindow == true ? "\(option.label) · Default" : option.label, window == option)
-                            }
-                        }
-                    }
-                }
-            }
-            if selectedRow?.fastMode == true {
-                Section {
-                    Button {
-                        change { $0.fastMode = choice.fastMode == true ? nil : true }
-                    } label: {
-                        check("Fast mode", choice.fastMode == true)
-                    }
-                }
+            if let row = selectedRow {
+                let sections = ModelOptions.sections(row: row, family: selectedFamily)
+                if sections.contains(.reasoning) { reasoningSection(row) }
+                if sections.contains(.contextWindow), let family = selectedFamily { windowSection(family) }
+                if sections.contains(.fastMode) { fastModeSection() }
+                if sections.contains(.serviceTier) { serviceTierSection(row) }
             }
         } label: {
             HStack(spacing: 8) {
@@ -175,30 +151,101 @@ struct ModelPillView: View {
                 Button {
                     select(ModelFamilies.pick(in: family, window: window), driver: driver)
                 } label: {
-                    check(family.label, driver == choice.driver && family.id == selectedFamily?.id)
+                    option(family.label, selected: driver == choice.driver && family.id == selectedFamily?.id)
                 }
             }
         }
     }
 
-    @ViewBuilder private func check(_ label: String, _ selected: Bool) -> some View {
-        if selected {
-            Label(label, systemImage: "checkmark")
-        } else {
-            Text(label)
+    @ViewBuilder private func reasoningSection(_ row: ProviderModel) -> some View {
+        Section("Reasoning") {
+            if ModelOptions.showsAutoEffort(row) {
+                Button { change { $0.effort = nil; $0.ultracode = nil } } label: {
+                    option("Auto", selected: choice.effort == nil && choice.ultracode != true)
+                }
+            }
+            ForEach(row.efforts, id: \.self) { level in
+                Button {
+                    change { $0.effort = ModelOptions.storedEffort(for: level, row: row); $0.ultracode = nil }
+                } label: {
+                    option(ModelFamilies.effortLabel(level),
+                           isDefault: ModelOptions.isDefaultEffort(level, row: row),
+                           selected: ModelOptions.isEffortSelected(level, choice: choice, row: row))
+                }
+            }
+            if ModelOptions.offersUltracode(driver: choice.driver, row: row) {
+                Button { change { $0.ultracode = true; $0.effort = nil } } label: {
+                    option("Ultracode",
+                           subtitle: "Extra-high reasoning that can also plan and run multi-step workflows on its own.",
+                           selected: choice.ultracode == true)
+                }
+            }
         }
     }
 
-    /// Move to a row, DROPPING WHAT IT CANNOT HONOUR: an effort it does not
-    /// list fails the turn; a fast-mode it does not offer silently does
-    /// nothing. Both dropped here, the one place that decides.
+    @ViewBuilder private func windowSection(_ family: ModelFamilies.Family) -> some View {
+        Section("Context window") {
+            ForEach(ModelFamilies.windows(of: family), id: \.self) { window in
+                let row = ModelFamilies.row(for: family, window: window)
+                Button {
+                    if let row { select(row, driver: choice.driver) }
+                } label: {
+                    option(window.label, isDefault: row?.defaultWindow == true, selected: self.window == window)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func fastModeSection() -> some View {
+        Section("Fast mode") {
+            Button { change { $0.fastMode = true } } label: {
+                option("On", selected: choice.fastMode == true)
+            }
+            Button { change { $0.fastMode = nil } } label: {
+                option("Off", isDefault: true, selected: choice.fastMode != true)
+            }
+        }
+    }
+
+    @ViewBuilder private func serviceTierSection(_ row: ProviderModel) -> some View {
+        Section("Service tier") {
+            if ModelOptions.showsAutoTier(row) {
+                Button { change { $0.serviceTier = nil } } label: {
+                    option("Auto", selected: choice.serviceTier == nil)
+                }
+            }
+            ForEach(row.serviceTiers ?? []) { tier in
+                Button {
+                    change { $0.serviceTier = ModelOptions.storedTier(for: tier.id, row: row) }
+                } label: {
+                    option(tier.name, subtitle: tier.description,
+                           isDefault: row.defaultServiceTier == tier.id,
+                           selected: ModelOptions.isTierSelected(tier.id, choice: choice, row: row))
+                }
+            }
+        }
+    }
+
+    /// A menu row: title (with "· Default" on the provider's default), an
+    /// optional subtitle the menu draws beneath it, and a tick when chosen.
+    @ViewBuilder private func option(_ title: String, subtitle: String? = nil,
+                                     isDefault: Bool = false, selected: Bool) -> some View {
+        let text = isDefault ? "\(title) · Default" : title
+        if selected {
+            Label {
+                Text(text)
+                if let subtitle { Text(subtitle) }
+            } icon: {
+                Image(systemName: "checkmark")
+            }
+        } else {
+            Text(text)
+            if let subtitle { Text(subtitle) }
+        }
+    }
+
     private func select(_ row: ProviderModel, driver: String) {
-        var next = choice
-        next.driver = driver
-        next.model = row.id
-        if let effort = next.effort, !row.efforts.contains(effort) { next.effort = nil }
-        if next.fastMode == true, !row.fastMode { next.fastMode = nil }
-        onChange(next)
+        onChange(ModelOptions.moving(choice, to: row, driver: driver))
     }
 
     private func change(_ mutate: (inout ModelChoice) -> Void) {

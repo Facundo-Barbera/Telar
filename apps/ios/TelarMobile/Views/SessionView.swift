@@ -1469,7 +1469,8 @@ struct SessionComposerControls: View {
             catalogues: store.catalogue.map { [driver: $0] } ?? [:],
             choice: ModelChoice(
                 driver: driver, model: selection?.model,
-                effort: selection?.effort, fastMode: selection?.fastMode
+                effort: selection?.effort, fastMode: selection?.fastMode,
+                serviceTier: selection?.serviceTier, ultracode: selection?.ultracode
             ),
             driversSwitchable: false,
             onChange: { next in Task { await store.setModelChoice(next) } }

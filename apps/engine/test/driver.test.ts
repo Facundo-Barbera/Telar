@@ -2742,11 +2742,25 @@ test("the user's MCP servers reach the SDK, and Telar's own key wins a collision
   expect(servers?.tools).toEqual({ type: "stdio", command: "node", args: ["s.js"] });
 });
 
+test("ultracode reaches the SDK as a setting beside fast mode, never as prompt text", async () => {
+  const seen: { settings?: unknown }[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push({ settings: input.options.settings });
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  await run(driver, { model: "claude-opus-5-5[1m]", ultracode: true, fastMode: true }).result;
+  await run(driver, { model: "claude-opus-5-5[1m]" }).result;
+  expect(seen[0]?.settings).toEqual({ fastMode: true, ultracode: true });
+  // Absent stays absent: no settings layer is invented.
+  expect(seen[1]?.settings).toBeUndefined();
+});
+
 test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   // A settings override is a request for non-default behaviour, so absence has
-  // to stay absence. Telar no longer offers 200k Claude rows, so both `[1m]`
-  // rows and legacy bare family aliases explicitly keep 1M enabled even if the
-  // host shell disabled it.
+  // to stay absence. Both `[1m]` rows and bare family aliases explicitly keep
+  // 1M enabled even if the host shell disabled it; the id picks the window.
   const seen: { model?: unknown; env?: Record<string, unknown>; settings?: { fastMode?: boolean } }[] = [];
   const driver = createClaudeDriver(async () => ({
     async *query(input) {

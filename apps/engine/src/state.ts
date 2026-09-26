@@ -248,7 +248,7 @@ import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerPr
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import type { ClaudeConversation, ForkCut } from "./claude-fork";
 import { describeImport } from "./claude-transcript";
-import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
+import { applyModelManifest, BUNDLED_MANIFEST, legacyLongSpelling, longDefaultOf, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay, chosenDefault } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
@@ -4754,6 +4754,84 @@ export class EngineStore {
       this.sessionIndexBackfill = this.backfillSessionRows();
       this.turnSummaryBackfill = this.backfillTurnSummaries();
     }
+    // On both backends, and before anything can claim a turn — see the method.
+    this.claudeLongWindowMigration = this.migrateBareClaudeIds();
+  }
+
+  /** What the one-time `[1m]` rewrite changed on this open, or nothing when it
+   *  had already run. See `migrateBareClaudeIds`. */
+  readonly claudeLongWindowMigration?: { sessions: number; projects: number };
+
+  /**
+   * RECORDS SAVED BEFORE 200k WAS A CHOICE KEEP RUNNING AT 1M — once, marked.
+   *
+   * Until #986 a bare Claude id whose model defaults to 1M (`opus`,
+   * `claude-opus-5-5`, Fable) was rewritten to its `[1m]` row at every door, so
+   * a session or project default saved bare ran 1M. From #986 a bare id is a pick
+   * of the 200k window. Without this, those older records would silently halve
+   * their window on the next turn; with it, their stored model is rewritten to
+   * the explicit `[1m]` id it always ran as, and only picks made from now on can
+   * mean 200k.
+   *
+   * ONCE, AND BEFORE THE FIRST CLAIM. The marker document is written in the same
+   * transaction as the rewrites, and its presence skips the pass on every later
+   * open. It runs in the constructor rather than lazily because a claim that
+   * reached an old record first would run it at 200k. It reads only session
+   * METADATA documents — no queue, items or journal — which is the part of a
+   * session #646's startup lesson says is cheap.
+   *
+   * IDEMPOTENT ANYWAY: a `[1m]` id is never rewritten, so running it twice
+   * changes nothing. Queued turns are left alone — the old `submitTurn` already
+   * stored them in the `[1m]` spelling.
+   */
+  private migrateBareClaudeIds(): { sessions: number; projects: number } | undefined {
+    if (this.readDocument(this.paths.claudeLongWindowMigration) !== undefined) return undefined;
+    const rewrite = (selection: unknown): string | undefined => {
+      const model = (selection as { model?: unknown } | undefined)?.model;
+      if (typeof model !== "string") return undefined;
+      const long = legacyLongSpelling(model, this.manifest);
+      return long === model ? undefined : long;
+    };
+    return this.executeCommand("migrateBareClaudeIds", () => {
+      let sessions = 0;
+      for (const id of this.storedSessionIds()) {
+        try {
+          const file = sessionMetadataFile(this.paths, id);
+          const raw = this.readDocument(file) as { driver?: unknown; model?: Record<string, unknown> } | undefined;
+          if (!raw || raw.driver !== "claude") continue;
+          const long = rewrite(raw.model);
+          if (!long) continue;
+          this.writeDocument(file, { ...raw, model: { ...raw.model, model: long } });
+          sessions += 1;
+        } catch {
+          // One unreadable session must not stop an engine from starting.
+        }
+      }
+      let projects = 0;
+      try {
+        const stored = this.readDocument(this.paths.projects) as { projects?: Record<string, unknown>[] } | undefined;
+        // The raw registry, not `readProviderInstances`, which seeds one on
+        // first read and would make this pass write a file nobody asked for.
+        const registry = this.readDocument(this.paths.providerInstances) as { providerInstances?: { id?: unknown; driver?: unknown }[] } | undefined;
+        const claudeInstances = new Set(
+          (registry?.providerInstances ?? []).flatMap((instance) => (instance.driver === "claude" && typeof instance.id === "string" ? [instance.id] : [])),
+        );
+        claudeInstances.add(defaultInstanceIdForDriver("claude"));
+        const next = (stored?.projects ?? []).map((project) => {
+          const selection = project.defaultModel as { instanceId?: unknown } | undefined;
+          if (typeof selection?.instanceId !== "string" || !claudeInstances.has(selection.instanceId)) return project;
+          const long = rewrite(selection);
+          if (!long) return project;
+          projects += 1;
+          return { ...project, defaultModel: { ...selection, model: long } };
+        });
+        if (projects > 0) this.writeDocument(this.paths.projects, { ...stored, projects: next });
+      } catch {
+        // A registry that will not parse is reported by every other reader of it.
+      }
+      this.writeDocument(this.paths.claudeLongWindowMigration, { version: 1, at: this.now(), sessions, projects });
+      return { sessions, projects };
+    });
   }
 
   /**
@@ -7894,13 +7972,17 @@ export class EngineStore {
     const id = selection.model ?? listed.find((row) => row.isDefault)?.id;
     const row = listed.find((candidate) => candidate.id === id || candidate.resolves === id);
     if (!row || row.source === "user") return selection;
-    const { effort, fastMode, ...rest } = selection;
-    const kept = {
+    const { effort, fastMode, serviceTier, ultracode, ...rest } = selection;
+    const kept: ModelSelection = {
       ...rest,
       ...(effort !== undefined && row.efforts.includes(effort) ? { effort } : {}),
       ...(fastMode !== undefined && row.fastMode ? { fastMode } : {}),
+      ...(serviceTier !== undefined && row.serviceTiers?.some((tier) => tier.id === serviceTier) ? { serviceTier } : {}),
+      // Ultracode runs at xhigh, so it needs a model that offers that level.
+      ...(ultracode !== undefined && row.efforts.includes("xhigh") ? { ultracode } : {}),
     };
-    return kept.model !== undefined || kept.effort !== undefined || kept.fastMode !== undefined ? kept : undefined;
+    const named = [kept.model, kept.effort, kept.fastMode, kept.serviceTier, kept.ultracode].some((value) => value !== undefined);
+    return named ? kept : undefined;
   }
 
   /**
@@ -8265,7 +8347,7 @@ export class EngineStore {
         if (parsed.data.instanceId !== session.providerInstanceId) {
           throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
         }
-        next.model = this.normalizeModelSelection(session.driver, parsed.data);
+        next.model = parsed.data;
       }
     }
     /**
@@ -9800,7 +9882,7 @@ export class EngineStore {
        */
       ...(input.model
         ? {
-            model: this.normalizeModelSelection(session.driver, {
+            model: {
               instanceId: session.providerInstanceId,
               // EITHER MAY BE ABSENT. "The provider's default model, at maximum
               // effort" is an ordinary thing to ask for, and spreading rather
@@ -9809,7 +9891,9 @@ export class EngineStore {
               ...(input.model.model ? { model: input.model.model } : {}),
               ...(input.model.effort ? { effort: input.model.effort } : {}),
               ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
-            }),
+              ...(input.model.serviceTier ? { serviceTier: input.model.serviceTier } : {}),
+              ...(input.model.ultracode === undefined ? {} : { ultracode: input.model.ultracode }),
+            },
           }
         : {}),
     };
@@ -11308,17 +11392,6 @@ export class EngineStore {
   }
 
   /**
-   * A Claude selection in the spelling Telar offers — see `normalizeClaudeModel`.
-   * Other drivers are never touched; there is no window to spell. Absent stays
-   * absent here: filling one in is the CLAIM's job, not a patch's.
-   */
-  private normalizeModelSelection<T extends ModelSelection | undefined>(driver: ProviderDriverKind, selection: T): T {
-    if (!selection || driver !== "claude" || !selection.model) return selection;
-    const model = normalizeClaudeModel(selection.model, this.manifest);
-    return model === selection.model ? selection : { ...selection, model };
-  }
-
-  /**
    * WHAT THE WORKER IS ACTUALLY HANDED, model-wise.
    *
    * An absent Claude model reaches the SDK as no `model` option at all, so the
@@ -11329,13 +11402,17 @@ export class EngineStore {
    *
    * An effort-only or fastMode-only selection keeps what it named and gains the
    * model, so "the default model at maximum effort" still means that.
+   *
+   * A NAMED MODEL RUNS AS NAMED. A bare Claude id used to be rewritten to its
+   * `[1m]` spelling here and at every patch, because the picker offered no 200k
+   * row and a bare id could only be an old record. Both windows are rows again,
+   * so a bare id is a pick of the standard window and is honoured.
    */
   private claimModelSelection(
     driver: ProviderDriverKind,
-    selection: ModelSelection | undefined,
+    normalized: ModelSelection | undefined,
     instanceId: string,
   ): ModelSelection | undefined {
-    const normalized = this.normalizeModelSelection(driver, selection);
     if (driver !== "claude" || normalized?.model) return normalized;
     const model = this.defaultClaudeModelId(normalized?.instanceId ?? instanceId);
     // Nothing known: unchanged. A guess here would be the 200k bug wearing a

@@ -134,20 +134,16 @@ export function claudeEffortFor(model: string | undefined, effort: string | unde
 }
 
 /**
- * THE DEFAULT-WINDOW SPELLING OF A SAVED CLAUDE MODEL, or the id untouched.
+ * THE `[1m]` SPELLING A BARE ID RAN AS BEFORE 200k WAS A CHOICE AGAIN, or the id
+ * untouched. Until #986 every door rewrote a bare id whose profile defaults to
+ * 1M (Opus 5.5, Opus 5, Opus 4.6, Fable 5.1, Fable 5) to its `[1m]` row, so a
+ * record saved bare ran 1M. Used only by the one-time migration that writes that
+ * spelling into records saved before then; a bare id picked since means 200k.
  *
- * A session can be SAVED as bare `opus` or `claude-opus-5` — an older record,
- * a hand-typed id, a client written before the window became a control.
- * Measured on the dogfood app: a bare `opus` session ran the provider's 200k
- * window while every surface assumed 1M. So an id whose profile defaults to 1M
- * gains `[1m]`; one that defaults to 200k (Sonnet) is already its default and
- * is left alone. Normalised at the store's three doors (session patch,
- * per-turn choice, claim).
- *
- * NEVER INVENTS AN ID. A dated build, a custom id, a fixed-window model and
- * anything unknown are returned as they came.
+ * NEVER INVENTS AN ID: already-long, dated, fixed-window, 200k-default and
+ * unknown ids come back as they went in.
  */
-export function normalizeClaudeModel(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): string {
+export function legacyLongSpelling(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): string {
   if (LONG.test(id) || /-\d{8}$/.test(id)) return id;
   const profile = claudeProfileOf(id, manifest);
   return profile && profile.windows.length > 1 && profile.defaultWindow === "1m" ? `${id}[1m]` : id;
@@ -194,8 +190,10 @@ function rowsOf(entry: ManifestModel, profile: ManifestProfile, listed: readonly
   }
   const short = standard ?? (long ? inWindow(long, false) : declared);
   const longRow = long ?? inWindow(short, true);
+  // BOTH WINDOWS ARE ROWS, the default one marked. The standard row used to be
+  // dropped wherever 1M was the default, which took the 200k choice away.
   const defaultLong = profile.defaultWindow === "1m";
-  return (defaultLong ? [longRow] : [short, longRow]).map((model) =>
+  return [short, longRow].map((model) =>
     isLong(model) === defaultLong ? { ...fill(model), defaultWindow: true } : fill(model),
   );
 }

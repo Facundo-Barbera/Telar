@@ -23,6 +23,7 @@ import {
   type Task,
   type Turn,
   type TurnAttachment,
+  type TurnModelSelection,
   type TurnState,
   seedSessionTitle,
   turnHasContent,
@@ -54,7 +55,7 @@ import { normaliseContextNoticePercent } from "@/lib/context-notice";
 import { useProviderInstance } from "@/lib/provider-instance-cache";
 import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
-import { projectDraftModel, sessionModelSelection, type ModelChoice } from "@/lib/models";
+import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
@@ -3567,15 +3568,7 @@ export function SessionCockpit({
       await api.submitTurn(target, {
         runId,
         input: text,
-        ...(pending?.model || pending?.effort || pending?.fastMode !== undefined
-          ? {
-              model: {
-                ...(pending.model ? { model: pending.model } : {}),
-                ...(pending.effort ? { effort: pending.effort } : {}),
-                ...(pending.fastMode === undefined ? {} : { fastMode: pending.fastMode }),
-              },
-            }
-          : {}),
+        ...(choiceNamesAnything(pending) ? { model: choiceOf(pending) as TurnModelSelection } : {}),
         ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
       });
       // Only for a session that ALREADY existed. A just-created one is hydrated
@@ -3626,14 +3619,8 @@ export function SessionCockpit({
          * `undefined` only when BOTH are absent is what clears it.
          */
         model:
-          next.model || next.effort || next.fastMode !== undefined
-            ? {
-                instanceId: session.providerInstanceId,
-                ...(next.model ? { model: next.model } : {}),
-                ...(next.effort ? { effort: next.effort } : {}),
-                ...(next.fastMode === undefined ? {} : { fastMode: next.fastMode }),
-              }
-            : // `null`, not `undefined`: JSON.stringify drops an undefined key, so
+          sessionModelSelection(session.providerInstanceId, next) ??
+            // `null`, not `undefined`: JSON.stringify drops an undefined key, so
               // the engine would see no patch and keep the old selection — the
               // pill would say "Provider default" and the record would disagree.
               null,

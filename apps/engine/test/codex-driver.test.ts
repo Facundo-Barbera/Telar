@@ -78,6 +78,7 @@ type RunOptions = {
   browserSocket?: { url: string; token: string };
   sessionsSocket?: { url: string; token: string };
   steer?: SteerMailbox;
+  serviceTier?: string;
   notification?: NotificationDetail;
 };
 
@@ -100,6 +101,7 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     ...(run.sessionsSocket ? { sessionsSocket: run.sessionsSocket } : {}),
     ...(run.steer ? { steer: run.steer } : {}),
     ...(run.notification ? { notification: run.notification } : {}),
+    ...(run.serviceTier ? { serviceTier: run.serviceTier } : {}),
   });
   return { result, observations, controller };
 }
@@ -158,6 +160,21 @@ test("a usage update for the wrong shape reports nothing rather than zeros", () 
 });
 
 // ── the wire ───────────────────────────────────────────────────────────────
+
+test("a picked service tier reaches turn/start for that turn only, and no pick sends none", async () => {
+  await runTurn("plain", { serviceTier: "priority" }).result;
+  // `serviceTierForTurn`, not `serviceTier`: the thread's tier is left alone, so
+  // a later turn with no pick runs at the default again.
+  expect(sent("turn/start").serviceTierForTurn).toBe("priority");
+  expect(sent("turn/start").serviceTier).toBeUndefined();
+  expect(sent("thread/start").serviceTier).toBeUndefined();
+
+  // A second turn with no pick: the LAST turn/start on the wire carries none.
+  await runTurn("plain").result;
+  const starts = wire().filter((entry) => entry.method === "turn/start");
+  expect(starts.length).toBeGreaterThan(1);
+  expect("serviceTierForTurn" in (starts.at(-1)!.params ?? {})).toBe(false);
+});
 
 test("turn/start sends the app-server's own input shape, snake_case field and all", async () => {
   await runTurn("plain", { prompt: "hello codex" }).result;

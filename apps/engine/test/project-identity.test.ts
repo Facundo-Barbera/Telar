@@ -303,6 +303,13 @@ describe("a new conversation starts with the project's model options", () => {
     expect(store.createSession({ id: "session_c", projectId: "project_one" }).model).toBeUndefined();
   });
 
+  test("ultracode needs a model with xhigh, and is dropped from one without", async () => {
+    const store = await catalogued();
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "claude-opus-5", ultracode: true } });
+    // The fixture's Opus stops at high.
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).model).toEqual({ instanceId: "claude", model: "claude-opus-5" });
+  });
+
   test("a cold catalogue trusts the stored options", () => {
     const store = readyStore();
     store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "claude-haiku-4-5", effort: "high" } });

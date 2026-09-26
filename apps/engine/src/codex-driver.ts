@@ -313,6 +313,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       signal,
       model: turnModel,
       effort: turnEffort,
+      serviceTier: turnServiceTier,
       attachments,
       providerSessionId,
       env: instanceEnv,
@@ -881,6 +882,10 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           approvalsReviewer: threadConfig.approvalsReviewer,
           sandboxPolicy: codexSandboxPolicy(threadConfig.sandbox, cwd),
           ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+          // THIS TURN'S PICK, for this turn only: `serviceTierForTurn` leaves the
+          // thread's tier alone, so a later turn with no pick runs at the
+          // default again rather than inheriting the last one.
+          ...(turnServiceTier ? { serviceTierForTurn: turnServiceTier } : {}),
         });
         rootTurnId = str(turn.turn?.id) ?? "";
 

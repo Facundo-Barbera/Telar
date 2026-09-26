@@ -32,6 +32,11 @@ struct ModelSelection: Codable, Equatable {
     var model: String?
     var effort: String?
     var fastMode: Bool?
+    /// An id from the model's own `serviceTiers`; absent is its default tier.
+    var serviceTier: String? = nil
+    /// Extra-high reasoning plus standing workflow orchestration — needs a
+    /// model that offers `xhigh`. Absent is off.
+    var ultracode: Bool? = nil
 }
 
 /// A decoded element that may be a shape this build does not know.

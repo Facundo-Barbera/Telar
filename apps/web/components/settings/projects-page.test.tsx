@@ -314,14 +314,14 @@ test("the options row reverts to the bare model, and the model row's revert clea
     renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={choice} models={MODELS} onChange={() => undefined} />).includes("Revert to the default");
   expect(revert({ model: "opus", effort: "high" })).toBe(true);
   expect(revert({ model: "opus" })).toBe(false);
-  expect(source).toContain("onChange(choice.model ? { model: choice.model } : {})");
+  expect(source).toContain("onChange(model ? { model } : {})");
   // The model row's revert writes `null`, which takes the options with it.
   expect(source).toContain('{...(stored ? { onRevert: () => writer?.save("defaultModel", { defaultModel: null }) } : {})}');
 });
 
 test("the options on offer are the composer's own, per model", () => {
-  expect(modelOptionsOf(MODELS, { model: "opus" })).toEqual({ efforts: ["low", "medium", "high"], fastMode: true });
-  expect(modelOptionsOf(MODELS, { model: "haiku" })).toEqual({ efforts: [], fastMode: false });
+  expect(modelOptionsOf(MODELS, { model: "opus" })).toEqual({ efforts: ["low", "medium", "high"], fastMode: true, serviceTiers: [], ultracode: false });
+  expect(modelOptionsOf(MODELS, { model: "haiku" })).toEqual({ efforts: [], fastMode: false, serviceTiers: [], ultracode: false });
 });
 
 test("a remote Mac's registry is read when it is asked for, not on mount", () => {
