@@ -797,6 +797,23 @@ class TerminalHost {
     return record ? facts(record) : undefined;
   }
 
+  /**
+   * HOW MANY TERMINALS EACH SESSION HOLDS, WHOEVER OPENED THEM — issue #883.
+   *
+   * Counts, never ids: the engine asks this to say "Settle closes 2 terminals"
+   * and to keep settled sessions under their limit, and it acts on a session
+   * only through `killBySession`. Handing it the person's terminal ids would
+   * hand it addresses it has no business holding. A terminal in no session is
+   * nobody's to count here.
+   */
+  countBySession() {
+    const counts = {};
+    for (const record of this.terminals.values()) {
+      if (record.sessionId) counts[record.sessionId] = (counts[record.sessionId] ?? 0) + 1;
+    }
+    return counts;
+  }
+
   /** How many terminals are live, whoever opened them. Quit asks this first:
    *  with none, there is nothing to close and nothing to wait for. */
   get size() {

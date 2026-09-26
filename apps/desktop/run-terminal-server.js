@@ -90,6 +90,7 @@ const ROUTES = new Set([
   "POST /mirror",
   "GET /events",
   "GET /state",
+  "GET /sessions",
 ]);
 
 function json(response, status, value) {
@@ -253,6 +254,16 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
         // The ENGINE's terminals. A person's Terminal tabs are not this
         // channel's business and are not listed here.
         json(response, 200, { terminals: host.list(ENGINE) });
+        return;
+      }
+      if (route === "GET /sessions") {
+        /**
+         * EVERY SESSION'S TERMINAL COUNT, THE PERSON'S SHELLS INCLUDED (#883).
+         * The one read on this channel that sees past the engine's scope, and
+         * only as numbers: what Settle will close, and what a settled session
+         * still holds, are both about terminals the engine did not open.
+         */
+        json(response, 200, { sessions: host.countBySession() });
         return;
       }
       const input = await readJson(request);
