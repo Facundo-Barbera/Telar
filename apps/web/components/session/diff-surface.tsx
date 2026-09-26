@@ -60,7 +60,7 @@
  * described before: the filter is an instance's identity, not a mode.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpFromLineIcon,
   ChevronDownIcon,
@@ -70,6 +70,7 @@ import {
   GitPullRequestArrowIcon,
   HardDriveIcon,
   GitCommitHorizontalIcon,
+  FolderTreeIcon,
   ListFilterIcon,
   PilcrowIcon,
   RefreshCwIcon,
@@ -101,6 +102,7 @@ import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { DiffCodeView, readPatchShape, type PatchReading } from "@/components/session/diff-code-view";
+import { DiffFileTree } from "@/components/session/diff-file-tree";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -337,6 +339,14 @@ function noHunkSentence(file: NonNullable<PatchReading["file"]>): string {
   return `${parts.join(" · ")}. No lines differ.`;
 }
 
+/** The one write to a surface's open set — a row's chevron and the tree's file
+ *  both land here (#855). */
+export function toggleOpen(current: ReadonlySet<string>, path: string): ReadonlySet<string> {
+  const next = new Set(current);
+  if (!next.delete(path)) next.add(path);
+  return next;
+}
+
 /**
  * One changed file. The patch is fetched WHEN OPENED rather than carried on the
  * review, because a two-hundred-file review with every patch is a megabyte on a
@@ -455,7 +465,7 @@ export function ReviewFileRow({
     /* Draggable on the wrapper so the row can be dropped into the message while
        the button inside keeps its press — see the same note on the journal's
        file rows in right-panel.tsx. */
-    <div draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(file.path))}>
+    <div data-diff-path={file.path} draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(file.path))}>
       {/* THE TRIGGER IS INSIDE THE DRAGGABLE, wrapping only the row's own
           content — the app's trigger-inside rule, and for its
           reason: a right-click on the drag handle would race the drag.
@@ -839,6 +849,12 @@ export function DiffToolbar({
         icon={<PilcrowIcon className="size-3.5" />}
         pressed={view.ignoreWhitespace}
         onPressedChange={(next) => setView({ ignoreWhitespace: next })}
+      />
+      <DiffToolbarToggle
+        label="File tree"
+        icon={<FolderTreeIcon className="size-3.5" />}
+        pressed={view.tree}
+        onPressedChange={(next) => setView({ tree: next })}
       />
       {expandable && (
         <button
@@ -1586,13 +1602,7 @@ export function DiffSurface({
    * one does not silently move the open patch to a different row.
    */
   const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleRow = useCallback((path: string) => {
-    setOpenPaths((current) => {
-      const next = new Set(current);
-      if (!next.delete(path)) next.add(path);
-      return next;
-    });
-  }, []);
+  const toggleRow = useCallback((path: string) => setOpenPaths((current) => toggleOpen(current, path)), []);
 
   /**
    * A CANVAS REVIEWS ITS PROJECT.
@@ -1839,6 +1849,22 @@ export function DiffSurface({
    *  the forty rows, so a fresh identity each render costs nothing. */
   const toggleAll = () => setOpenPaths((current) => (shownPaths.some((path) => current.has(path)) ? new Set() : new Set(shownPaths)));
 
+  /**
+   * THE TREE WRITES THROUGH `toggleRow` (#855) — the rows' own writer, so the
+   * tree cannot open a patch the list thinks is closed. Opening one also brings
+   * its row into view, because a patch opened forty rows below the fold is a
+   * click that appeared to do nothing.
+   */
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const selectFromTree = (path: string) => {
+    const opening = !openPaths.has(path);
+    toggleRow(path);
+    if (!opening) return;
+    window.requestAnimationFrame(() =>
+      rowsRef.current?.querySelector(`[data-diff-path="${CSS.escape(path)}"]`)?.scrollIntoView({ block: "start" }),
+    );
+  };
+
   if (!sessionId && !projectId) {
     return (
       <PanelEmpty icon={<GitBranchIcon />} title="No project">
@@ -2062,7 +2088,14 @@ export function DiffSurface({
           <ReviewEmptyState review={review} trimmed={trimmed} filesIncomplete={diff.filesIncomplete} />
         )
       ) : (
-        <div className="flex flex-col">
+        <div className="flex min-w-0 items-start">
+          {/* ONE FILE IS NOT A TREE, so a single-row review keeps its width. */}
+          {view.tree && shown.rows.length > 1 && (
+            <div className="sticky top-0 max-h-[70vh] w-44 shrink-0 overflow-y-auto">
+              <DiffFileTree files={shown.rows.map((row) => row.file)} openPaths={openPaths} onSelect={selectFromTree} />
+            </div>
+          )}
+        <div ref={rowsRef} className="flex min-w-0 flex-1 flex-col">
           {/* Unreported rows lead. They are the ones a reviewer has not seen,
               and burying them in alphabetical order defeats the point. On a
               canvas there is no transcript, so NOTHING is unreported — badging
@@ -2109,6 +2142,7 @@ export function DiffSurface({
                 {...rowMenu}
               />
             ))}
+        </div>
         </div>
       )}
 

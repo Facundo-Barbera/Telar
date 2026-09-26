@@ -14,27 +14,34 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_DIFF_VIEW, parseDiffView } from "./diff-view";
 
 describe("the diff view preference", () => {
-  test("nothing stored is stacked, unwrapped, and whitespace-sensitive", () => {
-    // Each of the three is a decision the issue argues for; a change here is a
+  test("nothing stored is stacked, unwrapped, whitespace-sensitive, with the tree shown", () => {
+    // Each of these is a decision an issue argues for; a change here is a
     // change of mind, not a tidy-up.
-    expect(parseDiffView(null)).toEqual({ layout: "stacked", wrap: false, ignoreWhitespace: false });
+    expect(parseDiffView(null)).toEqual({ layout: "stacked", wrap: false, ignoreWhitespace: false, tree: true });
     expect(DEFAULT_DIFF_VIEW).toEqual(parseDiffView(null));
   });
 
   test("a stored choice survives, both ways round", () => {
-    expect(parseDiffView('{"layout":"split","wrap":true,"ignoreWhitespace":true}')).toEqual({
+    expect(parseDiffView('{"layout":"split","wrap":true,"ignoreWhitespace":true,"tree":false}')).toEqual({
       layout: "split",
       wrap: true,
       ignoreWhitespace: true,
+      tree: false,
     });
-    expect(parseDiffView('{"layout":"stacked","wrap":false,"ignoreWhitespace":false}')).toEqual(DEFAULT_DIFF_VIEW);
+    expect(parseDiffView('{"layout":"stacked","wrap":false,"ignoreWhitespace":false,"tree":true}')).toEqual(DEFAULT_DIFF_VIEW);
+  });
+
+  test("a record written before the tree existed keeps the tree shown", () => {
+    // Absent is the default, not `false` — somebody who chose split last month
+    // did not choose to hide a control that did not exist yet.
+    expect(parseDiffView('{"layout":"split","wrap":false,"ignoreWhitespace":false}').tree).toBe(true);
   });
 
   test("one bad key costs only its own field", () => {
     // Total per FIELD rather than per record: a hand-edited file with one typo
     // should not silently reset the other two choices.
-    expect(parseDiffView('{"layout":"diagonal","wrap":true}')).toEqual({ layout: "stacked", wrap: true, ignoreWhitespace: false });
-    expect(parseDiffView('{"layout":"split","wrap":"yes"}')).toEqual({ layout: "split", wrap: false, ignoreWhitespace: false });
+    expect(parseDiffView('{"layout":"diagonal","wrap":true}')).toEqual({ layout: "stacked", wrap: true, ignoreWhitespace: false, tree: true });
+    expect(parseDiffView('{"layout":"split","wrap":"yes"}')).toEqual({ layout: "split", wrap: false, ignoreWhitespace: false, tree: true });
   });
 
   test("a corrupt record is a first run, never a surface that will not paint", () => {

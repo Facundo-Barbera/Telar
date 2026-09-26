@@ -70,7 +70,7 @@ async function row(
         readPatch={readPatch}
         file={file}
         reported
-        view={{ layout: "stacked", wrap: false, ignoreWhitespace: false }}
+        view={{ layout: "stacked", wrap: false, ignoreWhitespace: false, tree: true }}
         open
         onToggle={() => {}}
         {...(witness ? { witness } : {})}
