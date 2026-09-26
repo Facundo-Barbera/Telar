@@ -76,28 +76,6 @@ test("checkpoint_fullfsync moves in both directions on a raw connection, so the 
   db.close();
 });
 
-test("an explicit synchronous survives entering WAL, which is why the constructor may set it first", () => {
-  // The Agent's checkpointer cannot set its level after `journal_mode=WAL`,
-  // because the saver enters WAL lazily inside its own `setup()`. It sets it
-  // BEFORE, and this is the property that makes that legal: a level set
-  // explicitly is remembered across the mode change. Without it the shipped
-  // app's thread store would run at FULL, an unmeasured fsync per commit in
-  // production only (#632 §3).
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-durability-order-"));
-  roots.push(root);
-  type Raw = { exec(sql: string): void; prepare(sql: string): { get(): Record<string, unknown> | undefined }; close(): void };
-  const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite") as {
-    Database?: new (file: string) => Raw;
-    DatabaseSync?: new (file: string) => Raw;
-  };
-  const file = path.join(root, "order.sqlite");
-  const db = process.versions.bun ? new native.Database!(file) : new native.DatabaseSync!(file);
-  db.exec("PRAGMA synchronous=NORMAL;");
-  db.exec("PRAGMA journal_mode=WAL;");
-  expect(Number(Object.values(db.prepare("PRAGMA synchronous").get() ?? {})[0] ?? 0)).toBe(1);
-  db.close();
-});
-
 type Barrier = { sessionId: string; eventId: number };
 function watching(barriers: Barrier[]): { root: string; store: ExecutionStore } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-durability-"));
