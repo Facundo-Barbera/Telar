@@ -133,6 +133,22 @@ export function claudeEffortFor(model: string | undefined, effort: string | unde
   return claudeProfileOf(model, manifest)?.effortMap?.[effort as Effort] ?? effort;
 }
 
+/**
+ * THE `[1m]` SPELLING A BARE ID RAN AS BEFORE 200k WAS A CHOICE AGAIN, or the id
+ * untouched. Until #986 every door rewrote a bare id whose profile defaults to
+ * 1M (Opus 5.5, Opus 5, Opus 4.6, Fable 5.1, Fable 5) to its `[1m]` row, so a
+ * record saved bare ran 1M. Used only by the one-time migration that writes that
+ * spelling into records saved before then; a bare id picked since means 200k.
+ *
+ * NEVER INVENTS AN ID: already-long, dated, fixed-window, 200k-default and
+ * unknown ids come back as they went in.
+ */
+export function legacyLongSpelling(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): string {
+  if (LONG.test(id) || /-\d{8}$/.test(id)) return id;
+  const profile = claudeProfileOf(id, manifest);
+  return profile && profile.windows.length > 1 && profile.defaultWindow === "1m" ? `${id}[1m]` : id;
+}
+
 /** Dotted versions compared numerically; missing parts are zero. */
 function compareVersions(a: string, b: string): number {
   const left = a.split(".").map(Number);

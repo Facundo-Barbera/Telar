@@ -248,7 +248,7 @@ import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerPr
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import type { ClaudeConversation, ForkCut } from "./claude-fork";
 import { describeImport } from "./claude-transcript";
-import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, type ModelManifest } from "./model-manifest";
+import { applyModelManifest, BUNDLED_MANIFEST, legacyLongSpelling, longDefaultOf, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay, chosenDefault } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
@@ -4754,6 +4754,84 @@ export class EngineStore {
       this.sessionIndexBackfill = this.backfillSessionRows();
       this.turnSummaryBackfill = this.backfillTurnSummaries();
     }
+    // On both backends, and before anything can claim a turn — see the method.
+    this.claudeLongWindowMigration = this.migrateBareClaudeIds();
+  }
+
+  /** What the one-time `[1m]` rewrite changed on this open, or nothing when it
+   *  had already run. See `migrateBareClaudeIds`. */
+  readonly claudeLongWindowMigration?: { sessions: number; projects: number };
+
+  /**
+   * RECORDS SAVED BEFORE 200k WAS A CHOICE KEEP RUNNING AT 1M — once, marked.
+   *
+   * Until #986 a bare Claude id whose model defaults to 1M (`opus`,
+   * `claude-opus-5-5`, Fable) was rewritten to its `[1m]` row at every door, so
+   * a session or project default saved bare ran 1M. From #986 a bare id is a pick
+   * of the 200k window. Without this, those older records would silently halve
+   * their window on the next turn; with it, their stored model is rewritten to
+   * the explicit `[1m]` id it always ran as, and only picks made from now on can
+   * mean 200k.
+   *
+   * ONCE, AND BEFORE THE FIRST CLAIM. The marker document is written in the same
+   * transaction as the rewrites, and its presence skips the pass on every later
+   * open. It runs in the constructor rather than lazily because a claim that
+   * reached an old record first would run it at 200k. It reads only session
+   * METADATA documents — no queue, items or journal — which is the part of a
+   * session #646's startup lesson says is cheap.
+   *
+   * IDEMPOTENT ANYWAY: a `[1m]` id is never rewritten, so running it twice
+   * changes nothing. Queued turns are left alone — the old `submitTurn` already
+   * stored them in the `[1m]` spelling.
+   */
+  private migrateBareClaudeIds(): { sessions: number; projects: number } | undefined {
+    if (this.readDocument(this.paths.claudeLongWindowMigration) !== undefined) return undefined;
+    const rewrite = (selection: unknown): string | undefined => {
+      const model = (selection as { model?: unknown } | undefined)?.model;
+      if (typeof model !== "string") return undefined;
+      const long = legacyLongSpelling(model, this.manifest);
+      return long === model ? undefined : long;
+    };
+    return this.executeCommand("migrateBareClaudeIds", () => {
+      let sessions = 0;
+      for (const id of this.storedSessionIds()) {
+        try {
+          const file = sessionMetadataFile(this.paths, id);
+          const raw = this.readDocument(file) as { driver?: unknown; model?: Record<string, unknown> } | undefined;
+          if (!raw || raw.driver !== "claude") continue;
+          const long = rewrite(raw.model);
+          if (!long) continue;
+          this.writeDocument(file, { ...raw, model: { ...raw.model, model: long } });
+          sessions += 1;
+        } catch {
+          // One unreadable session must not stop an engine from starting.
+        }
+      }
+      let projects = 0;
+      try {
+        const stored = this.readDocument(this.paths.projects) as { projects?: Record<string, unknown>[] } | undefined;
+        // The raw registry, not `readProviderInstances`, which seeds one on
+        // first read and would make this pass write a file nobody asked for.
+        const registry = this.readDocument(this.paths.providerInstances) as { providerInstances?: { id?: unknown; driver?: unknown }[] } | undefined;
+        const claudeInstances = new Set(
+          (registry?.providerInstances ?? []).flatMap((instance) => (instance.driver === "claude" && typeof instance.id === "string" ? [instance.id] : [])),
+        );
+        claudeInstances.add(defaultInstanceIdForDriver("claude"));
+        const next = (stored?.projects ?? []).map((project) => {
+          const selection = project.defaultModel as { instanceId?: unknown } | undefined;
+          if (typeof selection?.instanceId !== "string" || !claudeInstances.has(selection.instanceId)) return project;
+          const long = rewrite(selection);
+          if (!long) return project;
+          projects += 1;
+          return { ...project, defaultModel: { ...selection, model: long } };
+        });
+        if (projects > 0) this.writeDocument(this.paths.projects, { ...stored, projects: next });
+      } catch {
+        // A registry that will not parse is reported by every other reader of it.
+      }
+      this.writeDocument(this.paths.claudeLongWindowMigration, { version: 1, at: this.now(), sessions, projects });
+      return { sessions, projects };
+    });
   }
 
   /**
