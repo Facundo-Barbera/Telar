@@ -240,18 +240,57 @@ export function cloneRequest(query: string): { source: string; url: string } | u
 }
 
 /**
+ * The folder the field names, if it names one — as the folder browser should be
+ * asked for it.
+ *
+ * A PASTED PATH IS THE LOCAL-FOLDER ROW'S URL. Without this, a path fell through
+ * to the title filter and matched nothing, so "No source matches that" was the
+ * answer to the most direct thing a person can give. It arrives in the shapes
+ * the places people copy from produce: Finder's Copy as Pathname and a shell
+ * both quote (`'…'`/`"…"`), a terminal copy carries a trailing newline, and a
+ * browser or an editor hands over a `file://` URL, percent-encoded.
+ *
+ * `~` IS LEFT FOR THE LISTING TO EXPAND (`expandHome` in lib/fs-dirs.ts), since
+ * home is the ANSWERING machine's — on a paired Mac it is not this one's.
+ */
+export function pathRequest(query: string): string | undefined {
+  let text = query.trim();
+  const quoted = /^(['"])([\s\S]*)\1$/.exec(text);
+  if (quoted) text = quoted[2]!.trim();
+  if (/^file:\/\//i.test(text)) {
+    try {
+      const url = new URL(text);
+      // `file://localhost/x` is the same place as `file:///x`; any other host
+      // is another machine, which a folder browser here cannot open.
+      if (url.host && url.host !== "localhost") return undefined;
+      text = decodeURIComponent(url.pathname);
+    } catch {
+      return undefined;
+    }
+  }
+  if (text === "~" || text.startsWith("~/") || text.startsWith("/")) return text;
+  return undefined;
+}
+
+/**
  * The Sources rows as drawn, for this query.
  *
  * A CLONABLE QUERY COLLAPSES THE LIST TO ONE ROW, deliberately: the reader has
  * already said what they want, and offering them five other sources to arrow
- * past is asking the question again. Otherwise it is an ordinary filter over
- * everything the rows say.
+ * past is asking the question again. A pasted folder path does the same, onto
+ * "Local folder". Otherwise it is an ordinary filter over everything the rows
+ * say.
  */
 export function sourceRows(query: string, sources: readonly ProjectSource[] = PROJECT_SOURCES): ProjectSource[] {
   const clone = cloneRequest(query);
   if (clone) {
     const row = sources.find((source) => source.id === clone.source);
     return row ? [{ ...row, hint: `Clone ${clone.url}` }] : [];
+  }
+  const folder = pathRequest(query);
+  if (folder) {
+    const row = sources.find((source) => source.id === "local");
+    return row ? [{ ...row, hint: `Open ${folder}` }] : [];
   }
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return [...sources];
@@ -373,6 +412,9 @@ export function ProjectPalettePages({
    *  page that picks the parent are two pages and the answer outlives the
    *  first. */
   const [cloneUrl, setCloneUrl] = useState<string>();
+  /** The folder a pasted path named, for the browser to open AT — held for the
+   *  same reason as `cloneUrl`: `go` clears the field that said it. */
+  const [startAt, setStartAt] = useState<string>();
   /** One line under the list. The palette has no other place to put a sentence,
    *  and swallowing the engine's refusal would leave a dead Enter key. */
   const [notice, setNotice] = useState<string>();
@@ -401,6 +443,7 @@ export function ProjectPalettePages({
       setBusy(false);
       setNotice(undefined);
       setCloneUrl(undefined);
+      setStartAt(undefined);
     }
   }
 
@@ -552,6 +595,7 @@ export function ProjectPalettePages({
       return;
     }
     if (!source.clones) {
+      setStartAt(pathRequest(query));
       go("local");
       return;
     }
@@ -636,6 +680,7 @@ export function ProjectPalettePages({
                open. The clone button says "Clone here" because the folder it
                takes is the PARENT of the checkout, not the checkout. */
             <DirectoryBrowser
+              {...(page === "local" && startAt ? { startAt } : {})}
               actionLabel={page === "local" ? "Add" : "Clone here"}
               busy={busy}
               {...(notice ? { notice } : {})}
@@ -690,8 +735,8 @@ export function ProjectPalettePages({
               onCompositionEnd={() => {
                 composing.current = false;
               }}
-              placeholder={page === "sources" ? "Search sources, or paste a repository URL" : "Search projects"}
-              aria-label={page === "sources" ? "Search sources, or paste a repository URL" : "Search projects"}
+              placeholder={page === "sources" ? "Search sources, or paste a URL or folder path" : "Search projects"}
+              aria-label={page === "sources" ? "Search sources, or paste a URL or folder path" : "Search projects"}
               role="combobox"
               aria-expanded={count > 0}
               aria-controls="project-palette-results"
