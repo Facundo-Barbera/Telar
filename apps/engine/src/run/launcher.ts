@@ -125,6 +125,11 @@ export type RunLauncher = {
    * engine's own children are every terminal there is, and it closes those.
    */
   closeSession?(sessionId: string): Promise<number>;
+  /**
+   * HOW MANY TERMINALS EACH SESSION HOLDS, WHOEVER OPENED THEM — the host's
+   * `GET /sessions` (#883). Absent for pipes, for `closeSession`'s reason.
+   */
+  sessionCounts?(): Promise<Record<string, number>>;
   /** The engine is going down: stop listening, close nothing. */
   detach?(): void;
 };
@@ -296,6 +301,7 @@ export function terminalLauncher(client: RunTerminalClient, defaults: { cols?: n
       return handleFor(facts.id, facts.pid);
     },
     closeSession: (sessionId) => client.closeSession(sessionId),
+    sessionCounts: () => client.sessionCounts(),
     detach: () => client.detach(),
   };
 }

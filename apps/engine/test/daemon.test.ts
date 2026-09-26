@@ -568,23 +568,29 @@ test("the inbox route carries the delegation grace, and `null` over the wire is 
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
 
-  expect((await client.inboxPolicy()).inbox).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 1 });
+  expect((await client.inboxPolicy()).inbox).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 1, settledTerminalLimit: 5 });
   expect((await client.setInboxPolicy({ settleDelegatedAfterHours: 6 })).inbox).toEqual({
     autoSettleAfterHours: 72,
     settleDelegatedAfterHours: 6,
+    settledTerminalLimit: 5,
   });
   expect((await client.setInboxPolicy({ autoSettleAfterHours: 12 })).inbox).toEqual({
     autoSettleAfterHours: 12,
     settleDelegatedAfterHours: 6,
+    settledTerminalLimit: 5,
   });
   // PRESENT-BUT-NULL is the off switch; an empty patch is "leave it alone".
   expect((await client.setInboxPolicy({ settleDelegatedAfterHours: null })).inbox).toEqual({
     autoSettleAfterHours: 12,
     settleDelegatedAfterHours: null,
+    settledTerminalLimit: 5,
   });
-  expect((await client.setInboxPolicy({})).inbox).toEqual({ autoSettleAfterHours: 12, settleDelegatedAfterHours: null });
+  expect((await client.setInboxPolicy({})).inbox).toEqual({ autoSettleAfterHours: 12, settleDelegatedAfterHours: null, settledTerminalLimit: 5 });
+  // The settled terminal limit rides the same document (#883).
+  expect((await client.setInboxPolicy({ settledTerminalLimit: 2 })).inbox.settledTerminalLimit).toBe(2);
   // The bound lives beside the schema that states it, not in the route.
   await expect(client.setInboxPolicy({ settleDelegatedAfterHours: 0 })).rejects.toMatchObject({ code: "invalid_request" });
+  await expect(client.setInboxPolicy({ settledTerminalLimit: -1 })).rejects.toMatchObject({ code: "invalid_request" });
 });
 
 test("POST /v2/projects/clone clones and registers in one request, with git stubbed", async () => {

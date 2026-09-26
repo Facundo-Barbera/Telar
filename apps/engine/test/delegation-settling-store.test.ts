@@ -342,11 +342,11 @@ test("A SESSION NOBODY DELEGATED TO IS NEVER TOUCHED", () => {
 
 test("the delegation grace is its own setting, and survives a reload beside the quiet window", () => {
   const fixture = scene();
-  expect(fixture.store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 1 });
+  expect(fixture.store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 1, settledTerminalLimit: 5 });
   fixture.store.setInboxPolicy({ settleDelegatedAfterHours: 6 });
-  expect(fixture.store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 6 });
+  expect(fixture.store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 6, settledTerminalLimit: 5 });
   // Changing one leaves the other exactly where it was.
   fixture.store.setInboxPolicy({ autoSettleAfterHours: null });
-  expect(fixture.store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null, settleDelegatedAfterHours: 6 });
+  expect(fixture.store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null, settleDelegatedAfterHours: 6, settledTerminalLimit: 5 });
   expect(() => fixture.store.setInboxPolicy({ settleDelegatedAfterHours: 0 })).toThrow();
 });
