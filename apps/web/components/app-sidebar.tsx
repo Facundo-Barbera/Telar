@@ -715,6 +715,8 @@ function SidebarBody() {
         session.projectId ? glyphs.get(session.projectId) : undefined,
         session.settledBy ? titles.get(session.settledBy.coordinatorSessionId) : undefined,
         session.projectId ? availability.get(session.projectId) : undefined,
+        // What it holds open (#883), off this same read — never a fetch per row.
+        result.terminals?.[session.id],
       ),
     );
     const page: HostPage = {

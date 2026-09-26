@@ -172,6 +172,13 @@ export type SidebarSession = {
    * happened without naming anybody, which is better than a raw id.
    */
   settledForTitle?: string;
+  /**
+   * HOW MANY TERMINALS IT HOLDS OPEN, WHOEVER OPENED THEM — issue #883. Off the
+   * live read's `terminals` map, like `assignments`. Absent means none known.
+   */
+  terminals?: number;
+  /** Telar closed its terminals while it sat on the shelf — `Session.terminalsClosed`. */
+  terminalsClosed?: { at: number; terminals: number; reason: "grace" | "limit" };
   snoozedUntil?: number;
   snoozedAt?: number;
   /**
@@ -243,6 +250,8 @@ export function toSidebarSession(
   coordinatorTitle?: string,
   /** `Project.availability` — whether the project's disk is here (#534). */
   projectAvailability?: ProjectAvailability,
+  /** Its open terminals, from the live read's `terminals` map (#883). */
+  terminals?: number,
 ): SidebarSession {
   return {
     id: session.id,
@@ -281,6 +290,8 @@ export function toSidebarSession(
     ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
     ...(session.settledBy ? { settledBy: session.settledBy } : {}),
     ...(session.settledBy && coordinatorTitle ? { settledForTitle: coordinatorTitle } : {}),
+    ...(terminals ? { terminals } : {}),
+    ...(session.terminalsClosed ? { terminalsClosed: session.terminalsClosed } : {}),
     ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
     ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
     ...(session.wokeAt === undefined ? {} : { wokeAt: session.wokeAt }),
