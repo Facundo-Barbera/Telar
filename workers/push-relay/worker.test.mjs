@@ -383,3 +383,20 @@ test('v2: a real attestation from a real iPhone verifies against the embedded Ap
   await assert.rejects(verifyAttestation({...args,teamId:'MM74W7WGAM'}));
   await assert.rejects(verifyAttestation({...args,now:leaf.notAfter+1000}));
 });
+test('v2: a refresh without a start token leaves starts refused as not_registered, and one with it restores them',async()=>{
+  const enrolled=await enroll();
+  const key=await pairKey(enrolled);
+  const start={...alert,kind:'liveactivity',start:true,payload:{aps:{event:'start'}}};
+  const {pushToStartToken:_,...withoutStart}=tokensOf;
+  assert.equal((await asPhone(enrolled,'PUT',`/v2/devices/${enrolled.handle}`,withoutStart)).status,200);
+  await withApple(()=>new Response(null,{status:200}),async calls=>{
+    const refused=await macSend(enrolled,key,start);
+    assert.equal(refused.status,409);
+    // The word is what lets the phone tell a lost start token from a full key ring.
+    assert.deepEqual(await refused.json(),{error:'not_registered'});
+    assert.equal(calls.length,0,'nothing reached Apple');
+    assert.equal((await asPhone(enrolled,'PUT',`/v2/devices/${enrolled.handle}`,tokensOf)).status,200);
+    assert.equal((await macSend(enrolled,key,start)).status,200);
+    assert.equal(calls[0].url,`https://api.push.apple.com/3/device/${'b'.repeat(64)}`);
+  });
+});
