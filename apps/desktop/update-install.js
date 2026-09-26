@@ -78,4 +78,37 @@ function createInstallGate({ now = Date.now, graceMs = QUIT_GRACE_MS } = {}) {
   };
 }
 
-module.exports = { QUIT_GRACE_MS, createInstallGate };
+/**
+ * A PLANNED RESTART, SAID TO THE NEXT ENGINE. The engine reads this on start and
+ * — only when the person turned on "Continue sessions after restarting" —
+ * continues the sessions the restart cut off. A crash writes nothing, so it can
+ * never resume anything. Beside the engine's own state, which is where it reads.
+ */
+const PLANNED_RESTART_FILE = "planned-restart.json";
+
+function plannedRestartPath(engineRoot) {
+  return require("node:path").join(engineRoot, PLANNED_RESTART_FILE);
+}
+
+/** Best effort: a marker that could not be written costs a resume, never the
+ *  update. Returns whether it was written. */
+function writePlannedRestart(engineRoot, { now = Date.now, fs = require("node:fs") } = {}) {
+  try {
+    fs.mkdirSync(engineRoot, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(plannedRestartPath(engineRoot), JSON.stringify({ version: 1, reason: "update", at: now() }), { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Taken back when the install did not happen after all. */
+function clearPlannedRestart(engineRoot, { fs = require("node:fs") } = {}) {
+  try {
+    fs.rmSync(plannedRestartPath(engineRoot), { force: true });
+  } catch {
+    // Nothing to take back.
+  }
+}
+
+module.exports = { QUIT_GRACE_MS, PLANNED_RESTART_FILE, createInstallGate, writePlannedRestart, clearPlannedRestart };
