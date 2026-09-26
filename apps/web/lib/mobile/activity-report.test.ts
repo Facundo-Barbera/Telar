@@ -42,8 +42,9 @@ describe("the report", () => {
     expect(activityReport(next).lastStart).toEqual({ at: 1000, status: 200, relay: false });
     next = (await deliverRecord(record(), [work], async () => ({ status: 400, reason: "BadDeviceToken" }), 2000))!;
     expect(activityReport(next).lastStart).toEqual({ at: 2000, status: 400, reason: "BadDeviceToken", relay: false });
-    next = (await deliverRecord(record(), [work], async () => ({ status: 409, relay: true }), 3000))!;
-    expect(activityReport(next).lastStart).toMatchObject({ status: 409, relay: true });
+    next = (await deliverRecord(record(), [work], async () => ({ status: 409, relay: true, reason: "not_registered" }), 3000))!;
+    // The relay's word reaches the phone, which is how it knows to re-send its start token.
+    expect(activityReport(next).lastStart).toEqual({ at: 3000, status: 409, reason: "not_registered", relay: true });
   });
 });
 

@@ -38,6 +38,18 @@ import Testing
         #expect(LiveActivityDiagnosis.line(nil, now: now).hasPrefix("no report"))
     }
 
+    @Test func aStartRefusedNotRegisteredMeansResendTheStartToken() {
+        let lost = start(409, reason: "not_registered", relay: true)
+        #expect(LiveActivityDiagnosis.startTokenMissingAtRelay(lost))
+        #expect(LiveActivityDiagnosis.line(lost, now: now).hasPrefix("the push relay had no start token for this phone"))
+        // Anything else is not a lost start token.
+        #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(start(409, reason: "too_many_keys", relay: true)))
+        #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(start(409, relay: true)))
+        #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(start(400, reason: "BadDeviceToken")))
+        #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(ActivityReport(card: true, lastStart: lost.lastStart)))
+        #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(nil))
+    }
+
     @Test func theMacsReportDecodesAsTheMacSendsIt() throws {
         let json = #"{"configured":true,"activity":{"card":false,"lastStart":{"at":1800000000,"status":200,"relay":false}}}"#
         let status = try JSONDecoder().decode(PushStatus.self, from: Data(json.utf8))

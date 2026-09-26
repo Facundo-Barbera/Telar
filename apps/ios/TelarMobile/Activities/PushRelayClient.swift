@@ -122,6 +122,15 @@ extension DCAppAttestService: AppAttesting {}
         }
     }
 
+    /// THE RELAY HAS LOST SOMETHING THIS PHONE THINKS IT SENT: a Mac's start came
+    /// back `not_registered`, typically because the relay dropped the push-to-start
+    /// token. The next sync re-sends the tokens even though they look unchanged
+    /// here; otherwise the daily short-circuit kept it missing for up to 24 hours.
+    func forceRefresh() {
+        state.refreshedAt = nil
+        persist(state)
+    }
+
     /// Unpairing: the Mac's key stops working at the relay, not just here.
     func revoke(host: String) async {
         guard let key = state.keys[host] else { return }

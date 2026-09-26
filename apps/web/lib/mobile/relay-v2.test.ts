@@ -119,6 +119,15 @@ describe("a send", () => {
     expect(await relayV2Delivery(credential, alert, fetchImpl)).toEqual({ status: 503, relay: true, retryAfter: 120 });
   });
 
+  test("a relay refusal keeps the relay's own word, so a lost start token can be told apart", async () => {
+    for (const [error, expected] of [["not_registered", "not_registered"], ["too_many_keys", "too_many_keys"], ["<script>", undefined]] as const) {
+      const { fetchImpl } = relay(() => Response.json({ error }, { status: 409 }));
+      expect(await relayV2Delivery(credential, alert, fetchImpl)).toEqual({ status: 409, relay: true, ...(expected ? { reason: expected } : {}) });
+    }
+    const { fetchImpl } = relay(() => new Response("not json", { status: 409 }));
+    expect(await relayV2Delivery(credential, alert, fetchImpl)).toEqual({ status: 409, relay: true });
+  });
+
   test("timestamps only rise, so two identical sends are never one replay", () => {
     const first = nextStamp(5), second = nextStamp(5);
     expect(second).toBeGreaterThan(first);
