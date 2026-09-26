@@ -5,6 +5,7 @@ import {
   cloneRequest,
   folderName,
   matchTargets,
+  pathRequest,
   PROJECT_SOURCES,
   QUICK_PICK_LIMIT,
   sourceRows,
@@ -193,6 +194,56 @@ test("ordinary words are not mistaken for URLs", () => {
   expect(cloneRequest("")).toBeUndefined();
   // A path is not a URL: it would be a local folder, and that row has a picker.
   expect(cloneRequest("/Users/someone/code/telar")).toBeUndefined();
+});
+
+test("a pasted folder path collapses the page to Local folder instead of matching nothing", () => {
+  // The bug: a path fell through to the title filter and the page said "No
+  // source matches that" to the most direct answer a person can give.
+  const drive = "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/[01] Work/repo";
+  for (const pasted of [drive, "~/code/telar", "~", `file://${encodeURI(drive)}`]) {
+    const rows = sourceRows(pasted);
+    expect(rows.map((row) => row.id)).toEqual(["local"]);
+  }
+  expect(sourceRows(drive)[0].hint).toBe(`Open ${drive}`);
+  // Spaces, `@` and brackets are a path, not an scp URL or a shorthand.
+  expect(cloneRequest(drive)).toBeUndefined();
+});
+
+test("a path arrives in the shapes people copy it in", () => {
+  const drive = "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/[01] Work/repo";
+  // Finder's Copy as Pathname and a shell both quote; a terminal copy ends in
+  // a newline.
+  expect(pathRequest(`'${drive}'`)).toBe(drive);
+  expect(pathRequest(`"${drive}"`)).toBe(drive);
+  expect(pathRequest(`${drive}\n`)).toBe(drive);
+  expect(pathRequest(`  "${drive}"\r\n`)).toBe(drive);
+  expect(pathRequest("'~/code/telar'")).toBe("~/code/telar");
+  // `file://` URLs are percent-decoded, and `localhost` is this machine.
+  expect(pathRequest("file:///Users/me/My%20Drive/%5B01%5D%20Work/repo")).toBe("/Users/me/My Drive/[01] Work/repo");
+  expect(pathRequest("file://localhost/Users/me/code")).toBe("/Users/me/code");
+  expect(pathRequest(`file://${encodeURI(drive)}\n`)).toBe(drive);
+});
+
+test("only a path is a path", () => {
+  expect(pathRequest("")).toBeUndefined();
+  expect(pathRequest("folder")).toBeUndefined();
+  expect(pathRequest("owner/repo")).toBeUndefined();
+  expect(pathRequest("https://github.com/owner/repo")).toBeUndefined();
+  // Another account's home, and another machine's file URL, are not ours to open.
+  expect(pathRequest("~root/x")).toBeUndefined();
+  expect(pathRequest("file://server/share/repo")).toBeUndefined();
+  // Mismatched quotes are not a quoted path.
+  expect(pathRequest("'/Users/me/code\"")).toBeUndefined();
+  // And the ordinary filter still works for words.
+  expect(sourceRows("folder").map((row) => row.id)).toEqual(["local"]);
+});
+
+test("choosing Local folder with a path in the field opens the browser AT it", () => {
+  expect(source).toContain("setStartAt(pathRequest(query));");
+  expect(source).toContain('{...(page === "local" && startAt ? { startAt } : {})}');
+  // A fresh palette forgets the last one's path.
+  expect(source).toContain("setStartAt(undefined);");
+  expect(source).toContain("paste a URL or folder path");
 });
 
 test("a clone row with nothing to clone opens the URL page instead of scolding the reader", () => {

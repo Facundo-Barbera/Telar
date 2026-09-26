@@ -14,13 +14,14 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync, type Dirent, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   browseRoots,
   compareNames,
   expandHome,
+  GIT_PROBE_BUDGET_MS,
   isDirectoryFailure,
   listDirectories,
   listRoots,
@@ -314,5 +315,142 @@ describe("listDirectories", () => {
     // Silently truncated is a list somebody scrolls to the bottom of looking
     // for a folder that is there.
     expect(result.truncated).toBe(true);
+  });
+});
+
+/**
+ * A FOLDER INSIDE A CLOUD DRIVE'S LOCAL MIRROR — the reported case.
+ *
+ * macOS puts these under `~/Library/CloudStorage/<Provider>-<account>/…`, served
+ * by a FileProvider extension: inside home, so the root check passes, with
+ * spaces, `@` and brackets in the path, and with reads that can be slow,
+ * typeless or refused. The fixture is a scratch home laid out with that name;
+ * the real `~/Library/CloudStorage` is never touched.
+ */
+describe("a cloud folder", () => {
+  const DRIVE = path.join("Library", "CloudStorage", "GoogleDrive-me@example.com", "My Drive");
+
+  function cloudHome(): { home: string; work: string; repo: string } {
+    const home = scratchHome();
+    const work = path.join(home, DRIVE, "[01] Work");
+    const repo = path.join(work, "repo");
+    mkdirSync(path.join(repo, ".git"), { recursive: true });
+    mkdirSync(path.join(work, "notes"));
+    writeFileSync(path.join(repo, "README.md"), "x");
+    return { home, work, repo };
+  }
+
+  const message = (outcome: DirectoryOutcome) => (isDirectoryFailure(outcome) ? outcome.message : "");
+
+  test("lists, badges the checkout, and takes the path typed or with ~", () => {
+    const { home, work, repo } = cloudHome();
+    const result = listing(listDirectories({ path: work }, { home, platform: "darwin" }));
+    expect(result.path).toBe(work);
+    expect(result.dirs.map((entry) => [entry.name, entry.git])).toEqual([
+      ["notes", false],
+      ["repo", true],
+    ]);
+    expect(result.missing).toBeUndefined();
+    const tilde = listing(listDirectories({ path: `~/${path.relative(home, repo)}` }, { home, platform: "darwin" }));
+    expect(tilde.path).toBe(repo);
+    // Its up leads back into the drive, not to a refusal.
+    expect(tilde.parent).toBe(work);
+  });
+
+  test("nearest opens the closest existing folder, and says what was missing", () => {
+    const { home, work, repo } = cloudHome();
+    const gone = path.join(work, "renamed since", "deeper");
+    const walked = listing(listDirectories({ path: gone, nearest: true }, { home, platform: "darwin" }));
+    expect(walked.path).toBe(work);
+    expect(walked.missing).toBe(gone);
+    // A pasted FILE opens the folder it is in.
+    const file = listing(listDirectories({ path: path.join(repo, "README.md"), nearest: true }, { home, platform: "darwin" }));
+    expect(file.path).toBe(repo);
+    // Without it, the answer is the one the phone has always had.
+    expect(listDirectories({ path: gone }, { home, platform: "darwin" })).toMatchObject({ code: "not_found" });
+  });
+
+  test("walking up never walks out of the roots", () => {
+    const home = scratchHome();
+    const outside = listDirectories({ path: "/telar-nowhere-9f3/x", nearest: true }, { home, platform: "darwin", mounts: [] });
+    expect(outside).toMatchObject({ code: "invalid_request" });
+    expect(message(outside)).toContain(home);
+  });
+
+  test("a typeless entry is asked by lstat, and one that fails does not fail the listing", () => {
+    const { home, work } = cloudHome();
+    const typeless = (name: string) =>
+      ({
+        name,
+        isDirectory: () => false,
+        isFile: () => false,
+        isSymbolicLink: () => false,
+        isFIFO: () => false,
+        isSocket: () => false,
+        isBlockDevice: () => false,
+        isCharacterDevice: () => false,
+      }) as unknown as Dirent;
+    const result = listing(
+      listDirectories(
+        { path: work },
+        {
+          home,
+          platform: "darwin",
+          readdir: () => [typeless("fetched"), typeless("stalled"), typeless("file.txt")],
+          lstat: (target) => {
+            if (target.endsWith("stalled")) throw Object.assign(new Error("timed out"), { code: "ETIMEDOUT" });
+            return { isDirectory: () => target.endsWith("fetched") } as Stats;
+          },
+        },
+      ),
+    );
+    expect(result.dirs.map((entry) => entry.name)).toEqual(["fetched"]);
+  });
+
+  test("a cloud folder that is there and unreadable says why, rather than 'does not exist'", () => {
+    const { home, work } = cloudHome();
+    const failing = (code: string) => () => {
+      throw Object.assign(new Error(code), { code });
+    };
+    const denied = listDirectories({ path: work }, { home, platform: "darwin", readdir: failing("EPERM") });
+    expect(denied).toMatchObject({ code: "invalid_request" });
+    expect(message(denied)).toContain("Privacy & Security");
+    // A stalled sync app is not a missing folder, and `nearest` does not walk
+    // past it to some other folder as though it were.
+    const stalled = listDirectories({ path: work, nearest: true }, { home, platform: "darwin", realpath: failing("ETIMEDOUT") });
+    expect(stalled).toMatchObject({ code: "invalid_request" });
+    expect(message(stalled)).toContain("(ETIMEDOUT)");
+    expect(message(stalled)).toContain("sync app");
+    // No vendor names in what a person reads.
+    expect(message(stalled)).not.toContain("Google");
+  });
+
+  test("slow .git probes stop at the budget, and the listing says some were skipped", () => {
+    const { home, work } = cloudHome();
+    for (const name of ["a", "b", "c"]) mkdirSync(path.join(work, name));
+    let clock = 0;
+    const probed: string[] = [];
+    const result = listing(
+      listDirectories(
+        { path: work },
+        {
+          home,
+          platform: "darwin",
+          // Every probe costs a whole second of the fake clock.
+          now: () => clock,
+          mounts: [],
+          exists: (target) => {
+            probed.push(path.basename(path.dirname(target)));
+            clock += 1000;
+            return true;
+          },
+        },
+      ),
+    );
+    expect(result.dirs.length).toBe(5);
+    expect(result.gitPartial).toBe(true);
+    // Probes at 0ms and 1000ms are inside the budget; by 2000ms it is spent.
+    expect(probed).toEqual(["a", "b"]);
+    expect(GIT_PROBE_BUDGET_MS).toBe(1500);
   });
 });

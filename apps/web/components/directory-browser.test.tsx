@@ -68,7 +68,27 @@ test("the caller's sentence is shown, and its own refusal wins over it", () => {
   // A clone that failed is the caller's to explain; a folder that would not
   // list is this component's, and it is the more recent thing that happened.
   expect(render({ notice: "That repository already exists there." })).toContain("That repository already exists there.");
-  expect(source).toContain("{error ?? notice}");
+  expect(source).toContain("{error ?? notice ?? aside}");
+});
+
+test("a pasted path is where the browser opens, and a missing one is explained", () => {
+  // Opened in preference to the remembered folder, and asked for with
+  // `nearest` so a file or a renamed folder opens its closest ancestor.
+  expect(source).toContain("startAt ?? (typeof window");
+  expect(source).toContain("...(nearest && target ? { nearest: true } : {})");
+  expect(source).toContain("so this is the nearest folder that exists.");
+  // A pasted path the listing refuses still falls back to home, but SAYS so —
+  // the reader is waiting for an answer about the path they gave.
+  expect(source).toContain("Showing home instead.");
+  // Browsing anywhere else is an exact request, and clears the sentence.
+  const open = source.slice(source.indexOf("const open = (path: string) => {"), source.indexOf("const showHidden"));
+  expect(open).toContain("setNearest(false);");
+  expect(open).toContain("setAside(undefined);");
+});
+
+test("a listing whose repository marks ran out of time says so", () => {
+  expect(source).toContain("listing?.gitPartial");
+  expect(source).toContain("not every repository is marked");
 });
 
 test("the busy state is the button's, not a spinner over the whole panel", () => {

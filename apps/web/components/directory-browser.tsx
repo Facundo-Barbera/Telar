@@ -52,7 +52,7 @@ const api = createEngineApi();
  * fetches, so a fresh closure on every render is a fetch on every render. The
  * default below is module-level for exactly that reason.
  */
-export type DirectoryLister = (input: { path?: string; hidden?: boolean }) => Promise<DirectoryListing>;
+export type DirectoryLister = (input: { path?: string; hidden?: boolean; nearest?: boolean }) => Promise<DirectoryListing>;
 
 const engineLister: DirectoryLister = (input) => api.fsDirs(input);
 
@@ -84,6 +84,7 @@ export function DirectoryBrowser({
   busy,
   notice,
   hostId,
+  startAt,
   list = engineLister,
 }: {
   /** "Add" for a local folder, "Clone here" for a clone parent — the button
@@ -101,13 +102,23 @@ export function DirectoryBrowser({
    *  refused. Shown under the list, beside this component's own. */
   notice?: string;
   hostId?: string;
+  /** A path somebody pasted — absolute, or `~`-relative for the listing to
+   *  expand. Opened instead of the remembered folder, and if it is a file or
+   *  gone, its nearest existing folder is opened with a sentence saying so. */
+  startAt?: string;
   list?: DirectoryLister;
 }) {
   /** The directory to list; `undefined` asks the engine for home. Starts at
-   *  whatever this host was last browsing. */
+   *  the pasted path, else whatever this host was last browsing. */
   const [target, setTarget] = useState<string | undefined>(() =>
-    typeof window === "undefined" ? undefined : remembered(hostId),
+    startAt ?? (typeof window === "undefined" ? undefined : remembered(hostId)),
   );
+  /** Still on the pasted path, so the listing may walk up from it. Browsing
+   *  anywhere else asks for exactly the folder named. */
+  const [nearest, setNearest] = useState(Boolean(startAt));
+  /** Why the browser is not where the pasted path said — kept past the
+   *  fallback listing that follows it, and cleared once the reader moves. */
+  const [aside, setAside] = useState<string>();
   const [hidden, setHidden] = useState(false);
   const [listing, setListing] = useState<DirectoryListing>();
   const [field, setField] = useState("");
@@ -129,9 +140,10 @@ export function DirectoryBrowser({
    */
   useEffect(() => {
     let live = true;
-    void list({ ...(target ? { path: target } : {}), ...(hidden ? { hidden: true } : {}) })
+    void list({ ...(target ? { path: target } : {}), ...(hidden ? { hidden: true } : {}), ...(nearest && target ? { nearest: true } : {}) })
       .then((answer) => {
         if (!live) return;
+        if (answer.missing) setAside(`Nothing to open at ${answer.missing}, so this is the nearest folder that exists.`);
         setListing(answer);
         setField(directoryField(answer.path, answer.home));
         setIndex(0);
@@ -146,6 +158,10 @@ export function DirectoryBrowser({
         const code = cause instanceof EngineApiError ? cause.code : undefined;
         if (target && !fellBack.current && (code === "not_found" || code === "invalid_request")) {
           fellBack.current = true;
+          // A remembered folder that has gone is nobody's business; a PASTED
+          // one being refused is an answer the reader is waiting for.
+          if (nearest && cause instanceof EngineApiError) setAside(`${cause.message} Showing home instead.`);
+          setNearest(false);
           setLoading(true);
           setTarget(undefined);
           return;
@@ -156,7 +172,7 @@ export function DirectoryBrowser({
     return () => {
       live = false;
     };
-  }, [list, target, hidden, hostId]);
+  }, [list, target, hidden, nearest, hostId]);
 
   const entries = useMemo(() => listing?.dirs ?? [], [listing]);
   const at = clampIndex(index, entries.length);
@@ -183,6 +199,8 @@ export function DirectoryBrowser({
 
   const open = (path: string) => {
     setError(undefined);
+    setAside(undefined);
+    setNearest(false);
     setLoading(true);
     setTarget(path);
   };
@@ -327,11 +345,16 @@ export function DirectoryBrowser({
             Only the first folders are listed. Type a path to go straight to one.
           </p>
         )}
+        {listing?.gitPartial && (
+          <p className="px-2 py-2 text-2xs text-muted-foreground">
+            This folder was slow to read, so not every repository is marked. Open one to check it.
+          </p>
+        )}
       </div>
 
-      {(error ?? notice) && (
+      {(error ?? notice ?? aside) && (
         <p className="border-t px-3 py-2 text-2xs leading-snug text-muted-foreground" role="status">
-          {error ?? notice}
+          {error ?? notice ?? aside}
         </p>
       )}
 

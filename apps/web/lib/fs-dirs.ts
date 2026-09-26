@@ -89,6 +89,12 @@ export type DirectoryListing = {
   /** The listing was cut. Said out loud, because a silently truncated list is
    *  one a reader scrolls to the bottom of looking for a folder that is there. */
   truncated: boolean;
+  /** Asked with `nearest`, the path that was requested and is not a folder —
+   *  so the caller can say why it is looking at an ancestor instead. */
+  missing?: string;
+  /** The `.git` probes ran out of time before every row was asked, so some
+   *  checkouts carry no branch glyph. See `GIT_PROBE_BUDGET_MS`. */
+  gitPartial?: boolean;
 };
 
 export type DirectoryFailure = { code: "invalid_request" | "not_found"; message: string };
@@ -103,6 +109,18 @@ export function isDirectoryFailure(outcome: DirectoryOutcome): outcome is Direct
  *  scrolls, so it can afford more. */
 export const MAX_ENTRIES = 500;
 
+/**
+ * HOW LONG THE BRANCH GLYPHS MAY COST, in total.
+ *
+ * Each row's `.git` check is a lookup INSIDE that child, and in a cloud-synced
+ * folder (macOS's `~/Library/CloudStorage/…`, served by a FileProvider
+ * extension) that can mean the extension enumerating a folder it has never
+ * fetched. Five hundred of those is a listing that never arrives, so past this
+ * budget the remaining rows are listed without the glyph and the listing says
+ * so. The folders are still there; only the badge is skipped.
+ */
+export const GIT_PROBE_BUDGET_MS = 1500;
+
 /** The narrow slice of `node:fs` this module uses, so a test can hand it a
  *  scratch home rather than the machine's. Real `fs` by default — the loop and
  *  the containment cases are only honest against a real filesystem. */
@@ -115,8 +133,10 @@ export type DirectoryDeps = {
   mounts?: readonly string[];
   realpath?: (target: string) => string;
   stat?: (target: string) => fs.Stats;
+  lstat?: (target: string) => fs.Stats;
   readdir?: (target: string) => fs.Dirent[];
   exists?: (target: string) => boolean;
+  now?: () => number;
 };
 
 type Resolved = Required<DirectoryDeps>;
@@ -130,8 +150,10 @@ function resolveDeps(deps: DirectoryDeps): Resolved {
     mounts: deps.mounts ?? mountRootsFor(platform),
     realpath: deps.realpath ?? ((target) => fs.realpathSync.native(target)),
     stat: deps.stat ?? ((target) => fs.statSync(target)),
+    lstat: deps.lstat ?? ((target) => fs.lstatSync(target)),
     readdir: deps.readdir ?? ((target) => fs.readdirSync(target, { withFileTypes: true })),
     exists: deps.exists ?? ((target) => fs.existsSync(target)),
+    now: deps.now ?? Date.now,
   };
 }
 
@@ -182,6 +204,40 @@ function outsideMessage(roots: readonly string[]): string {
   return `Telar only browses ${where}. Type a path inside one of those.`;
 }
 
+/** Under macOS's cloud-folder mount point, where a read that fails is most
+ *  often the sync app, or a privacy permission it asks for, rather than the
+ *  folder. */
+function inCloudFolder(target: string, home: string): boolean {
+  return within(path.join(home, "Library", "CloudStorage"), target);
+}
+
+const errorCode = (cause: unknown): string | undefined => (cause as { code?: string } | null)?.code;
+
+/** Nothing is at this path, as opposed to something being there that could
+ *  not be read. Only the first is a reason to walk up. */
+const absent = (code: string | undefined) => code === "ENOENT" || code === "ENOTDIR";
+
+/**
+ * The sentence for a folder that is THERE and could not be read.
+ *
+ * Every failure used to read "does not exist", which is false for a folder
+ * somebody can see in Finder. A cloud folder gets the two causes that are
+ * actually likely there, since neither is guessable from an error code.
+ */
+function unreadable(target: string, home: string, code: string | undefined): DirectoryFailure {
+  const denied = code === "EACCES" || code === "EPERM";
+  if (inCloudFolder(target, home)) {
+    return {
+      code: "invalid_request",
+      message: denied
+        ? "macOS has not let Telar read this cloud folder. Allow it in System Settings → Privacy & Security → Files & Folders, then try again."
+        : `That cloud folder could not be read${code ? ` (${code})` : ""}. Check that its sync app is running and signed in, then try again.`,
+    };
+  }
+  if (denied) return { code: "invalid_request", message: "That folder is not readable." };
+  return { code: "invalid_request", message: `That folder could not be read${code ? ` (${code})` : ""}.` };
+}
+
 /** Natural order, so `run-2` sorts before `run-10` and case is not a filter —
  *  the order a Finder window shows. The inline version sorted lexically, which
  *  put `run-10` first. */
@@ -198,11 +254,11 @@ export function compareNames(a: string, b: string): number {
  * differently to the person who typed it.
  */
 export function listDirectories(
-  input: { path?: string | null; hidden?: boolean } = {},
+  input: { path?: string | null; hidden?: boolean; nearest?: boolean } = {},
   deps: DirectoryDeps = {},
 ): DirectoryOutcome {
   const resolved = resolveDeps(deps);
-  const { home, realpath, stat, readdir, exists } = resolved;
+  const { home, realpath, stat, lstat, readdir, exists, now } = resolved;
   const requested = expandHome(input.path, home);
   if (!path.isAbsolute(requested)) {
     return { code: "invalid_request", message: "A folder path has to be absolute, or start with ~." };
@@ -212,66 +268,107 @@ export function listDirectories(
   // down, which is what makes the containment test below a test of where the
   // path really goes — and it is where a self-referential link turns into ELOOP
   // instead of a walk that never ends.
-  let target: string;
-  try {
-    target = realpath(requested);
-  } catch (cause) {
-    const code = (cause as { code?: string } | null)?.code;
-    if (code === "ELOOP") return { code: "invalid_request", message: "That path loops through itself." };
-    if (code === "EACCES" || code === "EPERM") return { code: "invalid_request", message: "That folder is not readable." };
-    return { code: "not_found", message: "That folder does not exist." };
+  //
+  // `nearest` WALKS UP from a path that is not a folder — a pasted path to a
+  // file, or to a folder since renamed — to the closest one that is, so the
+  // browser opens somewhere useful and can say why. Only ABSENCE walks up: a
+  // folder that is there and unreadable is reported, never skipped past.
+  let candidate = requested;
+  let walked = false;
+  let target: string | undefined;
+  while (target === undefined) {
+    let real: string;
+    let directory: boolean;
+    try {
+      real = realpath(candidate);
+      directory = stat(real).isDirectory();
+    } catch (cause) {
+      const code = errorCode(cause);
+      if (code === "ELOOP") return { code: "invalid_request", message: "That path loops through itself." };
+      if (!absent(code)) return unreadable(candidate, home, code);
+      if (!input.nearest || path.dirname(candidate) === candidate) {
+        return { code: "not_found", message: "That folder does not exist." };
+      }
+      candidate = path.dirname(candidate);
+      walked = true;
+      continue;
+    }
+    if (directory) target = real;
+    else if (!input.nearest) return { code: "invalid_request", message: "That is a file, not a folder." };
+    else {
+      candidate = path.dirname(candidate);
+      walked = true;
+    }
   }
+  const folder = target;
 
   const roots = browseRoots(resolved);
-  if (!roots.some((root) => within(root, target))) {
+  if (!roots.some((root) => within(root, folder))) {
     return { code: "invalid_request", message: outsideMessage(roots) };
-  }
-
-  try {
-    if (!stat(target).isDirectory()) return { code: "invalid_request", message: "That is a file, not a folder." };
-  } catch {
-    return { code: "not_found", message: "That folder does not exist." };
   }
 
   let children: fs.Dirent[];
   try {
-    children = readdir(target);
-  } catch {
-    return { code: "invalid_request", message: "That folder is not readable." };
+    children = readdir(folder);
+  } catch (cause) {
+    return unreadable(folder, home, errorCode(cause));
   }
 
   // `isDirectory()` on a `withFileTypes` entry reads the LSTAT, so a symlink is
   // false here however it resolves. That is the whole loop defence: a link is
   // never offered as a folder to descend into, and typing its path takes the
   // canonical route above.
-  const names = children.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  //
+  // AN ENTRY WITH NO TYPE IS ASKED, ONE AT A TIME. A filesystem may answer
+  // `readdir` without `d_type` (a FileProvider-backed cloud folder can), and
+  // such an entry reads as "not a directory" — a folder plainly there and
+  // missing from the list. So it gets its own `lstat`, and one that cannot be
+  // stat'd is left out rather than failing every other row with it.
+  const isFolder = (entry: fs.Dirent): boolean => {
+    if (entry.isDirectory()) return true;
+    if (entry.isFile() || entry.isSymbolicLink() || entry.isFIFO() || entry.isSocket()) return false;
+    if (entry.isBlockDevice() || entry.isCharacterDevice()) return false;
+    try {
+      return lstat(path.join(folder, entry.name)).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  const names = children.filter(isFolder).map((entry) => entry.name);
   const visible = input.hidden ? names : names.filter((name) => !name.startsWith("."));
   const truncated = visible.length > MAX_ENTRIES;
+  const deadline = now() + GIT_PROBE_BUDGET_MS;
+  let gitPartial = false;
   const dirs = visible
     .sort(compareNames)
     .slice(0, MAX_ENTRIES)
     .map((name) => {
-      const full = path.join(target, name);
+      const full = path.join(folder, name);
       let git = false;
-      try {
-        git = exists(path.join(full, ".git"));
-      } catch {
-        // An unreadable child is still a folder; it just gets no branch glyph.
+      if (!gitPartial && now() > deadline) gitPartial = true;
+      if (!gitPartial) {
+        try {
+          git = exists(path.join(full, ".git"));
+        } catch {
+          // An unreadable child is still a folder; it just gets no branch glyph.
+        }
       }
       return { name, path: full, git, hidden: name.startsWith(".") };
     });
 
-  const up = path.dirname(target);
+  const up = path.dirname(folder);
   return {
-    path: target,
-    name: path.basename(target) || target,
+    path: folder,
+    name: path.basename(folder) || folder,
     // A root has no up. Home's parent is `/Users` — outside the roots, so
     // offering it would be an up gesture whose answer is a refusal.
-    parent: up !== target && roots.some((root) => within(root, up)) ? up : null,
+    parent: up !== folder && roots.some((root) => within(root, up)) ? up : null,
     home,
     roots: listRoots(resolved),
     dirs,
     truncated,
+    ...(walked ? { missing: requested } : {}),
+    ...(gitPartial ? { gitPartial } : {}),
   };
 }
 

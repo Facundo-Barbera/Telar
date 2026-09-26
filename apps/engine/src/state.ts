@@ -5400,13 +5400,27 @@ export class EngineStore {
       throw new EngineStateError("invalid_request", "project name must be non-empty");
     }
     assertAbsolutePath(input.root, "project root");
+    /**
+     * "MUST BE AN EXISTING DIRECTORY" ONLY WHEN IT IS NOT ONE. A folder that is
+     * there and cannot be read — a privacy permission macOS has not granted, a
+     * cloud-synced folder whose sync app is not answering — used to get the
+     * same sentence, which sends somebody looking for a folder they can see.
+     * And `statSync` was unguarded, so its failure left as a bare 500.
+     */
     let projectRoot: string;
+    let directory: boolean;
     try {
       projectRoot = fs.realpathSync.native(input.root);
-    } catch {
-      throw new EngineStateError("invalid_request", "project root must be an existing directory");
+      directory = fs.statSync(projectRoot).isDirectory();
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException | null)?.code;
+      if (code === "ENOENT" || code === "ENOTDIR") throw new EngineStateError("invalid_request", "project root must be an existing directory");
+      throw new EngineStateError(
+        "invalid_request",
+        `project root could not be read${code ? ` (${code})` : ""}: check that Telar is allowed into that folder, and for a cloud folder that its sync app is running`,
+      );
     }
-    if (!fs.statSync(projectRoot).isDirectory()) throw new EngineStateError("invalid_request", "project root must be an existing directory");
+    if (!directory) throw new EngineStateError("invalid_request", "project root must be an existing directory");
     const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
     const id = input.id ?? `project_${crypto.randomUUID().replaceAll("-", "")}`;

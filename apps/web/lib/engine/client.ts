@@ -463,10 +463,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * (lib/hosts/client.ts), so the browser lists the disk the project is
      * actually being registered on. `hidden` opts in to dotfolders.
      */
-    fsDirs: (input: { path?: string; hidden?: boolean } = {}) => {
+    fsDirs: (input: { path?: string; hidden?: boolean; nearest?: boolean } = {}) => {
       const query = new URLSearchParams();
       if (input.path) query.set("path", input.path);
       if (input.hidden) query.set("hidden", "1");
+      if (input.nearest) query.set("nearest", "1");
       const search = query.toString();
       return request<DirectoryListing>(fetcher, "GET", search ? `/api/fs?${search}` : "/api/fs");
     },
