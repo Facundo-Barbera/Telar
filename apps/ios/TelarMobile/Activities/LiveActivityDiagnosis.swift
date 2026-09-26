@@ -35,6 +35,13 @@ enum LiveActivityDiagnosis {
         return lines
     }
 
+    /// A Mac's last start was refused because the relay holds no push-to-start
+    /// token for this phone. The phone has one, so the cure is to send it again.
+    static func startTokenMissingAtRelay(_ report: ActivityReport?) -> Bool {
+        guard let start = report?.lastStart, report?.card != true else { return false }
+        return start.relay == true && start.status == 409 && start.reason == "not_registered"
+    }
+
     static func line(_ report: ActivityReport?, now: Date) -> String {
         guard let report else { return "no report (an older Telar on that Mac, or it did not answer)." }
         if report.card { return "card running." }
@@ -47,6 +54,7 @@ enum LiveActivityDiagnosis {
         guard let start = report.lastStart else { return "waiting for active work to start a card." }
         let ago = RelativeDateTimeFormatter().localizedString(for: Date(timeIntervalSince1970: start.at), relativeTo: now)
         let said = start.reason.map { "\(start.status) \($0)" } ?? "\(start.status)"
+        if startTokenMissingAtRelay(report) { return "the push relay had no start token for this phone \(ago); it has been sent again, and the next start will use it." }
         if start.relay == true { return "the push relay refused the start \(ago) (\(said))." }
         if start.status == 200 { return "Apple accepted a start \(ago), but no card appeared. iOS dropped it." }
         return "Apple refused the start \(ago) (\(said))."

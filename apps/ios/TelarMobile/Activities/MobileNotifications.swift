@@ -49,6 +49,9 @@ struct PushStatus: Decodable {
     var followed: Set<ScopedSessionID> = []
     /// Each Mac's word on this phone's automatic Live Activity, from the last sync.
     var activityReports: [HostID: ActivityReport] = [:]
+    /// The latest refused start already answered with a forced re-send, so one
+    /// refusal costs one extra sync rather than a loop.
+    private var resyncedForStartAt: Double = 0
     private var token: String? = UserDefaults.standard.string(forKey: "telar.apns.token")
     private var activityTokens: [String: String] = [:]
     private var watchers: [String: Task<Void, Never>] = [:]
@@ -197,6 +200,15 @@ struct PushStatus: Decodable {
         }
         readiness = next
         activityReports = reports
+        // A Mac says the relay has no start token for this phone: re-read it from
+        // ActivityKit and push the tokens again, once per refused start.
+        let refused = reports.values.filter(LiveActivityDiagnosis.startTokenMissingAtRelay).compactMap { $0.lastStart?.at }
+        if let latest = refused.max(), latest > resyncedForStartAt {
+            resyncedForStartAt = latest
+            if let data = Activity<SessionActivityAttributes>.pushToStartToken { saveStartToken(data) }
+            PushRelayClient.shared.forceRefresh()
+            syncAgain = true
+        }
         status = next.statusLine(enabled: enabled, allowed: allowed)
     }
 
@@ -210,8 +222,12 @@ struct PushStatus: Decodable {
             else { return nil }
             return .init(id: activity.attributes.sessionId, token: pushToken)
         }
-        let starts = liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled
-        return RelayTokens(token: token, pushToStartToken: starts ? startToken : nil, activities: Array(activities.prefix(8)))
+        // THE START TOKEN IS ALWAYS SENT WHEN THERE IS ONE. Omitting it makes the
+        // relay drop its copy, and a moment where Live Activities read as off (the
+        // toggle, or iOS reporting them disabled while it settles) then left every
+        // later start refused `not_registered`. Whether to start a card is the
+        // Mac's decision, from `liveActivities` in the registration it gets.
+        return RelayTokens(token: token, pushToStartToken: startToken, activities: Array(activities.prefix(8)))
     }
 
     /**

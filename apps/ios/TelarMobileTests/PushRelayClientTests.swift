@@ -82,6 +82,21 @@ import Testing
         #expect(relay.calls == ["PUT /v2/devices/h1", "PUT /v2/devices/h1"])
     }
 
+    @Test func aForcedRefreshResendsTokensThatLookUnchanged() async throws {
+        let now = clock
+        let registered = PushRelayClient.State(attestKeyId: "attest-key-1", handle: "h1", registered: tokens, refreshedAt: now, keys: ["mac-a": .init(keyId: "k1", sendKey: "s1")])
+        let subject = client(state: registered) { now }
+        _ = await subject.credential(for: "mac-a", tokens: tokens)
+        #expect(relay.requests.isEmpty, "unchanged and fresh: nothing to send")
+        // A Mac's start came back `not_registered`: the relay lost the start token.
+        subject.forceRefresh()
+        relay.replies = [(200, "{}")]
+        _ = await subject.credential(for: "mac-a", tokens: tokens)
+        #expect(relay.calls == ["PUT /v2/devices/h1"])
+        _ = await subject.credential(for: "mac-a", tokens: tokens)
+        #expect(relay.calls == ["PUT /v2/devices/h1"], "one forced re-send, not a loop")
+    }
+
     @Test func startsOverWhenTheRelayHasForgottenIt() async throws {
         let now = clock
         let registered = PushRelayClient.State(attestKeyId: "attest-key-0", handle: "old", registered: tokens, refreshedAt: now, keys: ["mac-a": .init(keyId: "k-old", sendKey: "s-old")])
