@@ -71,6 +71,21 @@ test("a conversation with no opening prompt still shows something a person chose
   expect(html).toContain("The parser rewrite");
 });
 
+test("a renamed conversation leads with the name the CLI's /resume shows", () => {
+  /**
+   * THE REPORTED BUG: `triage-2` in the terminal read as "/clear" here, so a
+   * person looking for it by name could not find it.
+   */
+  const html = row({
+    sessionId: "5555eeee-5555-4555-8555-555555555555",
+    title: "triage-2",
+    customTitle: "triage-2",
+    firstPrompt: "/clear",
+    lastActivityAt: Date.now() - 60_000,
+  });
+  expect(html.indexOf("triage-2")).toBeLessThan(html.indexOf("/clear"));
+});
+
 test("the dialog says the conversation is copied rather than continued", () => {
   /**
    * PINNED AGAINST SOURCE, like the command palette's suite and for the same
