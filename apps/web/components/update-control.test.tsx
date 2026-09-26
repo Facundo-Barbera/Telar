@@ -69,7 +69,13 @@ const bridge: UpdatesBridge = {
 const { AppSidebarFooterRow } = await import("./app-sidebar-footer");
 const { UpdatesSection } = await import("./settings/updates-section");
 
+// The restart question asks the engine what is running, and Settings reads the
+// session defaults; nothing is running and nothing is set here.
+const realFetch = globalThis.fetch;
+globalThis.fetch = (async () => Response.json({ sessions: [], projects: [], sessionDefaults: { envMode: "local" } })) as unknown as typeof fetch;
+
 afterAll(async () => {
+  globalThis.fetch = realFetch;
   await GlobalRegistrator.unregister();
 });
 
@@ -181,11 +187,15 @@ describe("three states, the same glyph in both surfaces", () => {
     both.unmount();
   });
 
-  test("a download in flight draws the download glyph with how far along it is", async () => {
+  test("a download in flight shows how far along it is: a ring in the rail, the glyph and words in Settings", async () => {
     const both = mountBoth();
     await both.settle();
     await both.push({ status: "downloading", version: "0.3.1", percent: 37 });
-    for (const glyph of both.glyphs()) expect(glyph).toContain(GLYPH.download);
+    // The rail's slot is too small for a glyph AND a number, so it is a ring
+    // with the number inside it.
+    const ring = both.footer.host.querySelector('[data-slot="update-control"] [role="progressbar"]');
+    expect(ring?.getAttribute("aria-valuenow")).toBe("37");
+    expect(both.settings.host.querySelector("svg")?.getAttribute("class")).toContain(GLYPH.download);
     // The percentage is on screen in both, because it is the only thing that
     // distinguishes a download from a hang.
     expect(both.footer.host.textContent).toContain("37");
@@ -238,6 +248,10 @@ describe("pressing apply", () => {
     await both.push({ status: "downloaded", version: "0.3.1" });
     const button = both.footer.host.querySelector('[data-slot="update-control"] button') as HTMLButtonElement;
     await act(async () => button.click());
+    // Asked first: nothing installs until "Restart and update" is pressed.
+    expect(installs).toHaveLength(0);
+    const confirm = [...document.body.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Restart and update")!;
+    await act(async () => confirm.click());
     expect(installs).toHaveLength(1);
     expect(both.footer.host.querySelector('[data-slot="update-control"] svg')?.getAttribute("class")).toContain(GLYPH.spinner);
     // The OTHER surface learns from the shell's broadcast, not from this press.

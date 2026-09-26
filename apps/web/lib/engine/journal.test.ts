@@ -833,3 +833,15 @@ describe("passive arrivals", () => {
     expect(hostPassiveArrivals(projectJournal([host, woke], rows, [])).map((row) => row.runId)).toEqual(["run_386", "run_392"]);
   });
 });
+
+describe("a turn the engine wrote after a planned restart", () => {
+  const restartOrigin = { reason: "update" as const, plannedAt: 1_800_000_000_000, interruptedRunId: "run_0" };
+  const continued: Turn = { ...turn, origin: "restart", restartOrigin, input: "Telar restarted to install an update in the middle of your last turn." };
+
+  test("the snapshot and the event tail both carry what it continued, so it is not drawn as the person's words", () => {
+    const [projected] = projectJournal([continued], [], []);
+    expect(projected).toMatchObject({ origin: "restart", restartOrigin });
+    const [tailed] = projectJournal([], [], [{ ...envelope, id: 1, type: "turn.accepted", turn: continued }] as EngineEvent[]);
+    expect(tailed).toMatchObject({ origin: "restart", restartOrigin });
+  });
+});

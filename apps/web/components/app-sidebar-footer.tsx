@@ -21,6 +21,8 @@ import { useDesktopUpdate } from "@/lib/desktop-updates";
 import { formatCpu, useRunawayNotice, type RunawayRenderer } from "@/lib/desktop-metrics";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { UpdateToast } from "@/components/ui/update-toast";
+import { ProgressRing } from "@/components/ui/progress-ring";
+import { RestartUpdateDialog } from "@/components/ui/restart-update-dialog";
 import { cn } from "@/lib/utils";
 
 const iconButton = (active = false) =>
@@ -48,7 +50,7 @@ function FooterLink({ href, label, onNavigate, children }: { href: string; label
 }
 
 function UpdateButton() {
-  const { supported, path, status, action, label, busy, failure, act } = useDesktopUpdate();
+  const { supported, path, status, action, label, busy, failure, act, restart } = useDesktopUpdate();
 
   /**
    * THE DEV BUILD'S LOCAL-CHECKOUT UPDATER IS NOT A RAIL CONTROL.
@@ -72,6 +74,7 @@ function UpdateButton() {
     // corner of the screen — see components/ui/update-toast.tsx.
     <div data-slot="update-control" className="relative flex items-center">
       <UpdateToast status={status} />
+      <RestartUpdateDialog restart={restart} />
       <Tooltip>
         <TooltipTrigger
           render={
@@ -91,12 +94,14 @@ function UpdateButton() {
               {action === "restarting" || status.status === "checking" ? (
                 <Loader2Icon className="size-4 animate-spin" />
               ) : action === "download" ? (
-                // The DOWNLOAD glyph, with how far along it is — the state the
-                // old idle arrow was borrowing its look from.
-                <span className="relative flex items-center justify-center">
+                // HOW FAR ALONG, IN THE ICON'S OWN SLOT. The arrow with a number
+                // hung under it collided at this size; a ring with the number
+                // inside does not. Before the first reading, the plain arrow.
+                status.status === "downloading" && status.percent !== undefined ? (
+                  <ProgressRing percent={status.percent} label="Downloading update" />
+                ) : (
                   <DownloadIcon className="size-4" />
-                  <span className="absolute -bottom-1.5 text-[0.5rem] font-semibold tabular-nums">{Math.round(status.percent ?? 0) || ""}</span>
-                </span>
+                )
               ) : action === "apply" ? (
                 <PowerIcon className="size-4" />
               ) : (

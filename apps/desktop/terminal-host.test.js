@@ -20,6 +20,7 @@ const {
   parseProcessTable,
   terminalActivity,
   decideQuit,
+  busyTerminals,
   TERM,
   TERM_PROGRAM,
   terminalEnv,
@@ -1560,5 +1561,14 @@ describe("the module keeps itself loadable where the native one is not", () => {
     const host = new TerminalHost({ platform: "linux", version: "1.0.0" });
     expect(host.list()).toEqual([]);
     expect(Object.keys(require.cache).some((key) => key.includes(`${path.sep}node-pty${path.sep}`))).toBe(false);
+  });
+});
+
+describe("busyTerminals — what the restart-to-update dialog prints", () => {
+  test("counts only the busy ones, and names at most five commands", () => {
+    expect(busyTerminals([])).toEqual({ count: 0, commands: [] });
+    const many = Array.from({ length: 7 }, (_, index) => ({ active: true, command: `job ${index}` }));
+    expect(busyTerminals([{ active: false, command: "zsh" }, ...many])).toEqual({ count: 7, commands: ["job 0", "job 1", "job 2", "job 3", "job 4"] });
+    expect(busyTerminals([{ active: true }]).commands).toEqual(["a command"]);
   });
 });

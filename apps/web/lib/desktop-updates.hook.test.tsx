@@ -23,7 +23,9 @@ import { useDesktopUpdate, type DesktopUpdate, type UpdatePrefsInfo, type Update
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const realFetch = globalThis.fetch;
 afterAll(async () => {
+  globalThis.fetch = realFetch;
   await GlobalRegistrator.unregister();
 });
 
@@ -78,6 +80,8 @@ const seatBridge = () => {
 };
 
 beforeEach(() => {
+  // What the restart question asks the engine — nothing is running here.
+  globalThis.fetch = (async () => Response.json({ sessions: [], projects: [] })) as unknown as typeof fetch;
   script = { current: null, deferStatus: false, prefs: {}, checkAnswer: undefined, rejectCheck: null, rejectInstall: null, rejectPrefs: false };
   calls = [];
   listeners = new Set();
@@ -112,6 +116,11 @@ function mount(options?: { restartTimeoutMs?: number }) {
     },
     press: async () => {
       await act(async () => latest!.act());
+    },
+    /** Apply is asked first now: the press opens the question, and this is
+     *  the "Restart and update" answer to it. */
+    confirm: async () => {
+      await act(async () => latest!.restart.confirm());
     },
     unmount: () => {
       act(() => root.unmount());
@@ -204,6 +213,20 @@ describe("what a surface knows when it mounts", () => {
 describe("the press that applies an update", () => {
   const ready: UpdateStatus = { status: "downloaded", version: "0.3.1" };
 
+  test("the press asks first: nothing is installed until the answer, and Cancel installs nothing", async () => {
+    const probe = mount();
+    await settle();
+    await push(ready);
+    await probe.press();
+    expect(probe.update.restart.open).toBe(true);
+    expect(calls).not.toContain("install");
+    await act(async () => probe.update.restart.cancel());
+    expect(probe.update.restart.open).toBe(false);
+    expect(probe.update.action).toBe("apply");
+    expect(calls).not.toContain("install");
+    probe.unmount();
+  });
+
   test("it says 'restarting' before the shell has even answered", async () => {
     // THE DEFECT #389 OPENS WITH: the shell takes seconds to stage, and until
     // now nothing on screen moved in those seconds.
@@ -211,6 +234,7 @@ describe("the press that applies an update", () => {
     await settle();
     await push(ready);
     await probe.press();
+    await probe.confirm();
     expect(probe.update.action).toBe("restarting");
     expect(probe.update.busy).toBe(true);
     expect(probe.update.label).toBe("Restarting to install v0.3.1…");
@@ -223,9 +247,12 @@ describe("the press that applies an update", () => {
     await settle();
     await push(ready);
     await probe.press();
+    await probe.confirm();
     await probe.press();
     await probe.press();
     expect(calls.filter((call) => call === "install")).toHaveLength(1);
+    // A press while restarting opens no second question either.
+    expect(probe.update.restart.open).toBe(false);
     probe.unmount();
   });
 
@@ -237,14 +264,16 @@ describe("the press that applies an update", () => {
     await settle();
     await push(ready);
     await probe.press();
+    await probe.confirm();
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 40));
     });
     expect(probe.update.action).toBe("apply");
     expect(probe.update.failure).toContain("has not restarted");
     expect(probe.update.label).toBe(probe.update.failure);
-    // And it is a real retry: the shell is asked again.
+    // And it is a real retry: asked again, and the shell is asked again.
     await probe.press();
+    await probe.confirm();
     expect(calls.filter((call) => call === "install")).toHaveLength(2);
     probe.unmount();
   });
@@ -255,6 +284,7 @@ describe("the press that applies an update", () => {
     await settle();
     await push(ready);
     await probe.press();
+    await probe.confirm();
     await settle();
     expect(probe.update.failure).toContain("squirrel refused");
     expect(probe.update.action).toBe("apply");

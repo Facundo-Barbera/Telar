@@ -1130,6 +1130,7 @@ function SessionTurnBody({
     Boolean(turn.failure) ||
     Boolean(turn.usage) ||
     turn.resumedAfterRateLimit !== undefined ||
+    turn.restartOrigin !== undefined ||
     turn.state === "stopped" ||
     turn.state === "discarded" ||
     turn.state === "failed";
@@ -1175,7 +1176,9 @@ function SessionTurnBody({
           bubble would be the `/compact` mistake again, with a whole
           conversation's history underneath it rather than one row. Its own
           first item says what happened. */}
-      {turn.kind !== "import" && turn.origin !== "provider" && turn.origin !== "session" && (
+      {/* A RESTART CONTINUATION IS NOT THE PERSON'S MESSAGE either — the engine
+          wrote it after Telar restarted to update. Its marker below says so. */}
+      {turn.kind !== "import" && turn.origin !== "provider" && turn.origin !== "session" && turn.origin !== "restart" && (
         // `markdown={false}`: this is the draft the person typed, chips and
         // all — "Copy as Markdown" would offer the same string again under a
         // name that claims something about it which is not true.
@@ -1273,6 +1276,7 @@ function SessionTurnBody({
               by now, so its failure no longer renders — without this line the
               wait would read as an unexplained gap in the conversation. */}
           {turn.resumedAfterRateLimit !== undefined && <Marker>resumed after the usage limit reset</Marker>}
+          {turn.restartOrigin !== undefined && <Marker>continued after Telar restarted to update</Marker>}
           {turn.state === "stopped" && <Marker>stopped — kept what arrived</Marker>}
           {turn.state === "discarded" && <Marker>{describeTurnState(turn.state).label.toLowerCase()}</Marker>}
           {live && (

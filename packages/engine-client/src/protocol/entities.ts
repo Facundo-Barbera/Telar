@@ -1591,6 +1591,13 @@ export const SessionDefaults = z.object({
    * choice rather than picking it by hand each time.
    */
   envMode: EnvMode,
+  /**
+   * Whether a turn cut off by a PLANNED restart (the shell installing an
+   * update) gets one continuation turn when the engine comes back. Absent is
+   * off. A crash never resumes, whatever this says — only the shell's
+   * `planned-restart.json` marker opens the door. See `resumeAfterPlannedRestart`.
+   */
+  resumeAfterRestart: z.boolean().optional(),
 });
 export type SessionDefaults = z.infer<typeof SessionDefaults>;
 
@@ -2286,8 +2293,30 @@ export const Turn = z.object({
    * exactly-one invariant in `submitTurn` widens to three rather than being
    * told a lie.
    */
-  origin: z.enum(["user", "provider", "session", "schedule"]).optional(),
+  /**
+   * ── AND `restart` IS THE FIFTH ──
+   *
+   * A turn the ENGINE started after a planned restart (the shell installing an
+   * update) cut the session's last turn off, and the person had asked for such
+   * turns to be continued — `SessionDefaults.resumeAfterRestart`. `input` is
+   * the engine's own instruction to pick up where it stopped, never the
+   * person's words, and `restartOrigin` says which restart and which turn.
+   * The sibling of `resumedAfterRateLimit`: that one marks a turn the engine
+   * brought back by itself after a limit, this one a turn it opened after an
+   * update. A crash never produces one.
+   */
+  origin: z.enum(["user", "provider", "session", "schedule", "restart"]).optional(),
   scheduleOrigin: z.object({ scheduleId: Id, dueAt: Timestamp }).optional(),
+  restartOrigin: z
+    .object({
+      /** Why Telar restarted. Only `update` resumes today; a crash never does. */
+      reason: z.enum(["update"]),
+      /** When the shell said it was about to restart — the marker's `at`. */
+      plannedAt: Timestamp,
+      /** The turn the restart cut off, which this one continues. */
+      interruptedRunId: Id,
+    })
+    .optional(),
   /**
    * WHO SENT A DIRECT `origin: "session"` MESSAGE. Stamped by the engine from
    * proof the worker supplies (the claim token of the turn doing the sending),

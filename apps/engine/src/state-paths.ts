@@ -138,6 +138,10 @@ export type EngineStatePaths = {
   /** What a session is created with when nobody said — see `SessionDefaults`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   sessionDefaults: string;
+  /** `{ version: 1, reason: "update", at }`, written by the desktop shell just
+   *  before it restarts to install an update. The engine only reads and deletes
+   *  it — see `resumeAfterPlannedRestart`. A crash leaves none. */
+  plannedRestart: string;
   /** How a project's worktrees are prepared — this Mac's defaults and every
    *  project's overrides, in one document. See `workspace-config.ts`.
    *  Environment-scoped like `sessionDefaults`: read when a worktree is cut. */
@@ -270,6 +274,7 @@ export function statePaths(root: string): EngineStatePaths {
     subscriptions: path.join(resolved, "subscriptions.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
+    plannedRestart: path.join(resolved, "planned-restart.json"),
     workspace: path.join(resolved, "workspace.json"),
     cleanup: path.join(resolved, "cleanup.json"),
     sidebarLayout: path.join(resolved, "sidebar-layout.json"),

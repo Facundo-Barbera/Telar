@@ -1166,7 +1166,7 @@ export class EngineClient {
     return this.request("GET", "/v2/session-defaults");
   }
 
-  setSessionDefaults(patch: { envMode?: EnvMode }): Promise<{ sessionDefaults: SessionDefaults }> {
+  setSessionDefaults(patch: { envMode?: EnvMode; resumeAfterRestart?: boolean }): Promise<{ sessionDefaults: SessionDefaults }> {
     return this.request("PATCH", "/v2/session-defaults", patch);
   }
 

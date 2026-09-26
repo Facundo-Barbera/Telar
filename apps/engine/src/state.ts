@@ -446,6 +446,20 @@ const TURN_FAILURE_CODES = new Set<TurnFailureCode>(WorkerTurnFailureCodeSchema.
 const MAX_QUEUED_TURNS = 16;
 
 /**
+ * How old the shell's `planned-restart.json` may be and still mean "this
+ * restart". Ten minutes covers a slow update install and relaunch; past it the
+ * marker describes some earlier restart — an update that never came back up,
+ * found by a boot much later — and continuing work then would surprise
+ * everybody. See `resumeAfterPlannedRestart`.
+ */
+export const PLANNED_RESTART_WINDOW_MS = 10 * 60_000;
+
+/** What the model is told on the turn that continues after an update restart.
+ *  The engine's words, not the person's — see `Turn.origin`'s `restart`. */
+export const PLANNED_RESTART_CONTINUATION =
+  "Telar restarted to install an update in the middle of your last turn. Check the current state before redoing anything that may already have happened, then continue.";
+
+/**
  * How many sessions one session may be subscribed to at once. The file is
  * rewritten whole on every change, and a loop that subscribed forever would
  * make every terminal transition on the engine slower — the same reasoning as
@@ -3620,7 +3634,7 @@ export class EngineStore {
 
   /** Takes `unknown` and validates here, like the two policies above: the set
    *  of legal modes belongs next to the schema, not spelled again in a route. */
-  setSessionDefaults(patch: { envMode?: unknown }): SessionDefaults {
+  setSessionDefaults(patch: { envMode?: unknown; resumeAfterRestart?: unknown }): SessionDefaults {
     const next: SessionDefaults = { ...this.getSessionDefaults() };
     if (patch.envMode !== undefined) {
       const parsed = SessionDefaultsSchema.shape.envMode.safeParse(patch.envMode);
@@ -3628,6 +3642,12 @@ export class EngineStore {
         throw new EngineStateError("invalid_request", "default workspace must be local or worktree");
       }
       next.envMode = parsed.data;
+    }
+    if (patch.resumeAfterRestart !== undefined) {
+      if (typeof patch.resumeAfterRestart !== "boolean") {
+        throw new EngineStateError("invalid_request", "resumeAfterRestart must be true or false");
+      }
+      next.resumeAfterRestart = patch.resumeAfterRestart;
     }
     this.writeDocument(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
     return { ...next };
@@ -9869,11 +9889,13 @@ export class EngineStore {
        */
       notification?: NotificationDetail;
       assignmentScope?: string;
-      origin?: "session" | "schedule";
+      origin?: "session" | "schedule" | "restart";
       wakeReason?: WakeReason;
       sender?: { sessionId?: string };
       /** A CLOCK started this turn — issue #543. See the origin enum. */
       scheduleOrigin?: { scheduleId: string; dueAt: number };
+      /** A PLANNED RESTART cut the last turn off — see `resumeAfterPlannedRestart`. */
+      restartOrigin?: NonNullable<Turn["restartOrigin"]>;
     },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
@@ -9892,13 +9914,19 @@ export class EngineStore {
      * message — a lie told to an invariant rather than a change to it.
      */
     const companions =
-      Number(input.wakeReason !== undefined) + Number(input.sender !== undefined) + Number(input.scheduleOrigin !== undefined);
-    const wants = input.origin === "session" || input.origin === "schedule" ? 1 : 0;
+      Number(input.wakeReason !== undefined) +
+      Number(input.sender !== undefined) +
+      Number(input.scheduleOrigin !== undefined) +
+      Number(input.restartOrigin !== undefined);
+    const wants = input.origin === "session" || input.origin === "schedule" || input.origin === "restart" ? 1 : 0;
     if (companions !== wants) {
       throw new EngineStateError("invalid_request", "a session- or schedule-origin turn carries exactly one companion, and only such a turn does");
     }
     if (input.origin === "schedule" && input.scheduleOrigin === undefined) {
       throw new EngineStateError("invalid_request", "a schedule-origin turn names the schedule that started it");
+    }
+    if (input.origin === "restart" && input.restartOrigin === undefined) {
+      throw new EngineStateError("invalid_request", "a restart-origin turn names the restart that started it");
     }
     const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
@@ -9999,6 +10027,7 @@ export class EngineStore {
       // A CLOCK STARTED THIS ONE (#543), named so a transcript can say why it
       // ran rather than drawing it as something a person typed.
       ...(input.origin === "schedule" && input.scheduleOrigin ? { origin: "schedule" as const, scheduleOrigin: input.scheduleOrigin } : {}),
+      ...(input.origin === "restart" && input.restartOrigin ? { origin: "restart" as const, restartOrigin: input.restartOrigin } : {}),
       ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
       ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
       ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
@@ -10095,7 +10124,7 @@ export class EngineStore {
      * the pause silently releasing itself. Resume, or release it by hand.
      */
     if (session.paused && !passive) turn.held = { at, reason: "session_paused" };
-    if (input.origin !== "session" && kind !== "compact" && session.agentMessagesBlocked) {
+    if (input.origin !== "session" && input.origin !== "restart" && kind !== "compact" && session.agentMessagesBlocked) {
       delete session.agentMessagesBlocked;
       delete session.agentMessagesBlockedAt;
       this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
@@ -14771,6 +14800,9 @@ export class EngineStore {
    */
   recover(): { stopped: string[] } {
     const stopped: string[] = [];
+    /** The turns this boot cut off mid-flight, per session — what a planned
+     *  restart may continue. Backlog that was merely queued is not here. */
+    const cutOff = new Map<string, string[]>();
     for (const session of this.allSessions()) {
       const queue = this.readQueue(session.id);
       /**
@@ -14867,6 +14899,9 @@ export class EngineStore {
       for (const turn of queue.turns) {
         if (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running" && turn.state !== "steering") continue;
         const wasLive = turn.state === "running";
+        if ((wasLive || turn.state === "claimed") && turn.kind !== "compact") {
+          cutOff.set(session.id, [...(cutOff.get(session.id) ?? []), turn.runId]);
+        }
         turn.state = "stopped";
         turn.stopReason = "engine_restart";
         turn.completedAt = at;
@@ -14986,7 +15021,103 @@ export class EngineStore {
       const freed = pruned.bytes >= 1e6 ? `${(pruned.bytes / 1e6).toFixed(1)} MB` : `${Math.round(pruned.bytes / 1e3)} KB`;
       console.log(`[engine] trimmed ${pruned.dropped} resolved requests out of ${pruned.sessions} session${pruned.sessions === 1 ? "" : "s"} (${freed}); the journal still holds every one of them.`);
     }
+    // LAST, once every queue is terminal: nothing above may see the turn this
+    // opens, and nothing claims before the caller publishes discovery.
+    try {
+      this.resumeAfterPlannedRestart(cutOff);
+    } catch (error) {
+      console.warn("[engine] could not continue sessions after the restart:", error);
+    }
     return { stopped };
+  }
+
+  /**
+   * CONTINUE WHAT A PLANNED RESTART CUT OFF — and only a planned one.
+   *
+   * THE MARKER IS THE WHOLE PERMISSION. The desktop shell writes
+   * `planned-restart.json` immediately before it restarts to install an
+   * update; a crash writes nothing, so a crash resumes nothing, whatever the
+   * setting says. The marker must also be fresh (`PLANNED_RESTART_WINDOW_MS`):
+   * an update that failed to relaunch and a boot days later must not act on a
+   * restart nobody remembers. It is deleted on every path — used, refused,
+   * stale or unreadable — so it is read by exactly one boot.
+   *
+   * TWO WAYS A TURN IS CUT OFF, because a quit has two endings. If the engine
+   * went away under the worker, the turn was still `running` and `recover()`
+   * just stopped it (`cutOff`). If the worker got to say so first, the turn is
+   * already `failed` with `interrupted` — so that one counts too, when it
+   * failed at or after the shell announced the restart.
+   *
+   * ONE CONTINUATION PER SESSION, never a replay. The interrupted prompt is not
+   * sent again: whatever it had already done is in the world, and the text
+   * tells the model to look before redoing anything. The run id is derived
+   * from the marker, so a boot that dies before the marker is gone cannot
+   * open a second one — `submitTurn` replays a known run id.
+   *
+   * WHERE IT SITS: at the back of the queue, which after `recover()` means
+   * alone — a restart stops pre-restart backlog too, and that is unchanged.
+   * Anything the person sends after this boot queues behind it.
+   */
+  private resumeAfterPlannedRestart(cutOff: Map<string, string[]>): string[] {
+    const file = this.paths.plannedRestart;
+    if (!fs.existsSync(file)) return [];
+    const resumed: string[] = [];
+    try {
+      let marker: unknown;
+      try {
+        marker = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch {
+        return resumed;
+      }
+      const now = this.now();
+      if (
+        typeof marker !== "object" || marker === null ||
+        (marker as { version?: unknown }).version !== 1 ||
+        (marker as { reason?: unknown }).reason !== "update"
+      ) return resumed;
+      const plannedAt = (marker as { at?: unknown }).at;
+      if (typeof plannedAt !== "number" || !Number.isFinite(plannedAt) || plannedAt > now || now - plannedAt > PLANNED_RESTART_WINDOW_MS) {
+        return resumed;
+      }
+      if (this.getSessionDefaults().resumeAfterRestart !== true) return resumed;
+
+      const candidates = new Map(cutOff);
+      for (const session of this.allSessions()) {
+        if (candidates.has(session.id)) continue;
+        const interrupted = this.readQueue(session.id).turns.filter(
+          (turn) => turn.state === "failed" && turn.failure?.code === "interrupted" && turn.kind !== "compact" && (turn.completedAt ?? 0) >= plannedAt,
+        );
+        if (interrupted.length > 0) candidates.set(session.id, interrupted.map((turn) => turn.runId));
+      }
+      for (const [sessionId, runIds] of candidates) {
+        // One bad session is skipped, never the boot.
+        try {
+          const session = this.getSession(sessionId);
+          // Put away, or stopped by the person (their Stop latch is still up):
+          // either way somebody decided this session is done for now.
+          if (session.state === "archived" || session.settledOverride === "settled" || session.agentMessagesBlocked || session.draft) continue;
+          const turns = this.readQueue(sessionId).turns;
+          // A turn the person stopped is theirs to restart, not ours.
+          const last = turns.filter((turn) => runIds.includes(turn.runId)).sort((a, b) => b.sequence - a.sequence)[0];
+          if (!last || last.stopReason === "user" || last.stopReason === "agent") continue;
+          const { turn } = this.submitTurn(sessionId, {
+            runId: `run_restart_${plannedAt}_${sessionId}`.slice(0, 200),
+            input: PLANNED_RESTART_CONTINUATION,
+            origin: "restart",
+            restartOrigin: { reason: "update", plannedAt, interruptedRunId: last.runId },
+            // The same model and effort the cut-off turn was running on.
+            ...(last.model ? { model: (({ instanceId: _, ...selection }) => selection)(last.model) } : {}),
+          });
+          resumed.push(turn.runId);
+        } catch (error) {
+          console.warn(`[engine] could not continue ${sessionId} after the restart:`, error);
+        }
+      }
+      if (resumed.length > 0) console.log(`[engine] continued ${resumed.length} session${resumed.length === 1 ? "" : "s"} cut off by the update restart.`);
+      return resumed;
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
   }
 
   /**

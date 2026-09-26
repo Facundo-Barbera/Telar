@@ -313,6 +313,8 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // does not wait on it for the happy path: the process is quitting, and the
     // `restarting` broadcast has already arrived.
     install: () => ipcRenderer.invoke("telar:updates:install"),
+    // What a restart would end — busy terminals, for the confirm dialog.
+    busy: () => ipcRenderer.invoke("telar:updates:busy"),
     onStatus: (listener) => on("telar:updates:status", listener),
     // The last status the shell broadcast — how a renderer that mounted after
     // `update-downloaded` (or during the restart) still learns where the

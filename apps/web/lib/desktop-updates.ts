@@ -15,6 +15,7 @@
  */
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { createEngineApi } from "@/lib/engine/client";
 
 /**
  * What the shell broadcasts as an update moves through its lifecycle.
@@ -70,6 +71,9 @@ export type UpdatesBridge = {
   status?: () => Promise<UpdateStatus | null | undefined>;
   getPrefs: () => Promise<UpdatePrefsInfo>;
   setPrefs: (patch: Partial<UpdatePrefs>) => Promise<UpdatePrefs>;
+  /** What a restart would end: the busy terminals, for the confirm dialog.
+   *  Optional on older shells, which then report none. */
+  busy?: () => Promise<{ terminals: { count: number; commands: string[] } }>;
   /** Dev builds only: open the local-checkout update window. */
   openLocalUpdater?: () => Promise<{ ok: boolean; error?: string }>;
 };
@@ -233,9 +237,54 @@ export type DesktopUpdate = {
   /** A failure of THIS surface's own calls — a rejected check or install, or a
    *  restart that never happened. Retryable, never silently swallowed. */
   failure?: string;
-  /** What a press does, by state. A no-op where the state carries no decision. */
+  /** What a press does, by state. A no-op where the state carries no decision.
+   *  On "apply" it opens the restart confirmation rather than installing. */
   act: () => void;
+  /** The restart-to-update question, while it is being asked. */
+  restart: RestartConfirmation;
 };
+
+/** What a restart would interrupt, as far as this cockpit can tell. Absent
+ *  counts are "could not ask", which the dialog words as nothing to warn of. */
+export type RestartImpact = { workingSessions?: number; busyTerminals?: number; commands?: string[] };
+
+export type RestartConfirmation = {
+  open: boolean;
+  /** Undefined while it is still being asked. */
+  impact?: RestartImpact;
+  confirm: () => void;
+  cancel: () => void;
+};
+
+/**
+ * THE ONE QUESTION A RESTART TO UPDATE ASKS — sessions first, because a turn cut
+ * off mid-way is the loss a person notices, then terminals, folded in so the
+ * shell never asks a second time on this path. With nothing running it still
+ * asks, in a neutral line: the restart is still a restart.
+ */
+export function restartDialogCopy(impact: RestartImpact | undefined): { description: string; terminals?: string; commands: string[] } {
+  const working = impact?.workingSessions ?? 0;
+  const busy = impact?.busyTerminals ?? 0;
+  const description =
+    working === 0
+      ? "Telar closes and reopens on the new version. Nothing is running right now."
+      : working === 1
+        ? "One session is working. It will stop until Telar reopens."
+        : `${working} sessions are working. They will stop until Telar reopens.`;
+  return {
+    description,
+    ...(busy > 0
+      ? { terminals: busy === 1 ? "One terminal is running a command, which will be ended:" : `${busy} terminals are running commands, which will be ended:` }
+      : {}),
+    commands: busy > 0 ? (impact?.commands ?? []) : [],
+  };
+}
+
+/** Sessions whose turn a restart would cut off: working, or still running
+ *  background work after its turn. */
+export function countWorkingSessions(rows: readonly { activity?: string }[]): number {
+  return rows.filter((row) => row.activity === "working" || row.activity === "monitoring").length;
+}
 
 const subscribeToNothing = () => () => {};
 const shellIsPresent = () => desktopUpdates() !== undefined;
@@ -261,6 +310,8 @@ export function useDesktopUpdate({ restartTimeoutMs = RESTART_TIMEOUT_MS }: { re
   const [path, setPath] = useState<UpdatePath>("unknown");
   const [status, setStatus] = useState<UpdateStatus>({ status: "not-available" });
   const [failure, setFailure] = useState<string>();
+  const [confirming, setConfirming] = useState(false);
+  const [impact, setImpact] = useState<RestartImpact>();
 
   const readPrefs = useCallback(() => {
     const bridge = desktopUpdates();
@@ -344,15 +395,23 @@ export function useDesktopUpdate({ restartTimeoutMs = RESTART_TIMEOUT_MS }: { re
     // Nothing to decide: a download is arriving, or the app is on its way down.
     if (current === "download" || current === "restarting") return;
     if (current === "apply") {
-      setFailure(undefined);
-      // OPTIMISTIC, AND THEN CONFIRMED. The shell broadcasts `restarting` too,
-      // but only after the IPC round-trip — and the whole complaint was a
-      // button that looked inert in exactly that gap.
-      setStatus((last) => ({ ...last, status: "restarting" }));
-      void bridge.install().catch((error: unknown) => {
-        setFailure(`Install failed: ${say(error)}`);
-        setStatus((last) => (last.status === "restarting" ? { ...last, status: "downloaded" } : last));
-      });
+      /**
+       * ASKED FIRST. A restart stops every working session until Telar comes
+       * back, so the press opens a question rather than the installer; the
+       * question says what it would stop. Both halves are asked in parallel and
+       * either may fail — an unanswered half is simply not mentioned.
+       */
+      setImpact(undefined);
+      setConfirming(true);
+      void Promise.all([
+        bridge.busy?.().then((result) => result.terminals).catch(() => undefined),
+        createEngineApi().liveSessions().then((page) => countWorkingSessions(page.sessions)).catch(() => undefined),
+      ]).then(([terminals, workingSessions]) =>
+        setImpact({
+          ...(workingSessions === undefined ? {} : { workingSessions }),
+          ...(terminals ? { busyTerminals: terminals.count, commands: terminals.commands } : {}),
+        }),
+      );
       return;
     }
     setFailure(undefined);
@@ -372,5 +431,31 @@ export function useDesktopUpdate({ restartTimeoutMs = RESTART_TIMEOUT_MS }: { re
       });
   }, [path, readPrefs, status]);
 
-  return { supported, path, status, action, label: updateLabel(status, failure), busy, failure, act };
+  const confirm = useCallback(() => {
+    const bridge = desktopUpdates();
+    setConfirming(false);
+    if (!bridge) return;
+    setFailure(undefined);
+    // OPTIMISTIC, AND THEN CONFIRMED. The shell broadcasts `restarting` too,
+    // but only after the IPC round-trip — and the whole complaint was a
+    // button that looked inert in exactly that gap.
+    setStatus((last) => ({ ...last, status: "restarting" }));
+    void bridge.install().catch((error: unknown) => {
+      setFailure(`Install failed: ${say(error)}`);
+      setStatus((last) => (last.status === "restarting" ? { ...last, status: "downloaded" } : last));
+    });
+  }, []);
+  const cancel = useCallback(() => setConfirming(false), []);
+
+  return {
+    supported,
+    path,
+    status,
+    action,
+    label: updateLabel(status, failure),
+    busy,
+    failure,
+    act,
+    restart: { open: confirming, ...(impact ? { impact } : {}), confirm, cancel },
+  };
 }

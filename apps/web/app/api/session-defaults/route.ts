@@ -29,6 +29,7 @@ export async function PATCH(request: Request) {
     return Response.json(
       await (await engineClient()).setSessionDefaults({
         ...("envMode" in body ? { envMode: body.envMode as EnvMode } : {}),
+        ...("resumeAfterRestart" in body ? { resumeAfterRestart: body.resumeAfterRestart as boolean } : {}),
       }),
     );
   } catch (error) {

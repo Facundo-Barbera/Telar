@@ -49,7 +49,7 @@ const devUpdate = require("./dev-update");
 const updateWatchdog = require("./update-watchdog");
 const serviceWorkerWatchdog = require("./service-worker-watchdog");
 const { createProcessMetricsReader } = require("./process-metrics");
-const { createInstallGate } = require("./update-install");
+const { clearPlannedRestart, createInstallGate, writePlannedRestart } = require("./update-install");
 const { wireLoginOffer } = require("./login-offer-window");
 const { discoverOpeners, openWith, openersWithIcons, bundleIcon } = require("./workspace-openers");
 
@@ -3268,6 +3268,10 @@ ipcMain.handle("telar:updates:install", async () => {
   // an attended one.
   autoUpdater.autoInstallOnAppQuit = false;
   app.isQuitting = true;
+  // A PLANNED restart, for the next engine to read — see update-install.js.
+  // Written before the terminals close, so it is on disk before anything ends.
+  const engineRoot = path.join(telarHome(), "engine");
+  writePlannedRestart(engineRoot);
   /**
    * THE TERMINALS ARE CLOSED BEFORE THE INSTALLER GETS THE QUIT, NOT DURING IT.
    * The press was the person's consent to restart, so nothing is asked; but
@@ -3294,6 +3298,8 @@ ipcMain.handle("telar:updates:install", async () => {
     installGate.reset();
     app.isQuitting = false;
     terminalsClosedForQuit = false;
+    // It did not restart, so nothing is owed a resume on the next start.
+    clearPlannedRestart(engineRoot);
     const message = err && err.message ? err.message : String(err);
     autoUpdater.logger?.error?.(`quitAndInstall failed: ${message}`);
     broadcastUpdateStatus("error", { version: lastUpdateStatus?.version, message });
@@ -3304,6 +3310,19 @@ ipcMain.handle("telar:updates:install", async () => {
 
 // The pull half of the status contract — see `lastUpdateStatus`.
 ipcMain.handle("telar:updates:status", () => lastUpdateStatus);
+
+/**
+ * WHAT A RESTART WOULD END, asked by the cockpit's restart-to-update dialog so
+ * it can say so in its one question — the install path never asks `decideQuit`'s
+ * second one. Every terminal, a run's included, because the restart ends them
+ * all. Facts only: a count and the commands, no handles.
+ */
+ipcMain.handle("telar:updates:busy", async (event) => {
+  requireCockpitSender(event, "ask what a restart would end");
+  if (!terminalHost || terminalHost.size === 0) return { terminals: { count: 0, commands: [] } };
+  const { busyTerminals } = require("./terminal-host");
+  return { terminals: busyTerminals(await terminalHost.activeProcesses()) };
+});
 
 /**
  * THE DEV BUILD'S UPDATE PATH, reachable from the cockpit. A dev-packaged

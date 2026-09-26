@@ -117,3 +117,43 @@ describe("the window itself", () => {
     expect(QUIT_GRACE_MS).toBe(10_000);
   });
 });
+
+// A PLANNED RESTART IS WRITTEN FOR THE NEXT ENGINE, and taken back if the
+// install did not happen. A crash writes nothing, which is what keeps it from
+// ever resuming a session.
+describe("the planned-restart marker", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { PLANNED_RESTART_FILE, writePlannedRestart, clearPlannedRestart } = require("./update-install");
+
+  test("names the reason and the time, beside the engine's state", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-planned-restart-"));
+    try {
+      expect(writePlannedRestart(path.join(root, "engine"), { now: () => 1234 })).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(root, "engine", PLANNED_RESTART_FILE), "utf8"))).toEqual({ version: 1, reason: "update", at: 1234 });
+      clearPlannedRestart(path.join(root, "engine"));
+      expect(fs.existsSync(path.join(root, "engine", PLANNED_RESTART_FILE))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a marker that cannot be written costs the resume, never the update", () => {
+    const failing = { mkdirSync() { throw new Error("read-only"); }, writeFileSync() {} };
+    expect(writePlannedRestart("/nowhere", { fs: failing })).toBe(false);
+  });
+
+  test("the install handler writes it, takes it back on a failed stage, and never asks the quit question", () => {
+    const source = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+    const start = source.indexOf('ipcMain.handle("telar:updates:install"');
+    const handler = source.slice(start, source.indexOf("\n});", start));
+    expect(handler).toContain("writePlannedRestart(engineRoot)");
+    expect(handler).toContain("clearPlannedRestart(engineRoot)");
+    // One question per restart: the cockpit's dialog. `decideQuit` is never
+    // reached on this path, and its quit is never held.
+    expect(handler).not.toContain("showMessageBox");
+    expect(handler).not.toContain("decideQuit");
+    expect(handler).toContain("terminalsClosedForQuit = true");
+  });
+});

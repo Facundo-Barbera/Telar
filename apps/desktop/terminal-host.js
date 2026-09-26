@@ -323,6 +323,16 @@ function decideQuit(terminals) {
   };
 }
 
+/**
+ * WHAT THE RESTART-TO-UPDATE QUESTION SAYS ABOUT TERMINALS. The update path asks
+ * its own question in the cockpit and never `decideQuit`'s, so it needs the same
+ * facts in a form the renderer can print: how many are busy, and what they run.
+ */
+function busyTerminals(terminals) {
+  const busy = (Array.isArray(terminals) ? terminals : []).filter((terminal) => terminal && terminal.active);
+  return { count: busy.length, commands: busy.slice(0, 5).map((terminal) => clip(terminal.command || "a command", 80)) };
+}
+
 function clip(text, max) {
   const flat = String(text).replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
@@ -1171,6 +1181,7 @@ module.exports = {
   parseProcessTable,
   terminalActivity,
   decideQuit,
+  busyTerminals,
   killTerminalTree,
   ensureSpawnHelper,
   spawnHelperCandidates,
