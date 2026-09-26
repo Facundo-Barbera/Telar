@@ -221,7 +221,7 @@ function isBot(value: unknown): boolean {
  * `{login: "renovate"}` with no prefix and no flag, so a bot commenting is
  * indistinguishable from a person, and a bot whose bare slug is also a real
  * account would wear that person's face. That is #814, and it is fixed a layer
- * up rather than here — `readThreadAuthors` asks GitHub who wrote each comment
+ * up rather than here — `readThread` asks GitHub who wrote each comment
  * and `comment()` takes the answer over this derivation. This function is left
  * as the ROW's answer, where `is_bot` does arrive and the derivation is sound.
  *
@@ -734,11 +734,17 @@ type ThreadAuthor = { login?: string; avatarUrl?: string; reactions: GitHubReact
  * `{owner}` AND `{repo}` ARE `gh`'s OWN PLACEHOLDERS — it resolves them from the
  * checkout, so this never parses a remote URL, and on GHES it resolves against
  * that host.
+ *
+ * THE THING'S OWN REACTIONS RIDE THE SAME READ (#842), through `Reactable`, which
+ * both types implement. The list field sets could carry counts, but not the
+ * viewer's own — so they stay lean and this read, made once per opened detail,
+ * carries the whole answer.
  */
 const THREAD_AUTHORS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!, $last: Int!) {
   repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
+      ... on Reactable { reactionGroups { content viewerHasReacted users { totalCount } } }
       ... on Issue { comments(last: $last) { nodes { ...threadAuthor } } }
       ... on PullRequest { comments(last: $last) { nodes { ...threadAuthor } } }
     }
@@ -786,6 +792,10 @@ function reactions(value: unknown): GitHubReaction[] {
   });
 }
 
+/** The second read's answer: each comment's author and reactions by url, and the
+ *  thing's own reactions — absent when GitHub did not answer for the thing. */
+export type ThreadRead = { authors: Map<string, ThreadAuthor>; reactions?: GitHubReaction[] };
+
 /**
  * The GraphQL answer, folded by comment url.
  *
@@ -793,13 +803,17 @@ function reactions(value: unknown): GitHubReaction[] {
  * deleted account, and "GitHub says this comment has no identifiable author" is an
  * answer — it must suppress the derived face rather than fall through to it.
  */
-export function parseThreadAuthors(stdout: string): Map<string, ThreadAuthor> {
+export function parseThread(stdout: string): ThreadRead {
   const byUrl = new Map<string, ThreadAuthor>();
   const parsed = JSON.parse(stdout) as {
-    data?: { repository?: { issueOrPullRequest?: { comments?: { nodes?: unknown } } | null } | null };
+    data?: { repository?: { issueOrPullRequest?: { reactionGroups?: unknown; comments?: { nodes?: unknown } } | null } | null };
   };
-  const nodes = parsed.data?.repository?.issueOrPullRequest?.comments?.nodes;
-  if (!Array.isArray(nodes)) return byUrl;
+  const thing = parsed.data?.repository?.issueOrPullRequest;
+  // Only an ANSWERED `reactionGroups` is an answer; a missing one stays absent
+  // rather than becoming "nobody reacted".
+  const own = Array.isArray(thing?.reactionGroups) ? { reactions: reactions(thing.reactionGroups) } : {};
+  const nodes = thing?.comments?.nodes;
+  if (!Array.isArray(nodes)) return { authors: byUrl, ...own };
   for (const entry of nodes) {
     const node = entry as Record<string, unknown>;
     const url = text(node.url);
@@ -813,24 +827,24 @@ export function parseThreadAuthors(stdout: string): Map<string, ThreadAuthor> {
       reactions: reactions(node.reactionGroups),
     });
   }
-  return byUrl;
+  return { authors: byUrl, ...own };
 }
 
 /**
- * Who wrote each comment on one thread.
+ * Who wrote each comment on one thread, and what everybody reacted with.
  *
  * THE `readBoards` SHAPE, INCLUDING ITS FAILURE MODE: a failed second read answers
- * an empty map, and an empty map costs the faces rather than the issue. Every
- * comment then falls back to the derivation, which is what shipped in #790 — worse
- * than this read and better than a blank panel.
+ * an empty map, and an empty map costs the faces and the reactions rather than the
+ * issue. Every comment then falls back to the derivation, which is what shipped in
+ * #790 — worse than this read and better than a blank panel.
  */
-export async function readThreadAuthors(gh: GhRunner, cwd: string, number: number): Promise<Map<string, ThreadAuthor>> {
+export async function readThread(gh: GhRunner, cwd: string, number: number): Promise<ThreadRead> {
   const result = await gh(cwd, threadAuthorsArgv(number));
-  if (result.status !== 0) return new Map();
+  if (result.status !== 0) return { authors: new Map() };
   try {
-    return parseThreadAuthors(result.stdout);
+    return parseThread(result.stdout);
   } catch {
-    return new Map();
+    return { authors: new Map() };
   }
 }
 
@@ -1061,12 +1075,12 @@ export function parseIssueDetail(
   stdout: string,
   now: number,
   projects: string[] = [],
-  authors?: Map<string, ThreadAuthor>,
+  second?: ThreadRead,
 ): GitHubIssueDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = issueRow(row);
   if (!base) throw new Error("gh returned an issue with no number");
-  const thread = parseComments(row.comments, authors);
+  const thread = parseComments(row.comments, second?.authors);
   const closedAt = epoch(row.closedAt);
   return {
     // `base` already carries the author, labels, assignees, milestone and state
@@ -1076,6 +1090,7 @@ export function parseIssueDetail(
     body: text(row.body),
     comments: thread.comments,
     olderComments: thread.olderComments,
+    ...(second?.reactions ? { reactions: second.reactions } : {}),
     createdAt: epoch(row.createdAt),
     // `epoch` answers 0 for an absent date, and an open issue has no closing
     // time — 0 would render as January 1970.
@@ -1115,12 +1130,12 @@ export function parsePullDetail(
   now: number,
   mergeMethods: GitHubMergeMethod[] = [],
   projects: string[] = [],
-  authors?: Map<string, ThreadAuthor>,
+  second?: ThreadRead,
 ): GitHubPullDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = pullRow(row);
   if (!base) throw new Error("gh returned a pull request with no number");
-  const thread = parseComments(row.comments, authors);
+  const thread = parseComments(row.comments, second?.authors);
   const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
   return {
     // Labels, assignees, milestone, the merge time and the review decision all
@@ -1141,6 +1156,7 @@ export function parsePullDetail(
     changedFiles: count(row.changedFiles),
     comments: thread.comments,
     olderComments: thread.olderComments,
+    ...(second?.reactions ? { reactions: second.reactions } : {}),
     reviews: parseReviews(row.reviews, text(row.url)),
     checks: parseChecks(row.statusCheckRollup),
     createdAt: epoch(row.createdAt),
@@ -1203,17 +1219,17 @@ export async function readIssue(
   now: () => number = Date.now,
   options: { skipProjects?: boolean } = {},
 ): Promise<GitHubIssueRead> {
-  const [result, boards, authors] = await Promise.all([
+  const [result, boards, second] = await Promise.all([
     gh(cwd, ["issue", "view", String(number), "--json", ISSUE_DETAIL_FIELDS]),
     readBoards(gh, cwd, "issue", number, options.skipProjects),
     // In the SAME `Promise.all`, so the wall clock is the max and not the sum —
     // measured at 0.77s for a thread read, which sequentially would have been
     // visible on every click (#814).
-    readThreadAuthors(gh, cwd, number),
+    readThread(gh, cwd, number),
   ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { issue: parseIssueDetail(result.stdout, now(), boards, authors) };
+    return { issue: parseIssueDetail(result.stdout, now(), boards, second) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }
@@ -1236,15 +1252,15 @@ export async function readPull(
   now: () => number = Date.now,
   options: { skipProjects?: boolean } = {},
 ): Promise<GitHubPullRead> {
-  const [result, repo, boards, authors] = await Promise.all([
+  const [result, repo, boards, second] = await Promise.all([
     gh(cwd, ["pr", "view", String(number), "--json", PULL_DETAIL_FIELDS]),
     gh(cwd, ["repo", "view", "--json", MERGE_METHOD_FIELDS]),
     readBoards(gh, cwd, "pr", number, options.skipProjects),
-    readThreadAuthors(gh, cwd, number),
+    readThread(gh, cwd, number),
   ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards, authors) };
+    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards, second) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }

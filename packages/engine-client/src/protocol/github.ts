@@ -335,7 +335,8 @@ export type GitHubSnapshot = z.infer<typeof GitHubSnapshot>;
 // ── one issue, one pull request ─────────────────────────────────────────────
 
 /**
- * One reaction GitHub is holding on a comment.
+ * One reaction GitHub is holding on a comment, or on the issue or pull request
+ * itself (#842).
  *
  * GITHUB'S OWN WORD FOR THE CONTENT — `THUMBS_UP`, `HEART`, `ROCKET` — passed
  * through rather than mapped to a glyph, because which emoji stands for
@@ -345,10 +346,9 @@ export type GitHubSnapshot = z.infer<typeof GitHubSnapshot>;
  * every comment whether or not anybody used them — measured — so a comment
  * nobody reacted to would otherwise arrive as eight zeroes.
  *
- * `viewerHasReacted` IS CARRIED AND NOTHING CAN ACT ON IT YET. It is free on the
- * read that already happens, and the write half (`addReaction`/`removeReaction`)
- * does not exist — `gh`'s own comment projection drops the field entirely, so
- * having it at all is the reason the thread read is GraphQL. See #814's issue B.
+ * `viewerHasReacted` IS WHAT MAKES A PILL YOURS. `gh`'s own comment projection
+ * drops the field entirely, so having it at all is the reason the thread read is
+ * GraphQL (#814). The surface highlights the pills the viewer is counted in.
  */
 export const GitHubReaction = z.object({
   content: z.string().min(1),
@@ -393,11 +393,6 @@ export const GitHubComment = z.object({
    * absent is "this engine did not get to ask", `[]` is "asked, and nobody
    * reacted". A surface that conflated them would draw "no reactions" over a
    * failed read.
-   *
-   * NO SURFACE YET, on purpose. Where a reaction chip sits and whether it is
-   * actionable is the display decision #814's issue B is about; this is the half
-   * that was free on a read already being made, and it travels so that issue is
-   * a display change and not another round trip.
    */
   reactions: z.array(GitHubReaction).optional(),
   /**
@@ -521,6 +516,15 @@ export const GitHubIssueDetail = GitHubIssue.extend({
    * half a conversation without saying so has lied about the conversation.
    */
   olderComments: z.number().int().nonnegative(),
+  /**
+   * What GitHub is holding against the issue itself — #842.
+   *
+   * ON THE DETAIL, NOT THE ROW. The list could carry counts cheaply, but not
+   * whether the viewer is among them — `gh`'s projection drops that — so it rides
+   * the thread read a detail already makes. Absent and `[]` differ exactly as they
+   * do on `GitHubComment.reactions`.
+   */
+  reactions: z.array(GitHubReaction).optional(),
   createdAt: Timestamp,
   closedAt: Timestamp.optional(),
   /** When this was read. Same reason as the snapshot's: a network read is not
@@ -584,6 +588,8 @@ export const GitHubPullDetail = GitHubPullRequest.extend({
   comments: z.array(GitHubComment),
   /** Capped like an issue's, and for the same reason. */
   olderComments: z.number().int().nonnegative(),
+  /** The pull request's own reactions, read like an issue's. */
+  reactions: z.array(GitHubReaction).optional(),
   /** EVERY review, not the latest per reviewer. `reviewDecision` above is
    *  already the aggregate; this is the conversation, and hiding the round that
    *  requested changes because a later one approved loses why it was approved. */

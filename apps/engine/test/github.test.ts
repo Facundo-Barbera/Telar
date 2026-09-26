@@ -36,7 +36,7 @@ import {
   parsePulls,
   parseRepoFromUrl,
   parseReviews,
-  parseThreadAuthors,
+  parseThread,
   readCheckLog,
   readForgeFacets,
   readGitHub,
@@ -1511,15 +1511,42 @@ describe("the thread read asks GitHub who wrote each comment", () => {
     if (!("pull" in read)) throw new Error(`expected a pull request, got ${read.unavailable}`);
     expect(read.pull.comments[0]!.authorAvatar).toBe(APP_FACE);
   });
+
+  test("THE ISSUE'S OWN REACTIONS ride the thread read, with the viewer's marked (#842)", async () => {
+    const issue = await thread(
+      detail([]),
+      ok(
+        JSON.stringify({
+          data: {
+            repository: {
+              issueOrPullRequest: {
+                reactionGroups: [
+                  { content: "THUMBS_UP", viewerHasReacted: true, users: { totalCount: 4 } },
+                  { content: "CONFUSED", viewerHasReacted: false, users: { totalCount: 0 } },
+                ],
+                comments: { nodes: [] },
+              },
+            },
+          },
+        }),
+      ),
+    );
+    expect(issue.reactions).toEqual([{ content: "THUMBS_UP", count: 4, viewerHasReacted: true }]);
+  });
+
+  test("a failed thread read leaves the issue's own reactions ABSENT, never `[]`", async () => {
+    const issue = await thread(detail([]), failed("HTTP 502"));
+    expect(issue.reactions).toBeUndefined();
+  });
 });
 
-describe("parseThreadAuthors", () => {
+describe("parseThread", () => {
   const nodes = (entries: unknown[]) => JSON.stringify({ data: { repository: { issueOrPullRequest: { comments: { nodes: entries } } } } });
 
   test("folds by url, which is the identifier the two reads share", () => {
     // Measured: `gh issue view --json comments` and the GraphQL connection return
     // byte-identical `…#issuecomment-<id>` urls for the same comment.
-    const authors = parseThreadAuthors(
+    const { authors } = parseThread(
       nodes([
         { url: "https://github.com/o/r/issues/7#issuecomment-1", author: { __typename: "User", login: "ada", avatarUrl: "https://a/1" }, reactionGroups: [] },
         { url: "https://github.com/o/r/issues/7#issuecomment-2", author: { __typename: "Bot", login: "app", avatarUrl: "https://a/in/2" }, reactionGroups: [] },
@@ -1531,11 +1558,11 @@ describe("parseThreadAuthors", () => {
   });
 
   test("a node with no url cannot be folded onto anything, and is dropped", () => {
-    expect(parseThreadAuthors(nodes([{ author: { __typename: "User", login: "ada", avatarUrl: "https://a/1" } }])).size).toBe(0);
+    expect(parseThread(nodes([{ author: { __typename: "User", login: "ada", avatarUrl: "https://a/1" } }])).authors.size).toBe(0);
   });
 
   test("a null author is still an entry — GitHub answered, and the answer is nobody", () => {
-    const authors = parseThreadAuthors(nodes([{ url: "c1", author: null, reactionGroups: [] }]));
+    const { authors } = parseThread(nodes([{ url: "c1", author: null, reactionGroups: [] }]));
     expect(authors.has("c1")).toBe(true);
     expect(authors.get("c1")).toEqual({ reactions: [] });
   });
@@ -1543,8 +1570,32 @@ describe("parseThreadAuthors", () => {
   test("an answer with no thread in it is an empty map, not a throw", () => {
     // A number that resolves to neither an issue nor a pull request, and a partial
     // GraphQL error, both arrive shaped like this.
-    expect(parseThreadAuthors(JSON.stringify({ data: { repository: { issueOrPullRequest: null } } })).size).toBe(0);
-    expect(parseThreadAuthors(JSON.stringify({ data: null })).size).toBe(0);
+    expect(parseThread(JSON.stringify({ data: { repository: { issueOrPullRequest: null } } })).authors.size).toBe(0);
+    expect(parseThread(JSON.stringify({ data: null })).authors.size).toBe(0);
+  });
+
+  test("the thing's OWN reactions are read beside its comments, empty groups dropped", () => {
+    const read = parseThread(
+      JSON.stringify({
+        data: {
+          repository: {
+            issueOrPullRequest: {
+              reactionGroups: [
+                { content: "HEART", viewerHasReacted: true, users: { totalCount: 2 } },
+                { content: "EYES", viewerHasReacted: false, users: { totalCount: 0 } },
+              ],
+              comments: { nodes: [] },
+            },
+          },
+        },
+      }),
+    );
+    expect(read.reactions).toEqual([{ content: "HEART", count: 2, viewerHasReacted: true }]);
+  });
+
+  test("no `reactionGroups` in the answer is ABSENT, not \"nobody reacted\"", () => {
+    expect(parseThread(nodes([])).reactions).toBeUndefined();
+    expect(parseThread(JSON.stringify({ data: null })).reactions).toBeUndefined();
   });
 });
 
