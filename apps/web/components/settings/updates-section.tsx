@@ -22,6 +22,8 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { UpdateToast } from "@/components/ui/update-toast";
+import { RestartUpdateDialog } from "@/components/ui/restart-update-dialog";
+import { useSessionDefaults } from "@/lib/session-defaults";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
@@ -36,7 +38,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
  * install-on-quit) stay here, because they are this pane's alone.
  */
 export function UpdatesSection() {
-  const { supported: isDesktop, status, action, label, busy, failure, act } = useDesktopUpdate();
+  const { supported: isDesktop, status, action, label, busy, failure, act, restart } = useDesktopUpdate();
+  const { defaults, loading: defaultsLoading, save: saveDefaults } = useSessionDefaults();
   const [prefs, setPrefs] = useState<UpdatePrefsInfo | null>(null);
 
   useEffect(() => {
@@ -76,6 +79,7 @@ export function UpdatesSection() {
     // corner of the window.
     <span data-slot="update-control" className="relative inline-flex items-center">
       <UpdateToast status={status} />
+      <RestartUpdateDialog restart={restart} />
       {action === "restarting" ? (
         <Button size="sm" disabled aria-label={label}>
           <Spinner /> Restarting…
@@ -139,6 +143,19 @@ export function UpdatesSection() {
               ))}
             </SelectContent>
           </Select>
+        }
+      />
+      <Row
+        label="Continue sessions after restarting"
+        hint="When Telar restarts to update, the sessions it stopped pick up where they left off."
+        info="Only a restart to install an update counts; a crash never resumes anything. Each stopped session gets one message saying Telar restarted, marked as automatic. Terminals and runs are not restarted, and a session you stopped or settled is left alone."
+        control={
+          <Switch
+            aria-label="Continue sessions after restarting"
+            checked={defaults.resumeAfterRestart === true}
+            onCheckedChange={(resumeAfterRestart) => void saveDefaults({ resumeAfterRestart })}
+            disabled={defaultsLoading}
+          />
         }
       />
       <Row

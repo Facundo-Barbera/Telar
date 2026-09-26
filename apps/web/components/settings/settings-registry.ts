@@ -260,6 +260,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             icon: DownloadIcon,
           },
           {
+            title: "Continue sessions after restarting",
+            hint: "When Telar restarts to update, the sessions it stopped pick up where they left off.",
+            keywords: ["resume", "restart", "update", "continue", "interrupted"],
+            icon: DownloadIcon,
+          },
+          {
             title: "Install on quit",
             hint: "A downloaded update installs itself the next time you quit Telar.",
             keywords: ["restart", "automatic"],

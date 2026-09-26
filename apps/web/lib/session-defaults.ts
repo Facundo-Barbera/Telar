@@ -33,7 +33,7 @@ export type SessionDefaultsHandle = {
   /** True until the engine has answered once. The composer seeds its draft off
    *  the first answer rather than the placeholder — see `useEffect` there. */
   loading: boolean;
-  save: (patch: { envMode?: EnvMode }) => Promise<void>;
+  save: (patch: { envMode?: EnvMode; resumeAfterRestart?: boolean }) => Promise<void>;
   /** The engine refused, or is not answering. */
   error?: string;
 };
@@ -64,7 +64,7 @@ export function useSessionDefaults(): SessionDefaultsHandle {
     };
   }, []);
 
-  const save = useCallback(async (patch: { envMode?: EnvMode }) => {
+  const save = useCallback(async (patch: { envMode?: EnvMode; resumeAfterRestart?: boolean }) => {
     try {
       const result = await api.setSessionDefaults(patch);
       setDefaults(result.sessionDefaults);

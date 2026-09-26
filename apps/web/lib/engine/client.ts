@@ -546,7 +546,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** What a new session is built with when nobody said — see
      *  `SessionDefaults`. One answer for every client of this engine. */
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
-    setSessionDefaults: (patch: { envMode?: EnvMode }) =>
+    setSessionDefaults: (patch: { envMode?: EnvMode; resumeAfterRestart?: boolean }) =>
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
     /** How worktrees are prepared — `protocol/workspace.ts`. Both writes are
      *  whole-layer PUTs: the body IS the new layer, not a patch onto it. */

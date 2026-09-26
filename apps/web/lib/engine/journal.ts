@@ -43,7 +43,10 @@ export type JournalTurn = {
    *  wake-up line, not a bubble: no human typed `prompt`. */
   /** `schedule` since #543 — a turn a CLOCK started, drawn as what it is
    *  rather than as something a person typed. */
-  origin?: "user" | "provider" | "session" | "schedule";
+  origin?: "user" | "provider" | "session" | "schedule" | "restart";
+  /** Why the engine wrote this turn itself after a restart — see
+   *  `Turn.restartOrigin`. Present only on `origin: "restart"`. */
+  restartOrigin?: Turn["restartOrigin"];
   /** For a provider turn: the row whose ending woke it, when known. */
   wokenBy?: string;
   /**
@@ -223,6 +226,7 @@ export function projectJournal(
         prompt: turn.input,
         ...(turn.kind ? { kind: turn.kind } : {}),
         ...(turn.origin ? { origin: turn.origin } : {}),
+        ...(turn.restartOrigin ? { restartOrigin: turn.restartOrigin } : {}),
         ...(turn.providerReason?.kind === "background_task"
           ? { decidedForBackgroundWork: true, ...(turn.providerReason.taskId ? { askedBy: turn.providerReason.taskId } : {}) }
           : turn.providerReason?.taskId
@@ -352,6 +356,7 @@ export function projectJournal(
             prompt: event.turn.input,
             ...(event.turn.kind ? { kind: event.turn.kind } : {}),
             ...(event.turn.origin ? { origin: event.turn.origin } : {}),
+            ...(event.turn.restartOrigin ? { restartOrigin: event.turn.restartOrigin } : {}),
             ...(event.turn.providerReason?.kind === "background_task"
               ? { decidedForBackgroundWork: true, ...(event.turn.providerReason.taskId ? { askedBy: event.turn.providerReason.taskId } : {}) }
               : event.turn.providerReason?.taskId
