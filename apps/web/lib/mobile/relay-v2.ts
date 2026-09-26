@@ -64,19 +64,34 @@ export async function relayV2Delivery(credential: RelayCredential, delivery: Del
     method: "POST", body, redirect: "error", signal: AbortSignal.timeout(15000),
     headers: { "content-type": "application/json", "x-telar-key": credential.keyId, "x-telar-timestamp": stamp, "x-telar-signature": signV2(credential.sendKey, stamp, path, body) },
   });
-  if (!response.ok) { await response.body?.cancel(); return relayRefusal(response); }
+  if (!response.ok) return relayRefusal(response, await relayErrorWord(response));
   const result = await response.json() as { status?: number; reason?: string };
   if (typeof result.status !== "number") return { status: 503, relay: true };
   // Apple's own answer: the only case where `relay` is absent (#584).
   return { status: result.status, ...(typeof result.reason === "string" ? { reason: result.reason } : {}) };
 }
 
+/**
+ * THE RELAY'S OWN WORD FOR A REFUSAL, e.g. `not_registered` or `too_many_keys`.
+ *
+ * A bare 409 cannot tell "the relay holds no push-to-start token for this
+ * phone" from anything else. The word is what lets the phone see its start
+ * token went missing and re-send it. Only a short identifier is kept; the rest
+ * of the body is dropped unread.
+ */
+export async function relayErrorWord(response: Response): Promise<string | undefined> {
+  try {
+    const value = (JSON.parse((await response.text()).slice(0, 256)) as { error?: unknown }).error;
+    return typeof value === "string" && /^[a-z_]{1,64}$/.test(value) ? value : undefined;
+  } catch { return undefined; }
+}
+
 /** A relay status, marked as the relay's own. `Retry-After` rides along on the
  *  429 that says a daily budget is spent, and on v2's global-budget 503 (#584). */
-export function relayRefusal(response: Response): DeliveryResult {
+export function relayRefusal(response: Response, reason?: string): DeliveryResult {
   const after = Number(response.headers.get("retry-after"));
   return {
-    status: response.status, relay: true,
+    status: response.status, relay: true, ...(reason === undefined ? {} : { reason }),
     ...(Number.isFinite(after) && after > 0 ? { retryAfter: Math.min(Math.floor(after), 86400) } : {}),
   };
 }
