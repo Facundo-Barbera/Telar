@@ -14,6 +14,7 @@ import {
   fileReference,
   insertReference,
   issueReference,
+  lineRangeReference,
   noteReference,
   pageReference,
   pullReference,
@@ -206,5 +207,38 @@ describe("check references", () => {
     expect(readReferenceDrag(slots)).toMatchObject({ kind: "check" });
     // The plain-text half is what lands in a textarea in another application.
     expect(slots.getData("text/plain")).toContain("boom");
+  });
+});
+
+describe("line ranges (#855)", () => {
+  test("a range is path:start-end, and one line is path:line", () => {
+    expect(lineRangeReference("apps/web/lib/a.ts", { start: 10, end: 20 })).toEqual({ kind: "file", label: "a.ts:10-20", text: "`apps/web/lib/a.ts:10-20`" });
+    expect(lineRangeReference("apps/web/lib/a.ts", { start: 7, end: 7 }).text).toBe("`apps/web/lib/a.ts:7`");
+  });
+
+  test("a selection dragged upwards reads the same as one dragged down", () => {
+    expect(lineRangeReference("a.ts", { start: 20, end: 10 }).text).toBe("`a.ts:10-20`");
+  });
+
+  test("a renamed file is referenced by its new path, the one on disk", () => {
+    // The surface hands over the row's path, which for a rename is the new
+    // one; the old path has nothing at it for a Read tool to open.
+    expect(lineRangeReference("src/new-name.ts", { start: 3, end: 5, startSide: "after" }).text).toBe("`src/new-name.ts:3-5`");
+  });
+
+  test("removed lines say their numbers count the file before the change", () => {
+    expect(lineRangeReference("a.ts", { start: 4, end: 6, startSide: "before", endSide: "before" }).text).toBe("`a.ts:4-6` (lines before the change)");
+  });
+
+  test("a selection across both sides names each end rather than mixing two numberings", () => {
+    expect(lineRangeReference("a.ts", { start: 4, end: 9, startSide: "before", endSide: "after" }).text).toBe(
+      "`a.ts` from line 4 before the change to line 9 after it",
+    );
+  });
+
+  test("it lands in a half-written message spaced like a typed word", () => {
+    const { text } = lineRangeReference("a.ts", { start: 10, end: 20 });
+    expect(insertReference("why does", text, 8).draft).toBe("why does `a.ts:10-20` ");
+    expect(insertReference("see  here", text, 4).draft).toBe("see `a.ts:10-20` here");
   });
 });

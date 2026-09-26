@@ -100,8 +100,8 @@ import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, u
 import { useDiffView, type DiffView } from "@/lib/diff-view";
 import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
-import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
-import { DiffCodeView, readPatchShape, type PatchReading } from "@/components/session/diff-code-view";
+import { fileReference, lineRangeReference, startReferenceDrag, type LineSide } from "@/lib/drag-reference";
+import { DiffCodeView, readPatchShape, toLineRange, type PatchReading } from "@/components/session/diff-code-view";
 import { DiffFileTree } from "@/components/session/diff-file-tree";
 import {
   DropdownMenu,
@@ -568,7 +568,7 @@ export function ReviewFileRow({
         patch.incomplete ? (
           <>
             <p className="px-4 pb-2 text-2xs text-warning">{INCOMPLETE_PATCH[patch.incomplete][witness]}</p>
-            {patch.patch !== "" && <PatchBody patch={patch.patch} view={view} />}
+            {patch.patch !== "" && <PatchBody patch={patch.patch} view={view} path={file.path} {...(onInsertReference ? { onInsertReference } : {})} />}
           </>
         ) : patch.binary ? (
           <p className="px-4 pb-2 text-2xs text-muted-foreground">Binary file — no textual diff.</p>
@@ -577,7 +577,7 @@ export function ReviewFileRow({
           // its answer is that nothing in this file differs.
           <p className="px-4 pb-2 text-2xs text-muted-foreground">No textual difference.</p>
         ) : (
-          <PatchBody patch={patch.patch} view={view} />
+          <PatchBody patch={patch.patch} view={view} path={file.path} {...(onInsertReference ? { onInsertReference } : {})} />
         ))}
       {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-2xs text-muted-foreground">Renamed from {file.renamedFrom}</p>}
     </div>
@@ -601,8 +601,22 @@ export function ReviewFileRow({
  * THE VIEWER IS STILL MOUNTED UNDER THE BAND, because the library's recovery is
  * usually most of the patch and a warning over real hunks beats an empty box.
  */
-function PatchBody({ patch, view }: { patch: string; view: DiffView }) {
+function PatchBody({
+  patch,
+  view,
+  path,
+  onInsertReference,
+}: {
+  patch: string;
+  view: DiffView;
+  /** The row's path — the NEW one for a rename, which is what a range names. */
+  path: string;
+  onInsertReference?: (text: string) => void;
+}) {
   const reading = useMemo(() => readPatchShape(patch), [patch]);
+  const [selection, setSelection] = useState<LineRange>();
+  /** Stable, so the viewer's options do not change identity on every render. */
+  const onLinesSelected = useCallback((range: Parameters<typeof toLineRange>[0] | null) => setSelection(range ? toLineRange(range) : undefined), []);
   /* A CHANGE WITH NO HUNKS IS STILL A CHANGE — see `noHunkSentence`. Only when
      the parse was clean and described exactly one file: a complaint means the
      zero is the parser's failure rather than the file's shape, and the viewer
@@ -629,10 +643,55 @@ function PatchBody({ patch, view }: { patch: string; view: DiffView }) {
         <p className="px-4 pb-2 text-2xs text-muted-foreground">{noHunkSentence(noHunks)}</p>
       ) : (
         <div className="mx-3 mb-2 overflow-hidden rounded-md bg-card">
-          <DiffCodeView patch={patch} layout={view.layout} wrap={view.wrap} />
+          <DiffCodeView
+            patch={patch}
+            layout={view.layout}
+            wrap={view.wrap}
+            {...(onInsertReference ? { onLinesSelected } : {})}
+          />
         </div>
       )}
+      {selection && onInsertReference && (
+        <LineRangeAction
+          path={path}
+          range={selection}
+          onInsert={(text) => {
+            onInsertReference(text);
+            setSelection(undefined);
+          }}
+        />
+      )}
     </>
+  );
+}
+
+type LineRange = { start: number; end: number; startSide: LineSide; endSide: LineSide };
+
+/**
+ * SELECTED LINES, OFFERED TO THE MESSAGE — issue #855.
+ *
+ * A BUTTON UNDER THE PATCH, NOT AN INSERT ON RELEASE. Selecting lines is also
+ * how somebody reads them, and a selection that wrote into the composer by
+ * itself would put text in a message nobody asked to change.
+ *
+ * IT NEVER TAKES FOCUS. It appears without being focused, and pressing it keeps
+ * focus wherever it was (`preventDefault` on mouse-down), so a person halfway
+ * through a sentence in the composer can add the lines and keep typing.
+ */
+export function LineRangeAction({ path, range, onInsert }: { path: string; range: LineRange; onInsert: (text: string) => void }) {
+  const reference = lineRangeReference(path, range);
+  return (
+    <div className="mx-3 mb-2 flex items-center justify-end">
+      <button
+        type="button"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => onInsert(reference.text)}
+        title={reference.text}
+        className="rounded-md border border-input px-2 py-0.5 text-2xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Add {reference.label} to message
+      </button>
+    </div>
   );
 }
 
