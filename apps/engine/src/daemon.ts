@@ -1980,6 +1980,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, {
           sessionDefaults: store.setSessionDefaults({
             ...("envMode" in input ? { envMode: input.envMode } : {}),
+            ...("resumeAfterRestart" in input ? { resumeAfterRestart: input.resumeAfterRestart } : {}),
           }),
         });
         return;
