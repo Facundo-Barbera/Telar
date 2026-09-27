@@ -13,8 +13,8 @@
  * them is actionable by the person reading it: a fresh daemon id tells you the
  * engine restarted, and there is nothing here to do about that. What survives is
  * the part that stays true in a shipped app — which build this is, where its
- * state lives, and whether the engine answered at all — and it is one short
- * section rather than a pane of its own.
+ * state lives, and whether the engine answered at all — which is the This build
+ * pane under About.
  *
  * PROVIDERS IS THE ACCOUNT REGISTRY NOW. It used to be three rows of prose
  * saying sign-in happens elsewhere. True, and useless: there was nothing to
@@ -24,7 +24,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, DownloadIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, InfoIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
@@ -40,7 +40,7 @@ import { useSectionFromUrl } from "./use-section-from-url";
  * these is on screen and the rest are code the reader will probably never ask
  * for — somebody opens Settings to change a model or a shortcut, not to load a
  * LaTeX toolchain manager, a theme editor and a package browser. Statically
- * imported, all eighteen were in the chunk the FIRST pane's paint waited on:
+ * imported, every one was in the chunk the FIRST pane's paint waited on:
  * roughly a third of `/settings`, none of it drawn.
  *
  * SERVER RENDERING IS KEPT (no `ssr: false`). `useSectionFromUrl` deliberately
@@ -56,7 +56,7 @@ import { useSectionFromUrl } from "./use-section-from-url";
  * — the whole page, nav included, swapped out and back for one chunk. See the
  * same note on components/right-panel.tsx, where the owner saw it as a reload.
  *
- * WHY EIGHTEEN LINES RATHER THAN A MAP over ids: `import()` must take a literal
+ * WHY ONE LINE EACH RATHER THAN A MAP over ids: `import()` must take a literal
  * path for the bundler to see it at all (next/dist/docs/01-app/02-guides/
  * lazy-loading.md). A table keyed by section id would compile and split nothing.
  */
@@ -85,27 +85,23 @@ const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) 
 const api = createEngineApi();
 
 /**
- * EIGHT PANES, FROM SIX AFTER A CULL OF NINE — Integrations and Projects were
- * added back deliberately, each for a destination the merged panes had no room
- * for. The nav split stays what it was — "Cockpit" is
- * decisions about this window, "Runtime" is decisions about the machine that
- * runs turns — but panes that held two rows each merged with their nearest
- * neighbour, because a side-nav where most destinations are one group deep
- * makes every setting harder to find, not easier:
+ * FIVE GROUPS, EACH ANSWERING ONE QUESTION ABOUT WHERE A SETTING APPLIES:
  *
- *   - General = the old Sessions (Inbox + Text generation) plus the standing
- *     workspace choice. See below for why it is first.
- *   - Agent tools = the old MCP servers + Permissions. Both decide what a
- *     session's agent can reach beyond the repo.
- *   - Application = the old Updates + About. Both are facts about THIS
- *     INSTALL — its version, its channel, where its state lives.
+ *   - Cockpit: this window and how it behaves — what a new session is built
+ *     with, how it looks, which keys it answers to, its browser, dictation.
+ *   - Agents: what runs a turn and what it can reach — provider logins, the
+ *     tools and permissions a session gets, plugins.
+ *   - Projects: one project at a time, chosen on the pane.
+ *   - This Mac: facts about the machine itself — who may reach it, and what it
+ *     keeps on disk.
+ *   - About: this install — its build, its updates, and the CLIs it reads
+ *     through rather than holding a token for.
  *
  * GENERAL IS FIRST, AND IS WHERE SETTINGS OPENS. The pane used to land on
  * Appearance, which put a theme editor in front of somebody who came here to
  * change how their work behaves — the most decorative screen in the app as the
  * answer to "settings". General is the ordinary set: what a new session is
- * built with, when one leaves your list, who names it. Appearance keeps its
- * pane and loses the front door.
+ * built with, when one leaves your list, who names it.
  *
  * "SESSIONS" BECAME "GENERAL" rather than gaining a sibling. Its rows were
  * already the general ones, and a General pane beside a Sessions pane would
@@ -113,90 +109,57 @@ const api = createEngineApi();
  */
 const SECTIONS: SettingsSection[] = [
   { id: "general", label: "General", icon: SlidersHorizontalIcon, group: "Cockpit" },
-  /**
-   * UNDER "COCKPIT" rather than "Runtime": a project registration is this
-   * install's list of places to work, not a property of the machine that runs
-   * turns — the same engine serves whatever set of folders this cockpit has
-   * registered, and a paired Mac keeps its own list.
-   */
-  { id: "projects", label: "Projects", icon: FolderKanbanIcon, group: "Cockpit" },
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
   /**
-   * UNDER "COCKPIT": a chord is a decision about this window and the shell
-   * around it — the table is what builds the Mac app's own menu — not about
-   * the machine that runs turns. Read-only today; see keybindings-page.tsx.
+   * A chord is a decision about this window and the shell around it — the table
+   * is what builds the Mac app's own menu. See keybindings-page.tsx.
    */
   { id: "keybindings", label: "Keybindings", icon: KeyboardIcon, group: "Cockpit" },
   /**
-   * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
-   * a fact about the install, not about the machine that runs turns (the
-   * engine stays loopback either way).
-   */
-  { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "Cockpit" },
-  /**
-   * ALSO "COCKPIT": the accounts THIS WINDOW browses and signs in as. A browser
-   * profile is a set of cookies this install keeps, not a property of the machine
-   * that runs turns — and it is where a remembered login is scoped, which is why
-   * the two share a pane.
+   * The accounts THIS WINDOW browses and signs in as, and where its links open.
    *
-   * CALLED "BROWSER", NOT "INTEGRATIONS" (#357). Both groups on it are about one
-   * thing — Telar's own browser: the identities it signs in as, and the logins
-   * it may fill without asking. "Integrations" is the word every app uses for
-   * the drawer of things it connects to, so it named a category rather than this
-   * pane. THE ID STAYS `integrations`: it is a route, bookmarks point at it, and
-   * renaming a nav label is not a reason to strand one.
+   * CALLED "BROWSER", NOT "INTEGRATIONS" (#357). Every group on it is about
+   * Telar's own browser. THE ID STAYS `integrations`: it is a route, bookmarks
+   * point at it, and renaming a nav label is not a reason to strand one.
    *
-   * THE GLYPH IS A BROWSER'S (#430). It kept the plug the pane wore while it
-   * was called "Integrations", so the nav still said "things Telar connects
-   * to" in the one place a label cannot. `GlobeIcon` is what the right panel
-   * already draws for the browser — the same subject, so the same glyph.
+   * THE GLYPH IS A BROWSER'S (#430) — what the right panel draws for it.
    */
   { id: "integrations", label: "Browser", icon: GlobeIcon, group: "Cockpit" },
-  { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   /**
-   * UNDER "RUNTIME", beside Providers and for the same reason: both are CLIs
-   * already signed in on the machine that runs turns, which Telar reads through
-   * rather than holding a token for.
+   * ITS OWN PANE RATHER THAN A GROUP INSIDE GENERAL (#544). It ships OFF, so
+   * the thing a reader is most often looking for is the switch that turns it
+   * on, and a name in the nav is the cheapest answer to "can Telar dictate".
    */
-  { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "Runtime" },
-  { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
+  { id: "dictation", label: "Dictation", icon: MicIcon, group: "Cockpit" },
+  { id: "providers", label: "Providers", icon: PlugIcon, group: "Agents" },
+  { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Agents" },
   /**
-   * UNDER "RUNTIME" (#544): dictation is a service the machine that runs turns
-   * spends a key on, like Providers and TextGen — not a decision about this
-   * window. A paired phone dictating through this Mac reads this pane's
-   * setting, which is exactly what makes it the machine's and not the
-   * cockpit's.
-   *
-   * ITS OWN PANE RATHER THAN A GROUP INSIDE GENERAL, which is where it landed
-   * first. It ships OFF, so the thing a reader is most often looking for is the
-   * switch that turns it on — and a switch stacked seventh inside the pane
-   * everybody opens for something else is a switch nobody finds. A name in the
-   * nav is the cheapest possible answer to "can Telar do dictation".
+   * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. The
+   * list grows; a nav that grew with it would crowd out the things a person
+   * opens settings for.
    */
-  { id: "dictation", label: "Dictation", icon: MicIcon, group: "Runtime" },
+  { id: "plugins", label: "Plugins", icon: BlocksIcon, group: "Agents" },
+  { id: "projects", label: "Projects", icon: FolderKanbanIcon, group: "Projects" },
   /**
-   * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. Two
-   * shipped today and the list grows; a nav that grew with it would crowd out
-   * the things a person opens settings for.
+   * Pairing decides who may reach this Mac's engine and cockpit; the engine
+   * itself stays on loopback either way.
    */
-  { id: "plugins", label: "Plugins", icon: BlocksIcon, group: "Runtime" },
+  { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "This Mac" },
   /**
-   * WHAT THIS MACHINE IS KEEPING, AND WHERE — issue #642.
-   *
-   * UNDER "RUNTIME" AND LAST. Everything on it is a fact about the machine that
-   * runs turns rather than about this window: the checkouts sessions are built
-   * in, the journal turns are recorded to, the Python the plugin installed. A
-   * paired phone reading this pane is reading THIS Mac's disk.
-   *
-   * THE STORE'S LOCATION CAME WITH IT, off General. #630 put it beside Updates
-   * on the reasoning that both are properties of this install applied at the
-   * next launch, which was right while it was one row — but a pane that reports
-   * what is in the store and a row on another pane that moves the store are the
-   * same question answered in two places, and the one that can MOVE it was the
-   * one further from the numbers. Nothing is stranded: the row never had a
-   * section id of its own.
+   * WHAT THIS MAC IS KEEPING, AND WHERE — issue #642: the checkouts sessions are
+   * built in, the logs, and the store itself. A paired phone reading this pane
+   * is reading THIS Mac's disk. The store's location lives here rather than
+   * beside Updates because a pane that reports what is in the store and a row
+   * elsewhere that moves it would be one question answered in two places.
    */
-  { id: "storage", label: "Storage", icon: HardDriveIcon, group: "Runtime" },
+  { id: "storage", label: "Storage", icon: HardDriveIcon, group: "This Mac" },
+  { id: "about", label: "This build", icon: InfoIcon, group: "About" },
+  { id: "updates", label: "Updates", icon: DownloadIcon, group: "About" },
+  /**
+   * The gh CLI already signed in on this Mac, which Telar reads through rather
+   * than holding a token for.
+   */
+  { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "About" },
 ];
 
 /**
@@ -211,12 +174,8 @@ export const SECTION_ALIASES: Record<string, string> = {
   textgen: "general",
   mcp: "tools",
   permissions: "tools",
-  updates: "general",
-  about: "general",
-  // APPLICATION MERGED INTO GENERAL. Both held facts about this install and
-  // splitting them meant looking in two places for one question; the id keeps
-  // answering so bookmarks and the OAuth redirect do not strand.
-  application: "general",
+  // THE OLD APPLICATION PANE, later folded into General, is This build again.
+  application: "about",
   /**
    * SETTLED IS NOT A SETTING, AND THE PANE IS GONE (#364). It listed the
    * conversations this rail has shelved — a shelf, which the rail already
@@ -333,9 +292,8 @@ export function SettingsPage() {
       active={active}
       onSelect={setActive}
       backHref="/"
-      // `/` from anywhere in here finds a row by name without knowing which of
-      // six panes holds it — which is the gap this nav has always had, since
-      // General alone stacks six sections. See settings-registry.ts.
+      // `/` from anywhere in here finds a row by name without knowing which
+      // pane holds it. See settings-registry.ts.
       search={SETTINGS_SEARCH_INDEX}
     >
       <Suspense fallback={null}>
@@ -347,14 +305,16 @@ export function SettingsPage() {
         {active === "general" && (
           <>
             <WorkspaceSection />
-            <LinksSection />
             <InboxSection />
             <TextGenSection />
-            {/* Merged in from the retired Application pane. */}
-            <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
-            <UpdatesSection />
           </>
         )}
+
+        {active === "about" && (
+          <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
+        )}
+
+        {active === "updates" && <UpdatesSection />}
 
         {/* What Telar deletes on its own, then where the store lives. */}
         {active === "storage" && (
@@ -395,7 +355,12 @@ export function SettingsPage() {
 
         {active === "source-control" && <SourceControlPage />}
 
-        {active === "integrations" && <IntegrationsPage />}
+        {active === "integrations" && (
+          <>
+            <IntegrationsPage />
+            <LinksSection />
+          </>
+        )}
 
         {/* ORIENTATION LEADS THE PANE. The two groups under it decide what an
             agent may REACH; this decides what it is TOLD before anyone has said

@@ -3,8 +3,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 /**
- * THE NAV AFTER TWO CHANGES A PERSON ASKED FOR: Application folded into General,
- * and one Plugins destination instead of an item per plugin.
+ * THE NAV: five groups (Cockpit, Agents, Projects, This Mac, About), one Plugins
+ * destination instead of an item per plugin, and every retired id still routed.
  *
  * Read from the source rather than rendered, because what is being pinned is the
  * ROUTE CONTRACT — a section id that stops answering strands a bookmark, and the
@@ -12,20 +12,44 @@ import { readFileSync } from "node:fs";
  */
 const source = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
 
-test("Application is gone from the nav but its id still answers", () => {
-  // The pane merged into General. The alias is what keeps a bookmark — and the
-  // `about`/`updates` ids that already redirected here — from landing on the
-  // default pane instead.
-  expect(source).not.toContain('{ id: "application"');
-  expect(source).toContain('application: "general"');
-  expect(source).toContain('updates: "general"');
-  expect(source).toContain('about: "general"');
+test("the nav is five groups, in order, each holding the panes S1 assigned it", () => {
+  const groups = [...source.matchAll(/\{ id: "([^"]+)", label: "[^"]+", icon: \w+, group: "([^"]+)" \}/g)].map(([, id, group]) => `${group}:${id}`);
+  expect(groups).toEqual([
+    "Cockpit:general",
+    "Cockpit:appearance",
+    "Cockpit:keybindings",
+    "Cockpit:integrations",
+    "Cockpit:dictation",
+    "Agents:providers",
+    "Agents:tools",
+    "Agents:plugins",
+    "Projects:projects",
+    "This Mac:remote",
+    "This Mac:storage",
+    "About:about",
+    "About:updates",
+    "About:source-control",
+  ]);
 });
 
-test("what Application used to render now renders in General", () => {
-  const general = source.slice(source.indexOf('active === "general"'), source.indexOf('active === "plugins"'));
-  expect(general).toContain("<AboutSection");
-  expect(general).toContain("<UpdatesSection");
+test("This build and Updates are panes under About, and the old Application id lands on This build", () => {
+  expect(source).toContain('{ id: "about", label: "This build"');
+  expect(source).toContain('{ id: "updates", label: "Updates"');
+  expect(source).toContain('application: "about"');
+  // Real ids now, so they must not also be aliases pointing elsewhere.
+  expect(source).not.toContain('updates: "general"');
+  expect(source).not.toContain('about: "general"');
+  const general = source.slice(source.indexOf('active === "general"'), source.indexOf('active === "about"'));
+  expect(general).not.toContain("<AboutSection");
+  expect(general).not.toContain("<UpdatesSection");
+  expect(general).not.toContain("<LinksSection");
+  expect(source).toContain('active === "updates" && <UpdatesSection />');
+});
+
+test("Links moved to the Browser pane", () => {
+  const browser = source.slice(source.indexOf('active === "integrations"'), source.indexOf('active === "tools"'));
+  expect(browser).toContain("<IntegrationsPage />");
+  expect(browser).toContain("<LinksSection />");
 });
 
 test("ONE Plugins destination, not an item per plugin", () => {
@@ -46,7 +70,7 @@ test("Browser is a pane of its own, under Cockpit, and holds both groups", () =>
   // drawer of things it connects to, and named a category rather than this pane.
   expect(source).toContain('label: "Browser"');
   expect(source).not.toContain('label: "Integrations"');
-  expect(source).toContain('<IntegrationsPage />');
+  expect(source).toContain("<IntegrationsPage />");
   const tools = source.slice(source.indexOf('active === "tools"'));
   expect(tools.slice(0, 300)).not.toContain("<BrowserLoginsSection");
 });
@@ -90,7 +114,7 @@ test("the OAuth callback's section id is still routable", () => {
   expect(source).toContain('mcp: "tools"');
 });
 
-test("Storage is a pane under Runtime: automatic cleanup, then the store", () => {
+test("Storage is a pane under This Mac: automatic cleanup, then the store", () => {
   expect(source).toContain('{ id: "storage", label: "Storage"');
   const pane = source.slice(source.indexOf('active === "storage"'), source.indexOf('active === "plugins"'));
   expect(pane).toContain("<CleanupSection />");

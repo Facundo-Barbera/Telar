@@ -59,7 +59,7 @@ test("no two rows claim the same anchor", () => {
   // The pane is in the id, which is what lets two panes carry a row of the same
   // name. "Engine" used to be the example on both sides; Agent tools answers
   // that question in one row called "Computer use" now (#357).
-  expect(ids).toContain("settings-row-general-this-build-engine");
+  expect(ids).toContain("settings-row-about-this-build-engine");
   expect(ids).toContain("settings-row-tools-computer-use");
 });
 
