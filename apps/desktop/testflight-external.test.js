@@ -36,6 +36,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const SCRIPT = path.join(__dirname, "..", "ios", "testflight-external.sh");
+const APP_SCRIPT = path.join(__dirname, "..", "ios", "testflight-app.sh");
 const API = "https://api.appstoreconnect.apple.com";
 const APP_ID = "6807300090";
 const BUILD_NUMBER = "202609230300";
@@ -150,14 +151,14 @@ const SUBMIT_AT = HAPPY.length - 1;
  * Run the script by /bin/bash with `curl` shadowed. `responses` is what the
  * stub answers, in order; `env` overrides; `trace` runs it under `bash -x`.
  */
-const run = ({ responses, env = {}, trace = false }) => {
+const run = ({ responses, env = {}, trace = false, script = SCRIPT, args = [BUILD_NUMBER] }) => {
   const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "asc-stub-"));
   fs.mkdirSync(path.join(stubDir, "bin"));
   fs.mkdirSync(path.join(stubDir, "responses"));
   fs.writeFileSync(path.join(stubDir, "bin", "curl"), CURL_STUB, { mode: 0o755 });
   responses.forEach((body, index) => fs.writeFileSync(path.join(stubDir, "responses", String(index + 1)), body));
 
-  const result = spawnSync("/bin/bash", [...(trace ? ["-x"] : []), SCRIPT, BUILD_NUMBER], {
+  const result = spawnSync("/bin/bash", [...(trace ? ["-x"] : []), script, ...args], {
     encoding: "utf8",
     timeout: 15_000,
     env: {
@@ -169,6 +170,7 @@ const run = ({ responses, env = {}, trace = false }) => {
       TELAR_ASC_KEY_PATH: keyPath,
       TELAR_ASC_POLL_SECONDS: "0",
       TELAR_ASC_POLL_TIMEOUT_SECONDS: "1800",
+      TELAR_ASC_APP_ID: APP_ID,
       ...env,
     },
   });
@@ -387,5 +389,103 @@ describe("the token", () => {
       Buffer.from(`${headerB64}.${payloadB64}`),
     );
     expect(verified).toBe(true);
+  });
+});
+
+// ---- testflight-app.sh: a brand-new app record made ready for nightlies ----
+
+const NEW_BUNDLE = "io.github.novarix.telar";
+const NEW_APP = { data: [{ type: "apps", id: "a-new", attributes: { bundleId: NEW_BUNDLE } }] };
+const HOLDER_EMAIL = "holder@example.com";
+const HOLDER = { data: [{ type: "users", id: "u-1", attributes: { username: HOLDER_EMAIL, firstName: "Ada", lastName: "Lovelace" } }] };
+const TEMPLATE_LOCALIZATIONS = {
+  data: [{ type: "betaAppLocalizations", id: "l-old", attributes: { locale: "en-US", description: "Telar on the phone.", feedbackEmail: "fb@example.com", privacyPolicyUrl: "https://example.com/privacy", marketingUrl: null } }],
+};
+const TEMPLATE_DETAIL = {
+  data: { type: "betaAppReviewDetails", id: "6807300090", attributes: { contactFirstName: "Ada", contactLastName: "Lovelace", contactPhone: "+1 555 0100", contactEmail: "review@example.com", notes: null, demoAccountRequired: false } },
+};
+const APPS_URL = `${API}/v1/apps?filter[bundleId]=${NEW_BUNDLE}&fields[apps]=bundleId`;
+const runApp = (responses) => run({ responses, script: APP_SCRIPT, args: [], env: { TELAR_ASC_APP_ID: "" } });
+
+describe("testflight-app.sh makes a brand-new app ready for nightlies", () => {
+  test("creates the internal group with the account holder, copies the review info and creates the external group", () => {
+    const outcome = runApp([
+      reply(200, NEW_APP),
+      reply(200, { data: [] }),
+      reply(201, { data: { type: "betaGroups", id: "g-int" } }),
+      reply(200, HOLDER),
+      reply(200, { data: [] }),
+      reply(201, { data: { type: "betaTesters", id: "t-1" } }),
+      reply(200, { data: [] }),
+      reply(200, TEMPLATE_LOCALIZATIONS),
+      reply(201, { data: { type: "betaAppLocalizations", id: "l-new" } }),
+      reply(200, { data: { type: "betaAppReviewDetails", id: "a-new", attributes: { contactEmail: null } } }),
+      reply(200, TEMPLATE_DETAIL),
+      reply(200, { data: { type: "betaAppReviewDetails", id: "a-new" } }),
+      reply(200, { data: [] }),
+      reply(201, { data: { type: "betaGroups", id: "g-ext" } }),
+    ]);
+    expect(outcome.output).not.toContain("::error::");
+    expect(outcome.output).not.toContain("::warning::");
+    expect(outcome.status).toBe(0);
+    expect(outcome.calls.map((call) => call.method)).toEqual(["GET", "GET", "POST", "GET", "GET", "POST", "GET", "GET", "POST", "GET", "GET", "PATCH", "GET", "POST"]);
+    expect(outcome.calls[0].url).toBe(APPS_URL);
+    expect(outcome.calls[1].url).toContain("filter[app]=a-new&filter[isInternalGroup]=true");
+
+    const internal = JSON.parse(outcome.calls[2].data).data;
+    expect(internal.attributes).toEqual({ name: "Internal", isInternalGroup: true, hasAccessToAllBuilds: true });
+    expect(internal.relationships.app.data.id).toBe("a-new");
+
+    expect(outcome.calls[4].url).toContain(`filter[email]=${encodeURIComponent(HOLDER_EMAIL)}&filter[apps]=a-new`);
+    const tester = JSON.parse(outcome.calls[5].data).data;
+    expect(tester.attributes).toEqual({ email: HOLDER_EMAIL, firstName: "Ada", lastName: "Lovelace" });
+    expect(tester.relationships.betaGroups.data).toEqual([{ type: "betaGroups", id: "g-int" }]);
+    // The tester's address is sent to Apple, never printed.
+    expect(outcome.output).not.toContain(HOLDER_EMAIL);
+
+    expect(outcome.calls[7].url).toBe(`${API}/v1/apps/6807300090/betaAppLocalizations`);
+    const localization = JSON.parse(outcome.calls[8].data).data;
+    expect(localization.attributes).toEqual({ locale: "en-US", description: "Telar on the phone.", feedbackEmail: "fb@example.com", privacyPolicyUrl: "https://example.com/privacy" });
+    expect(localization.relationships.app.data.id).toBe("a-new");
+
+    expect(outcome.calls[11].url).toBe(`${API}/v1/betaAppReviewDetails/a-new`);
+    expect(JSON.parse(outcome.calls[11].data).data.attributes).toEqual({
+      contactFirstName: "Ada", contactLastName: "Lovelace", contactPhone: "+1 555 0100", contactEmail: "review@example.com", demoAccountRequired: false,
+    });
+
+    const external = JSON.parse(outcome.calls[13].data).data;
+    expect(external.attributes).toEqual({ name: "Nightly", isInternalGroup: false });
+  });
+
+  test("an app already set up costs only reads, and an existing tester is added to the group", () => {
+    const outcome = runApp([
+      reply(200, NEW_APP),
+      reply(200, { data: [{ type: "betaGroups", id: "g-int", attributes: { name: "Internal", isInternalGroup: true, hasAccessToAllBuilds: true } }] }),
+      reply(200, HOLDER),
+      reply(200, { data: [{ type: "betaTesters", id: "t-1" }] }),
+      reply(409, { errors: [{ code: "ENTITY_ERROR", status: "409", detail: "The tester is already in this group." }] }),
+      reply(200, { data: [{ type: "betaAppLocalizations", id: "l-new", attributes: { locale: "en-US" } }] }),
+      reply(200, TEMPLATE_LOCALIZATIONS),
+      reply(200, { data: { type: "betaAppReviewDetails", id: "a-new", attributes: { contactEmail: "review@example.com" } } }),
+      reply(200, EXTERNAL_GROUP),
+    ]);
+    expect(outcome.output).not.toContain("::warning::");
+    expect(outcome.status).toBe(0);
+    expect(outcome.calls.filter((call) => call.method !== "GET").map((call) => call.url)).toEqual([`${API}/v1/betaGroups/g-int/relationships/betaTesters`]);
+  });
+
+  test("no app record for the bundle is an error, and nothing else is asked", () => {
+    const outcome = runApp([reply(200, { data: [] })]);
+    expect(outcome.status).toBe(1);
+    expect(outcome.stderr).toContain(`no single app with bundle id ${NEW_BUNDLE}`);
+    expect(outcome.calls).toHaveLength(1);
+  });
+});
+
+describe("testflight-external.sh without TELAR_ASC_APP_ID", () => {
+  test("finds the app by bundle id and polls that app's builds", () => {
+    const outcome = run({ responses: [reply(200, NEW_APP), reply(200, NO_BUILD)], env: { TELAR_ASC_APP_ID: "", TELAR_ASC_POLL_TIMEOUT_SECONDS: "0" } });
+    expect(outcome.status).toBe(0);
+    expect(outcome.calls.map((call) => call.url)).toEqual([APPS_URL, `${API}/v1/builds?filter[app]=a-new&filter[version]=${BUILD_NUMBER}&fields[builds]=processingState`]);
   });
 });
