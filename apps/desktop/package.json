@@ -82,6 +82,8 @@
       "dev-update-core.js",
       "dev-update-preload.js",
       "dev-update.html",
+      "desktop-handoff.js",
+      "desktop-handoff-core.js",
       "update-watchdog.js",
       "service-worker-watchdog.js",
       "process-metrics.js",
