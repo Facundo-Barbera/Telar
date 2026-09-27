@@ -1598,8 +1598,27 @@ export const SessionDefaults = z.object({
    * `planned-restart.json` marker opens the door. See `resumeAfterPlannedRestart`.
    */
   resumeAfterRestart: z.boolean().optional(),
+  /**
+   * The access mode a new session opens in when its creator did not pick one.
+   * Absent keeps the posture's own default. A creator's ceiling still narrows
+   * it — see `createSession`.
+   */
+  runtimeMode: RuntimeMode.optional(),
+  /**
+   * Whether a Claude session sits out a usage limit and carries on, when the
+   * session itself has not said (`Session.resumeAfterRateLimit`). Absent is on.
+   */
+  resumeAfterRateLimit: z.boolean().optional(),
 });
 export type SessionDefaults = z.infer<typeof SessionDefaults>;
+
+/** What `PATCH /v2/session-defaults` accepts. `null` clears an optional default. */
+export type SessionDefaultsPatch = {
+  envMode?: EnvMode;
+  resumeAfterRestart?: boolean;
+  runtimeMode?: RuntimeMode | null;
+  resumeAfterRateLimit?: boolean;
+};
 
 /** `local` — what the engine did before this document existed, so an install
  *  that never opens the settings page behaves exactly as it always has. */

@@ -155,10 +155,9 @@ test("a glyph name this build does not know falls through to auto-detect", () =>
 
 test("a project with no workspace answer follows the app default, and says what it is following", () => {
   const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
-  // The first option is selected — absence is a CHOICE here, not a blank.
-  // "App default", not "Follow the Mac" (#363): the answer it follows is this
-  // install's, and Telar is not a Mac-only app.
-  expect(html).toContain("App default");
+  // The first option is selected — absence is a CHOICE here, not a blank, and
+  // it names the value it inherits rather than only where from.
+  expect(html).toContain("Inherit (Own worktree)");
   expect(html).not.toContain("Follow the Mac");
   expect(html).toContain("Following the app default, which says each session gets its own checkout");
   expect(html).toContain("General ▸ Workspace");
@@ -183,7 +182,7 @@ test("the workspace row offers both per-project answers beside the app default",
   // the three answers are pinned against source and the TRIGGER against markup.
   expect(source).toContain('{ value: "local", label: "Project checkout" }');
   expect(source).toContain('{ value: "worktree", label: "Own worktree" }');
-  expect(source).toContain('{ value: FOLLOW_APP, label: "App default" }');
+  expect(source).toContain('{ value: FOLLOW_APP, label: `Inherit (${envMode === "worktree" ? "Own worktree" : "Project checkout"})` }');
 
   /**
    * A DROPDOWN, NOT THREE BUTTONS (#364). The control spent the row's whole
@@ -192,7 +191,8 @@ test("the workspace row offers both per-project answers beside the app default",
    * sentinel value, which is the #318 bug a hand-written Select reintroduces.
    */
   const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
-  expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">App default<');
+  expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">Inherit (Own worktree)<');
+  expect(renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="local" />)).toContain(">Inherit (Project checkout)<");
   expect(html).toContain('aria-label="Where new conversations start"');
   // No segment left: three buttons is what this row stopped being.
   expect(html).not.toContain('aria-pressed');

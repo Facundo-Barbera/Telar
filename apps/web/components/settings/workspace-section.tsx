@@ -17,14 +17,18 @@
  * every settings pane here follows.
  */
 
-import { FolderGitIcon } from "lucide-react";
-import { DEFAULT_SESSION_DEFAULTS, type EnvMode } from "@telar/engine-client";
+import { FolderGitIcon, RefreshCwIcon, ShieldCheckIcon } from "lucide-react";
+import { DEFAULT_DETACHED_RUNTIME_MODE, DEFAULT_SESSION_DEFAULTS, type EnvMode, type RuntimeMode } from "@telar/engine-client";
 import { useSessionDefaults } from "@/lib/session-defaults";
-import { Dropdown, Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
+import { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS, RUNTIME_MODES } from "@/lib/runtime-modes";
+import { Dropdown, Row, SettingsGroup, ToggleRow, useRestoreDefaults } from "./settings-shell";
 
 export function WorkspaceSection() {
   const { defaults, loading, save, error } = useSessionDefaults();
-  useRestoreDefaults(() => save({ envMode: DEFAULT_SESSION_DEFAULTS.envMode }));
+  useRestoreDefaults(() => save({ envMode: DEFAULT_SESSION_DEFAULTS.envMode, runtimeMode: null, resumeAfterRateLimit: true }));
+  // Absent means the engine's own default for a new session, and Claude resuming.
+  const access = defaults.runtimeMode ?? DEFAULT_DETACHED_RUNTIME_MODE;
+  const resumes = defaults.resumeAfterRateLimit !== false;
 
   return (
     // NO CAPTION, BECAUSE THE ROW KEEPS ITS SENTENCE (#357). A group gets one or
@@ -62,6 +66,32 @@ export function WorkspaceSection() {
             />
           )
         }
+      />
+      {/* DEFAULTS, NOT LOCKS. Each conversation's composer starts from these and
+          can still change its own. */}
+      <Row
+        label="Access"
+        icon={ShieldCheckIcon}
+        hint={`${RUNTIME_MODE_HELP[access]}. A conversation can still change its own.`}
+        {...(defaults.runtimeMode === undefined ? {} : { onRevert: () => void save({ runtimeMode: null }) })}
+        control={
+          loading ? null : (
+            <Dropdown<RuntimeMode>
+              value={access}
+              label="Default access"
+              onChange={(next) => void save({ runtimeMode: next })}
+              options={RUNTIME_MODES.map((mode) => ({ value: mode, label: RUNTIME_MODE_LABELS[mode] }))}
+            />
+          )
+        }
+      />
+      <ToggleRow
+        label="Continue after a reset"
+        icon={RefreshCwIcon}
+        hint="A Claude turn stopped by a usage limit runs again once the limit lifts. A conversation can still change its own."
+        checked={resumes}
+        onCheckedChange={(next) => void save({ resumeAfterRateLimit: next })}
+        {...(resumes ? {} : { onRevert: () => void save({ resumeAfterRateLimit: true }) })}
       />
     </SettingsGroup>
   );

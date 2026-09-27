@@ -418,7 +418,7 @@ export function ProjectConversationRows({
             label="Where new conversations start"
             onChange={(next) => writer?.save("envMode", { envMode: next === FOLLOW_APP ? null : (next as EnvMode) })}
             options={[
-              { value: FOLLOW_APP, label: "App default" },
+              { value: FOLLOW_APP, label: `Inherit (${envMode === "worktree" ? "Own worktree" : "Project checkout"})` },
               { value: "local", label: "Project checkout" },
               { value: "worktree", label: "Own worktree" },
             ]}

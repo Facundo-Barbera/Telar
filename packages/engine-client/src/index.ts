@@ -44,6 +44,7 @@ import {
   type InboxPolicy,
   type RememberedLogin,
   type SessionDefaults,
+  type SessionDefaultsPatch,
   type CleanupPolicy,
   type CleanupState,
   type WorkspaceConfig,
@@ -1177,7 +1178,7 @@ export class EngineClient {
     return this.request("GET", "/v2/session-defaults");
   }
 
-  setSessionDefaults(patch: { envMode?: EnvMode; resumeAfterRestart?: boolean }): Promise<{ sessionDefaults: SessionDefaults }> {
+  setSessionDefaults(patch: SessionDefaultsPatch): Promise<{ sessionDefaults: SessionDefaults }> {
     return this.request("PATCH", "/v2/session-defaults", patch);
   }
 

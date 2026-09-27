@@ -2898,6 +2898,26 @@ test("the standing session defaults round-trip, and refuse a mode that is not on
   expect(store.getSessionDefaults()).toEqual({ envMode: "worktree" });
 });
 
+test("a standing access mode opens new sessions in it, and a creator's ceiling still narrows it", () => {
+  const { store } = readyStore();
+  expect(store.setSessionDefaults({ runtimeMode: "full-access" })).toEqual({ envMode: "local", runtimeMode: "full-access" });
+  expect(store.createSession({ id: "session_default", projectId: "project_one" }).runtimeMode).toBe("full-access");
+
+  // A supervised creator cannot hand out more than it has.
+  store.updateSession("session_default", { runtimeMode: "approval-required" });
+  expect(store.createSession({ id: "session_child", projectId: "project_one", ceilingFrom: "session_default" }).runtimeMode).toBe(
+    "approval-required",
+  );
+  // An attended session keeps asking whatever the default says.
+  expect(store.createSession({ id: "session_attended", projectId: "project_one", detached: false }).runtimeMode).toBe("approval-required");
+
+  expect(() => store.setSessionDefaults({ runtimeMode: "yolo" })).toThrow(EngineStateError);
+  expect(() => store.setSessionDefaults({ resumeAfterRateLimit: "yes" })).toThrow(EngineStateError);
+  // `null` clears it back to the posture's own default.
+  expect(store.setSessionDefaults({ runtimeMode: null })).toEqual({ envMode: "local" });
+  expect(store.createSession({ id: "session_plain", projectId: "project_one" }).runtimeMode).toBe("auto");
+});
+
 test("the sidebar layout round-trips, dedupes, and refuses a shape that is not a list of keys", () => {
   // WHERE EACH PROJECT GROUP SITS. Empty by default — the rail reads that as
   // "alphabetical, nobody has moved anything" — and on the engine so the
@@ -4550,6 +4570,21 @@ describe("a rate-limited turn resumes itself once the limit resets", () => {
     codex.failTurn("session_codex", "run_codex", token, { code: "rate_limited", message: "limited", resumeAt: 5_000 });
     setCodexNow(5_001);
     expect(codex.claimNextTurn("worker_one")).toBeUndefined();
+  });
+
+  test("a session that never chose follows the standing default, and its own choice still wins", () => {
+    const { store, setNow } = limitedStore();
+    store.setSessionDefaults({ resumeAfterRateLimit: false });
+    hitTheLimit(store, "run_one", 5_000);
+    setNow(5_001);
+    expect(store.claimNextTurn("worker_one")).toBeUndefined();
+
+    const { store: chosen, setNow: setChosenNow } = limitedStore();
+    chosen.setSessionDefaults({ resumeAfterRateLimit: false });
+    chosen.updateSession("session_one", { resumeAfterRateLimit: true });
+    hitTheLimit(chosen, "run_one", 5_000);
+    setChosenNow(5_001);
+    expect(chosen.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
   });
 
   /**

@@ -41,6 +41,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS, RUNTIME_MODES } from "@/lib/runtime-modes";
 
 /**
  * THE COMPOSER'S CONTROL ROW, ported from the frozen app's
@@ -215,22 +216,7 @@ function ChoiceRow({
   );
 }
 
-/** The donor's vocabulary, verbatim (lib/runtime-mode-client.ts). */
-export const RUNTIME_MODE_LABELS: Record<RuntimeMode, string> = {
-  "approval-required": "Supervised",
-  "auto-accept-edits": "Auto-accept edits",
-  auto: "Auto",
-  "full-access": "Full access",
-};
-
-export const RUNTIME_MODE_HELP: Record<RuntimeMode, string> = {
-  "approval-required": "Asks before every action",
-  "auto-accept-edits": "Other actions still ask",
-  auto: "A reviewer waves routine actions through",
-  "full-access": "No prompts",
-};
-
-const RUNTIME_MODES: RuntimeMode[] = ["approval-required", "auto-accept-edits", "auto", "full-access"];
+export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS };
 
 /**
  * THE CATALOGUE HOOKS NOW LIVE IN `lib/model-catalogue-cache.ts`.
