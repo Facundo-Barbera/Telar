@@ -188,6 +188,9 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     adopt: (id) => ipcRenderer.invoke("telar:terminal:adopt", { id }),
     /** Put those frames down. Does not stop the run — the engine owns it. */
     abandon: (id) => ipcRenderer.invoke("telar:terminal:abandon", { id }),
+    /** A kitty image sent as a path (`t=f`): `{ ok, bytes }` or `{ ok: false,
+     *  code }`. PNG only; the guards are in kitty-image-file.js. */
+    readImageFile: (path) => ipcRenderer.invoke("telar:terminal:read-image-file", { path }),
     onData: (listener) => on("telar:terminal:data", listener),
     onExit: (listener) => on("telar:terminal:exit", listener),
   },

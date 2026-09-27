@@ -52,7 +52,7 @@ import { endTerminal, mayClose } from "@/lib/terminal-close";
 import { runAsChip } from "@/lib/terminal-reveal";
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
-import { KittyGraphicsAddon } from "@/lib/terminal-kitty/addon";
+import { domImageBackend, KittyGraphicsAddon } from "@/lib/terminal-kitty/addon";
 import { attachTerminal, gridMeasurer, terminalKeyHandler } from "@/lib/terminal-session";
 import {
   activateShell,
@@ -791,7 +791,10 @@ function TerminalPane({
       const images = new ImageAddon(TERMINAL_IMAGE_OPTIONS);
       term.loadAddon(images);
       // After the image addon: kitty images are drawn through its store.
-      term.loadAddon(new KittyGraphicsAddon(images));
+      // `readFile` is what lets a `kitty-direct` logo (`t=f`) draw; the bridge
+      // exists only on the local host, so a remote session never reads here.
+      const readFile = bridge.readImageFile?.bind(bridge);
+      term.loadAddon(new KittyGraphicsAddon(images, { ...domImageBackend, readFile }));
       term.open(element);
       /**
        * WEBGL IS AN OPTIMISATION, NOT A REQUIREMENT. A machine with no GL

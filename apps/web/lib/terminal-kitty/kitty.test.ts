@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { deflateSync } from "node:zlib";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import type { TerminalBridge, TerminalChunk } from "@/lib/terminal-bridge";
+import type { KittyFileAnswer, TerminalBridge, TerminalChunk } from "@/lib/terminal-bridge";
 import { attachTerminal } from "@/lib/terminal-session";
 import { kittyApcRewriter, KITTY_GRAPHICS_OSC } from "./apc";
 import type { KittyGraphicsAddon as KittyAddonType, KittyImageBackend } from "./addon";
@@ -94,11 +94,11 @@ const fakeBackend: KittyImageBackend = {
   scale: (_image, width, height) => ({ width, height }),
 };
 
-function setup(cols = 20, rows = 8) {
+function setup(cols = 20, rows = 8, backend: KittyImageBackend = fakeBackend) {
   const term = new Terminal({ cols, rows, allowProposedApi: true });
   const images = new ImageAddon({ sixelSupport: true, iipSupport: true, enableSizeReports: false });
   term.loadAddon(images);
-  term.loadAddon(new KittyGraphicsAddon(images, fakeBackend));
+  term.loadAddon(new KittyGraphicsAddon(images, backend));
   const writes: string[] = [];
   const listeners: Array<(chunk: TerminalChunk) => void> = [];
   const bridge: Pick<TerminalBridge, "write" | "onData" | "onExit"> = {
@@ -224,12 +224,108 @@ describe("a malformed chunk is dropped and the stream goes on", () => {
     expect(writes).toEqual(["\u001b_Gi=9;ENODATA:image data does not match its size\u001b\\"]);
   });
 
-  test("file and shared-memory transmission are refused with an error, not read", async () => {
+  test("without a host that can read files, file and shared-memory transmission are refused, not read", async () => {
     const { send, writes } = setup();
     await send(apc("a=T,f=100,t=f,i=4", btoa("/tmp/logo.png")), apc("a=T,f=100,t=s,i=5", btoa("/shm")));
     expect(writes).toEqual([
       "\u001b_Gi=4;EINVAL:unsupported transmission medium\u001b\\",
       "\u001b_Gi=5;EINVAL:unsupported transmission medium\u001b\\",
+    ]);
+  });
+});
+
+describe("file transmission (t=f) — what fastfetch's kitty-direct logo sends", () => {
+  /** A host reader that records what it was asked for and answers as told. */
+  function fileHost(answer: (path: string) => Promise<KittyFileAnswer>) {
+    const asked: string[] = [];
+    const backend: KittyImageBackend = {
+      ...fakeBackend,
+      readFile: async (path) => {
+        asked.push(path);
+        return answer(path);
+      },
+    };
+    return { asked, backend };
+  }
+  const LOGO = "/Users/someone/.config/fastfetch/logo.png";
+
+  test("fastfetch's exact sequence draws 4×2 cells, and nothing at all is written back into the PTY", async () => {
+    const { asked, backend } = fileHost(async () => ({ ok: true, bytes: png(64, 64) }));
+    const { term, send, imageCells, writes } = setup(20, 8, backend);
+    // Byte for byte what fastfetch 2.68.1 `--logo-type kitty-direct` wrote,
+    // followed by the layout it then relies on.
+    await send(`\u001b[m\u001b_Ga=T,f=100,t=f,c=4,r=2;${btoa(LOGO)}\u001b\\\r\n\u001b[2A\u001b[8Cfacundo`);
+    expect(asked).toEqual([LOGO]);
+    expect(imageCells(10, 3)).toEqual(["####......", "####......", ".........."]);
+    expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe("        facundo");
+    expect(writes).toEqual([]);
+  });
+
+  test("with an id, the answer is OK and only OK — the file's bytes never reach the PTY", async () => {
+    const { backend } = fileHost(async () => ({ ok: true, bytes: png(4, 4) }));
+    const { send, writes } = setup(20, 8, backend);
+    await send(apc("a=T,f=100,t=f,i=12,c=2,r=1", btoa(LOGO)));
+    expect(writes).toEqual(["\u001b_Gi=12;OK\u001b\\"]);
+  });
+
+  test("each host refusal is answered with kitty's short code and a fixed sentence, never the path", async () => {
+    for (const code of ["EINVAL", "ENOENT", "EPERM", "EFBIG", "EBADPNG", "EIO"]) {
+      const { backend } = fileHost(async () => ({ ok: false, code }));
+      const { send, writes, imageCells } = setup(20, 8, backend);
+      await send(apc("a=T,f=100,t=f,i=1", btoa(LOGO)));
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toMatch(new RegExp(`^\\u001b_Gi=1;${code}:[a-zA-Z ]+\\u001b\\\\$`));
+      expect(writes[0]).not.toContain("logo");
+      expect(imageCells(3, 1)).toEqual(["..."]);
+    }
+  });
+
+  test("a code the addon does not know — even one carrying a path — is answered as EIO, and so is a reader that throws", async () => {
+    const odd = fileHost(async () => ({ ok: false, code: `ENOENT ${LOGO}` }));
+    const first = setup(20, 8, odd.backend);
+    await first.send(apc("a=T,f=100,t=f,i=1", btoa(LOGO)));
+    expect(first.writes).toEqual(["\u001b_Gi=1;EIO:could not read file\u001b\\"]);
+
+    const proto = fileHost(async () => ({ ok: false, code: "toString" }));
+    const second = setup(20, 8, proto.backend);
+    await second.send(apc("a=T,f=100,t=f,i=2", btoa(LOGO)));
+    expect(second.writes).toEqual(["\u001b_Gi=2;EIO:could not read file\u001b\\"]);
+
+    const throws = fileHost(async () => {
+      throw new Error(`EACCES: permission denied, open '${LOGO}'`);
+    });
+    const third = setup(20, 8, throws.backend);
+    await third.send(apc("a=T,f=100,t=f,i=3", btoa(LOGO)), "after");
+    expect(third.writes).toEqual(["\u001b_Gi=3;EIO:could not read file\u001b\\"]);
+    expect(third.text(0)).toBe("after");
+  });
+
+  test("bytes the host returned are still checked: a file that is not a PNG is refused here too", async () => {
+    const { backend } = fileHost(async () => ({ ok: true, bytes: new TextEncoder().encode("plain text, not an image") }));
+    const { send, writes } = setup(20, 8, backend);
+    await send(apc("a=T,f=100,t=f,i=5", btoa(LOGO)));
+    expect(writes).toEqual(["\u001b_Gi=5;EBADPNG:not a PNG\u001b\\"]);
+  });
+
+  test("t=f with raw pixels is refused without asking the host — file transmission is PNG only", async () => {
+    const { asked, backend } = fileHost(async () => ({ ok: true, bytes: png(4, 4) }));
+    const { send, writes } = setup(20, 8, backend);
+    await send(apc("a=T,f=32,s=1,v=1,t=f,i=6", btoa(LOGO)), apc("a=T,t=f,i=7", btoa(LOGO)));
+    expect(asked).toEqual([]);
+    expect(writes).toEqual([
+      "\u001b_Gi=6;EINVAL:file transmission is PNG only\u001b\\",
+      "\u001b_Gi=7;EINVAL:file transmission is PNG only\u001b\\",
+    ]);
+  });
+
+  test("temporary-file and shared-memory transmission stay refused even with a file reader", async () => {
+    const { asked, backend } = fileHost(async () => ({ ok: true, bytes: png(4, 4) }));
+    const { send, writes } = setup(20, 8, backend);
+    await send(apc("a=T,f=100,t=t,i=8", btoa(LOGO)), apc("a=T,f=100,t=s,i=9", btoa("/shm")));
+    expect(asked).toEqual([]);
+    expect(writes).toEqual([
+      "\u001b_Gi=8;EINVAL:unsupported transmission medium\u001b\\",
+      "\u001b_Gi=9;EINVAL:unsupported transmission medium\u001b\\",
     ]);
   });
 });
