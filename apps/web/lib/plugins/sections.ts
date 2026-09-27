@@ -12,7 +12,9 @@
  * real editors — an environment picker, a toolchain probe — and a generic
  * enable/configure pane would be a downgrade for both. So a contributed section
  * whose id matches one of those renders the pane that already exists, and
- * everything else gets the generic one. That is the whole compatibility rule.
+ * everything else gets the generic one. That is the whole compatibility rule,
+ * and it lives with the components it names — `SETTINGS_PANES` in
+ * components/plugins/settings-panes.tsx — so this library stays free of React.
  */
 import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
 import { machineAllows, pluginConfigFromLegacy } from "@telar/engine-client";
@@ -31,23 +33,6 @@ export type PluginSectionEntry = {
   state: PluginStatus["state"];
   error?: string;
 };
-
-/**
- * The plugins whose panes are written by hand and must keep rendering.
- *
- * NOT A DENYLIST — these plugins are shown, they simply use their own editor.
- * Removing an id here would silently replace a working environment picker with
- * a checkbox, which is why the mapping is stated rather than inferred.
- */
-export const BESPOKE_PLUGIN_PANES: Record<string, string> = {
-  "data-science": "data-science",
-  latex: "latex",
-};
-
-/** Whether this plugin renders its own pane rather than the generic one. */
-export function hasBespokePane(pluginId: string): boolean {
-  return pluginId in BESPOKE_PLUGIN_PANES;
-}
 
 /**
  * Flatten every registered plugin's project-scoped sections into nav entries.

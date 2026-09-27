@@ -81,8 +81,7 @@ import { AgentControl, modelOptionsOf, ReasoningControl } from "@/components/com
 import { useModelCatalogue } from "@/lib/model-catalogue-cache";
 import { ProjectIconPicker } from "@/components/projects/project-icon-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DataScienceSection } from "./data-science-section";
-import { LatexSection } from "./latex-section";
+import { projectPaneFor } from "@/components/plugins/settings-panes";
 import { McpSection } from "./mcp-section";
 import { machineOffReason, PluginSettings } from "./plugin-settings";
 import { RemoveProjectSection } from "./remove-project-section";
@@ -515,9 +514,10 @@ export function ProjectPluginRows({
  * the top of its first group — so the enable never appears twice, and the
  * toolchain probes behind those panes only run for projects that asked for them.
  *
- * THE BESPOKE PANES ARE NAMED, NOT INFERRED — `BESPOKE_PLUGIN_PANES` in
- * lib/plugins/sections.ts says why: silently replacing an environment picker
- * with a checkbox is a downgrade nobody would notice until they needed it.
+ * THE BESPOKE PANES ARE NAMED, NOT INFERRED — `SETTINGS_PANES` in
+ * components/plugins/settings-panes.tsx says why: silently replacing an
+ * environment picker with a checkbox is a downgrade nobody would notice until
+ * they needed it.
  */
 export function ProjectPluginPanes({
   project,
@@ -535,21 +535,19 @@ export function ProjectPluginPanes({
 
   return (
     <>
-      {entries.map((entry) =>
+      {entries.map((entry) => {
         // OFF FOR THE MAC WINS over the project's own answer: the bespoke pane
         // would offer a plugin the engine refuses, so the generic one says why.
-        !machineAllows(machine, entry.pluginId) ? (
-          <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} machineOff />
-        ) : !pluginEnabled(enabled, entry.pluginId) ? (
-          <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />
-        ) : entry.pluginId === "data-science" ? (
-          <DataScienceSection key={entry.key} project={project} onChange={onChange} />
-        ) : entry.pluginId === "latex" ? (
-          <LatexSection key={entry.key} project={project} onChange={onChange} />
+        if (!machineAllows(machine, entry.pluginId)) {
+          return <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} machineOff />;
+        }
+        const Pane = pluginEnabled(enabled, entry.pluginId) ? projectPaneFor(entry.pluginId) : undefined;
+        return Pane ? (
+          <Pane key={entry.key} project={project} onChange={onChange} />
         ) : (
           <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />
-        ),
-      )}
+        );
+      })}
     </>
   );
 }
