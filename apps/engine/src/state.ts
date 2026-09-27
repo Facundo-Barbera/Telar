@@ -174,6 +174,7 @@ import {
   type Subscription,
   type Cohort,
   type CohortMember,
+  type SubscribedCohort,
   type Turn,
   type TurnFailure as TurnFailureShape,
   type TurnFailureCode,
@@ -13222,11 +13223,19 @@ export class EngineStore {
    * stopped. A member that merely ENDED A TURN on the errand is not: a worker
    * waiting on CI ends turns mid-errand, and counting that as done fired a
    * cohort with the work still running.
+   *
+   * ONE COHORT PER MEMBER PER SUBSCRIBER. Two open cohorts naming one member
+   * both took its one result and both closed on it: the coordinator that
+   * re-subscribed after a restart was told the same thing twice. So the SAME
+   * member set returns the open cohort already covering it, id and expiry
+   * unchanged. An OVERLAPPING set takes those members over — the newest call
+   * is the coordinator's current intent — and the older cohort goes on with
+   * the rest, or goes if nothing is left in it.
    */
   subscribeCohort(
     subscriberSessionId: string,
     input: { sessionIds: string[]; timeoutMinutes?: number; completionWake?: Cohort["completionWake"] },
-  ): Cohort {
+  ): SubscribedCohort {
     const ids = [...new Set(input.sessionIds)];
     if (ids.length === 0 || ids.length > MAX_COHORT_MEMBERS) {
       throw new EngineStateError("invalid_request", `a cohort names between 1 and ${MAX_COHORT_MEMBERS} sessions`);
@@ -13241,17 +13250,29 @@ export class EngineStore {
     }
     const subscriber = this.getSession(subscriberSessionId);
     if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
-    const all = this.readCohorts();
-    const mine = all.filter((each) => each.subscriberSessionId === subscriberSessionId).length;
-    if (mine >= MAX_COHORTS_PER_SESSION) {
-      throw new EngineStateError("conflict", `this session already has ${mine} cohorts open, the most it may. Unsubscribe from ones you are finished with.`);
-    }
+    const open = this.readCohorts();
+    const wanted = new Set(ids);
+    const same = open.find(
+      (each) => each.subscriberSessionId === subscriberSessionId && !each.ready && each.members.length === wanted.size && each.members.every((member) => wanted.has(member.sessionId)),
+    );
+    if (same) return { ...structuredClone(same), alreadySubscribed: true };
     const at = this.now();
     const members = ids.map((id) => {
       const target = this.getSession(id);
       if (target.state !== "active") throw new EngineStateError("conflict", `session ${id} is archived and will do nothing worth waiting for`);
       return this.cohortMemberAtStart(subscriberSessionId, target, at);
     });
+    const movedFrom: string[] = [];
+    const all = open.flatMap((each) => {
+      if (each.subscriberSessionId !== subscriberSessionId || each.ready || !each.members.some((member) => wanted.has(member.sessionId))) return [each];
+      movedFrom.push(each.id);
+      const rest = each.members.filter((member) => !wanted.has(member.sessionId));
+      return rest.length > 0 ? [{ ...each, members: rest }] : [];
+    });
+    const mine = all.filter((each) => each.subscriberSessionId === subscriberSessionId).length;
+    if (mine >= MAX_COHORTS_PER_SESSION) {
+      throw new EngineStateError("conflict", `this session already has ${mine} cohorts open, the most it may. Unsubscribe from ones you are finished with.`);
+    }
     const cohort: Cohort = {
       id: `coh_${crypto.randomUUID().replaceAll("-", "")}`,
       subscriberSessionId,
@@ -13261,8 +13282,9 @@ export class EngineStore {
       expiresAt: at + minutes * 60_000,
     };
     this.writeCohorts([...all, cohort]);
-    this.closeDoneCohorts([cohort.id]);
-    return structuredClone(cohort);
+    // An older cohort left with only finished members is done now.
+    this.closeDoneCohorts([...movedFrom, cohort.id]);
+    return { ...structuredClone(cohort), ...(movedFrom.length > 0 ? { movedFrom } : {}) };
   }
 
   cohortsFor(subscriberSessionId: string): Cohort[] {

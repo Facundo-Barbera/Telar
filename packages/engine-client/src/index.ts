@@ -124,6 +124,7 @@ import {
   type SessionOrigin,
   type Subscription,
   type Cohort,
+  type SubscribedCohort,
   type Task,
   type EngineRequest,
   type RequestDecision,
@@ -3318,7 +3319,7 @@ export class EngineClient {
   subscribeCohort(
     sessionId: string,
     input: { sessionIds: string[]; timeoutMinutes?: number; completionWake?: Cohort["completionWake"] },
-  ): Promise<{ cohort: Cohort }> {
+  ): Promise<{ cohort: SubscribedCohort }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/cohorts`, input);
   }
 

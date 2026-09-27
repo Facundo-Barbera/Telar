@@ -30,7 +30,14 @@ function setup() {
   stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   for (const id of ["session_host", "session_a", "session_b", "session_c"]) store.createSession({ id, projectId: "project_one", title: id.replace("session_", "worker ") });
-  return { store, clock };
+  /** Telar restarting: the same home, a new engine, and its boot sweep. */
+  const restart = () => {
+    const next = new EngineStore(home, () => now, { executionStorage: "sqlite" });
+    stores.push(next);
+    next.recover();
+    return next;
+  };
+  return { store, clock, restart };
 }
 
 /** Start a run on a member, as if the host's task had just been claimed. */
@@ -312,4 +319,58 @@ test("a cohort of ONE quotes what its member said, like the single wake it repla
   x.complete();
   y.complete();
   expect(woken(two.store)[0]!.notification!.body).not.toContain("<<<");
+});
+
+/** The host tasks `sessionId` (run ids suffixed by `tag`); returns the member's claimed run. */
+function task(store: EngineStore, sessionId: string, tag: string) {
+  const host = store.submitTurn("session_host", { runId: `run_host_${tag}`, input: "fan out" });
+  const claim = store.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.markRunning("session_host", host.turn.runId, claim);
+  store.submitAgentTurn(sessionId, { runId: `run_task_${tag}`, input: "do it", intent: "task" }, { sessionId: "session_host", runId: host.turn.runId, claimToken: claim });
+  store.completeTurn("session_host", host.turn.runId, claim, { text: "dispatched" });
+  const child = store.claimTurn(sessionId, "worker_child")!;
+  store.markRunning(sessionId, child.runId, child.claim!.token);
+  return { sessionId, runId: child.runId, claimToken: child.claim!.token };
+}
+
+test("re-subscribing after a restart does not deliver the member's one result twice", () => {
+  const { store, restart } = setup();
+  task(store, "session_a", "one");
+  const first = store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  // Telar restarts: the member's turn is stopped by the boot, not by anyone.
+  const after = restart();
+  expect(after.turns("session_a").at(-1)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  // The coordinator re-tasks it and subscribes again.
+  const proof = task(after, "session_a", "two");
+  const second = after.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  expect(second).toMatchObject({ id: first.id, expiresAt: first.expiresAt, alreadySubscribed: true });
+  expect(after.cohortsFor("session_host")).toHaveLength(1);
+
+  after.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
+  after.completeTurn("session_a", proof.runId, proof.claimToken, { text: "Result sent." });
+  const notices = woken(after).filter((turn) => turn.notification?.cohortId);
+  expect(notices).toHaveLength(1);
+  expect(notices[0]!.notification!.cohortId).toBe(first.id);
+});
+
+test("an overlapping cohort takes its members over; the older one keeps the rest", () => {
+  const { store } = setup();
+  const older = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  const newer = store.subscribeCohort("session_host", { sessionIds: ["session_b", "session_c"] });
+  expect(newer.alreadySubscribed).toBeUndefined();
+  expect(newer.movedFrom).toEqual([older.id]);
+  const open = store.cohortsFor("session_host");
+  expect(open.find((each) => each.id === older.id)!.members.map((member) => member.sessionId)).toEqual(["session_a"]);
+  expect(open.find((each) => each.id === newer.id)!.members.map((member) => member.sessionId)).toEqual(["session_b", "session_c"]);
+
+  // A superset empties the older cohort, and it goes.
+  const all = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b", "session_c"] });
+  expect(new Set(all.movedFrom)).toEqual(new Set([older.id, newer.id]));
+  expect(store.cohortsFor("session_host").map((each) => each.id)).toEqual([all.id]);
+});
+
+test("the same set in another order is the same cohort", () => {
+  const { store } = setup();
+  const first = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  expect(store.subscribeCohort("session_host", { sessionIds: ["session_b", "session_a", "session_b"] })).toMatchObject({ id: first.id, alreadySubscribed: true });
 });

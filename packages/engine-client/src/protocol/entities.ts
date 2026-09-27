@@ -2156,6 +2156,14 @@ export const Cohort = z.object({
 });
 export type Cohort = z.infer<typeof Cohort>;
 
+/**
+ * WHAT SUBSCRIBING TO A COHORT RETURNS. `alreadySubscribed`: an open cohort of
+ * this subscriber already named exactly these sessions, and this is it — its
+ * id and its expiry, unchanged. `movedFrom`: the open cohorts some of these
+ * members were taken out of, so no member is tracked twice. Never stored.
+ */
+export type SubscribedCohort = Cohort & { alreadySubscribed?: true; movedFrom?: string[] };
+
 export const AgentMessageIntent = z.enum(["task", "report", "result", "blocker"]);
 export type AgentMessageIntent = z.infer<typeof AgentMessageIntent>;
 
