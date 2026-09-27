@@ -33,6 +33,7 @@ import {
   telarSkillDigest,
   writeOrientationInstructions,
 } from "../src/orientation";
+import { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "../src/orchestrate-skill";
 import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/provider-skills";
 import { openCodeBriefings, openCodeConfigContent } from "../src/opencode/runtime";
 import { sessionsTools } from "../src/sessions-tools/tools";
@@ -458,4 +459,31 @@ test("switching the skill off over HTTP deletes the file that was installed", as
   expect(existsSync(file)).toBe(false);
   await client.setOrientation({ skill: true });
   expect(readFileSync(file, "utf8")).toBe(TELAR_SKILL);
+});
+
+test("the orchestrate skill rides the same sync and the same toggle", async () => {
+  const root = join(home, "skills-root");
+  const { client } = await engine([root]);
+  const file = join(root, ORCHESTRATE_SKILL_NAME, "SKILL.md");
+
+  await eventually(() => expect(existsSync(file)).toBe(true));
+  expect(readFileSync(file, "utf8")).toBe(ORCHESTRATE_SKILL);
+  await client.setOrientation({ skill: false });
+  expect(existsSync(file)).toBe(false);
+});
+
+test("the orchestrate skill is a provider-readable skill that names no repo or person", () => {
+  expect(BUNDLED_SKILLS.map((skill) => skill.name)).toEqual([TELAR_SKILL_NAME, ORCHESTRATE_SKILL_NAME]);
+  expect(ORCHESTRATE_SKILL.startsWith("---\n")).toBe(true);
+  expect(ORCHESTRATE_SKILL).toContain(`name: ${ORCHESTRATE_SKILL_NAME}`);
+  expect(ORCHESTRATE_SKILL).toContain(`telar: generated v${ORIENTATION_VERSION}`);
+  expect(isTelarGenerated(ORCHESTRATE_SKILL)).toBe(true);
+  // The workflow's load-bearing rules.
+  const text = ORCHESTRATE_SKILL.replace(/\s+/g, " ");
+  expect(text).toContain("ONE `sessions_subscribe({ sessionIds: [...] })` for all of them, and END YOUR TURN");
+  expect(text).toContain("Never stack PRs");
+  expect(text).toContain("CURRENT head SHA");
+  expect(text).toContain("you never make one on their behalf");
+  expect(text).toContain("Needs your decision");
+  expect(ORCHESTRATE_SKILL.toLowerCase()).not.toMatch(/facundo|telar\/telar|github\.com\//);
 });

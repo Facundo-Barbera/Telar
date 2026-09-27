@@ -34,9 +34,10 @@
  * a command, and the SDK's list is called `supportedCommands`. There is no
  * field on the SDK's row that would let us claim more than that.
  *
- * CODEX AND OPENCODE REPORT NOTHING, and that is an answer rather than a gap:
- * neither exposes a skill or command inventory a daemon can read, so the route
- * says so with two empty lists instead of guessing at a layout.
+ * CODEX AND OPENCODE REPORT ONLY THEIR MACHINE-WIDE SKILLS DIRECTORY: neither
+ * exposes an inventory a daemon can ask, but each reads skills from a directory
+ * of its own convention (`providerSkillRoot`), which is where Telar installs its
+ * bundled skills. Commands stay empty rather than guessing at a layout.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -120,10 +121,9 @@ export function openCodeHome(env: NodeJS.ProcessEnv = process.env): string {
  * scanner accepts `{skill,skills}`, and the singular is the directory its own
  * docs name beside `agent/` and `command/`).
  *
- * SEPARATE FROM THE READING SIDE ABOVE, which lists what a person may TYPE and
- * deliberately reports nothing for Codex and OpenCode — neither exposes an
- * inventory a daemon can read. Not being able to enumerate a provider's skills
- * is a different fact from not knowing where to put one.
+ * ALSO THE ONE DIRECTORY THE READING SIDE LISTS FOR CODEX AND OPENCODE: neither
+ * exposes an inventory a daemon can ask, but this directory is theirs by
+ * convention, so what is in it is true.
  */
 export function providerSkillRoot(driver: ProviderDriverKind, env: NodeJS.ProcessEnv = process.env): string {
   if (driver === "codex") return path.join(codexHome(env), "skills");
@@ -515,9 +515,11 @@ function dedupe(groups: readonly ProviderSkill[][]): ProviderSkill[] {
  */
 export async function readProviderSkillsWithRoots(input: ProviderSkillsInput): Promise<{ value: ProviderSkills; watched: string[] }> {
   if (input.driver !== "claude") {
-    // Codex and OpenCode expose no inventory to read. Two empty lists is the
-    // true answer, and the composer draws nothing rather than a wrong heading.
-    return { value: { skills: [], commands: [] }, watched: [] };
+    // Codex and OpenCode expose no inventory to ask, but their machine-wide
+    // skills directory is theirs by convention and is where Telar installs its
+    // own. Listing it is the true part of the answer; commands stay empty.
+    const root = providerSkillRoot(input.driver, input.env);
+    return { value: { skills: await readSkillDirectory(root, "user"), commands: [] }, watched: [root] };
   }
 
   const home = claudeHome(input.env);

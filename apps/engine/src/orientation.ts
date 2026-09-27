@@ -369,7 +369,7 @@ export function isTelarGenerated(text: string): boolean {
 export type SkillSyncOutcome = "written" | "unchanged" | "removed" | "absent" | "foreign" | "failed";
 export type SkillSyncResult = { root: string; file: string; outcome: SkillSyncOutcome };
 
-const skillFile = (root: string): string => path.join(root, TELAR_SKILL_NAME, "SKILL.md");
+const skillFile = (root: string, name: string): string => path.join(root, name, "SKILL.md");
 
 async function readOrUndefined(file: string): Promise<string | undefined> {
   try {
@@ -394,12 +394,15 @@ async function readOrUndefined(file: string): Promise<string | undefined> {
 export async function syncTelarSkill(input: {
   install: boolean;
   roots: readonly string[];
+  /** Another Telar-authored skill; the `telar` one when omitted. */
+  name?: string;
   text?: string;
 }): Promise<SkillSyncResult[]> {
   const text = input.text ?? TELAR_SKILL;
+  const name = input.name ?? TELAR_SKILL_NAME;
   return Promise.all(
     input.roots.map(async (root): Promise<SkillSyncResult> => {
-      const file = skillFile(root);
+      const file = skillFile(root, name);
       const existing = await readOrUndefined(file);
       // SOMEBODY ELSE'S FILE UNDER OUR NAME. Left exactly as it is, in both
       // directions: not overwritten when installing, not deleted when removing.
