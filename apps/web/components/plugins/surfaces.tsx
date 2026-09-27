@@ -9,7 +9,7 @@
  * Loaded with `dynamic` for the reason every surface in the panel is: the panel
  * starts closed, and a surface's chunk should not be on screen until its tab is.
  */
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import type { EngineEvent, TurnState } from "@telar/engine-client";
 import type { PluginSurfaceId } from "@/lib/plugins/registry";
@@ -46,6 +46,10 @@ const SURFACES: Record<PluginSurfaceId, (props: PluginSurfaceProps) => ReactNode
   ),
 };
 
+/**
+ * INSIDE ITS OWN BOUNDARY (#896): a bare `dynamic` adds none, so a chunk not yet
+ * fetched would suspend up to the route's `loading.tsx` and redraw the page.
+ */
 export function PluginSurface({ id, ...props }: PluginSurfaceProps & { id: PluginSurfaceId }) {
-  return <>{SURFACES[id](props)}</>;
+  return <Suspense fallback={null}>{SURFACES[id](props)}</Suspense>;
 }
