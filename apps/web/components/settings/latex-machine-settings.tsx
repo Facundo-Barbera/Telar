@@ -45,7 +45,7 @@ const INSTALL_POLL_MS = 1500;
 /** base-ui refuses `""`, so "nothing pinned" needs a sentinel of its own. */
 const ENGINE_DEFAULT = "__engine-default";
 
-const ENGINE_LABEL: Record<PluginLatexEngine, string> = {
+export const ENGINE_LABEL: Record<PluginLatexEngine, string> = {
   pdflatex: "pdfLaTeX",
   lualatex: "LuaLaTeX",
   xelatex: "XeLaTeX",
