@@ -60,7 +60,10 @@ There are three tables, one per scope:
   - `packages/engine-client` methods `dataScience*`, `latex*`, `managedTectonic` and `installManagedTectonic`, and through them the web settings panes (`data-science-section`, `latex-section`, `*-machine-settings`, `packages-panel`, `job-log`) and the web `app/api/{data-science,latex,projects/[id]/…}` proxies;
   - iOS `EngineAPI.latex(...)`, which uses the session `/latex/*` alias.
 - `/v2/sessions/:id/data/table` stays core: it serves CSV with Data Science off, and only Parquet borrows the kernel.
-- Still to do in P1b: the kernel host and the installers move into the plugin's `init`.
+- **Kernel host (done):** Data Science's `init` builds the `KernelHost` from the store's half of the options (engine root, session dirs, state and plot recording), attaches it to the store and registers its teardown. It is still built only on a daemon that runs turns (embedded worker), as before.
+- **What stays in `state.ts`, and why:**
+  - The job runners `dsJobs` and `latexJobs`, together with the settings verbs that start jobs on them (environments, installs, bootstraps). Those verbs are store methods that resolve projects, checkouts and machine settings through store state. Moving a runner without its verbs would leave the store reaching into a plugin for its own jobs. They move together when the verbs leave the store (P1c or later).
+  - `store.dataScience()` / `store.latex()`, the capability resolvers. They are the gate (project opt-in, worktree rule, machine ceiling) and read store state directly.
 
 ### 3. Panel surfaces and file viewers (P2, *planned*)
 
