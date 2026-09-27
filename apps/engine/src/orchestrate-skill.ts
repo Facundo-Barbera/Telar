@@ -58,9 +58,9 @@ Write each worker a self-contained brief. It will not see this conversation.
 - **Where to look** — suspected files and symbols.
 - **Out of scope** — what not to touch.
 - **Tests** — what to add, and which to run.
-- **Reporting** — "Report to <your session id> with \`sessions_send\`: intent
-  \`result\` when done (PR, head SHA, what changed, what you tested), intent
-  \`blocker\` if you need a decision. No progress reports."
+- **Reporting** — the engine already tells every worker to end with one
+  \`result\` and a one-line answer. Say what the result must contain: PR,
+  head SHA, what changed, what you tested — under ~800 characters.
 - Point at the shared rules note instead of repeating it.
 
 ## 3. Dispatch
@@ -69,13 +69,17 @@ Write each worker a self-contained brief. It will not see this conversation.
   "worktree"\`), titled so the rail says what it is.
 - Send every brief with \`sessions_send\` intent \`task\`.
 - Then ONE \`sessions_subscribe({ sessionIds: [...] })\` for all of them, and
-  END YOUR TURN. No per-session subscribes, no polling, no sleeping.
+  END YOUR TURN. No per-session subscribes, no polling, no sleeping. You are
+  woken once, when every worker has sent its result (or failed, was stopped
+  or settled); a blocker reaches you at once. Their progress reports never
+  interrupt you — they arrive with your next turn.
 - Respect the project's concurrency or load cap: dispatch in waves if there is
   one.
 
 ## 4. Integrate
 
-When results arrive:
+When results arrive (each is quoted in the notice; call \`sessions_read\`
+only if it was cut, and never reply just to acknowledge one):
 
 - **Verify before merging.** Checks must belong to the PR's CURRENT head SHA,
   all completed and green. Merge pinned to that head commit, so a push that
@@ -105,6 +109,9 @@ Keep a short running list and show it whenever something changes:
 - **Needs your decision** — each with a recommendation.
 - **In progress** — task, session, state.
 - **Done** — task, PR, merged or ready.
+
+Practise what the workers do: when you report to the person, lead with the
+list and keep it short.
 
 Releases, deploys and anything else irreversible or outward-facing wait for the
 person's explicit OK, whatever this list says.

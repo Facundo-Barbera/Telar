@@ -481,6 +481,8 @@ test("the orchestrate skill is a provider-readable skill that names no repo or p
   // The workflow's load-bearing rules.
   const text = ORCHESTRATE_SKILL.replace(/\s+/g, " ");
   expect(text).toContain("ONE `sessions_subscribe({ sessionIds: [...] })` for all of them, and END YOUR TURN");
+  expect(text).toContain("never reply just to acknowledge one");
+  expect(text).toContain("Their progress reports never interrupt you");
   expect(text).toContain("Never stack PRs");
   expect(text).toContain("CURRENT head SHA");
   expect(text).toContain("you never make one on their behalf");
