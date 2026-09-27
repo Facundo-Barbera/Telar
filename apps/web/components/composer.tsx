@@ -444,6 +444,7 @@ export function Composer({
   onSubmit,
   onStop,
   onStopBackground,
+  onViewBackground,
   onRuntimeMode,
   onResumeAfterRateLimit,
   onModelChange,
@@ -577,6 +578,8 @@ export function Composer({
   /** Stop the lingering background tasks — the "N tasks still working" chip.
    *  Separate from `onStop` (which ends the turn and spares them). */
   onStopBackground: () => void;
+  /** Open the Processes tab on that work. Absent where there is no panel. */
+  onViewBackground?: () => void;
   onRuntimeMode: (mode: RuntimeMode) => void;
   /** Sit out a usage limit and carry on, or stay stopped. Absent on a session
    *  that does not exist yet — there is nothing to patch. */
@@ -1641,7 +1644,7 @@ export function Composer({
         </>
       )}
 
-      <BackgroundPresence count={backgroundTasks} onStop={onStopBackground} />
+      <BackgroundPresence count={backgroundTasks} onStop={onStopBackground} {...(onViewBackground ? { onView: onViewBackground } : {})} />
 
       {/* WHY IT DID NOT HAPPEN, above the box rather than in a toast — the
           same choice, for the same reason, as the file editor's save notice.

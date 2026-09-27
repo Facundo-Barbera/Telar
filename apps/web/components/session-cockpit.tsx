@@ -5,8 +5,6 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, ShieldCheckIcon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
-  countsAsActivity,
-  isBackgroundWork,
   type EngineEvent,
   type ClaudeConversation,
   type EngineRequest,
@@ -61,6 +59,7 @@ import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/lib/
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
 import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";
+import { processToReveal, stillWorking } from "@/lib/background-presence";
 import { Composer, MAX_ATTACHMENTS } from "./composer";
 import { CohortFold, foldCohortTurns } from "./session/cohort-fold";
 // `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
@@ -3164,6 +3163,14 @@ export function SessionCockpit({
     },
     [showPanelTab],
   );
+  /** The "N tasks still working" banner's View — see `processToReveal`. With
+   *  no single process to open, a focus left by an earlier chip is dropped so
+   *  the tab arrives with every row closed. */
+  const showProcesses = useCallback(() => {
+    const id = processToReveal(tasks);
+    setFocusedTask((current) => (id ? { id, nonce: (current?.nonce ?? 0) + 1 } : undefined));
+    showPanelTab("processes");
+  }, [tasks, showPanelTab]);
   /**
    * The turn actually EXECUTING, which is not simply the first active one now
    * that a backlog can exist: `queued` turns are also "active" by the contract's
@@ -4056,7 +4063,7 @@ export function SessionCockpit({
   /** Background work outlives the turn that started it, so it is counted over
    *  every task rather than over the active turn's. `countsAsActivity` is the
    *  rail's own predicate, so the chip and the row badge count the same tasks. */
-  const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && countsAsActivity(task)).length;
+  const backgroundTasks = stillWorking(tasks).length;
 
   /**
    * THE ROW GESTURES THAT END IN THE RIGHT PANEL, withheld on the solo route.
@@ -4362,6 +4369,7 @@ export function SessionCockpit({
           onSubmit={() => void submit()}
           onStop={() => void stop()}
           onStopBackground={() => void stopBackground()}
+          {...(solo ? {} : { onViewBackground: showProcesses })}
           // Before a session exists there is nothing to patch, so both choices
           // are held locally and applied by the one patch that follows creation.
           onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
