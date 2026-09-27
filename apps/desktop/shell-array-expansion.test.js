@@ -185,7 +185,7 @@ const CASES = [
     stub: "bunx",
     scope: [],
     emptyState: "CONFIG_OVERRIDES=()",
-    filledState: 'CONFIG_OVERRIDES=("-c.productName=Telar Dev" "-c.appId=com.telar.desktop.dev")',
+    filledState: 'CONFIG_OVERRIDES=("-c.productName=Telar Dev" "-c.appId=io.github.novarix.telar.dev")',
     whenEmpty: ["electron-builder", "--dir", "--publish", "never"],
     whenFilled: [
       "electron-builder",
@@ -193,7 +193,7 @@ const CASES = [
       "--publish",
       "never",
       "-c.productName=Telar Dev",
-      "-c.appId=com.telar.desktop.dev",
+      "-c.appId=io.github.novarix.telar.dev",
     ],
   },
   {

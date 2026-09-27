@@ -228,10 +228,23 @@ describe("a --dev package is a separate app that cannot collide with the install
   test("the shipping identity in package.json is untouched by the dev option", () => {
     // Overrides at package time, never edits: the nightly/beta pipelines read
     // this file and must see the same app they always did.
-    expect(manifest.build.appId).toBe("com.telar.desktop");
+    expect(manifest.build.appId).toBe("io.github.novarix.telar");
     expect(manifest.build.productName).toBe("Telar");
     expect(manifest.productName).toBe("Telar");
     expect(manifest.telarDev).toBeUndefined();
+  });
+
+  /**
+   * THE ID MOVED AND THE DATA MUST NOT (#1042). userData is appData/<productName>,
+   * not the bundle id, which is why io.github.novarix.telar opens the same
+   * ~/Library/Application Support/Telar the old id wrote. Renaming the product
+   * would strand every install's store; the computer-use helper keeps its own id
+   * so its Accessibility and Screen Recording grants survive the move.
+   */
+  test("the new bundle id keeps the product name, the dev id and the helper's id", () => {
+    expect(manifest.productName).toBe(manifest.build.productName);
+    expect(require("./dev-update-core").DEV_BUNDLE_ID).toBe("io.github.novarix.telar.dev");
+    expect(require("./computer-use-helper.json").bundleId).toBe("com.telar.desktop.computer-use");
   });
 
   /**
@@ -246,7 +259,7 @@ describe("a --dev package is a separate app that cannot collide with the install
   when("the built Telar Dev.app carries its own bundle id, name and executable", () => {
     const plist = (key) =>
       spawnSync("plutil", ["-extract", key, "raw", "-o", "-", path.join(devApp, "Contents", "Info.plist")], { encoding: "utf8" }).stdout.trim();
-    expect(plist("CFBundleIdentifier")).toBe("com.telar.desktop.dev");
+    expect(plist("CFBundleIdentifier")).toBe("io.github.novarix.telar.dev");
     expect(plist("CFBundleName")).toBe("Telar Dev");
     expect(fs.existsSync(path.join(devApp, "Contents", "MacOS", "Telar Dev"))).toBe(true);
     // Stamped as a dev build, with the dirtiness of its sources recorded.

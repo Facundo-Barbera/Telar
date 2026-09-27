@@ -18,7 +18,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const DEV_BUNDLE_ID = "com.telar.desktop.dev";
+const DEV_BUNDLE_ID = "io.github.novarix.telar.dev";
 
 /**
  * The env a build child may see. A Telar-descended process carries variables

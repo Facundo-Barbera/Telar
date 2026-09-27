@@ -115,7 +115,7 @@ echo "==> stamped local build: $SHORT_SHA (channel=$CHANNEL dirty=$DIRTY)"
 cd "$DESKTOP_DIR"
 CONFIG_OVERRIDES=()
 if [ "$DEV" -eq 1 ]; then
-  echo "==> package unsigned macOS arm64 DEV app (Telar Dev, com.telar.desktop.dev)"
+  echo "==> package unsigned macOS arm64 DEV app (Telar Dev, io.github.novarix.telar.dev)"
   # Everything that gives the dev build an identity of its own, as overrides so
   # package.json — and therefore the nightly/beta pipeline — is untouched:
   #   productName      names the bundle, the menu bar and app.getName();
@@ -132,7 +132,7 @@ if [ "$DEV" -eq 1 ]; then
     || { echo "!! build/icon-dev.icns is missing — regenerate it from build/icon-dev.png with iconutil" >&2; exit 1; }
   CONFIG_OVERRIDES=(
     "-c.productName=Telar Dev"
-    "-c.appId=com.telar.desktop.dev"
+    "-c.appId=io.github.novarix.telar.dev"
     "-c.mac.icon=build/icon-dev.icns"
     "-c.extraMetadata.productName=Telar Dev"
     "-c.extraMetadata.telarDev=true"
@@ -184,7 +184,7 @@ if [ "$DEV" -eq 1 ]; then
   # rather than trusted: a dev build that answers to the installed app's bundle
   # id is the collision this flag exists to prevent.
   BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
-  [ "$BUNDLE_ID" = "com.telar.desktop.dev" ] || { echo "!! dev build has bundle id $BUNDLE_ID" >&2; exit 1; }
+  [ "$BUNDLE_ID" = "io.github.novarix.telar.dev" ] || { echo "!! dev build has bundle id $BUNDLE_ID" >&2; exit 1; }
   # And the flag main.js keys everything on, as the BOOLEAN it tests for — a
   # CLI override could land as the string "true", which `=== true` ignores.
   # Extracted into a scratch dir: extract-file writes into the cwd.

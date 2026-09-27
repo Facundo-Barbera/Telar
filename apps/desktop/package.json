@@ -49,7 +49,7 @@
     "electron"
   ],
   "build": {
-    "appId": "com.telar.desktop",
+    "appId": "io.github.novarix.telar",
     "productName": "Telar",
     "asar": true,
     "asarUnpack": [
