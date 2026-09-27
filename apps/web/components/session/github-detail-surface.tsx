@@ -58,6 +58,7 @@ import {
   GripVerticalIcon,
   MilestoneIcon,
   RotateCwIcon,
+  SmilePlusIcon,
   SquareKanbanIcon,
   TriangleAlertIcon,
   UserIcon,
@@ -67,6 +68,8 @@ import type {
   GitHubCheck,
   GitHubIssueDetail,
   GitHubReaction,
+  GitHubReactionContent,
+  GitHubReactionResult,
   GitHubLink,
   GitHubMergeMethod,
   GitHubMergeRefusal,
@@ -81,8 +84,10 @@ import {
   issueStatus,
   mergeReadiness,
   MERGE_REFUSAL,
+  applyReaction,
   pullStatus,
   reactionPills,
+  REACTIONS,
   reviewLabel,
   STATUS_LABEL,
   STATUS_TONE,
@@ -339,7 +344,11 @@ const REVIEW_TONE: Record<string, string> = {
  * author bar in light mode, where `bg-muted/40` over --sidebar was 0.952 over
  * 0.955 — a boundary marker nobody could see. On --card it finally is one.
  */
-export function EntryCard({ entry }: { entry: ForgeEntry }) {
+/** Send one reaction for a subject. Supplied by the surface that knows which
+ *  project and which issue it is; absent where nothing may be written. */
+export type ReactHandler = (subjectId: string, content: GitHubReactionContent, react: boolean) => Promise<GitHubReactionResult>;
+
+export function EntryCard({ entry, onReact }: { entry: ForgeEntry; onReact?: ReactHandler }) {
   const [revealed, setRevealed] = useState(false);
   const hidden = entry.minimized === true && !revealed;
   const verdict = entry.state ? (REVIEW_TONE[entry.state.toUpperCase()] ?? "text-muted-foreground") : undefined;
@@ -422,7 +431,12 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
           /* A bare approval has no body, and that is not a missing one. */
           <p className="text-2xs text-muted-foreground">{entry.kind === "review" ? "No comment left with this review." : "No description was written."}</p>
         )}
-        {!hidden && entry.reactions && <ReactionRow reactions={entry.reactions} />}
+        {!hidden && entry.reactions && (
+          <ReactionRow
+            reactions={entry.reactions}
+            {...(onReact && entry.subjectId ? { onReact: onReact.bind(null, entry.subjectId) } : {})}
+          />
+        )}
       </div>
     </div>
   );
@@ -443,35 +457,139 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
  * NO ROW AT ALL WHEN NOBODY REACTED, rather than an empty strip — the ordinary case
  * for most comments, and a strip of nothing on every card is noise.
  */
-export function ReactionRow({ reactions }: { reactions: readonly GitHubReaction[] }) {
-  const pills = reactionPills(reactions);
-  if (pills.length === 0) return null;
+export function ReactionRow({
+  reactions,
+  onReact,
+}: {
+  reactions: readonly GitHubReaction[];
+  /** Present when this row may be changed. Without it the pills are a read. */
+  onReact?: (content: GitHubReactionContent, react: boolean) => Promise<GitHubReactionResult>;
+}) {
+  /**
+   * THE PILLS DRAW LOCAL STATE, NOT THE PROP. A click redraws at once and GitHub's
+   * answer (or the rollback) lands later; the prop only moves when the detail is
+   * read again, and when it does it wins — tracked by identity, which is React's
+   * own "adjust state when a prop changes" pattern rather than an effect.
+   */
+  const [shown, setShown] = useState(reactions);
+  const [source, setSource] = useState(reactions);
+  const [refused, setRefused] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  if (source !== reactions) {
+    setSource(reactions);
+    setShown(reactions);
+  }
+
+  const pills = reactionPills(shown);
+  if (pills.length === 0 && !onReact) return null;
+
+  const toggle = (content: GitHubReactionContent, react: boolean) => {
+    // One write in flight per row: a second click before GitHub answers would
+    // compute its guess from a guess, and roll back to one too.
+    if (!onReact || busy) return;
+    setBusy(true);
+    setRefused(undefined);
+    void applyReaction({ current: shown, content, react, send: () => onReact(content, react), draw: setShown })
+      .then(setRefused)
+      .finally(() => setBusy(false));
+  };
+
   return (
-    <div data-reactions className="mt-1.5 flex flex-wrap gap-1">
-      {pills.map((pill) => (
-        <span
-          key={pill.content}
-          data-mine={pill.viewerHasReacted || undefined}
-          aria-label={`${pill.count} ${pill.label}${pill.viewerHasReacted ? ", including you" : ""}`}
-          title={
-            !pill.viewerHasReacted
-              ? `${pill.count} reacted with ${pill.label}`
-              : pill.count === 1
-                ? `You reacted with ${pill.label}`
-                : `You and ${pill.count - 1} more reacted with ${pill.label}`
-          }
-          className={cn(
+    <div data-reactions className="mt-1.5 flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {pills.map((pill) => {
+          const words = `${pill.count} ${pill.label}${pill.viewerHasReacted ? ", including you" : ""}`;
+          const hover = !pill.viewerHasReacted
+            ? `${pill.count} reacted with ${pill.label}`
+            : pill.count === 1
+              ? `You reacted with ${pill.label}`
+              : `You and ${pill.count - 1} more reacted with ${pill.label}`;
+          const look = cn(
             "inline-flex h-5 items-center gap-1 rounded-full border px-1.5 text-3xs tabular-nums",
             pill.viewerHasReacted ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted-foreground",
-          )}
-        >
-          <span aria-hidden className="text-2xs leading-none">
-            {pill.glyph}
-          </span>
-          {pill.count}
-        </span>
-      ))}
+          );
+          const face = (
+            <>
+              <span aria-hidden className="text-2xs leading-none">
+                {pill.glyph}
+              </span>
+              {pill.count}
+            </>
+          );
+          /* A PILL IS ITS OWN TOGGLE when the row can write, as on the website:
+             pressing yours takes it back, pressing anybody else's adds you. */
+          return onReact ? (
+            <button
+              key={pill.content}
+              type="button"
+              data-mine={pill.viewerHasReacted || undefined}
+              aria-pressed={pill.viewerHasReacted}
+              aria-label={words}
+              title={hover}
+              disabled={busy}
+              onClick={() => toggle(pill.content as GitHubReactionContent, !pill.viewerHasReacted)}
+              className={cn(look, "transition-colors hover:border-primary/60 disabled:opacity-60")}
+            >
+              {face}
+            </button>
+          ) : (
+            <span key={pill.content} data-mine={pill.viewerHasReacted || undefined} aria-label={words} title={hover} className={look}>
+              {face}
+            </span>
+          );
+        })}
+        {onReact && <ReactionPicker reactions={shown} disabled={busy} onPick={toggle} />}
+      </div>
+      {refused && (
+        <p role="status" className="text-3xs leading-snug text-destructive">
+          {refused}
+        </p>
+      )}
     </div>
+  );
+}
+
+/**
+ * GITHUB'S EIGHT, ONE CLICK AWAY. The ones you already used are marked and
+ * picking one again takes it back — the same toggle the pills are, so there is
+ * no second meaning to learn.
+ */
+function ReactionPicker({
+  reactions,
+  disabled,
+  onPick,
+}: {
+  reactions: readonly GitHubReaction[];
+  disabled: boolean;
+  onPick: (content: GitHubReactionContent, react: boolean) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        disabled={disabled}
+        aria-label="Add a reaction"
+        title="Add a reaction"
+        className="inline-flex h-5 items-center rounded-full border border-dashed border-border px-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
+      >
+        <SmilePlusIcon className="size-3" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="flex w-auto flex-row gap-0.5 p-1">
+        {REACTIONS.map(({ content, glyph, label }) => {
+          const mine = reactions.some((reaction) => reaction.content === content && reaction.viewerHasReacted);
+          return (
+            <DropdownMenuItem
+              key={content}
+              aria-label={mine ? `Take back ${label}` : `React with ${label}`}
+              title={label}
+              onClick={() => onPick(content, !mine)}
+              className={cn("justify-center px-1.5 text-sm", mine && "bg-primary/10")}
+            >
+              {glyph}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -483,7 +601,7 @@ export function ReactionRow({ reactions }: { reactions: readonly GitHubReaction[
  * answering a comment appeared above the thing it answered, in a different section.
  * See `buildForgeTimeline` for what is merged and what is dropped.
  */
-function Timeline({ entries, older }: { entries: readonly ForgeEntry[]; older: number }) {
+function Timeline({ entries, older, onReact }: { entries: readonly ForgeEntry[]; older: number; onReact?: ReactHandler }) {
   const said = entries.filter((entry) => entry.kind !== "body").length;
   return (
     <>
@@ -499,7 +617,7 @@ function Timeline({ entries, older }: { entries: readonly ForgeEntry[]; older: n
         {entries
           .filter((entry) => entry.kind !== "body")
           .map((entry) => (
-            <EntryCard key={entry.id} entry={entry} />
+            <EntryCard key={entry.id} entry={entry} {...(onReact ? { onReact } : {})} />
           ))}
       </div>
     </>
@@ -1271,7 +1389,9 @@ export function ForgeDetailSurface({
     comments: thing.comments,
     ...(pull ? { reviews: pull.reviews } : {}),
     ...(thing.reactions ? { reactions: thing.reactions } : {}),
+    ...(thing.subjectId ? { subjectId: thing.subjectId } : {}),
   });
+  const react: ReactHandler = (subjectId, content, add) => api.reactOnProjectForge(projectId, kind, thing.number, { subjectId, content, react: add });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -1308,10 +1428,10 @@ export function ForgeDetailSurface({
          * named the author and the hour.
          */}
         <div className="flex flex-col border-t border-border px-3 py-2.5">
-          <EntryCard entry={timeline[0]!} />
+          <EntryCard entry={timeline[0]!} onReact={react} />
         </div>
 
-        <Timeline entries={timeline} older={thing.olderComments} />
+        <Timeline entries={timeline} older={thing.olderComments} onReact={react} />
 
         {/**
          * CHECKS AT THE BOTTOM, AGAINST THE MERGE.

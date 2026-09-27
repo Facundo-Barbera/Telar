@@ -20,6 +20,9 @@ import type {
   GitHubPullCreateRefusal,
   GitHubPullDetail,
   GitHubReaction,
+  GitHubReactionContent,
+  GitHubReactionRefusal,
+  GitHubReactionResult,
   GitHubReview,
   GitPushRefusal,
 } from "@telar/engine-client";
@@ -440,6 +443,9 @@ export type ForgeEntry = {
    * difference is the whole of what the marker can honestly say.
    */
   sessionId?: string;
+  /** The node id a reaction on this entry is written against. Absent means the
+   *  reactions can be shown and not changed. */
+  subjectId?: string;
   /** What GitHub is holding against this entry (#842). Absent when the engine did
    *  not get to ask — a review has none this read can reach — and the card then
    *  draws no reaction row at all rather than an empty one. */
@@ -455,6 +461,7 @@ export function buildForgeTimeline(input: {
   reviews?: readonly GitHubReview[];
   /** The issue's or pull request's own reactions, which belong on the body card. */
   reactions?: readonly GitHubReaction[];
+  subjectId?: string;
 }): ForgeEntry[] {
   const entries: ForgeEntry[] = input.comments.map((comment) => ({
     id: comment.url,
@@ -469,6 +476,7 @@ export function buildForgeTimeline(input: {
     url: comment.url,
     ...(comment.attribution ? { sessionId: comment.attribution.sessionId } : {}),
     ...(comment.reactions ? { reactions: comment.reactions } : {}),
+    ...(comment.subjectId ? { subjectId: comment.subjectId } : {}),
   }));
 
   for (const [at, review] of (input.reviews ?? []).entries()) {
@@ -509,6 +517,7 @@ export function buildForgeTimeline(input: {
       ...(input.authorAvatar ? { avatar: input.authorAvatar } : {}),
       body: input.body,
       ...(input.reactions ? { reactions: input.reactions } : {}),
+      ...(input.subjectId ? { subjectId: input.subjectId } : {}),
     },
     ...entries,
   ];
@@ -533,7 +542,7 @@ export const REACTIONS = [
   { content: "EYES", glyph: "👀", label: "eyes" },
 ] as const;
 
-export type ReactionContent = (typeof REACTIONS)[number]["content"];
+export type ReactionContent = GitHubReactionContent;
 
 /**
  * The pills a card draws: the reactions somebody used, in GitHub's order, each with
@@ -559,4 +568,63 @@ export function reviewLabel(state: string): string {
     PENDING: "pending",
   };
   return labels[state.toUpperCase()] ?? state.toLowerCase().replaceAll("_", " ");
+}
+
+/**
+ * What the pills say BEFORE GitHub has answered — one reaction added or removed.
+ *
+ * A GUESS, and written as one: the count moves by exactly the viewer, and a group
+ * the viewer leaves empty disappears, so the row looks the way GitHub will draw it
+ * in the ordinary case. The mutation's own answer then replaces the guess with
+ * GitHub's count, which is the only one that knows who else reacted meanwhile.
+ */
+export function toggleReaction(reactions: readonly GitHubReaction[], content: GitHubReactionContent, react: boolean): GitHubReaction[] {
+  const held = reactions.find((reaction) => reaction.content === content);
+  // Asking for what is already true changes nothing — a double click must not
+  // count the viewer twice.
+  if (react === Boolean(held?.viewerHasReacted)) return [...reactions];
+  if (!held) return [...reactions, { content, count: 1, viewerHasReacted: true }];
+  const count = held.count + (react ? 1 : -1);
+  return count <= 0
+    ? reactions.filter((reaction) => reaction !== held)
+    : reactions.map((reaction) => (reaction === held ? { content, count, viewerHasReacted: react } : reaction));
+}
+
+/** What a refused reaction says, in one sentence a person can act on. */
+export const REACTION_REFUSAL: Record<GitHubReactionRefusal, string> = {
+  scope: "Your GitHub sign-in can read here but not react. Run `gh auth refresh -s repo` in a terminal, then try again.",
+  not_permitted: "GitHub will not take a reaction here — it may be locked or archived.",
+  not_found: "That is gone from GitHub. Refresh to see what is there now.",
+  failed: "GitHub did not take that reaction.",
+};
+
+/**
+ * ONE REACTION, OPTIMISTICALLY — the whole write, without a component.
+ *
+ * The guess is drawn at once, GitHub is asked, and then EITHER its count replaces
+ * the guess OR the row goes back to exactly what it was before the click and the
+ * sentence saying why is returned. Pure apart from the two callbacks, so the
+ * rollback — the part that matters when it goes wrong — is testable without a DOM.
+ */
+export async function applyReaction(input: {
+  current: readonly GitHubReaction[];
+  content: GitHubReactionContent;
+  react: boolean;
+  send: () => Promise<GitHubReactionResult>;
+  draw: (reactions: readonly GitHubReaction[]) => void;
+}): Promise<string | undefined> {
+  input.draw(toggleReaction(input.current, input.content, input.react));
+  let result: GitHubReactionResult;
+  try {
+    result = await input.send();
+  } catch (cause) {
+    input.draw(input.current);
+    return cause instanceof Error && cause.message ? cause.message : "The engine did not answer.";
+  }
+  if (result.reacted) {
+    input.draw(result.reactions);
+    return undefined;
+  }
+  input.draw(input.current);
+  return REACTION_REFUSAL[result.refusal];
 }

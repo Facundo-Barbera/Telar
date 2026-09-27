@@ -24,8 +24,11 @@ import {
   PUSH_REFUSAL,
   offersMerge,
   pullStatus,
+  applyReaction,
   reactionPills,
   REACTIONS,
+  REACTION_REFUSAL,
+  toggleReaction,
   reviewLabel,
   STATUS_LABEL,
   STATUS_TONE,
@@ -497,5 +500,83 @@ describe("reactions (#842)", () => {
 
   test("all eight of GitHub's reactions are known, once each", () => {
     expect(new Set(REACTIONS.map((reaction) => reaction.content)).size).toBe(8);
+  });
+});
+
+describe("toggleReaction — the optimistic guess (#842)", () => {
+  const HEART = (count: number, viewerHasReacted: boolean) => ({ content: "HEART", count, viewerHasReacted });
+
+  test("adding to somebody else's pill counts you in", () => {
+    expect(toggleReaction([HEART(2, false)], "HEART", true)).toEqual([HEART(3, true)]);
+  });
+
+  test("a reaction nobody used yet appears as yours, at one", () => {
+    expect(toggleReaction([], "ROCKET", true)).toEqual([{ content: "ROCKET", count: 1, viewerHasReacted: true }]);
+  });
+
+  test("taking back the only one removes the pill rather than leaving a zero", () => {
+    expect(toggleReaction([HEART(1, true)], "HEART", false)).toEqual([]);
+  });
+
+  test("taking back yours from a crowd leaves the crowd", () => {
+    expect(toggleReaction([HEART(4, true)], "HEART", false)).toEqual([HEART(3, false)]);
+  });
+
+  test("asking for what is already true changes nothing — a double click cannot count you twice", () => {
+    expect(toggleReaction([HEART(2, true)], "HEART", true)).toEqual([HEART(2, true)]);
+  });
+});
+
+describe("applyReaction — optimistic, then GitHub's answer or a rollback (#842)", () => {
+  const before = [{ content: "HEART", count: 1, viewerHasReacted: false }];
+
+  test("draws the guess at once, then GitHub's count", async () => {
+    const drawn: unknown[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const pending = applyReaction({
+      current: before,
+      content: "HEART",
+      react: true,
+      send: async () => {
+        await gate;
+        return { reacted: true, reactions: [{ content: "HEART", count: 7, viewerHasReacted: true }] };
+      },
+      draw: (reactions) => drawn.push(reactions),
+    });
+    // The guess is on screen before GitHub has said anything.
+    expect(drawn).toEqual([[{ content: "HEART", count: 2, viewerHasReacted: true }]]);
+    release();
+    expect(await pending).toBeUndefined();
+    expect(drawn.at(-1)).toEqual([{ content: "HEART", count: 7, viewerHasReacted: true }]);
+  });
+
+  test("A REFUSAL ROLLS BACK to exactly what was there, and says why", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyReaction({
+      current: before,
+      content: "HEART",
+      react: true,
+      send: async () => ({ reacted: false, refusal: "scope" }),
+      draw: (reactions) => drawn.push(reactions),
+    });
+    expect(drawn.at(-1)).toBe(before);
+    expect(said).toBe(REACTION_REFUSAL.scope);
+    expect(said).toContain("gh auth refresh");
+  });
+
+  test("an engine that does not answer rolls back too", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyReaction({
+      current: before,
+      content: "HEART",
+      react: true,
+      send: async () => {
+        throw new Error("connection refused");
+      },
+      draw: (reactions) => drawn.push(reactions),
+    });
+    expect(drawn.at(-1)).toBe(before);
+    expect(said).toBe("connection refused");
   });
 });
