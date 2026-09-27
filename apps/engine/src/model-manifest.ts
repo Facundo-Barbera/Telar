@@ -122,6 +122,20 @@ export function claudeFixedWindowOf(id: string, manifest: ModelManifest = BUNDLE
   return fixedWindowOf(claudeProfileOf(id, manifest));
 }
 
+/**
+ * The window, in tokens, a Claude id RUNS — its single window, else the one its
+ * spelling picks: `[1m]` is 1M and a bare id is 200k since #986. Undefined for
+ * an id the manifest does not know, or a spelling its profile does not offer.
+ */
+export function claudeWindowTokensOf(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): number | undefined {
+  const profile = claudeProfileOf(id, manifest);
+  if (!profile) return undefined;
+  const fixed = fixedWindowOf(profile);
+  if (fixed) return fixed;
+  const window: ContextWindow = LONG.test(id) ? "1m" : "200k";
+  return profile.windows.includes(window) ? WINDOW_TOKENS[window] : undefined;
+}
+
 function fixedWindowOf(profile: ManifestProfile | undefined): number | undefined {
   return profile?.windows.length === 1 ? WINDOW_TOKENS[profile.windows[0]!] : undefined;
 }

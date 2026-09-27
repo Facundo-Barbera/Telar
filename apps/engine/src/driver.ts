@@ -44,9 +44,10 @@ import {
   qualifyTelarTool,
   TELAR_BROWSER_MCP_SERVER,
   TELAR_MCP_SERVER,
+  claudeCompactionEnvFor,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
-import { claudeEffortFor, claudeFixedWindowOf } from "./model-manifest";
+import { claudeEffortFor, claudeFixedWindowOf, claudeWindowTokensOf } from "./model-manifest";
 import { collectTelarWall, type TelarSocketLease, type TelarWallPart } from "./telar-socket";
 import { runTools } from "./run/tools";
 import { pluginToolModules } from "./plugins/bundled";
@@ -362,6 +363,18 @@ function isClaudeLongContextFamily(model: string): boolean {
 function claudeContextEnvForModel(model: string | undefined): Record<string, string> | undefined {
   if (model && !isClaudeLongContextFamily(model)) return undefined;
   return { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" };
+}
+
+/**
+ * THE LOGIN'S AUTO-COMPACT PERCENTAGE, MADE EXACT FOR THIS SESSION'S WINDOW
+ * (#587). The login stores a percentage of the model's window; the CLI reads a
+ * bare one against 20,000 tokens less, so this pins the pair for the window the
+ * session's model runs. Applied after the login's own patch, which it refines.
+ */
+function claudeCompactionEnvForModel(env: Record<string, string | undefined> | undefined, model: string | undefined): Record<string, string> | undefined {
+  if (!env || !model) return undefined;
+  const rows = Object.entries(env).flatMap(([name, value]) => (value === undefined ? [] : [{ name, value, sensitive: false }]));
+  return claudeCompactionEnvFor(rows, claudeWindowTokensOf(model));
 }
 
 /**
@@ -1337,6 +1350,7 @@ export function createClaudeDriver(
       const sdkEffort = claudeEffort(claudeEffortFor(model, effort));
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
+      const compactionEnv = claudeCompactionEnvForModel(env, model);
       const defaultEnv = { ...SESSION_STATE_ENV, ...claudeToolSearchEnv(process.env) };
 
       let finalText = "";
@@ -2600,7 +2614,7 @@ export function createClaudeDriver(
          * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
          * opposite instructions that `JSON.stringify` rendered identically.
          */
-        env: canonicalEnvPatch(defaultEnv, env, contextEnv),
+        env: canonicalEnvPatch(defaultEnv, env, contextEnv, compactionEnv),
         effort: sdkEffort ?? null,
         fastMode: fastMode ?? null,
         ultracode: ultracode ?? null,
@@ -2672,7 +2686,7 @@ export function createClaudeDriver(
 
       /** The child's environment with the patch's deletions APPLIED, resolved
        *  once so the query options and the fingerprint cannot disagree. */
-      const childEnv = resolveChildEnv(process.env, defaultEnv, env, contextEnv);
+      const childEnv = resolveChildEnv(process.env, defaultEnv, env, contextEnv, compactionEnv);
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };

@@ -2776,6 +2776,28 @@ test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   expect(seen[2]).toMatchObject({ model: undefined, env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
 });
 
+test("a login's auto-compact percentage is made exact for the session's window (#587)", async () => {
+  const seen: (Record<string, unknown> | undefined)[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push(input.options.env);
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const env = { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "80" };
+  await run(driver, { model: "claude-opus-5-5", env }).result;
+  await run(driver, { model: "claude-opus-5-5[1m]", env }).result;
+  await run(driver, { model: "claude-mystery-9", env }).result;
+  // 160 000 of 200 000 and 800 000 of 1 000 000, through the CLI's own
+  // `effective = window − 20 000`.
+  expect(seen[0]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "200000", CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "88.888889" });
+  expect(seen[1]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "1000000", CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "81.632654" });
+  // A window it cannot name: the login's percentage as it is, and no window
+  // pinned over whatever the engine's own environment holds.
+  expect(seen[2]).toMatchObject({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "80" });
+  expect(seen[2]?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+});
+
 test("MCP tool schemas are deferred behind tool search unless the environment says otherwise", async () => {
   // 142 tools / ~38k tokens rode every request in the 24 Sep benchmark because
   // Claude Code never switched tool search on by itself.
