@@ -39,7 +39,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 8;
+export const ORIENTATION_VERSION = 9;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -119,19 +119,22 @@ It is not this CLI's own notion of a session, and not a chat thread.
 - **Sessions are PEERS.** One you create is not your child: nothing links the
   two, it does not report back, and you learn what it did by asking.
 - **Assignment** — \`sessions_send\` with \`intent: "task"\` is what starts work;
-  creating a session starts none. \`report\` is passive and is for progress
-  mid-task; \`result\` is your FINAL answer — send it last; \`blocker\` asks
-  for intervention. Once a report, result or blocker from your run has reached
-  a subscriber, your run completing does not wake them again (failing or being
-  stopped still does), and two messages from one run reach a subscriber that
-  has not started yet as one. To fix something you already sent, send the
-  correction with \`corrects\` naming that message's runId: unread, it is
-  replaced; already read, the correction arrives at once.
+  creating a session starts none.
+- **Working for someone: end with a \`result\` and ONE line.** When the task
+  is done, \`sessions_send\` intent \`result\` to whoever tasked you — the
+  point first, under ~800 characters — then end your turn with one short line
+  ("Result sent."). The result IS your answer; do not write it out a second
+  time. Need a decision: intent \`blocker\`. Do not send progress
+  \`report\`s: they never wake anyone, and they only arrive with the other
+  session's next turn. A result silences your run's completion, so the
+  session you report to is woken once, not twice. To fix something you
+  already sent, send the correction with \`corrects\` naming that message's
+  runId: unread, it is replaced; already read, it arrives at once.
 - **A message arrives as a NOTICE.** The recipient is handed who sent it,
   which run holds it and how long it is; a \`result\` or \`blocker\` also
   carries up to about 1,500 characters of its text, and a finished turn's wake
-  the start of its answer. Anything longer is fetched with \`sessions_read\`.
-  Put the point first.
+  the start of its answer. That excerpt is inline: call \`sessions_read\` only
+  when it says it was cut. A result needs no reply to acknowledge it.
 - **Settling** is shelving, not acceptance. A settled session is still live and
   resumable; nothing is deleted, and nothing about the work is approved by it.
   Whether work is good enough to keep is a human's decision, made elsewhere:
@@ -148,7 +151,7 @@ It is not this CLI's own notion of a session, and not a chat thread.
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
 \`sessions_subscribe\`, \`sessions_unsubscribe\`, \`sessions_subscriptions\`,
-\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_report_window\`,
+\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_report_window\` (deprecated),
 \`sessions_schedule\`, and the six reads below.
 
 ### Reading a peer without spending your context on it
@@ -161,7 +164,8 @@ name the exact next call.
   adds the shelf, \`projectId\` narrows, \`after\` pages. An engine with hundreds
   of conversations is ordinary and almost all of them are shelved.
 - \`sessions_status\` is the cheap "is it finished yet": an activity, a turn
-  count, and the last few turns. Ask it before you read anything.
+  count, and the last few turns. Ask it before you read anything — but never
+  poll it to wait for a peer; subscribe and end your turn instead.
 - \`sessions_read\` FOLDS by default: recent turns, a line each — what it was
   asked, what it did, how it answered — which is what "what has it been doing"
   means, and a fifth of the size of the journal it stands in for. \`mode:
@@ -169,11 +173,11 @@ name the exact next call.
   \`from: "start"\` reads from the beginning, \`after\` walks forward from a
   cursor, and \`verbose: true\` restores the token counts and auto-approved
   requests that are dropped by default.
-- **A wake or a peer's message is a PING.** It names a session and a run and
-  carries no body. \`sessions_read(sessionId, runId)\` fetches the whole thing —
-  the answer, and a peer's message in full — and long ones come back in verbatim
-  slices on \`resultAfter\` / \`messageAfter\` that concatenate exactly. Fetch when
-  it matters; skip when it does not.
+- **A wake or a peer's message names a session and a run**, with an excerpt
+  inline when there is one. When the excerpt says it was cut,
+  \`sessions_read(sessionId, runId)\` fetches the whole thing — the answer, and a
+  peer's message in full — and long ones come back in verbatim slices on
+  \`resultAfter\` / \`messageAfter\` that concatenate exactly.
 
 ### Asking a conversation a question instead of paging it
 
@@ -194,38 +198,28 @@ trace.
 - \`sessions_grep\` — where a phrase appears in one session's journal. A
   substring, not a regular expression.
 
-### Fanning out: one wake when they are ALL done
+### Waiting for the sessions you tasked: one subscribe, then end your turn
 
-Subscribing to each of N peers wakes you N times, once per result, and never
-says "all done". When you dispatch several peers and want their results
-together, send the tasks, then \`sessions_subscribe({ sessionIds: [...] })\`.
+Send every task first, then ONE \`sessions_subscribe({ sessionIds: [...] })\` —
+one id or many, the same call — then END YOUR TURN. Do not subscribe per
+session, do not poll \`sessions_status\`, and do not sleep.
 
-- You get ONE notification when every member has sent its \`result\` or ended a
-  turn, with a line per member: its final state, the first line of what it said,
-  and the \`sessions_read\` call for the rest.
-- Their results are held for it, not delivered one by one. A \`blocker\` or a
-  parked request still reaches you at once, and a member that sent a blocker
-  stays pending until you answer it.
-- A member settled, archived or deleted before it reported counts as done.
-- It expires after \`timeoutMinutes\` (default 240) with whatever arrived, naming
-  who is still pending. \`sessions_unsubscribe\` takes its id.
+- You are woken ONCE, when every session is done: it sent its \`result\`, a
+  turn failed or was stopped, or it was settled, archived or deleted. A turn
+  that merely ends is not done — a worker waiting on CI ends turns mid-errand.
+- The notice has a line per session with how it ended and the first line of
+  what it said; a single session's is quoted like any notice.
+- A \`blocker\` or a parked request reaches you at once. Answer it; the session
+  stays in the wait until it finishes.
+- It expires after \`timeoutMinutes\` (default 240), naming who never sent a
+  result. \`sessions_unsubscribe\` takes its id.
 
-### Being told on a clock instead of one at a time
+### Nothing interrupts you but a person, a task or a blocker
 
-With several peers reporting, the interleaving is what becomes unreadable, not
-the size of any one message. \`sessions_report_window(minutes)\` holds ROUTINE
-traffic — a \`report\`, and a \`result\` nobody subscribed for — and delivers
-whatever piled up as ONE notification at most that often. \`minutes: null\` goes
-back to being told as each arrives.
-
-- It is YOUR OWN cadence. There is no session argument, and no session can set
-  another's.
-- A \`task\`, a \`blocker\` and a \`result\` you subscribed to are never held.
-- Nothing is lost while it waits: \`sessions_status\` lists what is held and the
-  window it is waiting on. A window that closes with nothing in it costs nothing
-  and delivers nothing.
-- Set it when you are about to dispatch several peers, not after they start
-  talking.
+Everything else waits for your turn to end. Peer \`report\`s, and a
+\`result\` nobody subscribed to, never open a turn of their own: they are
+held, and handed to you with your next turn, whatever starts it — a wake, or
+the person's next message. \`sessions_status\` lists what is held.
 
 ### Being woken on a clock, days from now
 

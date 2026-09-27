@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import type { NotificationDetail } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
-import { agentNotice, INLINE_CHARS, inlineExcerpt } from "../src/agent-notice";
+import { agentNotice, INLINE_CHARS, inlineExcerpt, reportBack } from "../src/agent-notice";
 import { frameAgentMessage, frameAgentNotice, framedSteerText, framedTurnInput, frameWakeMessage, RELAY_RULE } from "../src/attribution";
 import { claudeNotificationContent } from "../src/driver";
 import { codexNotificationInstruction } from "../src/codex-driver";
@@ -165,11 +165,15 @@ test("every intent is announced; a task and a report are never quoted", () => {
     expect(notice).toContain(`sessions_read(sessionId: "session_host", runId: "run_x")`);
     if (intent === "task" || intent === "report") {
       expect(notice).not.toContain("SENSITIVE PAYLOAD");
-      expect(notice.split("\n")).toHaveLength(2);
+      // A task also says how to report back (session-tools audit).
+      expect(notice.split("\n")).toHaveLength(intent === "task" ? 3 : 2);
+      if (intent === "task") expect(notice.split("\n")[2]).toBe(reportBack("session_worker"));
     } else {
       // A result ends an errand and a blocker asks for a decision: the two a
       // coordinator nearly always reads, so they arrive with their words.
       expect(notice).toContain("In full:\n<<<\nSENSITIVE PAYLOAD\n>>>");
+      // And a result needs no acknowledgement turn.
+      expect(notice.endsWith("No reply is needed to acknowledge it.")).toBe(intent === "result");
     }
   }
 });

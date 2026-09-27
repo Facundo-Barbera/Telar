@@ -27,6 +27,7 @@ import { EngineClient, type RuntimeMode, type Session } from "@telar/engine-clie
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver, type SessionsCapability, type TurnDriver } from "../src/driver";
 import { SessionsToolSocket } from "../src/sessions-tools/run-socket";
+import { reportBack } from "../src/agent-notice";
 import { EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";
 
@@ -683,7 +684,9 @@ test("a LONG task is handed to the provider as the assignment notice, with the b
   // opening either. The measurement, not the adjective.
   expect(prompts[0]).not.toContain("Background nobody needs up front.");
   expect(prompts[0]).not.toContain("Rewrite the parser's error recovery.");
-  expect(prompts[0]!.length).toBeLessThan(brief.length / 8);
+  // Measured without the fixed report-back line every task carries (session-
+  // tools audit): what must stay flat is the cost of the BODY.
+  expect(prompts[0]!.replace(reportBack(hostId), "").length).toBeLessThan(brief.length / 8);
   // The record keeps what the notice stands in for, unabridged.
   expect((await client.session(made!.id)).turns[0]?.input).toBe(brief);
 });
