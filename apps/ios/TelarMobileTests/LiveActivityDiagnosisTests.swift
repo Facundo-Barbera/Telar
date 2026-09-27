@@ -50,6 +50,33 @@ import Testing
         #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(nil))
     }
 
+    @Test func appleRefusingTheStartTokenItselfIsToldApartFromEverythingElse() {
+        #expect(LiveActivityDiagnosis.startTokenRejectedByApple(start(410, reason: "Unregistered")))
+        #expect(LiveActivityDiagnosis.startTokenRejectedByApple(start(400, reason: "BadDeviceToken")))
+        #expect(!LiveActivityDiagnosis.startTokenRejectedByApple(start(400, reason: "PayloadTooLarge")))
+        #expect(!LiveActivityDiagnosis.startTokenRejectedByApple(start(410, relay: true)), "the relay's refusal is not Apple's")
+        #expect(!LiveActivityDiagnosis.startTokenRejectedByApple(start(200)))
+        #expect(LiveActivityDiagnosis.line(start(410, reason: "Unregistered"), now: now).hasPrefix("Apple no longer accepts this phone's start token (410 Unregistered"))
+    }
+
+    @Test func aRejectedTokenTellsThePersonHowToGetANewOne() {
+        let lines = LiveActivityDiagnosis.lines(systemAllowed: true, toggle: true, hasStartToken: false, startTokenRejected: true, macs: [], now: now)
+        #expect(lines == ["Apple no longer accepts the start token iOS gave Telar. \(LiveActivityDiagnosis.freshTokenHint)"])
+    }
+
+    @Test func aTokenAppleRefusedIsNeverSentAgainButANewOneIs() {
+        let dead = String(repeating: "a", count: 64), fresh = String(repeating: "b", count: 64)
+        let rejected = StartTokenPolicy.remember(dead, in: [])
+        #expect(StartTokenPolicy.usable(dead, rejected: Set(rejected)) == nil)
+        #expect(StartTokenPolicy.usable(fresh, rejected: Set(rejected)) == fresh)
+        #expect(StartTokenPolicy.usable(nil, rejected: []) == nil, "nothing confirmed this launch, nothing sent")
+        // A fingerprint, not the token, and a bounded list with no repeats.
+        #expect(!rejected.contains(dead) && rejected.first?.count == 16)
+        #expect(StartTokenPolicy.remember(dead, in: rejected) == rejected)
+        let many = (0..<12).reduce([String]()) { StartTokenPolicy.remember(String(repeating: "\($0 % 10)", count: 64) + "\($0)", in: $1) }
+        #expect(many.count == 8)
+    }
+
     @Test func theMacsReportDecodesAsTheMacSendsIt() throws {
         let json = #"{"configured":true,"activity":{"card":false,"lastStart":{"at":1800000000,"status":200,"relay":false}}}"#
         let status = try JSONDecoder().decode(PushStatus.self, from: Data(json.utf8))

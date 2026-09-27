@@ -60,7 +60,12 @@ struct PushStatus: Decodable {
     private var synchronizing = false
     private var syncAgain = false
     private var attemptedRegistration = false
-    private var startToken: String? = UserDefaults.standard.string(forKey: "telar.activity.startToken")
+    /// Only a token iOS confirmed during THIS launch — see `StartTokenPolicy`.
+    private var startToken: String?
+    /// iOS reported a token Apple has already refused, so none is sent.
+    private var startTokenRejected = false
+    private var rejectedStartTokens = UserDefaults.standard.stringArray(forKey: "telar.activity.rejectedStartTokens") ?? []
+    private var handledStartRejectionAt: Double = 0
     private var startTokenWatcher: Task<Void, Never>?
     private var incomingActivityWatcher: Task<Void, Never>?
     var liveActivities = UserDefaults.standard.object(forKey: "telar.activities.enabled") as? Bool ?? true {
@@ -71,6 +76,8 @@ struct PushStatus: Decodable {
     func start(settings: AppSettings) {
         self.settings = settings
         guard startTokenWatcher == nil else { return }
+        // Earlier builds cached the token across launches; that copy is never trusted.
+        defaults.removeObject(forKey: "telar.activity.startToken")
         if let data = Activity<SessionActivityAttributes>.pushToStartToken { saveStartToken(data) }
         startTokenWatcher = Task { [weak self] in
             for await data in Activity<SessionActivityAttributes>.pushToStartTokenUpdates {
@@ -91,13 +98,14 @@ struct PushStatus: Decodable {
         Task { await ReadSync.reconcile(settings: settings) }
     }
     private func saveStartToken(_ data: Data) {
-        startToken = data.map { String(format: "%02x", $0) }.joined()
-        defaults.set(startToken, forKey: "telar.activity.startToken")
+        let confirmed = data.map { String(format: "%02x", $0) }.joined()
+        startToken = StartTokenPolicy.usable(confirmed, rejected: Set(rejectedStartTokens))
+        startTokenRejected = startToken == nil
     }
     /// The Live Activities status lines for Settings — see `LiveActivityDiagnosis`.
     var liveActivityDiagnosis: [String] {
         LiveActivityDiagnosis.lines(systemAllowed: ActivityAuthorizationInfo().areActivitiesEnabled, toggle: liveActivities,
-                                    hasStartToken: startToken != nil,
+                                    hasStartToken: startToken != nil, startTokenRejected: startTokenRejected,
                                     macs: (settings?.hosts ?? []).map { ($0.name, activityReports[$0.id]) })
     }
     func setLiveActivities(_ enabled: Bool) async {
@@ -205,6 +213,21 @@ struct PushStatus: Decodable {
         let refused = reports.values.filter(LiveActivityDiagnosis.startTokenMissingAtRelay).compactMap { $0.lastStart?.at }
         if let latest = refused.max(), latest > resyncedForStartAt {
             resyncedForStartAt = latest
+            if let data = Activity<SessionActivityAttributes>.pushToStartToken { saveStartToken(data) }
+            PushRelayClient.shared.forceRefresh()
+            syncAgain = true
+        }
+        // APPLE REFUSED THE START TOKEN ITSELF (410 Unregistered and the like):
+        // stop sending it, and take a new one only when iOS offers a different one.
+        let rejected = reports.values.filter(LiveActivityDiagnosis.startTokenRejectedByApple).compactMap { $0.lastStart?.at }
+        if let latest = rejected.max(), latest > handledStartRejectionAt {
+            handledStartRejectionAt = latest
+            if let dead = startToken {
+                rejectedStartTokens = StartTokenPolicy.remember(dead, in: rejectedStartTokens)
+                defaults.set(rejectedStartTokens, forKey: "telar.activity.rejectedStartTokens")
+                startToken = nil
+                startTokenRejected = true
+            }
             if let data = Activity<SessionActivityAttributes>.pushToStartToken { saveStartToken(data) }
             PushRelayClient.shared.forceRefresh()
             syncAgain = true
