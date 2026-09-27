@@ -13,8 +13,14 @@
  * display (`a=T`), display a stored image (`a=p`), delete (`a=d`, by `d=a`/`A`
  * and `d=i`/`I`), and the query (`a=q`), whose answer is what a program's
  * auto-detection reads. Placement sizes to `c` columns by `r` rows when asked.
- * Shared memory and file transmission are not spoken: they are answered with an
- * error, as kitty answers any medium it cannot use.
+ *
+ * FILE TRANSMISSION (`t=f`) is PNG only and only where the backend can read a
+ * file — the local desktop host, through `readImageFile`, whose guards live in
+ * apps/desktop/kitty-image-file.js. It is what fastfetch's `kitty-direct` logo
+ * sends. The file's bytes are drawn here and never written back into the PTY;
+ * a refusal is answered with the host's bare error code, never the path.
+ * Shared memory and temporary files are not spoken, and are answered with an
+ * error as kitty answers any medium it cannot use.
  *
  * THE STORE IS REACHED THROUGH THE ADDON'S PRIVATE FIELDS. The package exports
  * only `ImageAddon`; its `ImageStorage` is internal. The alternative was a copy
@@ -27,6 +33,7 @@
  */
 import type { IDisposable, ITerminalAddon, Terminal } from "@xterm/xterm";
 import type { ImageAddon } from "@xterm/addon-image";
+import type { KittyFileAnswer } from "@/lib/terminal-bridge";
 import { KITTY_GRAPHICS_OSC } from "./apc";
 import { charKey, decodeBase64, isPng, numberKey, parseKittyCommand, type KittyCommand } from "./command";
 
@@ -40,6 +47,8 @@ export type KittyImageBackend = {
   decodePng: (bytes: Uint8Array) => Promise<KittyImage | undefined>;
   fromPixels: (bytes: Uint8Array, width: number, height: number, channels: 3 | 4) => KittyImage | undefined;
   scale: (image: KittyImage, width: number, height: number) => KittyImage | undefined;
+  /** Present only where a file can be read — the local desktop host. */
+  readFile?: (path: string) => Promise<KittyFileAnswer>;
 };
 
 type StoredSpec = { marker?: { dispose: () => void } };
@@ -77,6 +86,17 @@ const TRANSMISSION_LIMIT = Math.ceil((PIXEL_LIMIT * 4 * 4) / 3);
 const STORED_LIMIT = 64;
 
 type Pending = { command: KittyCommand; chunks: string[]; size: number };
+
+/** Every answer a file refusal can produce. Fixed text: nothing the host
+ *  reports is echoed, so no path can reach the terminal this way. */
+const FILE_REFUSALS: Record<string, string> = {
+  EINVAL: "EINVAL:not a regular file",
+  ENOENT: "ENOENT:file not found",
+  EPERM: "EPERM:location not allowed",
+  EFBIG: "EFBIG:file too large",
+  EBADPNG: "EBADPNG:not a PNG",
+  EIO: "EIO:could not read file",
+};
 
 export const domImageBackend: KittyImageBackend = {
   decodePng: async (bytes) => {
@@ -189,8 +209,13 @@ export class KittyGraphicsAddon implements ITerminalAddon {
   }
 
   private startTransmission(command: KittyCommand): boolean | Promise<boolean> {
-    if (charKey(command, "t", "d") !== "d") {
+    const medium = charKey(command, "t", "d");
+    if (medium !== "d" && !(medium === "f" && this.backend.readFile)) {
       this.reply(command, "EINVAL:unsupported transmission medium");
+      return true;
+    }
+    if (medium === "f" && numberKey(command, "f", 32) !== 100) {
+      this.reply(command, "EINVAL:file transmission is PNG only");
       return true;
     }
     if (![24, 32, 100].includes(numberKey(command, "f", 32))) {
@@ -225,6 +250,32 @@ export class KittyGraphicsAddon implements ITerminalAddon {
       this.reply(command, "EINVAL:malformed payload");
       return true;
     }
+    if (charKey(command, "t", "d") === "f") return this.readFile(command, bytes);
+    return this.finishWithBytes(command, bytes);
+  }
+
+  /**
+   * The payload is the file's path. What comes back from the host is either
+   * the file's bytes — decoded and drawn here, never written towards the PTY —
+   * or a bare code, answered with a fixed sentence so the path, and anything
+   * else the host saw, never reaches the program that asked.
+   */
+  private async readFile(command: KittyCommand, encodedPath: Uint8Array): Promise<boolean> {
+    const path = new TextDecoder().decode(encodedPath);
+    let answer: KittyFileAnswer;
+    try {
+      answer = await this.backend.readFile!(path);
+    } catch {
+      answer = { ok: false, code: "EIO" };
+    }
+    if (!answer.ok) {
+      this.reply(command, Object.hasOwn(FILE_REFUSALS, answer.code) ? FILE_REFUSALS[answer.code] : FILE_REFUSALS.EIO);
+      return true;
+    }
+    return this.finishWithBytes(command, answer.bytes);
+  }
+
+  private finishWithBytes(command: KittyCommand, bytes: Uint8Array): boolean | Promise<boolean> {
     const format = numberKey(command, "f", 32);
     const channels = format === 24 ? 3 : 4;
     const refusal = format === 100 ? (isPng(bytes) ? undefined : "EBADPNG:not a PNG") : this.rawRefusal(command, bytes, channels);

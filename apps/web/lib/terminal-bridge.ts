@@ -104,6 +104,8 @@ export type TerminalActivity = { id: string; active: boolean; processes: number;
  *  learn the spawn threw. */
 export type TerminalOpened = { id: string; pid?: number; ending?: TerminalEnding };
 
+export type KittyFileAnswer = { ok: true; bytes: Uint8Array } | { ok: false; code: string };
+
 export type TerminalBridge = {
   open: (options: TerminalOpenRequest) => Promise<TerminalOpened>;
   write: (id: string, data: string) => Promise<{ ok: boolean }>;
@@ -136,6 +138,13 @@ export type TerminalBridge = {
   adopt?: (id: string) => Promise<{ ok: boolean }>;
   /** Stop reading it. Does NOT stop the run: the engine owns the process. */
   abandon?: (id: string) => Promise<{ ok: boolean }>;
+  /**
+   * READ A KITTY IMAGE SENT AS A PATH (`t=f`, #884). PNG only, regular files
+   * only, never under /dev, /proc or /sys; a refusal is a bare kitty error
+   * code. Optional because an older preload has none, and then `t=f` is
+   * answered as unsupported.
+   */
+  readImageFile?: (path: string) => Promise<KittyFileAnswer>;
   onData: (listener: (chunk: TerminalChunk) => void) => (() => void) | undefined;
   onExit: (listener: (ending: TerminalEnding) => void) => (() => void) | undefined;
 };
