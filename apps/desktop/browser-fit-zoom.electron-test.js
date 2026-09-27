@@ -217,7 +217,7 @@ async function main() {
 
     // ── 2. FIXED → FIT: from a scaled fixed preset back to native fit ──
     // A stage TALLER than the fitted page: 1280×800 in 640×600 is 640×400 at
-    // 0.5, placed at the TOP of the stage. The view is exactly that page —
+    // 0.5, centred in the stage (y 100). The view is exactly that page —
     // the emulated size × scale — and the page's fixed footer sits at the
     // emulated bottom (800), so nothing of it can paint below the frame.
     manager.setBounds("s", { x: 0, y: 0, width: 640, height: 600 });
@@ -230,8 +230,8 @@ async function main() {
     const presented = manager.state("s").presentation.rect;
     note(`fixed default in 640×600: inner=${fixed.inner} vv=${fixed.vv} floor=${fixed.floor} scale=${fixedScale} rect=${JSON.stringify(fixedRect)} presented=${JSON.stringify(presented)} h=${fixed.h} override=${tab.viewportOverride}`);
     assert(fixed.inner[0] === 1280 && fixed.inner[1] === 800 && fixedScale === 0.5, `fixed preset did not lay out at 1280×800 scaled 0.5 (${fixed.inner} @ ${fixedScale})`);
-    assert(fixedRect.x === 0 && fixedRect.y === 0 && fixedRect.width === 640 && fixedRect.height === 400, `fixed view is not the top-aligned fitted page: ${JSON.stringify(fixedRect)}`);
-    assert(presented.x === 0 && presented.y === 0 && presented.width === 640 && presented.height === 400, `the presentation rect ${JSON.stringify(presented)} is not the view's`);
+    assert(fixedRect.x === 0 && fixedRect.y === 100 && fixedRect.width === 640 && fixedRect.height === 400, `fixed view is not the centred fitted page: ${JSON.stringify(fixedRect)}`);
+    assert(presented.x === 0 && presented.y === 100 && presented.width === 640 && presented.height === 400, `the presentation rect ${JSON.stringify(presented)} is not the view's`);
     assert(fixed.floor === 800, `the page's fixed footer bottoms out at ${fixed.floor}, not the emulated 800 — the page is laid out for something other than the emulated height`);
     // THE WIDGET IS THE VIEW, NOT THE OVERRIDE (the white slab after #922).
     // `view.getBounds()` is only what was asked for; the page's own surface is

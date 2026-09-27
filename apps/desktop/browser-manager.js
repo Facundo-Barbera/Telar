@@ -117,14 +117,25 @@ function resolveColorScheme(value) {
   throw new Error(`Unknown appearance ${JSON.stringify(value)}. Use light, dark or system.`);
 }
 
+/** A presentation zoom: "fit", or a scale in (0, 1]. Above 1 is refused —
+ *  the view never draws a page larger than it is. */
+function resolveZoom(value) {
+  if (value === "fit") return "fit";
+  const zoom = Number(value);
+  if (Number.isFinite(zoom) && zoom >= 0.1 && zoom <= 1) return zoom;
+  throw new Error(`Unknown zoom ${JSON.stringify(value)}. Use "fit" or a scale from 0.1 to 1.`);
+}
+
 /**
  * PRESENTATION-ONLY FIT. The page keeps its intrinsic CSS viewport; when the
  * panel is narrower than that, the native view is scaled down to fit (never
  * up — a small page in a wide panel is shown at 1:1). Returns the scale and
- * the native rect the view should occupy inside `bounds`: centred across,
- * TOP-ALIGNED — the way a browser's device toolbar shows an emulated screen.
- * It used to centre vertically too, which put a band of nothing above a page
- * shorter than the stage and read as the page sitting in the wrong place.
+ * the native rect the view should occupy inside `bounds`, CENTRED ON BOTH
+ * AXES. It was top-aligned for a while; with rails on all four sides the
+ * device reads as a device in the middle of its stage, and the drag math
+ * (the renderer's `resizeToEdge`) assumes the page grows on both sides.
+ * `zoom` is the presentation zoom a person picked ("fit", or a scale that is
+ * never allowed past fit — the view cannot reach outside the stage).
  * Measured in a real Electron (Astra's probe, 2026-09-06): bounds 640×400
  * with `Emulation.setDeviceMetricsOverride {1280×800, scale: 0.5}` keeps
  * innerWidth/innerHeight at 1280×800, native input maps through the scale on
@@ -132,15 +143,16 @@ function resolveColorScheme(value) {
  * The renderer draws its device frame with the same arithmetic
  * (apps/web/lib/browser-viewport.ts `fitViewport`); the two move together.
  */
-function fitViewport(viewport, bounds) {
-  const scale = Math.min(1, bounds.width / viewport.width, bounds.height / viewport.height);
+function fitViewport(viewport, bounds, zoom = "fit") {
+  const fit = Math.min(1, bounds.width / viewport.width, bounds.height / viewport.height);
+  const scale = typeof zoom === "number" ? Math.min(fit, zoom) : fit;
   const width = Math.max(1, Math.round(viewport.width * scale));
   const height = Math.max(1, Math.round(viewport.height * scale));
   return {
     scale,
     rect: {
       x: bounds.x + Math.max(0, Math.floor((bounds.width - width) / 2)),
-      y: bounds.y,
+      y: bounds.y + Math.max(0, Math.floor((bounds.height - height) / 2)),
       width,
       height,
     },
@@ -1899,8 +1911,8 @@ class DesktopBrowserManager {
         const tab = tabs.find((entry) => entry.id === activeTabId);
         if (!tab) return null;
         const viewport = this.effectiveViewport(tab);
-        const fit = this.isNativeFit(tab) ? { scale: 1, rect: { ...this.bounds } } : fitViewport(viewport, this.bounds);
-        return { ...viewport, mode: this.viewportModeOf(tab), scale: fit.scale, rect: fit.rect, bounds: this.bounds, presets: VIEWPORT_PRESETS };
+        const fit = this.isNativeFit(tab) ? { scale: 1, rect: { ...this.bounds } } : fitViewport(viewport, this.bounds, this.zoomOf(tab));
+        return { ...viewport, mode: this.viewportModeOf(tab), scale: fit.scale, zoom: this.zoomOf(tab), rect: fit.rect, bounds: this.bounds, presets: VIEWPORT_PRESETS };
       })(),
       screenshot: null,
       error: null,
@@ -2100,7 +2112,13 @@ class DesktopBrowserManager {
    */
   nativeRect(tab) {
     if (this.isNativeFit(tab)) return { ...this.bounds };
-    return fitViewport(this.viewportOf(tab), this.bounds).rect;
+    return fitViewport(this.viewportOf(tab), this.bounds, this.zoomOf(tab)).rect;
+  }
+
+  /** The presentation zoom picked in the device toolbar: "fit" or a scale.
+   *  Presentation only — the page's layout never sees it. */
+  zoomOf(tab) {
+    return typeof tab.presentationZoom === "number" ? tab.presentationZoom : "fit";
   }
 
   /**
@@ -2110,9 +2128,39 @@ class DesktopBrowserManager {
    * through here; the page reflows wherever the tab is shown (or not), and
    * a snapshot taken before this is stale by definition. A failed emulation
    * puts the record back and throws — never a false "resized".
+   *
+   * `live: true` is a frame of a drag on the device frame's edges: the page
+   * relays out now, but nothing is persisted or emitted — the release (the
+   * same call without `live`) does that once, measured against the size the
+   * drag STARTED at, so an abandoned drag that commits the start size puts
+   * the view back and says nothing changed.
+   *
+   * `zoom` alone ("fit", or a scale up to 1) changes only how the page is
+   * shown, never its layout.
    */
   async resizeTab(tab, input) {
-    const previous = { viewport: tab.viewport, mode: tab.viewportMode };
+    if (input && typeof input === "object" && input.zoom !== undefined && input.preset === undefined && input.width === undefined && input.height === undefined && input.mode === undefined) {
+      tab.presentationZoom = resolveZoom(input.zoom);
+      await this.applyGeometry(tab);
+      this.emitState(tab.scopeKey);
+      return this.viewportOf(tab);
+    }
+    const live = Boolean(input && typeof input === "object" && input.live === true);
+    const dragged = Boolean(tab.liveResizeFrom);
+    const previous = tab.liveResizeFrom || { viewport: tab.viewport, mode: tab.viewportMode };
+    if (live) {
+      tab.liveResizeFrom = previous;
+      const next = resolveViewport(input);
+      const current = this.viewportOf(tab);
+      if (next.width === current.width && next.height === current.height && tab.viewportMode === "fixed") return current;
+      tab.viewport = next;
+      tab.viewportMode = "fixed";
+      tab.generation += 1;
+      tab.staleReason = "the viewport was resized";
+      await this.applyGeometry(tab);
+      return next;
+    }
+    tab.liveResizeFrom = undefined;
     const wantsFit = input && typeof input === "object" && input.mode === "fit";
     if (wantsFit) {
       tab.viewportMode = "fit";
@@ -2126,7 +2174,11 @@ class DesktopBrowserManager {
     const current = this.viewportOf(tab);
     const before = previous.viewport || DEFAULT_VIEWPORT;
     const changed = current.width !== before.width || current.height !== before.height || (previous.mode === "fit") !== (tab.viewportMode === "fit");
-    if (!changed) return current;
+    if (!changed) {
+      // The drag's frames moved the view; the release puts it back.
+      if (dragged) await this.applyGeometry(tab);
+      return current;
+    }
     try {
       await this.applyGeometry(tab);
     } catch (error) {
@@ -3906,7 +3958,10 @@ class DesktopBrowserManager {
     if (kind === "resize") {
       const tab = action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index);
       await this.resizeTab(tab, action);
-      return this.state(scope);
+      // A drag frame answers nothing: the renderer already draws the size it
+      // asked for, and building the whole state per frame is the cost `live`
+      // exists to avoid.
+      return action.live === true ? null : this.state(scope);
     }
     return this.performAction(scope, action, "human");
   }
@@ -4149,7 +4204,7 @@ class DesktopBrowserManager {
     // (#895). The CSS-space scale the renderer draws its frame with stays
     // unzoomed, which is why `state()` computes that one itself.
     if (!this.isTabVisible(tab)) return { emulate: true, width: viewport.width, height: viewport.height, scale: 1 };
-    const scale = fitViewport(viewport, this.bounds).scale * this.cockpitZoom();
+    const scale = fitViewport(viewport, this.bounds, this.zoomOf(tab)).scale * this.cockpitZoom();
     // THE WIDGET STAYS THE VIEW'S SIZE. `place` gives the view this rect;
     // the emulation must not resize the page's widget past it (see
     // `syncViewport`), so the size travels with the target and its key.
@@ -5335,4 +5390,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, keyChord, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
+module.exports = { DesktopBrowserManager, managerForScope, keyChord, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, resolveZoom, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
