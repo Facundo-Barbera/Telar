@@ -46,9 +46,10 @@
  *      `max-h-72` the `<pre>` had, for the same reason.
  */
 
-import { parsePatchFiles } from "@pierre/diffs";
+import { parsePatchFiles, type SelectedLineRange } from "@pierre/diffs";
 import { PatchDiff } from "@pierre/diffs/react";
 
+import type { LineSide } from "@/lib/drag-reference";
 import { cn } from "@/lib/utils";
 
 /**
@@ -126,6 +127,18 @@ export function readPatchShape(patch: string): PatchReading {
   }
 }
 
+/**
+ * PIERRE'S SELECTION, IN TELAR'S WORDS (#855). The library names a side by
+ * which half of the diff it is on; a reference names it by which version of
+ * the file the numbers count — `deletions` are lines of the file before the
+ * change. A side left unsaid is a context or added line, which is today's file.
+ */
+export function toLineRange(range: SelectedLineRange): { start: number; end: number; startSide: LineSide; endSide: LineSide } {
+  const startSide: LineSide = range.side === "deletions" ? "before" : "after";
+  const endSide: LineSide = (range.endSide ?? range.side) === "deletions" ? "before" : "after";
+  return { start: range.start, end: range.end, startSide, endSide };
+}
+
 /** How a patch is laid out. Named for the toolbar rather than for the library:
  *  "stacked" is what the control says, `unified` is what Pierre calls it. */
 export type DiffLayout = "stacked" | "split";
@@ -141,6 +154,7 @@ export function DiffCodeView({
   patch,
   layout,
   wrap,
+  onLinesSelected,
   className,
 }: {
   /** A unified diff, as git printed it. */
@@ -155,6 +169,9 @@ export function DiffCodeView({
    * a long line scrolls. The toggle is a preference, never a threshold.
    */
   wrap: boolean;
+  /** Lines were selected, or the selection cleared. Absent leaves selection
+   *  off, for a surface with nowhere to send one. */
+  onLinesSelected?: (range: SelectedLineRange | null) => void;
   className?: string;
 }) {
   return (
@@ -169,6 +186,9 @@ export function DiffCodeView({
         overflow: wrap ? "wrap" : "scroll",
         // See note 1: the row above is the header.
         disableFileHeader: true,
+        // THE COMMITTED SELECTION, not every step of the drag: the affordance
+        // it raises should appear once, when the reader lets go.
+        ...(onLinesSelected ? { enableLineSelection: true, onLineSelected: onLinesSelected } : {}),
       }}
     />
   );
