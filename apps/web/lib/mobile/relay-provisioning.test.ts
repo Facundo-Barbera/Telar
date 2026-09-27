@@ -61,7 +61,7 @@ function setup() {
 const registration: MobileRegistration = {
   hostId: "12345678-1234-1234-1234-123456789abc",
   token: "a".repeat(64),
-  topic: "com.telar.mobile",
+  topic: "io.github.novarix.telar",
   sandbox: false,
   enabled: true,
   completions: true,

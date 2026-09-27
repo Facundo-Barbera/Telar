@@ -19,7 +19,7 @@ import { deliverRecord } from "./worker";
 
 const record = (patch: Partial<PushRecord> = {}): PushRecord => ({
   hostId: "12345678-1234-1234-1234-123456789abc", hostName: "Studio", token: "a".repeat(64), pushToStartToken: "b".repeat(64),
-  topic: "com.telar.mobile", sandbox: false, enabled: false, completions: false, previews: false, liveActivities: true,
+  topic: "io.github.novarix.telar", sandbox: false, enabled: false, completions: false, previews: false, liveActivities: true,
   mutedSessions: [], activities: [], deviceId: "phone", revision: "r1", updatedAt: 0, seen: {}, activitySent: {}, ...patch,
 });
 const work = { id: "one", title: "Private task", activity: "working", activityAt: 1 };

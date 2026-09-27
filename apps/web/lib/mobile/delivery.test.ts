@@ -18,7 +18,7 @@ import { canReach, changedSessions, deliverRecord, heartbeatDue, heartbeatWanted
  */
 
 const registration: MobileRegistration = {
-  hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: false,
+  hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
   enabled: true, completions: true, previews: false, mutedSessions: [], activities: [],
 };
 const working: SessionSignal = { id: "one", title: "A task", activity: "working", activityAt: 1000 };
@@ -116,8 +116,8 @@ const credential: RelayCredential = { handle: "h".repeat(43), keyId: "k".repeat(
 describe("which records this Mac sends to", () => {
   test("a parked record is pruned once superseded or left for two weeks, and nothing else is", () => {
     const now = PARKED_TTL_MS * 2;
-    const live = record({ deviceId: "phone", topic: "com.telar.mobile", updatedAt: 1 });
-    const superseded = record({ deviceId: "phone", topic: "com.telar.mobile.dev", sandbox: true, parked: true, updatedAt: now });
+    const live = record({ deviceId: "phone", topic: "io.github.novarix.telar", updatedAt: 1 });
+    const superseded = record({ deviceId: "phone", topic: "io.github.novarix.telar.dev", sandbox: true, parked: true, updatedAt: now });
     const abandoned = record({ deviceId: "gone", parked: true, updatedAt: now - PARKED_TTL_MS });
     const recent = record({ deviceId: "lonely", parked: true, updatedAt: now - 1000 });
     expect(stalePushRecords([live, superseded, abandoned, recent], now)).toEqual([superseded, abandoned]);

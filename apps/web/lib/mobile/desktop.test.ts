@@ -52,7 +52,7 @@ describe("which transitions reach the Mac", () => {
   });
 
   test("agrees with the phone's rule, including the completions gate and the ungated failure", () => {
-    const phone: MobileRegistration = { hostId: "h", token: "t", topic: "com.telar.mobile", sandbox: false, enabled: true, completions: false, previews: true, mutedSessions: [], activities: [] };
+    const phone: MobileRegistration = { hostId: "h", token: "t", topic: "io.github.novarix.telar", sandbox: false, enabled: true, completions: false, previews: true, mutedSessions: [], activities: [] };
     const { state } = pass(emptyDesktopState(), [working]);
     const prefs = { completions: false, previews: true };
     expect(desktopNotices(state, [finished], undefined, prefs).notices).toEqual([]);
@@ -204,7 +204,7 @@ describe("presence over the fork channel", () => {
 
 describe("the Mac takes an alert, and the phone's seen still advances", () => {
   const phone: PushRecord = {
-    hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: false,
+    hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
     enabled: true, completions: true, previews: false, mutedSessions: [], activities: [],
     deviceId: "paired", revision: "r1", updatedAt: 1000, baselined: true, seen: { s1: signalKey(working) }, activitySent: {},
   };

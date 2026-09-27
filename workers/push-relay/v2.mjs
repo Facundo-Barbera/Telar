@@ -30,8 +30,12 @@
 import { verifyAssertion, verifyAttestation } from './appattest.mjs';
 import { DAY, DEAD_TOKEN, appleReason, b64url, readText, reply, unb64 } from './shared.mjs';
 
-/** Bundles a phone may register as. Debug builds are `.dev` and use APNs sandbox. */
-const BUNDLES = new Set(['com.telar.mobile', 'com.telar.mobile.dev']);
+/**
+ * Bundles a phone may register as. Debug builds are `.dev` and use APNs sandbox.
+ * The `com.telar.mobile` pair is the app before #1042; phones paired with it
+ * keep working until they move to the new app.
+ */
+const BUNDLES = new Set(['io.github.novarix.telar', 'io.github.novarix.telar.dev', 'com.telar.mobile', 'com.telar.mobile.dev']);
 const hex = /^[a-f0-9]{64,512}$/i;
 const id = /^[a-zA-Z0-9_-]{1,128}$/;
 const HANDLE = /^[A-Za-z0-9_-]{43}$/; // 32 random bytes

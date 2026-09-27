@@ -28,7 +28,7 @@ describe("Notify on", () => {
  * reads as a bad week rather than as something to act on.
  */
 const device = (patch: Partial<PushRelayStatus["devices"][number]> = {}): PushRelayStatus["devices"][number] => ({
-  deviceId: "phone", name: "Facundo's iPhone", paired: true, topic: "com.telar.mobile", sandbox: false,
+  deviceId: "phone", name: "Facundo's iPhone", paired: true, topic: "io.github.novarix.telar", sandbox: false,
   enabled: true, liveActivities: false, updatedAt: 1000, consecutiveFailures: 0, parked: false, transport: "v2", ...patch,
 });
 

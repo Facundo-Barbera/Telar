@@ -6,7 +6,7 @@ import { v2Body } from "./relay-v2";
 import { deliverRecord, readSyncPass } from "./worker";
 
 const registration: MobileRegistration = {
-  hostId: "12345678-1234-1234-1234-123456789ABC", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: false,
+  hostId: "12345678-1234-1234-1234-123456789ABC", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
   enabled: true, completions: true, previews: true, mutedSessions: [], activities: [],
 };
 const working = (id: string): SessionSignal => ({ id, title: `Secret title ${id}`, activity: "working", activityAt: 1000, lastTurnSequence: 1, lastReadTurnSequence: 1 });
@@ -36,7 +36,7 @@ describe("the silent push", () => {
   test("is background, silent, to the app's own bundle, and carries ids only", () => {
     const delivery = readSyncDelivery(registration, ["a", "b"]);
     expect(delivery.kind).toBe("background");
-    expect(delivery.topic).toBe("com.telar.mobile");
+    expect(delivery.topic).toBe("io.github.novarix.telar");
     expect(delivery.token).toBe(registration.token);
     expect(delivery.payload).toEqual({ aps: { "content-available": 1 }, read: { host: registration.hostId, sessions: ["a", "b"] } });
     expect(JSON.stringify(delivery.payload)).not.toContain("Secret");
