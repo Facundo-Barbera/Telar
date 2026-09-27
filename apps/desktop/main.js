@@ -47,6 +47,7 @@ const { createSitePermissionStore } = require("./site-permissions");
 const { resolveHelperExec } = require("./helper-exec");
 const { bundledHelperDaemon, stopHelperDaemon } = require("./computer-use-stop");
 const devUpdate = require("./dev-update");
+const desktopHandoff = require("./desktop-handoff");
 const updateWatchdog = require("./update-watchdog");
 const serviceWorkerWatchdog = require("./service-worker-watchdog");
 const { createProcessMetricsReader } = require("./process-metrics");
@@ -3224,6 +3225,34 @@ function configureAutoUpdater() {
   void checkForUpdates();
   const timer = setInterval(() => void checkForUpdates(), UPDATE_CHECK_INTERVAL_MS);
   timer.unref?.(); // a pending check must never be the reason the app stays alive
+  // The move to the new bundle id (#1042), which Squirrel cannot carry. Inert
+  // in any build but com.telar.desktop, and until the new feed has a manifest.
+  desktopHandoff.start({
+    channel: () => readUpdatePrefs().channel,
+    key: updateProxyKey(),
+    quit: quitForHandoff,
+    log: autoUpdater.logger,
+  });
+}
+
+/**
+ * THE HAND-OFF'S QUIT, which is an install's quit: a planned restart for the
+ * engine, and the terminals closed before the quit rather than during it —
+ * see `telar:updates:install` below for why both.
+ */
+async function quitForHandoff() {
+  app.isQuitting = true;
+  writePlannedRestart(path.join(telarHome(), "engine"));
+  if (terminalHost && terminalHost.size > 0) {
+    try {
+      await terminalHost.closeAll();
+      await terminalHost.drain();
+    } catch (error) {
+      logShell("error", `closing terminals before the hand-off failed: ${error?.stack || error}`);
+    }
+  }
+  terminalsClosedForQuit = true;
+  app.quit();
 }
 
 ipcMain.handle("telar:updates:check", async () => {
@@ -3671,6 +3700,22 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
   });
 }
 
+/**
+ * THE NEW BUILD'S HALF OF THE HAND-OFF (#1042). A swap helper is waiting for
+ * this launch to prove it works, and the bar is the smoke's: an engine with a
+ * registered worker. A launch that doesn't reach it writes nothing, and the
+ * helper puts the previous app back.
+ */
+async function recordHandoffBoot(home) {
+  if (!app.isPackaged || DEV_BUILD) return;
+  try {
+    if (desktopHandoff.awaitingConfirmation()) await waitForEngine(home, { requireWorker: true });
+    desktopHandoff.recordBoot((line) => logShell("info", line));
+  } catch (err) {
+    logShell("error", `hand-off boot check failed: ${err?.message || err}`);
+  }
+}
+
 // --- Smoke mode (no window, ever) -------------------------------------------
 async function runSmoke() {
   try {
@@ -3886,6 +3931,7 @@ if (SMOKE) {
           const home = telarHome();
           startEngineChild(home);
           engineDiscovery = await waitForEngine(home);
+          await recordHandoffBoot(home);
           const port = await getStablePort();
           await publishTailscaleServe(home, port);
           startServer(port, home);
