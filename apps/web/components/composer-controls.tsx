@@ -1715,7 +1715,7 @@ export function ContextPill({
 }
 
 /** Shown while background work outlives the turn that started it. */
-export function BackgroundPresence({ count, onStop }: { count: number; onStop: () => void }) {
+export function BackgroundPresence({ count, onStop, onView }: { count: number; onStop: () => void; onView?: () => void }) {
   if (count === 0) return null;
   return (
     <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-card/60 px-2.5 py-1.5">
@@ -1726,9 +1726,16 @@ export function BackgroundPresence({ count, onStop }: { count: number; onStop: (
         </span>
         {count} {count === 1 ? "task" : "tasks"} still working
       </span>
-      <Button type="button" size="xs" variant="outline" onClick={onStop}>
-        Stop
-      </Button>
+      <span className="flex items-center gap-1.5">
+        {onView && (
+          <Button type="button" size="xs" variant="outline" onClick={onView} title="Show running tasks in Processes" aria-label="Show running tasks in Processes">
+            View
+          </Button>
+        )}
+        <Button type="button" size="xs" variant="outline" onClick={onStop}>
+          Stop
+        </Button>
+      </span>
     </div>
   );
 }
