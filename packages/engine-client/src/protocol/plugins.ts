@@ -190,24 +190,22 @@ export const ProjectPlugins = z.object({
 export type ProjectPlugins = z.infer<typeof ProjectPlugins>;
 
 /**
- * WHICH PLUGINS STILL WRITE A LEGACY MIRROR, and why this is a list rather than
- * a date.
+ * THE TWO PLUGINS THAT PREDATE THE MAP, and the `Project` key each one used to
+ * live under.
  *
- * While an id is in here, every write to the map ALSO writes the matching
- * `Project.latex` / `Project.dataScience` block, in the same atomic write. The
- * mirror exists for exactly one reader: an OLDER engine binary. `Project` is a
- * plain `z.object`, so an old engine parsing this registry strips the unknown
- * `plugins` key and, on its next write, drops it — leaving only the mirror. A
- * user who rolls back a nightly therefore keeps their LaTeX and Data Science
- * settings, and rolling forward re-migrates from the mirror.
- *
- * REMOVING AN ID FROM THIS LIST IS A DELIBERATE COMPATIBILITY DECISION, not
- * something that happens on a schedule. It says: we no longer support rolling
- * back to an engine that predates the plugin map. Until somebody decides that
- * out loud, the mirrors stay.
+ * THE MIRROR IS RETIRED (P1c). The engine used to write `Project.latex` /
+ * `Project.dataScience` beside the map so a rollback to an engine older than
+ * the map kept its settings; that is no longer supported. What remains is
+ * READING: a record an older engine wrote still carries these keys, so the
+ * engine folds them into the map when it opens the registry
+ * (`migrateLegacyPluginFields`), and a client reading such a record off an
+ * older engine still gets the right answer from `readProjectPlugins`.
  */
-export const MIRRORED_PLUGINS = ["latex", "data-science"] as const;
-export type MirroredPlugin = (typeof MIRRORED_PLUGINS)[number];
+export const LEGACY_PLUGIN_KEYS = {
+  latex: "latex",
+  "data-science": "dataScience",
+} as const satisfies Record<string, "latex" | "dataScience">;
+export type LegacyPlugin = keyof typeof LEGACY_PLUGIN_KEYS;
 
 /**
  * EVERY TOOL PREFIX A BUNDLED PLUGIN OWNS, declared in the protocol rather than
@@ -233,11 +231,6 @@ export type MirroredPlugin = (typeof MIRRORED_PLUGINS)[number];
  */
 export const BUNDLED_PLUGIN_TOOL_PREFIXES = ["ds", "notebook", "latex", "hello"] as const;
 
-/** The legacy `Project` key each mirrored plugin shadows. */
-export const LEGACY_PLUGIN_KEYS: Record<MirroredPlugin, "latex" | "dataScience"> = {
-  latex: "latex",
-  "data-science": "dataScience",
-};
 
 /**
  * A legacy block is `{enabled, ...settings}` flattened; the map keeps `enabled`
@@ -277,8 +270,8 @@ export function readProjectPlugins(project: {
   if (parsed.success) return { plugins: parsed.data, migrated: true };
 
   const entries: Record<string, PluginConfig> = {};
-  for (const id of MIRRORED_PLUGINS) {
-    const legacy = project[LEGACY_PLUGIN_KEYS[id]];
+  for (const [id, key] of Object.entries(LEGACY_PLUGIN_KEYS)) {
+    const legacy = project[key];
     if (legacy && typeof legacy === "object" && !Array.isArray(legacy)) {
       entries[id] = pluginConfigFromLegacy(legacy as Record<string, unknown>);
     }
@@ -287,21 +280,40 @@ export function readProjectPlugins(project: {
 }
 
 /**
- * The legacy blocks a given map implies — INCLUDING THE ABSENCES. A plugin with
- * no entry yields `undefined`, and the caller must DELETE the legacy key rather
- * than leave it: a mirror that is only ever added is the resurrection bug with
- * extra steps.
+ * FOLD A RECORD'S LEGACY BLOCKS INTO ITS MAP, AND DROP THEM — the one-way
+ * migration the engine runs on every registry open.
+ *
+ * NON-DESTRUCTIVE AND IDEMPOTENT:
+ *   - an existing map entry always wins; a legacy block only fills an id the
+ *     map does not name, and its settings come across whole;
+ *   - a record with no legacy keys is returned untouched (`changed: false`), so
+ *     a second run — or a project nobody configured — writes nothing, and no
+ *     empty map is invented for it.
  */
-export function legacyMirrors(plugins: ProjectPlugins): Record<"latex" | "dataScience", Record<string, unknown> | undefined> {
-  const mirrors = { latex: undefined, dataScience: undefined } as Record<
-    "latex" | "dataScience",
-    Record<string, unknown> | undefined
-  >;
-  for (const id of MIRRORED_PLUGINS) {
-    const config = plugins.entries[id];
-    mirrors[LEGACY_PLUGIN_KEYS[id]] = config ? legacyFromPluginConfig(config) : undefined;
+export function migrateLegacyPluginFields(project: Record<string, unknown>): { project: Record<string, unknown>; changed: boolean } {
+  const legacyKeys = Object.values(LEGACY_PLUGIN_KEYS).filter((key) => project[key] !== undefined);
+  if (legacyKeys.length === 0) return { project, changed: false };
+  const current = ProjectPlugins.safeParse(project.plugins);
+  const entries: Record<string, PluginConfig> = current.success ? { ...current.data.entries } : {};
+  for (const [id, key] of Object.entries(LEGACY_PLUGIN_KEYS)) {
+    const legacy = project[key];
+    if (entries[id] !== undefined || !legacy || typeof legacy !== "object" || Array.isArray(legacy)) continue;
+    entries[id] = pluginConfigFromLegacy(legacy as Record<string, unknown>);
   }
-  return mirrors;
+  const { latex: _latex, dataScience: _dataScience, ...rest } = project;
+  void _latex;
+  void _dataScience;
+  return { project: { ...rest, plugins: { version: PROJECT_PLUGINS_VERSION, entries } }, changed: true };
+}
+
+/**
+ * A plugin's entry as one flat block — `{enabled, ...settings}`, the shape the
+ * Data Science and LaTeX settings panes and resolvers read. `undefined` when
+ * the project has no entry for it (which means off).
+ */
+export function pluginBlock(project: { plugins?: unknown; latex?: unknown; dataScience?: unknown }, id: string): Record<string, unknown> | undefined {
+  const config = readProjectPlugins(project).plugins.entries[id];
+  return config ? legacyFromPluginConfig(config) : undefined;
 }
 
 /** Whether a project has a plugin switched on. The single question every gate asks. */

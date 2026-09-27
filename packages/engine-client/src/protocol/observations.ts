@@ -234,21 +234,6 @@ export const WorkerClaim = z.object({
    */
   mcpServers: z.array(McpServer).optional(),
   /**
-   * THE PROJECT OPTED INTO DATA SCIENCE, resolved at claim time like the
-   * rest: present means the `notebook_*` and `ds_*` toolkits register for this
-   * turn, absent means they do not exist. A worktree session whose configured
-   * interpreter is not in ITS tree gets nothing here — no fallback to the
-   * project root, so a worktree stays the isolated thing it was cut to be.
-   */
-  dataScience: z.object({ pythonPath: z.string().min(1) }).optional(),
-  /**
-   * THE PROJECT OPTED INTO LATEX, resolved at claim time like `dataScience`
-   * above: present means the `latex_*` toolkit registers for this turn. The
-   * kind rides along so tool descriptions can be honest about how packages
-   * behave (tectonic fetches automatically; TeX Live wants tlmgr).
-   */
-  latex: z.object({ kind: z.enum(["tectonic", "texlive"]) }).optional(),
-  /**
    * EVERY OTHER PLUGIN THE PROJECT TURNED ON, as ids. The two fields above are
    * the two features that predate the host; this is the one that does not grow
    * when a third arrives.
