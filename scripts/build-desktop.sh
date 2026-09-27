@@ -19,6 +19,7 @@ REF="origin/main"
 OUT="apps/desktop/release/from-origin"
 TARGETS="dir"
 PUBLISH_R2=0
+FEED_PREFIX=""
 CHANNEL=""
 # An explicit version, used by the tag-triggered workflows: when a tag already
 # named the version, the build must not re-derive a different one.
@@ -32,6 +33,8 @@ while [ $# -gt 0 ]; do
     --version) VERSION_OVERRIDE="${2:?--version needs a value}"; shift 2 ;;
     --version=*) VERSION_OVERRIDE="${1#*=}"; shift ;;
     --publish-r2) PUBLISH_R2=1; shift ;;
+    --feed-prefix) FEED_PREFIX="${2:?--feed-prefix needs a value}"; shift 2 ;;
+    --feed-prefix=*) FEED_PREFIX="${1#*=}"; shift ;;
     --ref=*) REF="${1#*=}"; shift ;;
     --out=*) OUT="${1#*=}"; shift ;;
     --targets=*) TARGETS="${1#*=}"; shift ;;
@@ -42,7 +45,7 @@ usage: build-desktop.sh [--ref <git ref, default origin/main>]
                          [--out <dir, default apps/desktop/release/from-origin>]
                          [--targets <csv electron-builder mac targets, default dir>]
                          [--channel beta|nightly]
-                         [--publish-r2]
+                         [--publish-r2] [--feed-prefix <key prefix>]
 
 --targets controls what electron-builder produces (e.g. "dir", "zip,dmg").
 Signing and notarization are NOT flags here — electron-builder picks them up
@@ -61,6 +64,11 @@ build whatever version is already committed at --ref.
 compatible API, for electron-updater's generic provider to serve from later.
 Requires R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET,
 UPDATE_PROXY_URL, UPDATE_PROXY_KEY in the environment, and the "aws" CLI on PATH.
+
+--feed-prefix puts every uploaded object under <prefix>/ and bakes
+$UPDATE_PROXY_URL/<prefix> into the app as its feed URL. Any appId other than
+com.telar.desktop must publish with one: the bucket root is frozen for the
+legacy id's installs (scripts/feed-prefix.sh).
 HELP
       exit 0 ;;
     *) echo "build-desktop: unknown arg: $1" >&2; exit 2 ;;
@@ -75,6 +83,12 @@ if [ "$PUBLISH_R2" -eq 1 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=feed-prefix.sh
+. "$SCRIPT_DIR/feed-prefix.sh"
+if [ -n "$FEED_PREFIX" ] && ! feed_prefix_valid "$FEED_PREFIX"; then
+  echo "build-desktop: --feed-prefix '$FEED_PREFIX' is not a relative key path" >&2
+  exit 2
+fi
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 
 # Resolve --out to an absolute dir (relative paths are anchored at the repo root
@@ -125,6 +139,14 @@ git -C "$REPO_ROOT" worktree add --detach "$SNAP" "$SHA"
 
 # From here on, sources come ONLY from the snapshot.
 cd "$SNAP"
+
+# Refused before the long build, not after it: the id comes from the snapshot,
+# since that is what will be packaged.
+if [ "$PUBLISH_R2" -eq 1 ]; then
+  APP_ID="$(NODE_OPTIONS= bun -e 'process.stdout.write(require(process.argv[1]).build.appId)' "$SNAP/apps/desktop/package.json")"
+  feed_refuse "$APP_ID" "$FEED_PREFIX" || exit 2
+  log "publishing $APP_ID to ${FEED_PREFIX:-the bucket root}"
+fi
 
 # --- frozen install (snapshot's own bun.lock) --------------------------------
 log "bun install --frozen-lockfile (snapshot)"
@@ -197,7 +219,7 @@ fi
 # ran last. Set it here, from the same --channel that picked the version.
 CONFIG_OVERRIDES=()
 if [ "$PUBLISH_R2" -eq 1 ]; then
-  CONFIG_OVERRIDES+=("-c.publish.url=$UPDATE_PROXY_URL" "-c.extraMetadata.updateProxyKey=$UPDATE_PROXY_KEY")
+  CONFIG_OVERRIDES+=("-c.publish.url=$(feed_publish_url "$UPDATE_PROXY_URL" "$FEED_PREFIX")" "-c.extraMetadata.updateProxyKey=$UPDATE_PROXY_KEY")
 fi
 if [ -n "$CHANNEL" ]; then
   CONFIG_OVERRIDES+=("-c.publish.channel=$CHANNEL")
@@ -342,7 +364,7 @@ if [ "$PUBLISH_R2" -eq 1 ]; then
     exit 1
   fi
   R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-  log "publishing ${#ARTIFACTS[@]} artifact(s) to r2://$R2_BUCKET"
+  log "publishing ${#ARTIFACTS[@]} artifact(s) to r2://$R2_BUCKET/$FEED_PREFIX"
   # IMMUTABLE ASSETS FIRST, MUTABLE FEED LAST. The *-mac.yml feed names the
   # zip/dmg/blockmap an updater will fetch; uploading it before those assets
   # exist would advertise files that are not there yet if the run dies
@@ -351,7 +373,7 @@ if [ "$PUBLISH_R2" -eq 1 ]; then
     AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
     AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
     AWS_DEFAULT_REGION="auto" \
-      aws s3 cp "$1" "s3://$R2_BUCKET/$(basename "$1")" --endpoint-url "$R2_ENDPOINT"
+      aws s3 cp "$1" "s3://$R2_BUCKET/$(feed_object_key "$FEED_PREFIX" "$1")" --endpoint-url "$R2_ENDPOINT"
   }
   # Guarded like every other array expansion in this repo's shell (#808), even
   # though the count check above already proves ARTIFACTS is non-empty here.
@@ -383,7 +405,7 @@ if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
   done
   if [ "$PUBLISH_R2" -eq 1 ]; then
     echo
-    echo "  published to r2://$R2_BUCKET"
+    echo "  published to r2://$R2_BUCKET/$FEED_PREFIX"
   else
     echo
     echo "To publish to a private GitHub Release, run e.g.:"
