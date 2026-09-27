@@ -691,8 +691,8 @@ export function ReviewThreadsBlock({
 }
 
 const HUNK_LINE: Record<"add" | "del" | "ctx", string> = {
-  add: "bg-success/10 text-foreground",
-  del: "bg-destructive/10 text-foreground",
+  add: "tint-success text-foreground",
+  del: "tint-destructive text-foreground",
   ctx: "text-muted-foreground",
 };
 const HUNK_MARK: Record<"add" | "del" | "ctx", string> = { add: "+", del: "−", ctx: " " };
@@ -737,7 +737,7 @@ export function ReviewThreadCard({ thread, onReact }: { thread: GitHubReviewThre
       {!folded && (
         <>
           {lines.length > 0 && (
-            <pre className="overflow-x-auto border-b border-border py-0.5 font-mono text-3xs leading-relaxed">
+            <pre className="overflow-x-auto border-b border-border bg-card py-0.5 font-mono text-3xs leading-relaxed">
               {lines.map((line, index) => (
                 <div key={index} className={cn("flex px-2", HUNK_LINE[line.kind])}>
                   <span aria-hidden className="w-3 shrink-0 select-none opacity-60">
