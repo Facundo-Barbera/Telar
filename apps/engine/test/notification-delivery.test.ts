@@ -7,7 +7,8 @@
  *
  *   - `settled_only` is the default, so a wake arriving while the subscriber
  *     has a live turn is HELD rather than steered into the middle of its
- *     reasoning. `always` is the opt-in and still interrupts.
+ *     reasoning. `always` is the opt-in: queued at once, but (since the
+ *     session-tools audit) it waits for the running turn rather than steering.
  *   - everything held for one session arrives as ONE notification listing it,
  *     rather than as four turns.
  *   - a waiting notification is re-announced at most once more; past that the
@@ -34,6 +35,8 @@ afterEach(() => {
 function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-notify-"));
   homes.push(home);
+  // A resolvable model, so `claimNextTurn` can build a claim (held mail rides its notes).
+  fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
   const store = new EngineStore(home, Date.now, { executionStorage: "sqlite" });
   stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
@@ -83,15 +86,21 @@ test("settled_only is the default: a wake at a busy subscriber is held, not stee
   expect(store.pendingNotifications("session_host")).toHaveLength(0);
 });
 
-test("completionWake: always is the opt-in, and still interrupts", () => {
+// THE SESSION-TOOLS AUDIT: only a person, a task or a blocker steers into a
+// running turn now. `always` still opts out of the settled_only hold — the wake
+// is queued as its own turn at once — but it waits for the turn in flight.
+test("completionWake: always queues its wake at once, but no longer steers into the running turn", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a", completionWake: "always" });
-  busy(store);
+  const host = busy(store);
 
   runTurn(store, "session_a", "run_a");
 
-  expect(store.turns("session_host").find((turn) => turn.state === "steering")?.notification?.runId).toBe("run_a");
+  expect(store.turns("session_host").find((turn) => turn.state === "steering")).toBeUndefined();
   expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  expect(queued.map((turn) => turn.notification?.runId)).toEqual(["run_a"]);
+  expect(store.turns("session_host").find((turn) => turn.runId === host.runId)!.state).toBe("running");
 });
 
 test("re-subscribing changes the policy and leaves what it does not name", () => {
@@ -298,7 +307,9 @@ test("a newer fact about one run in a queued cohort replaces only that run's lin
   ]);
 });
 
-test("a peer's report to an idle host joins the wake already queued there", () => {
+// THE SESSION-TOOLS AUDIT: a report no longer joins the queued wake's
+// notification. It is held, and handed over as a claim note on that wake.
+test("a peer's report to an idle host rides the wake already queued there, as a note", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a" });
   runTurn(store, "session_a", "run_a");
@@ -306,11 +317,18 @@ test("a peer's report to an idle host joins the wake already queued there", () =
   store.submitTurn("session_b", { runId: "run_b", input: "work" });
   const claim = store.claimTurn("session_b", "worker_child")!.claim!;
   store.markRunning("session_b", "run_b", claim.token);
-  store.submitAgentTurn("session_host", { runId: "run_msg", input: "found the bug", intent: "report" }, { sessionId: "session_b", runId: "run_b", claimToken: claim.token });
+  const sent = store.submitAgentTurn("session_host", { runId: "run_msg", input: "found the bug", intent: "report" }, { sessionId: "session_b", runId: "run_b", claimToken: claim.token });
+  expect(sent.turn.agentDelivery).toBe("passive");
 
   const woken = notifications(store).filter((turn) => turn.agentDelivery !== "passive");
   expect(woken).toHaveLength(1);
-  expect(woken[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["wake", "peer_message"]);
+  expect(woken[0]!.notification!.entries).toBeUndefined();
+  expect(store.pendingNotifications("session_host").map((each) => each.runId)).toEqual(["run_msg"]);
+
+  const next = store.claimNextTurn("worker_host")!;
+  expect(next.turn.runId).toBe(woken[0]!.runId);
+  expect(next.notes!.some((note) => note.startsWith("Held for you while you were busy") && note.includes("run_msg"))).toBe(true);
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
   // The message itself is still on its own turn, whole, for sessions_read.
   expect(store.turns("session_host").find((turn) => turn.runId === "run_msg")!.input).toBe("found the bug");
 });
@@ -508,25 +526,27 @@ test("a result the host has CLAIMED is not rewritten, and its completion is reco
   expect(store.claimTurn("session_host", "worker_host")).toBeUndefined();
 });
 
-test("a result STEERED into the host's running turn counts as read; the completion does not wake it again", () => {
+// THE SESSION-TOOLS AUDIT: an awaited result no longer steers into a busy
+// host's turn. It is queued, so the ending that follows folds into it (#590) —
+// one turn carrying both, nothing held, nothing recorded separately.
+test("an awaited result to a BUSY host is queued, not steered, and its completion folds into it", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a", once: true });
   const host = busy(store);
-  // Awaited and the host is busy on a driver with live steering, so the result
-  // goes into the turn in flight rather than the queue — the orchestrator's
-  // shape in the issue, where the redundant turn then produced its own wake.
   const worker = reports(store);
-  expect(worker.sent.state).toBe("steering");
-  expect(store.steerForWorker("worker_host").map((each) => each.steerRunId)).toEqual([worker.sent.runId]);
-  store.ackSteer("session_host", worker.sent.runId, host.token);
+  expect(worker.sent).toMatchObject({ state: "queued", agentDelivery: "wake" });
+  expect(store.steerForWorker("worker_host")).toHaveLength(0);
 
   worker.end();
 
   expect(store.pendingNotifications("session_host")).toHaveLength(0);
-  expect(recordOf(store, worker.runId)).toBeDefined();
+  expect(recordOf(store, worker.runId)).toBeUndefined();
   expect(store.subscriptionsFor("session_host")).toHaveLength(0);
-  store.completeTurn("session_host", host.runId, host.token, { text: "integrated it" });
-  expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
+  store.completeTurn("session_host", host.runId, host.token, { text: "done thinking" });
+  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  expect(queued).toHaveLength(1);
+  expect(queued[0]!.runId).toBe(worker.sent.runId);
+  expect(queued[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
 });
 
 test("a run that FAILS after sending its result still wakes the host — that is actionable", () => {
@@ -586,7 +606,7 @@ test("a completion after a sent result never interrupts, even under completionWa
   expect(recordOf(store, worker.runId)).toBeDefined();
 });
 
-test("a result nobody was awaiting still reaches the host once — the completion after it is only recorded", () => {
+test("a result nobody was awaiting stays held for the next turn — the completion after it is only recorded", () => {
   const { store } = setup();
   // Sent while the host was busy and UNSUBSCRIBED: passive, and in the mailbox.
   // The host subscribes afterwards, which is the only way this completion can
@@ -600,13 +620,13 @@ test("a result nobody was awaiting still reaches the host once — the completio
   worker.end();
 
   // Counted from when it was SENT: the ending is recorded, and the result
-  // itself still waits in the mailbox for the host's next idle moment.
+  // itself waits in the mailbox. Peer mail never opens a turn of its own, so
+  // the host's turn ending does not flush it either — it rides the next turn.
   expect(recordOf(store, worker.runId)).toBeDefined();
   expect(store.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
   store.completeTurn("session_host", host.runId, host.token, { text: "done" });
-  const woken = store.turns("session_host").filter((turn) => turn.state === "queued");
-  expect(woken).toHaveLength(1);
-  expect(woken[0]!.notification!.kind).toBe("peer_message");
+  expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
+  expect(store.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
 });
 
 test("the merge spends a delivery; a fresh errand joining the queued turn does not", () => {
@@ -671,8 +691,8 @@ test("a passive report is never merged into — nothing was queued to merge", ()
   const { store } = setup();
   // No `turn_completed` subscription when the result was sent, and the host is
   // WORKING, so the send is passive: it completed on arrival and reached no
-  // model. (Since #631 part 2 an IDLE host would have taken it as a turn — busy
-  // is what passive means now.) There is nothing queued for a later wake to
+  // model. (Since the session-tools audit it would be passive on an idle host
+  // too.) There is nothing queued for a later wake to
   // fold into, so the failure must be announced in its own right.
   const host = busy(store);
   store.subscribe("session_host", { targetSessionId: "session_a", events: ["turn_failed"] });
@@ -692,38 +712,41 @@ test("a passive report is never merged into — nothing was queued to merge", ()
 /**
  * ONE WAKE PER EVENT — #919 widened. A worker that REPORTS and then ends its
  * run woke the coordinator twice: once for the report, once for the ending.
- * Most mid-work messages are reports, so this was the double wake seen all day.
+ * Since the session-tools audit the report opens no turn at all: it is held,
+ * and the ending's wake carries it — one wake, naming both.
  */
-test("a report the host has read, then the run's clean ending: one wake, the ending recorded", () => {
+test("a held report, then the run's clean ending: one wake naming both", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a" });
   const worker = reports(store, { intent: "report" });
-  // An idle host takes a report as a turn (#631), so it was delivered.
-  expect(worker.sent.agentDelivery).toBe("wake");
-  const sent = notifications(store)[0]!;
-  const token = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", sent.runId, token);
+  expect(worker.sent.agentDelivery).toBe("passive");
+  expect(notifications(store).filter((turn) => turn.state === "queued")).toHaveLength(0);
 
   worker.end();
 
-  expect(recordOf(store, worker.runId)).toBeDefined();
+  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  expect(queued).toHaveLength(1);
+  expect(queued[0]!.notification!.entries?.map((entry) => [entry.kind, entry.wakeKind])).toEqual([
+    ["peer_message", undefined],
+    ["wake", "turn_completed"],
+  ]);
+  expect(recordOf(store, worker.runId)).toBeUndefined();
   expect(store.pendingNotifications("session_host")).toHaveLength(0);
-  store.completeTurn("session_host", sent.runId, token, { text: "read it" });
-  expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
 });
 
-test("a run that FAILS after a report still wakes the host", () => {
+test("a run that FAILS after a held report still wakes the host, carrying the report", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a" });
   const worker = reports(store, { intent: "report" });
-  const sent = notifications(store)[0]!;
-  const token = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", sent.runId, token);
 
   store.failTurn("session_a", worker.runId, worker.token, { code: "driver_failed", message: "the CLI died" });
 
   expect(recordOf(store, worker.runId)).toBeUndefined();
-  expect(store.pendingNotifications("session_host").map((each) => each.wakeKind)).toEqual(["turn_failed"]);
+  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  expect(queued).toHaveLength(1);
+  expect(queued[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
+  expect(queued[0]!.notification!.entries!.at(-1)!.wakeKind).toBe("turn_failed");
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
 });
 
 test("a completion that said nothing — the background-claim turn — is recorded, not woken on", () => {
@@ -749,28 +772,32 @@ test("a completion that said nothing — the background-claim turn — is record
   expect(notifications(store).filter((turn) => turn.state === "queued").map((turn) => turn.notification!.runId)).toEqual(["run_spoke"]);
 });
 
-test("a report and a result from one run, before the host has started: one delivery naming both", () => {
+// THE SESSION-TOOLS AUDIT: the report is held rather than queued, so the result
+// is the delivery and the report rides it as a claim note.
+test("a report and a result from one run, before the host has started: one delivery, the report as its note", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a" });
   const worker = reports(store, { intent: "report", sent: "Parser done; tests next." });
+  expect(worker.sent).toMatchObject({ state: "completed", agentDelivery: "passive" });
   const result = store.submitAgentTurn(
     "session_host",
     { runId: "run_sent_second", input: "Tests pass. Done.", intent: "result" },
     { sessionId: "session_a", runId: worker.runId, claimToken: worker.token },
   );
+  expect(result.turn).toMatchObject({ state: "queued", agentDelivery: "wake", input: "Tests pass. Done." });
+  expect(store.pendingNotifications("session_host").map((each) => each.runId)).toEqual([worker.sent.runId]);
 
+  // The clean ending folds into the waiting result (#590).
+  worker.end();
   const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
   expect(queued).toHaveLength(1);
-  expect(queued[0]!.runId).toBe(worker.sent.runId);
-  expect(queued[0]!.notification!.entries).toHaveLength(2);
-  expect(queued[0]!.notification!.body).toContain("run_sent_second");
-  // The second message is kept whole, as history, and is not mail.
-  expect(result.turn).toMatchObject({ state: "completed", agentDelivery: "passive", input: "Tests pass. Done." });
-  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  expect(queued[0]!.runId).toBe("run_sent_second");
+  expect(queued[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
 
-  // And the clean ending folds into the same waiting turn (#590).
-  worker.end();
-  expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(1);
+  const claim = store.claimNextTurn("worker_host")!;
+  expect(claim.turn.runId).toBe("run_sent_second");
+  expect(claim.notes!.some((note) => note.startsWith("Held for you while you were busy") && note.includes(worker.sent.runId))).toBe(true);
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
 });
 
 /**

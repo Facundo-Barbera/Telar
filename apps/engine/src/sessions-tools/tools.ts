@@ -404,7 +404,10 @@ function endedNote(ended: SessionSettleEnded | undefined): string {
   return parts.length ? ` Settling ended what it left running: ${parts.join(" and ")}.` : "";
 }
 
-const REPORT_WINDOW = `Be told about routine reports on a clock instead of one at a time: minutes holds them and delivers the batch as one notification, null goes back to arrival. Sets YOUR OWN cadence, nobody else's. A task, a blocker and a result you subscribed to still arrive at once.`;
+const REPORT_WINDOW = `Deprecated, and does nothing: reports never open a turn now. They are held and handed over with your next turn, whatever starts it. A task, a blocker and a result you subscribed to still arrive at once.`;
+
+const REPORT_WINDOW_RETIRED =
+  "Nothing changed: reports never open a turn now. They are held, and handed over with your next turn — a wake, or the person's next message. sessions_status lists what is held. This tool goes away in a later release.";
 
 /**
  * THE `filesIncomplete` CLAUSE COSTS 45 OF THE 47 CHARACTERS the wide tool wall
@@ -1996,25 +1999,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             `Minutes to hold routine reports for, "${HOLD_REPORTS}" to keep them as mail and never take them as turns, or null to be told as each one arrives.`,
           ),
       },
-      async (args) => {
+      async () => {
         if (!capability.self) return err(NO_SELF);
-        const minutes = args.minutes === null ? null : args.minutes === HOLD_REPORTS ? HOLD_REPORTS : Number(args.minutes);
-        try {
-          const session = await capability.setReportWindow(capability.self.sessionId, minutes);
-          const set = session.reportWindowMinutes;
-          return json({
-            sessionId: session.id,
-            reportWindowMinutes: set ?? null,
-            note:
-              set === undefined
-                ? "Routine reports now reach you as they arrive, each as its own turn."
-                : set === HOLD_REPORTS
-                  ? "Routine reports — a report, and a result nobody is waiting on — are now HELD as mail and never turned into a turn. No window closes and no tick delivers them; sessions_status lists what is waiting and it stays there until you read it. A task, a blocker and a result you subscribed to still reach you at once, unchanged. Your own next turn still drains the box, because a session that is taking a turn is awake by demonstration."
-                  : `Routine reports — a report, and a result nobody is waiting on — are now held and delivered together at most every ${set} minute${set === 1 ? "" : "s"}. Nothing is lost while they wait: sessions_status lists what is held. A task, a blocker and a result you subscribed to still reach you at once, and a window that closes with nothing in it delivers nothing.`,
-          });
-        } catch (error) {
-          return err(`Could not set this session's report window: ${failure(error)}`);
-        }
+        return json({ sessionId: capability.self.sessionId, deprecated: true, note: REPORT_WINDOW_RETIRED });
       },
     ),
     /**
