@@ -374,3 +374,39 @@ test("the same set in another order is the same cohort", () => {
   const first = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
   expect(store.subscribeCohort("session_host", { sessionIds: ["session_b", "session_a", "session_b"] })).toMatchObject({ id: first.id, alreadySubscribed: true });
 });
+
+test("a restart is not a stop: the cohort survives it, pending, with its original expiry", () => {
+  const { store, clock, restart } = setup();
+  task(store, "session_a", "one");
+  const cohort = store.subscribeCohort("session_host", { sessionIds: ["session_a"], timeoutMinutes: 60 });
+  clock.advance(10 * 60_000);
+  const after = restart();
+  expect(after.turns("session_a").at(-1)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  expect(after.cohortsFor("session_host")).toEqual([cohort]);
+  clock.advance(49 * 60_000);
+  expect(after.sweepCohorts()).toEqual([]);
+
+  const proof = task(after, "session_a", "two");
+  after.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
+  const notices = woken(after).filter((turn) => turn.notification?.cohortId);
+  expect(notices).toHaveLength(1);
+  expect(notices[0]!.notification!.body).toContain('session_a "worker a" — result: Done.');
+});
+
+test("a member cut off by a restart is pending when subscribed to, not stopped", () => {
+  const { store, restart } = setup();
+  task(store, "session_a", "one");
+  const after = restart();
+  const cohort = after.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  expect(cohort.members[0]!.outcome).toBeUndefined();
+  expect(woken(after).filter((turn) => turn.notification?.cohortId)).toHaveLength(0);
+});
+
+test("a turn failed as interrupted by a worker shutting down does not end the member's wait", () => {
+  const { store } = setup();
+  const proof = task(store, "session_a", "one");
+  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  store.failTurn("session_a", proof.runId, proof.claimToken, { code: "interrupted", message: "Telar quit while this turn was running." });
+  expect(store.cohortsFor("session_host")[0]!.members[0]!.outcome).toBeUndefined();
+  expect(woken(store).filter((turn) => turn.notification?.cohortId)).toHaveLength(0);
+});

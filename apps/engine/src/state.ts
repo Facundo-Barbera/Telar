@@ -543,6 +543,17 @@ const ALL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "t
 const TERMINAL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "turn_stopped"];
 
 /**
+ * A TURN TELAR CUT OFF, NOT ONE THAT ENDED ITS ERRAND: stopped by a boot
+ * (`recover`) or a lost worker (`retireWorkerRegistration`), or failed as
+ * `interrupted` by a worker shutting down. Nobody chose to stop the work, and
+ * the next message continues it — so for a cohort it is not an ending.
+ */
+function cutOffByTelar(turn: Turn): boolean {
+  if (turn.state === "stopped") return turn.stopReason === "engine_restart" || turn.stopReason === "worker_unavailable";
+  return turn.state === "failed" && turn.failure?.code === "interrupted";
+}
+
+/**
  * THE STATES IN WHICH A RESULT HAS REACHED THE MODEL — issue #919.
  *
  * `queued` is deliberately absent: a result nobody has read is what
@@ -13342,7 +13353,8 @@ export class EngineStore {
     if (said?.agentIntent === "blocker") return { ...base, blocked: true };
     if (said) return { ...base, outcome: "result", fetch: { sessionId: subscriberSessionId, runId: said.runId }, firstLine: firstLineOf(said.input), ...excerptOf(said.input), at };
     // A turn that merely completed is not the errand's end; only its result is.
-    if (last.state === "completed") return base;
+    // Nor is one a restart cut off: it was not stopped, it was interrupted.
+    if (last.state === "completed" || cutOffByTelar(last)) return base;
     const kind: WakeKind = last.state === "failed" ? "turn_failed" : "turn_stopped";
     return { ...base, ...this.cohortOutcome(target.id, kind, last, { ...(last.resultText ? { resultText: last.resultText } : {}), ...(last.failure ? { failure: last.failure } : {}) }), at };
   }
@@ -13371,6 +13383,8 @@ export class EngineStore {
   private advanceCohortMember(sessionId: string, kind: WakeKind, turn: Turn, context: { resultText?: string; failure?: Turn["failure"] }): void {
     if (!TERMINAL_WAKE_KINDS.includes(kind)) return;
     if (turn.origin === "provider" && turn.providerReason?.kind === "background_task") return;
+    // A worker shutting down fails its turn as `interrupted`; the member stays pending.
+    if (cutOffByTelar(turn)) return;
     const completed = kind === "turn_completed";
     const errandFrom = new Map<string, boolean>();
     const onErrand = (subscriberSessionId: string): boolean => {
