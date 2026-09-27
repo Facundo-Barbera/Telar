@@ -34,7 +34,8 @@ import type {
   DataScienceToolchain,
   Project,
 } from "@telar/engine-client";
-import { pluginEnabled, readProjectPlugins } from "@telar/engine-client";
+import { pluginBlock } from "@telar/engine-client";
+import { blockPatch } from "@/lib/plugins/sections";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -96,15 +97,10 @@ function toConfig(env: { path: string; root?: string; manager: DataScienceEnviro
 
 export function DataScienceSection({ project, onChange }: { project: Project; onChange: (project: Project) => void }) {
   const router = useRouter();
-  const config = project.dataScience;
-  // WHETHER IT IS ON COMES FROM THE MAP, NEVER THE MIRROR (#338, same class as
-  // #269). `project.dataScience` is written beside the plugin map for one
-  // reader — an older engine binary — so a project switched off through the map
-  // keeps a mirror still saying `enabled: true`, and reading it here drew an
-  // On switch over a plugin the engine refuses to run.
-  const enabled = pluginEnabled(readProjectPlugins(project).plugins, "data-science");
-  // The chosen interpreter still comes from the mirror, which is also what this
-  // pane writes through: it is kept across an off/on, and the rows below say so.
+  // The plugin map's entry, flattened to `{enabled, ...settings}`. The chosen
+  // interpreter is kept across an off/on, and the rows below say so.
+  const config = pluginBlock(project, "data-science") as DataScienceConfig | undefined;
+  const enabled = config?.enabled === true;
   const current = config?.python;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -132,7 +128,7 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
     setSaving(true);
     setError(undefined);
     try {
-      const answer = await api.updateProject(project.id, { dataScience: next });
+      const answer = await api.updateProject(project.id, blockPatch("data-science", next));
       onChange(answer.project);
       setAdding(undefined);
     } catch (cause) {

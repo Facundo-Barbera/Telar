@@ -21,6 +21,9 @@ type Context = { params: Promise<{ projectId: string }> };
  * LaTeX — could be toggled by the project's own page (which calls the engine
  * client directly) and not through this route, so the same switch worked on one
  * surface and silently did nothing on the other.
+ *
+ * The legacy `dataScience` / `latex` arms are still forwarded for released
+ * clients; this app itself writes only `plugins`.
  */
 type ProjectPatch = Parameters<Awaited<ReturnType<typeof engineClient>>["updateProject"]>[1];
 

@@ -43,7 +43,7 @@ struct PluginConfig: Decodable, Equatable {
 ///
 /// A per-key fallback to legacy is the resurrection bug, not a kindness:
 /// disabling Data Science deletes the map entry, the next read falls back to
-/// the stale mirror, and the feature turns itself back on.
+/// a stale legacy block, and the feature turns itself back on.
 struct ProjectPlugins: Decodable, Equatable {
     var version: Int
     var entries: [String: PluginConfig]
@@ -85,7 +85,8 @@ enum ProjectAvailability: String, Codable, Equatable {
 }
 
 /// `GET /api/projects` — the record the cockpit reads to decide which panel
-/// tabs a session gets. The plugin map and the two legacy opt-ins it shadows.
+/// tabs a session gets. The plugin map, and the two legacy opt-ins an older
+/// engine may still send; a current engine never writes them.
 struct Project: Decodable, Identifiable, Equatable {
     var id: EngineID
     var name: String

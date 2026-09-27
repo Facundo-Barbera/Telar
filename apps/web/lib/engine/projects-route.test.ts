@@ -114,14 +114,14 @@ describe("PATCH /api/projects/:projectId", () => {
     expect(stored?.plugins?.entries?.hello?.enabled).toBe(true);
   });
 
-  test("the legacy arms still travel beside the new ones", async () => {
+  test("the legacy arms still travel beside the new ones, and land in the map", async () => {
+    // Released clients still send them; the engine writes them into the map.
     const client = await ready();
+    const latex = async () => (await client.listProjects()).projects.find((project) => project.id === "project_one")?.plugins?.entries?.latex;
     await patch({ latex: { enabled: true, mainFile: "paper.tex" } });
-    expect(
-      (await client.listProjects()).projects.find((project) => project.id === "project_one")?.latex,
-    ).toEqual({ enabled: true, mainFile: "paper.tex" });
+    expect(await latex()).toEqual({ enabled: true, settings: { mainFile: "paper.tex" } });
     await patch({ latex: null });
-    expect((await client.listProjects()).projects.find((project) => project.id === "project_one")?.latex).toBeUndefined();
+    expect(await latex()).toBeUndefined();
   });
 
   test("the engine owns the refusal, and its status comes through unchanged", async () => {

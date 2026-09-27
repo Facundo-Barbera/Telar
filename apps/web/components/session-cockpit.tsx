@@ -12,7 +12,6 @@ import {
   type Item,
   pluginEnabled,
   readProjectPlugins,
-  type Project,
   type ProviderDriverKind,
   type RuntimeMode,
   type Session,
@@ -193,17 +192,10 @@ export function describeTurnState(state: TurnState): { label: string; tone: "act
  * WHICH PLUGIN SURFACES THIS PROJECT OFFERS — the Data tab, the LaTeX tab, and
  * whether an `.ipynb` opens as a notebook rather than as text.
  *
- * READ FROM THE MAP, NEVER FROM THE LEGACY MIRROR (#269). `Project.dataScience`
- * and `Project.latex` are written beside the map for one reader only — an older
- * engine binary, so a rollback keeps your settings — and a project that
- * disabled Data Science through the map keeps a mirror still saying `true`.
- * Reading that mirror is the resurrection bug `readProjectPlugins` exists to
- * prevent: the cockpit offered the Data tab and routed notebooks to a surface
- * whose plugin route was disabled. `readProjectPlugins` migrates an unmigrated
- * project from the mirror, so this is also correct for a project that predates
- * the map — see `PROJECT_PLUGINS_VERSION`.
+ * READ FROM THE PLUGIN MAP (#269), through `readProjectPlugins` — the one read
+ * path, which also answers for a record an older engine sent without a map.
  */
-export function cockpitPlugins(project: Pick<Project, "plugins" | "latex" | "dataScience"> | undefined): {
+export function cockpitPlugins(project: Parameters<typeof readProjectPlugins>[0] | undefined): {
   dataScience: boolean;
   latex: boolean;
 } {

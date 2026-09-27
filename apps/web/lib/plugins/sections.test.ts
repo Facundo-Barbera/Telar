@@ -9,7 +9,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { PluginStatus } from "@telar/engine-client";
-import { BESPOKE_PLUGIN_PANES, enablePatch, hasBespokePane, machineSettingsPatch, projectPluginSections } from "./sections";
+import { BESPOKE_PLUGIN_PANES, blockPatch, enablePatch, hasBespokePane, machineSettingsPatch, projectPluginSections } from "./sections";
 
 const status = (id: string, extra: Partial<PluginStatus["meta"]> = {}, rest: Partial<PluginStatus> = {}): PluginStatus => ({
   meta: {
@@ -87,6 +87,19 @@ test("enabling writes the map entry; disabling REMOVES it", () => {
   expect(enablePatch("hello", true, { greeting: "hi" })).toEqual({
     plugins: { hello: { enabled: true, settings: { greeting: "hi" } } },
   });
+});
+
+test("a bespoke pane's flat block is written as a map entry, never a legacy key", () => {
+  const python = { source: "chosen", path: ".venv/bin/python", resolvedAt: 1 };
+  expect(blockPatch("data-science", { enabled: true, python })).toEqual({
+    plugins: { "data-science": { enabled: true, settings: { python } } },
+  });
+  // Off with a kept interpreter stays a stored `{enabled:false}` with its settings.
+  expect(blockPatch("data-science", { enabled: false, python })).toEqual({
+    plugins: { "data-science": { enabled: false, settings: { python } } },
+  });
+  expect(blockPatch("latex", { enabled: true })).toEqual({ plugins: { latex: { enabled: true } } });
+  expect(blockPatch("latex", null)).toEqual({ plugins: { latex: null } });
 });
 
 test("no plugins is an empty nav, not a crash", () => {

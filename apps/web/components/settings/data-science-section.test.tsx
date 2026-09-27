@@ -1,12 +1,11 @@
 /**
- * #338 — THE PANE READS THE MAP, NOT THE MIRROR.
+ * #338 — THE PANE READS THE MAP.
  *
- * `Project.dataScience` is kept beside the plugin map for ONE reader: an older
- * engine binary, so a rollback keeps your settings. It is not a source of
- * truth, and a project switched off through the map keeps a mirror still
- * saying `enabled: true`. This pane read that mirror, so its switch said On
- * over a plugin the engine refuses to run — the same resurrection bug #269
- * fixed in the cockpit, found again on the settings page.
+ * The engine no longer writes or returns `Project.dataScience`, but a record
+ * from an older engine may still carry it. Beside a map it is never a source of
+ * truth: a project switched off through the map could carry a legacy block
+ * still saying `enabled: true`, and reading it drew an On switch over a plugin
+ * the engine refuses to run — the resurrection bug #269 fixed in the cockpit.
  *
  * RENDERED RATHER THAN SCANNED: the claim is what the person sees on the
  * switch, and the source could go on calling the right helper while the value
@@ -27,11 +26,12 @@ mock.module("next/navigation", () => ({
 
 const { DataScienceSection } = await import("./data-science-section");
 
-/** A real interpreter in the legacy block, so "off" cannot be mistaken for
+/** A real interpreter in the settings, so "off" cannot be mistaken for
  *  "nothing was ever configured". */
 const PYTHON = { source: "chosen", path: ".venv/bin/python", resolvedAt: 1, manager: "venv" } as const;
 
-const project = (extra: Partial<Project>): Project =>
+/** Loose on purpose: an older engine's record may carry the legacy block. */
+const project = (extra: Partial<Project> & { dataScience?: unknown }): Project =>
   ({ id: "project_1", name: "Telar", path: "/tmp/telar", ...extra }) as Project;
 
 const render = (value: Project) => renderToStaticMarkup(<DataScienceSection project={value} onChange={() => {}} />);
@@ -46,30 +46,37 @@ const switchState = (html: string): string => {
 
 test("a migrated map that disables it wins over a stale legacy enabled:true", () => {
   // The marker is present and carries NO data-science entry: the map says off,
-  // whatever the mirror an old engine can still read says.
+  // whatever a legacy block an older engine sent says.
   const html = render(project({
     plugins: { version: PROJECT_PLUGINS_VERSION, entries: {} },
     dataScience: { enabled: true, python: PYTHON },
   }));
   expect(switchState(html)).toBe("off");
-  // And the row says which "off" this is — the environment is kept, not lost.
-  expect(html).toContain("Off. The chosen environment is kept.");
+  // Nothing of the legacy block is read — not even its interpreter.
+  expect(html).toContain("Off. You can turn it on before the environment exists.");
 });
 
 test("a migrated map that enables it turns the switch on", () => {
   const html = render(project({
     plugins: { version: PROJECT_PLUGINS_VERSION, entries: { "data-science": { enabled: true, settings: { python: PYTHON } } } },
-    dataScience: { enabled: true, python: PYTHON },
   }));
   expect(switchState(html)).toBe("on");
   expect(html).toContain("Sessions get notebook and ds_* tools.");
 });
 
-test("a project that predates the map still reads from its legacy block", () => {
-  // `readProjectPlugins` migrates an unmigrated project from the mirror, so the
-  // fix must not turn every pre-map project off. See PROJECT_PLUGINS_VERSION.
+test("an older engine's record with only a legacy block is still read", () => {
+  // `readProjectPlugins` folds a record with no map from its legacy block, so a
+  // remote pre-map engine's projects are not all shown off.
   const html = render(project({ dataScience: { enabled: true, python: PYTHON } }));
   expect(switchState(html)).toBe("on");
+});
+
+test("a map that turns it off keeps the chosen environment", () => {
+  const html = render(project({
+    plugins: { version: PROJECT_PLUGINS_VERSION, entries: { "data-science": { enabled: false, settings: { python: PYTHON } } } },
+  }));
+  expect(switchState(html)).toBe("off");
+  expect(html).toContain("Off. The chosen environment is kept.");
 });
 
 test("a project with neither a map nor a legacy block is off", () => {
