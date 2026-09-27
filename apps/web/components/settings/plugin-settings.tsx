@@ -83,7 +83,7 @@ export function PluginSettings({
     <SettingsGroup title={entry.label} description={entry.blurb}>
       <Row
         icon={PlugIcon}
-        label={enabled ? "Enabled for this project" : "Not enabled"}
+        label={`${entry.label} for this project`}
         hint={
           failed
             ? "This plugin did not start, so turning it on would do nothing."

@@ -125,22 +125,12 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
     }
   };
 
-  /** The one distribution discovery would pick unaided, for the enable switch. */
-  const soleChoice = (): LatexToolchainChoice | undefined => {
-    if (!data) return undefined;
-    const cards = [
-      ...(data.toolchain.tectonic ? [{ kind: "tectonic" as const, path: data.toolchain.tectonic.path }] : []),
-      ...data.toolchain.texlive.map((dist) => ({ kind: "texlive" as const, path: dist.binDir })),
-    ];
-    return cards.length === 1 ? cards[0] : undefined;
-  };
-
   const setEnabled = (next: boolean) => {
     if (!next) return void save(config ? { ...config, enabled: false } : null);
-    // On first enable with exactly one distribution, pick it silently — the
-    // same moment the DS page writes the environment on "Use".
-    const toolchain = config?.toolchain ?? soleChoice();
-    void save({ enabled: true, ...(toolchain ? { toolchain } : {}), ...(config?.mainFile ? { mainFile: config.mainFile } : {}) });
+    // Enabling pins nothing, even when only one distribution is found: a
+    // project with no toolchain of its own follows this Mac's default, and only
+    // pressing Use on a card chooses one.
+    void save({ enabled: true, ...(config?.toolchain ? { toolchain: config.toolchain } : {}), ...(config?.mainFile ? { mainFile: config.mainFile } : {}) });
   };
 
   const use = (choice: LatexToolchainChoice) =>
@@ -186,7 +176,7 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
         }
       >
         <Row
-          label="Enabled"
+          label="LaTeX for this project"
           hint={enabled ? "Sessions get the latex_* tools and the LaTeX panel tab." : "Off. You can enable first, then choose or install a toolchain below."}
           {...(error ? { error } : {})}
           control={<Switch checked={enabled} disabled={saving} onCheckedChange={setEnabled} aria-label="Enable LaTeX for this project" />}

@@ -22,6 +22,8 @@ export type SettingsSection = {
   icon: ComponentType<{ className?: string }>;
   count?: number;
   group?: string; // optional side-nav grouping header
+  /** Where every value on this pane is kept, when it is one place. A mixed pane marks its groups instead. */
+  scope?: SettingsScope;
 };
 
 /**
@@ -425,6 +427,11 @@ export function SettingsShell({
             <h3 aria-current="page" className="truncate font-heading text-sm font-semibold tracking-tight">
               {activeSection.label}
             </h3>
+            {activeSection.scope && (
+              <span className="app-no-drag ml-1">
+                <ScopeBadge scope={activeSection.scope} />
+              </span>
+            )}
           </nav>
           <div className="app-no-drag ml-auto flex items-center gap-2">
             {headerActions}
@@ -512,25 +519,103 @@ export function SettingsShell({
  * one field — an "Advanced" switch, a reset. It sits on the caption line,
  * outside the card, because it acts on the group rather than on any row in it.
  */
+/** The ⓘ beside a label, with its sentence in a tooltip. */
+function InfoTip({
+  info,
+  label = "More about this setting",
+  attribute = "data-info",
+  children,
+}: {
+  info: ReactNode;
+  label?: string;
+  /** Where the sentence is exposed; a scope is not a setting's own fact. */
+  attribute?: "data-info" | "data-scope-info";
+  children?: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={label}
+            // The sentence itself, as `data-info`: the tooltip portals out of
+            // the row on hover, so this is what a test (and an assistive
+            // query) reads without hovering.
+            {...{ [attribute]: typeof info === "string" ? info : undefined }}
+            className="flex shrink-0 items-center gap-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+          >
+            {children}
+            <InfoIcon className="size-3.5" />
+          </button>
+        }
+      />
+      <TooltipContent side="top" className="max-w-72 text-xs leading-snug">
+        {info}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * WHERE A SETTING IS KEPT, which is what decides where else it applies. Derived
+ * from the store each value is actually written to, never from the pane it
+ * happens to sit on.
+ */
+export type SettingsScope = "mac" | "project" | "browser" | "host";
+
+const SCOPE_LABEL: Record<SettingsScope, string> = {
+  mac: "This Mac",
+  project: "This project",
+  browser: "This browser",
+  host: "This host",
+};
+
+const SCOPE_INFO: Record<SettingsScope, string> = {
+  mac: "Kept by Telar on this Mac, so every window and paired device that uses it sees the same value.",
+  project: "Kept with the selected project. Other projects keep their own.",
+  browser: "Kept in this window's own storage. Another browser, or a phone, keeps its own.",
+  host: "Kept by the Mac this window is connected to, not the one in front of you.",
+};
+
+/** A small, quiet label naming a scope, with what it means behind its ⓘ. */
+export function ScopeBadge({ scope }: { scope: SettingsScope }) {
+  return (
+    <InfoTip info={SCOPE_INFO[scope]} label={`Scope: ${SCOPE_LABEL[scope]}`} attribute="data-scope-info">
+      <span data-scope={scope} className="text-2xs font-medium tracking-wide text-muted-foreground uppercase">
+        {SCOPE_LABEL[scope]}
+      </span>
+    </InfoTip>
+  );
+}
+
 export function SettingsGroup({
   title,
   description,
   action,
+  scope,
   children,
 }: {
   title?: ReactNode;
   description?: ReactNode;
   action?: ReactNode;
+  /** Where this group's values are kept. Omit when the pane already says, one scope for all of it. */
+  scope?: SettingsScope;
   children: ReactNode;
 }) {
   return (
     <section className="mb-6 last:mb-0">
-      {(title || description || action) && (
+      {(title || description || action || scope) && (
         // `px-4` matches the card's own row padding, so the caption sits over
         // the row titles rather than over the card's edge.
         <div className="mb-2 flex items-start gap-3 px-4">
           <div className="min-w-0 flex-1">
-            {title && <h4 className="font-heading text-xs-plus font-semibold tracking-tight text-foreground">{title}</h4>}
+            {(title || scope) && (
+              <div className="flex items-center gap-2">
+                {title && <h4 className="font-heading text-xs-plus font-semibold tracking-tight text-foreground">{title}</h4>}
+                {scope && <ScopeBadge scope={scope} />}
+              </div>
+            )}
             {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
           </div>
           {action && <div className="shrink-0">{action}</div>}
@@ -681,28 +766,7 @@ export function Row({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium text-foreground">{label}</span>
-            {info && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      aria-label="More about this setting"
-                      // The sentence itself, as `data-info`: the tooltip portals
-                      // out of the row on hover, so this is what a test (and
-                      // an assistive query) reads without hovering.
-                      data-info={typeof info === "string" ? info : undefined}
-                      className="flex shrink-0 items-center text-muted-foreground/60 transition-colors hover:text-foreground"
-                    >
-                      <InfoIcon className="size-3.5" />
-                    </button>
-                  }
-                />
-                <TooltipContent side="top" className="max-w-72 text-xs leading-snug">
-                  {info}
-                </TooltipContent>
-              </Tooltip>
-            )}
+            {info && <InfoTip info={info} />}
             {status && <span className="shrink-0">{status}</span>}
             {/* The reserved slot — `size-3` is the arrow's own box, so the row
                 measures the same with it and without it. */}
@@ -895,7 +959,7 @@ export function Tabs<T extends string>({
   );
 }
 
-// Labelled toggle row. `status`, `error`, `onRevert` and `unavailable` pass
+// Labelled toggle row. `status`, `error`, `onRevert`, `unavailable` and `info` pass
 // straight through: a toggle is a Row, it is off its default as often as any
 // other field, and a switch that does not apply here is the commonest case
 // `unavailable` exists for.
@@ -910,11 +974,14 @@ export function ToggleRow({
   onRevert,
   error,
   unavailable,
+  info,
 }: {
   /** Passed straight through — a toggle row is a Row, and is a search destination like any other. */
   id?: string;
   label: ReactNode;
   hint?: ReactNode;
+  /** The ⓘ beside the label, as on Row. */
+  info?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
   status?: ReactNode;
   checked: boolean;
@@ -933,6 +1000,7 @@ export function ToggleRow({
       {...(onRevert ? { onRevert } : {})}
       {...(error ? { error } : {})}
       {...(unavailable ? { unavailable } : {})}
+      {...(info ? { info } : {})}
       control={<Switch checked={checked} onCheckedChange={onCheckedChange} />}
     />
   );

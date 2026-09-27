@@ -26,7 +26,7 @@ export function LinksSection() {
   return (
     // The caption asked the question the row's own sentence answers, so it went
     // (#357): one of the two, never both.
-    <SettingsGroup title="Links">
+    <SettingsGroup title="Links" scope="browser">
       <Row
         label="Open in the session's browser"
         icon={ExternalLinkIcon}

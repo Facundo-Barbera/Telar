@@ -252,9 +252,9 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           },
           { title: "Glass", hint: "Blur or clear, behind a translucent window.", keywords: ["frost", "blur"], icon: MonitorIcon },
           {
-            title: "Show-through",
-            hint: "The desktop behind a translucent window, and the composition's layers under the app.",
-            keywords: ["opacity", "wallpaper", "backdrop", "layers"],
+            title: "Layers through canvas and rail",
+            hint: "How much of the composition's layers, and the desktop behind a translucent window, show through the app.",
+            keywords: ["show-through", "show through", "opacity", "wallpaper", "backdrop", "layers"],
             icon: MonitorIcon,
           },
           {

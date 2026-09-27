@@ -122,7 +122,7 @@ export function TextGenSection() {
     // Claude/Codex control needs no gloss, and the caption was a third telling
     // of what "Generated text" and "Name sessions" already say. The two
     // sub-lines left are both traps a reader cannot see from the control.
-    <SettingsGroup title="Generated text">
+    <SettingsGroup title="Generated text" scope="mac">
       <Row
         label="Written by"
         // THE ERROR, NOT THE HINT. It used to BE the hint, so a row whose write
@@ -147,10 +147,11 @@ export function TextGenSection() {
       <Row
         label="Model"
         // THE EDGE CASE THAT BITES, and only that. The sentence explaining that
-        // "Provider default" lets the harness pick was the select restating its
-        // own option; what a reader cannot see is that changing the harness
-        // above drops the pin server-side.
-        hint="Changing the harness above clears a pinned model."
+        // "Provider default" lets the provider pick was the select restating its
+        // own option; what a reader cannot see is that changing the provider
+        // above drops the pin server-side. "Provider", not "harness": the row
+        // above and its search entry say provider.
+        hint="Changing the provider above clears a pinned model."
         {...(pinned === DEFAULT_TEXT_GEN_POLICY.model
           ? {}
           : { onRevert: () => void save({ model: DEFAULT_TEXT_GEN_POLICY.model ?? null }) })}

@@ -55,7 +55,7 @@ export function DictationMicrophoneSection() {
    */
   if (unavailable) {
     return (
-      <SettingsGroup title="Microphone">
+      <SettingsGroup title="Microphone" scope="browser">
         <Row icon={MicIcon} label="Not available here" hint={unavailable} />
       </SettingsGroup>
     );
@@ -74,7 +74,7 @@ export function DictationMicrophoneSection() {
   const reading = metering || listening;
 
   return (
-    <SettingsGroup title="Microphone">
+    <SettingsGroup title="Microphone" scope="browser">
       <Row
         label="Input"
         icon={MicIcon}

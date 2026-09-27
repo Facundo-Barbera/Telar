@@ -109,12 +109,12 @@ const api = createEngineApi();
  */
 const SECTIONS: SettingsSection[] = [
   { id: "general", label: "General", icon: SlidersHorizontalIcon, group: "Cockpit" },
-  { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
+  { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit", scope: "browser" },
   /**
    * A chord is a decision about this window and the shell around it — the table
    * is what builds the Mac app's own menu. See keybindings-page.tsx.
    */
-  { id: "keybindings", label: "Keybindings", icon: KeyboardIcon, group: "Cockpit" },
+  { id: "keybindings", label: "Keybindings", icon: KeyboardIcon, group: "Cockpit", scope: "browser" },
   /**
    * The accounts THIS WINDOW browses and signs in as, and where its links open.
    *
@@ -131,20 +131,20 @@ const SECTIONS: SettingsSection[] = [
    * on, and a name in the nav is the cheapest answer to "can Telar dictate".
    */
   { id: "dictation", label: "Dictation", icon: MicIcon, group: "Cockpit" },
-  { id: "providers", label: "Providers", icon: PlugIcon, group: "Agents" },
-  { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Agents" },
+  { id: "providers", label: "Providers", icon: PlugIcon, group: "Agents", scope: "mac" },
+  { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Agents", scope: "mac" },
   /**
    * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. The
    * list grows; a nav that grew with it would crowd out the things a person
    * opens settings for.
    */
-  { id: "plugins", label: "Plugins", icon: BlocksIcon, group: "Agents" },
-  { id: "projects", label: "Projects", icon: FolderKanbanIcon, group: "Projects" },
+  { id: "plugins", label: "Plugins", icon: BlocksIcon, group: "Agents", scope: "mac" },
+  { id: "projects", label: "Projects", icon: FolderKanbanIcon, group: "Projects", scope: "project" },
   /**
    * Pairing decides who may reach this Mac's engine and cockpit; the engine
    * itself stays on loopback either way.
    */
-  { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "This Mac" },
+  { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "This Mac", scope: "mac" },
   /**
    * WHAT THIS MAC IS KEEPING, AND WHERE — issue #642: the checkouts sessions are
    * built in, the logs, and the store itself. A paired phone reading this pane
@@ -152,14 +152,14 @@ const SECTIONS: SettingsSection[] = [
    * beside Updates because a pane that reports what is in the store and a row
    * elsewhere that moves it would be one question answered in two places.
    */
-  { id: "storage", label: "Storage", icon: HardDriveIcon, group: "This Mac" },
-  { id: "about", label: "This build", icon: InfoIcon, group: "About" },
-  { id: "updates", label: "Updates", icon: DownloadIcon, group: "About" },
+  { id: "storage", label: "Storage", icon: HardDriveIcon, group: "This Mac", scope: "mac" },
+  { id: "about", label: "This build", icon: InfoIcon, group: "About", scope: "mac" },
+  { id: "updates", label: "Updates", icon: DownloadIcon, group: "About", scope: "mac" },
   /**
    * The gh CLI already signed in on this Mac, which Telar reads through rather
    * than holding a token for.
    */
-  { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "About" },
+  { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "About", scope: "mac" },
 ];
 
 /**

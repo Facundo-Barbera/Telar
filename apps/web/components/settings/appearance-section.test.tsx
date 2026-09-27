@@ -111,7 +111,7 @@ describe("the rows settings search points at", () => {
     const ids = indexed.map((entry: { id: string }) => entry.id);
     expect(ids).toContain("settings-row-appearance-window-translucency");
     expect(ids).toContain("settings-row-appearance-window-glass");
-    expect(ids).toContain("settings-row-appearance-window-show-through");
+    expect(ids).toContain("settings-row-appearance-window-layers-through-canvas-and-rail");
     expect(ids).toContain("settings-row-appearance-type-and-surfaces-accent");
     expect(ids).toContain("settings-row-appearance-composer-base");
   });
@@ -121,7 +121,7 @@ describe("the rows settings search points at", () => {
      * THE PANE HALF IS THE SHELL'S AND IS ABSENT HERE, on purpose. `Row` reads
      * its pane from `SettingsShell`'s context (settings-shell.tsx), and this
      * mounts the section on its own — so the ids it stamps are group-and-label,
-     * `settings-row-window-show-through`. That is exactly the half #399 moved:
+     * `settings-row-window-layers-through-canvas-and-rail`. That is exactly the half #399 moved:
      * before, these rows had no group at all and derived
      * `settings-row-show-through`. The pane half is pinned by
      * settings-registry.test.ts, against the same `settingsRowId`.
@@ -129,7 +129,7 @@ describe("the rows settings search points at", () => {
      * Translucency and Glass need the macOS shell to exist at all, so they are
      * not assertable in a browser tab; the rest are.
      */
-    expect(host.querySelector("#settings-row-window-show-through")).not.toBeNull();
+    expect(host.querySelector("#settings-row-window-layers-through-canvas-and-rail")).not.toBeNull();
     expect(host.querySelector("#settings-row-type-and-surfaces-accent")).not.toBeNull();
     expect(host.querySelector("#settings-row-composer-base")).not.toBeNull();
   });
