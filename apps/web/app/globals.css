@@ -1284,6 +1284,90 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   }
 }
 
+/* THE DICTATION GLOW — see components/dictation-glow.tsx.
+
+   The angle is a REGISTERED property for the shimmer's reason above: an
+   unregistered one would step instead of turning. Opacity is a TRANSITION, not
+   a keyframe — the WebKit crash above is about keyframed fades — and the layers
+   are absolute, never fixed. The spin pauses while idle rather than stopping,
+   so a fade-out does not snap the colours back to 0deg on its way out.
+
+   The palette is Apple Intelligence's: violet, pink, blue, coral, amber. */
+@property --dictation-glow-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes dictation-glow-spin {
+  to {
+    --dictation-glow-angle: 360deg;
+  }
+}
+
+.dictation-glow {
+  position: absolute;
+  pointer-events: none;
+  /* The card's `rounded-2xl`, spelled from the :root token it derives from. */
+  border-radius: calc(var(--radius) * 1.8);
+  background: conic-gradient(
+    from var(--dictation-glow-angle, 0deg),
+    #bc82f3,
+    #f5b9ea,
+    #8d9fff,
+    #ff6778,
+    #ffba71,
+    #c686ff,
+    #bc82f3
+  );
+  opacity: 0;
+  transition: opacity 450ms ease;
+  animation: dictation-glow-spin 4s linear infinite;
+  animation-play-state: paused;
+}
+
+.dictation-glow[data-phase="starting"],
+.dictation-glow[data-phase="listening"] {
+  animation-play-state: running;
+}
+
+.dictation-glow-halo {
+  inset: -3px;
+  filter: blur(14px);
+}
+.dictation-glow-halo[data-phase="starting"] {
+  opacity: 0.3;
+}
+.dictation-glow-halo[data-phase="listening"] {
+  opacity: 0.75;
+}
+
+/* Only the border band is painted: the content box is masked out, so the
+   draft underneath is never tinted. */
+.dictation-glow-ring {
+  inset: 0;
+  padding: 1.5px;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+.dictation-glow-ring[data-phase="starting"] {
+  opacity: 0.45;
+}
+.dictation-glow-ring[data-phase="listening"] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dictation-glow {
+    animation: none;
+  }
+}
+
 /* Chromium's default scrollbars paint a stark near-white thumb over the dark
    shell. The standard properties (which supersede ::-webkit-scrollbar when set)
    tint the thumb from theme tokens so it re-themes with light/dark. */
