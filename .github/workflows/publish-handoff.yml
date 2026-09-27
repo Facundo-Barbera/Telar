@@ -1,0 +1,58 @@
+name: Publish the identity hand-off
+
+# THE SWITCH THAT MOVES A CHANNEL TO io.github.novarix.telar (#1042).
+#
+# The last com.telar.desktop release (H) looks for
+# io.github.novarix.telar/handoff-<channel>-mac.json and, once it exists, offers
+# every old install the new build that channel's feed names. So this runs by
+# hand, one channel at a time, only after that channel's new-id build has been
+# installed and tried: nightly first, beta once nightly has held.
+#
+# The manifest is derived from the feed the new build already published
+# (scripts/handoff-manifest.mjs), so it names exactly the zip that feed names.
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Which channel to hand off
+        required: true
+        type: choice
+        options: [nightly, beta]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-handoff
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PREFIX: io.github.novarix.telar
+      CHANNEL: ${{ inputs.channel }}
+      # Only a cross-check: the old app reads the team off its own signature.
+      TEAM: MM74W7WGAM
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Build the manifest from the channel's new-id feed and publish it
+        run: |
+          set -euo pipefail
+          aws s3 cp "s3://$R2_BUCKET/$PREFIX/$CHANNEL-mac.yml" "$RUNNER_TEMP/feed.yml" --endpoint-url "$R2_ENDPOINT"
+          bun scripts/handoff-manifest.mjs --feed "$RUNNER_TEMP/feed.yml" --channel "$CHANNEL" --team "$TEAM" \
+            > "$RUNNER_TEMP/handoff-$CHANNEL-mac.json"
+          cat "$RUNNER_TEMP/handoff-$CHANNEL-mac.json"
+          # The zip the manifest names must already be there.
+          ZIP="$(bun -e 'process.stdout.write(require(process.argv[1]).zip)' "$RUNNER_TEMP/handoff-$CHANNEL-mac.json")"
+          aws s3api head-object --bucket "$R2_BUCKET" --key "$PREFIX/$ZIP" --endpoint-url "$R2_ENDPOINT" >/dev/null
+          aws s3 cp "$RUNNER_TEMP/handoff-$CHANNEL-mac.json" "s3://$R2_BUCKET/$PREFIX/handoff-$CHANNEL-mac.json" \
+            --endpoint-url "$R2_ENDPOINT" --content-type application/json
