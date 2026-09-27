@@ -24,7 +24,11 @@ import type {
   GitHubReactionRefusal,
   GitHubReactionResult,
   GitHubReview,
+  GitHubReviewComment,
   GitHubReviewThread,
+  GitHubThreadRefusal,
+  GitHubThreadReplyResult,
+  GitHubThreadResolveResult,
   GitPushRefusal,
 } from "@telar/engine-client";
 
@@ -691,4 +695,92 @@ export function threadsByFile(threads: readonly GitHubReviewThread[]): { path: s
       path,
       threads: [...list].sort((left, right) => (threadAnchor(left).to ?? 0) - (threadAnchor(right).to ?? 0)),
     }));
+}
+
+// ── acting on a review thread (#842) ─────────────────────────────────────────
+
+/** What a refused reply or resolve says. */
+export const THREAD_REFUSAL: Record<GitHubThreadRefusal, string> = {
+  scope: "Your GitHub sign-in can read here but not write. Run `gh auth refresh -s repo` in a terminal, then try again.",
+  not_permitted: "GitHub will not take that here — the conversation may be locked, or this account cannot.",
+  not_found: "That thread is gone from GitHub. Refresh to see what is there now.",
+  invalid_body: "A reply needs something in it, and at most 65,536 characters.",
+  failed: "GitHub did not take that.",
+};
+
+/**
+ * RESOLVE OR UNRESOLVE, OPTIMISTICALLY. The thread folds (or unfolds) at once;
+ * GitHub's answer then sets the state and who may flip it back, or the thread
+ * goes back to exactly what it was and the sentence is returned.
+ */
+export async function applyThreadResolve(input: {
+  current: GitHubReviewThread;
+  resolved: boolean;
+  send: () => Promise<GitHubThreadResolveResult>;
+  draw: (thread: GitHubReviewThread) => void;
+}): Promise<string | undefined> {
+  const { current } = input;
+  input.draw({ ...current, isResolved: input.resolved });
+  let result: GitHubThreadResolveResult;
+  try {
+    result = await input.send();
+  } catch (cause) {
+    input.draw(current);
+    return cause instanceof Error && cause.message ? cause.message : "The engine did not answer.";
+  }
+  if (!result.changed) {
+    input.draw(current);
+    return result.message && result.refusal === "failed" ? result.message : THREAD_REFUSAL[result.refusal];
+  }
+  const next: GitHubReviewThread = {
+    ...current,
+    isResolved: result.isResolved,
+    viewerCanResolve: result.viewerCanResolve,
+    viewerCanUnresolve: result.viewerCanUnresolve,
+  };
+  // An unresolved thread has nobody who resolved it; the old name must not linger.
+  if (result.resolvedBy) next.resolvedBy = result.resolvedBy;
+  else delete next.resolvedBy;
+  input.draw(next);
+  return undefined;
+}
+
+/**
+ * REPLY, OPTIMISTICALLY. The reply appears at once as a pending comment (no url
+ * yet, so nothing can link or react to it); GitHub's stored comment then takes its
+ * place, or it is removed and the sentence returned — and the caller keeps the
+ * draft, because a reply lost to a missing scope must not have to be typed again.
+ */
+export const PENDING_REPLY_URL = "pending:";
+
+export async function applyThreadReply(input: {
+  current: GitHubReviewThread;
+  body: string;
+  author?: string;
+  now: number;
+  send: () => Promise<GitHubThreadReplyResult>;
+  draw: (thread: GitHubReviewThread) => void;
+}): Promise<string | undefined> {
+  const { current } = input;
+  const pending: GitHubReviewComment = {
+    ...(input.author ? { author: input.author } : {}),
+    body: input.body.trim(),
+    createdAt: input.now,
+    url: `${PENDING_REPLY_URL}${input.now}`,
+    reactions: [],
+  };
+  input.draw({ ...current, comments: [...current.comments, pending] });
+  let result: GitHubThreadReplyResult;
+  try {
+    result = await input.send();
+  } catch (cause) {
+    input.draw(current);
+    return cause instanceof Error && cause.message ? cause.message : "The engine did not answer.";
+  }
+  if (!result.replied) {
+    input.draw(current);
+    return result.message && (result.refusal === "failed" || result.refusal === "invalid_body") ? result.message : THREAD_REFUSAL[result.refusal];
+  }
+  input.draw({ ...current, comments: [...current.comments, result.comment] });
+  return undefined;
 }

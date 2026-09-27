@@ -72,6 +72,8 @@ import type {
   GitHubReactionContent,
   GitHubReactionResult,
   GitHubReviewThread,
+  GitHubThreadReplyResult,
+  GitHubThreadResolveResult,
   GitHubLink,
   GitHubMergeMethod,
   GitHubMergeRefusal,
@@ -87,6 +89,9 @@ import {
   mergeReadiness,
   MERGE_REFUSAL,
   applyReaction,
+  applyThreadReply,
+  applyThreadResolve,
+  PENDING_REPLY_URL,
   hunkTail,
   threadAnchor,
   threadsByFile,
@@ -107,6 +112,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { MessageResponse } from "@/components/ui/message";
 import { PanelDivider, PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -646,14 +652,23 @@ function Timeline({ entries, older, onReact }: { entries: readonly ForgeEntry[];
  * AN ABSENT READ SAYS SO. "No review comments" over a read that failed would be
  * the surface inventing an answer.
  */
+/** The two writes a thread takes, supplied by the surface that knows the pull
+ *  request. Absent where nothing may be written. */
+export type ThreadActions = {
+  reply: (threadId: string, body: string) => Promise<GitHubThreadReplyResult>;
+  resolve: (threadId: string, resolved: boolean) => Promise<GitHubThreadResolveResult>;
+};
+
 export function ReviewThreadsBlock({
   threads,
   more,
   onReact,
+  actions,
 }: {
   threads?: readonly GitHubReviewThread[];
   more: number;
   onReact?: ReactHandler;
+  actions?: ThreadActions;
 }) {
   if (threads === undefined) {
     return <p className="px-3 pb-2 text-3xs leading-snug text-muted-foreground">The review comments on lines of the diff could not be read.</p>;
@@ -681,7 +696,7 @@ export function ReviewThreadsBlock({
               </span>
             </h4>
             {file.threads.map((thread) => (
-              <ReviewThreadCard key={thread.id} thread={thread} {...(onReact ? { onReact } : {})} />
+              <ReviewThreadCard key={thread.id} thread={thread} {...(onReact ? { onReact } : {})} {...(actions ? { actions } : {})} />
             ))}
           </section>
         ))}
@@ -697,43 +712,100 @@ const HUNK_LINE: Record<"add" | "del" | "ctx", string> = {
 };
 const HUNK_MARK: Record<"add" | "del" | "ctx", string> = { add: "+", del: "−", ctx: " " };
 
-export function ReviewThreadCard({ thread, onReact }: { thread: GitHubReviewThread; onReact?: ReactHandler }) {
+export function ReviewThreadCard({ thread: given, onReact, actions }: { thread: GitHubReviewThread; onReact?: ReactHandler; actions?: ThreadActions }) {
+  // Local, like a reaction row's: a write redraws at once and GitHub's answer (or
+  // the rollback) lands later; a fresh read of the pull request wins when it comes.
+  const [thread, setThread] = useState(given);
+  const [source, setSource] = useState(given);
+  if (source !== given) {
+    setSource(given);
+    setThread(given);
+  }
   const [unfolded, setUnfolded] = useState(false);
+  const [draft, setDraft] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState<string>();
+
   const anchor = threadAnchor(thread);
   const folded = thread.isResolved && !unfolded;
   const span = anchor.from !== undefined && anchor.to !== undefined ? anchor.to - anchor.from + 1 : 1;
   const lines = anchor.label === "file" ? [] : hunkTail(thread.diffHunk, span);
+  const canFlip = actions && (thread.isResolved ? thread.viewerCanUnresolve : thread.viewerCanResolve);
+
+  const flip = () => {
+    if (!actions || busy) return;
+    setBusy(true);
+    setRefused(undefined);
+    const resolved = !thread.isResolved;
+    // Unresolving opens the thread; resolving folds it — the state IS the fold.
+    setUnfolded(!resolved);
+    void applyThreadResolve({ current: thread, resolved, send: () => actions.resolve(thread.id, resolved), draw: setThread })
+      .then(setRefused)
+      .finally(() => setBusy(false));
+  };
+
+  const send = () => {
+    const body = draft?.trim();
+    if (!actions || busy || !body) return;
+    setBusy(true);
+    setRefused(undefined);
+    void applyThreadReply({ current: thread, body, now: Date.now(), send: () => actions.reply(thread.id, body), draw: setThread })
+      .then((said) => {
+        setRefused(said);
+        // THE DRAFT SURVIVES A REFUSAL — a reply lost to a missing scope must not
+        // have to be typed again. It clears only once GitHub has it.
+        if (!said) setDraft(undefined);
+      })
+      .finally(() => setBusy(false));
+  };
 
   return (
     <div data-thread={thread.id} className="w-full min-w-0 overflow-hidden rounded-md border border-border bg-card">
-      <button
-        type="button"
-        aria-expanded={!folded}
-        onClick={() => thread.isResolved && setUnfolded((was) => !was)}
-        className={cn(
-          "flex w-full min-w-0 items-center gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-left text-3xs text-muted-foreground",
-          folded && "border-b-0",
-          !thread.isResolved && "cursor-default",
+      <div className={cn("flex min-w-0 items-center gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-3xs text-muted-foreground", folded && "border-b-0")}>
+        <button
+          type="button"
+          aria-expanded={!folded}
+          disabled={!thread.isResolved}
+          onClick={() => setUnfolded((was) => !was)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left disabled:cursor-default"
+        >
+          {thread.isResolved && <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", !folded && "rotate-90")} />}
+          <span className="shrink-0 font-mono text-foreground">{anchor.label}</span>
+          {anchor.outdated && (
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
+              outdated
+            </Badge>
+          )}
+          {thread.isResolved && (
+            <Badge variant="outline" className="shrink-0 border-success/40 px-1 py-0 text-4xs font-normal text-success">
+              resolved{thread.resolvedBy ? ` by ${thread.resolvedBy}` : ""}
+            </Badge>
+          )}
+          {folded && (
+            <span className="min-w-0 truncate">
+              {thread.comments[0]?.author ?? "someone"}: {thread.comments[0]?.body.split("\n")[0]}
+            </span>
+          )}
+        </button>
+        {/* ONLY WHEN GITHUB SAYS THIS VIEWER MAY — `viewerCanResolve` is read, not
+            assumed, so the button never offers a refusal. */}
+        {canFlip && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={flip}
+            title={thread.isResolved ? "Reopen this conversation" : "Mark this conversation as settled"}
+            className="shrink-0 rounded px-1 transition-colors hover:text-foreground disabled:opacity-60"
+          >
+            {thread.isResolved ? "Unresolve" : "Resolve"}
+          </button>
         )}
-      >
-        {thread.isResolved && <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", !folded && "rotate-90")} />}
-        <span className="shrink-0 font-mono text-foreground">{anchor.label}</span>
-        {anchor.outdated && (
-          <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
-            outdated
-          </Badge>
-        )}
-        {thread.isResolved && (
-          <Badge variant="outline" className="shrink-0 border-success/40 px-1 py-0 text-4xs font-normal text-success">
-            resolved{thread.resolvedBy ? ` by ${thread.resolvedBy}` : ""}
-          </Badge>
-        )}
-        {folded && (
-          <span className="min-w-0 truncate">
-            {thread.comments[0]?.author ?? "someone"}: {thread.comments[0]?.body.split("\n")[0]}
-          </span>
-        )}
-      </button>
+      </div>
+      {refused && folded && (
+        <p role="status" className="px-2 py-1 text-3xs leading-snug text-destructive">
+          {refused}
+        </p>
+      )}
       {!folded && (
         <>
           {lines.length > 0 && (
@@ -749,42 +821,100 @@ export function ReviewThreadCard({ thread, onReact }: { thread: GitHubReviewThre
             </pre>
           )}
           <div className="flex flex-col divide-y divide-border">
-            {thread.comments.map((comment) => (
-              <div key={comment.url} className="min-w-0 px-2 py-1.5">
-                <div className="mb-1 flex min-w-0 items-center gap-1.5 text-3xs text-muted-foreground">
-                  <GitHubAvatar {...(comment.author ? { login: comment.author } : {})} {...(comment.authorAvatar ? { src: comment.authorAvatar } : {})} className="size-4" />
-                  <span className="min-w-0 truncate font-medium text-foreground">{comment.author ?? "someone"}</span>
-                  {comment.authorAssociation && comment.authorAssociation !== "NONE" && (
-                    <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
-                      {comment.authorAssociation.toLowerCase()}
-                    </Badge>
+            {thread.comments.map((comment) => {
+              const pending = comment.url.startsWith(PENDING_REPLY_URL);
+              return (
+                <div key={comment.url} data-pending={pending || undefined} className={cn("min-w-0 px-2 py-1.5", pending && "opacity-60")}>
+                  <div className="mb-1 flex min-w-0 items-center gap-1.5 text-3xs text-muted-foreground">
+                    <GitHubAvatar {...(comment.author ? { login: comment.author } : {})} {...(comment.authorAvatar ? { src: comment.authorAvatar } : {})} className="size-4" />
+                    <span className="min-w-0 truncate font-medium text-foreground">{pending ? "you" : (comment.author ?? "someone")}</span>
+                    {comment.authorAssociation && comment.authorAssociation !== "NONE" && (
+                      <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
+                        {comment.authorAssociation.toLowerCase()}
+                      </Badge>
+                    )}
+                    {pending ? (
+                      <span className="flex shrink-0 items-center gap-1">
+                        <Spinner className="size-2.5" /> sending
+                      </span>
+                    ) : (
+                      <>
+                        <span className="shrink-0 tabular-nums" title={when(comment.createdAt)}>
+                          {fmtAgo(comment.createdAt)}
+                        </span>
+                        <a
+                          href={comment.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label="Open this review comment on GitHub"
+                          className="ml-auto shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
+                        >
+                          <ExternalLinkIcon className="size-2.5" />
+                        </a>
+                      </>
+                    )}
+                  </div>
+                  <Markdown>{comment.body}</Markdown>
+                  {!pending && (
+                    <ReactionRow
+                      reactions={comment.reactions}
+                      {...(onReact && comment.subjectId ? { onReact: onReact.bind(null, comment.subjectId) } : {})}
+                    />
                   )}
-                  <span className="shrink-0 tabular-nums" title={when(comment.createdAt)}>
-                    {fmtAgo(comment.createdAt)}
-                  </span>
-                  <a
-                    href={comment.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="Open this review comment on GitHub"
-                    className="ml-auto shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
-                  >
-                    <ExternalLinkIcon className="size-2.5" />
-                  </a>
                 </div>
-                <Markdown>{comment.body}</Markdown>
-                <ReactionRow
-                  reactions={comment.reactions}
-                  {...(onReact && comment.subjectId ? { onReact: onReact.bind(null, comment.subjectId) } : {})}
-                />
-              </div>
-            ))}
+              );
+            })}
             {thread.moreComments > 0 && (
               <p className="px-2 py-1 text-3xs text-muted-foreground">
                 {thread.moreComments} more {thread.moreComments === 1 ? "reply" : "replies"} on GitHub.
               </p>
             )}
+            {actions && thread.viewerCanReply && (
+              <div className="px-2 py-1.5">
+                {draft === undefined ? (
+                  <button
+                    type="button"
+                    onClick={() => setDraft("")}
+                    className="w-full rounded border border-border px-2 py-1 text-left text-3xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Reply…
+                  </button>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <Textarea
+                      autoFocus
+                      value={draft}
+                      disabled={busy}
+                      placeholder="Reply to this thread. ⌘↩ sends."
+                      aria-label="Reply to this review thread"
+                      onChange={(event) => setDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                          event.preventDefault();
+                          send();
+                        }
+                        if (event.key === "Escape" && !busy) setDraft(undefined);
+                      }}
+                      className="min-h-16 text-xs"
+                    />
+                    <div className="flex justify-end gap-1">
+                      <Button size="xs" variant="ghost" disabled={busy} onClick={() => setDraft(undefined)}>
+                        Cancel
+                      </Button>
+                      <Button size="xs" disabled={busy || !draft.trim()} onClick={send}>
+                        Reply
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+          {refused && (
+            <p role="status" className="border-t border-border px-2 py-1 text-3xs leading-snug text-destructive">
+              {refused}
+            </p>
+          )}
         </>
       )}
     </div>
@@ -1600,7 +1730,17 @@ export function ForgeDetailSurface({
 
         <Timeline entries={timeline} older={thing.olderComments} onReact={react} />
 
-        {pull && <ReviewThreadsBlock threads={pull.reviewThreads} more={pull.moreReviewThreads ?? 0} onReact={react} />}
+        {pull && (
+          <ReviewThreadsBlock
+            threads={pull.reviewThreads}
+            more={pull.moreReviewThreads ?? 0}
+            onReact={react}
+            actions={{
+              reply: (threadId, body) => api.replyToProjectThread(projectId, pull.number, threadId, body),
+              resolve: (threadId, resolved) => api.resolveProjectThread(projectId, pull.number, threadId, resolved),
+            }}
+          />
+        )}
 
         {/**
          * CHECKS AT THE BOTTOM, AGAINST THE MERGE.
