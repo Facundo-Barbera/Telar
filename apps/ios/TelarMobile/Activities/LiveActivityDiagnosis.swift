@@ -36,7 +36,7 @@ enum LiveActivityDiagnosis {
         if !toggle { return ["Automatic Live Activities are off."] }
         var lines: [String] = []
         if startTokenRejected { lines.append("Apple no longer accepts the start token iOS gave Telar. \(freshTokenHint)") }
-        else if !hasStartToken { lines.append("iOS has not given Telar a push-to-start token yet. Open Telar once more with Live Activities allowed.") }
+        else if !hasStartToken { lines.append("iOS has not given Telar a push-to-start token, so a card starts only while Telar is open. Once started, your Macs keep it up to date.") }
         for mac in macs { lines.append("\(mac.name): \(line(mac.report, currentToken: currentToken, now: now))") }
         return lines
     }
