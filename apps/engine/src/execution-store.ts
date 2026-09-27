@@ -232,6 +232,18 @@ const DURABILITY_BARRIER_KEY = "durability-barrier";
 const COMPACT_AFTER_OPEN_MS = 5_000;
 
 /**
+ * HOW MANY EVENT IDS ONE SLIM OR PRUNE STEP COVERS — the per-tick bound.
+ *
+ * #894 made the walk yield BETWEEN sessions, and that left one session's first
+ * pass as a single synchronous transaction over its whole history. The first
+ * slim and prune after #1011/#1019 are exactly that pass, and on a long session
+ * the daemon served nothing until it ended — conversations stopped hydrating.
+ * So each step covers at most this many ids, cut at a turn boundary (see
+ * `chunkHigh`), and the walk comes back to the same session after a yield.
+ */
+const SWEEP_CHUNK_IDS = 2_000;
+
+/**
  * HOW LONG THE JSON THE IMPORT REPLACED IS KEPT — issue #457.
  *
  * `importLegacy` copies every document it reads into `execution-json-backup`
@@ -717,6 +729,9 @@ export class ExecutionStore {
    * walk over a store the first one is still working through.
    */
   private walk?: { cancelled: boolean };
+  /** The runtime mode in force at the top of the last prune chunk, so the next
+   *  chunk of the same session need not walk its history back to find it. */
+  private pruneMode?: { sessionId: string; at: number; mode: string | undefined };
   /** Said out loud by the daemon when the background sweep finds something.
    *  A callback rather than a return because the sweep no longer happens while
    *  anybody is waiting on the open — see the constructor. */
@@ -1152,6 +1167,12 @@ export class ExecutionStore {
     const slimmed = { rows: 0, sessions: 0 };
     const pruned = { pairs: 0, turns: 0, sessions: 0, refused: 0 };
     let index = 0;
+    // A session with more than one chunk left (`SWEEP_CHUNK_IDS`) is stepped
+    // again before the walk moves on; `session` sums its chunks so the totals
+    // count it once.
+    let resuming = false;
+    const fresh = () => ({ deltas: 0, starts: 0, slimmed: 0, pairs: 0, turns: 0, refused: 0 });
+    let session = fresh();
     const done = (): void => {
       this.walk = undefined;
       // A cancelled walk announces nothing: `close()` took it mid-store, so
@@ -1171,13 +1192,37 @@ export class ExecutionStore {
       if (walk.cancelled || this.closed) { if (this.walk === walk) this.walk = undefined; return; }
       if (index >= sessions.length) return done();
       const sessionId = sessions[index]!;
-      index += 1;
-      try { this.compactInto(sessionId, swept); } catch { /* as above */ }
-      try { this.foldInto(sessionId, folded); } catch { /* as above */ }
+      let more = false;
+      try {
+        const chunk = this.compactChunk(sessionId);
+        session.deltas += chunk.deltas;
+        session.starts += chunk.starts;
+        more ||= chunk.more;
+      } catch { /* as above */ }
+      if (!resuming) try { this.foldInto(sessionId, folded); } catch { /* as above */ }
       // LAST, because it is bounded by what the compaction has already read:
       // the compaction measures deltas against `item.completed` text.
-      try { this.slimInto(sessionId, slimmed); } catch { /* as above */ }
-      try { this.pruneRequestsInto(sessionId, pruned); } catch { /* as above */ }
+      try {
+        const chunk = this.slimChunk(sessionId);
+        session.slimmed += chunk.rows;
+        more ||= chunk.more;
+      } catch { /* as above */ }
+      try {
+        const chunk = this.pruneRequestsChunk(sessionId);
+        session.pairs += chunk.pairs;
+        session.turns += chunk.turns;
+        session.refused += chunk.refused;
+        more ||= chunk.more;
+      } catch { /* as above */ }
+      resuming = more;
+      if (!more) {
+        index += 1;
+        if (session.deltas > 0 || session.starts > 0) { swept.deltas += session.deltas; swept.starts += session.starts; swept.sessions += 1; }
+        if (session.slimmed > 0) { slimmed.rows += session.slimmed; slimmed.sessions += 1; }
+        pruned.refused += session.refused;
+        if (session.pairs > 0) { pruned.pairs += session.pairs; pruned.turns += session.turns; pruned.sessions += 1; }
+        session = fresh();
+      }
       this.sweepYield(step);
     };
     this.sweepYield(step);
@@ -1320,9 +1365,23 @@ export class ExecutionStore {
     return high;
   }
 
-  /** One session's share of `compactJournal`, in a transaction of its own. */
+  /** One session's share of `compactJournal`, a transaction per chunk. */
   private compactSession(sessionId: string): { deltas: number; starts: number } {
     const swept = { deltas: 0, starts: 0 };
+    for (let more = true; more;) {
+      const chunk = this.compactChunk(sessionId);
+      swept.deltas += chunk.deltas;
+      swept.starts += chunk.starts;
+      more = chunk.more;
+    }
+    return swept;
+  }
+
+  /** At most `SWEEP_CHUNK_IDS` of one session's compaction, in a transaction of
+   *  its own. An item streams, starts and completes inside its own turn, so a
+   *  range cut at a turn boundary (`chunkHigh`) compacts what the whole would. */
+  private compactChunk(sessionId: string): { deltas: number; starts: number; more: boolean } {
+    const swept = { deltas: 0, starts: 0, more: false };
     this.alone(() => {
       // Held deltas belong in the database before anything sums them: a delta
       // still in the buffer makes its item's total look shorter than it is,
@@ -1331,10 +1390,12 @@ export class ExecutionStore {
       const key = `${COMPACT_WATERMARK_PREFIX}${sessionId}`;
       const stored = this.statement("SELECT value FROM metadata WHERE key=?").get(key);
       const low = Number(stored?.value ?? 0);
-      const high = this.terminalHigh(sessionId);
+      const settled = this.terminalHigh(sessionId);
       // No turn has ended here since the last sweep. Nothing below `low` can
       // have become compactable, so there is nothing to look at.
-      if (high <= low) return;
+      if (settled <= low) return;
+      const high = this.chunkHigh(sessionId, low, settled);
+      swept.more = high < settled;
       /**
        * THE SUM AGAINST THE COMPLETED TEXT, both bounded to the settled range.
        *
@@ -1602,15 +1663,29 @@ export class ExecutionStore {
     total.sessions += 1;
   }
 
-  /** One session's share of `slimJournal`, in a transaction of its own. */
+  /** One session's share of `slimJournal`, a transaction per chunk. */
   slimSession(sessionId: string): number {
+    let rows = 0;
+    for (let more = true; more;) {
+      const chunk = this.slimChunk(sessionId);
+      rows += chunk.rows;
+      more = chunk.more;
+    }
+    return rows;
+  }
+
+  /** At most `SWEEP_CHUNK_IDS` of one session's slim, in a transaction of its own. */
+  private slimChunk(sessionId: string): { rows: number; more: boolean } {
     let slimmed = 0;
+    let more = false;
     this.alone(() => {
       const key = `${SLIM_WATERMARK_PREFIX}${sessionId}`;
       const low = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(key)?.value ?? 0);
       const compacted = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(`${COMPACT_WATERMARK_PREFIX}${sessionId}`)?.value ?? 0);
-      const high = Math.min(this.terminalHigh(sessionId), compacted);
-      if (high <= low) return;
+      const settled = Math.min(this.terminalHigh(sessionId), compacted);
+      if (settled <= low) return;
+      const high = this.chunkHigh(sessionId, low, settled);
+      more = high < settled;
       this.statement(
         `UPDATE events SET value = json_set(json_set(value,'$.item',json_object('id',json_extract(value,'$.item.id'))),'$.${SLIM_MARKER}',json('true'))
           WHERE session_id=? AND id>? AND id<=?
@@ -1625,7 +1700,29 @@ export class ExecutionStore {
       this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .run(key, String(high));
     });
-    return slimmed;
+    return { rows: slimmed, more };
+  }
+
+  /**
+   * WHERE ONE SWEEP STEP OVER `(low, high]` STOPS — see `SWEEP_CHUNK_IDS`.
+   *
+   * At a TERMINAL TURN EVENT, so a step never ends mid-turn: the prune pairs a
+   * request with its resolution and its turn's end inside one range, and a
+   * range that cut a turn in half would leave that turn's pairs unpaired. The
+   * last terminal event within the budget, or failing that the first one past
+   * it — a single turn longer than the budget is still one step.
+   */
+  private chunkHigh(sessionId: string, low: number, high: number): number {
+    if (high - low <= SWEEP_CHUNK_IDS) return high;
+    const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
+    const within = this.statement(
+      `SELECT MAX(id) AS id FROM events WHERE session_id=? AND id>? AND id<=? AND json_extract(value,'$.type') IN (${placeholders})`,
+    ).get(sessionId, low, low + SWEEP_CHUNK_IDS, ...TERMINAL_TURN_TYPES)?.id;
+    if (within !== undefined && within !== null) return Number(within);
+    const past = this.statement(
+      `SELECT id FROM events WHERE session_id=? AND id>? AND id<=? AND json_extract(value,'$.type') IN (${placeholders}) ORDER BY id LIMIT 1`,
+    ).get(sessionId, low + SWEEP_CHUNK_IDS, high, ...TERMINAL_TURN_TYPES)?.id;
+    return past !== undefined && past !== null ? Number(past) : high;
   }
 
   /**
@@ -1674,32 +1771,62 @@ export class ExecutionStore {
     total.sessions += 1;
   }
 
-  /** One session's share of `pruneJournalRequests`, in a transaction of its own. */
+  /** One session's share of `pruneJournalRequests`, a transaction per chunk. */
   pruneRequests(sessionId: string): { pairs: number; turns: number; refused: number } {
     const pruned = { pairs: 0, turns: 0, refused: 0 };
+    for (let more = true; more;) {
+      const chunk = this.pruneRequestsChunk(sessionId);
+      pruned.pairs += chunk.pairs;
+      pruned.turns += chunk.turns;
+      pruned.refused += chunk.refused;
+      more = chunk.more;
+    }
+    return pruned;
+  }
+
+  /**
+   * At most `SWEEP_CHUNK_IDS` of one session's prune, in a transaction of its own.
+   *
+   * A TURN HAS ENDED WHEN ITS TERMINAL EVENT IS IN THE SAME RANGE, read by the
+   * one scan that reads the pairs. It used to be a query per run over the whole
+   * journal below `high` — O(runs × events) per session, 17 s for a 1,000-turn
+   * session, all of it on the event loop. A pair after its own turn's end is
+   * not something the engine writes, and one would simply stay.
+   */
+  private pruneRequestsChunk(sessionId: string): { pairs: number; turns: number; refused: number; more: boolean } {
+    const pruned = { pairs: 0, turns: 0, refused: 0, more: false };
     this.alone(() => {
       this.drain(this.depth > 0);
       const key = `${REQUEST_PRUNE_WATERMARK_PREFIX}${sessionId}`;
       const low = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(key)?.value ?? 0);
-      const high = this.terminalHigh(sessionId);
-      if (high <= low) return;
+      const settledHigh = this.terminalHigh(sessionId);
+      if (settledHigh <= low) return;
+      const high = this.chunkHigh(sessionId, low, settledHigh);
+      pruned.more = high < settledHigh;
+      const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
       const rows = this.statement(
         `SELECT id, json_extract(value,'$.type') AS type, json_extract(value,'$.runId') AS run_id,
                 CASE WHEN json_extract(value,'$.type') LIKE 'request.%' THEN value END AS value,
                 json_extract(value,'$.session.runtimeMode') AS mode
            FROM events WHERE session_id=? AND id>? AND id<=?
-            AND json_extract(value,'$.type') IN ('request.opened','request.resolved','session.created','session.updated')
+            AND json_extract(value,'$.type') IN ('request.opened','request.resolved','session.created','session.updated',${placeholders})
           ORDER BY id`,
-      ).all(sessionId, low, high);
+      ).all(sessionId, low, high, ...TERMINAL_TURN_TYPES);
 
       type Opened = { id: number; runId: string; kind: string; decision: string; mode: string | undefined };
       type Resolved = { id: number; runId: string; decision: string };
       const opened = new Map<string, Opened[]>();
       const resolved = new Map<string, Resolved[]>();
-      let mode: string | undefined;
-      let modeRead = false;
+      const ended = new Set<string>();
+      const carried = this.pruneMode?.sessionId === sessionId && this.pruneMode.at === low ? this.pruneMode : undefined;
+      let mode: string | undefined = carried?.mode;
+      let modeRead = carried !== undefined;
       for (const row of rows) {
         const type = String(row.type);
+        if ((TERMINAL_TURN_TYPES as readonly string[]).includes(type)) {
+          if (typeof row.run_id === "string") ended.add(row.run_id);
+          continue;
+        }
         if (type === "session.created" || type === "session.updated") {
           mode = typeof row.mode === "string" ? row.mode : undefined;
           modeRead = true;
@@ -1736,8 +1863,6 @@ export class ExecutionStore {
       }
 
       const byRun = new Map<string, { ids: number[]; counts: TurnPolicyRequests }>();
-      const settled = new Map<string, boolean>();
-      const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
       for (const [requestId, [open, ...extraOpen]] of opened) {
         const [close, ...extraClose] = resolved.get(requestId) ?? [];
         if (!open || !close || extraOpen.length > 0 || extraClose.length > 0) continue;
@@ -1745,13 +1870,7 @@ export class ExecutionStore {
         if (close.decision !== open.decision || close.runId !== open.runId || close.id <= open.id) continue;
         if (!open.mode || !(RuntimeMode.options as readonly string[]).includes(open.mode)) continue;
         if (autoResolution(open.mode as RuntimeMode, open.kind as RequestKind) !== open.decision) continue;
-        if (!settled.has(open.runId)) {
-          settled.set(open.runId, !!this.statement(
-            `SELECT 1 AS ok FROM events WHERE session_id=? AND id<=?
-               AND json_extract(value,'$.runId')=? AND json_extract(value,'$.type') IN (${placeholders}) LIMIT 1`,
-          ).get(sessionId, high, open.runId, ...TERMINAL_TURN_TYPES));
-        }
-        if (!settled.get(open.runId)) continue;
+        if (!ended.has(open.runId)) continue;
         const run = byRun.get(open.runId) ?? { ids: [], counts: {} };
         run.ids.push(open.id, close.id);
         const kind = (run.counts[open.kind] ??= {});
@@ -1782,6 +1901,9 @@ export class ExecutionStore {
       }
       this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .run(key, String(high));
+      // Keyed by the watermark it sits at: a rolled-back chunk leaves the
+      // watermark below `high`, and the next chunk then reads the mode itself.
+      this.pruneMode = modeRead ? { sessionId, at: high, mode } : undefined;
     });
     return pruned;
   }
