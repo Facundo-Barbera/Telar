@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pluginBlock } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../src/state";
 
 const roots: string[] = [];
@@ -30,23 +31,28 @@ function readyStore(): { store: EngineStore; projectRoot: string } {
 
 test("a project starts with no latex block; a patch adds one and null removes it", () => {
   const { store } = readyStore();
-  expect(store.getProject("project_one").latex).toBeUndefined();
+  expect(pluginBlock(store.getProject("project_one"), "latex")).toBeUndefined();
   const config = { enabled: true, toolchain: { kind: "tectonic" as const, path: fakeTectonic() }, mainFile: "main.tex" };
-  expect(store.updateProject("project_one", { latex: config }).latex).toEqual(config);
-  expect(store.getProject("project_one").latex).toEqual(config);
+  const updated = store.updateProject("project_one", { latex: config });
+  expect(pluginBlock(updated, "latex")).toEqual(config);
+  expect("latex" in updated).toBe(false);
+  expect(pluginBlock(store.getProject("project_one"), "latex")).toEqual(config);
   const off = store.updateProject("project_one", { latex: null });
-  expect(off.latex).toBeUndefined();
-  expect("latex" in JSON.parse(fs.readFileSync(path.join(store.paths.root, "projects.json"), "utf8")).projects[0]).toBe(false);
+  expect(pluginBlock(off, "latex")).toBeUndefined();
+  const stored = JSON.parse(fs.readFileSync(path.join(store.paths.root, "projects.json"), "utf8")).projects[0];
+  expect("latex" in stored).toBe(false);
+  expect(stored.plugins.entries.latex).toBeUndefined();
 });
 
 test("an invalid latex block is refused; dataScience beside it is untouched", () => {
   const { store } = readyStore();
   expect(() => store.updateProject("project_one", { latex: { enabled: "yes" } as never })).toThrow(EngineStateError);
+  expect(pluginBlock(store.getProject("project_one"), "latex")).toBeUndefined();
   store.updateProject("project_one", { dataScience: { enabled: true } });
   store.updateProject("project_one", { latex: { enabled: true } });
   const project = store.getProject("project_one");
-  expect(project.dataScience?.enabled).toBe(true);
-  expect(project.latex?.enabled).toBe(true);
+  expect(pluginBlock(project, "data-science")?.enabled).toBe(true);
+  expect(pluginBlock(project, "latex")?.enabled).toBe(true);
 });
 
 test("enabling on a git checkout gitignores the aux dir", () => {

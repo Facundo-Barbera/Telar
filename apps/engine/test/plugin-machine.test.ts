@@ -15,7 +15,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient, machineAllows, pluginEffectivelyEnabled, readProjectPlugins, type EngineClientError } from "@telar/engine-client";
+import { EngineClient, machineAllows, pluginBlock, pluginEffectivelyEnabled, readProjectPlugins, type EngineClientError } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
 
@@ -82,9 +82,12 @@ test("a globally disabled plugin does not reach a worker's CLAIM", async () => {
   // frontend rule, the tools would still be registered for the turn.
   const { daemon, client, store } = await ready();
   await client.updateProject("project_one", { plugins: { hello: { enabled: true } } });
-  expect(store.enabledPluginIds(store.getSession("session_one"))).toEqual(["hello"]);
+  // LaTeX is on in `ready()`, and now rides the same list as any other plugin.
+  expect(store.enabledPluginIds(store.getSession("session_one"))).toEqual(["hello", "latex"]);
 
   expect((await machine(daemon, { hello: { enabled: false } })).status).toBe(200);
+  expect(store.enabledPluginIds(store.getSession("session_one"))).toEqual(["latex"]);
+  expect((await machine(daemon, { latex: { enabled: false } })).status).toBe(200);
   expect(store.enabledPluginIds(store.getSession("session_one"))).toEqual([]);
 });
 
@@ -102,7 +105,7 @@ test("PROJECT SETTINGS SURVIVE a global disable, and re-enabling restores them",
   // The project's own configuration is untouched — that is what makes this a
   // ceiling rather than a rewrite.
   const stored = store.getProject("project_one");
-  expect(stored.latex).toEqual({ enabled: true, mainFile: "paper.tex", toolchain: { kind: "texlive", path: "/bin/echo" } });
+  expect(pluginBlock(stored, "latex")).toEqual({ enabled: true, mainFile: "paper.tex", toolchain: { kind: "texlive", path: "/bin/echo" } });
   expect(readProjectPlugins(stored).plugins.entries.latex?.enabled).toBe(true);
 
   await machine(daemon, { latex: { enabled: true } });
@@ -115,7 +118,7 @@ test("a globally disabled project keeps its OWN switch answerable", async () => 
   const { daemon, client, store } = await ready();
   await machine(daemon, { latex: { enabled: false } });
   await client.updateProject("project_one", { latex: null });
-  expect(store.getProject("project_one").latex).toBeUndefined();
+  expect(pluginBlock(store.getProject("project_one"), "latex")).toBeUndefined();
 });
 
 test("the MACHINE'S TeX install is a real fallback, not an inert stored field", async () => {
@@ -154,7 +157,7 @@ test("the machine map SURVIVES A RESTART", async () => {
   daemons.push(restarted);
   expect(machineAllows(restarted.store.machinePlugins(), "latex")).toBe(false);
   // …and the project's settings came back untouched with it.
-  expect(restarted.store.getProject("project_one").latex?.mainFile).toBe("paper.tex");
+  expect(pluginBlock(restarted.store.getProject("project_one"), "latex")?.mainFile).toBe("paper.tex");
 });
 
 test("GET reports what this Mac allows beside what it has registered", async () => {

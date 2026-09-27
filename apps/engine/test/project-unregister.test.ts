@@ -16,6 +16,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pluginBlock } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../src/state";
 
 const roots: string[] = [];
@@ -72,7 +73,7 @@ test("the record is KEPT and marked, not deleted — that is what makes restorin
   expect(store.listProjects()).toEqual([]);
   // …and still there for the one screen that offers to put it back.
   expect(store.listProjects({ includeRemoved: true }).map((project) => project.id)).toEqual(["project_one"]);
-  expect(store.getProject("project_one").dataScience).toEqual({ enabled: true });
+  expect(pluginBlock(store.getProject("project_one"), "data-science")).toEqual({ enabled: true });
 });
 
 test("removal and restoration both survive a restart", () => {
@@ -103,7 +104,7 @@ test("registering the same checkout again restores the SAME project", () => {
   const back = store.registerProject({ name: "One", root: projectRoot });
   expect(back.id).toBe("project_one");
   expect(back.removedAt).toBeUndefined();
-  expect(back.dataScience).toEqual({ enabled: true });
+  expect(pluginBlock(back, "data-science")).toEqual({ enabled: true });
   expect(store.listProjects().map((project) => project.id)).toEqual(["project_one"]);
   // The session that ran here is its session again, not an orphan.
   expect(store.listSessions("project_one").map((each) => each.id)).toEqual([session.id]);

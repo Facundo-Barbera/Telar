@@ -1,6 +1,6 @@
 # Plugins: the contract
 
-Status: P1a landed (tools and prompt text); P1b scoped routes landed. Everything marked *planned* is the target shape, not code yet.
+Status: P1a (tools and prompt text), P1b (scoped routes, kernel host in `init`) and P1c (legacy mirror retired) landed. Everything marked *planned* is the target shape, not code yet.
 
 A plugin is a feature that the core does not name. Data Science and LaTeX are **bundled plugins**: they are compiled into the engine, but they reach the core only through the contract below. A future **external plugin** will use the same manifest and contribution points, and will differ only in where its code runs.
 
@@ -117,7 +117,12 @@ requires?: { id; label; probe: verb; install?: verb }[]
 
 1. **P1a**: this doc. DS and LaTeX walls and briefings come from their manifests. Registration in `driver.ts` and `worker.ts` is generic, including the missing in-process loop. The fingerprint is derived from the enabled ids. Tool names are unchanged.
 2. **P1b**: the scoped routes table replaces the hand-written `/v2/data-science/*` and `/v2/latex/*` routes. The kernel host and the installers move into the plugin's `init`.
-3. **P1c**: drop the legacy `Project.dataScience` / `Project.latex` mirror, with a migration. The claim's `dataScience` / `latex` fields go with it.
+3. **P1c (done)**: the legacy `Project.dataScience` / `Project.latex` mirror is retired.
+   - The engine reads and writes only `plugins.entries[<id>]`.
+   - On every open, the store folds any legacy block into the map (`migrateLegacyPluginFields`) and drops it. An existing entry always wins, settings come across whole, and a registry with no legacy keys is not rewritten.
+   - `PATCH /v2/projects/:id` still accepts `dataScience` / `latex` as deprecated input aliases for one release. They write the map and are never stored.
+   - The claim's dedicated fields are gone. `plugins` carries the two plugins when they resolve for the session.
+   - **Rolling back to an engine older than the map is no longer supported.** Such an engine would see no Data Science or LaTeX settings.
 4. **P2**: UI registry covering panels, viewers, commands and event renderers. iOS `PluginID` becomes open.
 5. **P3**: settings generated from the schema, with one switch per scope.
 6. **P4**: external plugins, covering the folder loader, the supervised process, MCP tools and routes, declarative UI, and install/uninstall.

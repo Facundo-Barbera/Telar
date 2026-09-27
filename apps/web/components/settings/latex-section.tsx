@@ -29,7 +29,8 @@ import type {
   Project,
   ProjectPlugins,
 } from "@telar/engine-client";
-import { latexMachineSettings } from "@telar/engine-client";
+import { latexMachineSettings, pluginBlock } from "@telar/engine-client";
+import { blockPatch } from "@/lib/plugins/sections";
 import { createEngineApi } from "@/lib/engine/client";
 import { ENGINE_LABEL } from "./latex-machine-settings";
 import { Badge } from "@/components/ui/badge";
@@ -78,7 +79,7 @@ export function inheritedDistribution(machine: ProjectPlugins | undefined, toolc
 
 export function LatexSection({ project, onChange }: { project: Project; onChange: (project: Project) => void }) {
   const router = useRouter();
-  const config = project.latex;
+  const config = pluginBlock(project, "latex") as LatexConfig | undefined;
   const enabled = config?.enabled === true;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -116,7 +117,7 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
     setSaving(true);
     setError(undefined);
     try {
-      const answer = await api.updateProject(project.id, { latex: next });
+      const answer = await api.updateProject(project.id, blockPatch("latex", next));
       onChange(answer.project);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save.");

@@ -3434,6 +3434,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }
           patch.envMode = input.envMode as Parameters<typeof store.updateProject>[1]["envMode"];
         }
+        /**
+         * DEPRECATED INPUT ALIASES for `plugins["data-science"]` / `plugins.latex`,
+         * accepted one more release so a released cockpit keeps working. The
+         * store writes them into the map; neither key is stored or returned.
+         */
         if ("dataScience" in input) {
           if (input.dataScience !== null && (typeof input.dataScience !== "object" || Array.isArray(input.dataScience))) {
             throw new HttpError(400, "invalid_request", "dataScience must be an object or null");

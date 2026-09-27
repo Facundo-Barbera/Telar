@@ -72,9 +72,8 @@ import {
   PROJECT_PLUGINS_VERSION,
   ProjectPlugins as ProjectPluginsSchema,
   type ProjectPlugins,
-  legacyMirrors,
-  MIRRORED_PLUGINS,
-  type MirroredPlugin,
+  migrateLegacyPluginFields,
+  pluginBlock,
   pluginConfigFromLegacy,
   readProjectPlugins,
   assignmentsOf,
@@ -1444,6 +1443,23 @@ function latestProviderSessionId(queue: SessionQueue): string | undefined {
     .filter((turn) => typeof turn.providerSessionId === "string" && turn.providerSessionId.trim())
     .sort((left, right) => right.sequence - left.sequence)[0]?.providerSessionId;
 }
+
+/**
+ * A PROJECT'S DATA SCIENCE / LATEX ENTRY, in the flat `{enabled, ...settings}`
+ * shape their resolvers read. Read from the plugin map only — the legacy
+ * `Project.dataScience` / `Project.latex` keys are folded into it when the
+ * registry opens and never read here. `undefined` means off. Settings that no
+ * longer parse are dropped rather than half-trusted; the switch survives.
+ */
+function typedPluginBlock<T>(project: Project, id: string, schema: { safeParse(value: unknown): { success: boolean; data?: T } }): T | undefined {
+  const block = pluginBlock(project, id);
+  if (!block) return undefined;
+  const parsed = schema.safeParse(block);
+  return parsed.success ? parsed.data : schema.safeParse({ enabled: block.enabled === true }).data;
+}
+const dataScienceBlock = (project: Project): DataScienceConfig | undefined =>
+  typedPluginBlock(project, "data-science", DataScienceConfigSchema);
+const latexBlock = (project: Project): LatexConfig | undefined => typedPluginBlock(project, "latex", LatexConfigSchema);
 
 /**
  * PARSING IS THE SCHEMAS' JOB NOW. v1 hand-rolled every one of these checks and
@@ -3032,7 +3048,7 @@ export class EngineStore {
     if (!session.projectId) return undefined;
     let project: Project;
     try { project = this.getProject(session.projectId); } catch { return undefined; }
-    const config = project.dataScience;
+    const config = dataScienceBlock(project);
     if (!config?.enabled) return undefined;
     // The machine ceiling, same rule as LaTeX's: off here means unavailable
     // everywhere, and every project keeps what it chose.
@@ -3109,7 +3125,7 @@ export class EngineStore {
     if (!session.projectId) return undefined;
     let project: Project;
     try { project = this.getProject(session.projectId); } catch { return undefined; }
-    const config = project.latex;
+    const config = latexBlock(project);
     if (!config?.enabled) return undefined;
     // THE MACHINE CEILING. Turning LaTeX off for this Mac makes it unavailable
     // everywhere without touching what any project chose.
@@ -5043,6 +5059,43 @@ export class EngineStore {
     // On both backends, and before anything can claim a turn — see the method.
     this.claudeLongWindowMigration = this.migrateBareClaudeIds();
     this.claudeCompactionMigration = this.migrateClaudeCompactionToLimits();
+    this.pluginFieldMigration = this.migrateLegacyPluginFieldsOnOpen();
+  }
+
+  /** How many projects the legacy-field fold changed on this open (0 on most). */
+  readonly pluginFieldMigration: number;
+
+  /**
+   * THE LEGACY `dataScience` / `latex` BLOCKS FOLD INTO THE PLUGIN MAP — on
+   * every open, not once.
+   *
+   * EVERY OPEN because the input can come back: an older engine (one rolled
+   * back to) writes those keys again, and the next open of this one must fold
+   * them rather than ignore them. That is affordable because the pass is
+   * IDEMPOTENT AND NON-DESTRUCTIVE (`migrateLegacyPluginFields`): an existing
+   * map entry always wins, settings come across whole, and a registry with no
+   * legacy keys is not written at all.
+   *
+   * The raw registry, before the schema, so nothing the schema would strip is
+   * lost on the way. A registry that will not parse is left for every other
+   * reader of it to report.
+   */
+  private migrateLegacyPluginFieldsOnOpen(): number {
+    return this.executeCommand("migrateLegacyPluginFields", () => {
+      let projects = 0;
+      try {
+        const stored = this.readDocument(this.paths.projects) as { projects?: Record<string, unknown>[] } | undefined;
+        const next = (stored?.projects ?? []).map((project) => {
+          const migrated = migrateLegacyPluginFields(project);
+          if (migrated.changed) projects += 1;
+          return migrated.project;
+        });
+        if (projects > 0) this.writeDocument(this.paths.projects, { ...stored, projects: next });
+      } catch {
+        // Reported by every other reader of the registry.
+      }
+      return projects;
+    });
   }
 
   /** How many logins the one-time #587 rewrite changed on this open, or nothing
@@ -6138,75 +6191,47 @@ export class EngineStore {
       if (!mode.success || mode.data === undefined) throw new EngineStateError("invalid_request", "workspace mode must be local or worktree");
       next.envMode = mode.data;
     }
-    if (patch.dataScience === null) {
-      delete next.dataScience;
-    } else if (patch.dataScience !== undefined) {
-      const config = DataScienceConfigSchema.safeParse(patch.dataScience);
-      if (!config.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
-      next.dataScience = config.data;
+    /**
+     * THE MAP IS THE ONLY WRITE. `dataScience` and `latex` are DEPRECATED INPUT
+     * ALIASES, kept one more release for a released cockpit: each is validated
+     * against its legacy schema and translated into a plugin patch, and neither
+     * key is ever stored — the record carries `plugins` alone.
+     */
+    const fromLegacy: PluginPatch = {};
+    if (patch.dataScience !== undefined) {
+      if (patch.dataScience === null) fromLegacy["data-science"] = null;
+      else {
+        const config = DataScienceConfigSchema.safeParse(patch.dataScience);
+        if (!config.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
+        fromLegacy["data-science"] = pluginConfigFromLegacy(config.data);
+      }
     }
-    if (patch.latex === null) {
-      delete next.latex;
-    } else if (patch.latex !== undefined) {
-      const config = LatexConfigSchema.safeParse(patch.latex);
-      if (!config.success) throw new EngineStateError("invalid_request", "LaTeX configuration is invalid");
-      next.latex = config.data;
-      if (config.data.enabled) {
+    if (patch.latex !== undefined) {
+      if (patch.latex === null) fromLegacy.latex = null;
+      else {
+        const config = LatexConfigSchema.safeParse(patch.latex);
+        if (!config.success) throw new EngineStateError("invalid_request", "LaTeX configuration is invalid");
+        fromLegacy.latex = pluginConfigFromLegacy(config.data);
+      }
+    }
+    const pluginPatch: PluginPatch = { ...fromLegacy, ...(patch.plugins ?? {}) };
+    if (Object.keys(pluginPatch).length > 0) {
+      next.plugins = applyPluginPatch(readProjectPlugins(next).plugins, pluginPatch);
+      // Compiles leave aux files under `.telar/latex/`; a project turning LaTeX
+      // on gets them ignored, through either arm.
+      if (pluginPatch.latex?.enabled) {
         try {
           ensureTelarGitignore(next.root, [{ rule: ".telar/latex/", alreadyCovered: [".telar/", ".telar", "/.telar/", ".telar/latex/"], why: "LaTeX aux files from Telar's compiles" }]);
         } catch { /* not a repo, or unwritable — compiles still work */ }
       }
     }
-    /**
-     * THE MAP, AND ITS MIRRORS, IN THE SAME WRITE.
-     *
-     * Both legacy arms above still work — they are what a released cockpit
-     * sends — and each is translated into the map here rather than being a
-     * second source of truth. The map then writes BACK the legacy blocks,
-     * INCLUDING THEIR ABSENCES: a mirror that is only ever added is the
-     * resurrection bug with extra steps.
-     *
-     * `version`'s presence is the durable migration marker. Once it is there
-     * the map is the whole truth and the legacy fields are never read again —
-     * see `PROJECT_PLUGINS_VERSION` for why a per-key fallback resurrects a
-     * feature the user just turned off.
-     */
-    const before = readProjectPlugins(next).plugins;
-    const fromLegacy: PluginPatch = {};
-    if (patch.dataScience !== undefined) {
-      fromLegacy["data-science"] =
-        patch.dataScience === null ? null : pluginConfigFromLegacy(patch.dataScience as Record<string, unknown>);
-    }
-    if (patch.latex !== undefined) {
-      fromLegacy.latex = patch.latex === null ? null : pluginConfigFromLegacy(patch.latex as Record<string, unknown>);
-    }
-    const merged = applyPluginPatch(before, { ...fromLegacy, ...(patch.plugins ?? {}) });
-    const changed = patch.dataScience !== undefined || patch.latex !== undefined || patch.plugins !== undefined;
-    // HAS-MAP GUARD: a project nobody has configured keeps no `plugins` key at
-    // all, so an untouched registry is never rewritten with an empty map.
-    if (changed || next.plugins !== undefined) {
-      next.plugins = merged;
-      const mirrors = legacyMirrors(merged);
-      for (const [key, value] of Object.entries(mirrors)) {
-        if (value === undefined) delete (next as Record<string, unknown>)[key];
-        else (next as Record<string, unknown>)[key] = value;
-      }
-    }
+    delete (next as Record<string, unknown>).dataScience;
+    delete (next as Record<string, unknown>).latex;
     parsed.projects[index] = next;
     this.writeDocument(this.paths.projects, parsed);
     return structuredClone(next);
   }
 
-  /**
-   * WHICH PLUGINS A SESSION'S PROJECT HAS TURNED ON, as ids.
-   *
-   * `data-science` and `latex` are excluded even when the map names them,
-   * because their own claim fields already carry them and a worker that saw
-   * them twice would build their walls twice. That exclusion is temporary in
-   * the same sense the two dedicated claim fields are, and it lives HERE, in
-   * one line, rather than in the worker where it would be a second place to
-   * forget.
-   */
   /**
    * Where a departure is announced. One subscriber — the plugin host — so a
    * plugin with per-session state gives it back without the store naming it.
@@ -6295,6 +6320,7 @@ export class EngineStore {
     this.pluginRelease = release;
   }
 
+  /** WHICH PLUGINS A SESSION'S PROJECT HAS TURNED ON, as ids, under the Mac's ceiling. */
   enabledPluginIds(session: Session): string[] {
     if (!session.projectId) return [];
     let project: Project;
@@ -6305,7 +6331,7 @@ export class EngineStore {
       // THE MACHINE CEILING APPLIES TO THE CLAIM TOO. A worker builds walls from
       // this list, so a globally disabled plugin must not reach a turn — the
       // frontend hiding it would not be enforcement.
-      .filter(([id, config]) => config.enabled && machineAllows(machine, id) && !MIRRORED_PLUGINS.includes(id as MirroredPlugin))
+      .filter(([id, config]) => config.enabled && machineAllows(machine, id))
       .map(([id]) => id)
       .sort();
   }
@@ -6343,7 +6369,7 @@ export class EngineStore {
     const declared = declaredDependencies(base);
     const found = await discoverEnvironments(base, { toolchain, ...(telarVenvPython(telarVenv) ? { telarVenv } : {}), ...(declared.length ? { dists: declared } : {}) });
     const environments = found.map((env) => ({ ...env, path: relativisePythonPath(base, env.python) }));
-    const current = project.dataScience?.python ? this.currentEnvironment(project, base) : undefined;
+    const current = dataScienceBlock(project)?.python ? this.currentEnvironment(project, base) : undefined;
     return { toolchain, environments, requirements: projectRequirements(base), ...(declared.length ? { declared } : {}), ...(current ? { currentId: current.id } : {}) };
   }
 
@@ -6409,7 +6435,7 @@ export class EngineStore {
    * manager is read off the directory then (`pyvenv.cfg`, `conda-meta/`).
    */
   private currentEnvironment(project: Project, workspace = project.root): { id: string; manager: EnvManager; root: string; python: string } | undefined {
-    const config = project.dataScience?.python;
+    const config = dataScienceBlock(project)?.python;
     if (!config) return undefined;
     const python = resolvePythonPath(workspace, config.path);
     if (!fs.existsSync(python)) return undefined;
@@ -6626,7 +6652,7 @@ export class EngineStore {
       }
     };
     scan(project.root, 2);
-    return { toolchain, mainCandidates: candidates.sort(), ...(project.latex?.toolchain ? { current: project.latex.toolchain } : {}) };
+    return { toolchain, mainCandidates: candidates.sort(), ...(latexBlock(project)?.toolchain ? { current: latexBlock(project)!.toolchain } : {}) };
   }
 
   /** Install Tectonic or TinyTeX, as a job. Adopts the binary's directory on
@@ -6660,8 +6686,7 @@ export class EngineStore {
   /** What the project's distribution has installed — or the honest sentence
    *  about why there is nothing to list. */
   async latexPackages(projectId: string): Promise<LatexPackagesAnswer> {
-    const project = this.getProject(projectId);
-    const config = project.latex;
+    const config = latexBlock(this.getProject(projectId));
     if (!config?.enabled || !config.toolchain) throw new EngineStateError("invalid_request", "this project has no TeX toolchain configured");
     if (config.toolchain.kind === "tectonic") return { mode: "automatic", note: TECTONIC_PACKAGES_NOTE };
     const toolchain = await this.latexToolchain();
@@ -6673,8 +6698,7 @@ export class EngineStore {
   /** tlmgr install/remove, as a job. Tectonic projects are refused here — the
    *  settings page never shows the form, and the agent's tool says why. */
   async latexInstall(projectId: string, input: { add?: string[]; remove?: string[] }): Promise<{ jobId: string }> {
-    const project = this.getProject(projectId);
-    const config = project.latex;
+    const config = latexBlock(this.getProject(projectId));
     if (!config?.enabled || !config.toolchain) throw new EngineStateError("invalid_request", "this project has no TeX toolchain configured");
     if (config.toolchain.kind === "tectonic") throw new EngineStateError("invalid_request", TECTONIC_PACKAGES_NOTE);
     const toolchain = await this.latexToolchain();
@@ -11702,29 +11726,20 @@ export class EngineStore {
         // Filtered to the enabled ones in the engine, so "disabled" is decided
         // in exactly one place rather than trusted to every worker.
         ...(mcpServers.length > 0 ? { mcpServers } : {}),
-        // The project's opt-in, resolved with the worktree rule. Absent means
-        // the toolkits do not register for this turn.
+        /**
+         * Every plugin this turn gets, as ids — the list the worker builds its
+         * walls and briefings from. Data Science and LaTeX are in it only when
+         * they RESOLVE for this session (an interpreter or TeX binary that
+         * exists, with the worktree rule), not merely when switched on: a
+         * worktree missing its `.venv` gets no kernel tools rather than tools
+         * that fail.
+         */
         ...(() => {
-          const ds = this.resolveDataScience(session);
-          return ds ? { dataScience: ds } : {};
-        })(),
-        // The LaTeX opt-in, resolved the same way. Only the kind travels: the
-        // worker needs presence to register the toolkit, and the kind keeps
-        // the tools honest about how packages behave.
-        ...(() => {
-          const latex = this.resolveLatex(session);
-          return latex ? { latex: { kind: latex.kind } } : {};
-        })(),
-        // Every plugin this turn gets, as ids — the list the worker builds its
-        // walls and briefings from. The mirrored two join it under the SAME
-        // gate as their legacy fields above (the resolved opt-in, worktree
-        // rule included), so a plugin reaches a turn exactly when it did before.
-        ...(() => {
-          const ids = [
-            ...this.enabledPluginIds(session),
-            ...(this.resolveDataScience(session) ? ["data-science"] : []),
-            ...(this.resolveLatex(session) ? ["latex"] : []),
-          ].sort();
+          const resolves: Record<string, () => unknown> = {
+            "data-science": () => this.resolveDataScience(session),
+            latex: () => this.resolveLatex(session),
+          };
+          const ids = this.enabledPluginIds(session).filter((id) => (id in resolves ? resolves[id]!() !== undefined : true));
           return ids.length > 0 ? { plugins: ids } : {};
         })(),
         ...(resumeCursor ? { resumeCursor } : {}),

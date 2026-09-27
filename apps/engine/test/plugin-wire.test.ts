@@ -170,20 +170,27 @@ test("disabling removes the entry, and the door closes again with no daemon rest
   await expect(client.plugin(sessionId, "hello", "ping", {})).rejects.toMatchObject({ code: "invalid_request" });
 });
 
-test("the claim carries enabled plugin ids, and never the two that have their own fields", async () => {
+test("the claim carries enabled plugin ids, and Data Science and LaTeX only when they RESOLVE", async () => {
   gateOn();
   const { client, sessionId } = await ready({ enable: true });
-  // Both mirrored features on as well, so the exclusion is asserted against a
-  // map that actually contains them rather than against an empty one.
-  await client.updateProject("project_one", { latex: { enabled: true } });
+  // LaTeX on with a binary that exists: it resolves, so it joins the list.
+  // Data Science on with no interpreter anywhere: switched on but unresolved,
+  // so it stays off the claim rather than handing the agent tools that fail.
+  await client.updateProject("project_one", {
+    latex: { enabled: true, toolchain: { kind: "texlive", path: "/bin/echo" } },
+    dataScience: { enabled: true },
+  });
   await client.registerWorker("worker_one");
   await client.submitTurn(sessionId, { runId: "run_one", input: "Hello" });
   const claim = (await client.claimTurn("worker_one", 1)).claim!;
-  expect(claim.plugins).toEqual(["hello"]);
+  expect(claim.plugins).toEqual(["hello", "latex"]);
+  // The retired dedicated fields are gone from the wire.
+  expect("latex" in claim).toBe(false);
+  expect("dataScience" in claim).toBe(false);
 
   // And the worker builds exactly the walls the claim names.
   const built = bundledPluginToolModules().filter((module) => claim.plugins?.includes(module.meta.id));
-  expect(built.map((module) => module.meta.id)).toEqual(["hello"]);
+  expect(built.map((module) => module.meta.id).sort()).toEqual(["hello", "latex"]);
 });
 
 test("a plugin id on the claim that this binary does not bundle builds no wall rather than crashing", () => {

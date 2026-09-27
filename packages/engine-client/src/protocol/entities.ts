@@ -540,17 +540,18 @@ export const Project = z.object({
    * field go on working against an engine that has it, and the other way round.
    */
   availability: ProjectAvailability.optional(),
-  /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
+  /**
+   * @deprecated READ-ONLY LEGACY. Data Science's settings live in
+   * `plugins.entries["data-science"]`. An engine from P1c on never writes this
+   * key and folds it into the map when it opens the registry; it is kept on the
+   * shape only so a record an older engine wrote still decodes.
+   */
   dataScience: DataScienceConfig.optional(),
-  /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
+  /** @deprecated READ-ONLY LEGACY, as `dataScience` above: see `plugins.entries.latex`. */
   latex: LatexConfig.optional(),
   /**
-   * THE PLUGIN MAP — the last per-feature block this record grows.
-   *
-   * `dataScience` and `latex` above are two bespoke optional blocks, each with
-   * its own patch arm; a third would have been a third arm. Everything after
-   * them is an entry here, and those two are MIRRORED into it so a rollback to
-   * an engine that predates this key keeps the user's settings.
+   * THE PLUGIN MAP — the one place a project's features are configured,
+   * Data Science and LaTeX included. See `readProjectPlugins`.
    */
   plugins: ProjectPlugins.optional(),
 });

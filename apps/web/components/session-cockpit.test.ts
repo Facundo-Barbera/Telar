@@ -539,15 +539,19 @@ describe("a sub-agent's background claim is not a row in the main chat (#912)", 
 });
 
 /**
- * ISSUE #269. The plugin map is the whole truth once a project carries one, and
- * the legacy `dataScience`/`latex` blocks beside it are a mirror written for an
- * older engine binary — never a fallback. The cockpit read the mirror, so a
- * project that turned Data Science OFF through the map kept being offered the
- * Data tab, and `.ipynb` kept routing to the notebook surface, which then hit a
- * disabled plugin route.
+ * ISSUE #269. The plugin map is the whole truth once a project carries one. A
+ * record from an older engine may still carry legacy `dataScience`/`latex`
+ * blocks — beside a map they are never a fallback, and without one they are
+ * what `readProjectPlugins` reads.
  */
 describe("which plugin surfaces the cockpit offers", () => {
-  test("a map that disables Data Science beats a stale legacy mirror", () => {
+  test("reads the map", () => {
+    expect(
+      cockpitPlugins({ plugins: { version: 1, entries: { "data-science": { enabled: true }, latex: { enabled: false } } } }),
+    ).toEqual({ dataScience: true, latex: false });
+  });
+
+  test("a map that disables Data Science beats stale legacy fields", () => {
     expect(
       cockpitPlugins({
         plugins: { version: 1, entries: { latex: { enabled: true } } },
@@ -556,15 +560,15 @@ describe("which plugin surfaces the cockpit offers", () => {
     ).toEqual({ dataScience: false, latex: true });
   });
 
-  test("an entry the map never grew is off, whatever the mirror says", () => {
+  test("an entry the map never grew is off, whatever legacy fields say", () => {
     expect(
       cockpitPlugins({ plugins: { version: 1, entries: {} }, dataScience: { enabled: true }, latex: { enabled: true } }),
     ).toEqual({ dataScience: false, latex: false });
   });
 
-  test("a project that predates the map is still read from its legacy blocks", () => {
-    // `readProjectPlugins` migrates an unmigrated project from the mirror, so
-    // the switch a person threw before the map existed still holds.
+  test("an older engine's record with only legacy blocks is still read", () => {
+    // A remote engine from before the map sends these; `readProjectPlugins`
+    // folds them, so the switch a person threw there still holds.
     expect(cockpitPlugins({ dataScience: { enabled: true } })).toEqual({ dataScience: true, latex: false });
   });
 

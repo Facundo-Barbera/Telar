@@ -1028,13 +1028,15 @@ export class EngineClient {
       iconEmoji?: string | null;
       defaultModel?: ModelSelection | null;
       envMode?: EnvMode | null;
-      dataScience?: DataScienceConfig | null;
-      latex?: LatexConfig | null;
       /**
-       * THE GENERIC ARM. One entry per plugin, `null` to turn it off. The two
-       * legacy keys above still work and are mirrored into this map by the
-       * engine, so an old cockpit and a new one write the same truth.
+       * @deprecated An input alias for `plugins["data-science"]`, accepted for
+       * one more release so a released cockpit keeps working. The engine writes
+       * it into the map; nothing stores or returns this key.
        */
+      dataScience?: DataScienceConfig | null;
+      /** @deprecated An input alias for `plugins.latex`, as `dataScience` above. */
+      latex?: LatexConfig | null;
+      /** THE ARM TO USE. One entry per plugin, `null` to turn it off. */
       plugins?: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>;
     },
   ): Promise<{ project: Project }> {

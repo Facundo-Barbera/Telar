@@ -23,10 +23,9 @@ import type { PluginToolModule } from "./tool-module";
 export { LatexMachineSettings };
 
 /**
- * WHAT THE PROJECT STORES. Deliberately the same shape the legacy
- * `Project.latex` block holds, because `pluginConfigFromLegacy` maps one to the
- * other field for field — a settings schema that disagreed with the mirror
- * would make a rollback lossy.
+ * WHAT THE PROJECT STORES under `plugins.entries.latex.settings`. The same
+ * fields the retired `Project.latex` block held, which is what the load-time
+ * fold relies on.
  */
 export const LatexSettings = z.object({
   /** The chosen toolchain, as the machine reported it. */

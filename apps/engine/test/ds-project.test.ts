@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pluginBlock } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../src/state";
 
 const roots: string[] = [];
@@ -22,23 +23,27 @@ function readyStore(): EngineStore {
 
 test("a project starts with no data-science block and a patch adds one", () => {
   const store = readyStore();
-  expect(store.getProject("project_one").dataScience).toBeUndefined();
+  expect(pluginBlock(store.getProject("project_one"), "data-science")).toBeUndefined();
 
   const config = { enabled: true, python: { source: "chosen" as const, path: ".venv/bin/python", resolvedAt: 5 } };
   const updated = store.updateProject("project_one", { dataScience: config });
-  expect(updated.dataScience).toEqual(config);
+  // The alias lands in the map, whole, and is not itself stored or returned.
+  expect(pluginBlock(updated, "data-science")).toEqual(config);
+  expect("dataScience" in updated).toBe(false);
   expect(updated.updatedAt).toBe(100);
   // Survives a fresh read, and the list's derived-metadata spread.
-  expect(store.getProject("project_one").dataScience).toEqual(config);
-  expect(store.listProjects()[0]!.dataScience).toEqual(config);
+  expect(pluginBlock(store.getProject("project_one"), "data-science")).toEqual(config);
+  expect(pluginBlock(store.listProjects()[0]!, "data-science")).toEqual(config);
 });
 
 test("null removes the block rather than storing enabled: false forever", () => {
   const store = readyStore();
   store.updateProject("project_one", { dataScience: { enabled: true } });
   const off = store.updateProject("project_one", { dataScience: null });
-  expect(off.dataScience).toBeUndefined();
-  expect("dataScience" in JSON.parse(fs.readFileSync(path.join(store.paths.root, "projects.json"), "utf8")).projects[0]).toBe(false);
+  expect(pluginBlock(off, "data-science")).toBeUndefined();
+  const stored = JSON.parse(fs.readFileSync(path.join(store.paths.root, "projects.json"), "utf8")).projects[0];
+  expect("dataScience" in stored).toBe(false);
+  expect(stored.plugins.entries["data-science"]).toBeUndefined();
 });
 
 test("an invalid block and an unknown project are refused", () => {

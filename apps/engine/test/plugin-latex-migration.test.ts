@@ -9,8 +9,9 @@
  *   the generic `/plugins/latex/<method>` answers IDENTICALLY — one door
  *     cannot drift from the other, because both dispatch the same route table
  *   a project that has not enabled LaTeX is refused, in the same words
- *   the legacy `Project.latex` mirror is still written, so a rollback keeps
- *     the user's toolchain and main file
+ *   a `Project.latex` block an older engine left on disk folds into the map on
+ *     open, toolchain and main file intact, and the doors open on it
+ *     (a disabled one stays off; re-opening changes nothing)
  *   LaTeX's tools keep their shipped qualified names, so no stored approval is
  *     orphaned
  *
@@ -111,18 +112,61 @@ test("an unknown verb is a 404 about the method, not a 500", async () => {
   await expect(genericDoor(client, "nosuchverb")).rejects.toMatchObject({ status: 404 } satisfies Partial<EngineClientError>);
 });
 
-test("the legacy mirror is still written, so rolling back keeps the user's settings", async () => {
-  const { daemon } = await ready({ enable: true });
+/** Rewrite the registry as an engine older than the map left it, and restart. */
+async function restartOnLegacyRecord(daemon: EngineDaemon, latex: Record<string, unknown>) {
+  const home = daemon.store.paths.root;
+  const file = path.join(home, "projects.json");
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  parsed.projects = parsed.projects.map((project: Record<string, unknown>) => {
+    const { plugins: _stripped, ...rest } = project;
+    return { ...rest, latex };
+  });
+  fs.writeFileSync(file, JSON.stringify(parsed));
+  await daemon.close();
+  daemons.splice(daemons.indexOf(daemon), 1);
+  const restarted = await startEngine({ models: stubModels, engineRoot: home });
+  daemons.push(restarted);
+  return { restarted, client: new EngineClient(restarted.discovery), file };
+}
 
-  const stored = JSON.parse(fs.readFileSync(path.join(daemon.store.paths.root, "projects.json"), "utf8")).projects[0];
+test("a legacy LaTeX block an older engine left folds into the map on open, and the doors open on it", async () => {
+  const { daemon } = await ready();
+  const legacy = { enabled: true, mainFile: "paper.tex", toolchain: { kind: "texlive", path: "/bin/echo" } };
+  const { client, file } = await restartOnLegacyRecord(daemon, legacy);
 
-  // The map is authoritative…
-  expect(pluginEnabled(readProjectPlugins(stored).plugins, "latex")).toBe(true);
+  const stored = JSON.parse(fs.readFileSync(file, "utf8")).projects[0];
+  expect("latex" in stored).toBe(false);
+  expect(stored.plugins.entries.latex).toEqual({
+    enabled: true,
+    settings: { mainFile: "paper.tex", toolchain: { kind: "texlive", path: "/bin/echo" } },
+  });
+  // The settings are not just stored — they are what the doors resolve.
+  await expect(legacyDoor(client, "status")).resolves.toBeDefined();
+  await expect(genericDoor(client, "status")).resolves.toBeDefined();
+});
 
-  // …and the legacy block is written beside it, in the same atomic write, for
-  // exactly one reader: an OLDER engine binary. Removing it is a deliberate
-  // compatibility decision, not something a migration does on the way past.
-  expect(stored.latex).toEqual({ enabled: true, mainFile: "paper.tex", toolchain: { kind: "texlive", path: "/bin/echo" } });
+test("a DISABLED legacy LaTeX block stays off after the fold, and re-opening is a no-op", async () => {
+  const { daemon } = await ready();
+  const { restarted, client, file } = await restartOnLegacyRecord(daemon, {
+    enabled: false,
+    mainFile: "paper.tex",
+    toolchain: { kind: "texlive", path: "/bin/echo" },
+  });
+
+  const stored = JSON.parse(fs.readFileSync(file, "utf8")).projects[0];
+  expect(pluginEnabled(readProjectPlugins(stored).plugins, "latex")).toBe(false);
+  expect(stored.plugins.entries.latex.settings).toEqual({ mainFile: "paper.tex", toolchain: { kind: "texlive", path: "/bin/echo" } });
+  const refused = await legacyDoor(client, "status").catch((error: EngineClientError) => error);
+  expect((refused as EngineClientError).message).toContain("not enabled");
+
+  const before = fs.readFileSync(file, "utf8");
+  const home = restarted.store.paths.root;
+  await restarted.close();
+  daemons.splice(daemons.indexOf(restarted), 1);
+  const again = await startEngine({ models: stubModels, engineRoot: home });
+  daemons.push(again);
+  expect(again.store.pluginFieldMigration).toBe(0);
+  expect(fs.readFileSync(file, "utf8")).toBe(before);
 });
 
 test("LaTeX's tools keep their shipped names, so no stored approval is orphaned", () => {

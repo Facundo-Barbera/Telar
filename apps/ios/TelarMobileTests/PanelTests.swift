@@ -271,9 +271,9 @@ import Testing
 ///
 /// `packages/engine-client/src/protocol/plugins.ts` `readProjectPlugins`: once
 /// a project carries the map's `version` marker the map is the WHOLE truth,
-/// and the legacy `dataScience` / `latex` blocks — which are still written as
-/// mirrors for an older engine — are never read again. A per-key fallback is
-/// what resurrects a feature somebody turned off.
+/// and the legacy `dataScience` / `latex` blocks — which only an older engine
+/// still sends — are never read again. A per-key fallback is what resurrects a
+/// feature somebody turned off.
 @Suite struct ProjectPluginTests {
     private func project(_ json: String) throws -> Project {
         try JSONDecoder().decode(Project.self, from: Data(json.utf8))
@@ -291,14 +291,14 @@ import Testing
         #expect(p.pluginEnabled(.latex))
     }
 
-    @Test func theMapWinsOverAStaleLegacyMirror() throws {
+    @Test func theMapWinsOverAStaleLegacyBlock() throws {
         // Data Science was turned OFF: the entry is gone from the map and the
-        // mirror still says true. Falling back to it would turn the plugin
+        // legacy block still says true. Falling back to it would turn the plugin
         // back on by itself.
         let gone = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":true}}}}"#)
         #expect(!gone.pluginEnabled(.dataScience))
         #expect(gone.pluginEnabled(.latex))
-        // And the explicit `false` entry beats the mirror just the same.
+        // And the explicit `false` entry beats the legacy block just the same.
         let off = try project(#"{"id":"p","name":"P","latex":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":false}}}}"#)
         #expect(!off.pluginEnabled(.latex))
     }

@@ -17,7 +17,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient, type ModelCatalogue, type ProviderModel } from "@telar/engine-client";
+import { EngineClient, pluginBlock, type ModelCatalogue, type ProviderModel } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../src/state";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
@@ -118,7 +118,8 @@ describe("the store's write path", () => {
     expect(project.name).toBe("Renamed");
     expect(project.envMode).toBe("worktree");
     expect(project.iconEmoji).toBe("🧵");
-    expect(project.latex).toEqual({ enabled: true });
+    expect(pluginBlock(project, "latex")).toEqual({ enabled: true });
+    expect(project.plugins?.entries.latex).toEqual({ enabled: true });
   });
 
   test("an invalid selection is refused BEFORE anything is written", () => {

@@ -15,7 +15,7 @@
  * everything else gets the generic one. That is the whole compatibility rule.
  */
 import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
-import { machineAllows } from "@telar/engine-client";
+import { machineAllows, pluginConfigFromLegacy } from "@telar/engine-client";
 
 /** A settings entry a plugin contributed, flattened for the nav. */
 export type PluginSectionEntry = {
@@ -101,6 +101,14 @@ export function enablePatch(pluginId: string, enabled: boolean, settings?: Recor
       [pluginId]: enabled ? { enabled: true, ...(settings ? { settings } : {}) } : null,
     },
   };
+}
+
+/**
+ * A BESPOKE PANE'S WRITE: its flat `{enabled, ...settings}` block, as a map
+ * entry. `null` removes the entry, as in `enablePatch`.
+ */
+export function blockPatch(pluginId: string, block: { enabled: boolean; [setting: string]: unknown } | null) {
+  return { plugins: { [pluginId]: block && pluginConfigFromLegacy(block) } };
 }
 
 /**

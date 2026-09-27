@@ -8,15 +8,15 @@
  *   - a project that predates the map migrates from its legacy blocks
  *   - once the marker is present the map is the WHOLE truth, and a missing
  *     entry is OFF rather than a legacy read (the resurrection bug)
- *   - disabling writes an absence to BOTH sides, so no reader anywhere can
- *     still see the old settings
- *   - an old engine stripping `plugins` and rewriting the mirror is survivable,
- *     and rolling forward re-migrates to the same state
+ *   - the legacy blocks an older engine wrote fold into the map with their
+ *     settings, a disabled one stays off, and re-running changes nothing
  */
 import { describe, expect, test } from "bun:test";
 import {
   applyPluginPatch,
-  legacyMirrors,
+  LEGACY_PLUGIN_KEYS,
+  migrateLegacyPluginFields,
+  pluginBlock,
   pluginConfigFromLegacy,
   legacyFromPluginConfig,
   pluginEnabled,
@@ -87,68 +87,89 @@ describe("reading the map", () => {
   });
 });
 
-describe("legacy mirrors", () => {
-  test("an enabled entry mirrors back to the exact legacy shape", () => {
-    const { plugins } = readProjectPlugins({ latex: latexLegacy, dataScience: dsLegacy });
-    const mirrors = legacyMirrors(plugins);
-    expect(mirrors.latex).toEqual(latexLegacy);
-    expect(mirrors.dataScience).toEqual(dsLegacy);
-  });
-
-  test("DISABLING WRITES AN ABSENCE TO BOTH SIDES", () => {
-    // The mirror must be deleted, not merely left alone. A mirror that is only
-    // ever added is the resurrection bug wearing a rollback hat.
-    const { plugins } = readProjectPlugins({ latex: latexLegacy, dataScience: dsLegacy });
-    const next = applyPluginPatch(plugins, { latex: null });
-    const mirrors = legacyMirrors(next);
-    expect(mirrors.latex).toBeUndefined();
-    expect(mirrors.dataScience).toEqual(dsLegacy);
-  });
-
-  test("an explicitly-disabled entry mirrors as `enabled: false`, not as an absence", () => {
-    const { plugins } = readProjectPlugins({ latex: latexLegacy });
-    const next = applyPluginPatch(plugins, { latex: { enabled: false, settings: { mainFile: "paper.tex" } } });
-    expect(legacyMirrors(next).latex).toEqual({ enabled: false, mainFile: "paper.tex" });
-  });
-
-  test("the legacy translation round-trips", () => {
+describe("the legacy translation", () => {
+  test("round-trips", () => {
     expect(legacyFromPluginConfig(pluginConfigFromLegacy(latexLegacy))).toEqual(latexLegacy);
+  });
+
+  test("names exactly the two plugins that predate the map", () => {
+    expect(LEGACY_PLUGIN_KEYS).toEqual({ latex: "latex", "data-science": "dataScience" });
   });
 });
 
-describe("rollback and roll-forward", () => {
-  /** What an OLD engine binary does to the registry: `Project` is a plain
-   *  `z.object`, so the unknown `plugins` key is stripped on parse and gone on
-   *  the next write. The mirror is all that survives. */
-  const asOldEngineRewrote = (project: Record<string, unknown>) => {
-    const { plugins: _stripped, ...rest } = project;
-    return rest;
-  };
-
-  test("rolling back keeps the settings, and rolling forward re-migrates to the same map", () => {
-    const { plugins } = readProjectPlugins({ latex: latexLegacy, dataScience: dsLegacy });
-    const onDisk = { plugins, ...legacyMirrors(plugins) };
-
-    const afterRollback = asOldEngineRewrote(onDisk);
-    expect(afterRollback.latex).toEqual(latexLegacy);
-
-    const rolledForward = readProjectPlugins(afterRollback);
-    expect(rolledForward.migrated).toBe(false);
-    expect(rolledForward.plugins).toEqual(plugins);
+describe("folding the legacy blocks into the map", () => {
+  test("a legacy-only record folds into the map with its settings, and the keys are dropped", () => {
+    const { project, changed } = migrateLegacyPluginFields({ id: "p", latex: latexLegacy, dataScience: dsLegacy });
+    expect(changed).toBe(true);
+    expect(project).toEqual({
+      id: "p",
+      plugins: {
+        version: PROJECT_PLUGINS_VERSION,
+        entries: {
+          latex: { enabled: true, settings: { mainFile: "paper.tex", toolchain: { kind: "tectonic" } } },
+          "data-science": { enabled: true, settings: { stack: ["pandas"] } },
+        },
+      },
+    });
+    expect("latex" in project).toBe(false);
+    expect("dataScience" in project).toBe(false);
   });
 
-  test("A FEATURE DISABLED BEFORE A ROLLBACK STAYS DISABLED AFTER ROLLING FORWARD", () => {
-    // The end-to-end statement of the hazard: disable under the new engine,
-    // roll back to one that cannot see the map, roll forward again. LaTeX must
-    // not come back on.
-    const { plugins } = readProjectPlugins({ latex: latexLegacy, dataScience: dsLegacy });
-    const disabled = applyPluginPatch(plugins, { latex: null });
-    const onDisk = { plugins: disabled, ...legacyMirrors(disabled) };
-    expect(onDisk.latex).toBeUndefined();
+  test("A DISABLED LEGACY BLOCK STAYS OFF, and keeps its settings", () => {
+    const { project } = migrateLegacyPluginFields({ latex: { enabled: false, mainFile: "paper.tex" } });
+    const plugins = readProjectPlugins(project).plugins;
+    expect(pluginEnabled(plugins, "latex")).toBe(false);
+    expect(pluginSettings(plugins, "latex")).toEqual({ mainFile: "paper.tex" });
+  });
 
-    const rolledForward = readProjectPlugins(asOldEngineRewrote(onDisk));
-    expect(pluginEnabled(rolledForward.plugins, "latex")).toBe(false);
-    expect(pluginEnabled(rolledForward.plugins, "data-science")).toBe(true);
+  test("RE-RUNNING IS A NO-OP", () => {
+    const once = migrateLegacyPluginFields({ id: "p", latex: latexLegacy, dataScience: dsLegacy });
+    const twice = migrateLegacyPluginFields(once.project);
+    expect(twice.changed).toBe(false);
+    expect(twice.project).toEqual(once.project);
+  });
+
+  test("a record nobody configured is untouched — no empty map is invented", () => {
+    const record = { id: "p" };
+    const { project, changed } = migrateLegacyPluginFields(record);
+    expect(changed).toBe(false);
+    expect(project).toEqual({ id: "p" });
+  });
+
+  test("an existing map entry wins over a legacy block for the same id", () => {
+    const { project, changed } = migrateLegacyPluginFields({
+      plugins: { version: 1, entries: { latex: { enabled: true, settings: { mainFile: "thesis.tex" } }, hello: { enabled: true } } },
+      latex: latexLegacy,
+      dataScience: dsLegacy,
+    });
+    expect(changed).toBe(true);
+    const plugins = readProjectPlugins(project).plugins;
+    expect(pluginSettings(plugins, "latex")).toEqual({ mainFile: "thesis.tex" });
+    // The id the map did not name is filled from its legacy block, and an
+    // unrelated entry survives.
+    expect(pluginSettings(plugins, "data-science")).toEqual({ stack: ["pandas"] });
+    expect(pluginEnabled(plugins, "hello")).toBe(true);
+    expect("latex" in project).toBe(false);
+  });
+});
+
+describe("a plugin's flat block", () => {
+  test("is the entry as `{enabled, ...settings}`", () => {
+    const project = { plugins: { version: 1, entries: { latex: { enabled: true, settings: { mainFile: "paper.tex" } } } } };
+    expect(pluginBlock(project, "latex")).toEqual({ enabled: true, mainFile: "paper.tex" });
+  });
+
+  test("is undefined when the map has no entry, even beside a stale legacy block", () => {
+    expect(pluginBlock({ plugins: { version: 1, entries: {} }, latex: latexLegacy }, "latex")).toBeUndefined();
+  });
+
+  test("reads an older engine's legacy-only record", () => {
+    expect(pluginBlock({ dataScience: dsLegacy }, "data-science")).toEqual(dsLegacy);
+  });
+
+  test("an explicitly-disabled entry reads as `enabled: false`, not as an absence", () => {
+    const next = applyPluginPatch({ version: 1, entries: {} }, { latex: { enabled: false, settings: { mainFile: "paper.tex" } } });
+    expect(pluginBlock({ plugins: next }, "latex")).toEqual({ enabled: false, mainFile: "paper.tex" });
   });
 });
 

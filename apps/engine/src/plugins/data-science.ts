@@ -12,6 +12,7 @@
 import { z } from "zod";
 import {
   DataScienceBootstrap,
+  DataScienceConfig,
   DataScienceCreateEnvironment,
   DataScienceMachineSettings,
   DataScienceMachineSettingsWrite,
@@ -32,15 +33,12 @@ import type { PluginToolModule } from "./tool-module";
 export { DataScienceMachineSettings };
 
 /**
- * WHAT THE PROJECT STORES. The same shape the legacy `Project.dataScience`
- * block holds, field for field, because `pluginConfigFromLegacy` maps one onto
- * the other and a schema that disagreed with the mirror would make a rollback
- * lossy.
+ * WHAT THE PROJECT STORES under `plugins.entries["data-science"].settings`: the
+ * chosen interpreter (`python.path` may be RELATIVE, so a worktree resolves its
+ * own `.venv`) and the one-click stack. The same fields the retired
+ * `Project.dataScience` block held, which is what the load-time fold relies on.
  */
-export const DataScienceSettings = z.object({
-  /** The interpreter the kernel runs. Absolute, checked on disk at resolve. */
-  pythonPath: z.string().min(1).optional(),
-});
+export const DataScienceSettings = DataScienceConfig.omit({ enabled: true });
 export type DataScienceSettings = z.infer<typeof DataScienceSettings>;
 
 /**
@@ -228,7 +226,7 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
     settingsSchema: DataScienceSettings,
     /**
      * THE MAC-WIDE DEFAULTS — a different shape from the project's, and
-     * deliberately so. A project stores `pythonPath`, which may be RELATIVE so
+     * deliberately so. A project stores `python.path`, which may be RELATIVE so
      * a worktree resolves its own `.venv`; a machine default cannot be relative
      * to a checkout it knows nothing about, so `python` is absolute. Sharing one
      * schema would have made each half accept the other's lie.

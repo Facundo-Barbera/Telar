@@ -76,10 +76,11 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test("the claim carries dataScience, and the project's venv python is the one resolved", () => {
+  test("the claim carries data-science, and the project's venv python is the one resolved", () => {
     store.submitTurn("session_k", { runId: "run_1", input: "hi" });
     const claim = store.claimNextTurn("worker_1");
-    expect(claim?.dataScience?.pythonPath).toBe(projectPython);
+    expect(claim?.plugins).toContain("data-science");
+    expect(store.resolveDataScience(store.getSession("session_k"))?.pythonPath).toBe(projectPython);
     store.stopTurn("session_k", "run_1");
   });
 
