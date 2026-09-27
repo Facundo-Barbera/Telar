@@ -24,10 +24,14 @@ import type {
   LatexEngine,
   LatexPackagesAnswer,
   LatexTexliveDistribution,
+  LatexToolchain,
   LatexToolchainChoice,
   Project,
+  ProjectPlugins,
 } from "@telar/engine-client";
+import { latexMachineSettings } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { ENGINE_LABEL } from "./latex-machine-settings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,6 +60,22 @@ const FLAVOUR_LABEL: Record<LatexTexliveDistribution["flavour"], string> = {
   texlive: "TeX Live",
 };
 
+/**
+ * WHAT A PROJECT WITH NO CHOICE OF ITS OWN COMPILES WITH, in words: this Mac's
+ * default, then Telar's own Tectonic — the chain `resolveLatex` walks.
+ */
+export function inheritedDistribution(machine: ProjectPlugins | undefined, toolchain: Pick<LatexToolchain, "texlive" | "managed"> | undefined): string {
+  const mac = latexMachineSettings(machine).toolchain;
+  const texlive = mac?.kind === "texlive" ? toolchain?.texlive.find((dist) => dist.binDir === mac.path) : undefined;
+  const label =
+    mac?.kind === "managed" ? "Telar (managed)"
+    : mac?.kind === "tectonic" ? "Tectonic"
+    : mac?.kind === "texlive" ? (texlive ? `${FLAVOUR_LABEL[texlive.flavour]}${texlive.year ? ` ${texlive.year}` : ""}` : "TeX Live")
+    : toolchain?.managed?.installed ? "Telar (managed)"
+    : "none";
+  return `Inherit (${label})`;
+}
+
 export function LatexSection({ project, onChange }: { project: Project; onChange: (project: Project) => void }) {
   const router = useRouter();
   const config = project.latex;
@@ -80,6 +100,17 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
     const task = window.setTimeout(() => void refresh(), 0);
     return () => window.clearTimeout(task);
   }, [refresh]);
+
+  /** This Mac's LaTeX defaults, read as the Plugins pane reads them — what an
+   *  unset project row inherits. A failed read only costs the label. */
+  const [machine, setMachine] = useState<ProjectPlugins>();
+  useEffect(() => {
+    let live = true;
+    api.machinePlugins().then((answer) => live && setMachine(answer.machine), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const save = async (next: LatexConfig | null) => {
     setSaving(true);
@@ -184,19 +215,12 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
             label="Engine"
             hint="What latexmk drives. pdflatex unless the document needs system fonts (xelatex, lualatex)."
             control={
-              <Select
-                value={config.toolchain.engine ?? "pdflatex"}
-                onValueChange={(next) => void save({ ...config, toolchain: { ...config.toolchain!, engine: next as LatexEngine } })}
-              >
-                <SelectTrigger size="sm" className="w-36" aria-label="TeX engine">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ENGINES.map((engine) => (
-                    <SelectItem key={engine} value={engine}>{engine}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <EngineSelect
+                {...(config.toolchain.engine ? { value: config.toolchain.engine } : {})}
+                machine={machine}
+                // Inherit removes the key rather than storing a copy of the Mac's.
+                onPick={(engine) => void save({ ...config, toolchain: { kind: config.toolchain!.kind, ...(config.toolchain!.path ? { path: config.toolchain!.path } : {}), ...(engine ? { engine } : {}) } })}
+              />
             }
           />
         )}
@@ -216,6 +240,16 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
       >
         <div className="flex flex-col gap-2 py-3">
           {!data && loading && <span className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3" /> Probing TeX programs…</span>}
+          {/* NO CHOICE IS A CHOICE: the project follows this Mac's default. */}
+          {data && (
+            <DistributionCard
+              name={inheritedDistribution(machine, data.toolchain)}
+              detail="This Mac's default, set on the Plugins pane."
+              inUse={enabled && !config?.toolchain}
+              saving={saving}
+              onUse={() => void save({ enabled: true, ...(config?.mainFile ? { mainFile: config.mainFile } : {}) })}
+            />
+          )}
           {data && (
             <DistributionCard
               name="Tectonic"
@@ -302,6 +336,29 @@ export function MainFileSelect({ value, candidates, onPick }: { value?: string; 
 
 /** base-ui needs a non-empty value per item, so "none" travels as a sentinel. */
 const NO_MAIN_FILE = "__none";
+
+/** The project's engine, or Inherit — which names this Mac's default engine. */
+export function EngineSelect({ value, machine, onPick }: { value?: LatexEngine; machine: ProjectPlugins | undefined; onPick: (next?: LatexEngine) => void }) {
+  const inherited = `Inherit (${ENGINE_LABEL[latexMachineSettings(machine).engine ?? "pdflatex"]})`;
+  return (
+    <Select
+      value={value ?? INHERIT_ENGINE}
+      onValueChange={(next) => onPick(typeof next === "string" && next !== INHERIT_ENGINE ? (next as LatexEngine) : undefined)}
+    >
+      <SelectTrigger size="sm" className="w-40" aria-label="TeX engine">
+        <SelectValue>{value ?? inherited}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={INHERIT_ENGINE}>{inherited}</SelectItem>
+        {ENGINES.map((engine) => (
+          <SelectItem key={engine} value={engine}>{engine}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+const INHERIT_ENGINE = "__inherit";
 
 function MainFileInput({ value, disabled, onSave }: { value: string; disabled: boolean; onSave: (next: string) => void }) {
   const [draft, setDraft] = useState(value);

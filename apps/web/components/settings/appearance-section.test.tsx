@@ -27,6 +27,7 @@ import { Row, SettingsGroup, SettingsShell } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { TELAR_DARK, TELAR_LIGHT } from "@telar/engine-client";
 import { STATE_INK, TINT_FLOOR, tintCost } from "@/lib/tint-separation";
+import { readTheme } from "@/components/theme-provider";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -230,9 +231,11 @@ describe("the Composer group", () => {
     return [...host.querySelectorAll("section")].find((section) => section.querySelector("h4")?.textContent === "Composer") ?? null;
   }
 
-  test("the light/dark switch is the first control, and it is a pair", () => {
+  test("it carries no light/dark switch of its own: Window ▸ Colour scheme is the one", () => {
     const segments = [...(composerGroup()?.querySelectorAll("button[aria-pressed]") ?? [])].map((button) => button.textContent);
-    expect(segments.slice(0, 2)).toEqual(["Light", "Dark"]);
+    expect(segments).not.toContain("Light");
+    expect(segments).not.toContain("Dark");
+    expect(host.querySelectorAll('[aria-label="Colour scheme"]')).toHaveLength(1);
   });
 
   test("the base leads, and the layers follow it", () => {
@@ -287,11 +290,10 @@ describe("the Composer group", () => {
     const shown = [...(card?.querySelectorAll("span") ?? [])].find((span) => /^\d+\.\d$/.test(span.textContent ?? ""));
     expect(shown, "the card row shows a ratio").not.toBeUndefined();
 
-    // WHICH HALF IS ON SCREEN is the window's colour scheme, so the pane's own
-    // switch is asked rather than assumed — the state ink differs between the
+    // WHICH HALF IS ON SCREEN is the window's colour scheme, so the stored
+    // scheme is asked rather than assumed — the state ink differs between the
     // two and a test that guessed would pass for the wrong reason.
-    const showing = [...(composerGroup()?.querySelectorAll("button[aria-pressed]") ?? [])].find((button) => button.getAttribute("aria-pressed") === "true");
-    const dark = showing?.textContent?.toLowerCase().includes("dark") ?? false;
+    const dark = readTheme() === "dark";
     const expected = tintCost(dark ? TELAR_DARK.card : TELAR_LIGHT.card, dark ? STATE_INK.dark : STATE_INK.light, TINT_FLOOR);
     expect(shown?.textContent).toBe(expected.readability.toFixed(1));
     expect(shown?.getAttribute("title")).toContain(`.tint-${expected.tone}`);
