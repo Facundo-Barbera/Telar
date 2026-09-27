@@ -22,20 +22,16 @@
  *
  *   LOOKS              somewhere whole to start from, including the defaults
  *                      that used to be built-in themes and starters.
- *   COMPOSER           the light/dark switch, the base colour those sixteen
- *                      tokens come from, the layers over it, and — folded away
- *                      — the tokens themselves for overriding what was derived.
+ *   COMPOSER           the base colour those sixteen tokens come from, the
+ *                      layers over it, and — folded away — the tokens
+ *                      themselves for overriding what was derived.
  *   TYPE AND SURFACES  the accent, the two faces, their sizes, and the depth.
  *   WINDOW             the colour scheme, translucency and glass. The only
  *                      group that is not part of a look at all.
  *
- * THE LIGHT/DARK SWITCH IS THE WINDOW'S COLOUR SCHEME, and that is deliberate
- * rather than a shortcut. "The window's colour scheme picks which state is
- * showing" — so a composer switch that selected a state WITHOUT moving the
- * window would be editing a state you cannot see, which is the whole failure
- * the direct-apply rebuild set out to end. One control, and the Window group
- * keeps the same one (with `system` as well, which the composer's two-way
- * switch cannot express).
+ * THE COMPOSER EDITS WHATEVER STATE THE WINDOW WEARS. Window ▸ Colour scheme is
+ * the one light/dark control on the pane; the composer used to carry a second
+ * switch writing the same value, which was one setting in two places.
  *
  * AND IT IS A SETTINGS PANE, NOT A STUDIO (#399). Stacked `SettingsGroup` cards
  * with a title and a sentence, exactly like inbox-section.tsx and
@@ -95,7 +91,7 @@ export function AppearanceSection() {
    * pane whose whole claim is that the app is the preview must not be showing
    * you a state your window is not wearing.
    */
-  const { theme, setTheme } = useTheme();
+  const { theme } = useTheme();
   const systemIsDark = useSyncExternalStore(
     (onChange) => {
       const query = window.matchMedia("(prefers-color-scheme: dark)");
@@ -212,18 +208,7 @@ export function AppearanceSection() {
 
       <SettingsGroup
         title="Composer"
-        description="What the app looks like: a base colour the surfaces are derived from, and the layers over it. Light and dark are two states of one composition — the switch says which one you are editing, and the window wears it."
-        action={
-          <Segmented<CompositionMode>
-            value={mode}
-            // The switch IS the window's colour scheme — see the file header.
-            onChange={(next) => setTheme(next)}
-            options={[
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
-            ]}
-          />
-        }
+        description="What the app looks like: a base colour the surfaces are derived from, and the layers over it. Light and dark are two states of one composition — you edit the one the window wears, set under Window below."
       >
         <Row
           label="Base"
