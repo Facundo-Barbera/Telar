@@ -94,7 +94,7 @@ export interface PushRecord extends MobileRegistration {
   /** The last push-to-start this Mac sent for the automatic card, and what
    *  came back. Apple answers 200 for a start iOS then drops, so it is read
    *  together with whether a card was registered afterwards (`activityReport`). */
-  automaticStart?: { at: number; status: number; reason?: string; relay?: true };
+  automaticStart?: { at: number; status: number; reason?: string; relay?: true; token?: string };
   updatedAt: number;
   /** Which alerts this phone holds and which reads it has not yet been told
    *  about — see `read-sync.ts`. Ids only. */
@@ -412,11 +412,18 @@ export const AUTOMATIC_START_ATTEMPTS = 3;
  * Apple accepted. The last one looks identical to success from here, and
  * without this they could only be guessed at.
  */
+/** Eight bytes of SHA-256 over the token's hex, as the phone computes it
+ *  (`StartTokenPolicy.fingerprint`): enough to tell tokens apart, useless as one. */
+export function tokenFingerprint(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
 export type ActivityReport = {
   /** A card from this Mac is registered on the phone right now. */
   card: boolean;
   blocker?: "off" | "no-start-token" | "gave-up";
-  lastStart?: { at: number; status: number; reason?: string; relay?: boolean };
+  /** `token` is `tokenFingerprint` of the start token that start used, so the
+   *  phone can tell whether Apple refused its current token or an old one. */
+  lastStart?: { at: number; status: number; reason?: string; relay?: boolean; token?: string };
 };
 export function activityReport(record: PushRecord): ActivityReport {
   const card = record.activities.some(activity => activity.sessionId === AUTOMATIC_ACTIVITY);
@@ -424,7 +431,7 @@ export function activityReport(record: PushRecord): ActivityReport {
     : !card && (record.automaticStarts ?? 0) >= AUTOMATIC_START_ATTEMPTS ? "gave-up" : undefined;
   const start = record.automaticStart;
   return { card, ...(blocker ? { blocker } : {}),
-    ...(start ? { lastStart: { at: start.at, status: start.status, ...(start.reason ? { reason: start.reason } : {}), relay: start.relay === true } } : {}) };
+    ...(start ? { lastStart: { at: start.at, status: start.status, ...(start.reason ? { reason: start.reason } : {}), relay: start.relay === true, ...(start.token ? { token: start.token } : {}) } } : {}) };
 }
 export const ACTIVITY_STALE_S = 300;
 export function automaticSessions(sessions: SessionSignal[]): SessionSignal[] {

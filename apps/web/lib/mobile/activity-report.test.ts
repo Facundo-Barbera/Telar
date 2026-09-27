@@ -14,7 +14,7 @@ import path from "node:path";
 import { activityLine } from "../../components/settings/push-notifications-group";
 import { PUT as pushPUT } from "../../app/api/mobile/push/route";
 import { addDevice, mintDeviceToken } from "../remote/store";
-import { AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, activityReport, type PushRecord } from "./push";
+import { AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, activityReport, tokenFingerprint, type PushRecord } from "./push";
 import { deliverRecord } from "./worker";
 
 const record = (patch: Partial<PushRecord> = {}): PushRecord => ({
@@ -39,12 +39,15 @@ describe("the report", () => {
 
   test("every start is recorded with what came back, accepted or refused", async () => {
     let next = (await deliverRecord(record(), [work], async () => ({ status: 200 }), 1000))!;
-    expect(activityReport(next).lastStart).toEqual({ at: 1000, status: 200, relay: false });
+    expect(activityReport(next).lastStart).toEqual({ at: 1000, status: 200, relay: false, token: tokenFingerprint("b".repeat(64)) });
+    // A fingerprint, never the token, and the phone's own formula (StartTokenPolicy.fingerprint).
+    expect(tokenFingerprint("b".repeat(64))).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.stringify(activityReport(next))).not.toContain("b".repeat(64));
     next = (await deliverRecord(record(), [work], async () => ({ status: 400, reason: "BadDeviceToken" }), 2000))!;
-    expect(activityReport(next).lastStart).toEqual({ at: 2000, status: 400, reason: "BadDeviceToken", relay: false });
+    expect(activityReport(next).lastStart).toMatchObject({ at: 2000, status: 400, reason: "BadDeviceToken", relay: false });
     next = (await deliverRecord(record(), [work], async () => ({ status: 409, relay: true, reason: "not_registered" }), 3000))!;
     // The relay's word reaches the phone, which is how it knows to re-send its start token.
-    expect(activityReport(next).lastStart).toEqual({ at: 3000, status: 409, reason: "not_registered", relay: true });
+    expect(activityReport(next).lastStart).toMatchObject({ at: 3000, status: 409, reason: "not_registered", relay: true });
   });
 });
 

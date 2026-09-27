@@ -26,8 +26,9 @@ import Testing
     }
 
     @Test func aRefusalNamesWhoseAndWhy() {
-        #expect(LiveActivityDiagnosis.line(start(400, reason: "BadDeviceToken"), now: now).contains("Apple refused the start"))
-        #expect(LiveActivityDiagnosis.line(start(400, reason: "BadDeviceToken"), now: now).hasSuffix("(400 BadDeviceToken)."))
+        // A refusal that is not about the token itself (a dead one has its own line).
+        #expect(LiveActivityDiagnosis.line(start(400, reason: "PayloadTooLarge"), now: now).contains("Apple refused the start"))
+        #expect(LiveActivityDiagnosis.line(start(400, reason: "PayloadTooLarge"), now: now).hasSuffix("(400 PayloadTooLarge)."))
         #expect(LiveActivityDiagnosis.line(start(409, relay: true), now: now).contains("push relay refused"))
     }
 
@@ -48,6 +49,45 @@ import Testing
         #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(start(400, reason: "BadDeviceToken")))
         #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(ActivityReport(card: true, lastStart: lost.lastStart)))
         #expect(!LiveActivityDiagnosis.startTokenMissingAtRelay(nil))
+    }
+
+    @Test func appleRefusingTheStartTokenItselfIsToldApartFromEverythingElse() {
+        #expect(LiveActivityDiagnosis.startTokenRejectedByApple(start(410, reason: "Unregistered")))
+        #expect(LiveActivityDiagnosis.startTokenRejectedByApple(start(400, reason: "BadDeviceToken")))
+        #expect(!LiveActivityDiagnosis.startTokenRejectedByApple(start(400, reason: "PayloadTooLarge")))
+        #expect(!LiveActivityDiagnosis.startTokenRejectedByApple(start(410, relay: true)), "the relay's refusal is not Apple's")
+        #expect(!LiveActivityDiagnosis.startTokenRejectedByApple(start(200)))
+        #expect(LiveActivityDiagnosis.line(start(410, reason: "Unregistered"), now: now).hasPrefix("Apple no longer accepts this phone's start token (410 Unregistered"))
+    }
+
+    @Test func aRejectedTokenTellsThePersonHowToGetANewOne() {
+        let lines = LiveActivityDiagnosis.lines(systemAllowed: true, toggle: true, hasStartToken: false, startTokenRejected: true, macs: [], now: now)
+        #expect(lines == ["Apple no longer accepts the start token iOS gave Telar. \(LiveActivityDiagnosis.freshTokenHint)"])
+    }
+
+    @Test func aTokenAppleRefusedIsNeverSentAgainButANewOneIs() {
+        let dead = String(repeating: "a", count: 64), fresh = String(repeating: "b", count: 64)
+        let rejected = StartTokenPolicy.remember(dead, in: [])
+        #expect(StartTokenPolicy.usable(dead, rejected: Set(rejected)) == nil)
+        #expect(StartTokenPolicy.usable(fresh, rejected: Set(rejected)) == fresh)
+        #expect(StartTokenPolicy.usable(nil, rejected: []) == nil, "nothing confirmed this launch, nothing sent")
+        // A fingerprint, not the token, and a bounded list with no repeats.
+        #expect(!rejected.contains(dead) && rejected.first?.count == 16)
+        #expect(StartTokenPolicy.remember(dead, in: rejected) == rejected)
+        var many: [String] = []
+        for n in 0..<12 { many = StartTokenPolicy.remember(String(repeating: "c", count: 62) + String(format: "%02d", n), in: many) }
+        #expect(many.count == 8)
+    }
+
+    @Test func theFingerprintIsTheMacsFormulaAndNamesWhichTokenWasRefused() {
+        // Same formula as tokenFingerprint in apps/web/lib/mobile/push.ts.
+        #expect(StartTokenPolicy.fingerprint(String(repeating: "b", count: 64)) == "a0fab1377f49a759")
+        var old = ActivityReport(card: false, lastStart: .init(at: 1_800_000_000 - 5, status: 410, reason: "Unregistered", relay: false, token: "1111111111111111"))
+        #expect(LiveActivityDiagnosis.line(old, currentToken: "2222222222222222", now: now).hasPrefix("Apple refused an older start token"))
+        #expect(LiveActivityDiagnosis.line(old, currentToken: "1111111111111111", now: now).hasPrefix("Apple refused the start token iOS currently gives Telar"))
+        old.lastStart?.token = nil
+        #expect(LiveActivityDiagnosis.line(old, currentToken: "1111111111111111", now: now).hasPrefix("Apple no longer accepts this phone's start token"))
+        #expect(StartTokenPolicy.remember(print: "1111111111111111", in: ["1111111111111111"]) == ["1111111111111111"])
     }
 
     @Test func theMacsReportDecodesAsTheMacSendsIt() throws {
