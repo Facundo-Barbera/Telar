@@ -121,12 +121,40 @@ import Testing
         #expect(subject.state.keys.keys.sorted() == ["mac-b"])
     }
 
-    @Test func withoutAppAttestOrOnAnUnknownBundleThePhoneStaysOnV1() async throws {
+    @Test func withoutAppAttestOrOnAnUnknownBundlePushIsUnavailable() async throws {
         let now = clock
         attest.isSupported = false
-        #expect(await client { now }.credential(for: "mac-a", tokens: tokens) == nil)
+        let unsupported = client { now }
+        #expect(unsupported.unavailable)
+        #expect(await unsupported.credential(for: "mac-a", tokens: tokens) == nil)
         attest.isSupported = true
-        #expect(await client(bundle: "com.example.other") { now }.credential(for: "mac-a", tokens: tokens) == nil)
+        let unknown = client(bundle: "com.example.other") { now }
+        #expect(unknown.unavailable)
+        #expect(await unknown.credential(for: "mac-a", tokens: tokens) == nil)
         #expect(relay.requests.isEmpty)
+        #expect(attest.attested.isEmpty)
+    }
+
+    @Test func aRefusedAttestationIsNotRetriedThisLaunch() async throws {
+        let now = clock
+        let subject = client { now }
+        #expect(!subject.unavailable)
+        relay.replies = [(200, #"{"challenge":"issued-challenge"}"#), (401, "{}")]
+        #expect(await subject.credential(for: "mac-a", tokens: tokens) == nil)
+        #expect(subject.unavailable)
+        // A second Mac, or the next sync, costs nothing: no retry loop.
+        #expect(await subject.credential(for: "mac-b", tokens: tokens) == nil)
+        #expect(relay.calls == ["GET /v2/challenge", "POST /v2/devices"])
+        #expect(attest.attested.count == 1)
+    }
+
+    @Test func aRelayThatCannotBeReachedIsRetriedOnTheNextSync() async throws {
+        let now = clock
+        let subject = client { now }
+        relay.replies = [(503, "{}")]
+        #expect(await subject.credential(for: "mac-a", tokens: tokens) == nil)
+        #expect(!subject.unavailable)
+        relay.replies = [(200, #"{"challenge":"c2"}"#), (201, #"{"handle":"h1"}"#), (201, #"{"keyId":"k1","sendKey":"s1"}"#)]
+        #expect(await subject.credential(for: "mac-a", tokens: tokens) != nil)
     }
 }
