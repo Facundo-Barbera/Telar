@@ -27,6 +27,9 @@ import {
   type GitHubReactionResult,
   type GitHubThreadReplyResult,
   type GitHubThreadResolveResult,
+  type GitHubLineCommentInput,
+  type GitHubLineCommentResult,
+  type GitHubPullAnchor,
   type GitHubPullCreateResult,
   type GitHubPullFilter,
   type GitHubPullRead,
@@ -2902,6 +2905,16 @@ export class EngineClient {
    */
   openSessionPullRequest(sessionId: string, input: { title: string; body?: string; base?: string }): Promise<GitHubPullCreateResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull`, input);
+  }
+
+  /** What placing a Diff line on the session branch's pull request needs (#1014). */
+  sessionPullAnchor(sessionId: string): Promise<GitHubPullAnchor> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull/anchor`);
+  }
+
+  /** Start a review thread on a line or range of the session branch's pull request (#1014). */
+  commentOnSessionPullLine(sessionId: string, input: GitHubLineCommentInput): Promise<GitHubLineCommentResult> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull/comments`, input);
   }
 
   /**

@@ -11,6 +11,7 @@ import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineClientError,
+  GitHubLineCommentInput,
   GitHubReactionContent,
   GitHubSubjectId,
   DataScienceBootstrap,
@@ -4771,6 +4772,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               ...(typeof input.base === "string" && input.base.trim() ? { base: input.base } : {}),
             }),
           );
+          return;
+        }
+        /** The pull request a Diff line would be placed on, and the facts that
+         *  decide whether it can be (#1014). */
+        if (request.method === "GET" && session.tail === "/github/pull/anchor") {
+          writeJson(response, 200, await store.sessionPullAnchor(session.sessionId));
+          return;
+        }
+        /** A new review thread on the session branch's pull request. The pull
+         *  request is the branch's; the body names only the line and the words. */
+        if (request.method === "POST" && session.tail === "/github/pull/comments") {
+          const input = GitHubLineCommentInput.safeParse(await body(request));
+          if (!input.success) throw new HttpError(400, "invalid_request", "a comment needs a 40-character commit, a path, a line, a side and a body");
+          writeJson(response, 200, await store.sessionPullLineComment(session.sessionId, input.data));
           return;
         }
         if (request.method === "GET" && session.tail === "/browser") {

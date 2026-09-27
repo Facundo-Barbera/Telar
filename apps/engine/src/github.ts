@@ -57,6 +57,10 @@ import type {
   GitHubReviewThread,
   GitHubThreadReplyResult,
   GitHubThreadResolveResult,
+  DiffHunkRange,
+  GitHubLineCommentInput,
+  GitHubLineCommentResult,
+  GitHubPullAnchor,
   GitHubSnapshot,
   GitHubUnavailable,
 } from "@telar/engine-client";
@@ -1888,6 +1892,121 @@ export async function resolveThread(gh: GhRunner, cwd: string, input: { threadId
     }
   }
   return { changed: false, ...classifyGraphqlWriteFailure(result) };
+}
+
+// ── starting a review thread from the Diff surface (#1014) ─────────────────
+
+/** The open pull request whose head is `branch`. The branch comes off the
+ *  session record, never a request. */
+export function pullForBranchArgv(branch: string): string[] {
+  return ["pr", "list", "--head", branch, "--state", "open", "--limit", "1", "--json", "number,url,headRefOid,baseRefName"];
+}
+
+export async function readPullForBranch(gh: GhRunner, cwd: string, branch: string): Promise<GitHubPullAnchor["pull"]> {
+  const result = await gh(cwd, pullForBranchArgv(branch));
+  if (result.status !== 0) return undefined;
+  try {
+    const row = (JSON.parse(result.stdout) as Record<string, unknown>[])[0];
+    const number = typeof row?.number === "number" ? row.number : undefined;
+    const url = text(row?.url);
+    const headRefOid = text(row?.headRefOid);
+    const baseRefName = text(row?.baseRefName);
+    return number && url && headRefOid && baseRefName ? { number, url, headRefOid, baseRefName } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every file in the pull request's own diff, one `[path, patch]` JSON row per
+ *  line. `patch` is absent for binary and very large files, which leaves them
+ *  with no hunks and so nothing to anchor to. */
+export function pullFilesArgv(number: number): string[] {
+  return ["api", "--paginate", `repos/{owner}/{repo}/pulls/${number}/files`, "--jq", '.[] | [.filename, (.patch // "")]'];
+}
+
+/** The hunk headers of a unified diff. A count left out means one line. */
+export function hunkRanges(patch: string): DiffHunkRange[] {
+  const hunks: DiffHunkRange[] = [];
+  for (const match of patch.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    hunks.push({
+      oldStart: Number(match[1]),
+      oldLines: match[2] === undefined ? 1 : Number(match[2]),
+      newStart: Number(match[3]),
+      newLines: match[4] === undefined ? 1 : Number(match[4]),
+    });
+  }
+  return hunks;
+}
+
+export async function readPullFiles(gh: GhRunner, cwd: string, number: number): Promise<GitHubPullAnchor["files"]> {
+  const result = await gh(cwd, pullFilesArgv(number));
+  if (result.status !== 0) return [];
+  const files: GitHubPullAnchor["files"] = [];
+  for (const line of result.stdout.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const [path, patch] = JSON.parse(line) as unknown[];
+      if (typeof path === "string" && path) files.push({ path, hunks: typeof patch === "string" ? hunkRanges(patch) : [] });
+    } catch {
+      // One unreadable row costs that file its anchor, not the rest.
+    }
+  }
+  return files;
+}
+
+/**
+ * Start a review thread on one line or a range.
+ *
+ * REST, NOT `addPullRequestReviewThread`, because only REST takes `commit_id`:
+ * the comment is pinned to the head the reader saw, so a push in between makes
+ * GitHub place it on that commit rather than on lines that have moved. Every
+ * value is a `-f`/`-F` field — `-f` for text, so a body or path starting with
+ * `@` is never read as a file — and the number is the only thing in the path.
+ * A person's words, so no session marker (see `threadReplyArgv`).
+ */
+export function lineCommentArgv(number: number, input: GitHubLineCommentInput): string[] {
+  const argv = [
+    "api",
+    "-X",
+    "POST",
+    `repos/{owner}/{repo}/pulls/${number}/comments`,
+    "-f",
+    `body=${input.body}`,
+    "-f",
+    `commit_id=${input.commitId}`,
+    "-f",
+    `path=${input.path}`,
+    "-F",
+    `line=${input.line}`,
+    "-f",
+    `side=${input.side}`,
+  ];
+  if (input.startLine !== undefined) argv.push("-F", `start_line=${input.startLine}`, "-f", `start_side=${input.startSide ?? input.side}`);
+  return argv;
+}
+
+export async function commentOnPullLine(gh: GhRunner, cwd: string, number: number, input: GitHubLineCommentInput): Promise<GitHubLineCommentResult> {
+  const body = input.body.trim();
+  if (!body) return { commented: false, refusal: "invalid_body", message: "A comment needs something in it." };
+  if (body.length > MAX_COMMENT_BODY) {
+    return { commented: false, refusal: "invalid_body", message: `That comment is ${body.length} characters; GitHub takes at most ${MAX_COMMENT_BODY}.` };
+  }
+  const result = await gh(cwd, lineCommentArgv(number, { ...input, body }));
+  if (result.status === 0) {
+    try {
+      const url = text((JSON.parse(result.stdout) as { html_url?: unknown }).html_url);
+      if (url) return { commented: true, url };
+    } catch {
+      // Fall through to the classifier.
+    }
+  }
+  // REST says a missing scope in `gh`'s own hint ("needs the "repo" scope …
+  // gh auth refresh"), and a missing pull request as HTTP 404.
+  const lower = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  const classified = classifyGraphqlWriteFailure(result);
+  if (lower.includes("auth refresh") || lower.includes("scope")) return { commented: false, ...classified, refusal: "scope" };
+  if (lower.includes("http 404")) return { commented: false, ...classified, refusal: "not_found" };
+  return { commented: false, ...classified };
 }
 
 // ── opening one pull request ────────────────────────────────────────────────

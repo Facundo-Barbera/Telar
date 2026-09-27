@@ -361,6 +361,20 @@ export function parseUntracked(stdout: string): string[] {
     .filter(Boolean);
 }
 
+/** `git status --porcelain -z` → every path with an uncommitted change. A rename
+ *  or copy is followed by its origin as a field of its own; both are counted. */
+export function porcelainPaths(stdout: string): string[] {
+  const fields = nulFields(stdout);
+  const paths: string[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const entry = fields[index]!;
+    if (entry.length < 4) continue;
+    paths.push(entry.slice(3));
+    if (/[RC]/.test(entry.slice(0, 2)) && fields[index + 1]) paths.push(fields[++index]!);
+  }
+  return paths;
+}
+
 /** Field and record separators chosen because git will not emit them itself:
  *  a commit subject may contain any printable character, including tabs. */
 const FIELD = "";

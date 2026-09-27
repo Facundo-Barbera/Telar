@@ -893,6 +893,70 @@ export const GitHubThreadResolveResult = z.union([
 ]);
 export type GitHubThreadResolveResult = z.infer<typeof GitHubThreadResolveResult>;
 
+// ── starting a review thread from the Diff surface (#1014) ─────────────────
+
+/** One `@@ -oldStart,oldLines +newStart,newLines @@` header, as numbers. */
+export const DiffHunkRange = z.object({
+  oldStart: z.number().int().nonnegative(),
+  oldLines: z.number().int().nonnegative(),
+  newStart: z.number().int().nonnegative(),
+  newLines: z.number().int().nonnegative(),
+});
+export type DiffHunkRange = z.infer<typeof DiffHunkRange>;
+
+/**
+ * WHAT A LOCAL LINE NEEDS TO BE PLACED ON A PULL REQUEST — #1014.
+ *
+ * The Diff surface draws the session's checkout; a review comment anchors to the
+ * pull request's head commit and GitHub's own diff. This carries both sides of
+ * that comparison so the surface can refuse, with a reason, every line it cannot
+ * place exactly: the open pull request for the session's branch (absent when
+ * there is none), the checkout's HEAD, the paths with uncommitted changes, and
+ * the hunk headers of every file in GitHub's diff.
+ */
+export const GitHubPullAnchor = z.object({
+  pull: z
+    .object({
+      number: z.number().int().positive(),
+      url: z.string().min(1),
+      headRefOid: z.string().min(1),
+      baseRefName: z.string().min(1),
+    })
+    .optional(),
+  head: z.string().min(1).optional(),
+  dirty: z.array(z.string()),
+  files: z.array(z.object({ path: z.string().min(1), hunks: z.array(DiffHunkRange) })),
+});
+export type GitHubPullAnchor = z.infer<typeof GitHubPullAnchor>;
+
+/** GitHub's side names: LEFT is the base's lines, RIGHT the head's. */
+export const GitHubLineSide = z.enum(["LEFT", "RIGHT"]);
+export type GitHubLineSide = z.infer<typeof GitHubLineSide>;
+
+/** A new review comment on one line or a range. `startLine`/`startSide` are
+ *  present only for a range; `commitId` pins it to the head the reader saw. */
+export const GitHubLineCommentInput = z.object({
+  commitId: z.string().regex(/^[0-9a-f]{40}$/),
+  path: z.string().min(1),
+  line: z.number().int().positive(),
+  side: GitHubLineSide,
+  startLine: z.number().int().positive().optional(),
+  startSide: GitHubLineSide.optional(),
+  body: z.string(),
+});
+export type GitHubLineCommentInput = z.infer<typeof GitHubLineCommentInput>;
+
+/** A thread refusal, plus `stale`: the branch or the pull request moved after
+ *  the surface read them, so the line may no longer be where it was. */
+export const GitHubLineCommentRefusal = z.enum([...GitHubThreadRefusal.options, "stale"]);
+export type GitHubLineCommentRefusal = z.infer<typeof GitHubLineCommentRefusal>;
+
+export const GitHubLineCommentResult = z.union([
+  z.object({ commented: z.literal(true), url: z.string().min(1) }),
+  z.object({ commented: z.literal(false), refusal: GitHubLineCommentRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitHubLineCommentResult = z.infer<typeof GitHubLineCommentResult>;
+
 // ── opening one pull request ────────────────────────────────────────────────
 
 /** How long a pull request's title may be. GitHub's own ceiling is 256; held
