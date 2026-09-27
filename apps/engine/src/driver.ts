@@ -92,6 +92,7 @@ export type { DriverRequest, DriverRequestOutcome, DriverRun, DriverResult, Prov
 import { ProviderUnavailableError, normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun,
   type DriverResult, type ProviderTurnBinding, type DriverSessionHooks, type TurnDriver } from "./provider-contract";
 import { requireCwd } from "./provider-contract";
+import { taskOutputFileFrom } from "./task-output";
 
 /** The SDK's permission callback, narrowed to what this driver uses. */
 type SdkCanUseTool = (
@@ -1567,6 +1568,9 @@ export function createClaudeDriver(
        *  the set the moment the CLI backgrounds it (Ctrl+B). On the runtime's
        *  memory like the rows — see `TaskMemory`. */
       let suppressedTasks: Set<string> = new Set();
+      /** Log paths a backgrounded Bash result stated before its task had a
+       *  row, by SDK id — folded in when the row is minted (`emitTask`). */
+      const pendingOutputFiles = new Map<string, string>();
       /** The turn the pump is reading is one the CLI started on its own (a
        *  background task's wake-up), not this engine turn — see the
        *  `message_start` check in the loop. Its rows are filed under the task
@@ -1687,8 +1691,11 @@ export function createClaudeDriver(
         // see `isUnstatedEnding`, and the store's copy of this rule.
         const corrected = known !== undefined && isUnstatedEnding(known) && (patch.state === "failed" || patch.state === "stopped");
         const state = known && isTerminalTaskState(known.state) && !corrected ? known.state : patch.state;
+        const pendingOutput = sdkTaskId ? pendingOutputFiles.get(sdkTaskId) : undefined;
+        if (sdkTaskId) pendingOutputFiles.delete(sdkTaskId);
         const task: TaskSeed = {
           ...known,
+          ...(pendingOutput ? { outputFile: pendingOutput } : {}),
           ...patch,
           id,
           // PRECEDENCE: what the frame says, then what the SDK ever STATED
@@ -1707,6 +1714,28 @@ export function createClaudeDriver(
         const settled = isTerminalTaskState(state);
         const announced = kind === "task.started" ? kind : settled ? "task.completed" : "task.progress";
         emit(announced === "task.progress" ? { kind: announced, task, ...(message ? { message } : {}) } : { kind: announced, task });
+      };
+
+      /**
+       * A BACKGROUNDED BASH CALL NAMES ITS LOG AT ONCE. Its result carries the
+       * SDK task id (`backgroundTaskId`) and, in the text, the file the shell is
+       * writing to — the only statement of the path while the shell runs; the
+       * notification's `output_file` comes only at the end. The row usually
+       * exists already (`task_started` precedes the result); if not, the path
+       * waits for `emitTask` to mint it.
+       */
+      const noteTaskOutput = (structured: unknown, output: string): void => {
+        const sdkId = str(asRecord(structured).backgroundTaskId);
+        const file = sdkId ? taskOutputFileFrom(output) : undefined;
+        if (!sdkId || !file || suppressedTasks.has(sdkId)) return;
+        const rowId = taskIdsBySdkId.get(sdkId);
+        const known = rowId ? knownTasks.get(rowId) : undefined;
+        if (!known) {
+          pendingOutputFiles.set(sdkId, file);
+          return;
+        }
+        if (known.outputFile === file) return;
+        emitTask("task.progress", sdkId, { state: known.state, outputFile: file });
       };
 
       /** A sub-agent's usage, in the contract's shape. The SDK reports one
@@ -1763,6 +1792,8 @@ export function createClaudeDriver(
         workflow_name?: string;
         summary?: string;
         status?: string;
+        /** `task_notification` only: where the task's output was written. */
+        output_file?: string;
         /** `task_started` only: housekeeping the CLI does not surface as
          *  user work — the SDK says to exclude it from activity. */
         ambient?: boolean;
@@ -1927,6 +1958,9 @@ export function createClaudeDriver(
         if (item.subtype === "task_notification") {
           if (str(item.task_id) && suppressedTasks.has(item.task_id!)) return true;
           const id = taskIdFor(str(item.task_id), str(item.tool_use_id));
+          // Only a shell's file is a log; an agent's is its transcript, which
+          // the Agents tab already draws as steps.
+          const logged = knownTasks.get(id)?.kind === "background" && str(item.output_file);
           // Remembered on the PROCESS: the wake-up this notification triggers
           // may be read by the idle pump, or by the next turn's pump, and
           // either has to name the shell that spoke.
@@ -1940,6 +1974,7 @@ export function createClaudeDriver(
               // see `taskStateForStatus`.
               state: taskStateForStatus(str(item.status), "completed"),
               ...(str(item.summary) ? { resultText: item.summary! } : {}),
+              ...(logged ? { outputFile: logged } : {}),
               ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
             },
             str(item.tool_use_id),
@@ -4145,6 +4180,7 @@ export function createClaudeDriver(
               openTopLevelTools.delete(useId);
               const failed = block.is_error === true;
               const output = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? null);
+              if (!failed && structured) noteTaskOutput(structured, output);
               emit({
                 kind: "item.completed",
                 itemId: open.id,

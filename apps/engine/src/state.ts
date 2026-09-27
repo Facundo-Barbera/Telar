@@ -17291,7 +17291,7 @@ export class EngineStore {
          * on what CHANGED, not on the seed's key set: the driver repeats the
          * whole row (title, kind, backgrounded) on every report.
          */
-        const onlySummary = changed.every((key) => key === "resultText" || key === "usage");
+        const onlySummary = changed.every((key) => key === "resultText" || key === "usage" || key === "outputFile");
         if (onlySummary) {
           projection.tasks.set(known.id, { ...known, ...definedOnly(seed), id: known.id, kind: known.kind, state: known.state, runId: known.runId, startedAt: known.startedAt, updatedAt: at });
           projection.tasksTouched = true;
