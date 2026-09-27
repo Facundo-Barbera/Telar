@@ -66,9 +66,9 @@ test("no two rows claim the same anchor", () => {
 test("the questions a person actually types find the row", () => {
   const first = (query: string) => searchSettings(SETTINGS_SEARCH_INDEX, query)[0]?.title;
   expect(first("settle")).toBe("Settle quiet sessions");
-  // Found by what it does, not by what it is called — behind the Storage rows
-  // that carry the word in their titles.
-  expect(first("worktree")).toBe("Delete inactive worktrees");
+  // A title that starts with the word leads; the cleanup row is still found.
+  expect(first("worktree")).toBe("Worktree preparation");
+  expect(searchSettings(SETTINGS_SEARCH_INDEX, "worktree").map((hit) => hit.title)).toContain("Delete inactive worktrees");
   expect(searchSettings(SETTINGS_SEARCH_INDEX, "worktree").map((hit) => hit.title)).toContain("Workspace");
   // A symptom, not a destination.
   expect(first("disk space")).toBe("Delete inactive worktrees");
@@ -109,4 +109,73 @@ test("a result carries the pane it lives on, which is what the list shows", () =
   const hit = searchSettings(SETTINGS_SEARCH_INDEX, "tailscale")[0];
   expect(hit?.pageId).toBe("remote");
   expect(hit?.pageLabel).toBe("Remote access");
+});
+
+/**
+ * A ROW CANNOT EXIST WITHOUT BEING SEARCHABLE, AND AN ENTRY CANNOT OUTLIVE ITS
+ * ROW. Static extraction rather than a render: the panes are lazy and most of
+ * their rows appear only once the engine answers, so mounting them here would
+ * test the mocks. Every `<Row>`/`<ToggleRow>` with a plain-string label is read
+ * out of the pane sources and matched against the registry in both directions.
+ */
+function renderedLabels(): Set<string> {
+  const labels = new Set<string>();
+  for (const source of paneSources(here)) {
+    for (const [, attrs] of source.matchAll(/<(?:Row|ToggleRow)\b([\s\S]*?)\/?>/g)) {
+      const label = /\blabel="([^"]+)"/.exec(attrs ?? "")?.[1];
+      if (label) labels.add(label);
+    }
+  }
+  return labels;
+}
+
+/**
+ * Rows that are not settings: a state the pane is in (loading, empty, failed,
+ * not available here). Searching for one would land on a row that is usually
+ * not there. A new entry here needs the same excuse.
+ */
+const NOT_SETTINGS = new Set([
+  "Could not read plugins",
+  "Could not save",
+  "Desktop app only",
+  "Detecting",
+  "Did not start",
+  "Loading",
+  "No hubs configured",
+  "No other TeX install found",
+  "No phone can be reached yet",
+  "No plugins registered",
+  "No remembered logins",
+  "No servers configured",
+  "No update feed in this build",
+  "None yet",
+  "Not available here",
+  "Restart to apply",
+  "The engine did not answer",
+]);
+
+test("every rendered row with a fixed label has a search entry", () => {
+  const indexed = new Set(SETTINGS_SEARCH_PAGES.flatMap((page) => page.groups.flatMap((group) => group.rows.map((row) => row.title))));
+  const missing = [...renderedLabels()].filter((label) => !indexed.has(label) && !NOT_SETTINGS.has(label)).sort();
+  expect(missing).toEqual([]);
+});
+
+test("every search entry points at a row that renders, unless it says it lands on a pane", () => {
+  const labels = renderedLabels();
+  const sources = paneSources(here).join("\n");
+  // A row is rendered if a Row carries its label, a row descriptor mapped into
+  // Rows names it (`label: "Setup"`), or it spells its anchor out by hand.
+  const renders = (title: string, id: string) =>
+    labels.has(title) || sources.includes(`label: "${title}"`) || sources.includes(`id="${id}"`);
+  const anchor = new Map(SETTINGS_SEARCH_INDEX.entries.map((entry) => [`${entry.pageId}:${entry.title}`, entry.id]));
+  const dangling = SETTINGS_SEARCH_PAGES.flatMap((page) =>
+    page.groups.flatMap((group) =>
+      group.rows
+        .filter((row) => !row.navigateOnly && !renders(row.title, row.id ?? anchor.get(`${page.id}:${row.title}`) ?? ""))
+        .map((row) => `${page.id}: ${row.title}`),
+    ),
+  );
+  expect(dangling).toEqual([]);
+  // And the exemption list stays honest: a label that became a setting, or went away, leaves it.
+  for (const label of NOT_SETTINGS) expect(labels.has(label)).toBe(true);
 });
