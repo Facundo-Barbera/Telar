@@ -8,8 +8,9 @@
  * data. Nothing can enumerate them without mounting every pane, which is
  * exactly what a person who does not know where a setting lives cannot do. So
  * the rows are DECLARED here, and `settings-registry.test.ts` is what keeps the
- * declaration honest: every title below must still appear in a section file, or
- * the test fails and names the row that moved.
+ * declaration honest, both ways: every Row with a fixed label must have an entry
+ * here (or be a state row the test names), and every entry must still match a
+ * rendered row unless it is marked `navigateOnly`.
  *
  * THE HINTS ARE THE STABLE HALF OF THE ROW'S OWN SENTENCE. Most rows write
  * their hint from live state — a pairing hint names the address it is reachable
@@ -20,12 +21,9 @@
  *
  * WHAT IS DELIBERATELY NOT HERE:
  *
- *   - THE PROJECT-SCOPED GROUPS ON THE PROJECTS PANE — its MCP list and every
- *     plugin's own editor, which arrived there when the standalone per-project
- *     page was retired (#363). Both are built from data: the MCP group's
- *     heading is the project's own name and a plugin's is the plugin's, which
- *     is the rule two bullets down. The pane's STANDING rows are indexed, and
- *     they are copy rather than one entry per registered folder.
+ *   - THE PROJECTS PANE'S PER-PROJECT MCP LIST, whose heading is the
+ *     project's own name — the rule two bullets down. The built-in plugin
+ *     editors on that pane ARE indexed; their headings are copy.
  *   - PLUGIN-CONTRIBUTED SECTIONS. They arrive from the engine at runtime, and
  *     a plugin does not declare searchable rows in its manifest today. The
  *     Plugins pane itself is indexed; what a plugin puts inside it is not.
@@ -54,6 +52,7 @@ import {
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
+  FlaskConicalIcon,
   FolderGitIcon,
   FolderKanbanIcon,
   GaugeIcon,
@@ -63,21 +62,24 @@ import {
   HardDriveIcon,
   ImageIcon,
   InfoIcon,
-  KeyboardIcon,
   KeyRoundIcon,
+  KeyboardIcon,
+  LanguagesIcon,
   LayersIcon,
-  MicIcon,
   LockIcon,
+  MicIcon,
   MonitorIcon,
   NetworkIcon,
   PackageIcon,
+  PackagePlusIcon,
   PaletteIcon,
   PlugIcon,
   PlugZapIcon,
-  ScrollTextIcon,
   RefreshCwIcon,
-  ShieldCheckIcon,
+  ScrollTextIcon,
   ServerIcon,
+  SettingsIcon,
+  ShieldCheckIcon,
   SlidersHorizontalIcon,
   SmartphoneIcon,
   SparklesIcon,
@@ -182,6 +184,18 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             icon: TimerIcon,
           },
           {
+            title: "Settle delegated conversations after their result is delivered",
+            hint: "A conversation another session handed work to settles once the result is back.",
+            keywords: ["delegated", "errand", "coordinator", "handoff", "result", "settle"],
+            icon: TimerIcon,
+          },
+          {
+            title: "Settle delegated conversations after",
+            hint: "How long after delivery. A failed errand, a pinned row and an open question all stay put.",
+            keywords: ["hours", "days", "window", "delegated"],
+            icon: TimerIcon,
+          },
+          {
             title: "Terminals settled sessions may keep open",
             hint: "Past it, the session settled longest ago has its terminals closed first.",
             keywords: ["terminal", "process", "dev server", "shell", "limit", "cap", "running", "settled"],
@@ -278,6 +292,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             keywords: ["colour", "color", "theme", "palette", "hue", "tint", "background", "canvas"],
             icon: PaletteIcon,
           },
+          {
+            title: "Match the other state",
+            hint: "Carries this state's look over to the other one, light or dark.",
+            keywords: ["light", "dark", "copy", "sync", "both"],
+            icon: PaletteIcon,
+          },
         ],
       },
       {
@@ -323,6 +343,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
       {
         rows: [
           {
+            navigateOnly: true,
             title: "Keyboard shortcuts",
             hint: "Every chord this app answers to, and what each one does — the same list the command palette runs.",
             keywords: [
@@ -364,12 +385,14 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
       {
         rows: [
           {
+            navigateOnly: true,
             title: "Browser profiles",
             hint: "The identities Telar's own browser signs in as, one set of cookies each.",
             keywords: ["cookies", "account", "sign in", "chrome", "profile", "default", "browser", "integrations"],
             icon: CircleUserRoundIcon,
           },
           {
+            navigateOnly: true,
             title: "Remembered logins",
             hint: "Logins you allowed agents to fill without asking again, one 1Password item each.",
             keywords: ["1password", "password", "credential", "autofill", "revoke", "vault", "integrations"],
@@ -450,6 +473,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
               "deepgram",
             ],
             icon: MicIcon,
+          },
+          {
+            title: "Language",
+            hint: "Which language is transcribed. Automatic detects it; one language is more accurate within it.",
+            keywords: ["spanish", "english", "automatic", "multilingual", "locale"],
+            icon: LanguagesIcon,
           },
           {
             title: "Deepgram key",
@@ -542,6 +571,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
       {
         rows: [
           {
+            navigateOnly: true,
             title: "Add a login",
             hint: "Each login is a CLI already on this machine. Telar never signs you in; tokens stay where the CLI put them.",
             keywords: ["account", "claude", "codex", "api key", "sign in", "auth", "provider"],
@@ -560,6 +590,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         title: "Usage providers",
         rows: [
           {
+            navigateOnly: true,
             title: "Add hub",
             hint: "Hubs that pool subscription accounts. Their remaining quota shows under Limits on the Usage page.",
             keywords: ["cliproxy", "cliproxyapi", "hub", "proxy", "quota", "limit", "limits", "usage", "pooled", "rate limit", "5h", "weekly", "remaining"],
@@ -624,6 +655,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
          */
         rows: [
           {
+            navigateOnly: true,
             title: "Add a server",
             hint: "Tool servers every project sees. A project can define one with the same id to replace it for itself.",
             keywords: ["mcp", "stdio", "sse", "http", "tool", "server"],
@@ -667,6 +699,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         // note at the top about plugin-declared rows.
         rows: [
           {
+            navigateOnly: true,
             title: "Plugins",
             hint: "Which plugins are registered with the engine, whether each is on for this Mac, and the defaults a project inherits.",
             // The Mac-wide defaults live on this page and are contributed at
@@ -687,6 +720,54 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
               "default python",
             ],
             icon: BlocksIcon,
+          },
+        ],
+      },
+      {
+        title: "TeX distribution",
+        rows: [
+          {
+            id: "plugins-latex-managed",
+            title: "Telar (managed)",
+            hint: "A TeX engine Telar downloads itself, so LaTeX works on a Mac with no TeX installed.",
+            keywords: ["tectonic", "latex", "install", "tex", "download"],
+            icon: DownloadIcon,
+          },
+        ],
+      },
+      {
+        title: "Compiling",
+        rows: [
+          {
+            title: "Default engine",
+            hint: "What a TeX install drives when a project has not chosen.",
+            keywords: ["pdflatex", "xelatex", "lualatex", "latexmk", "engine"],
+            icon: SettingsIcon,
+          },
+          {
+            title: "Install missing packages automatically",
+            hint: "When a compile fails on a missing package, install it and compile once more.",
+            keywords: ["tlmgr", "packages", "latex", "auto install"],
+            icon: PackagePlusIcon,
+          },
+        ],
+      },
+      {
+        title: "Data science defaults",
+        rows: [
+          {
+            id: "plugins-data-science-python",
+            title: "Default Python",
+            hint: "The interpreter a project with none of its own runs its kernel on.",
+            keywords: ["python", "interpreter", "kernel", "jupyter"],
+            icon: FlaskConicalIcon,
+          },
+          {
+            id: "plugins-data-science-packages",
+            title: "Default packages",
+            hint: "Installed into environments Telar creates from here on.",
+            keywords: ["pandas", "numpy", "packages", "pip", "environment"],
+            icon: PackageIcon,
           },
         ],
       },
@@ -719,12 +800,14 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
          */
         rows: [
           {
+            navigateOnly: true,
             title: "Mac",
             hint: "Projects are registered per Mac. A paired one's registry is read from that Mac.",
             keywords: ["host", "paired", "remote", "other mac", "machine"],
             icon: MonitorIcon,
           },
           {
+            navigateOnly: true,
             title: "Project",
             hint: "All projects leaves the rows below inert; naming one binds them to it.",
             keywords: ["scope", "pick", "select", "all projects", "registry"],
@@ -791,10 +874,101 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         title: "Danger",
         rows: [
           {
+            title: "Worktree preparation",
+            hint: "How a new worktree is prepared for this project: inherit, off, or its own.",
+            keywords: ["setup", "prepare", "inherit", "worktree"],
+            icon: TerminalIcon,
+          },
+          {
+            title: "Repo file",
+            hint: "Preparation read from a file committed in the repository.",
+            keywords: ["config file", "committed", "telar.json", "repo"],
+            icon: FolderGitIcon,
+          },
+          {
             title: "Remove project from Telar",
             hint: "Put the registration away. Nothing on disk is touched, and it can be restored.",
             keywords: ["unregister", "delete", "forget", "put away"],
             icon: FolderKanbanIcon,
+          },
+        ],
+      },
+      {
+        title: "Removed from Telar",
+        rows: [
+          {
+            title: "Restore this project",
+            hint: "Puts a removed project back in the rail. Nothing on disk was touched when it went.",
+            keywords: ["undo", "restore", "removed", "unarchive"],
+            icon: FolderKanbanIcon,
+          },
+        ],
+      },
+      {
+        title: "LaTeX",
+        rows: [
+          {
+            title: "LaTeX for this project",
+            hint: "Compile this project's documents and give its sessions the LaTeX tools.",
+            keywords: ["latex", "tex", "enable", "plugin"],
+            icon: BlocksIcon,
+          },
+          {
+            title: "Default document",
+            hint: "The file a compile builds when nothing else is named.",
+            keywords: ["main file", "main.tex", "document", "entry"],
+            icon: ScrollTextIcon,
+          },
+        ],
+      },
+      {
+        title: "Data science",
+        rows: [
+          {
+            title: "Data science for this project",
+            hint: "Give this project's sessions a Python kernel and notebooks.",
+            keywords: ["python", "jupyter", "notebook", "kernel", "enable", "plugin"],
+            icon: BlocksIcon,
+          },
+        ],
+      },
+      {
+        title: "Python tools",
+        rows: [
+          {
+            title: "uv",
+            hint: "The Python manager Telar installs interpreters and packages with.",
+            keywords: ["python", "install", "package manager"],
+            icon: PackageIcon,
+          },
+          {
+            title: "conda",
+            hint: "Environments made with conda, used when a project already has one.",
+            keywords: ["anaconda", "miniconda", "environment"],
+            icon: PackageIcon,
+          },
+          {
+            title: "Python",
+            hint: "Interpreters installed on this Mac, and one more to install.",
+            keywords: ["interpreter", "version", "install python"],
+            icon: FlaskConicalIcon,
+          },
+        ],
+      },
+      {
+        title: "Environment",
+        rows: [
+          {
+            title: "Install packages",
+            hint: "Add packages to the environment this project runs in.",
+            keywords: ["pip", "package", "install", "dependencies"],
+            icon: PackageIcon,
+          },
+          {
+            title: "The project's own dependencies",
+            hint: "Install what the project's own requirements file lists.",
+            keywords: ["requirements", "pyproject", "dependencies", "sync"],
+            icon: PackageIcon,
           },
         ],
       },
@@ -862,6 +1036,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             // NAVIGATE-ONLY. The pane is status only since relay v2: its one
             // phone row is a summary whose label changes, so there is no
             // standing row to anchor to — the group heading is the title.
+            navigateOnly: true,
             title: "Push notifications",
             // The words somebody types when notifications are not arriving —
             // they search for the symptom, not for "relay", which is a term
@@ -924,6 +1099,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             icon: ArchiveIcon,
           },
           {
+            title: "Move existing worktrees",
+            hint: "Moves worktrees already on disk to the new location as well.",
+            keywords: ["move", "relocate", "worktree folder", "location"],
+            icon: FolderGitIcon,
+          },
+          {
             /**
              * TWO ROWS CALLED "Location", ON ONE PANE, AND DELIBERATELY. One
              * moves the reproducible worktrees; the other moves everything,
@@ -946,6 +1127,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             keywords: ["cleanup", "clean up", "disk", "space", "logs", "rotate", "days"],
             icon: ScrollTextIcon,
           },
+          {
+            title: "Turn journal retention",
+            hint: "A journal retention window set before this page existed, and the button that turns it off.",
+            keywords: ["retention", "journal", "export", "retire", "idle"],
+            icon: ArchiveIcon,
+          },
         ],
       },
       {
@@ -955,6 +1142,18 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             title: "Location",
             hint: "Where Telar keeps everything, and how to move it to another drive.",
             keywords: ["move", "external", "volume", "drive", "relocate", "where", "path", "ssd"],
+            icon: HardDriveIcon,
+          },
+          {
+            title: "Safe copy",
+            hint: "History, settings and notes copied to a new folder. Checkouts and environments are re-made.",
+            keywords: ["backup", "copy", "export", "move store"],
+            icon: CopyIcon,
+          },
+          {
+            title: "Previous store",
+            hint: "The copy left behind after the store moved, and the button that removes it.",
+            keywords: ["old store", "cleanup", "free space", "retired"],
             icon: HardDriveIcon,
           },
         ],

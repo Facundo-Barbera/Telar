@@ -87,6 +87,12 @@ export type SettingsRowSpec = {
   hint?: string;
   keywords?: readonly string[];
   icon?: SettingsSearchIcon;
+  /**
+   * The entry lands on a pane or a group rather than on one rendered row — a
+   * list built from data, a button, the scope bar. Everything else must match
+   * a Row's label, which `settings-registry.test.ts` checks both ways.
+   */
+  navigateOnly?: true;
 };
 
 export type SettingsGroupSpec = {
