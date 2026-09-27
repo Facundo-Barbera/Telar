@@ -24,6 +24,7 @@ const { attachHostHeader } = require("./host-header");
 const { createLinkRouting } = require("./link-routing");
 const { startBrowserControlServer } = require("./browser-control-server");
 const { startRunTerminalServer } = require("./run-terminal-server");
+const { readKittyImageFile } = require("./kitty-image-file");
 const tailscale = require("./tailscale");
 const remoteFile = require("./remote-file");
 const { claimedCommandIds, keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
@@ -2176,6 +2177,15 @@ ipcMain.handle("telar:terminal:active", async (event, input) => {
   const host = requireTerminalHost();
   const ids = Array.isArray(input?.ids) ? input.ids.map(String) : undefined;
   return { terminals: await host.activeProcesses(ids ? { ids } : { owner: RENDERER }) };
+});
+/**
+ * A KITTY IMAGE SENT AS A PATH (`t=f`, #884) — fastfetch's `kitty-direct` logo.
+ * Every guard and the reason it is no new privilege are in kitty-image-file.js.
+ * The bytes go back to the renderer that drew the request and nowhere else.
+ */
+ipcMain.handle("telar:terminal:read-image-file", (event, input) => {
+  requireCockpitSender(event, "read a terminal image file");
+  return readKittyImageFile(input?.path);
 });
 /** What is live right now — how a remounted panel finds the terminals its
  *  previous render left running. Facts only; no handles cross this, and no ids

@@ -60,6 +60,7 @@
       "main.js",
       "chord-scope.js",
       "terminal-host.js",
+      "kitty-image-file.js",
       "browser-manager.js",
       "browser-context-menu.js",
       "browser-downloads.js",
