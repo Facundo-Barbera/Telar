@@ -16,7 +16,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 
 MODE=dev
 CONFIG=Debug
-BUNDLE=com.telar.mobile.dev
+BUNDLE=io.github.novarix.telar.dev
 NAME="Telar Dev"
 ICON=AppIconDev
 

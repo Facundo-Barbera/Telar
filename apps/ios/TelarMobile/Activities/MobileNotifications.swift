@@ -198,7 +198,7 @@ struct PushStatus: Decodable {
             let relay = await PushRelayClient.shared.credential(for: host.id.uuidString, tokens: relayTokens)
             do {
                 let reply = try await api.registerPush(.init(hostId: host.id.uuidString, token: token,
-                    topic: Bundle.main.bundleIdentifier ?? "com.telar.mobile", sandbox: sandbox,
+                    topic: Bundle.main.bundleIdentifier ?? "io.github.novarix.telar", sandbox: sandbox,
                     enabled: enabled && allowed, completions: completions, previews: previews,
                     mutedSessions: mutedSessions, activities: subscriptions,
                     liveActivities: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
@@ -369,7 +369,7 @@ struct PushStatus: Decodable {
             let sandbox = false
             #endif
             _ = try? await api.registerPush(.init(hostId: host.uuidString, token: token,
-                topic: Bundle.main.bundleIdentifier ?? "com.telar.mobile", sandbox: sandbox,
+                topic: Bundle.main.bundleIdentifier ?? "io.github.novarix.telar", sandbox: sandbox,
                 enabled: false, completions: false, previews: false, mutedSessions: [], activities: []))
         }
         await PushRelayClient.shared.revoke(host: host.uuidString)

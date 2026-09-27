@@ -32,7 +32,7 @@ import Testing
     var clock = Date(timeIntervalSince1970: 1_800_000_000)
     let tokens = RelayTokens(token: String(repeating: "a", count: 64), pushToStartToken: nil, activities: [.init(id: "session_1", token: String(repeating: "c", count: 64))])
 
-    func client(bundle: String = "com.telar.mobile", state: PushRelayClient.State? = nil, now: @escaping () -> Date) -> PushRelayClient {
+    func client(bundle: String = "io.github.novarix.telar", state: PushRelayClient.State? = nil, now: @escaping () -> Date) -> PushRelayClient {
         PushRelayClient(url: URL(string: "https://relay.test")!, bundle: bundle, sandbox: false, attest: attest,
                         transport: relay.send, load: { state }, persist: { _ in }, now: now)
     }
@@ -48,7 +48,7 @@ import Testing
         #expect(attest.attested.map(\.hash) == [PushRelayClient.sha256("issued-challenge")])
         let registration = try JSONSerialization.jsonObject(with: relay.requests[1].httpBody!) as! [String: Any]
         #expect(registration["challenge"] as? String == "issued-challenge")
-        #expect(registration["bundle"] as? String == "com.telar.mobile")
+        #expect(registration["bundle"] as? String == "io.github.novarix.telar")
         #expect(registration["keyId"] as? String == "attest-key-1")
         #expect(registration["token"] as? String == tokens.token)
         // The assertion covers exactly the bytes sent.

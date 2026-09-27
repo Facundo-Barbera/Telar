@@ -72,7 +72,7 @@ extension DCAppAttestService: AppAttesting {}
     struct AttestationRefused: Error {}
 
     typealias Transport = (URLRequest) async throws -> (Data, URLResponse)
-    nonisolated static let bundles: Set<String> = ["com.telar.mobile", "com.telar.mobile.dev"]
+    nonisolated static let bundles: Set<String> = ["io.github.novarix.telar", "io.github.novarix.telar.dev"]
     /// Compiled in, and overridable through Info.plist (`TelarPushRelayURL`) so
     /// the relay can move to its own account or domain without a code change.
     nonisolated static var defaultURL: URL {
@@ -95,7 +95,7 @@ extension DCAppAttestService: AppAttesting {}
     private let now: () -> Date
 
     init(url: URL = PushRelayClient.defaultURL,
-         bundle: String = Bundle.main.bundleIdentifier ?? "com.telar.mobile",
+         bundle: String = Bundle.main.bundleIdentifier ?? "io.github.novarix.telar",
          sandbox: Bool = PushRelayClient.debugBuild,
          attest: AppAttesting = DCAppAttestService.shared,
          transport: @escaping Transport = { try await URLSession.shared.data(for: $0) },
