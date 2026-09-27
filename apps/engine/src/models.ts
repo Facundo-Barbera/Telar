@@ -31,6 +31,7 @@ import { promisify } from "node:util";
 import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { refuseCliSpawnUnderTest, requireCli, resolveCliAsync } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
+import { readCodexWindows, withCodexLongRows, type CodexWindow } from "./codex/windows";
 
 /**
  * How long to wait for a provider to describe itself.
@@ -373,6 +374,7 @@ export function parseCodexModels(payload: unknown): ProviderModel[] {
  */
 export async function readCodexModels(
   spawnServer: () => CodexAppServer = () => new CodexAppServer(resolveCodexBinary(), dropUndefined(process.env)),
+  readWindows: () => Promise<ReadonlyMap<string, CodexWindow>> = async () => readCodexWindows(resolveCodexBinary()),
 ): Promise<{ models: ProviderModel[]; message?: string }> {
   let client: CodexAppServer;
   try {
@@ -388,7 +390,8 @@ export async function readCodexModels(
     });
     client.notify("initialized");
     const models = parseCodexModels(await client.request("model/list", {}));
-    return { models };
+    // Codex's long window as a second row (#587) — see ./codex/windows.
+    return { models: withCodexLongRows(models, await readWindows().catch(() => new Map<string, CodexWindow>())) };
   } catch (error) {
     return { models: [], message: error instanceof Error ? error.message : "codex did not answer model/list" };
   } finally {

@@ -15,7 +15,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { McpServer, NotificationDetail, RequestDecision, TurnObservation } from "@telar/engine-client";
+import type { AutoCompact, McpServer, NotificationDetail, RequestDecision, TurnObservation } from "@telar/engine-client";
 import { codexMcpServers, codexNotificationInstruction, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
 import { codexApprovalRequest, codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
@@ -80,6 +80,8 @@ type RunOptions = {
   steer?: SteerMailbox;
   serviceTier?: string;
   notification?: NotificationDetail;
+  model?: string;
+  autoCompact?: AutoCompact;
 };
 
 function runTurn(scenario: string, run: RunOptions = {}) {
@@ -102,6 +104,8 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     ...(run.steer ? { steer: run.steer } : {}),
     ...(run.notification ? { notification: run.notification } : {}),
     ...(run.serviceTier ? { serviceTier: run.serviceTier } : {}),
+    ...(run.model ? { model: run.model } : {}),
+    ...(run.autoCompact ? { autoCompact: run.autoCompact } : {}),
   });
   return { result, observations, controller };
 }
@@ -230,6 +234,41 @@ test("empty capability fields are OMITTED, because an empty one is a different s
   // registry, which would read as "forget the ones in config.toml".
   expect("config" in params).toBeFalse();
   expect(params).toMatchObject({ cwd: "/tmp/project", model: "gpt-5.5" });
+});
+
+/** Codex's own catalog as codex-cli 0.157.0 reports it: 272k by default, 872k
+ *  as the long window, and a model with no long window. */
+const WINDOWS = new Map([
+  ["gpt-6-sol", { context: 272_000, max: 872_000 }],
+  ["gpt-5.5", { context: 272_000, max: 272_000 }],
+]);
+const LIMITS: AutoCompact = { mode: "limits", standard: 150_000, long: 400_000 };
+
+test("the long window and the login's limit ride the thread's config overlay (#587)", async () => {
+  const readWindows = async () => WINDOWS;
+  await runTurn("plain", { model: "gpt-6-sol[1m]", autoCompact: LIMITS, options: { readWindows } }).result;
+  expect(sent("thread/start")).toMatchObject({ model: "gpt-6-sol", config: { model_context_window: 872_000, model_auto_compact_token_limit: 400_000 } });
+  expect(sent("turn/start").model).toBe("gpt-6-sol");
+});
+
+test("the standard window takes the standard limit and pins no window", async () => {
+  const readWindows = async () => WINDOWS;
+  await runTurn("plain", { model: "gpt-6-sol", autoCompact: LIMITS, options: { readWindows } }).result;
+  expect(sent("thread/start").config).toEqual({ model_auto_compact_token_limit: 150_000 });
+});
+
+test("a long row on a model with no long window runs its standard one", async () => {
+  const readWindows = async () => WINDOWS;
+  await runTurn("plain", { model: "gpt-5.5[1m]", autoCompact: LIMITS, options: { readWindows } }).result;
+  expect(sent("thread/start")).toMatchObject({ model: "gpt-5.5", config: { model_auto_compact_token_limit: 150_000 } });
+});
+
+test("Never and Default write nothing, and read no catalog", async () => {
+  let reads = 0;
+  const readWindows = async () => ((reads += 1), WINDOWS);
+  await runTurn("plain", { model: "gpt-6-sol", autoCompact: { mode: "never" }, options: { readWindows } }).result;
+  expect(sent("thread/start").config).toBeUndefined();
+  expect(reads).toBe(0);
 });
 
 test("the user's MCP servers ride thread/start's config overlay", async () => {
