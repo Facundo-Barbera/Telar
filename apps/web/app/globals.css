@@ -1308,9 +1308,10 @@ html:not(.dark)[data-telar-shell][data-translucent] {
 .dictation-glow {
   position: absolute;
   pointer-events: none;
-  border-radius: var(--radius-2xl);
+  /* The card's `rounded-2xl`, spelled from the :root token it derives from. */
+  border-radius: calc(var(--radius) * 1.8);
   background: conic-gradient(
-    from var(--dictation-glow-angle),
+    from var(--dictation-glow-angle, 0deg),
     #bc82f3,
     #f5b9ea,
     #8d9fff,
