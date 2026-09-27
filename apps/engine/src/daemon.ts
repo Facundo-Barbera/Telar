@@ -2067,6 +2067,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           sessionDefaults: store.setSessionDefaults({
             ...("envMode" in input ? { envMode: input.envMode } : {}),
             ...("resumeAfterRestart" in input ? { resumeAfterRestart: input.resumeAfterRestart } : {}),
+            ...("runtimeMode" in input ? { runtimeMode: input.runtimeMode } : {}),
+            ...("resumeAfterRateLimit" in input ? { resumeAfterRateLimit: input.resumeAfterRateLimit } : {}),
           }),
         });
         return;

@@ -1,5 +1,5 @@
 import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
-import type { EnvMode } from "@telar/engine-client";
+import type { EnvMode, RuntimeMode } from "@telar/engine-client";
 
 /**
  * What a new session is built with when nobody said — today, the workspace:
@@ -30,6 +30,8 @@ export async function PATCH(request: Request) {
       await (await engineClient()).setSessionDefaults({
         ...("envMode" in body ? { envMode: body.envMode as EnvMode } : {}),
         ...("resumeAfterRestart" in body ? { resumeAfterRestart: body.resumeAfterRestart as boolean } : {}),
+        ...("runtimeMode" in body ? { runtimeMode: body.runtimeMode as RuntimeMode | null } : {}),
+        ...("resumeAfterRateLimit" in body ? { resumeAfterRateLimit: body.resumeAfterRateLimit as boolean } : {}),
       }),
     );
   } catch (error) {

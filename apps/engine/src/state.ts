@@ -3725,7 +3725,7 @@ export class EngineStore {
 
   /** Takes `unknown` and validates here, like the two policies above: the set
    *  of legal modes belongs next to the schema, not spelled again in a route. */
-  setSessionDefaults(patch: { envMode?: unknown; resumeAfterRestart?: unknown }): SessionDefaults {
+  setSessionDefaults(patch: { envMode?: unknown; resumeAfterRestart?: unknown; runtimeMode?: unknown; resumeAfterRateLimit?: unknown }): SessionDefaults {
     const next: SessionDefaults = { ...this.getSessionDefaults() };
     if (patch.envMode !== undefined) {
       const parsed = SessionDefaultsSchema.shape.envMode.safeParse(patch.envMode);
@@ -3739,6 +3739,17 @@ export class EngineStore {
         throw new EngineStateError("invalid_request", "resumeAfterRestart must be true or false");
       }
       next.resumeAfterRestart = patch.resumeAfterRestart;
+    }
+    if (patch.runtimeMode !== undefined) {
+      if (patch.runtimeMode === null) delete next.runtimeMode;
+      else if (RUNTIME_MODES.has(patch.runtimeMode as RuntimeMode)) next.runtimeMode = patch.runtimeMode as RuntimeMode;
+      else throw new EngineStateError("invalid_request", "unknown runtime mode");
+    }
+    if (patch.resumeAfterRateLimit !== undefined) {
+      if (typeof patch.resumeAfterRateLimit !== "boolean") {
+        throw new EngineStateError("invalid_request", "resumeAfterRateLimit must be true or false");
+      }
+      next.resumeAfterRateLimit = patch.resumeAfterRateLimit;
     }
     this.writeDocument(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
     return { ...next };
@@ -8343,7 +8354,9 @@ export class EngineStore {
        * has no creator to inherit from.
        */
       runtimeMode: (() => {
-        const posture = detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE;
+        // The standing default replaces the detached posture only: an attended
+        // session is one somebody is watching, and it keeps asking.
+        const posture = detached ? (this.getSessionDefaults().runtimeMode ?? DEFAULT_DETACHED_RUNTIME_MODE) : DEFAULT_ATTENDED_RUNTIME_MODE;
         return ceiling === undefined ? posture : narrowerRuntimeMode(posture, ceiling);
       })(),
       interactionMode: "default",
@@ -11310,10 +11323,12 @@ export class EngineStore {
    * written into the record, so a session created before the setting existed
    * behaves like one created after it, and a provider that starts reporting
    * limits the same way later begins resuming without a migration. Only an
-   * explicit choice is stored.
+   * explicit choice is stored. For Claude, "absent" asks `SessionDefaults`.
    */
   private resumesAfterRateLimit(session: Session): boolean {
-    return session.resumeAfterRateLimit ?? session.driver === "claude";
+    // Resolved at read time, so changing the standing default reaches every
+    // session that never chose for itself.
+    return session.resumeAfterRateLimit ?? (session.driver === "claude" && this.getSessionDefaults().resumeAfterRateLimit !== false);
   }
 
   /** What the newest journal record naming this run said, falling back through
