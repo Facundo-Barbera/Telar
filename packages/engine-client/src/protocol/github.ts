@@ -350,6 +350,22 @@ export type GitHubSnapshot = z.infer<typeof GitHubSnapshot>;
  * drops the field entirely, so having it at all is the reason the thread read is
  * GraphQL (#814). The surface highlights the pills the viewer is counted in.
  */
+/** GitHub's eight reactions, in GitHub's own order. The READ passes whatever
+ *  GitHub sends through as a string; the WRITE only takes these, because a
+ *  mutation with any other word is a GraphQL error rather than a reaction. */
+export const GitHubReactionContent = z.enum(["THUMBS_UP", "THUMBS_DOWN", "LAUGH", "HOORAY", "CONFUSED", "HEART", "ROCKET", "EYES"]);
+export type GitHubReactionContent = z.infer<typeof GitHubReactionContent>;
+
+/**
+ * GitHub's node id for something that can be reacted to — #842.
+ *
+ * THE ONLY HANDLE `addReaction` AND `removeReaction` TAKE. It is opaque, and it
+ * goes into a GraphQL variable rather than into the query text, so the pattern
+ * here is not escaping — it is refusing anything no GitHub id has ever looked
+ * like before a process is spawned for it.
+ */
+export const GitHubSubjectId = z.string().regex(/^[A-Za-z0-9_=-]{1,200}$/);
+
 export const GitHubReaction = z.object({
   content: z.string().min(1),
   count: z.number().int().positive(),
@@ -395,6 +411,14 @@ export const GitHubComment = z.object({
    * failed read.
    */
   reactions: z.array(GitHubReaction).optional(),
+  /**
+   * What a reaction on this comment is written against — #842.
+   *
+   * GitHub's node id, carried from the same second read as `reactions` and absent
+   * exactly when they are: with no id there is nothing to write against, and the
+   * surface draws the reactions without the controls.
+   */
+  subjectId: GitHubSubjectId.optional(),
   /**
    * WHICH TELAR SESSION THIS COMMENT CLAIMS TO COME FROM — issue #791, the one
    * thing github.com structurally cannot show.
@@ -525,6 +549,9 @@ export const GitHubIssueDetail = GitHubIssue.extend({
    * do on `GitHubComment.reactions`.
    */
   reactions: z.array(GitHubReaction).optional(),
+  /** What a reaction on the issue itself is written against; see
+   *  `GitHubComment.subjectId`. */
+  subjectId: GitHubSubjectId.optional(),
   createdAt: Timestamp,
   closedAt: Timestamp.optional(),
   /** When this was read. Same reason as the snapshot's: a network read is not
@@ -590,6 +617,7 @@ export const GitHubPullDetail = GitHubPullRequest.extend({
   olderComments: z.number().int().nonnegative(),
   /** The pull request's own reactions, read like an issue's. */
   reactions: z.array(GitHubReaction).optional(),
+  subjectId: GitHubSubjectId.optional(),
   /** EVERY review, not the latest per reviewer. `reviewDecision` above is
    *  already the aggregate; this is the conversation, and hiding the round that
    *  requested changes because a later one approved loses why it was approved. */
@@ -723,6 +751,41 @@ export const GitHubCommentResult = z.union([
   z.object({ posted: z.literal(false), refusal: GitHubCommentRefusal, message: z.string().min(1).optional() }),
 ]);
 export type GitHubCommentResult = z.infer<typeof GitHubCommentResult>;
+
+// ── reacting ───────────────────────────────────────────────────────────────
+
+/**
+ * Why a reaction did not land — #842.
+ *
+ * `scope` IS ITS OWN ANSWER because it is the one with a fix the reader can run:
+ * a token GitHub will read with but not write with. Folding it into
+ * `not_permitted` would tell somebody who is one command away that they are not
+ * allowed.
+ */
+export const GitHubReactionRefusal = z.enum([
+  /** The token lacks the scope to write here. */
+  "scope",
+  /** Locked, archived, or this account cannot react here. */
+  "not_permitted",
+  /** The thing reacted to is gone. */
+  "not_found",
+  /** Anything else. `message` is GitHub's own words, never invented. */
+  "failed",
+]);
+export type GitHubReactionRefusal = z.infer<typeof GitHubReactionRefusal>;
+
+/**
+ * What adding or removing one reaction answers.
+ *
+ * SUCCESS CARRIES THE SUBJECT'S REACTIONS AS GITHUB NOW HOLDS THEM, read back in
+ * the mutation's own answer. An optimistic pill is a guess — somebody else may
+ * have reacted in the meantime — and this replaces the guess with the count.
+ */
+export const GitHubReactionResult = z.union([
+  z.object({ reacted: z.literal(true), reactions: z.array(GitHubReaction) }),
+  z.object({ reacted: z.literal(false), refusal: GitHubReactionRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitHubReactionResult = z.infer<typeof GitHubReactionResult>;
 
 // ── opening one pull request ────────────────────────────────────────────────
 

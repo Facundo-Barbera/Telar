@@ -50,11 +50,13 @@ import type {
   GitHubPullRead,
   GitHubPullRequest,
   GitHubReaction,
+  GitHubReactionContent,
+  GitHubReactionResult,
   GitHubReview,
   GitHubSnapshot,
   GitHubUnavailable,
 } from "@telar/engine-client";
-import { MAX_COMMENT_BODY, MAX_PULL_TITLE } from "@telar/engine-client";
+import { GitHubSubjectId, MAX_COMMENT_BODY, MAX_PULL_TITLE } from "@telar/engine-client";
 
 export type GhResult = { status: number; stdout: string; stderr: string };
 /** Injectable so tests never touch the network. */
@@ -715,7 +717,7 @@ export const MAX_THREAD_COMMENTS = 100;
  * measured against cli/cli#14443 — which no login can be turned into. For a person
  * on GitHub Enterprise Server it is that server's, not public github.com's.
  */
-type ThreadAuthor = { login?: string; avatarUrl?: string; reactions: GitHubReaction[] };
+type ThreadAuthor = { login?: string; avatarUrl?: string; reactions: GitHubReaction[]; subjectId?: string };
 
 /**
  * Ask GitHub who wrote each comment, and what it is holding against them.
@@ -744,13 +746,14 @@ const THREAD_AUTHORS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!, $last: Int!) {
   repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
-      ... on Reactable { reactionGroups { content viewerHasReacted users { totalCount } } }
+      ... on Reactable { id reactionGroups { content viewerHasReacted users { totalCount } } }
       ... on Issue { comments(last: $last) { nodes { ...threadAuthor } } }
       ... on PullRequest { comments(last: $last) { nodes { ...threadAuthor } } }
     }
   }
 }
 fragment threadAuthor on IssueComment {
+  id
   url
   author { __typename login avatarUrl }
   reactionGroups { content viewerHasReacted users { totalCount } }
@@ -794,7 +797,12 @@ function reactions(value: unknown): GitHubReaction[] {
 
 /** The second read's answer: each comment's author and reactions by url, and the
  *  thing's own reactions — absent when GitHub did not answer for the thing. */
-export type ThreadRead = { authors: Map<string, ThreadAuthor>; reactions?: GitHubReaction[] };
+export type ThreadRead = { authors: Map<string, ThreadAuthor>; reactions?: GitHubReaction[]; subjectId?: string };
+
+/** A node id GitHub sent, or nothing — never one the write would refuse. */
+function subjectId(value: unknown): string | undefined {
+  return GitHubSubjectId.safeParse(value).success ? (value as string) : undefined;
+}
 
 /**
  * The GraphQL answer, folded by comment url.
@@ -806,12 +814,16 @@ export type ThreadRead = { authors: Map<string, ThreadAuthor>; reactions?: GitHu
 export function parseThread(stdout: string): ThreadRead {
   const byUrl = new Map<string, ThreadAuthor>();
   const parsed = JSON.parse(stdout) as {
-    data?: { repository?: { issueOrPullRequest?: { reactionGroups?: unknown; comments?: { nodes?: unknown } } | null } | null };
+    data?: { repository?: { issueOrPullRequest?: { id?: unknown; reactionGroups?: unknown; comments?: { nodes?: unknown } } | null } | null };
   };
   const thing = parsed.data?.repository?.issueOrPullRequest;
   // Only an ANSWERED `reactionGroups` is an answer; a missing one stays absent
   // rather than becoming "nobody reacted".
-  const own = Array.isArray(thing?.reactionGroups) ? { reactions: reactions(thing.reactionGroups) } : {};
+  const ownId = subjectId(thing?.id);
+  const own = {
+    ...(Array.isArray(thing?.reactionGroups) ? { reactions: reactions(thing.reactionGroups) } : {}),
+    ...(ownId ? { subjectId: ownId } : {}),
+  };
   const nodes = thing?.comments?.nodes;
   if (!Array.isArray(nodes)) return { authors: byUrl, ...own };
   for (const entry of nodes) {
@@ -821,10 +833,12 @@ export function parseThread(stdout: string): ThreadRead {
     const author = node.author as { login?: unknown; avatarUrl?: unknown } | null;
     const name = login(author);
     const face = text(author?.avatarUrl);
+    const id = subjectId(node.id);
     byUrl.set(url, {
       ...(name ? { login: name } : {}),
       ...(face ? { avatarUrl: face } : {}),
       reactions: reactions(node.reactionGroups),
+      ...(id ? { subjectId: id } : {}),
     });
   }
   return { authors: byUrl, ...own };
@@ -896,6 +910,7 @@ function comment(entry: unknown, authors?: Map<string, ThreadAuthor>): GitHubCom
     // Absent when the second read did not answer for this comment, `[]` when it
     // answered and nobody reacted — see the contract for why those differ.
     ...(known ? { reactions: known.reactions } : {}),
+    ...(known?.subjectId ? { subjectId: known.subjectId } : {}),
     ...(attribution ? { attribution } : {}),
   };
 }
@@ -1091,6 +1106,7 @@ export function parseIssueDetail(
     comments: thread.comments,
     olderComments: thread.olderComments,
     ...(second?.reactions ? { reactions: second.reactions } : {}),
+    ...(second?.subjectId ? { subjectId: second.subjectId } : {}),
     createdAt: epoch(row.createdAt),
     // `epoch` answers 0 for an absent date, and an open issue has no closing
     // time — 0 would render as January 1970.
@@ -1157,6 +1173,7 @@ export function parsePullDetail(
     comments: thread.comments,
     olderComments: thread.olderComments,
     ...(second?.reactions ? { reactions: second.reactions } : {}),
+    ...(second?.subjectId ? { subjectId: second.subjectId } : {}),
     reviews: parseReviews(row.reviews, text(row.url)),
     checks: parseChecks(row.statusCheckRollup),
     createdAt: epoch(row.createdAt),
@@ -1535,6 +1552,96 @@ export async function commentOn(
    * merge does not.
    */
   return { posted: true, url: url ?? `#${input.number}`, attribution: { sessionId: input.sessionId } };
+}
+
+// ── reacting ───────────────────────────────────────────────────────────────
+
+/**
+ * Add or remove one reaction — #842.
+ *
+ * `gh api graphql` BECAUSE `gh` HAS NO REACTION VERB, and GraphQL rather than
+ * REST because the subject is already known by its node id from the thread read,
+ * whatever it is — an issue, a pull request, a comment or a review comment all
+ * take the same mutation. The subject's reactions come back in the SAME answer,
+ * so the surface replaces its optimistic guess with GitHub's count without a
+ * second read.
+ *
+ * VARIABLES, NEVER INTERPOLATION. The id and the content travel as `-F` fields,
+ * so nothing a caller sends can become query text.
+ */
+const REACTION_GROUPS = "reactionGroups { content viewerHasReacted users { totalCount } }";
+
+export function reactionArgv(input: { subjectId: string; content: GitHubReactionContent; react: boolean }): string[] {
+  const mutation = input.react ? "addReaction" : "removeReaction";
+  return [
+    "api",
+    "graphql",
+    "-F",
+    `subject=${input.subjectId}`,
+    "-F",
+    `content=${input.content}`,
+    "-f",
+    `query=mutation($subject: ID!, $content: ReactionContent!) { ${mutation}(input: { subjectId: $subject, content: $content }) { subject { ${REACTION_GROUPS} } } }`,
+  ];
+}
+
+/**
+ * Why a GraphQL write refused, from GitHub's own words.
+ *
+ * `gh api graphql` EXITS 1 ON A GraphQL ERROR and prints `gh: <message>` on stderr,
+ * and a partial answer can still carry `errors` beside exit 0 — so both are read.
+ * The scope case is matched on GitHub's error TYPE as well as its sentence, because
+ * that is the one refusal with a command behind it.
+ */
+export function classifyGraphqlWriteFailure(result: GhResult): { refusal: "scope" | "not_permitted" | "not_found" | "failed"; message?: string } {
+  const said = `${result.stderr}\n${result.stdout}`;
+  const lower = said.toLowerCase();
+  let message = result.stderr.trim().replace(/^gh:\s*/, "");
+  try {
+    const errors = (JSON.parse(result.stdout) as { errors?: { message?: unknown }[] }).errors;
+    const first = errors?.map((error) => text(error.message)).find(Boolean);
+    if (first) message = first;
+  } catch {
+    // Not JSON — stderr is the sentence.
+  }
+  const carry = message ? { message } : {};
+  if (lower.includes("insufficient_scopes") || lower.includes("required scopes") || lower.includes("not been granted")) return { refusal: "scope", ...carry };
+  if (lower.includes("could not resolve to a node") || lower.includes("not_found")) return { refusal: "not_found", ...carry };
+  if (
+    lower.includes("locked") ||
+    lower.includes("archived") ||
+    lower.includes("forbidden") ||
+    lower.includes("not accessible") ||
+    lower.includes("permission") ||
+    lower.includes("http 403")
+  ) {
+    return { refusal: "not_permitted", ...carry };
+  }
+  return { refusal: "failed", ...carry };
+}
+
+/** The subject's reactions out of a mutation's answer, whichever mutation it was. */
+export function parseReactionAnswer(stdout: string): GitHubReaction[] | undefined {
+  const data = (JSON.parse(stdout) as { data?: Record<string, { subject?: { reactionGroups?: unknown } } | null> | null }).data;
+  const answer = data?.addReaction ?? data?.removeReaction;
+  const groups = answer?.subject?.reactionGroups;
+  return Array.isArray(groups) ? reactions(groups) : undefined;
+}
+
+export async function reactOn(
+  gh: GhRunner,
+  cwd: string,
+  input: { subjectId: string; content: GitHubReactionContent; react: boolean },
+): Promise<GitHubReactionResult> {
+  const result = await gh(cwd, reactionArgv(input));
+  if (result.status !== 0) return { reacted: false, ...classifyGraphqlWriteFailure(result) };
+  try {
+    const now = parseReactionAnswer(result.stdout);
+    if (now) return { reacted: true, reactions: now };
+  } catch {
+    // Fall through: exit 0 with nothing readable is a refusal worth naming.
+  }
+  return { reacted: false, ...classifyGraphqlWriteFailure(result) };
 }
 
 // ── opening one pull request ────────────────────────────────────────────────

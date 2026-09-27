@@ -11,6 +11,8 @@ import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineClientError,
+  GitHubReactionContent,
+  GitHubSubjectId,
   DataScienceBootstrap,
   DataScienceCreateEnvironment,
   LatexBootstrap,
@@ -3217,6 +3219,32 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           response,
           200,
           projectForge[2] === "issues" ? await store.projectIssue(projectId, number, { force }) : await store.projectPull(projectId, number, { force }),
+        );
+        return;
+      }
+      /**
+       * One reaction, added or removed — #842. The content and the subject id are
+       * refused HERE when they are not shaped like GitHub's, so nothing but one of
+       * the eight words and an opaque node id ever reaches a `gh` argv.
+       */
+      const projectReaction = /^\/v2\/projects\/([^/]+)\/github\/(issues|pulls)\/(\d+)\/reactions$/.exec(url.pathname);
+      if (request.method === "POST" && projectReaction) {
+        const input = await body(request);
+        const content = GitHubReactionContent.safeParse(input.content);
+        if (!content.success) throw new HttpError(400, "invalid_request", "content must be one of GitHub's eight reactions");
+        const subject = GitHubSubjectId.safeParse(input.subjectId);
+        if (!subject.success) throw new HttpError(400, "invalid_request", "subjectId must be a GitHub node id");
+        if (typeof input.react !== "boolean") throw new HttpError(400, "invalid_request", "react must be true or false");
+        writeJson(
+          response,
+          200,
+          await store.projectGitHubReaction(decodeURIComponent(projectReaction[1]), {
+            kind: projectReaction[2] === "issues" ? "issue" : "pull",
+            number: Number(projectReaction[3]),
+            subjectId: subject.data,
+            content: content.data,
+            react: input.react,
+          }),
         );
         return;
       }

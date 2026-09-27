@@ -23,6 +23,8 @@ import {
   type GitHubIssueRead,
   type GitHubMergeMethod,
   type GitHubMergeResult,
+  type GitHubReactionContent,
+  type GitHubReactionResult,
   type GitHubPullCreateResult,
   type GitHubPullFilter,
   type GitHubPullRead,
@@ -1941,6 +1943,21 @@ export class EngineClient {
     input: { method: GitHubMergeMethod; expectedHeadOid: string },
   ): Promise<GitHubMergeResult> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input);
+  }
+
+  /**
+   * Add (`react: true`) or remove one reaction on an issue, a pull request, or
+   * a comment on one — #842. `subjectId` is the node id the detail read carried;
+   * `kind` and `number` name the detail it belongs to, so its cache is dropped.
+   * A refusal is `{ reacted: false, refusal }`, not an exception.
+   */
+  reactOnProjectForge(
+    projectId: string,
+    kind: "issue" | "pull",
+    number: number,
+    input: { subjectId: string; content: GitHubReactionContent; react: boolean },
+  ): Promise<GitHubReactionResult> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/${kind === "issue" ? "issues" : "pulls"}/${number}/reactions`, input);
   }
 
   /** What is uncommitted in a project right now — the review a canvas shows

@@ -12,6 +12,7 @@ import {
   classifyCommentFailure,
   classifyDetailFailure,
   classifyGhFailure,
+  classifyGraphqlWriteFailure,
   classifyMergeFailure,
   classifyProjectFailure,
   commentOn,
@@ -37,6 +38,8 @@ import {
   parseRepoFromUrl,
   parseReviews,
   parseThread,
+  reactionArgv,
+  reactOn,
   readCheckLog,
   readForgeFacets,
   readGitHub,
@@ -1593,6 +1596,29 @@ describe("parseThread", () => {
     expect(read.reactions).toEqual([{ content: "HEART", count: 2, viewerHasReacted: true }]);
   });
 
+  test("node ids travel so a reaction has something to be written against", () => {
+    const read = parseThread(
+      JSON.stringify({
+        data: {
+          repository: {
+            issueOrPullRequest: {
+              id: "I_kwDOabc",
+              reactionGroups: [],
+              comments: { nodes: [{ id: "IC_kwDOdef", url: "c1", author: null, reactionGroups: [] }] },
+            },
+          },
+        },
+      }),
+    );
+    expect(read.subjectId).toBe("I_kwDOabc");
+    expect(read.authors.get("c1")!.subjectId).toBe("IC_kwDOdef");
+  });
+
+  test("an id no GitHub node has ever looked like is dropped, not carried to a write", () => {
+    const read = parseThread(JSON.stringify({ data: { repository: { issueOrPullRequest: { id: "x y; drop", comments: { nodes: [] } } } } }));
+    expect(read.subjectId).toBeUndefined();
+  });
+
   test("no `reactionGroups` in the answer is ABSENT, not \"nobody reacted\"", () => {
     expect(parseThread(nodes([])).reactions).toBeUndefined();
     expect(parseThread(JSON.stringify({ data: null })).reactions).toBeUndefined();
@@ -2047,5 +2073,68 @@ describe("openPullRequest", () => {
     expect(parsePullNumber(`${OPENED}/files`)).toBe(812);
     expect(parsePullNumber("https://github.com/Facundo-Barbera/Telar/issues/670")).toBeUndefined();
     expect(parsePullNumber("telar/670-push → main")).toBeUndefined();
+  });
+});
+
+// ── reacting (#842) ──────────────────────────────────────────────────────────
+
+describe("reactOn", () => {
+  const answer = (mutation: string, groups: unknown[]) => ok(JSON.stringify({ data: { [mutation]: { subject: { reactionGroups: groups } } } }));
+
+  test("adds through `addReaction`, with the id and content as VARIABLES, never query text", () => {
+    const argv = reactionArgv({ subjectId: "IC_1", content: "HEART", react: true });
+    expect(argv.slice(0, 2)).toEqual(["api", "graphql"]);
+    expect(argv).toContain("subject=IC_1");
+    expect(argv).toContain("content=HEART");
+    const query = argv.find((arg) => arg.startsWith("query="))!;
+    expect(query).toContain("addReaction");
+    expect(query).not.toContain("IC_1");
+  });
+
+  test("removes through `removeReaction`", () => {
+    expect(reactionArgv({ subjectId: "IC_1", content: "HEART", react: false }).find((arg) => arg.startsWith("query="))).toContain("removeReaction");
+  });
+
+  test("answers GitHub's count as it now stands, not the guess", async () => {
+    const seen: string[][] = [];
+    const result = await reactOn(
+      verbRunner({ "api graphql": answer("addReaction", [{ content: "HEART", viewerHasReacted: true, users: { totalCount: 5 } }]) }, seen),
+      "/repo",
+      { subjectId: "IC_1", content: "HEART", react: true },
+    );
+    expect(result).toEqual({ reacted: true, reactions: [{ content: "HEART", count: 5, viewerHasReacted: true }] });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("A MISSING SCOPE IS ITS OWN REFUSAL, carrying GitHub's sentence", async () => {
+    const result = await reactOn(
+      verbRunner({
+        "api graphql": {
+          status: 1,
+          stdout: JSON.stringify({
+            errors: [{ type: "INSUFFICIENT_SCOPES", message: "Your token has not been granted the required scopes to execute this query." }],
+          }),
+          stderr: "gh: Your token has not been granted the required scopes to execute this query.",
+        },
+      }),
+      "/repo",
+      { subjectId: "IC_1", content: "HEART", react: true },
+    );
+    expect(result).toEqual({ reacted: false, refusal: "scope", message: "Your token has not been granted the required scopes to execute this query." });
+  });
+
+  test("a locked conversation is not_permitted, and a vanished subject is not_found", () => {
+    expect(classifyGraphqlWriteFailure(failed("gh: Lock conversation is enabled; reactions are locked")).refusal).toBe("not_permitted");
+    expect(classifyGraphqlWriteFailure(failed("gh: Could not resolve to a node with the global id of 'IC_1'")).refusal).toBe("not_found");
+    expect(classifyGraphqlWriteFailure(failed("gh: something new")).refusal).toBe("failed");
+  });
+
+  test("exit 0 with errors and no answer is still a refusal — never a silent success", async () => {
+    const result = await reactOn(
+      verbRunner({ "api graphql": ok(JSON.stringify({ data: { addReaction: null }, errors: [{ message: "Resource not accessible by integration" }] })) }),
+      "/repo",
+      { subjectId: "IC_1", content: "HEART", react: true },
+    );
+    expect(result).toEqual({ reacted: false, refusal: "not_permitted", message: "Resource not accessible by integration" });
   });
 });
