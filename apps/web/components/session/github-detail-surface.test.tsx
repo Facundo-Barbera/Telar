@@ -420,3 +420,32 @@ describe("a card's reactions", () => {
     expect(markup).not.toContain("👀");
   });
 });
+
+describe("reacting from a card (#842)", () => {
+  const react = async () => ({ reacted: true as const, reactions: [] });
+
+  test("with somewhere to write, pills are toggles and the picker is offered", () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard
+        entry={entry({ body: "x", subjectId: "IC_1", reactions: [{ content: "HEART", count: 2, viewerHasReacted: true }] })}
+        onReact={react}
+      />,
+    );
+    expect(markup).toContain('aria-pressed="true"');
+    expect(markup).toContain('aria-label="Add a reaction"');
+  });
+
+  test("nobody has reacted yet — the picker is still there, so the first one can be added", () => {
+    const markup = renderToStaticMarkup(<EntryCard entry={entry({ body: "x", subjectId: "IC_1", reactions: [] })} onReact={react} />);
+    expect(markup).toContain('aria-label="Add a reaction"');
+  });
+
+  test("WITHOUT a node id there is nothing to write against, so the pills stay a read", () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard entry={entry({ body: "x", reactions: [{ content: "HEART", count: 2, viewerHasReacted: false }] })} onReact={react} />,
+    );
+    expect(markup).toContain("❤️");
+    expect(markup).not.toContain("aria-pressed");
+    expect(markup).not.toContain("Add a reaction");
+  });
+});

@@ -12,6 +12,8 @@ import type {
   GitHubIssueRead,
   GitHubMergeMethod,
   GitHubMergeResult,
+  GitHubReactionContent,
+  GitHubReactionResult,
   GitHubPullCreateResult,
   GitPushResult,
   GitHubPullFilter,
@@ -883,6 +885,20 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      */
     mergeProjectPull: (projectId: string, number: number, input: { method: GitHubMergeMethod; expectedHeadOid: string }) =>
       request<GitHubMergeResult>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input),
+    /** Add or remove one reaction (#842). A refusal is `reacted: false` with a
+     *  reason — `scope` is the one with a command behind it. */
+    reactOnProjectForge: (
+      projectId: string,
+      kind: "issue" | "pull",
+      number: number,
+      input: { subjectId: string; content: GitHubReactionContent; react: boolean },
+    ) =>
+      request<GitHubReactionResult>(
+        fetcher,
+        "POST",
+        `/api/projects/${encodeURIComponent(projectId)}/github/${kind === "issue" ? "issues" : "pulls"}/${number}/reactions`,
+        input,
+      ),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
     // `assignments` rides this list so Related work needs no per-session

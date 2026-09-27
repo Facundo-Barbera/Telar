@@ -109,6 +109,8 @@ import {
   type GitCommitEntry,
   type GitHubCheckLog,
   type GitHubCommentResult,
+  type GitHubReactionContent,
+  type GitHubReactionResult,
   type GitHubFacets,
   type GitHubIssueFilter,
   type GitHubIssueRead,
@@ -230,6 +232,7 @@ import { cloneRepository, isCloneFailure } from "./clone";
 import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
   commentOn,
+  reactOn,
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
   defaultGhRunner,
@@ -7389,6 +7392,28 @@ export class EngineStore {
       sessionId: claimed.sessionId,
     });
     if (result.posted) this.githubDetailCache.delete(`${project.id}:${input.kind}:${target}`);
+    return structuredClone(result);
+  }
+
+  /**
+   * Add or remove one reaction — #842.
+   *
+   * A PERSON'S GESTURE, NOT AN AGENT'S, so unlike `projectGitHubComment` there is
+   * no claim to check: a reaction carries no body to attribute and lands under
+   * whoever `gh` is signed in as, which is the person pressing the pill.
+   *
+   * THE DETAIL IT BELONGS TO IS DROPPED ON SUCCESS, for the staleness reason the
+   * comment write gives: a refresh within thirty seconds would otherwise redraw
+   * the count the person just changed.
+   */
+  async projectGitHubReaction(
+    projectId: string,
+    input: { kind: "issue" | "pull"; number: number; subjectId: string; content: GitHubReactionContent; react: boolean },
+  ): Promise<GitHubReactionResult> {
+    const project = this.getProject(projectId);
+    const target = this.forgeNumber(input.number);
+    const result = await reactOn(this.gh, project.root, { subjectId: input.subjectId, content: input.content, react: input.react });
+    if (result.reacted) this.githubDetailCache.delete(`${project.id}:${input.kind}:${target}`);
     return structuredClone(result);
   }
 
