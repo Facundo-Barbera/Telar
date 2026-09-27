@@ -19,6 +19,7 @@ import type {
   GitHubMergeRefusal,
   GitHubPullCreateRefusal,
   GitHubPullDetail,
+  GitHubReaction,
   GitHubReview,
   GitPushRefusal,
 } from "@telar/engine-client";
@@ -439,6 +440,10 @@ export type ForgeEntry = {
    * difference is the whole of what the marker can honestly say.
    */
   sessionId?: string;
+  /** What GitHub is holding against this entry (#842). Absent when the engine did
+   *  not get to ask — a review has none this read can reach — and the card then
+   *  draws no reaction row at all rather than an empty one. */
+  reactions?: readonly GitHubReaction[];
 };
 
 export function buildForgeTimeline(input: {
@@ -448,6 +453,8 @@ export function buildForgeTimeline(input: {
   createdAt: number;
   comments: readonly GitHubComment[];
   reviews?: readonly GitHubReview[];
+  /** The issue's or pull request's own reactions, which belong on the body card. */
+  reactions?: readonly GitHubReaction[];
 }): ForgeEntry[] {
   const entries: ForgeEntry[] = input.comments.map((comment) => ({
     id: comment.url,
@@ -461,6 +468,7 @@ export function buildForgeTimeline(input: {
     ...(comment.minimizedReason ? { minimizedReason: comment.minimizedReason } : {}),
     url: comment.url,
     ...(comment.attribution ? { sessionId: comment.attribution.sessionId } : {}),
+    ...(comment.reactions ? { reactions: comment.reactions } : {}),
   }));
 
   for (const [at, review] of (input.reviews ?? []).entries()) {
@@ -500,9 +508,44 @@ export function buildForgeTimeline(input: {
       ...(input.author ? { author: input.author } : {}),
       ...(input.authorAvatar ? { avatar: input.authorAvatar } : {}),
       body: input.body,
+      ...(input.reactions ? { reactions: input.reactions } : {}),
     },
     ...entries,
   ];
+}
+
+/**
+ * GITHUB'S EIGHT REACTIONS, in GitHub's own order, as the glyph each one is.
+ *
+ * DECIDED HERE, ONCE — the engine passes `THUMBS_UP` through unmapped on the
+ * grounds that which emoji stands for `HOORAY` is a display decision. The order is
+ * GitHub's, so a pill row reads the same left to right as it does on the website
+ * and the picker offers them in the order a GitHub user already knows.
+ */
+export const REACTIONS = [
+  { content: "THUMBS_UP", glyph: "👍", label: "thumbs up" },
+  { content: "THUMBS_DOWN", glyph: "👎", label: "thumbs down" },
+  { content: "LAUGH", glyph: "😄", label: "laugh" },
+  { content: "HOORAY", glyph: "🎉", label: "hooray" },
+  { content: "CONFUSED", glyph: "😕", label: "confused" },
+  { content: "HEART", glyph: "❤️", label: "heart" },
+  { content: "ROCKET", glyph: "🚀", label: "rocket" },
+  { content: "EYES", glyph: "👀", label: "eyes" },
+] as const;
+
+export type ReactionContent = (typeof REACTIONS)[number]["content"];
+
+/**
+ * The pills a card draws: the reactions somebody used, in GitHub's order, each with
+ * its glyph. A content this cockpit does not know is dropped rather than drawn as a
+ * bare word — GitHub has not added one since 2016, and a pill reading `SMILE` would
+ * be a bug report rather than a reaction.
+ */
+export function reactionPills(reactions: readonly GitHubReaction[]): (GitHubReaction & { glyph: string; label: string })[] {
+  return REACTIONS.flatMap(({ content, glyph, label }) => {
+    const held = reactions.find((reaction) => reaction.content === content);
+    return held && held.count > 0 ? [{ ...held, glyph, label }] : [];
+  });
 }
 
 /** GitHub's review vocabulary, in words a row has space for. An unfamiliar state

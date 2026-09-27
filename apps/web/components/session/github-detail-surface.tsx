@@ -66,6 +66,7 @@ import {
 import type {
   GitHubCheck,
   GitHubIssueDetail,
+  GitHubReaction,
   GitHubLink,
   GitHubMergeMethod,
   GitHubMergeRefusal,
@@ -81,6 +82,7 @@ import {
   mergeReadiness,
   MERGE_REFUSAL,
   pullStatus,
+  reactionPills,
   reviewLabel,
   STATUS_LABEL,
   STATUS_TONE,
@@ -420,7 +422,55 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
           /* A bare approval has no body, and that is not a missing one. */
           <p className="text-2xs text-muted-foreground">{entry.kind === "review" ? "No comment left with this review." : "No description was written."}</p>
         )}
+        {!hidden && entry.reactions && <ReactionRow reactions={entry.reactions} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * WHAT PEOPLE REACTED WITH, UNDER WHAT THEY REACTED TO — #842.
+ *
+ * INSIDE THE CARD, AT THE FOOT OF THE BODY, because a reaction is a reply to that
+ * text and nothing else; github.com puts it there too, and a reader who has used it
+ * looks there. Counted pills rather than a list of names: in this repository the
+ * names are one account, so a count is the whole of what a name list would say.
+ *
+ * YOURS IS TINTED, in the accent, because "did I already say this" is the question
+ * the row answers before any other. Nothing else about a pill changes — a count is
+ * a count whoever is in it.
+ *
+ * NO ROW AT ALL WHEN NOBODY REACTED, rather than an empty strip — the ordinary case
+ * for most comments, and a strip of nothing on every card is noise.
+ */
+export function ReactionRow({ reactions }: { reactions: readonly GitHubReaction[] }) {
+  const pills = reactionPills(reactions);
+  if (pills.length === 0) return null;
+  return (
+    <div data-reactions className="mt-1.5 flex flex-wrap gap-1">
+      {pills.map((pill) => (
+        <span
+          key={pill.content}
+          data-mine={pill.viewerHasReacted || undefined}
+          aria-label={`${pill.count} ${pill.label}${pill.viewerHasReacted ? ", including you" : ""}`}
+          title={
+            !pill.viewerHasReacted
+              ? `${pill.count} reacted with ${pill.label}`
+              : pill.count === 1
+                ? `You reacted with ${pill.label}`
+                : `You and ${pill.count - 1} more reacted with ${pill.label}`
+          }
+          className={cn(
+            "inline-flex h-5 items-center gap-1 rounded-full border px-1.5 text-3xs tabular-nums",
+            pill.viewerHasReacted ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted-foreground",
+          )}
+        >
+          <span aria-hidden className="text-2xs leading-none">
+            {pill.glyph}
+          </span>
+          {pill.count}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1220,6 +1270,7 @@ export function ForgeDetailSurface({
     createdAt: openedAt,
     comments: thing.comments,
     ...(pull ? { reviews: pull.reviews } : {}),
+    ...(thing.reactions ? { reactions: thing.reactions } : {}),
   });
 
   return (

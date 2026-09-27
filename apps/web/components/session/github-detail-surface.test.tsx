@@ -380,3 +380,43 @@ describe("a comment's session", () => {
     expect(markup).not.toContain("session");
   });
 });
+
+/** WHAT PEOPLE REACTED WITH — #842. Counted pills at the foot of the card. */
+describe("a card's reactions", () => {
+  test("draws a counted pill per reaction, and marks the one the viewer is in", () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard
+        entry={entry({
+          body: "a finding",
+          reactions: [
+            { content: "THUMBS_UP", count: 3, viewerHasReacted: true },
+            { content: "ROCKET", count: 1, viewerHasReacted: false },
+          ],
+        })}
+      />,
+    );
+    expect(markup).toContain("👍");
+    expect(markup).toContain("🚀");
+    expect(markup).toContain('aria-label="3 thumbs up, including you"');
+    expect(markup).toContain('aria-label="1 rocket"');
+    // Only the viewer's pill is marked.
+    expect(markup.match(/data-mine="true"/g)).toHaveLength(1);
+  });
+
+  test("the opening post carries the issue's own reactions too", () => {
+    const [body] = buildForgeTimeline({ body: "the ask", createdAt: NOW, comments: [], reactions: [{ content: "HEART", count: 2, viewerHasReacted: false }] });
+    expect(renderToStaticMarkup(<EntryCard entry={body!} />)).toContain("❤️");
+  });
+
+  test("nobody reacted draws no row at all — and neither does a read that did not ask", () => {
+    expect(renderToStaticMarkup(<EntryCard entry={entry({ body: "x", reactions: [] })} />)).not.toContain("data-reactions");
+    expect(renderToStaticMarkup(<EntryCard entry={entry({ body: "x" })} />)).not.toContain("data-reactions");
+  });
+
+  test("a comment the repository hid does not show its reactions until revealed", () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard entry={entry({ body: "spam", minimized: true, reactions: [{ content: "EYES", count: 5, viewerHasReacted: false }] })} />,
+    );
+    expect(markup).not.toContain("👀");
+  });
+});

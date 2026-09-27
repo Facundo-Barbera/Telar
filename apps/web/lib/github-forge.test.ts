@@ -24,6 +24,8 @@ import {
   PUSH_REFUSAL,
   offersMerge,
   pullStatus,
+  reactionPills,
+  REACTIONS,
   reviewLabel,
   STATUS_LABEL,
   STATUS_TONE,
@@ -457,5 +459,43 @@ describe("a comment's session", () => {
     // THE FAILURE DIRECTION: without this, a builder that stamped every entry
     // with the same id would satisfy the assertion above.
     expect(timeline.find((entry) => entry.at === 300)?.sessionId).toBeUndefined();
+  });
+});
+
+describe("reactions (#842)", () => {
+  test("the body card carries the thing's own reactions and each comment its own", () => {
+    const timeline = buildForgeTimeline({
+      body: "b",
+      createdAt: 1,
+      reactions: [{ content: "HEART", count: 2, viewerHasReacted: false }],
+      comments: [{ body: "c", createdAt: 2, minimized: false, url: "u1", reactions: [{ content: "ROCKET", count: 1, viewerHasReacted: true }] }],
+    });
+    expect(timeline[0]!.reactions).toEqual([{ content: "HEART", count: 2, viewerHasReacted: false }]);
+    expect(timeline[1]!.reactions).toEqual([{ content: "ROCKET", count: 1, viewerHasReacted: true }]);
+  });
+
+  test("absent stays absent — a failed read must not become \"nobody reacted\"", () => {
+    const timeline = buildForgeTimeline({ body: "b", createdAt: 1, comments: [{ body: "c", createdAt: 2, minimized: false, url: "u1" }] });
+    expect("reactions" in timeline[0]!).toBe(false);
+    expect("reactions" in timeline[1]!).toBe(false);
+  });
+
+  test("pills come out in GitHub's order, with glyphs, whatever order they arrived in", () => {
+    const pills = reactionPills([
+      { content: "EYES", count: 1, viewerHasReacted: false },
+      { content: "THUMBS_UP", count: 3, viewerHasReacted: true },
+    ]);
+    expect(pills.map((pill) => [pill.glyph, pill.count, pill.viewerHasReacted])).toEqual([
+      ["👍", 3, true],
+      ["👀", 1, false],
+    ]);
+  });
+
+  test("a content this cockpit does not know is dropped, not drawn as a bare word", () => {
+    expect(reactionPills([{ content: "SMILE", count: 1, viewerHasReacted: false }])).toEqual([]);
+  });
+
+  test("all eight of GitHub's reactions are known, once each", () => {
+    expect(new Set(REACTIONS.map((reaction) => reaction.content)).size).toBe(8);
   });
 });
