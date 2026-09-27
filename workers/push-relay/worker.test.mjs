@@ -243,6 +243,16 @@ test('v2: an attested phone hands a Mac a key, and the Mac sends without ever ho
   });
 });
 const background={kind:'background',collapseId:'e'.repeat(64),payload:{aps:{'content-available':1},read:{host:'h',sessions:['session_1']}}};
+test('v2: an urgent Live Activity update goes at priority 10; urgent on a background push changes nothing',async()=>{
+  const enrolled=await enroll();
+  const key=await pairKey(enrolled);
+  await withApple(()=>new Response(null,{status:200}),async calls=>{
+    await macSend(enrolled,key,{...alert,kind:'liveactivity',activity:'session_1',urgent:true,payload:{aps:{event:'update'}}});
+    await macSend(enrolled,key,{...alert,kind:'liveactivity',activity:'session_1',payload:{aps:{event:'update'}}});
+    await macSend(enrolled,key,{...background,urgent:true});
+    assert.deepEqual(calls.map(c=>c.headers['apns-priority']),['10','5','5']);
+  });
+});
 test('v2: a background push is silent, priority 5, to the phone\'s own bundle, and carries no collapse id',async()=>{
   const enrolled=await enroll();
   const key=await pairKey(enrolled);
