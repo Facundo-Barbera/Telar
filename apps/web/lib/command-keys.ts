@@ -109,7 +109,7 @@ export function commandDestination(id: CommandId, recentSessionHrefs: readonly (
    */
   if (id === "appearance") return { kind: "navigate", href: "/settings?section=appearance" };
   if (id === "open-plugins") return { kind: "navigate", href: "/settings?section=plugins" };
-  if (id === "check-for-updates") return { kind: "navigate", href: "/settings?section=general" };
+  if (id === "check-for-updates") return { kind: "navigate", href: "/settings?section=updates" };
   if (id === "open-usage") return { kind: "navigate", href: "/usage" };
   const n = jumpSlot(id);
   if (!n) return { kind: "noop" };

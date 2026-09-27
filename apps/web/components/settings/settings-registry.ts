@@ -146,17 +146,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
-        title: "Links",
-        rows: [
-          {
-            title: "Open in the session's browser",
-            hint: "Issues and pull requests open in the right panel; other links open as tabs the agent can see.",
-            keywords: ["external", "system browser", "tabs"],
-            icon: ExternalLinkIcon,
-          },
-        ],
-      },
-      {
         title: "Settling",
         rows: [
           {
@@ -223,161 +212,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Only branches the engine cut. Yours keep their names.",
             keywords: ["git", "branch name"],
             icon: SparklesIcon,
-          },
-        ],
-      },
-      {
-        title: "This build",
-        rows: [
-          { title: "Version", hint: "Which build of Telar this install is.", keywords: ["about"], icon: InfoIcon },
-          {
-            title: "Engine",
-            hint: "Whether the thing that runs turns is answering.",
-            keywords: ["daemon", "offline", "health"],
-            icon: InfoIcon,
-          },
-          {
-            title: "State",
-            hint: "Sessions, transcripts, worktrees and settings.",
-            keywords: ["telar home", "storage", "path"],
-            icon: InfoIcon,
-          },
-        ],
-      },
-      {
-        title: "Updates",
-        rows: [
-          {
-            title: "Update status",
-            hint: "Check for a new build, and install one that has been found.",
-            keywords: ["upgrade", "download", "version"],
-            icon: DownloadIcon,
-          },
-          {
-            title: "Channel",
-            hint: "Which stream of builds this install follows.",
-            keywords: ["beta", "nightly", "stable", "release"],
-            icon: DownloadIcon,
-          },
-          {
-            title: "Continue sessions after restarting",
-            hint: "When Telar restarts to update, the sessions it stopped pick up where they left off.",
-            keywords: ["resume", "restart", "update", "continue", "interrupted"],
-            icon: DownloadIcon,
-          },
-          {
-            title: "Install on quit",
-            hint: "A downloaded update installs itself the next time you quit Telar.",
-            keywords: ["restart", "automatic"],
-            icon: DownloadIcon,
-          },
-        ],
-      },
-    ],
-  },
-  {
-    /**
-     * THE PANE'S ROWS ARE INDEXED; THE PROJECTS ARE NOT. A project's name is a
-     * value, not copy — the note at the top of this file — and the pane holds
-     * one project at a time anyway, chosen on the pane itself. What search can
-     * usefully find here is the SETTING: "where do I change a project's icon",
-     * "which project has LaTeX on".
-     *
-     * The Danger group is `remove-project-section.tsx`'s and appears only once
-     * a project is named, so its row is indexed with that caveat: choosing it
-     * lands on Projects, and the scope row is the step between.
-     */
-    id: "projects",
-    label: "Projects",
-    icon: FolderKanbanIcon,
-    groups: [
-      {
-        /**
-         * THE SCOPE BAR, AND IT IS NAVIGATE-ONLY. Both controls are the pane's
-         * header rather than rows in a group — see `projects-page.tsx` — so
-         * there is no anchor to scroll to. Indexed anyway, and without the
-         * caveat the other navigate-only entries carry: the bar is the first
-         * thing on the pane, so arriving at Projects puts both controls on
-         * screen without a scroll.
-         */
-        rows: [
-          {
-            title: "Mac",
-            hint: "Projects are registered per Mac. A paired one's registry is read from that Mac.",
-            keywords: ["host", "paired", "remote", "other mac", "machine"],
-            icon: MonitorIcon,
-          },
-          {
-            title: "Project",
-            hint: "All projects leaves the rows below inert; naming one binds them to it.",
-            keywords: ["scope", "pick", "select", "all projects", "registry"],
-            icon: FolderKanbanIcon,
-          },
-        ],
-      },
-      {
-        title: "Identity",
-        rows: [
-          {
-            title: "Name",
-            hint: "Set when the folder was registered.",
-            keywords: ["rename", "title", "project name"],
-            icon: FolderKanbanIcon,
-          },
-          {
-            title: "Icon",
-            hint: "Found in the checkout — a favicon, an app icon, or a .telar icon file.",
-            keywords: ["avatar", "favicon", "logo", "mark"],
-            icon: ImageIcon,
-          },
-          {
-            title: "Checkout",
-            hint: "Sessions run here, or in a worktree cut from it.",
-            keywords: ["root", "path", "folder", "directory"],
-            icon: FolderGitIcon,
-          },
-        ],
-      },
-      {
-        title: "New conversations",
-        rows: [
-          {
-            title: "Default model",
-            hint: "Which model a conversation in this project opens on.",
-            keywords: ["model", "per project", "default"],
-            icon: SparklesIcon,
-          },
-          {
-            title: "Model options",
-            hint: "New conversations in this project start with this model and these options.",
-            keywords: ["effort", "reasoning", "fast mode", "per project"],
-            icon: GaugeIcon,
-          },
-          {
-            title: "Where new conversations start",
-            hint: "The project's own checkout, or a worktree cut from it.",
-            keywords: ["worktree", "checkout", "workspace", "branch"],
-            icon: FolderGitIcon,
-          },
-        ],
-      },
-      {
-        // Rendered only for a project on this Mac; at All projects a search
-        // lands on the pane and the scope picker, which is the step to take.
-        title: "New worktrees",
-        rows: WORKTREE_PREPARATION_ROWS,
-      },
-      {
-        // THE PLUGIN TOGGLES ARE NOT INDEXED, and that is the rule at the top
-        // of this file rather than an omission: each row's title is a
-        // plugin's own name, arriving from the engine at runtime.
-        title: "Danger",
-        rows: [
-          {
-            title: "Remove project from Telar",
-            hint: "Put the registration away. Nothing on disk is touched, and it can be restored.",
-            keywords: ["unregister", "delete", "forget", "put away"],
-            icon: FolderKanbanIcon,
           },
         ],
       },
@@ -499,98 +333,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     ],
   },
   {
-    id: "remote",
-    label: "Remote access",
-    icon: SmartphoneIcon,
-    groups: [
-      {
-        title: "Pairing",
-        rows: [
-          {
-            title: "Require pairing",
-            hint: "On by default. Unpaired devices are refused; off, anything that can reach this address has full control.",
-            keywords: ["auth", "security", "phone", "ipad"],
-            icon: SmartphoneIcon,
-          },
-        ],
-      },
-      {
-        title: "This environment",
-        rows: [
-          {
-            title: "Network access",
-            hint: "Listen on every interface, or on 127.0.0.1 only.",
-            keywords: ["expose", "lan", "loopback", "address"],
-            icon: GlobeIcon,
-          },
-          {
-            title: "Tailscale HTTPS",
-            hint: "Publish through Tailscale Serve at a MagicDNS HTTPS URL, so phone browsers get a secure context.",
-            keywords: ["tailnet", "magicdns", "certificate", "serve"],
-            icon: LockIcon,
-          },
-        ],
-      },
-      {
-        title: "Pair a device",
-        rows: [
-          {
-            title: "Pairing code",
-            hint: "One code, one device. Codes are shown once and never stored.",
-            keywords: ["qr", "link", "token"],
-            icon: SmartphoneIcon,
-          },
-        ],
-      },
-      {
-        title: "Paired devices",
-        rows: [
-          {
-            title: "Revoke all other devices",
-            hint: "Keeps this one. The lost-phone button.",
-            keywords: ["sign out", "logout", "lost", "stolen"],
-            icon: SmartphoneIcon,
-          },
-        ],
-      },
-      {
-        title: "Push notifications",
-        rows: [
-          {
-            // NAVIGATE-ONLY. The pane is status only since relay v2: its one
-            // phone row is a summary whose label changes, so there is no
-            // standing row to anchor to — the group heading is the title.
-            title: "Push notifications",
-            // The words somebody types when notifications are not arriving —
-            // they search for the symptom, not for "relay", which is a term
-            // they have no reason to know.
-            hint: "Whether this Mac's alerts reach your phone.",
-            keywords: ["notifications", "apns", "alerts", "push", "relay", "phone", "not working", "test notification"],
-            icon: BellIcon,
-          },
-          {
-            // The one standing row: which device an alert goes to.
-            title: "Notify on",
-            hint: "Which device each alert goes to.",
-            keywords: ["duplicate", "twice", "desktop notifications", "banner", "iphone", "mac", "idle", "away"],
-            icon: BellIcon,
-          },
-        ],
-      },
-      {
-        title: "Other Macs",
-        rows: [
-          {
-            title: "Add a Mac",
-            hint: "Another Telar's conversations, in this rail, from its pairing link.",
-            keywords: ["host", "pair", "second machine", "remote"],
-            icon: MonitorIcon,
-          },
-        ],
-      },
-    ],
-  },
-  {
     id: "integrations",
     // NAVIGATE-ONLY, both rows. A profile row's title is the profile's own name
     // and a grant's is the address it covers — values, not copy, so there is
@@ -640,43 +382,14 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           },
         ],
       },
-    ],
-  },
-  {
-    id: "providers",
-    // NAVIGATE-ONLY, and knowingly. This pane's body is one card per configured
-    // login, built from engine data — there is no static `Row` to anchor to, so
-    // choosing this opens Providers and stops there. It is indexed anyway
-    // because "where do I add my Codex account" is a question search should
-    // answer, and landing on the right pane answers most of it.
-    label: "Providers",
-    icon: PlugIcon,
-    groups: [
       {
+        title: "Links",
         rows: [
           {
-            title: "Add a login",
-            hint: "Each login is a CLI already on this machine. Telar never signs you in; tokens stay where the CLI put them.",
-            keywords: ["account", "claude", "codex", "api key", "sign in", "auth", "provider"],
-            icon: PlugIcon,
-          },
-        ],
-      },
-      {
-        /**
-         * ALSO NAVIGATE-ONLY, and for the same reason as the group above: the
-         * rows under this heading are one per configured hub, which are values
-         * rather than copy. What IS indexed is the verb that adds one, because
-         * "where do I see how much of my plan is left" is a question search
-         * should answer and landing on this pane answers most of it.
-         */
-        title: "Usage providers",
-        rows: [
-          {
-            title: "Add hub",
-            hint: "Hubs that pool subscription accounts. Their remaining quota shows under Limits on the Usage page.",
-            keywords: ["cliproxy", "cliproxyapi", "hub", "proxy", "quota", "limit", "limits", "usage", "pooled", "rate limit", "5h", "weekly", "remaining"],
-            icon: ServerIcon,
+            title: "Open in the session's browser",
+            hint: "Issues and pull requests open in the right panel; other links open as tabs the agent can see.",
+            keywords: ["external", "system browser", "tabs"],
+            icon: ExternalLinkIcon,
           },
         ],
       },
@@ -803,18 +516,40 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     ],
   },
   {
-    id: "source-control",
-    label: "Source control",
-    icon: GitPullRequestIcon,
+    id: "providers",
+    // NAVIGATE-ONLY, and knowingly. This pane's body is one card per configured
+    // login, built from engine data — there is no static `Row` to anchor to, so
+    // choosing this opens Providers and stops there. It is indexed anyway
+    // because "where do I add my Codex account" is a question search should
+    // answer, and landing on the right pane answers most of it.
+    label: "Providers",
+    icon: PlugIcon,
     groups: [
       {
-        title: "Source control",
         rows: [
           {
-            title: "GitHub",
-            hint: "Issues, pull requests and checks, read through the gh CLI you signed in to yourself.",
-            keywords: ["gh", "git", "pull request", "issues", "token", "auth", "sign in", "cli", "forge", "gitlab"],
-            icon: GitPullRequestIcon,
+            title: "Add a login",
+            hint: "Each login is a CLI already on this machine. Telar never signs you in; tokens stay where the CLI put them.",
+            keywords: ["account", "claude", "codex", "api key", "sign in", "auth", "provider"],
+            icon: PlugIcon,
+          },
+        ],
+      },
+      {
+        /**
+         * ALSO NAVIGATE-ONLY, and for the same reason as the group above: the
+         * rows under this heading are one per configured hub, which are values
+         * rather than copy. What IS indexed is the verb that adds one, because
+         * "where do I see how much of my plan is left" is a question search
+         * should answer and landing on this pane answers most of it.
+         */
+        title: "Usage providers",
+        rows: [
+          {
+            title: "Add hub",
+            hint: "Hubs that pool subscription accounts. Their remaining quota shows under Limits on the Usage page.",
+            keywords: ["cliproxy", "cliproxyapi", "hub", "proxy", "quota", "limit", "limits", "usage", "pooled", "rate limit", "5h", "weekly", "remaining"],
+            icon: ServerIcon,
           },
         ],
       },
@@ -943,6 +678,206 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
       },
     ],
   },
+  {
+    /**
+     * THE PANE'S ROWS ARE INDEXED; THE PROJECTS ARE NOT. A project's name is a
+     * value, not copy — the note at the top of this file — and the pane holds
+     * one project at a time anyway, chosen on the pane itself. What search can
+     * usefully find here is the SETTING: "where do I change a project's icon",
+     * "which project has LaTeX on".
+     *
+     * The Danger group is `remove-project-section.tsx`'s and appears only once
+     * a project is named, so its row is indexed with that caveat: choosing it
+     * lands on Projects, and the scope row is the step between.
+     */
+    id: "projects",
+    label: "Projects",
+    icon: FolderKanbanIcon,
+    groups: [
+      {
+        /**
+         * THE SCOPE BAR, AND IT IS NAVIGATE-ONLY. Both controls are the pane's
+         * header rather than rows in a group — see `projects-page.tsx` — so
+         * there is no anchor to scroll to. Indexed anyway, and without the
+         * caveat the other navigate-only entries carry: the bar is the first
+         * thing on the pane, so arriving at Projects puts both controls on
+         * screen without a scroll.
+         */
+        rows: [
+          {
+            title: "Mac",
+            hint: "Projects are registered per Mac. A paired one's registry is read from that Mac.",
+            keywords: ["host", "paired", "remote", "other mac", "machine"],
+            icon: MonitorIcon,
+          },
+          {
+            title: "Project",
+            hint: "All projects leaves the rows below inert; naming one binds them to it.",
+            keywords: ["scope", "pick", "select", "all projects", "registry"],
+            icon: FolderKanbanIcon,
+          },
+        ],
+      },
+      {
+        title: "Identity",
+        rows: [
+          {
+            title: "Name",
+            hint: "Set when the folder was registered.",
+            keywords: ["rename", "title", "project name"],
+            icon: FolderKanbanIcon,
+          },
+          {
+            title: "Icon",
+            hint: "Found in the checkout — a favicon, an app icon, or a .telar icon file.",
+            keywords: ["avatar", "favicon", "logo", "mark"],
+            icon: ImageIcon,
+          },
+          {
+            title: "Checkout",
+            hint: "Sessions run here, or in a worktree cut from it.",
+            keywords: ["root", "path", "folder", "directory"],
+            icon: FolderGitIcon,
+          },
+        ],
+      },
+      {
+        title: "New conversations",
+        rows: [
+          {
+            title: "Default model",
+            hint: "Which model a conversation in this project opens on.",
+            keywords: ["model", "per project", "default"],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Model options",
+            hint: "New conversations in this project start with this model and these options.",
+            keywords: ["effort", "reasoning", "fast mode", "per project"],
+            icon: GaugeIcon,
+          },
+          {
+            title: "Where new conversations start",
+            hint: "The project's own checkout, or a worktree cut from it.",
+            keywords: ["worktree", "checkout", "workspace", "branch"],
+            icon: FolderGitIcon,
+          },
+        ],
+      },
+      {
+        // Rendered only for a project on this Mac; at All projects a search
+        // lands on the pane and the scope picker, which is the step to take.
+        title: "New worktrees",
+        rows: WORKTREE_PREPARATION_ROWS,
+      },
+      {
+        // THE PLUGIN TOGGLES ARE NOT INDEXED, and that is the rule at the top
+        // of this file rather than an omission: each row's title is a
+        // plugin's own name, arriving from the engine at runtime.
+        title: "Danger",
+        rows: [
+          {
+            title: "Remove project from Telar",
+            hint: "Put the registration away. Nothing on disk is touched, and it can be restored.",
+            keywords: ["unregister", "delete", "forget", "put away"],
+            icon: FolderKanbanIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "remote",
+    label: "Remote access",
+    icon: SmartphoneIcon,
+    groups: [
+      {
+        title: "Pairing",
+        rows: [
+          {
+            title: "Require pairing",
+            hint: "On by default. Unpaired devices are refused; off, anything that can reach this address has full control.",
+            keywords: ["auth", "security", "phone", "ipad"],
+            icon: SmartphoneIcon,
+          },
+        ],
+      },
+      {
+        title: "This environment",
+        rows: [
+          {
+            title: "Network access",
+            hint: "Listen on every interface, or on 127.0.0.1 only.",
+            keywords: ["expose", "lan", "loopback", "address"],
+            icon: GlobeIcon,
+          },
+          {
+            title: "Tailscale HTTPS",
+            hint: "Publish through Tailscale Serve at a MagicDNS HTTPS URL, so phone browsers get a secure context.",
+            keywords: ["tailnet", "magicdns", "certificate", "serve"],
+            icon: LockIcon,
+          },
+        ],
+      },
+      {
+        title: "Pair a device",
+        rows: [
+          {
+            title: "Pairing code",
+            hint: "One code, one device. Codes are shown once and never stored.",
+            keywords: ["qr", "link", "token"],
+            icon: SmartphoneIcon,
+          },
+        ],
+      },
+      {
+        title: "Paired devices",
+        rows: [
+          {
+            title: "Revoke all other devices",
+            hint: "Keeps this one. The lost-phone button.",
+            keywords: ["sign out", "logout", "lost", "stolen"],
+            icon: SmartphoneIcon,
+          },
+        ],
+      },
+      {
+        title: "Push notifications",
+        rows: [
+          {
+            // NAVIGATE-ONLY. The pane is status only since relay v2: its one
+            // phone row is a summary whose label changes, so there is no
+            // standing row to anchor to — the group heading is the title.
+            title: "Push notifications",
+            // The words somebody types when notifications are not arriving —
+            // they search for the symptom, not for "relay", which is a term
+            // they have no reason to know.
+            hint: "Whether this Mac's alerts reach your phone.",
+            keywords: ["notifications", "apns", "alerts", "push", "relay", "phone", "not working", "test notification"],
+            icon: BellIcon,
+          },
+          {
+            // The one standing row: which device an alert goes to.
+            title: "Notify on",
+            hint: "Which device each alert goes to.",
+            keywords: ["duplicate", "twice", "desktop notifications", "banner", "iphone", "mac", "idle", "away"],
+            icon: BellIcon,
+          },
+        ],
+      },
+      {
+        title: "Other Macs",
+        rows: [
+          {
+            title: "Add a Mac",
+            hint: "Another Telar's conversations, in this rail, from its pairing link.",
+            keywords: ["host", "pair", "second machine", "remote"],
+            icon: MonitorIcon,
+          },
+        ],
+      },
+    ],
+  },
   /**
    * STORAGE — what Telar deletes on its own, and where things live. What a
    * person types here is a symptom ("disk full", "space"), so the cleanup rows
@@ -1007,6 +942,85 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Where Telar keeps everything, and how to move it to another drive.",
             keywords: ["move", "external", "volume", "drive", "relocate", "where", "path", "ssd"],
             icon: HardDriveIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "about",
+    label: "This build",
+    icon: InfoIcon,
+    groups: [
+      {
+        title: "This build",
+        rows: [
+          { title: "Version", hint: "Which build of Telar this install is.", keywords: ["about"], icon: InfoIcon },
+          {
+            title: "Engine",
+            hint: "Whether the thing that runs turns is answering.",
+            keywords: ["daemon", "offline", "health"],
+            icon: InfoIcon,
+          },
+          {
+            title: "State",
+            hint: "Sessions, transcripts, worktrees and settings.",
+            keywords: ["telar home", "storage", "path"],
+            icon: InfoIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "updates",
+    label: "Updates",
+    icon: DownloadIcon,
+    groups: [
+      {
+        title: "Updates",
+        rows: [
+          {
+            title: "Update status",
+            hint: "Check for a new build, and install one that has been found.",
+            keywords: ["upgrade", "download", "version"],
+            icon: DownloadIcon,
+          },
+          {
+            title: "Channel",
+            hint: "Which stream of builds this install follows.",
+            keywords: ["beta", "nightly", "stable", "release"],
+            icon: DownloadIcon,
+          },
+          {
+            title: "Continue sessions after restarting",
+            hint: "When Telar restarts to update, the sessions it stopped pick up where they left off.",
+            keywords: ["resume", "restart", "update", "continue", "interrupted"],
+            icon: DownloadIcon,
+          },
+          {
+            title: "Install on quit",
+            hint: "A downloaded update installs itself the next time you quit Telar.",
+            keywords: ["restart", "automatic"],
+            icon: DownloadIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "source-control",
+    label: "Source control",
+    icon: GitPullRequestIcon,
+    groups: [
+      {
+        title: "Source control",
+        rows: [
+          {
+            title: "GitHub",
+            hint: "Issues, pull requests and checks, read through the gh CLI you signed in to yourself.",
+            keywords: ["gh", "git", "pull request", "issues", "token", "auth", "sign in", "cli", "forge", "gitlab"],
+            icon: GitPullRequestIcon,
           },
         ],
       },

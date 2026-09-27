@@ -338,7 +338,7 @@ describe("what a command means here", () => {
     // mounted for "take me to Appearance" to mean something.
     expect(commandDestination("appearance", [])).toEqual({ kind: "navigate", href: "/settings?section=appearance" });
     expect(commandDestination("open-plugins", [])).toEqual({ kind: "navigate", href: "/settings?section=plugins" });
-    expect(commandDestination("check-for-updates", [])).toEqual({ kind: "navigate", href: "/settings?section=general" });
+    expect(commandDestination("check-for-updates", [])).toEqual({ kind: "navigate", href: "/settings?section=updates" });
     expect(commandDestination("open-usage", [])).toEqual({ kind: "navigate", href: "/usage" });
     // The project one is the RAIL's to answer — it is the only thing that knows
     // which project you are in — so the table says nothing about it.

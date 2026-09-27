@@ -4,7 +4,7 @@
  * Three claims, and each of them is one somebody would otherwise find out the
  * hard way:
  *
- *   - THE PANE EXISTS AS A DESTINATION. It is in `SECTIONS` under Runtime and
+ *   - THE PANE EXISTS AS A DESTINATION. It is in `SECTIONS` under Cockpit and
  *     the page renders it for `active === "dictation"`, so the nav and the body
  *     agree. A section id in one and not the other is a nav button that opens
  *     an empty pane, which is the exact decay `settings-nav.test.ts` exists for
@@ -33,8 +33,8 @@ import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 const nav = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
 
 describe("the Dictation pane is a destination of its own", () => {
-  test("it is in the nav, under Runtime rather than inside General", () => {
-    expect(nav).toContain('{ id: "dictation", label: "Dictation", icon: MicIcon, group: "Runtime" }');
+  test("it is in the nav, under Cockpit rather than inside General", () => {
+    expect(nav).toContain('{ id: "dictation", label: "Dictation", icon: MicIcon, group: "Cockpit" }');
   });
 
   test("and the page renders it there rather than stacking it in General", () => {
