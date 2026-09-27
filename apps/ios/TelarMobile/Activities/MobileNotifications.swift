@@ -68,6 +68,8 @@ struct PushStatus: Decodable {
     private var handledStartRejectionAt: Double = 0
     private var startTokenWatcher: Task<Void, Never>?
     private var incomingActivityWatcher: Task<Void, Never>?
+    /// Macs whose automatic card was swiped away during their current stretch of work.
+    private var dismissedCards: Set<HostID> = []
     var liveActivities = UserDefaults.standard.object(forKey: "telar.activities.enabled") as? Bool ?? true {
         didSet { defaults.set(liveActivities, forKey: "telar.activities.enabled") }
     }
@@ -324,6 +326,27 @@ struct PushStatus: Decodable {
             UIApplication.shared.registerForRemoteNotifications()
         } catch { activityError = "Couldn't start a Live Activity: \(error.localizedDescription)" }
     }
+    /// Starts each working Mac's automatic card from the phone — see `AutomaticCard`.
+    /// Only while Telar is in the foreground: iOS refuses `Activity.request` otherwise.
+    func startAutomaticCards(_ active: [HostedSession]) {
+        guard UIApplication.shared.applicationState == .active else { return }
+        let working = Set(active.filter { $0.session.activity != .idle }.map(\.hostId))
+        dismissedCards = AutomaticCard.dismissedStillIdle(dismissedCards, working: working)
+        let carded = Set(Activity<SessionActivityAttributes>.activities
+            .filter { $0.attributes.sessionId == AutomaticCard.sessionId && ($0.activityState == .active || $0.activityState == .stale) }
+            .compactMap { UUID(uuidString: $0.attributes.hostId) })
+        let hosts = AutomaticCard.hostsToStart(enabled: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
+                                               working: working, carded: carded, dismissed: dismissedCards)
+        for host in hosts {
+            let now = Date()
+            let state = AutomaticCard.initialState(active.filter { $0.hostId == host }.map(\.session), previews: previews, now: now)
+            let attributes = SessionActivityAttributes(hostId: host.uuidString, sessionId: AutomaticCard.sessionId, hostName: settings?.host(host)?.name ?? "Mac")
+            do {
+                let activity = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: now.addingTimeInterval(300)), pushType: .token)
+                watch(activity)
+            } catch { activityError = "Couldn't start a Live Activity: \(error.localizedDescription)" }
+        }
+    }
     func removeHost(_ host: HostID, api: HTTPEngineAPI?) async {
         if let token, let api {
             #if DEBUG
@@ -383,6 +406,8 @@ struct PushStatus: Decodable {
         guard watchers[activity.id] == nil else { return }
         stateWatchers[activity.id] = Task { [weak self] in
             for await state in activity.activityStateUpdates {
+                // Dismissed without ending first: the person swiped it away.
+                if state == .dismissed && activity.attributes.sessionId == AutomaticCard.sessionId { self?.dismissedCards.insert(host) }
                 if state == .ended || state == .dismissed {
                     self?.followed.remove(.init(hostId: host, sessionId: activity.attributes.sessionId))
                     self?.activityTokens[activity.id] = nil
