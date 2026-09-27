@@ -114,6 +114,9 @@ import {
   type GitHubReactionResult,
   type GitHubThreadReplyResult,
   type GitHubThreadResolveResult,
+  type GitHubLineCommentInput,
+  type GitHubLineCommentResult,
+  type GitHubPullAnchor,
   type GitHubFacets,
   type GitHubIssueFilter,
   type GitHubIssueRead,
@@ -234,6 +237,7 @@ import {
   pushSessionBranch,
   sessionBranchFacts,
   sessionDiffAsync,
+  porcelainPaths,
   sessionFilePatchAsync,
   type GitOverview,
 } from "./git";
@@ -244,6 +248,9 @@ import { RELAY_RULE } from "./attribution";
 import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import {
   commentOn,
+  commentOnPullLine,
+  readPullFiles,
+  readPullForBranch,
   reactOn,
   replyToThread,
   resolveThread,
@@ -7656,6 +7663,58 @@ export class EngineStore {
     // staleness `projectPullMerge` refuses.
     if (result.opened) this.forgetGitHub(project.id);
     return structuredClone(result);
+  }
+
+  /**
+   * What placing a Diff line on this session branch's pull request needs — #1014.
+   *
+   * Read when asked, never cached: the surface asks once per branch-scope view,
+   * and the whole point is that HEAD, the dirty paths and the pull request's head
+   * are compared as they are NOW. A session with no branch of its own has no pull
+   * request, and says so by leaving `pull` out.
+   */
+  async sessionPullAnchor(sessionId: string): Promise<GitHubPullAnchor> {
+    const session = this.getSession(sessionId);
+    const workspace = session.workspace;
+    if (workspace.mode !== "worktree") return { dirty: [], files: [] };
+    const cwd = workspaceRootOf(session);
+    const [pull, local] = await Promise.all([readPullForBranch(this.gh, cwd, workspace.branch), this.checkoutHeadAndDirty(cwd)]);
+    if (!pull) return { ...local, files: [] };
+    return { pull, ...local, files: await readPullFiles(this.gh, cwd, pull.number) };
+  }
+
+  /**
+   * Start a review thread on the session branch's pull request — #1014.
+   *
+   * THE PULL REQUEST IS THE BRANCH'S, NEVER THE CALLER'S: it is looked up again
+   * from the session record, so this route cannot comment anywhere else. And the
+   * commit the surface anchored to must still be both the checkout's HEAD and the
+   * pull request's head — otherwise the line numbers it chose describe a
+   * different file, and the answer is `stale` rather than a misplaced comment.
+   */
+  async sessionPullLineComment(sessionId: string, input: GitHubLineCommentInput): Promise<GitHubLineCommentResult> {
+    const session = this.getSession(sessionId);
+    const workspace = session.workspace;
+    if (workspace.mode !== "worktree") {
+      return { commented: false, refusal: "not_found", message: "This session has no branch of its own, so it has no pull request." };
+    }
+    const cwd = workspaceRootOf(session);
+    const [pull, local] = await Promise.all([readPullForBranch(this.gh, cwd, workspace.branch), this.checkoutHeadAndDirty(cwd)]);
+    if (!pull) return { commented: false, refusal: "not_found", message: `${workspace.branch} has no open pull request.` };
+    if (pull.headRefOid !== input.commitId || local.head !== input.commitId || local.dirty.includes(input.path)) {
+      return { commented: false, refusal: "stale", message: "The branch moved after this diff was read. Refresh and select the lines again." };
+    }
+    const result = await commentOnPullLine(this.gh, cwd, pull.number, input);
+    if (result.commented && session.projectId !== undefined) this.githubDetailCache.delete(`${session.projectId}:pull:${pull.number}`);
+    return structuredClone(result);
+  }
+
+  private async checkoutHeadAndDirty(cwd: string): Promise<{ head?: string; dirty: string[] }> {
+    const [head, status] = await Promise.all([this.asyncGit(cwd, ["rev-parse", "HEAD"]), this.asyncGit(cwd, ["status", "--porcelain=v1", "-z"])]);
+    // A status that did not answer leaves HEAD out too: without the dirty list
+    // no line can be called safe, and no HEAD is what says so.
+    const sha = head.status === 0 && status.status === 0 ? head.stdout.trim() : "";
+    return { ...(sha ? { head: sha } : {}), dirty: status.status === 0 ? porcelainPaths(status.stdout) : [] };
   }
 
   /** The remote's own default branch, unqualified — `origin/main` is what a
