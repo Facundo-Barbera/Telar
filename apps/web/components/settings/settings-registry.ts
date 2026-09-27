@@ -557,21 +557,21 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         title: "Push notifications",
         rows: [
           {
-            // NAVIGATE-ONLY. The pane is status only since relay v2: its rows
-            // are the phones themselves, values rather than copy, so there is
-            // no standing row to anchor to — the group heading is the title.
+            // NAVIGATE-ONLY. The pane is status only since relay v2: its one
+            // phone row is a summary whose label changes, so there is no
+            // standing row to anchor to — the group heading is the title.
             title: "Push notifications",
             // The words somebody types when notifications are not arriving —
             // they search for the symptom, not for "relay", which is a term
             // they have no reason to know.
-            hint: "Whether this Mac can send alerts to your phones, and whether each one is actually being reached.",
+            hint: "Whether this Mac's alerts reach your phone.",
             keywords: ["notifications", "apns", "alerts", "push", "relay", "phone", "not working", "test notification"],
             icon: BellIcon,
           },
           {
             // The one standing row: which device an alert goes to.
             title: "Notify on",
-            hint: "Each alert goes to one device: this Mac while you're using it, your iPhone once you step away.",
+            hint: "Which device each alert goes to.",
             keywords: ["duplicate", "twice", "desktop notifications", "banner", "iphone", "mac", "idle", "away"],
             icon: BellIcon,
           },

@@ -118,13 +118,15 @@ export function deviceLine(device: PushRelayStatus["devices"][number], now = Dat
   return parts.join(" · ");
 }
 
+const TEST_OK = "Working — test notification delivered";
+
 /**
  * WHAT THE TEST ALERT SENT AFTER PAIRING CAME BACK WITH — "working", or the
  * exact reason. A refusal by the relay is told apart from one by Apple: the
  * first is about this pairing, the second about the phone.
  */
 export function testLine(test: NonNullable<PushRelayStatus["devices"][number]["test"]>): string {
-  if (test.status === 200 && !test.relay) return "Working — test notification delivered";
+  if (test.status === 200 && !test.relay) return TEST_OK;
   const said = test.reason ? `${test.status} ${test.reason}` : String(test.status);
   if (test.relay) return test.status === 0 ? "Test notification could not reach the relay" : `Relay refused the test notification (${said})`;
   return `Apple refused the test notification (${said})`;
@@ -150,6 +152,52 @@ export function activityLine(report: ActivityReport): string | undefined {
  *  looking at a phone that is not ringing would use. */
 export function pausedLine(pausedUntil: number): string {
   return `Push paused until ${new Date(pausedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+type Device = PushRelayStatus["devices"][number];
+
+/** A delivery this recent means alerts are getting through, whatever a Live
+ *  Activity or a single refused send has counted against the record since. */
+const REACHED_WITHIN_MS = 60 * 60 * 1000;
+
+/** Stopped until the phone registers again, or no longer paired: sent nothing,
+ *  and the worker drops it. Never counted in the summary. */
+export function isStale(device: Device): boolean {
+  return device.parked || !device.paired;
+}
+
+/** Alerts are not getting through: sends are failing with no recent delivery,
+ *  or the test notification sent after pairing was refused and nothing has landed since. */
+export function isFailing(device: Device, now = Date.now()): boolean {
+  const reached = device.lastDeliveryAt !== undefined && now - device.lastDeliveryAt * 1000 < REACHED_WITHIN_MS;
+  if (device.consecutiveFailures > 0 && !reached) return true;
+  return device.test !== undefined && testLine(device.test) !== TEST_OK && device.lastDeliveryAt === undefined;
+}
+
+const phones = (n: number) => `${n} phone${n === 1 ? "" : "s"}`;
+
+/**
+ * THE WHOLE PANE IN ONE LINE. Only this Mac's live phones count; stopped and
+ * other Macs' registrations stay in the details, where the diagnostics are.
+ */
+export function phoneSummary(status: PushRelayStatus, now = Date.now()): { label: string; ok: boolean } {
+  const live = status.devices.filter((device) => device.mine && !isStale(device));
+  const failing = live.filter((device) => isFailing(device, now));
+  if (failing.length === 1) return { label: `Alerts aren't reaching ${failing[0]!.name ?? "your phone"}`, ok: false };
+  if (failing.length > 1) return { label: `Alerts aren't reaching ${phones(failing.length)}`, ok: false };
+  const on = live.filter((device) => device.enabled).length;
+  if (on > 0) return { label: `Alerts reach ${phones(on)}`, ok: true };
+  if (live.length > 0) return { label: `Alerts are off on ${live.length === 1 ? "your phone" : phones(live.length)}`, ok: true };
+  return { label: "No phone registered yet", ok: true };
+}
+
+/** Every registration and its full diagnostic line, stale ones included and marked. */
+export function detailLines(status: PushRelayStatus, now = Date.now()): Array<{ key: string; name: string; line: string }> {
+  return status.devices.map((device) => ({
+    key: `${device.deviceId}:${device.topic}`,
+    name: `${device.name ?? "Unnamed device"}${isStale(device) ? " (stopped, removed automatically)" : ""}`,
+    line: deviceLine(device, now),
+  }));
 }
 
 /**
@@ -201,18 +249,21 @@ export function PushNotificationsGroup() {
 
   if (!status) return null;
   const headline = relayHeadline(status);
+  const summary = phoneSummary(status);
+  const details = detailLines(status);
 
   return (
     <SettingsGroup
       title="Push notifications"
-      description="Whether this Mac can send alerts to your phones, and whether each one is actually being reached."
+      description="Whether this Mac's alerts reach your phone."
       action={<Badge variant={headline.ok ? "outline" : "destructive"}>{headline.label}</Badge>}
     >
       {notifyOn && (
         <Row
           label="Notify on"
           icon={BellIcon}
-          hint="Each alert goes to one device: this Mac while you're using it, your iPhone once you step away. A session you're looking at alerts neither."
+          hint="Which device each alert goes to."
+          info="Each alert goes to one device: this Mac while you're using it, your iPhone once you step away. A session you're looking at alerts neither."
           {...(notifyError ? { error: notifyError } : {})}
           {...(notifyOn === "mac" ? {} : { onRevert: () => void saveNotifyOn("mac") })}
           control={
@@ -230,7 +281,8 @@ export function PushNotificationsGroup() {
         <Row
           label="No phone can be reached yet"
           icon={BellIcon}
-          hint="There is nothing to set up on this Mac. Pair a phone and allow notifications when it asks; it registers itself and a test notification confirms it here."
+          hint="Pair a phone and allow notifications when it asks."
+          info="There is nothing to set up on this Mac. The phone registers itself, and a test notification confirms it here."
           control={null}
         />
       )}
@@ -238,29 +290,34 @@ export function PushNotificationsGroup() {
         <Row
           label={pausedLine(status.pausedUntil)}
           icon={BellIcon}
-          hint="This Mac has spent the relay's daily budget, so nothing is sent until it resets. Alerts resume on their own; no action is needed unless it happens every day, which would mean something is sending far more than it should."
+          hint="Alerts resume on their own."
+          info="This Mac has spent the relay's daily budget, so nothing is sent until it resets. If it happens every day, something is sending far more than it should."
           control={null}
         />
       )}
-      {status.devices.length === 0 ? (
-        <Row
-          label="No phone has registered"
-          icon={SmartphoneIcon}
-          hint="A paired phone registers the first time it is asked for notification permission. If yours has not, open Telar on it — it asks once, after pairing."
-          control={null}
-        />
-      ) : (
-        status.devices.map((device) => (
-          <Row
-            key={`${device.deviceId}:${device.topic}`}
-            id={`push-device-${device.deviceId}`}
-            label={device.name ?? "Unnamed device"}
-            icon={SmartphoneIcon}
-            hint={deviceLine(device)}
-            control={null}
-          />
-        ))
-      )}
+      <Row
+        id="push-phones"
+        label={summary.label}
+        icon={SmartphoneIcon}
+        {...(summary.ok ? {} : { hint: "Open Telar on the phone to register it again." })}
+        info="A paired phone registers when it first asks for notification permission. A registration that stops working is removed automatically, and the phone registers again the next time Telar opens on it."
+        control={null}
+      >
+        {details.length > 0 && (
+          <details className="mt-1 text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none hover:text-foreground">Details</summary>
+            <ul className="mt-1.5 space-y-1.5">
+              {details.map((detail) => (
+                <li key={detail.key}>
+                  <span className="text-foreground">{detail.name}</span>
+                  <br />
+                  {detail.line}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </Row>
     </SettingsGroup>
   );
 }
