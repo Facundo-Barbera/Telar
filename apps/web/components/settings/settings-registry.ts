@@ -4,7 +4,7 @@
  *
  * WHY A SECOND COPY OF THE TITLES EXISTS AT ALL. The rows themselves are React
  * trees scattered across a dozen section files, several behind a condition
- * ("After" appears only once settling is on) and several rendered from engine
+ * ("Settle quiet sessions after" appears only once settling is on) and several rendered from engine
  * data. Nothing can enumerate them without mounting every pane, which is
  * exactly what a person who does not know where a setting lives cannot do. So
  * the rows are DECLARED here, and `settings-registry.test.ts` is what keeps the
@@ -173,7 +173,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             icon: TimerIcon,
           },
           {
-            title: "After",
+            title: "Settle quiet sessions after",
             hint: "Time without activity. Pinned sessions and open questions stay put.",
             keywords: ["hours", "days", "window"],
             icon: TimerIcon,

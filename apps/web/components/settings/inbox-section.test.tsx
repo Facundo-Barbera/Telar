@@ -51,3 +51,10 @@ test("the two duration inputs are labelled apart", () => {
   expect(source).toContain("How long a session must be quiet before it settles");
   expect(source).toContain("How long after delivery a delegated conversation settles");
 });
+
+test("the two duration rows have labels of their own, so their anchors differ", () => {
+  // Row derives its DOM id from the label: two rows called "After" shared one.
+  expect(source).not.toContain('label="After"');
+  expect(source).toContain('label="Settle quiet sessions after"');
+  expect(source).toContain('label="Settle delegated conversations after"');
+});

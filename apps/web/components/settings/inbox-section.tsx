@@ -161,7 +161,7 @@ export function InboxSection() {
   return (
     // NO CAPTION. "Settle quiet sessions" with a switch beside it is the whole
     // sentence; the caption and the sub-line under it were two more ways of
-    // saying the same thing (#357). What survives is on "After", because the
+    // saying the same thing (#357). What survives is on the duration row, because the
     // carve-out is the one fact neither the title nor the control can carry.
     <SettingsGroup title="Settling">
       <Row
@@ -183,7 +183,7 @@ export function InboxSection() {
       />
       {hours !== null && (
         <Row
-          label="After"
+          label="Settle quiet sessions after"
           hint="Pinned sessions and open questions stay put."
           {...(hours === DEFAULT_AUTO_SETTLE_HOURS
             ? {}
@@ -228,7 +228,7 @@ export function InboxSection() {
       />
       {delegated !== null && (
         <Row
-          label="After"
+          label="Settle delegated conversations after"
           hint="A failed errand, a pinned row and an open question all stay put."
           {...(delegated === DEFAULT_SETTLE_DELEGATED_AFTER_HOURS
             ? {}
