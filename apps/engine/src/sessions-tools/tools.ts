@@ -1795,7 +1795,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           .min(1)
           .max(20)
           .optional()
-          .describe("A cohort: one notification when ALL of these are done — each sent its result, or a turn ended with no blocker unanswered, or it was settled or archived."),
+          .describe("A cohort: one notification when ALL of these are done — each sent its result, or a turn failed or was stopped, or it was settled or archived. A turn that merely ends is not done."),
         timeoutMinutes: z.number().int().min(1).max(10_080).optional().describe("Cohort only. Default 240: past it you get what arrived and who is still pending."),
         events: z
           .array(z.enum(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]))
