@@ -183,6 +183,8 @@ import {
   type WorktreeReclaimResult,
   seedSessionTitle,
   turnHasContent,
+  CLAUDE_COMPACTION_ENV_NAMES,
+  migrateClaudeCompaction,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
 import { atomicWrite, atomicWriteText } from "./atomic";
@@ -444,6 +446,10 @@ const TURN_FAILURE_CODES = new Set<TurnFailureCode>(WorkerTurnFailureCodeSchema.
  * turn transition.
  */
 const MAX_QUEUED_TURNS = 16;
+
+/** The window a pre-#587 token threshold is converted against. See
+ *  `migrateClaudeCompactionToPercent`. */
+const CLAUDE_COMPACTION_MIGRATION_WINDOW = 200_000;
 
 /**
  * How old the shell's `planned-restart.json` may be and still mean "this
@@ -4924,6 +4930,48 @@ export class EngineStore {
     }
     // On both backends, and before anything can claim a turn — see the method.
     this.claudeLongWindowMigration = this.migrateBareClaudeIds();
+    this.claudeCompactionMigration = this.migrateClaudeCompactionToPercent();
+  }
+
+  /** How many logins the one-time #587 rewrite changed on this open, or nothing
+   *  when it had already run. */
+  readonly claudeCompactionMigration?: number;
+
+  /**
+   * TOKEN AUTO-COMPACT THRESHOLDS BECOME PERCENTAGES OF THE WINDOW — once,
+   * marked (#587).
+   *
+   * A Claude login configured before #587 holds its threshold as a window and
+   * percentage pair that says a token count. The count is converted against the
+   * 200k window — a bare id's window since #986 — rounded down and clamped to
+   * 1–100%, so a 200k session compacts at or before where it did.
+   *
+   * The raw registry, not `readProviderInstances`, which seeds one on first
+   * read. A login whose compaction rows are sensitive keeps them: their values
+   * live in the secrets file and are not this pass's to read.
+   */
+  private migrateClaudeCompactionToPercent(): number | undefined {
+    if (this.readDocument(this.paths.claudeCompactionMigration) !== undefined) return undefined;
+    return this.executeCommand("migrateClaudeCompactionToPercent", () => {
+      let logins = 0;
+      try {
+        const stored = this.readDocument(this.paths.providerInstances) as { providerInstances?: Record<string, unknown>[] } | undefined;
+        const next = (stored?.providerInstances ?? []).map((instance) => {
+          const env = instance.env as ProviderInstanceEnvVar[] | undefined;
+          if (instance.driver !== "claude" || !Array.isArray(env)) return instance;
+          if (env.some((variable) => CLAUDE_COMPACTION_ENV_NAMES.includes(variable.name) && variable.sensitive)) return instance;
+          const migrated = migrateClaudeCompaction(env, CLAUDE_COMPACTION_MIGRATION_WINDOW);
+          if (!migrated) return instance;
+          logins += 1;
+          return { ...instance, env: migrated };
+        });
+        if (logins > 0) this.writeDocument(this.paths.providerInstances, { ...stored, providerInstances: next });
+      } catch {
+        // A registry that will not parse is reported by every other reader of it.
+      }
+      this.writeDocument(this.paths.claudeCompactionMigration, { version: 1, at: this.now(), logins });
+      return logins;
+    });
   }
 
   /** What the one-time `[1m]` rewrite changed on this open, or nothing when it

@@ -39,6 +39,9 @@ export type EngineStatePaths = {
   /** The one-time rewrite of bare 1M-default Claude ids to `[1m]` — its
    *  presence is the marker that it ran. See `migrateBareClaudeIds`. */
   claudeLongWindowMigration: string;
+  /** The one-time rewrite of token auto-compact thresholds to percentages
+   *  (#587). See `migrateClaudeCompactionToPercent`. */
+  claudeCompactionMigration: string;
   sessions: string;
   /** User-configured MCP servers. ENVIRONMENT-SCOPED, beside projects.json
    *  rather than inside a session: a tool is configured once. */
@@ -256,6 +259,7 @@ export function statePaths(root: string): EngineStatePaths {
     machinePlugins: path.join(resolved, "machine-plugins.json"),
     claudeDefault: path.join(resolved, "claude-default-model.json"),
     claudeLongWindowMigration: path.join(resolved, "claude-long-window-migration.json"),
+    claudeCompactionMigration: path.join(resolved, "claude-compaction-migration.json"),
     sessions: path.join(resolved, "sessions"),
     mcpServers: path.join(resolved, "mcp-servers.json"),
     providerInstances: path.join(resolved, "provider-instances.json"),
