@@ -88,6 +88,7 @@ export function BrowserLoginsSection() {
     // card can show because it happens at fill time: the vault still locks.
     <SettingsGroup
       title="Remembered logins"
+      scope="mac"
       description="Logins you allowed agents to fill without asking again — 1Password still asks to unlock."
     >
       {error && <p className="text-xs text-destructive">{error}</p>}

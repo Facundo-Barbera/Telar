@@ -122,7 +122,7 @@ export function TextGenSection() {
     // Claude/Codex control needs no gloss, and the caption was a third telling
     // of what "Generated text" and "Name sessions" already say. The two
     // sub-lines left are both traps a reader cannot see from the control.
-    <SettingsGroup title="Generated text">
+    <SettingsGroup title="Generated text" scope="mac">
       <Row
         label="Written by"
         // THE ERROR, NOT THE HINT. It used to BE the hint, so a row whose write

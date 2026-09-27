@@ -115,7 +115,7 @@ export function BrowserProfilesSection() {
 
   if (!bridge) {
     return (
-      <SettingsGroup title="Browser profiles" description="The identities Telar's own browser signs in as.">
+      <SettingsGroup title="Browser profiles" scope="mac" description="The identities Telar's own browser signs in as.">
         <Row icon={MonitorIcon} label="Desktop app only" hint="This browser tab has no browser host to keep profiles for." />
       </SettingsGroup>
     );
@@ -131,6 +131,7 @@ export function BrowserProfilesSection() {
           to check it against. */}
       <SettingsGroup
         title="Browser profiles"
+        scope="mac"
         description="Each one is a separate set of cookies and logins for Telar's own browser."
         action={
           <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
@@ -323,7 +324,7 @@ export function SitePermissionsGroup() {
 
   if (!supported) {
     return (
-      <SettingsGroup title="Site permissions" description="What sites may do in Telar's own browser.">
+      <SettingsGroup title="Site permissions" scope="mac" description="What sites may do in Telar's own browser.">
         <Row icon={MonitorIcon} label="Desktop app only" hint="This browser tab has no browser host to keep site permissions for." />
       </SettingsGroup>
     );
@@ -332,6 +333,7 @@ export function SitePermissionsGroup() {
   return (
     <SettingsGroup
       title="Site permissions"
+      scope="mac"
       description="Camera, microphone, notifications, location, clipboard and screen sharing, as you answered them."
     >
       {error && <p className="text-xs text-destructive">{error}</p>}

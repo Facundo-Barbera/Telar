@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 const source = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
 
 test("the nav is five groups, in order, each holding the panes S1 assigned it", () => {
-  const groups = [...source.matchAll(/\{ id: "([^"]+)", label: "[^"]+", icon: \w+, group: "([^"]+)" \}/g)].map(([, id, group]) => `${group}:${id}`);
+  const groups = [...source.matchAll(/\{ id: "([^"]+)", label: "[^"]+", icon: \w+, group: "([^"]+)"(?:, scope: "\w+")? \}/g)].map(([, id, group]) => `${group}:${id}`);
   expect(groups).toEqual([
     "Cockpit:general",
     "Cockpit:appearance",

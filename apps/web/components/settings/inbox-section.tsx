@@ -29,7 +29,10 @@ import {
   DEFAULT_SETTLED_TERMINAL_LIMIT,
   MAX_SETTLED_TERMINAL_LIMIT,
 } from "@telar/engine-client";
+import { usePathname } from "next/navigation";
 import { useInboxPolicy } from "@/lib/inbox-policy";
+import { hostFromPathname } from "@/lib/hosts/client";
+import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -146,6 +149,8 @@ function CountInput({ value, onCommit, label }: { value: number; onCommit: (valu
 
 export function InboxSection() {
   const { policy, loading, save, error } = useInboxPolicy();
+  // The rule belongs to whichever engine the address bar names, as the hook reads it.
+  const pathname = usePathname();
   const hours = policy.autoSettleAfterHours;
   const delegated = policy.settleDelegatedAfterHours;
   // An engine older than the field answers without it; the default is what it does.
@@ -163,7 +168,7 @@ export function InboxSection() {
     // sentence; the caption and the sub-line under it were two more ways of
     // saying the same thing (#357). What survives is on the duration row, because the
     // carve-out is the one fact neither the title nor the control can carry.
-    <SettingsGroup title="Settling">
+    <SettingsGroup title="Settling" scope={hostFromPathname(pathname ?? "/") === LOCAL_HOST_ID ? "mac" : "host"}>
       <Row
         label="Settle quiet sessions"
         {...(error ? { error } : {})}

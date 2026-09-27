@@ -160,7 +160,7 @@ export function DictationSection() {
           whichever value is chosen — and said it standing, in both states at
           once, above a row that answers live. The same rule `updates-section.tsx`
           states for the same reason. */}
-      <SettingsGroup title="Dictation">
+      <SettingsGroup title="Dictation" scope="mac">
         <Row
           label="Provider"
           icon={provider === "off" ? MicOffIcon : MicIcon}

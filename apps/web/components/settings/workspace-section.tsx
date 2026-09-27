@@ -34,7 +34,7 @@ export function WorkspaceSection() {
     // NO CAPTION, BECAUSE THE ROW KEEPS ITS SENTENCE (#357). A group gets one or
     // the other, and "Workspace" is the jargon here — the caption restated the
     // group title while the row is where the two modes are actually explained.
-    <SettingsGroup title="New sessions">
+    <SettingsGroup title="New sessions" scope="mac">
       <Row
         label="Workspace"
         icon={FolderGitIcon}
