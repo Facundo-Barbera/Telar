@@ -119,6 +119,7 @@ import {
   type Session,
   type SessionOrigin,
   type Subscription,
+  type Cohort,
   type Task,
   type EngineRequest,
   type RequestDecision,
@@ -3294,6 +3295,18 @@ export class EngineClient {
 
   subscriptions(sessionId: string): Promise<{ subscriptions: Subscription[] }> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/subscriptions`);
+  }
+
+  /** A COHORT: one wake when every session in `sessionIds` is done. See `Cohort`. */
+  subscribeCohort(
+    sessionId: string,
+    input: { sessionIds: string[]; timeoutMinutes?: number; completionWake?: Cohort["completionWake"] },
+  ): Promise<{ cohort: Cohort }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/cohorts`, input);
+  }
+
+  cohorts(sessionId: string): Promise<{ cohorts: Cohort[] }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/cohorts`);
   }
 
   /** `subscriberSessionId` narrows the delete to that session's own

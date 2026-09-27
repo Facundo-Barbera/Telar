@@ -1406,6 +1406,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     } catch {
       /* the next tick tries again */
     }
+    // A cohort's expiry rides the same tick: a minute is its shortest timeout.
+    try {
+      store.sweepCohorts();
+    } catch {
+      /* the next tick tries again */
+    }
   }, options.reportWindowSweepIntervalMs ?? 30_000);
   reportWindowSweeper.unref();
   /**
@@ -1615,6 +1621,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
       unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
       subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
+      subscribeCohort: async (subscriber, input) => store.subscribeCohort(subscriber, input),
+      cohorts: async (subscriber) => store.cohortsFor(subscriber),
       requests: async (sessionId) => store.requests(sessionId),
       resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
       /**
@@ -5054,6 +5062,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "GET" && session.tail === "/subscriptions") {
           writeJson(response, 200, { subscriptions: store.subscriptionsFor(session.sessionId) });
+          return;
+        }
+        if (request.method === "POST" && session.tail === "/cohorts") {
+          const input = await body(request);
+          const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.filter((each): each is string => typeof each === "string") : [];
+          writeJson(response, 201, {
+            cohort: store.subscribeCohort(session.sessionId, {
+              sessionIds,
+              ...(typeof input.timeoutMinutes === "number" ? { timeoutMinutes: input.timeoutMinutes } : {}),
+              ...(input.completionWake === "always" || input.completionWake === "settled_only" ? { completionWake: input.completionWake } : {}),
+            }),
+          });
+          return;
+        }
+        if (request.method === "GET" && session.tail === "/cohorts") {
+          writeJson(response, 200, { cohorts: store.cohortsFor(session.sessionId) });
           return;
         }
         /**

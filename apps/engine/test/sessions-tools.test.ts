@@ -120,6 +120,8 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
     unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
     subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
+    subscribeCohort: async (subscriber, input) => store.subscribeCohort(subscriber, input),
+    cohorts: async (subscriber) => store.cohortsFor(subscriber),
     requests: async (sessionId) => store.requests(sessionId),
     resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
     // #516's six, the daemon's own wiring again — so the query tools below are
@@ -326,7 +328,7 @@ describe("creating a session", () => {
     // turn's does (`self`) — for subscriptions, which are recorded on the
     // subscription and on neither session.
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
-      "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "cohorts", "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "unsubscribe",
     ]);
   });
 
@@ -1440,6 +1442,25 @@ describe("subscribing and answering", () => {
     expect(store.turns(host.id)).toHaveLength(1);
     const ongoing = await call(tools, "sessions_subscribe", { sessionId: target.id, once: false });
     expect(ongoing.json!.once).not.toBe(true);
+  });
+
+  test("sessionIds subscribes a cohort, which is listed and removed by its id", async () => {
+    const { store, projectId } = engine();
+    const host = store.createSession({ projectId, title: "coordinator" });
+    const one = store.createSession({ projectId, title: "one" });
+    const two = store.createSession({ projectId, title: "two" });
+    const tools = wall(store, { sessionId: host.id });
+    const made = await call(tools, "sessions_subscribe", { sessionIds: [one.id, two.id], timeoutMinutes: 60 });
+    expect(made.isError).toBe(false);
+    expect(made.json!.id as string).toStartWith("coh_");
+    expect(made.json!.note as string).toContain("ONE notification when all 2 are done");
+    const listed = await call(tools, "sessions_subscriptions");
+    expect(listed.json!.cohorts).toEqual([{ id: made.json!.id, expiresAt: made.json!.expiresAt, pending: [one.id, two.id], members: 2 }]);
+    const removed = await call(tools, "sessions_unsubscribe", { subscriptionId: made.json!.id });
+    expect(removed.json!.removed).toBe(true);
+    expect(store.cohortsFor(host.id)).toHaveLength(0);
+    // Neither id nor ids: refused in words.
+    expect((await call(tools, "sessions_subscribe", {})).isError).toBe(true);
   });
 
   test("a peer cannot restart a human-stopped session or add to its history", async () => {

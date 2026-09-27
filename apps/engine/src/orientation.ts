@@ -194,6 +194,22 @@ trace.
 - \`sessions_grep\` — where a phrase appears in one session's journal. A
   substring, not a regular expression.
 
+### Fanning out: one wake when they are ALL done
+
+Subscribing to each of N peers wakes you N times, once per result, and never
+says "all done". When you dispatch several peers and want their results
+together, send the tasks, then \`sessions_subscribe({ sessionIds: [...] })\`.
+
+- You get ONE notification when every member has sent its \`result\` or ended a
+  turn, with a line per member: its final state, the first line of what it said,
+  and the \`sessions_read\` call for the rest.
+- Their results are held for it, not delivered one by one. A \`blocker\` or a
+  parked request still reaches you at once, and a member that sent a blocker
+  stays pending until you answer it.
+- A member settled, archived or deleted before it reported counts as done.
+- It expires after \`timeoutMinutes\` (default 240) with whatever arrived, naming
+  who is still pending. \`sessions_unsubscribe\` takes its id.
+
 ### Being told on a clock instead of one at a time
 
 With several peers reporting, the interleaving is what becomes unreadable, not

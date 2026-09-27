@@ -21,7 +21,7 @@
  * already exists to prevent. `agentNotice` is now DERIVED from `body` here for
  * the same reason.
  */
-import type { NotificationDetail, NotificationEntry, WakeKind } from "@telar/engine-client";
+import type { CohortMember, NotificationDetail, NotificationEntry, WakeKind } from "@telar/engine-client";
 import { agentNotice, type AgentNoticeInput } from "./agent-notice";
 
 /**
@@ -285,4 +285,83 @@ export function notificationLabel(detail: NotificationDetail): string {
   const where = detail.sessionId ? ` · session ${detail.sessionId}` : "";
   const which = detail.wakeKind ? ` · ${detail.wakeKind}` : "";
   return `[notification: ${what}${which}${where}]`;
+}
+
+/** How a member ended, as a wake kind — what stamps the cohort's turn. */
+function wakeKindOf(member: CohortMember): WakeKind {
+  if (member.outcome === "failed") return "turn_failed";
+  if (member.outcome === "result" || member.outcome === "completed") return "turn_completed";
+  return "turn_stopped";
+}
+
+const OUTCOME_PHRASE: Record<NonNullable<CohortMember["outcome"]>, string> = {
+  result: "result",
+  completed: "completed",
+  failed: "FAILED",
+  stopped: "stopped",
+  settled: "settled before it reported",
+  archived: "archived before it reported",
+  deleted: "deleted before it reported",
+};
+
+/** A member's one line: who, how it ended, the first line it said, and the read. */
+function memberLine(member: CohortMember): string {
+  const who = `${member.sessionId}${member.title ? ` "${member.title}"` : ""}`;
+  const state = member.outcome ? OUTCOME_PHRASE[member.outcome] : `STILL PENDING${member.blocked ? " (its blocker is unanswered)" : ""}`;
+  const said = member.firstLine ? `: ${member.firstLine}` : "";
+  const read = member.fetch ? ` · sessions_read(sessionId: "${member.fetch.sessionId}", runId: "${member.fetch.runId}")` : "";
+  return `${who} — ${state}${said}${read}`;
+}
+
+/**
+ * A COHORT'S ONE NOTIFICATION — see `Cohort`.
+ *
+ * A LINE PER MEMBER, which is the difference from `mergeNotifications`: the
+ * reader asked for exactly these sessions, so each gets its final state and the
+ * first line of what it said, with the read that has the rest. The entries
+ * carry the same lines, so a merge that flattens this into a list keeps them.
+ *
+ * THE LAST MEMBER TO FINISH LEADS, as the newest happening leads a merge.
+ */
+export function cohortNotification(input: {
+  cohortId: string;
+  members: CohortMember[];
+  reason: "all" | "expired";
+  minutes: number;
+  /** A read for the lead when no member has one of its own. */
+  fallbackFetch: { sessionId: string; runId: string };
+}): NotificationDetail {
+  const finished = input.members.filter((member) => member.outcome);
+  const lead = [...finished].sort((a, b) => (a.at ?? 0) - (b.at ?? 0)).at(-1) ?? input.members[0]!;
+  const header = input.reason === "all"
+    ? `[cohort done · all ${input.members.length} sessions finished]`
+    : `[cohort expired · ${finished.length} of ${input.members.length} sessions finished in ${input.minutes} min]`;
+  const lines = input.members.map(memberLine);
+  const body = [
+    header,
+    "—",
+    ...lines.map((line, index) => `${index + 1}. ${line}`),
+    "—",
+    `One line per session: how it ended and the first line of what it said; the call on a line reads it whole.${
+      input.reason === "expired" ? " Nothing more will arrive from this cohort — subscribe again with the pending ones to keep waiting." : ""
+    } None of this was typed by a person.`,
+  ].join("\n");
+  const kind = wakeKindOf(lead);
+  return {
+    kind: "wake",
+    sessionId: lead.sessionId,
+    ...(lead.fetch?.sessionId === lead.sessionId ? { runId: lead.fetch.runId } : {}),
+    wakeKind: kind,
+    summary: summaryOf(header),
+    fetch: lead.fetch ?? input.fallbackFetch,
+    body,
+    entries: input.members.map((member, index) => ({
+      kind: member.outcome === "result" ? "peer_message" : "wake",
+      sessionId: member.sessionId,
+      ...(member.fetch ? { runId: member.fetch.runId } : {}),
+      ...(member.outcome === "result" ? { intent: "result" as const } : member.outcome ? { wakeKind: wakeKindOf(member) } : {}),
+      summary: summaryOf(lines[index]!),
+    })),
+    cohortId: input.cohortId,
+  };
 }
