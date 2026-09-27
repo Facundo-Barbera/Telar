@@ -4286,7 +4286,10 @@ export function SessionCockpit({
           // A fresh canvas is READY: there is nothing to wait for, because the
           // message you type is the thing that creates the session.
           ready={fresh || Boolean(session)}
-          compact={readingBack}
+          // Not while a conversation is opening: its placement is still moving
+          // the viewport, and a composer changing height under it would move it
+          // again.
+          compact={readingBack && transcriptLanded}
           attachments={attachments}
           onAttach={setAttachments}
           fresh={fresh}
