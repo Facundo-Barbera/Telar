@@ -1,6 +1,6 @@
 # Plugins: the contract
 
-Status: P1a landed (tools and prompt text). Everything marked *planned* is the target shape, not code yet.
+Status: P1a landed (tools and prompt text); P1b scoped routes landed. Everything marked *planned* is the target shape, not code yet.
 
 A plugin is a feature that the core does not name. Data Science and LaTeX are **bundled plugins**: they are compiled into the engine, but they reach the core only through the contract below. A future **external plugin** will use the same manifest and contribution points, and will differ only in where its code runs.
 
@@ -34,19 +34,33 @@ Registration is generic in three places, and none of them names a plugin:
 
 **Enabled set.** The claim carries `plugins: string[]`, which lists the ids this turn may use. The engine resolves it at claim time, applying the machine ceiling and the project opt-in (plus the resolved-environment gate for the two mirrored plugins). The worker builds a capability only for those ids. A missing id means no tools and no briefing. The Claude fingerprint and the OpenCode server identity both carry the sorted ids, so toggling a plugin cold-starts the provider.
 
-### 2. Scoped routes (P1b, *planned*)
+### 2. Scoped routes (P1b, routes done)
 
-Today `routes` is a flat `verb → (input, capability)` table served at session scope, with legacy aliases `/ds/*` and `/latex/*`. P1b turns it into a table keyed by scope:
+There are three tables, one per scope:
 
-```ts
-routes?: {
-  session?: Record<string, Route>;   // capability = resolve(sessionId); gate = project opt-in
-  project?: Record<string, Route>;   // e.g. environment lists, main-file pickers
-  machine?: Record<string, Route>;   // e.g. /v2/latex/managed, toolchain probes
-}
-```
+| Scope | Field | Served at | Gate |
+| --- | --- | --- | --- |
+| session | `routes` (`verb → (input, capability)`, POST only) | `/v2/sessions/:id/plugins/<plugin>/<verb>` | `resolve(sessionId)`: Mac and project |
+| project | `projectRoutes` | `/v2/projects/:id/plugins/<plugin>/<verb>` | Mac and project, unless the route sets `beforeEnable` |
+| machine | `machineRoutes` | `/v2/plugins/<plugin>/<verb>` | Mac |
 
-The daemon serves these at `/v2/{sessions/:id|projects/:id|machine}/plugins/:plugin/:verb`. The daemon parses the body and writes the response. A thrown error becomes `plugin_error` carrying the plugin id. The hand-written `/v2/data-science/*` and `/v2/latex/*` arms become aliases and are then removed. The kernel host and the installers move into the plugin's `init`.
+- Project and machine entries are keyed by method and path: `"GET environments"`, `"DELETE jobs/:id"`. A `:name` segment captures one path segment.
+- Each entry is `{ status?: 200 | 202; beforeEnable?; handle({ input, query, params }, scope) }` (see `plugins/routes.ts`). The daemon matches the route, gates it, parses the body and writes the response.
+- Error handling:
+  - `PluginInputError` becomes a 400 `invalid_request`.
+  - Any other unexpected throw becomes `plugin_error`, carrying the plugin id.
+  - Refusals because a plugin is off use the session door's words: `<id> is turned off for this Mac`, `<id> is not enabled for this project`.
+- `beforeEnable` is for the reads a person uses to choose settings before turning the plugin on: DS environments, create environment and probe; LaTeX distributions. The Mac switch still refuses these.
+- The old paths are now aliases into the same tables, ungated and not relabelled, so their HTTP behaviour is unchanged:
+  - `/v2/projects/:id/{data-science,latex}/*`
+  - `/v2/{data-science,latex}/*`
+  - session `/ds/*` and `/latex/*`
+
+  Callers still on the aliases, to move in P2:
+  - `packages/engine-client` methods `dataScience*`, `latex*`, `managedTectonic` and `installManagedTectonic`, and through them the web settings panes (`data-science-section`, `latex-section`, `*-machine-settings`, `packages-panel`, `job-log`) and the web `app/api/{data-science,latex,projects/[id]/…}` proxies;
+  - iOS `EngineAPI.latex(...)`, which uses the session `/latex/*` alias.
+- `/v2/sessions/:id/data/table` stays core: it serves CSV with Data Science off, and only Parquet borrows the kernel.
+- Still to do in P1b: the kernel host and the installers move into the plugin's `init`.
 
 ### 3. Panel surfaces and file viewers (P2, *planned*)
 

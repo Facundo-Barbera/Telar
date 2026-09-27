@@ -19,6 +19,7 @@
 import type { PluginMeta } from "@telar/engine-client";
 import type { z } from "zod";
 import type { PluginWorkLog } from "./work-log";
+import type { PluginMachineRoutes, PluginProjectRoutes } from "./routes";
 
 /**
  * WHY EVERY LIFECYCLE HOOK IS BOUNDED. A plugin's `init` runs inside daemon
@@ -167,6 +168,14 @@ export type PluginEngineModule<Settings = unknown> = {
    * agent door cannot drift apart.
    */
   routes?: Record<string, (input: Record<string, unknown>, capability: unknown) => unknown | Promise<unknown>>;
+  /**
+   * THE SAME IDEA ONE SCOPE UP: verbs about a project (its environments, its
+   * packages) and about this Mac (toolchains, installers, jobs), which have no
+   * session to resolve. Keyed by method and path — see `routes.ts`. Gated by
+   * the host on the Mac-wide switch, and at project scope on the project's too.
+   */
+  projectRoutes?: PluginProjectRoutes;
+  machineRoutes?: PluginMachineRoutes;
   /**
    * Resolve this plugin's capability for a session, or throw if the project has
    * not opted in. The host never invents this — a plugin that has no HTTP door

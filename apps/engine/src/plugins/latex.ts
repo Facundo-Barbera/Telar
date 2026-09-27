@@ -10,7 +10,9 @@
  * three providers through the shared `telar` socket, under the same key.
  */
 import { z } from "zod";
-import { LatexMachineSettings, LatexMachineSettingsWrite, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
+import { LatexBootstrap, LatexMachineSettings, LatexMachineSettingsWrite, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
+import type { EngineStore } from "../state";
+import { jobCursor, PluginInputError, type PluginMachineRoutes, type PluginProjectRoutes } from "./routes";
 import type { LatexCapability } from "../latex/capability";
 import { clientLatexCapability } from "../latex/client-capability";
 import { latexTools } from "../latex/latex-tools";
@@ -118,9 +120,74 @@ export type LatexPluginDeps = {
     list(): { status: string }[];
     disposeAll(): void;
   };
+  /** The settings pages' verbs, which are still the store's. */
+  settings: Pick<
+    EngineStore,
+    | "latexDistributions"
+    | "latexPackages"
+    | "latexInstall"
+    | "latexBootstrap"
+    | "latexToolchain"
+    | "managedTectonic"
+    | "installManagedTectonic"
+    | "latexJob"
+    | "latexCancelJob"
+  >;
 };
 
+/**
+ * THE PROJECT AND MACHINE DOORS — same verbs, bodies, statuses and refusals as
+ * the hand-written routes they replace, which now forward here.
+ */
+function latexScopedRoutes(settings: LatexPluginDeps["settings"]): { project: PluginProjectRoutes; machine: PluginMachineRoutes } {
+  return {
+    project: {
+      // Choosing a distribution comes before turning LaTeX on.
+      "GET distributions": { beforeEnable: true, handle: (_request, { projectId }) => settings.latexDistributions(projectId) },
+      "GET packages": { handle: (_request, { projectId }) => settings.latexPackages(projectId) },
+      "POST packages": {
+        status: 202,
+        handle: ({ input }, { projectId }) => {
+          const list = (key: string) => (Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined);
+          return settings.latexInstall(projectId, {
+            ...(list("add") ? { add: list("add")! } : {}),
+            ...(list("remove") ? { remove: list("remove")! } : {}),
+          });
+        },
+      },
+    },
+    machine: {
+      "POST bootstrap": {
+        status: 202,
+        handle: ({ input }) => {
+          const parsed = LatexBootstrap.safeParse(input);
+          if (!parsed.success) throw new PluginInputError("not a valid bootstrap request");
+          return settings.latexBootstrap(parsed.data);
+        },
+      },
+      "GET toolchain": { handle: async ({ query }) => ({ toolchain: await settings.latexToolchain(query.get("fresh") === "1") }) },
+      /**
+       * TELAR'S OWN TECTONIC. GET is cheap enough to poll while an install
+       * runs; POST starts one and is IDEMPOTENT. Not a job: it is an
+       * in-process, digest-verified fetch with no subprocess to stream.
+       */
+      "GET managed": { handle: () => ({ managed: settings.managedTectonic() }) },
+      "POST managed": { status: 202, handle: async () => ({ managed: await settings.installManagedTectonic() }) },
+      "GET jobs/:id": {
+        handle: ({ query, params }) => ({ job: settings.latexJob(params.id!, jobCursor(query)) }),
+      },
+      "DELETE jobs/:id": {
+        handle: ({ params }) => {
+          settings.latexCancelJob(params.id!);
+          return {};
+        },
+      },
+    },
+  };
+}
+
 export function latexPlugin(deps: LatexPluginDeps): PluginEngineModule<LatexSettings> {
+  const scoped = latexScopedRoutes(deps.settings);
   return {
     meta: latexMeta,
     settingsSchema: LatexSettings,
@@ -207,6 +274,9 @@ export function latexPlugin(deps: LatexPluginDeps): PluginEngineModule<LatexSett
         }),
       clean: (input, capability) => (capability as LatexCapability).clean({ ...(input.pdf === true ? { pdf: true } : {}) }),
     },
+
+    projectRoutes: scoped.project,
+    machineRoutes: scoped.machine,
 
     resolve: (sessionId) => deps.resolve(sessionId),
   };
