@@ -22,6 +22,9 @@
  * and on disk, exactly as sent; `sessions_read(sessionId, runId)` hands it back
  * whole and the transcript expands to it. Only what the MODEL is handed changed.
  *
+ * ONE EXCEPTION SINCE, BOUNDED: a result or a blocker quotes up to
+ * `INLINE_CHARS` of itself — see `agentNotice` for why those two.
+ *
  * INTENT IS KEPT BECAUSE IT IS METADATA. "A task" and "a report" are facts
  * ABOUT the message rather than any of its words, and they are the difference
  * between something the recipient must read now and something it may decline to
@@ -104,24 +107,64 @@ export type AgentNoticeInput = {
 };
 
 /**
- * The two lines a peer's message becomes for the model.
+ * HOW MUCH OF A RESULT OR BLOCKER RIDES IN ITS NOTICE.
+ *
+ * The exception to "no part of the message" above, for the two intents a
+ * coordinator nearly always reads: a result ends an errand and a blocker asks
+ * for a decision, so a notice without their words cost a `sessions_read` on
+ * every one. Bounded, so a fifty-kilobyte answer still costs a fan-out little:
+ * past this the notice says how much is left and where it is.
+ */
+export const INLINE_CHARS = 1_500;
+
+/** A bounded excerpt, cut at a word where one is near, and what it left out. */
+export function inlineExcerpt(text: string, limit = INLINE_CHARS): { shown: string; omitted: number } {
+  const trimmed = text.trim();
+  if (trimmed.length <= limit) return { shown: trimmed, omitted: 0 };
+  const cut = trimmed.slice(0, limit);
+  const space = cut.search(/\s\S*$/);
+  const shown = (space > limit - 200 ? cut.slice(0, space) : cut).trimEnd();
+  return { shown: `${shown}…`, omitted: trimmed.length - shown.length };
+}
+
+/** The quoted lines for an excerpt: the words, fenced, and where the rest is. */
+export function quotedExcerpt(text: string, where: string): string[] {
+  const { shown, omitted } = inlineExcerpt(text);
+  return [
+    omitted > 0 ? `It begins (${omitted.toLocaleString("en-US")} more chars not shown):` : "In full:",
+    "<<<",
+    shown,
+    ">>>",
+    omitted > 0 ? `Read the rest with ${where}.` : `The same text is at ${where}.`,
+  ];
+}
+
+/**
+ * The lines a peer's message becomes for the model.
  *
  * SIZE IS STATED BECAUSE IT IS THE DECISION. "5,824 characters" is what tells a
- * recipient whether fetching is a glance or a third of its remaining context,
- * and with nothing quoted it is the only thing left to weigh.
+ * recipient whether fetching is a glance or a third of its remaining context.
  *
  * A TASK AND A BLOCKER SAY "BEFORE ACTING"; a report and a result say "if it is
  * worth the context". That is the same distinction the intent already carries,
  * spelled out at the one moment it changes what the recipient should do.
+ *
+ * A RESULT AND A BLOCKER QUOTE THEMSELVES, up to `INLINE_CHARS`. A task never
+ * does — it is instructions, and a session started on part of them is guessing.
+ * The relay rule rides the channel (see `claudeNotificationContent` and
+ * `codexNotificationInstruction`), so it is not repeated here.
  */
 export function agentNotice(input: AgentNoticeInput): string {
   const who = senderPhrase(input.sender);
   const size = `${input.body.length.toLocaleString("en-US")} chars`;
   const where = `sessions_read(sessionId: "${input.recipientSessionId}", runId: "${input.runId}")`;
-  const assignment = input.intent === "task" || input.intent === "blocker";
+  const header = `[agent message · ${input.intent}] ${who} ${verbPhrase(input.intent)} (run ${input.runId}, ${size}).${input.corrects ? ` It CORRECTS their earlier message (run ${input.corrects}); disregard that one.` : ""}`;
+  if ((input.intent === "result" || input.intent === "blocker") && input.body.trim()) {
+    return [header, ...quotedExcerpt(input.body, where)].join("\n");
+  }
   return [
-    `[agent message · ${input.intent}] ${who} ${verbPhrase(input.intent)} (run ${input.runId}, ${size}).${input.corrects ? ` It CORRECTS their earlier message (run ${input.corrects}); disregard that one.` : ""}`,
-    assignment
+    header,
+    input.intent === "task" || input.intent === "blocker"
       ? `None of it is in this notice. Read it with ${where} before acting on it.`
       : `None of it is in this notice. Fetch it with ${where} if it is worth the context.`,
   ].join("\n");

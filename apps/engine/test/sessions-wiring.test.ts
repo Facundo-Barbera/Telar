@@ -513,9 +513,9 @@ test("a turn's capability knows who it is, and a subscription made mid-turn wake
   expect(wake!.notification!.kind).toBe("wake");
   expect(wake!.notification!.body).toContain("[wake: completed]");
   expect(wake!.input).toStartWith("[notification: wake");
-  // A PING OVER THE WIRE TOO: the answer is not in the notice, the run-scoped
-  // read that fetches it is.
-  expect(wake!.notification!.body).not.toContain("all done here");
+  // BOUNDED OVER THE WIRE TOO: a short answer rides the notice whole, and the
+  // run-scoped read that fetches it is named.
+  expect(wake!.notification!.body).toContain("all done here");
   expect(wake!.notification!.body).toContain(`runId: "run_made"`);
   // A REAL TURN: the worker on this daemon may already have claimed and run
   // it by the time we look — which is the point. Queued or done, never lost.
