@@ -66,7 +66,7 @@ async function mount(instance: ProviderInstance, inheritance?: InheritanceNotice
         | undefined,
     radio: (label: string) =>
       [...host.querySelectorAll("[role=radio]")].find((button) => button.textContent?.trim() === label) as HTMLButtonElement | undefined,
-    field: () => host.querySelector("[aria-label='Compact after how many tokens']") as HTMLInputElement | null,
+    field: () => host.querySelector("[aria-label='Compact at what percentage of the context window']") as HTMLInputElement | null,
     unmount: () => {
       act(() => root.unmount());
       host.remove();
@@ -103,23 +103,28 @@ describe("the compaction control", () => {
     view.unmount();
   });
 
-  test("a variable typed by hand is what the control reads back", async () => {
-    // Nothing here was written by the control. 200 000 declared, minus the
-    // CLI's own 20 000 output reserve and 13 000 summary buffer.
-    const view = await mount(instanceWith("claude", [{ name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "200000", sensitive: false }]));
-    expect(view.radio("Compact after…")!.getAttribute("aria-checked")).toBe("true");
-    expect(view.field()!.value).toBe("167,000");
+  test("a stored percentage is what the control reads back", async () => {
+    const view = await mount(instanceWith("claude", [{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "75", sensitive: false }]));
+    expect(view.radio("Compact at…")!.getAttribute("aria-checked")).toBe("true");
+    expect(view.field()!.value).toBe("75");
+    expect(view.host.textContent).toContain("of its model's context window");
     view.unmount();
   });
 
-  test("a percentage with no window says so rather than showing a number", async () => {
-    const view = await mount(instanceWith("claude", [{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "40", sensitive: false }]));
+  test("a window row set by hand claims no state", async () => {
+    const view = await mount(instanceWith("claude", [{ name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "200000", sensitive: false }]));
     expect(view.field()).toBeNull();
-    expect(view.host.textContent).toContain("no token count to show");
-    // No state is claimed for a login whose environment does not name one.
-    for (const label of ["Default", "Compact after…", "Never compact"]) {
+    expect(view.host.textContent).toContain("Set by hand");
+    for (const label of ["Default", "Compact at…", "Never compact"]) {
       expect(view.radio(label)!.getAttribute("aria-checked")).toBe("false");
     }
+    view.unmount();
+  });
+
+  test("Compact at… starts at 80%", async () => {
+    const view = await mount(instanceWith("claude"));
+    await press(view.radio("Compact at…")!);
+    expect(view.patches.at(-1)!.env).toEqual([{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "80", sensitive: false }]);
     view.unmount();
   });
 
@@ -134,8 +139,7 @@ describe("the compaction control", () => {
 
     const configured = await mount(
       instanceWith("claude", [
-        { name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "183000", sensitive: false },
-        { name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "92.02454", sensitive: false },
+        { name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "80", sensitive: false },
       ]),
     );
     await press(configured.radio("Default")!);
@@ -145,21 +149,6 @@ describe("the compaction control", () => {
     configured.unmount();
   });
 
-  test("the field shows the stored number with separators", async () => {
-    const view = await mount(instanceWith("claude", [{ name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "183000", sensitive: false }]));
-    expect(view.field()!.value).toBe("150,000");
-    view.unmount();
-  });
-
-  test("the small print states the clamp, and claims no percentage of a model window", async () => {
-    const view = await mount(instanceWith("claude", [{ name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "183000", sensitive: false }]));
-    // 150 000 + the CLI's 33 000 of reserved headroom.
-    expect(view.host.textContent).toContain("any model with at least 183,000 tokens of context");
-    expect(view.host.textContent).toContain("compacts earlier — never later");
-    // The conversion consults no model, so the card must not imply one.
-    expect(view.host.textContent).not.toContain("% of this model");
-    view.unmount();
-  });
 });
 
 /**
@@ -228,27 +217,19 @@ describe("the inheritance notice", () => {
  * NOT covered either way is the wiring from the field to this function — one
  * call site, and the kind of thing a driven test should now take.
  */
-describe("what a typed threshold does", () => {
-  const configured: ProviderInstanceEnvVar[] = [{ name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "183000", sensitive: false }];
+describe("what a typed percentage does", () => {
+  const configured: ProviderInstanceEnvVar[] = [{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "80", sensitive: false }];
 
-  test("a number it can honour becomes the pair, separators and all", () => {
-    expect(compactionEdit(configured, "120,000")).toEqual({
-      env: [
-        { name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "153000", sensitive: false },
-        { name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "90.225564", sensitive: false },
-      ],
+  test("a whole number from 1 to 100 becomes the percentage row, % sign and all", () => {
+    expect(compactionEdit(configured, "70 %")).toEqual({
+      env: [{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "70", sensitive: false }],
     });
+    expect(compactionEdit(configured, "100")).toHaveProperty("env");
   });
 
-  test("a number past what the CLI can honour is refused rather than clamped", () => {
-    // 967 000 is the last one the CLI's own 1 000 000 window can hold with its
-    // reserves. Past it the CLI would cap the window and compact EARLIER than
-    // the number on screen, which is the one thing this control must not do.
-    expect(compactionEdit(configured, "967000")).toHaveProperty("env");
-    for (const typed of ["967001", "2000000", "0", "", "lots"]) {
-      const edit = compactionEdit(configured, typed);
-      expect(edit).not.toHaveProperty("env");
-      expect((edit as { refused: string }).refused).toContain("Between 1 and 967,000 tokens");
+  test("anything else is refused rather than clamped", () => {
+    for (const typed of ["0", "101", "", "lots", "75.5"]) {
+      expect(compactionEdit(configured, typed)).toEqual({ refused: "A whole number from 1 to 100." });
     }
   });
 });
