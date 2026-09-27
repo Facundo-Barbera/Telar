@@ -62,6 +62,7 @@ import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snap
 import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";
 import { Composer, MAX_ATTACHMENTS } from "./composer";
+import { CohortFold, foldCohortTurns } from "./session/cohort-fold";
 // `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
@@ -3989,6 +3990,13 @@ export function SessionCockpit({
     () => (session?.id === sessionId ? newestResultTurn(turns) : undefined),
     [session, sessionId, turns],
   );
+  // A cohort's close stays a row and the coordinator's reactions before it
+  // fold. Kept as rows: a turn with a request, open or decided, and the newest
+  // answer, whose read-receipt marker a closed fold would never show.
+  const segments = foldCohortTurns(shown, {
+    ...(active ? { activeRunId: active.runId } : {}),
+    keep: new Set([...requests.map((request) => hostOf.get(request.runId) ?? request.runId), ...(newestResult ? [newestResult.runId] : [])]),
+  });
   /**
    * The engine's answer to a receipt, folded back in.
    *
@@ -4220,7 +4228,8 @@ export function SessionCockpit({
                 at the activity lane's own `gap-0.5`. A group of one is every
                 other turn in the conversation, rendered exactly as before.
                 See `groupNotificationTurns`. */}
-            {groupNotificationTurns(shown, active?.runId).map((group) => {
+            {segments.map((segment) => {
+              const rows = groupNotificationTurns(segment.turns, active?.runId).map((group) => {
               const turns = group.map((turn) => (
               /* THE END OF THIS ANSWER, when it is the newest one — the
                  position a read receipt is about. Inside the list rather than
@@ -4257,6 +4266,14 @@ export function SessionCockpit({
                 <div key={group[0]!.runId} className="flex flex-col gap-0.5" data-notification-strip={group.length}>
                   {turns}
                 </div>
+              );
+              });
+              return segment.kind === "fold" ? (
+                <CohortFold key={segment.turns[0]!.runId} turns={segment.turns} members={segment.members}>
+                  {rows}
+                </CohortFold>
+              ) : (
+                <Fragment key={segment.turns[0]!.runId}>{rows}</Fragment>
               );
             })}
             </TranscriptWorkspace>
