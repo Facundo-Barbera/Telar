@@ -303,8 +303,10 @@ export class RelayDevice {
       const response = await fetch(`https://${device.sandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com'}/3/device/${token}`, {
         method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
         // Background is always priority 5, as Apple requires, and carries no
-        // collapse id: nothing is displayed for it to collapse.
-        headers: { authorization: `bearer ${jwt}`, 'apns-topic': topic, 'apns-push-type': body.kind, 'apns-priority': alert || start || body.payload.aps.event === 'end' ? '10' : '5', 'apns-expiration': String(Math.floor(now / 1000) + 3600), ...(background ? {} : { 'apns-collapse-id': body.collapseId }) },
+        // collapse id: nothing is displayed for it to collapse. A Live Activity
+        // update the Mac marks `urgent` (a card turning to "Needs you") goes at
+        // 10 too; iOS budgets priority 10, so routine updates stay at 5.
+        headers: { authorization: `bearer ${jwt}`, 'apns-topic': topic, 'apns-push-type': body.kind, 'apns-priority': alert || start || body.payload.aps.event === 'end' || (activity && body.urgent === true) ? '10' : '5', 'apns-expiration': String(Math.floor(now / 1000) + 3600), ...(background ? {} : { 'apns-collapse-id': body.collapseId }) },
         body: JSON.stringify(body.payload),
       });
       let reason;
