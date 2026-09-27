@@ -5,7 +5,7 @@ import { deliverRecord } from "./worker";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-const record = (): PushRecord => ({ hostId:"12345678-1234-1234-1234-123456789abc",hostName:"Studio Mac",token:"a".repeat(64),pushToStartToken:"b".repeat(64),topic:"com.telar.mobile",sandbox:false,enabled:false,completions:false,previews:false,liveActivities:true,mutedSessions:[],activities:[],deviceId:"phone",revision:"r1",updatedAt:0,seen:{},activitySent:{} });
+const record = (): PushRecord => ({ hostId:"12345678-1234-1234-1234-123456789abc",hostName:"Studio Mac",token:"a".repeat(64),pushToStartToken:"b".repeat(64),topic:"io.github.novarix.telar",sandbox:false,enabled:false,completions:false,previews:false,liveActivities:true,mutedSessions:[],activities:[],deviceId:"phone",revision:"r1",updatedAt:0,seen:{},activitySent:{} });
 const work = {id:"one",title:"Private task",activity:"working",activityAt:1};
 test("automatic work starts once without a follow or notification opt-in; idle permits the next run",async()=>{
   const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return {status:200};};

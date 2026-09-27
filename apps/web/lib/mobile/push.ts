@@ -148,6 +148,8 @@ export function isDeadToken(result: DeliveryResult): boolean {
   return result.status === 410 || (result.status === 400 && result.reason !== undefined && DEAD_TOKEN_REASONS.has(result.reason));
 }
 export class PushInputError extends Error {}
+/** The phone app's bundle ids, which are its APNs topics. `com.telar.mobile` is the app before #1042. */
+const MOBILE_TOPICS = new Set(["io.github.novarix.telar", "io.github.novarix.telar.dev", "com.telar.mobile", "com.telar.mobile.dev"]);
 const hex = /^[a-fA-F0-9]{32,512}$/;
 const uuid = /^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$/;
 
@@ -155,7 +157,7 @@ export function parseRegistration(input: unknown): MobileRegistration {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new PushInputError("Invalid registration");
   const x = input as Record<string, unknown>;
   if (typeof x.hostId !== "string" || !uuid.test(x.hostId) || typeof x.token !== "string" || !hex.test(x.token)
-      || !["com.telar.mobile", "com.telar.mobile.dev"].includes(String(x.topic))
+      || !MOBILE_TOPICS.has(String(x.topic))
       || ["sandbox", "enabled", "completions", "previews"].some(k => typeof x[k] !== "boolean")
       || !Array.isArray(x.mutedSessions) || x.mutedSessions.length > 1000 || !x.mutedSessions.every(v => typeof v === "string" && v.length > 0 && v.length <= 256)
       || !Array.isArray(x.activities) || x.activities.length > 8) throw new PushInputError("Invalid registration");

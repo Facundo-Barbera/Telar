@@ -7,7 +7,7 @@ import { activityDelivery, legacyPushFile, notification, parseRegistration, push
 import { deliverRecord } from "./worker";
 
 const registration: MobileRegistration = {
-  hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: true,
+  hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: true,
   enabled: true, completions: true, previews: false, mutedSessions: [], activities: [],
 };
 const working: SessionSignal = { id: "session/a?b", title: "Private repository task", activity: "working", activityAt: 1000 };
@@ -19,6 +19,11 @@ describe("mobile push delivery", () => {
     expect(parseRegistration(registration)).toEqual(registration);
     for (const patch of [{ topic: "com.someone.else" }, { token: "not-a-token" }, { hostId: "wrong" }, { enabled: "yes" }, { activities: Array(9).fill({}) }]) {
       expect(() => parseRegistration({ ...registration, ...patch })).toThrow();
+    }
+  });
+  test("still accepts the pre-#1042 app's topics, so phones paired with it keep working", () => {
+    for (const topic of ["com.telar.mobile", "com.telar.mobile.dev", "io.github.novarix.telar.dev"]) {
+      expect(parseRegistration({ ...registration, topic }).topic).toBe(topic);
     }
   });
   test("baseline and duplicate polls do not alert; attention transitions do", () => {
@@ -63,7 +68,7 @@ describe("mobile push delivery", () => {
     const follow = { sessionId: working.id, token: "b".repeat(64), startedAt: 1800000000 };
     const r = { ...record(), activities: [follow] };
     const payload = activityDelivery(r, follow, working, 1800000060);
-    expect(payload.topic).toBe("com.telar.mobile.push-type.liveactivity");
+    expect(payload.topic).toBe("io.github.novarix.telar.push-type.liveactivity");
     expect(payload.payload.aps.event).toBe("update");
     expect(payload.payload.aps["content-state"]).toMatchObject({ title: "Telar session", updatedAt: 821692860, ended: false });
     expect(activityDelivery(r, follow, undefined, 1800000060).payload.aps.event).toBe("end");

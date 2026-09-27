@@ -20,7 +20,7 @@ function setup() {
   folder = fs.mkdtempSync(path.join(os.tmpdir(), "telar-mobile-route-"));
   process.env.TELAR_HOME = folder; process.env.TELAR_COCKPIT = "1"; delete process.env.TELAR_APNS_KEY_ID;
 }
-const input = { hostId: "11111111-1111-1111-1111-111111111111", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: true, enabled: true, completions: false, previews: false, mutedSessions: [], activities: [] };
+const input = { hostId: "11111111-1111-1111-1111-111111111111", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: true, enabled: true, completions: false, previews: false, mutedSessions: [], activities: [] };
 function request(token?: string, body: unknown = input) {
   return new Request("http://localhost/api/mobile/push", { method: "PUT", headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "content-type": "application/json" }, body: JSON.stringify(body) });
 }

@@ -25,7 +25,7 @@ const attributesBody = swift.slice(swift.indexOf("}", swift.indexOf("struct Cont
 const contentState = fields(stateBody), attributes = fields(attributesBody);
 
 const record: MobileRegistration = {
-  hostId: "12345678-1234-1234-1234-123456789abc", hostName: "Studio", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: false,
+  hostId: "12345678-1234-1234-1234-123456789abc", hostName: "Studio", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
   enabled: true, completions: true, previews: false, mutedSessions: [], liveActivities: true, pushToStartToken: "b".repeat(64),
   activities: [{ sessionId: "session_1", token: "c".repeat(64), startedAt: 1_800_000_000 }],
 };
@@ -48,10 +48,10 @@ describe("a followed session's card", () => {
   test("is a liveactivity push to the bundle's liveactivity topic, named by its session", () => {
     const delivery = activityDelivery(record, record.activities[0], working, now);
     expect(delivery.kind).toBe("liveactivity");
-    expect(delivery.topic).toBe("com.telar.mobile.push-type.liveactivity");
+    expect(delivery.topic).toBe("io.github.novarix.telar.push-type.liveactivity");
     expect(delivery.token).toBe("c".repeat(64));
     expect(delivery.activityId).toBe("session_1");
-    expect(activityDelivery({ ...record, topic: "com.telar.mobile.dev", sandbox: true }, record.activities[0], working, now).topic).toBe("com.telar.mobile.dev.push-type.liveactivity");
+    expect(activityDelivery({ ...record, topic: "io.github.novarix.telar.dev", sandbox: true }, record.activities[0], working, now).topic).toBe("io.github.novarix.telar.dev.push-type.liveactivity");
   });
 
   test("its content-state decodes as SessionActivityAttributes.ContentState, dates from 2001", () => {
@@ -79,7 +79,7 @@ describe("the automatic card", () => {
   test("a start carries everything push-to-start needs, decodable as the Swift type", () => {
     const delivery = automaticActivityDelivery(record, [working], "b".repeat(64), now, now, true);
     const aps = delivery.payload.aps;
-    expect(delivery.topic).toBe("com.telar.mobile.push-type.liveactivity");
+    expect(delivery.topic).toBe("io.github.novarix.telar.push-type.liveactivity");
     expect(aps.event).toBe("start");
     expect(aps["attributes-type"]).toBe("SessionActivityAttributes");
     const attrs = aps.attributes as Record<string, unknown>;

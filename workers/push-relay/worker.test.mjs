@@ -56,7 +56,7 @@ async function pki() {
   return {root:Buffer.from(rootDer).toString('base64'),mid,midDer:await cert({subject:'Test CA',issuer:'Test Root',publicKey:mid.publicKey,signer:root.privateKey})};
 }
 /** A phone: an attested key for `challenge`, and a signer for later assertions. */
-async function phone(p,{challenge,bundle='com.telar.mobile',environment='production'}) {
+async function phone(p,{challenge,bundle='io.github.novarix.telar',environment='production'}) {
   const key=await subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
   const keyHash=await sha(new Uint8Array(await subtle.exportKey('raw',key.publicKey)));
   const rp=await sha(`${TEAM}.${bundle}`);
@@ -83,7 +83,7 @@ function relayEnv(extra={}) {
 const call=(env,path,init={})=>worker.fetch(new Request('https://relay'+path,init),env);
 const challengeFor=async(env,ip)=>(await (await call(env,'/v2/challenge',ip?{headers:{'cf-connecting-ip':ip}}:{})).json()).challenge;
 const tokensOf={token:'a'.repeat(64),pushToStartToken:'b'.repeat(64),activities:[{id:'session_1',token:'c'.repeat(64)}]};
-async function enroll({bundle='com.telar.mobile',sandbox=false,environment,extra={}}={}) {
+async function enroll({bundle='io.github.novarix.telar',sandbox=false,environment,extra={}}={}) {
   const p=await pki(), env=relayEnv({APPATTEST_ROOT:p.root,...extra});
   const challenge=await challengeFor(env);
   const ph=await phone(p,{challenge,bundle,environment});
@@ -131,9 +131,9 @@ test('v2: an attested phone hands a Mac a key, and the Mac sends without ever ho
     assert.equal((await macSend(enrolled,key,{...alert,kind:'liveactivity',activity:'session_2',payload:{aps:{event:'update'}}})).status,409);
     // The destination and topic are the relay's choice, from what the phone registered.
     assert.deepEqual(calls.map(c=>[c.url,c.headers['apns-topic'],c.headers['apns-priority']]),[
-      [`https://api.push.apple.com/3/device/${'a'.repeat(64)}`,'com.telar.mobile','10'],
-      [`https://api.push.apple.com/3/device/${'c'.repeat(64)}`,'com.telar.mobile.push-type.liveactivity','5'],
-      [`https://api.push.apple.com/3/device/${'b'.repeat(64)}`,'com.telar.mobile.push-type.liveactivity','10'],
+      [`https://api.push.apple.com/3/device/${'a'.repeat(64)}`,'io.github.novarix.telar','10'],
+      [`https://api.push.apple.com/3/device/${'c'.repeat(64)}`,'io.github.novarix.telar.push-type.liveactivity','5'],
+      [`https://api.push.apple.com/3/device/${'b'.repeat(64)}`,'io.github.novarix.telar.push-type.liveactivity','10'],
     ]);
   });
 });
@@ -154,7 +154,7 @@ test('v2: a background push is silent, priority 5, to the phone\'s own bundle, a
   await withApple(()=>new Response(null,{status:200}),async calls=>{
     assert.deepEqual(await (await macSend(enrolled,key,background)).json(),{status:200});
     assert.deepEqual([calls[0].url,calls[0].headers['apns-topic'],calls[0].headers['apns-push-type'],calls[0].headers['apns-priority'],calls[0].headers['apns-collapse-id']],
-      [`https://api.push.apple.com/3/device/${'a'.repeat(64)}`,'com.telar.mobile','background','5',undefined]);
+      [`https://api.push.apple.com/3/device/${'a'.repeat(64)}`,'io.github.novarix.telar','background','5',undefined]);
     // Anything a person would see is refused: this kind is never an alert in disguise.
     for(const aps of [{'content-available':1,alert:'hi'},{'content-available':1,sound:'default'},{alert:'hi'},{'content-available':0}])
       assert.equal((await macSend(enrolled,key,{...background,payload:{aps}})).status,400);
@@ -184,17 +184,25 @@ test('v2: a dead token found by a background push is dropped like an alert\'s',a
   });
 });
 test('v2: a Debug build registers under the dev bundle and is sent through the sandbox host',async()=>{
-  const enrolled=await enroll({bundle:'com.telar.mobile.dev',sandbox:true,environment:'development'});
+  const enrolled=await enroll({bundle:'io.github.novarix.telar.dev',sandbox:true,environment:'development'});
   const key=await pairKey(enrolled);
   await withApple(()=>new Response(null,{status:200}),async calls=>{
     assert.equal((await macSend(enrolled,key,alert)).status,200);
     assert.equal(calls[0].url,`https://api.sandbox.push.apple.com/3/device/${'a'.repeat(64)}`);
-    assert.equal(calls[0].headers['apns-topic'],'com.telar.mobile.dev');
+    assert.equal(calls[0].headers['apns-topic'],'io.github.novarix.telar.dev');
+  });
+});
+test('v2: a phone on the pre-#1042 app still registers and is sent to its own topics',async()=>{
+  const enrolled=await enroll({bundle:'com.telar.mobile'});
+  const key=await pairKey(enrolled);
+  await withApple(()=>new Response(null,{status:200}),async calls=>{
+    assert.equal((await macSend(enrolled,key,alert)).status,200);
+    assert.equal(calls[0].headers['apns-topic'],'com.telar.mobile');
   });
 });
 test('v2: an attestation is refused unless it is Apple-rooted, for our App ID, over a challenge we issued once',async()=>{
   const p=await pki(), env=relayEnv({APPATTEST_ROOT:p.root});
-  const register=(ph,challenge,extra={})=>call(env,'/v2/devices',{method:'POST',body:JSON.stringify({keyId:ph.keyId,attestation:ph.attestation,challenge,bundle:'com.telar.mobile',sandbox:false,...tokensOf,...extra})});
+  const register=(ph,challenge,extra={})=>call(env,'/v2/devices',{method:'POST',body:JSON.stringify({keyId:ph.keyId,attestation:ph.attestation,challenge,bundle:'io.github.novarix.telar',sandbox:false,...tokensOf,...extra})});
   const challenge=await challengeFor(env);
   const good=await phone(p,{challenge});
   assert.equal((await register(good,challenge)).status,201);
@@ -203,7 +211,7 @@ test('v2: an attestation is refused unless it is Apple-rooted, for our App ID, o
   const other=await challengeFor(env);
   assert.equal((await register(good,other)).status,401,'attested over a different challenge');
   const devBuild=await challengeFor(env);
-  assert.equal((await register(await phone(p,{challenge:devBuild,bundle:'com.telar.mobile.dev'}),devBuild)).status,401,'minted for another bundle than claimed');
+  assert.equal((await register(await phone(p,{challenge:devBuild,bundle:'io.github.novarix.telar.dev'}),devBuild)).status,401,'minted for another bundle than claimed');
   const forged=await challengeFor(env);
   assert.equal((await register(await phone(await pki(),{challenge:forged}),forged)).status,401,'not our root');
   const wrongKey=await challengeFor(env);

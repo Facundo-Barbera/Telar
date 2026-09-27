@@ -47,7 +47,8 @@ esac
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 TEAM="${DEVELOPMENT_TEAM:-MM74W7WGAM}"
-BUNDLE="${TELAR_BUNDLE_ID:-com.telar.mobile}"
+BUNDLE="${TELAR_BUNDLE_ID:-io.github.novarix.telar}"
+export TELAR_BUNDLE_ID="$BUNDLE"
 BUILD_NUMBER="$(date +%Y%m%d%H%M)"
 ARCHIVE="$DIR/DerivedData-nightly/Telar-$BUILD_NUMBER.xcarchive"
 EXPORT_DIR="$DIR/DerivedData-nightly/export-$BUILD_NUMBER"
@@ -188,6 +189,11 @@ if [[ "$MODE" == "--export-only" ]]; then
   echo "exported $EXPORT_DIR/TelarMobile.ipa (upload skipped)"
   exit 0
 fi
+
+# A brand-new app record has no TestFlight groups or review info; this makes
+# them (and is a few GETs once they exist). Before the upload, so a missing app
+# record fails here rather than after a build was spent on it.
+"$DIR/testflight-app.sh"
 
 # altool finds keys by NAME in a directory, not by path — stage the key
 # where it looks, under the name it expects.

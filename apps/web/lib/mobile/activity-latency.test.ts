@@ -43,7 +43,7 @@ describe("priority 10 for the transition that needs the person, 5 for the rest",
   const card = { sessionId: AUTOMATIC_ACTIVITY, token: "d".repeat(64), startedAt: 1 };
   const followed = { sessionId: working.id, token: "e".repeat(64), startedAt: 1 };
   const record = (patch: Partial<PushRecord>): PushRecord => ({
-    hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: false,
+    hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
     enabled: true, completions: true, previews: false, mutedSessions: [], liveActivities: true, activities: [card, followed],
     deviceId: "paired", revision: "r1", updatedAt: 1000, baselined: true, seen: { [working.id]: signalKey(working) }, activitySent: {}, ...patch,
   });

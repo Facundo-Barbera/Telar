@@ -46,7 +46,7 @@ function setup() {
 
 const credential = { handle: "h".repeat(43), keyId: "k".repeat(22), sendKey: crypto.randomBytes(32).toString("base64url") };
 const registration: MobileRegistration = {
-  hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: false,
+  hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
   enabled: true, completions: true, previews: false, mutedSessions: [],
   activities: [{ sessionId: "session_1", token: "c".repeat(64), startedAt: 1 }], relay: credential,
 };

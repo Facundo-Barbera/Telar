@@ -2,7 +2,7 @@
  * APP ATTEST, VERIFIED WITH NOTHING BUT WEBCRYPTO — relay v2.
  *
  * v2's registration endpoint is public, so App Attest is what stops anyone
- * from using this relay as a free sender to `com.telar.mobile`. An attestation
+ * from using this relay as a free sender to our bundles. An attestation
  * is accepted only if Apple's own root signed the chain, the key was minted by
  * a build of Telar signed by our team, and the nonce binds the one-time
  * challenge this relay issued. After that, each request the phone makes is

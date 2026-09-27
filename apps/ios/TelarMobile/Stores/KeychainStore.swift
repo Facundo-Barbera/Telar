@@ -16,7 +16,7 @@ enum KeychainStore {
     /// "paired" the moment any one of them was — including a pairing
     /// inherited from a long-deleted install, because the keychain outlives
     /// the app that wrote it.
-    private static let service = Bundle.main.bundleIdentifier ?? "com.telar.mobile"
+    private static let service = Bundle.main.bundleIdentifier ?? "io.github.novarix.telar"
     private static let legacyService = "com.telar.mobile"
     private static let legacyAccount = "deviceToken"
 

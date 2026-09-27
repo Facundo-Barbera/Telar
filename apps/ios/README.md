@@ -61,12 +61,12 @@ xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
   -destination "platform=iOS,id=$TELAR_IPHONE_UDID" \
   -derivedDataPath apps/ios/DerivedData \
   -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM \
-  TELAR_APP_BUNDLE_ID=com.telar.mobile.dev test
+  TELAR_APP_BUNDLE_ID=io.github.novarix.telar.dev test
 ```
 
 **`TELAR_APP_BUNDLE_ID` is not optional here, whatever it looks like.**
 `xcodebuild test` installs its test host on the phone, and the project
-default is `com.telar.mobile` — the TestFlight app's identifier. Without the
+default is `io.github.novarix.telar` — the TestFlight app's identifier. Without the
 override the run replaces the nightly on the phone with a dev-signed build of
 whatever is checked out. The `.dev` id is the one `phone.sh` uses, which iOS
 treats as an unrelated app, so the TestFlight build is left alone.
@@ -133,7 +133,7 @@ build with no project-file edit.
 ## Installing on a phone
 
 Headless, via `apps/ios/phone.sh` (no Xcode GUI) — installs "Telar Dev"
-(`com.telar.mobile.dev`, Debug, amber icon), the cable-fed build that lives
+(`io.github.novarix.telar.dev`, Debug, amber icon), the cable-fed build that lives
 beside the TestFlight nightly. Two bundle ids make them UNRELATED APPS to
 iOS; each keeps its own pairing (Keychain is per-app), so pair each once
 and it survives reinstalls of that flavor.
@@ -160,6 +160,14 @@ App Review once processed; the first build of each new version waits hours in
 review, later builds of that version minutes. Why the Mac and not GitHub's
 macOS lane, and how every other workflow came to live there too:
 docs/operations/mac-mini-runner-plan-2026-09-11.md.
+
+The App Store Connect app is "Telar by Novarix" (`io.github.novarix.telar`,
+since #1042; the home screen still says "Telar"). Before each upload
+`apps/ios/testflight-app.sh` finds it by bundle id and makes sure it has an
+internal group with every build and the account holder in it, the Beta App
+Review information (copied from the old "Telar Mobile" app where missing), and
+the external "Nightly" group. Signing is automatic: `-allowProvisioningUpdates`
+with the API key creates the profiles for the new App IDs.
 
 Credentials are the repo secrets `APPLE_API_KEY_P8_BASE64` /
 `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` — an ADMIN App Store Connect API
@@ -269,7 +277,7 @@ stops service rather than enabling a paid plan. See the
 [relay README](../../workers/push-relay/README.md).
 
 The phone registers itself with the relay: it proves with App Attest that it
-is a genuine `com.telar.mobile` or `com.telar.mobile.dev` build
+is a genuine `io.github.novarix.telar` or `io.github.novarix.telar.dev` build
 (`POST /v2/devices`), keeps the relay's copy of its APNs tokens current, and
 mints one revocable send key per paired Mac, handed over in
 `PUT /api/mobile/push` (`PushRelayClient.swift`). A Mac needs no relay setup of
@@ -300,7 +308,7 @@ The embedded widget has its own bundle ID, `<app bundle id>.activity`.
 `phone.sh` and `nightly.sh` already pass it. Do not override
 `PRODUCT_BUNDLE_IDENTIFIER` globally, which would give both targets one ID.
 Debug uses APNs sandbox; Release uses production. This implementation accepts
-`com.telar.mobile` and `com.telar.mobile.dev` registrations.
+`io.github.novarix.telar` and `io.github.novarix.telar.dev` registrations.
 
 A paired full-access device registers at `PUT /api/mobile/push`. An unpaired
 caller is refused even when global pairing enforcement is off. Observer
@@ -383,7 +391,7 @@ xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobileUI \
   -destination "platform=iOS,id=$TELAR_IPHONE_UDID" \
   -derivedDataPath /tmp/telar-mobile-tests \
   -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM \
-  TELAR_APP_BUNDLE_ID=com.telar.mobile.dev test
+  TELAR_APP_BUNDLE_ID=io.github.novarix.telar.dev test
 ```
 
 Same reason as the unit suite: this drives the real app on the phone, so
