@@ -367,8 +367,10 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // Read-only by construction — see `SessionsQueryCapability`, which has no
     // member that writes for one to be misfiled as.
     // The verb that addressed the built-in Agent came and went with it (#784, #908).
+    // `subscribeCohort` and `cohorts` are a subscription to several sessions at
+    // once, and its list: the same reach `subscribe` already has.
     expect(surface).toEqual([
-      "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "turn", "unsubscribe",
+      "cohorts", "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "turn", "unsubscribe",
     ]);
     expect(Object.keys(sessions.query).sort()).toEqual(["answer", "find", "grep", "outline", "step", "steps"]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
