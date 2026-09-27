@@ -48,7 +48,7 @@ import {
   TriangleAlertIcon,
   WrenchIcon,
 } from "lucide-react";
-import type { Item, RateLimitType, TurnFailureCode } from "@telar/engine-client";
+import { isKnownPath, type Item, type RateLimitType, type TurnFailureCode } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
 import { notificationHead, notificationVerbs, type NotificationSubject } from "@/lib/notifications";
@@ -112,6 +112,28 @@ function actionLabel(item: JournalItem): string {
   }
 }
 
+/** The verb a RUNNING row leads with. Present tense: it has not happened yet. */
+function liveActionLabel(item: JournalItem): string {
+  switch (item.detail.type) {
+    case "command_execution":
+      return "Running command";
+    case "file_read":
+      return "Reading file";
+    case "file_change":
+      return item.detail.change.kind === "create"
+        ? "Creating file"
+        : item.detail.change.kind === "delete"
+          ? "Deleting file"
+          : "Editing file";
+    case "web_search":
+      return "Searching web";
+    case "browser_action":
+      return "Browsing";
+    default:
+      return actionLabel(item);
+  }
+}
+
 /** The salient argument, collapsed to one line and clipped. Never the payload.
  *  Split on CODE POINTS, not UTF-16 units — a plain slice can cut an astral
  *  character in half and render a broken glyph right at the boundary.
@@ -124,11 +146,9 @@ function preview(item: JournalItem): string {
   const raw =
     item.detail.type === "command_execution"
       ? item.detail.command.command
-      : item.detail.type === "file_read"
-        ? item.detail.read.path
-        : item.detail.type === "file_change"
-          ? item.detail.change.path
-          : item.detail.type === "web_search"
+      : item.detail.type === "file_read" || item.detail.type === "file_change"
+        ? (rowPath(item) ?? "")
+        : item.detail.type === "web_search"
             ? item.detail.query
             : item.detail.type === "mcp_tool_call" || item.detail.type === "dynamic_tool_call" || item.detail.type === "browser_action"
               ? toolInputSummary(item.detail.call.input) ?? ""
@@ -178,11 +198,11 @@ export function TranscriptWorkspace({ path, children }: { path?: string; childre
   return <WorkspaceContext.Provider value={path}>{children}</WorkspaceContext.Provider>;
 }
 
-/** The path a row is ABOUT, when it is about one. */
+/** The path a row is ABOUT, when it is about one — never the placeholder a
+ *  call carries before its input has named the file. */
 function rowPath(item: JournalItem): string | undefined {
-  if (item.detail.type === "file_change") return item.detail.change.path;
-  if (item.detail.type === "file_read") return item.detail.read.path;
-  return undefined;
+  const path = item.detail.type === "file_change" ? item.detail.change.path : item.detail.type === "file_read" ? item.detail.read.path : undefined;
+  return path && isKnownPath(path) ? path : undefined;
 }
 
 /** A diff is SOURCE: read as written, never wrapped, cut at 24 lines like any
@@ -236,7 +256,7 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
   const change = item.detail.type === "file_change" ? item.detail.change : undefined;
   const output = toolOutput(item);
   const body = change?.unifiedDiff ?? output;
-  const label = actionLabel(item);
+  const label = running(item) ? liveActionLabel(item) : actionLabel(item);
   const isError = failed(item);
   const RowIcon = TOOL_ICON[item.detail.type] ?? WrenchIcon;
   const command = item.detail.type === "command_execution" ? item.detail.command.command : undefined;
@@ -259,7 +279,7 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
       >
         {running(item) ? (
           <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
-            {argument ? `${label} · ${argument}` : label}
+            {argument ? `${label} · ${argument}` : `${label}…`}
           </Shimmer>
         ) : (
           <>

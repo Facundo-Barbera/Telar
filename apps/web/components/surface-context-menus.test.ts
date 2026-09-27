@@ -346,9 +346,12 @@ describe("the transcript's message and tool rows", () => {
     expect(source).toContain("{path && onOpenFile && <ContextMenuItem onClick={() => onOpenFile(path)}>Open file in the Editor</ContextMenuItem>}");
     expect(source).toContain("onClick={() => void navigator.clipboard.writeText(path)}>Copy path");
     expect(source).toContain("onClick={() => onInsert(fileReference(path).text)}>Insert as reference");
-    // The path comes from the row's own detail, for the two kinds that have one.
-    expect(source).toContain('if (item.detail.type === "file_change") return item.detail.change.path;');
-    expect(source).toContain('if (item.detail.type === "file_read") return item.detail.read.path;');
+    // The path comes from the row's own detail, for the two kinds that have one —
+    // and never the placeholder a streamed call carries before its file is named.
+    expect(source).toContain(
+      'const path = item.detail.type === "file_change" ? item.detail.change.path : item.detail.type === "file_read" ? item.detail.read.path : undefined;',
+    );
+    expect(source).toContain("return path && isKnownPath(path) ? path : undefined;");
   });
 
   test("a row with nothing to offer gets no menu rather than an empty popup", () => {

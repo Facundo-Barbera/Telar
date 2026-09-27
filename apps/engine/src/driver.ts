@@ -44,6 +44,7 @@ import {
   qualifyTelarTool,
   TELAR_BROWSER_MCP_SERVER,
   TELAR_MCP_SERVER,
+  UNKNOWN_PATH,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 import { claudeEffortFor, claudeFixedWindowOf } from "./model-manifest";
@@ -601,6 +602,42 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/** The input keys a file tool names its file by, in the order they are read. */
+const PATH_KEYS = ["file_path", "notebook_path", "path"] as const;
+
+function toolPath(args: Record<string, unknown>): string | undefined {
+  for (const key of PATH_KEYS) {
+    const path = str(args[key]);
+    if (path) return path;
+  }
+  return undefined;
+}
+
+function isFileTool(name: string): boolean {
+  return ["Read", "NotebookRead", "Write", "Edit", "NotebookEdit", "MultiEdit"].includes(name);
+}
+
+/**
+ * THE PATH, READ OUT OF AN INPUT THAT IS STILL STREAMING. The input arrives as
+ * `input_json_delta` fragments and is not parseable until the last one, but the
+ * path is short and comes first — so a key scan finds it long before the body of
+ * a Write has been generated. Only a string whose closing quote has arrived
+ * counts; a key quoted inside another string is escaped, so it cannot match.
+ */
+export function pathFromPartialInput(json: string): string | undefined {
+  for (const key of PATH_KEYS) {
+    const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(json);
+    if (!match) continue;
+    try {
+      const path = str(JSON.parse(`"${match[1]}"`));
+      if (path) return path;
+    } catch {
+      // A malformed escape: wait for the envelope rather than guess.
+    }
+  }
+  return undefined;
+}
+
 /**
  * Map one provider tool call onto a canonical item.
  *
@@ -627,7 +664,7 @@ export function itemDetailForToolCall(name: string, input: unknown): ItemDetail 
     return {
       type: "file_read",
       read: {
-        path: str(args.file_path) ?? str(args.path) ?? "(unknown)",
+        path: toolPath(args) ?? UNKNOWN_PATH,
         ...(typeof args.offset === "number" ? { fromLine: Math.max(1, args.offset) } : {}),
       },
     };
@@ -636,7 +673,7 @@ export function itemDetailForToolCall(name: string, input: unknown): ItemDetail 
     return {
       type: "file_change",
       change: {
-        path: str(args.file_path) ?? str(args.path) ?? "(unknown)",
+        path: toolPath(args) ?? UNKNOWN_PATH,
         kind: name === "Write" ? "create" : "edit",
       },
     };
@@ -682,10 +719,11 @@ export function titleForToolCall(name: string, detail: ItemDetail): string {
   switch (detail.type) {
     case "command_execution":
       return oneLine(detail.command.command) || name;
+    // No path yet is the tool's name, never the sentinel.
     case "file_read":
-      return detail.read.path;
+      return detail.read.path === UNKNOWN_PATH ? name : detail.read.path;
     case "file_change":
-      return detail.change.path;
+      return detail.change.path === UNKNOWN_PATH ? name : detail.change.path;
     case "web_search":
       return oneLine(detail.query) || name;
     case "browser_action":
@@ -1477,6 +1515,8 @@ export function createClaudeDriver(
       /** Tool rows keyed by `tool_use_id`, so a later `tool_result` closes the
        *  row its call opened rather than opening a second one. */
       const openTools = new Map<string, { id: string; detail: ItemDetail }>();
+      /** File calls whose input is still streaming — see `streamedPathUpdate`. */
+      const streamingInputs = new Map<string, StreamingInput>();
       /**
        * The MAIN LOOP'S tool calls whose `tool_result` has not arrived yet — a
        * subset of `openTools` (which also tracks sub-agent tools). Kept apart
@@ -3869,6 +3909,8 @@ export function createClaudeDriver(
               if (blockType === "tool_use" && useId && name && name !== "TodoWrite" && !openTools.has(useId)) {
                 const seed = streamingToolSeed(useId, name, ownerTaskId);
                 openTools.set(useId, { id: seed.id, detail: seed.detail });
+                const input = streamingInputFor(useId, name, ownerTaskId);
+                if (input) streamingInputs.set(index, input);
                 if (ours) openTopLevelTools.add(useId);
                 emit({ kind: "item.started", item: seed });
                 await flush();
@@ -3877,6 +3919,12 @@ export function createClaudeDriver(
             }
 
             if (event.type === "content_block_delta") {
+              const pathUpdate = streamedPathUpdate(streamingInputs, openTools, index, event.delta);
+              if (pathUpdate) {
+                emit(pathUpdate);
+                await flush();
+                continue;
+              }
               const open = openBlocks.get(index);
               if (!open) continue;
               const progress = noteThinkingTokens(open, event.delta?.estimated_tokens);
@@ -3904,6 +3952,7 @@ export function createClaudeDriver(
             }
 
             if (event.type === "content_block_stop") {
+              streamingInputs.delete(index);
               const open = openBlocks.get(index);
               if (!open) continue;
               openBlocks.delete(index);
@@ -4225,6 +4274,7 @@ export function createClaudeDriver(
                 gate: SdkCanUseTool | undefined;
                 blocks: Map<string, OpenBlock>;
                 tools: Map<string, { id: string; detail: ItemDetail }>;
+                inputs: Map<string, StreamingInput>;
                 /** The open provider-wait row, exactly as a human turn keeps one. */
                 waitItemId: string | undefined;
                 /** And its warning memory, for the same reason (#897): this
@@ -4398,6 +4448,7 @@ export function createClaudeDriver(
                   gate: binding.onRequest ? gateFor(binding.onRequest) : undefined,
                   blocks: new Map(),
                   tools: new Map(),
+                  inputs: new Map(),
                   waitItemId: undefined,
                   lastLimitWarning: undefined,
                   lastUsage: undefined,
@@ -4547,10 +4598,13 @@ export function createClaudeDriver(
       async function pumpFrame(
         item: SdkFrame,
         ownerTaskId: string | undefined,
-        wake: { blocks: Map<string, OpenBlock>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined,
+        wake:
+          | { blocks: Map<string, OpenBlock>; tools: Map<string, { id: string; detail: ItemDetail }>; inputs: Map<string, StreamingInput> }
+          | undefined,
       ): Promise<string> {
         const blocks = wake?.blocks ?? new Map<string, OpenBlock>();
         const tools = wake?.tools ?? new Map<string, { id: string; detail: ItemDetail }>();
+        const inputs = wake?.inputs ?? new Map<string, StreamingInput>();
         let added = "";
         // The silent thought's running size — see the turn pump's copy. The
         // idle pump flushes after every frame, so there is nothing to schedule.
@@ -4577,9 +4631,13 @@ export function createClaudeDriver(
               // alone, so the envelope could not tell it had been opened.
               const seed = streamingToolSeed(useId, name, ownerTaskId);
               tools.set(useId, { id: seed.id, detail: seed.detail });
+              const input = streamingInputFor(useId, name, ownerTaskId);
+              if (input) inputs.set(index, input);
               emit({ kind: "item.started", item: seed });
             }
           } else if (event.type === "content_block_delta") {
+            const pathUpdate = streamedPathUpdate(inputs, tools, index, event.delta);
+            if (pathUpdate) emit(pathUpdate);
             const open = blocks.get(index);
             const progress = open ? noteThinkingTokens(open, event.delta?.estimated_tokens) : undefined;
             if (progress) emit(progress);
@@ -4590,6 +4648,7 @@ export function createClaudeDriver(
               emit({ kind: "content.delta", itemId: open.id, stream: open.kind === "text" ? "assistant_text" : "reasoning_text", text });
             }
           } else if (event.type === "content_block_stop") {
+            inputs.delete(index);
             const open = blocks.get(index);
             if (open) {
               blocks.delete(index);
@@ -4688,13 +4747,54 @@ function noteThinkingTokens(block: OpenBlock, tokens: unknown): TurnObservation 
 function streamingToolSeed(useId: string, name: string, ownerTaskId: string | undefined): ItemSeed {
   const isTask = name === "Task" || name === "Agent";
   const detail: ItemDetail = isTask ? { type: "task", taskId: `task_${useId}` } : itemDetailForToolCall(name, {});
-  const derived = isTask ? name : titleForToolCall(name, detail);
   return {
     id: `item_${useId}`,
     detail,
-    title: derived === "(unknown)" ? name : derived,
+    title: isTask ? name : titleForToolCall(name, detail),
     ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
     providerRefs: { itemId: useId },
+  };
+}
+
+/** A file tool's input while it streams, keyed like a text block by owner and
+ *  index — `input_json_delta` names the index, not the call. */
+type StreamingInput = { useId: string; name: string; json: string; taskId?: string };
+
+function streamingInputFor(useId: string, name: string, ownerTaskId: string | undefined): StreamingInput | undefined {
+  return isFileTool(name) ? { useId, name, json: "", ...(ownerTaskId ? { taskId: ownerTaskId } : {}) } : undefined;
+}
+
+/**
+ * Fold one `input_json_delta` into a streaming file call. Returns the
+ * `item.updated` that gives the open row its real path, once the path has
+ * arrived — and stops listening, since nothing else in the input is shown live.
+ */
+function streamedPathUpdate(
+  inputs: Map<string, StreamingInput>,
+  tools: Map<string, { id: string; detail: ItemDetail }>,
+  index: string,
+  delta: unknown,
+): TurnObservation | undefined {
+  const input = inputs.get(index);
+  const fragment = asRecord(delta);
+  if (!input || fragment.type !== "input_json_delta" || typeof fragment.partial_json !== "string") return undefined;
+  input.json += fragment.partial_json;
+  const path = pathFromPartialInput(input.json);
+  if (!path) return undefined;
+  inputs.delete(index);
+  const open = tools.get(input.useId);
+  if (!open) return undefined;
+  const detail = itemDetailForToolCall(input.name, { file_path: path });
+  tools.set(input.useId, { id: open.id, detail });
+  return {
+    kind: "item.updated",
+    item: {
+      id: open.id,
+      detail,
+      title: titleForToolCall(input.name, detail),
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+      providerRefs: { itemId: input.useId },
+    },
   };
 }
 
