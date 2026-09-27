@@ -413,6 +413,7 @@ function ComposerBanner({
 export function Composer({
   draft,
   ready,
+  compact = false,
   kind = "session",
   attachments,
   onAttach,
@@ -455,6 +456,13 @@ export function Composer({
 }: {
   draft: string;
   ready: boolean;
+  /**
+   * THE READER IS SCROLLED BACK THROUGH THE TRANSCRIPT — T3's compact composer.
+   * The box drops to one line with send beside it, and the model pills move to
+   * a thin tray tucked under it. A request, not an order: anything that needs
+   * the full box (the caret, a menu, a question, an attachment) keeps it.
+   */
+  compact?: boolean;
   /**
    * WHICH MESSAGE BOX THIS IS (#548). It names the editable root — `id` and
    * `data-composer` — and it is what the page API reports to an external
@@ -1398,6 +1406,8 @@ export function Composer({
   /** What is being dragged over the box — a panel reference gets its own words,
    *  because "drop to reference" is the label that teaches the gesture. */
   const [dropping, setDropping] = useState<false | "reference" | "content">(false);
+  /** The caret is in the editor — the one focus that lifts the compact shape. */
+  const [editorFocused, setEditorFocused] = useState(false);
 
   const onDrop = (event: React.DragEvent) => {
     dragDepth.current = 0;
@@ -1451,6 +1461,137 @@ export function Composer({
   /** Ultrathink is a word in the message, so the options menu edits the draft
    *  in view rather than sending anything the person cannot see. */
   const ultrathink = { active: hasUltrathink(draft), toggle: () => onDraftChange(toggleUltrathink(draft)) };
+
+  /**
+   * COMPACT ONLY WHILE NOTHING NEEDS THE FULL BOX. The caret in the editor is
+   * the main one — typing into a one-line box is reading back no longer. Focus
+   * on a PILL does not count: expanding would move it out of the tray and
+   * remount it, closing the menu it just opened.
+   */
+  const compactNow =
+    compact && !fresh && !editorFocused && !questionActive && !dropping && !stashOpen && !menuOpen && !escArmed && !driveAway && attachments.length === 0;
+
+  const sendButton = (
+    /* NOT DISABLED ON AN EMPTY DRAFT, and that is a fix rather than an
+       oversight: `InputGroup` carries `has-disabled:opacity-50`, so a
+       disabled descendant greys the ENTIRE composer — box, pills,
+       placeholder and all. With the send button disabled whenever the
+       box was empty, the composer spent most of its life looking
+       broken. The donor never disables it either; submitting an empty
+       draft is simply a no-op. */
+    <InputGroupButton
+      // In question mode the button SUBMITS THE FORM — the turn is
+      // running (busy), but the gesture on offer is answering, not
+      // stopping; the drawer keeps its own "Cancel the turn".
+      type={stopping && !questionActive ? "button" : "submit"}
+      variant="default"
+      size="icon-sm"
+      aria-label={questionActive ? questionSubmitLabel : submitLabel}
+      title={questionActive ? questionSubmitLabel : undefined}
+      onClick={stopping && !questionActive ? onStop : undefined}
+      className={cn(
+        escArmed && !questionActive && "bg-destructive text-background hover:bg-destructive",
+        !busy && !hasContent && "opacity-60",
+        questionActive && !canAdvance(qFields, qd) && "opacity-60",
+      )}
+    >
+      {questionActive ? (
+        sending ? (
+          <Spinner />
+        ) : (
+          <CornerDownLeftIcon className="size-4" />
+        )
+      ) : escArmed ? (
+        // The WORD, not a glyph. "ESC" names the key the user just
+        // pressed and the key that will finish the job, which no icon
+        // can say.
+        <span className="text-3xs leading-none font-semibold tracking-tight">ESC</span>
+      ) : stopping ? (
+        <SquareIcon className="size-4" />
+      ) : sending ? (
+        <Spinner />
+      ) : (
+        <CornerDownLeftIcon className="size-4" />
+      )}
+    </InputGroupButton>
+  );
+
+  /**
+   * THE PILLS ARE THE DEFAULT; `···` IS WHAT HAPPENS WHEN THEY DO
+   * NOT FIT.
+   *
+   * Both are mounted and CSS picks, on `@2xl` (42rem) of the
+   * COMPOSER'S OWN container rather than the viewport — the whole
+   * problem is that the window can be wide while this column is
+   * narrow, because the right panel took the difference. A viewport
+   * query cannot see that; a container query is measuring the thing
+   * that actually ran out of room.
+   *
+   * 42rem is where the row stops fitting: ~570px of controls plus
+   * the box's padding. Above it you read the model, the effort and
+   * the access mode without opening anything, which is the point —
+   * a menu that is always closed is state you cannot see.
+   *
+   * A VALUE rather than inline JSX because it has two homes: the box's
+   * toolbar, and the tray under the box while it is compact.
+   */
+  const pills = (session || (fresh && driver)) && (
+    <>
+      <AgentControl
+        driver={activeDriver}
+        choice={choice}
+        {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
+        {...(onModelChange ? { onChange: onModelChange } : {})}
+        {...(onDriverChange ? { onDriverChange } : {})}
+      />
+      {/* Hairlines rather than borders: three bordered chips read
+          as chrome bolted to the composer, where the reference draws
+          the same three as labels with a rule between them. */}
+      <div className="hidden items-center gap-1 @2xl/composer:flex">
+        <ControlDivider />
+        <ReasoningControl
+          driver={activeDriver}
+          choice={choice}
+          {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
+          {...(onModelChange ? { onChange: onModelChange } : {})}
+          ultrathink={ultrathink}
+        />
+        {runtimeMode && (
+          <>
+            <ControlDivider />
+            <AccessControl
+              runtimeMode={runtimeMode}
+              onRuntimeMode={onRuntimeMode}
+              driver={activeDriver}
+              {...(session?.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: session.resumeAfterRateLimit })}
+              {...(onResumeAfterRateLimit ? { onResumeAfterRateLimit } : {})}
+            />
+          </>
+        )}
+      </div>
+      {/* The overflow carries EVERYTHING the pills carry, plus the
+          two create-time choices that live on other surfaces when
+          there is room. A narrow window must not be the reason a
+          setting is unreachable. */}
+      <div className="@2xl/composer:hidden">
+        <ComposerOverflowMenu
+          driver={activeDriver}
+          choice={choice}
+          ultrathink={ultrathink}
+          {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
+          fresh={fresh}
+          {...(runtimeMode ? { runtimeMode } : {})}
+          {...(envMode ? { envMode } : {})}
+          {...(onModelChange ? { onChange: onModelChange } : {})}
+          {...(runtimeMode ? { onRuntimeMode } : {})}
+          {...(onDriverChange ? { onDriverChange } : {})}
+          {...(onEnvMode ? { onEnvMode } : {})}
+          {...(session?.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: session.resumeAfterRateLimit })}
+          {...(onResumeAfterRateLimit ? { onResumeAfterRateLimit } : {})}
+        />
+      </div>
+    </>
+  );
 
   return (
     /**
@@ -1677,6 +1818,7 @@ export function Composer({
             // coincidentally similar.
             "rounded-2xl border-border/80 bg-card/95 shadow-2 backdrop-blur-xl",
             dropping && "relative border-ring ring-2 ring-ring/40",
+            compactNow && "h-auto",
           )}
         >
           {/* THE GESTURE, NAMED WHILE IT HAPPENS. The ring says "this accepts
@@ -1759,7 +1901,13 @@ export function Composer({
             onPasteFiles={addFiles}
             // THE CARET ARRIVING IS THE WHOLE OF "ACTIVE" — see
             // lib/composer-registry.ts.
-            onFocus={() => markComposerActive(token)}
+            onFocus={() => {
+              markComposerActive(token);
+              setEditorFocused(true);
+            }}
+            onBlur={() => setEditorFocused(false)}
+            compact={compactNow}
+            {...(compactNow ? { className: "min-w-0 flex-1" } : {})}
           />
           </div>
           {attachments.length > 0 && (
@@ -1779,6 +1927,14 @@ export function Composer({
               ))}
             </InputGroupAddon>
           )}
+          {compactNow ? (
+            // ONE LINE: what goes into the message, then send — T3's shape.
+            <InputGroupAddon align="inline-end" className="gap-1 self-end py-1.5 pr-1.5">
+              <AddContextMenu onPick={addFiles} />
+              <DictationButton dictation={dictation} />
+              {sendButton}
+            </InputGroupAddon>
+          ) : (
           <InputGroupAddon align="block-end" className="min-h-10 flex-wrap justify-between gap-1 border-t border-border/40 px-2 pt-1 pb-1.5">
             {/* Not a trigger any more — the card above is. It keeps its own
                 `min-w-0`, which is the reason it was a box rather than the
@@ -1844,79 +2000,7 @@ export function Composer({
                   {stashing ? <Spinner /> : <span className="text-xs tabular-nums">{shelf.rows.length}</span>}
                 </button>
               )}
-              {/**
-               * THE PILLS ARE THE DEFAULT; `···` IS WHAT HAPPENS WHEN THEY DO
-               * NOT FIT.
-               *
-               * Both are mounted and CSS picks, on `@2xl` (42rem) of the
-               * COMPOSER'S OWN container rather than the viewport — the whole
-               * problem is that the window can be wide while this column is
-               * narrow, because the right panel took the difference. A viewport
-               * query cannot see that; a container query is measuring the thing
-               * that actually ran out of room.
-               *
-               * 42rem is where the row stops fitting: ~570px of controls plus
-               * the box's padding. Above it you read the model, the effort and
-               * the access mode without opening anything, which is the point —
-               * a menu that is always closed is state you cannot see.
-               */}
-              {(session || (fresh && driver)) && (
-                <>
-                  <AgentControl
-                    driver={activeDriver}
-                    choice={choice}
-                    {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
-                    {...(onModelChange ? { onChange: onModelChange } : {})}
-                    {...(onDriverChange ? { onDriverChange } : {})}
-                  />
-                  {/* Hairlines rather than borders: three bordered chips read
-                      as chrome bolted to the composer, where the reference draws
-                      the same three as labels with a rule between them. */}
-                  <div className="hidden items-center gap-1 @2xl/composer:flex">
-                    <ControlDivider />
-                    <ReasoningControl
-                      driver={activeDriver}
-                      choice={choice}
-                      {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
-                      {...(onModelChange ? { onChange: onModelChange } : {})}
-                      ultrathink={ultrathink}
-                    />
-                    {runtimeMode && (
-                      <>
-                        <ControlDivider />
-                        <AccessControl
-                          runtimeMode={runtimeMode}
-                          onRuntimeMode={onRuntimeMode}
-                          driver={activeDriver}
-                          {...(session?.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: session.resumeAfterRateLimit })}
-                          {...(onResumeAfterRateLimit ? { onResumeAfterRateLimit } : {})}
-                        />
-                      </>
-                    )}
-                  </div>
-                  {/* The overflow carries EVERYTHING the pills carry, plus the
-                      two create-time choices that live on other surfaces when
-                      there is room. A narrow window must not be the reason a
-                      setting is unreachable. */}
-                  <div className="@2xl/composer:hidden">
-                    <ComposerOverflowMenu
-                      driver={activeDriver}
-                      choice={choice}
-                      ultrathink={ultrathink}
-                      {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
-                      fresh={fresh}
-                      {...(runtimeMode ? { runtimeMode } : {})}
-                      {...(envMode ? { envMode } : {})}
-                      {...(onModelChange ? { onChange: onModelChange } : {})}
-                      {...(runtimeMode ? { onRuntimeMode } : {})}
-                      {...(onDriverChange ? { onDriverChange } : {})}
-                      {...(onEnvMode ? { onEnvMode } : {})}
-                      {...(session?.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: session.resumeAfterRateLimit })}
-                      {...(onResumeAfterRateLimit ? { onResumeAfterRateLimit } : {})}
-                    />
-                  </div>
-                </>
-              )}
+              {pills}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1.5 self-end">
             <ContextPill
@@ -1929,55 +2013,26 @@ export function Composer({
               // never give a person two different reasons.
               compactReason={compactBlockedReason({ busy, compacting }) ?? "Sending…"}
             />
-            {/* NOT DISABLED ON AN EMPTY DRAFT, and that is a fix rather than an
-                oversight: `InputGroup` carries `has-disabled:opacity-50`, so a
-                disabled descendant greys the ENTIRE composer — box, pills,
-                placeholder and all. With the send button disabled whenever the
-                box was empty, the composer spent most of its life looking
-                broken. The donor never disables it either; submitting an empty
-                draft is simply a no-op. */}
-            <InputGroupButton
-              // In question mode the button SUBMITS THE FORM — the turn is
-              // running (busy), but the gesture on offer is answering, not
-              // stopping; the drawer keeps its own "Cancel the turn".
-              type={stopping && !questionActive ? "button" : "submit"}
-              variant="default"
-              size="icon-sm"
-              aria-label={questionActive ? questionSubmitLabel : submitLabel}
-              title={questionActive ? questionSubmitLabel : undefined}
-              onClick={stopping && !questionActive ? onStop : undefined}
-              className={cn(
-                escArmed && !questionActive && "bg-destructive text-background hover:bg-destructive",
-                !busy && !hasContent && "opacity-60",
-                questionActive && !canAdvance(qFields, qd) && "opacity-60",
-              )}
-            >
-              {questionActive ? (
-                sending ? (
-                  <Spinner />
-                ) : (
-                  <CornerDownLeftIcon className="size-4" />
-                )
-              ) : escArmed ? (
-                // The WORD, not a glyph. "ESC" names the key the user just
-                // pressed and the key that will finish the job, which no icon
-                // can say.
-                <span className="text-3xs leading-none font-semibold tracking-tight">ESC</span>
-              ) : stopping ? (
-                <SquareIcon className="size-4" />
-              ) : sending ? (
-                <Spinner />
-              ) : (
-                <CornerDownLeftIcon className="size-4" />
-              )}
-            </InputGroupButton>
+            {sendButton}
             </div>
           </InputGroupAddon>
+          )}
         </InputGroup>
         </ComposerChromeMenu>
         <DictationGlow phase={dictation.phase} layer="ring" />
         </div>
       </form>
+
+      {/* THE PILLS' HOME WHILE COMPACT: a tray tucked under the box, in the
+          foot's own fuse (`-mt-px`, `border-t-0`) so the two read as one
+          object — and the foot itself steps aside below. */}
+      {compactNow && pills && (
+        <div className="mx-3 -mt-px">
+          <div className="flex items-center gap-1 rounded-b-2xl border border-t-0 border-border/80 bg-card/95 px-2 py-0.5 shadow-1 backdrop-blur-xl">
+            {pills}
+          </div>
+        </div>
+      )}
 
       {/* The composer's foot: where this message lands. Outside the form and
           fused to its bottom edge — see workspace-environment.tsx.
@@ -2003,7 +2058,10 @@ export function Composer({
         keep glued to the first. `driveAway` stays a plain boolean state up
         here only because the send guard above needs it.
       */}
+      {/* HIDDEN, NOT UNMOUNTED, while compact: it is also what reports
+          `driveAway`, and a poll that stopped would stop reporting it. */}
       {projectId && (
+      <div className={cn(compactNow && "hidden")}>
       <WorkspaceEnvironment
         projectId={projectId}
         onAvailability={setDriveAway}
@@ -2015,6 +2073,7 @@ export function Composer({
         {...(onBase ? { onBase } : {})}
         {...(onOpenChanges ? { onOpenChanges } : {})}
       />
+      </div>
       )}
       </div>
     </div>
