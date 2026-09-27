@@ -153,19 +153,32 @@ export function quotedExcerpt(text: string, where: string): string[] {
  * does — it is instructions, and a session started on part of them is guessing.
  * The relay rule rides the channel (see `claudeNotificationContent` and
  * `codexNotificationInstruction`), so it is not repeated here.
+ *
+ * A TASK SAYS HOW TO REPORT BACK, and a result says no reply is needed — the
+ * session-tools audit. Workers wrote their whole answer twice, as a result and
+ * as a long final message, and coordinators spent turns acknowledging. This is
+ * the one text every worker is handed, whatever skill or project it runs in.
  */
+const NO_REPLY = "No reply is needed to acknowledge it.";
+
+/** How a worker answers the session that tasked it. */
+export function reportBack(senderSessionId: string): string {
+  return `When it is done: sessions_send intent "result" to ${senderSessionId} (the point first, under ~800 chars), then end your turn with one short line. Need a decision: intent "blocker". No progress reports.`;
+}
+
 export function agentNotice(input: AgentNoticeInput): string {
   const who = senderPhrase(input.sender);
   const size = `${input.body.length.toLocaleString("en-US")} chars`;
   const where = `sessions_read(sessionId: "${input.recipientSessionId}", runId: "${input.runId}")`;
   const header = `[agent message · ${input.intent}] ${who} ${verbPhrase(input.intent)} (run ${input.runId}, ${size}).${input.corrects ? ` It CORRECTS their earlier message (run ${input.corrects}); disregard that one.` : ""}`;
   if ((input.intent === "result" || input.intent === "blocker") && input.body.trim()) {
-    return [header, ...quotedExcerpt(input.body, where)].join("\n");
+    return [header, ...quotedExcerpt(input.body, where), ...(input.intent === "result" ? [NO_REPLY] : [])].join("\n");
   }
   return [
     header,
     input.intent === "task" || input.intent === "blocker"
       ? `None of it is in this notice. Read it with ${where} before acting on it.`
       : `None of it is in this notice. Fetch it with ${where} if it is worth the context.`,
+    ...(input.intent === "task" && input.sender?.sessionId ? [reportBack(input.sender.sessionId)] : []),
   ].join("\n");
 }

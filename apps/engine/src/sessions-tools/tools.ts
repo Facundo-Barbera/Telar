@@ -300,7 +300,7 @@ const LIST = `Live sessions, and the projects one can be created in. Unsettled o
 
 const CREATE = `Start a NEW session on a project. It is a PEER: it does not report back, and creating it starts no work — sessions_send with intent task does. ${NOT_A_BYPASS}`;
 
-const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text; a result or blocker also quotes its first ~1,500 chars — lead with the point. ${NOT_A_BYPASS}`;
+const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text; a result or blocker also quotes its first ~1,500 chars — lead with the point. Tasked? End with ONE result (then a one-line answer) or a blocker; no progress reports. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
@@ -388,7 +388,7 @@ const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. R
  */
 const READ = `What a session has done: by default a turn-by-turn summary. runId answers ONE turn; mode: events for the raw journal, which is long. Narrower and cheaper first: sessions_outline for its turns, sessions_answer for one conclusion, sessions_steps for what a turn did.`;
 
-const STATUS = `Working, waiting (on a person, a session or a tool), background, scheduled or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing.`;
+const STATUS = `Working, waiting (on a person, a session or a tool), background, scheduled or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing. Never poll it to wait: sessions_subscribe and end your turn.`;
 
 const STOP = `Stop a session's work now: the running turn ends where it stands and the queue is settled. Nothing is undone — what it wrote stays written and a command it ran may have finished. Then idle, not paused.`;
 

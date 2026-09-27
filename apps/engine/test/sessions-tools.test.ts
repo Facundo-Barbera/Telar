@@ -1406,9 +1406,17 @@ describe("sessions_read returns the message a notice stands in for", () => {
     // where the caller is choosing the argument that fetches it — and the
     // sentence it used to live in was one the Agent resent on every lap.
     expect(JSON.stringify(toolInputSchema(tools.get("sessions_read")!.shape))).toContain("a peer message in full");
-    expect(TELAR_SKILL).toContain("A wake or a peer's message is a PING");
+    expect(TELAR_SKILL).toContain("A wake or a peer's message names a session and a run");
     expect(TELAR_SKILL).toContain("sessions_read(sessionId, runId)");
     expect(tools.get("sessions_subscribe")!.description).toContain("It is a PING");
+  });
+
+  test("the descriptions say: never poll, and a tasked worker ends with one result", () => {
+    const { store } = engine();
+    const tools = wall(store);
+    expect(tools.get("sessions_status")!.description).toContain("Never poll it to wait");
+    expect(tools.get("sessions_send")!.description).toContain("End with ONE result");
+    expect(tools.get("sessions_send")!.description).toContain("no progress reports");
   });
 });
 

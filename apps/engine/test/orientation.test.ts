@@ -310,6 +310,20 @@ test("the skill says the things a coordinator gets wrong", () => {
   expect(TELAR_SKILL.toLowerCase()).toContain("refused");
 });
 
+test("the skill teaches the session-tools audit's model: one subscribe, a result and one line", () => {
+  // Agents subscribed per session, polled, and wrote their answer twice.
+  const skill = TELAR_SKILL.replace(/\s+/g, " ");
+  expect(skill).toContain("Send every task first, then ONE `sessions_subscribe({ sessionIds: [...] })` — one id or many, the same call — then END YOUR TURN");
+  expect(skill).toContain("Do not subscribe per session, do not poll `sessions_status`, and do not sleep");
+  expect(skill).toContain("A turn that merely ends is not done");
+  expect(skill).toContain("Answer it; the session stays in the wait until it finishes");
+  expect(skill).toContain("then end your turn with one short line");
+  expect(skill).toContain("do not write it out a second time");
+  expect(skill).toContain("never open a turn of their own");
+  expect(skill).toContain("call `sessions_read` only when it says it was cut");
+  expect(ORIENTATION_VERSION).toBeGreaterThanOrEqual(9);
+});
+
 test("the skill no longer offers the built-in Agent as an address (#908)", () => {
   // It left the binary; a session told `sessions_send` to `agent` reaches the
   // person would send into a session id that does not exist.
