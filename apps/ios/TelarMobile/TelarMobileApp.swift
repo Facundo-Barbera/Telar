@@ -152,9 +152,13 @@ struct RootView: View {
             MobileNotifications.shared.settings = settings
             await MobileNotifications.shared.syncRegistrations()
         }
+        .onChange(of: inbox.working) { _, working in
+            if scenePhase == .active { MobileNotifications.shared.startAutomaticCards(working) }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 inbox.start()
+                MobileNotifications.shared.startAutomaticCards(inbox.working)
                 Task { await MobileNotifications.shared.syncRegistrations() }
                 // A phone that slept at home may wake on cellular: pick the
                 // address that answers now, and learn any the Mac gained (#832).

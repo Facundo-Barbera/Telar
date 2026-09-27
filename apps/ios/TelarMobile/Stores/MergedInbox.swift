@@ -67,6 +67,14 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         mergeInbox(order.compactMap { id in stores[id].map { (id, $0.sections) } }, filter: filter)
     }
 
+    /// Sessions with work in flight on every Mac that answered live, whatever
+    /// the filter: what an automatic Live Activity is about.
+    var working: [HostedSession] {
+        let stale = staleHosts
+        let all = mergeInbox(order.compactMap { id in stores[id].map { (id, $0.sections) } }, filter: nil)
+        return (all.active + all.tail).filter { $0.session.activity != .idle && !stale.contains($0.hostId) }
+    }
+
     /// HOW MANY SETTLED ROWS THE MACS ARE HOLDING BACK (#457), summed over the
     /// ones being shown. Their live reads answer the unsettled rows alone until
     /// somebody opens the shelf, so this is what draws the shelf that asks.
