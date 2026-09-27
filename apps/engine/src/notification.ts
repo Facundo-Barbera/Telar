@@ -318,7 +318,7 @@ const OUTCOME_PHRASE: Record<NonNullable<CohortMember["outcome"]>, string> = {
 /** A member's one line: who, how it ended, the first line it said, and the read. */
 function memberLine(member: CohortMember): string {
   const who = `${member.sessionId}${member.title ? ` "${member.title}"` : ""}`;
-  const state = member.outcome ? OUTCOME_PHRASE[member.outcome] : `STILL PENDING${member.blocked ? " (its blocker is unanswered)" : ""}`;
+  const state = member.outcome ? OUTCOME_PHRASE[member.outcome] : `STILL PENDING${member.blocked ? " (its blocker is unanswered)" : " (no result sent)"}`;
   const said = member.firstLine ? `: ${member.firstLine}` : "";
   const read = member.fetch ? ` · sessions_read(sessionId: "${member.fetch.sessionId}", runId: "${member.fetch.runId}")` : "";
   return `${who} — ${state}${said}${read}`;

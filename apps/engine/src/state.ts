@@ -13233,10 +13233,11 @@ export class EngineStore {
    * every member is done, rather than one per member. See `Cohort` for what the
    * subscriber is told and `advanceCohortMember` for what "done" means.
    *
-   * A MEMBER ALREADY IDLE ON AN ERRAND THIS SUBSCRIBER GAVE IT counts as done at
-   * once — a child fast enough to finish before its coordinator subscribed must
-   * not hang the cohort until it expires. The order that makes this right is
-   * the one the tools teach: send the tasks, then subscribe.
+   * A MEMBER THAT ALREADY FINISHED AN ERRAND THIS SUBSCRIBER GAVE IT counts as
+   * done at once — its `result` is already here, or its last turn failed or was
+   * stopped. A member that merely ENDED A TURN on the errand is not: a worker
+   * waiting on CI ends turns mid-errand, and counting that as done fired a
+   * cohort with the work still running.
    */
   subscribeCohort(
     subscriberSessionId: string,
@@ -13311,7 +13312,9 @@ export class EngineStore {
     ).at(-1);
     if (said?.agentIntent === "blocker") return { ...base, blocked: true };
     if (said) return { ...base, outcome: "result", fetch: { sessionId: subscriberSessionId, runId: said.runId }, firstLine: firstLineOf(said.input), at };
-    const kind: WakeKind = last.state === "completed" ? "turn_completed" : last.state === "failed" ? "turn_failed" : "turn_stopped";
+    // A turn that merely completed is not the errand's end; only its result is.
+    if (last.state === "completed") return base;
+    const kind: WakeKind = last.state === "failed" ? "turn_failed" : "turn_stopped";
     return { ...base, ...this.cohortOutcome(target.id, kind, last, { ...(last.resultText ? { resultText: last.resultText } : {}), ...(last.failure ? { failure: last.failure } : {}) }), at };
   }
 
@@ -13323,18 +13326,39 @@ export class EngineStore {
   }
 
   /**
-   * WHAT "DONE" MEANS FOR A MEMBER — a turn of its ending.
+   * WHAT "DONE" MEANS FOR A MEMBER — the errand's end, not a turn's.
    *
-   * A completed, failed or stopped turn ends a member's wait UNLESS it has an
-   * unanswered blocker: a worker that asks for a decision and ends its turn to
-   * wait for one is not done, it is waiting on the subscriber. Its own `result`
-   * ends the wait too, and is recorded where it lands (`submitAgentTurn`). A
-   * turn the driver opened for background work is not an ending (#891).
+   * On an errand the subscriber gave it, a member is done when it sends its
+   * `result` (recorded where it lands, `submitAgentTurn`), when a turn FAILS or
+   * is STOPPED, or when it is put away (`reviewCohorts`). A turn that merely
+   * completes is not an ending: a worker waiting on CI, or on the answer to its
+   * blocker, ends turns mid-errand. A failed or stopped turn ends even a blocked
+   * member's wait — nothing more is coming from it.
+   *
+   * A member the subscriber never gave an errand has no result to send, so for
+   * it any turn's end is the ending. A turn the driver opened for background
+   * work never is (#891).
    */
   private advanceCohortMember(sessionId: string, kind: WakeKind, turn: Turn, context: { resultText?: string; failure?: Turn["failure"] }): void {
     if (!TERMINAL_WAKE_KINDS.includes(kind)) return;
     if (turn.origin === "provider" && turn.providerReason?.kind === "background_task") return;
-    this.updateCohortMembers(sessionId, undefined, (member) => (member.outcome || member.blocked ? undefined : { ...member, ...this.cohortOutcome(sessionId, kind, turn, context), at: this.now() }));
+    const completed = kind === "turn_completed";
+    const errandFrom = new Map<string, boolean>();
+    const onErrand = (subscriberSessionId: string): boolean => {
+      if (!errandFrom.has(subscriberSessionId)) {
+        errandFrom.set(
+          subscriberSessionId,
+          this.scanQueue(sessionId).turns.some((each) => each.agentDelivery !== "passive" && each.sender?.sessionId === subscriberSessionId),
+        );
+      }
+      return errandFrom.get(subscriberSessionId)!;
+    };
+    this.updateCohortMembers(sessionId, undefined, (member, subscriberSessionId) => {
+      if (member.outcome) return undefined;
+      if (completed && (member.blocked || onErrand(subscriberSessionId))) return undefined;
+      const { blocked: _ended, ...rest } = member;
+      return { ...rest, ...this.cohortOutcome(sessionId, kind, turn, context), at: this.now() };
+    });
   }
 
   /** Does an open cohort `subscriberSessionId` holds still take `memberSessionId`'s result? */
@@ -13378,14 +13402,18 @@ export class EngineStore {
    * `update`, which returns undefined to leave one alone. The cohorts that are
    * now complete are delivered.
    */
-  private updateCohortMembers(memberSessionId: string, subscriberSessionId: string | undefined, update: (member: CohortMember) => CohortMember | undefined): void {
+  private updateCohortMembers(
+    memberSessionId: string,
+    subscriberSessionId: string | undefined,
+    update: (member: CohortMember, subscriberSessionId: string) => CohortMember | undefined,
+  ): void {
     const all = this.readCohorts();
     const touched: string[] = [];
     for (const cohort of all) {
       if (cohort.ready || (subscriberSessionId !== undefined && cohort.subscriberSessionId !== subscriberSessionId)) continue;
       cohort.members = cohort.members.map((member) => {
         if (member.sessionId !== memberSessionId) return member;
-        const next = update(member);
+        const next = update(member, cohort.subscriberSessionId);
         if (!next) return member;
         touched.push(cohort.id);
         return next;
