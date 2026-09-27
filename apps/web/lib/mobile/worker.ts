@@ -33,6 +33,12 @@ const RETRY_CEILING = 3600;
 export const PARK_AFTER_FAILURES = 20;
 
 /** Fold after successful delivery only. First sight baselines history, not a burst of old alerts. */
+/** A card that has just turned to "Needs you" goes at priority 10; the heartbeat
+ *  repeating it does not, or the refresh would spend iOS's priority budget. Ends
+ *  are already 10 (`apnsPriority`). */
+export function urgentActivity(delivery: Delivery, urgent: boolean): Delivery {
+  return urgent ? { ...delivery, urgent: true } : delivery;
+}
 export async function deliverRecord(
   record: PushRecord,
   sessions: SessionSignal[],
@@ -110,8 +116,9 @@ export async function deliverRecord(
   for (const follow of automatic) {
     // The activity exists, so the start it came from worked: the attempt count has done its job.
     if (active.length && record.liveActivities) { next.automaticStartedAt = follow.startedAt; next.automaticStarts = undefined; }
-    if (aggregateSignal === record.automaticSignal && now - (record.activitySent[follow.token] ?? 0) < ACTIVITY_REFRESH_S) continue;
-    const result = await safeSend(automaticActivityDelivery(record, sessions, follow.token, follow.startedAt, now));
+    const moved = aggregateSignal !== record.automaticSignal;
+    if (!moved && now - (record.activitySent[follow.token] ?? 0) < ACTIVITY_REFRESH_S) continue;
+    const result = await safeSend(urgentActivity(automaticActivityDelivery(record, sessions, follow.token, follow.startedAt, now), moved && active[0]?.activity === "blocked"));
     if (isDeadToken(result) || (result.status === 200 && (!active.length || !record.liveActivities))) {
       next.activities = next.activities.filter(a => a.token !== follow.token);
       delete next.activitySent[follow.token];
@@ -121,7 +128,7 @@ export async function deliverRecord(
     const session = sessions.find(s => s.id === follow.sessionId);
     const changed = session && record.seen[session.id] !== signalKey(session);
     if (!changed && now - (record.activitySent[follow.token] ?? 0) < ACTIVITY_REFRESH_S) continue;
-    const result = await safeSend(activityDelivery(record, follow, session, now));
+    const result = await safeSend(urgentActivity(activityDelivery(record, follow, session, now), !!changed && session?.activity === "blocked"));
     if (isDeadToken(result) || (result.status === 200 && (!session || turnIsOver(session.activity)))) {
       next.activities = next.activities.filter(a => a.token !== follow.token);
       delete next.activitySent[follow.token];
@@ -200,10 +207,27 @@ const HEARTBEAT_INTERVAL = ACTIVITY_REFRESH_S * 1000;
  *  ending writes several events at once, and one wide pass for the burst is
  *  the point — long enough to coalesce, short enough that "immediate" is still
  *  the honest word for it. */
-const FEED_COALESCE_MS = 250;
+export const FEED_COALESCE_MS = 250;
+/**
+ * WHAT A FRAME DOES TO THE SCHEDULE. It used to clear the pending timer and set
+ * a new one every time — a debounce with no ceiling. A working session writes
+ * events faster than every 250 ms, so while anything streamed the pass kept
+ * sliding back, and a session that turned to "needs you" beside it waited for
+ * the whole machine to go quiet. Now the first frame sets the pass and later
+ * ones join it; a frame during a pass asks for one more straight after.
+ */
+export function frameAction(dueAt: number | undefined, running: boolean, now: number): "after-pass" | "join" | "schedule" {
+  if (running) return "after-pass";
+  return dueAt !== undefined && dueAt - now <= FEED_COALESCE_MS ? "join" : "schedule";
+}
 
 type WorkerState = {
   telarMobilePushTimer?: ReturnType<typeof setTimeout>;
+  /** Milliseconds: when the pending timer fires. See `frameAction`. */
+  telarMobilePushDueAt?: number;
+  telarMobilePushRunning?: boolean;
+  /** A frame arrived while a pass ran; the next pass follows at once. */
+  telarMobilePushNudged?: boolean;
   /** Milliseconds. The relay answered 429 with a `Retry-After`: this host's
    *  daily budget is spent and nothing is sent until it resets (#584). */
   telarMobilePushPausedUntil?: number;
@@ -465,7 +489,16 @@ export function startMobilePushWorker(): void {
   const desktop = desktopAttached();
   if (workerGlobal.telarMobilePushTimer || (!pushAvailable() && !desktop) || process.env.TELAR_COCKPIT !== "1") return;
   if (desktop) listenForDesktop(async (sessionId, requestId, input) => (await engineClient()).resolveRequest(sessionId, requestId, input));
+  const schedule = (delay: number) => {
+    if (workerGlobal.telarMobilePushTimer) clearTimeout(workerGlobal.telarMobilePushTimer);
+    workerGlobal.telarMobilePushDueAt = Date.now() + delay;
+    workerGlobal.telarMobilePushTimer = setTimeout(tick, delay);
+    workerGlobal.telarMobilePushTimer.unref();
+  };
   const tick = async () => {
+    workerGlobal.telarMobilePushRunning = true;
+    workerGlobal.telarMobilePushNudged = false;
+    delete workerGlobal.telarMobilePushDueAt;
     // Recomputed every pass; any early return below leaves the ordinary cadence.
     workerGlobal.telarMobilePushHeartbeat = false;
     try {
@@ -578,22 +611,21 @@ export function startMobilePushWorker(): void {
     } finally {
       // THE CADENCE FOLLOWS THE FEED (#586): the reconcile when frames are
       // arriving, the old ten seconds when they are not.
-      workerGlobal.telarMobilePushTimer = setTimeout(tick, pollDelay(workerGlobal.telarMobilePushFeedOpen === true, workerGlobal.telarMobilePushHeartbeat === true));
-      workerGlobal.telarMobilePushTimer.unref();
+      workerGlobal.telarMobilePushRunning = false;
+      schedule(workerGlobal.telarMobilePushNudged ? FEED_COALESCE_MS : pollDelay(workerGlobal.telarMobilePushFeedOpen === true, workerGlobal.telarMobilePushHeartbeat === true));
     }
   };
-  workerGlobal.telarMobilePushTimer = setTimeout(tick, 0);
-  workerGlobal.telarMobilePushTimer.unref();
+  schedule(0);
   /**
-   * A FRAME RESCHEDULES THE PASS RATHER THAN RUNNING ONE (#586). Several
+   * A FRAME SCHEDULES THE PASS RATHER THAN RUNNING ONE (#586). Several
    * events land together constantly — a turn completing writes more than one —
    * and running a wide pass per frame would be worse than the poll this
-   * replaces. Clearing the pending timer and setting a short one coalesces a
-   * burst into a single pass a moment later.
+   * replaces. A burst becomes one pass at most `FEED_COALESCE_MS` after its
+   * first frame; see `frameAction` for why it is not pushed back further.
    */
   openSessionFeed(() => {
-    if (workerGlobal.telarMobilePushTimer) clearTimeout(workerGlobal.telarMobilePushTimer);
-    workerGlobal.telarMobilePushTimer = setTimeout(tick, FEED_COALESCE_MS);
-    workerGlobal.telarMobilePushTimer.unref();
+    const action = frameAction(workerGlobal.telarMobilePushDueAt, workerGlobal.telarMobilePushRunning === true, Date.now());
+    if (action === "after-pass") workerGlobal.telarMobilePushNudged = true;
+    else if (action === "schedule") schedule(FEED_COALESCE_MS);
   });
 }

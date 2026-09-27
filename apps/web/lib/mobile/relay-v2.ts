@@ -51,7 +51,8 @@ export function v2Body(delivery: Delivery): Record<string, unknown> | undefined 
   const base = { kind: delivery.kind, collapseId: delivery.collapseId, payload: delivery.payload };
   if (delivery.kind === "alert" || delivery.kind === "background") return base;
   if (delivery.payload.aps.event === "start") return { ...base, start: true };
-  return delivery.activityId !== undefined && ACTIVITY.test(delivery.activityId) ? { ...base, activity: delivery.activityId } : undefined;
+  // A relay that predates `urgent` ignores it and sends at its own priority.
+  return delivery.activityId !== undefined && ACTIVITY.test(delivery.activityId) ? { ...base, activity: delivery.activityId, ...(delivery.urgent ? { urgent: true } : {}) } : undefined;
 }
 
 export async function relayV2Delivery(credential: RelayCredential, delivery: Delivery, fetchImpl: typeof fetch = fetch): Promise<DeliveryResult> {

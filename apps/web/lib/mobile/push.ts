@@ -107,8 +107,17 @@ export type PushPayload = { aps: Record<string, unknown>; url?: string; request?
 /** The phone registers these (`NotificationActions.swift`): Approve + Open, or Open alone. */
 export const CATEGORY_REQUEST = "TELAR_REQUEST", CATEGORY_SESSION = "TELAR_SESSION";
 /** `activityId` names a Live Activity for relay v2, which holds its token.
- *  `background` is the silent read-sync push (`read-sync.ts`). */
-export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity" | "background"; collapseId: string; payload: PushPayload; activityId?: string };
+ *  `background` is the silent read-sync push (`read-sync.ts`). `urgent` asks
+ *  for APNs priority 10 on a Live Activity update — see `urgentActivity`. */
+export type Delivery = { token: string; topic: string; sandbox: boolean; kind: "alert" | "liveactivity" | "background"; collapseId: string; payload: PushPayload; activityId?: string; urgent?: boolean };
+/** THE PRIORITY APNS DELIVERS AT. Priority 5 is opportunistic: iOS may hold a
+ *  Live Activity update for minutes, which is fine for "still working" and not
+ *  for "needs you". Starts, ends and urgent updates go at 10, which iOS budgets,
+ *  so only a transition the person has to act on is marked urgent. */
+export function apnsPriority(delivery: Delivery): "5" | "10" {
+  if (delivery.kind === "background") return "5";
+  return delivery.kind === "alert" || delivery.urgent === true || ["start", "end"].includes(String(delivery.payload.aps.event)) ? "10" : "5";
+}
 
 /**
  * WHAT CAME BACK FROM A SEND — issue #584.
@@ -366,7 +375,7 @@ export async function sendAPNs(delivery: Delivery): Promise<DeliveryResult> {
     const fail = () => { clearTimeout(timer); client.destroy(); reject(new Error("APNs transport failed")); };
     client.on("error", fail);
     const request = client.request({ ":method": "POST", ":path": `/3/device/${delivery.token}`, authorization,
-      "apns-topic": delivery.topic, "apns-push-type": delivery.kind, "apns-priority": delivery.kind === "alert" || ["start", "end"].includes(String(delivery.payload.aps.event)) ? "10" : "5",
+      "apns-topic": delivery.topic, "apns-push-type": delivery.kind, "apns-priority": apnsPriority(delivery),
       // A background push is never displayed, so it has nothing to collapse.
       "apns-expiration": String(Math.floor(Date.now() / 1000) + 3600), ...(delivery.kind === "background" ? {} : { "apns-collapse-id": delivery.collapseId }) });
     let status = 0;
