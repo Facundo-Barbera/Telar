@@ -22,15 +22,16 @@ const NEW_BUNDLE_ID = "io.github.novarix.telar";
 const FEED_PREFIX = NEW_BUNDLE_ID;
 const CHANNELS = ["beta", "nightly"];
 const CONFIRM_SECONDS = 180;
-// last-good.app stays until N's second launch AND this long after it confirmed.
-const KEEP_LAST_GOOD_MS = 7 * 24 * 60 * 60 * 1000;
-// The old id's leftovers N may delete once it has booted, relative to
-// ~/Library. Exact names: com.telar.desktop.computer-use state is never touched.
+// The old id's leftovers N deletes once it has booted, relative to ~/Library.
+// Exact names: com.telar.desktop.computer-use state is never touched.
 const LEGACY_LEFTOVERS = [
   ["Caches", `${LEGACY_BUNDLE_ID}.ShipIt`],
   ["Saved Application State", `${LEGACY_BUNDLE_ID}.savedState`],
   ["HTTPStorages", LEGACY_BUNDLE_ID],
+  ["Preferences", `${LEGACY_BUNDLE_ID}.plist`],
 ];
+// Exact-match on one id: the helper's grants live under its own id.
+const TCC_RESET_ARGS = ["reset", "All", LEGACY_BUNDLE_ID];
 
 const MAX_ZIP_BYTES = 2 * 1024 ** 3;
 
@@ -226,6 +227,9 @@ const paths = (workDir) => ({
   failed: path.join(workDir, "failed.json"),
   lastGood: path.join(workDir, "last-good.app"),
   staged: path.join(workDir, "staged"),
+  script: path.join(workDir, "handoff.sh"),
+  // An empty bundle carrying the old id, so tccutil can still resolve it.
+  legacyStub: path.join(workDir, "legacy-id.app"),
 });
 
 /**
@@ -249,23 +253,66 @@ function offerDecision(workDir, manifest) {
 /**
  * Run by every packaged launch once the engine has a worker. On the first N
  * boot after a swap it writes confirmed.json, which is what the helper waits
- * for. Later launches count up, and once N has launched twice and a week has
- * passed, last-good.app is no longer needed.
+ * for, and asks for the old identity to be cleaned up. A launch that finds a
+ * confirmed swap not yet cleaned up (an earlier attempt was cut short, or the
+ * swap predates this rule) asks again.
+ *
+ * WHY THE FIRST BOOT AND NOT A ROLLBACK WINDOW: last-good.app is only ever
+ * restored by the helper, and only while it waits for this confirmation. Once
+ * the helper has seen it and exited, nothing can bring last-good back, so
+ * keeping it only leaves an old-id Telar on disk for System Settings to list.
  */
 function confirmBoot(workDir, { bundleId, version, now = Date.now() }) {
   const p = paths(workDir);
   const pending = readJson(p.pending);
   if (pending && pending.bundleId === bundleId) {
-    writeJson(p.confirmed, { version, bundleId, confirmedAt: now, launches: 1 });
+    writeJson(p.confirmed, { version, bundleId, confirmedAt: now });
     fs.rmSync(p.pending, { force: true });
     return { action: "confirmed" };
   }
   const confirmed = readJson(p.confirmed);
-  if (!confirmed || confirmed.bundleId !== bundleId || confirmed.lastGoodRemoved) return { action: "none" };
-  const launches = (confirmed.launches ?? 1) + 1;
-  const due = now - confirmed.confirmedAt >= KEEP_LAST_GOOD_MS;
-  writeJson(p.confirmed, { ...confirmed, launches, ...(due ? { lastGoodRemoved: true } : {}) });
-  return { action: due ? "remove-last-good" : "none" };
+  if (!confirmed || confirmed.bundleId !== bundleId || confirmed.cleanedUp) return { action: "none" };
+  return { action: "clean-up" };
+}
+
+function markCleanedUp(workDir) {
+  const file = paths(workDir).confirmed;
+  const confirmed = readJson(file);
+  if (confirmed) writeJson(file, { ...confirmed, cleanedUp: true });
+}
+
+/** Whether the swap helper is still running, from `ps -axo command=`. */
+function helperRunning(psOutput, script) {
+  return (psOutput || "").split("\n").some((line) => line.includes(script));
+}
+
+/**
+ * Everything the old identity left that N deletes, as absolute paths: the
+ * rollback copy, the stub, and the exact old-id names in ~/Library. Never the
+ * hand-off folder itself, userData, or the helper's state.
+ */
+function legacyLeftovers(workDir, home) {
+  const p = paths(workDir);
+  return [p.lastGood, p.legacyStub, p.staged, ...LEGACY_LEFTOVERS.map((parts) => path.join(home, "Library", ...parts))];
+}
+
+/** LaunchServices only registers a bundle with an executable, so it gets one that does nothing. */
+function writeLegacyStub(workDir) {
+  const stub = paths(workDir).legacyStub;
+  fs.mkdirSync(path.join(stub, "Contents", "MacOS"), { recursive: true });
+  fs.writeFileSync(path.join(stub, "Contents", "MacOS", "stub"), "#!/bin/sh\n", { mode: 0o755 });
+  fs.writeFileSync(
+    path.join(stub, "Contents", "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>${LEGACY_BUNDLE_ID}</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleExecutable</key><string>stub</string>
+</dict></plist>
+`,
+  );
+  return stub;
 }
 
 /**
@@ -370,8 +417,8 @@ module.exports = {
   FEED_PREFIX,
   CHANNELS,
   CONFIRM_SECONDS,
-  KEEP_LAST_GOOD_MS,
   LEGACY_LEFTOVERS,
+  TCC_RESET_ARGS,
   readFeedUrl,
   manifestUrl,
   zipUrl,
@@ -390,5 +437,9 @@ module.exports = {
   writeJson,
   offerDecision,
   confirmBoot,
+  markCleanedUp,
+  helperRunning,
+  legacyLeftovers,
+  writeLegacyStub,
   helperScript,
 };

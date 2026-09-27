@@ -5,8 +5,8 @@
 //                explain what macOS will ask again, and swap on the person's
 //                click. Nothing installs without that click: the Keychain
 //                prompt that follows needs somebody there to answer it.
-//   recordBoot() in every packaged launch: N's first boot confirms the swap;
-//                later ones tidy up what the old id left behind.
+//   recordBoot() in every packaged launch: N's first boot confirms the swap
+//                and removes what the old id left behind.
 //
 // Inert until a handoff-<channel>-mac.json exists under N's feed prefix.
 "use strict";
@@ -25,6 +25,9 @@ const MANIFEST_TIMEOUT_MS = 30_000;
 const PARENT_EXIT_SECONDS = 600;
 // SIGTERM to SIGKILL, when a new app that never confirmed is stopped.
 const KILL_GRACE_SECONDS = 30;
+// Past this the helper has either exited or is rolling back.
+const HELPER_EXIT_WAIT_MS = (core.CONFIRM_SECONDS + KILL_GRACE_SECONDS + 30) * 1000;
+const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
 let inFlight = false;
 let declined = false;
@@ -137,7 +140,7 @@ async function handOver({ plan, stagedApp, manifest, team, quit, log }) {
   }
   const dir = workDir();
   core.writeJson(core.paths(dir).pending, { version: manifest.version, bundleId: core.NEW_BUNDLE_ID, target: plan.target });
-  const script = path.join(dir, "handoff.sh");
+  const script = core.paths(dir).script;
   fs.writeFileSync(script, core.helperScript(), { mode: 0o755 });
   const helper = spawn(
     "bash",
@@ -245,30 +248,49 @@ function awaitingConfirmation() {
   return fs.existsSync(core.paths(workDir()).pending);
 }
 
-function removeLegacyLeftovers(log) {
-  for (const parts of core.LEGACY_LEFTOVERS) {
-    const target = path.join(os.homedir(), "Library", ...parts);
+/** Never rejects: a cleanup step that fails is logged, not fatal. */
+function execResult(cmd, args) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 60_000 }, (err, stdout, stderr) => resolve({ ok: !err, output: `${stderr || ""}${stdout || ""}`.trim() || err?.message || "" }));
+  });
+}
+
+function helperRunning(script) {
+  return new Promise((resolve) => {
+    execFile("ps", ["-axo", "command="], (err, stdout) => resolve(!err && core.helperRunning(stdout, script)));
+  });
+}
+
+/**
+ * Remove the old identity: its System Settings entries, the rollback copy and
+ * its ~/Library leftovers. Waits for the swap helper first, because it moves
+ * last-good back if the confirmation reached it too late.
+ */
+async function cleanUpOldIdentity(log) {
+  const dir = workDir();
+  const p = core.paths(dir);
+  const started = Date.now();
+  while (await helperRunning(p.script)) {
+    if (Date.now() - started > HELPER_EXIT_WAIT_MS) return log("hand-off: the swap helper is still running; cleaning up next launch");
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  // tccutil only resolves an id LaunchServices knows: last-good carries the old
+  // one; without it, an empty stub does.
+  const holder = fs.existsSync(p.lastGood) ? p.lastGood : core.writeLegacyStub(dir);
+  await execResult(LSREGISTER, ["-f", holder]);
+  const reset = await execResult("tccutil", core.TCC_RESET_ARGS);
+  log(reset.ok ? "hand-off: removed the old identity's System Settings entries" : `hand-off: tccutil reset failed: ${reset.output}`);
+  await execResult(LSREGISTER, ["-u", holder]);
+  for (const target of core.legacyLeftovers(dir, os.homedir())) {
     try {
       fs.rmSync(target, { recursive: true, force: true });
     } catch (err) {
-      log(`could not remove ${target}: ${err.message}`);
+      log(`hand-off: could not remove ${target}: ${err.message}`);
     }
   }
-}
-
-async function offerPermissionCleanup(log) {
-  const { response } = await dialog.showMessageBox({
-    type: "info",
-    buttons: ["Remove old entries", "Keep"],
-    defaultId: 0,
-    cancelId: 1,
-    message: "Telar has moved to its new identity",
-    detail: "System Settings still lists permissions for the old Telar. Removing them doesn't affect this Telar or computer use.",
-  });
-  if (response !== 0) return;
-  execFile("tccutil", ["reset", "All", core.LEGACY_BUNDLE_ID], (err, _stdout, stderr) => {
-    log(err ? `tccutil reset failed: ${stderr || err.message}` : "removed the old identity's permission entries");
-  });
+  for (const name of fs.readdirSync(dir)) if (name.endsWith(".zip")) fs.rmSync(path.join(dir, name), { force: true });
+  core.markCleanedUp(dir);
+  log("hand-off: removed the previous app and the old identity's leftovers");
 }
 
 /** Called once the engine has a worker. `log` takes one line. */
@@ -281,16 +303,9 @@ function recordBoot(log) {
   const bundleId = core.readBundleId(bundle);
   if (!bundleId) return;
   const { action } = core.confirmBoot(dir, { bundleId, version: app.getVersion() });
-  if (action === "confirmed") {
-    log(`hand-off confirmed: ${bundleId} ${app.getVersion()}`);
-    removeLegacyLeftovers(log);
-    fs.rmSync(p.staged, { recursive: true, force: true });
-    for (const name of fs.readdirSync(dir)) if (name.endsWith(".zip")) fs.rmSync(path.join(dir, name), { force: true });
-    void offerPermissionCleanup(log);
-  } else if (action === "remove-last-good") {
-    fs.rmSync(p.lastGood, { recursive: true, force: true });
-    log("hand-off: removed the previous app kept for rollback");
-  }
+  if (action === "none") return;
+  if (action === "confirmed") log(`hand-off confirmed: ${bundleId} ${app.getVersion()}`);
+  cleanUpOldIdentity(log).catch((err) => log(`hand-off: cleanup failed: ${err?.message || err}`));
 }
 
 module.exports = { start, awaitingConfirmation, recordBoot };
