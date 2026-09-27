@@ -2,9 +2,9 @@ import CryptoKit
 import DeviceCheck
 import Foundation
 
-/// What a Mac needs to send to this phone through relay v2: which
+/// What a Mac needs to send to this phone through the push relay: which
 /// registration, and the key that signs its requests. Handed to each paired
-/// Mac inside `PUT /api/mobile/push`. The Mac never learns an APNs token.
+/// Mac inside `PUT /api/mobile/push`; the relay holds the APNs tokens.
 struct RelayCredential: Encodable, Equatable {
     var url: String
     var handle: String
@@ -34,12 +34,11 @@ protocol AppAttesting {
 extension DCAppAttestService: AppAttesting {}
 
 /**
- REGISTERING THIS PHONE WITH THE PUSH RELAY — relay v2.
+ REGISTERING THIS PHONE WITH THE PUSH RELAY.
 
- v1 needed every Mac provisioned by hand. With v2 the phone registers itself,
- proving with App Attest that it is a genuine Telar build, and gives each
- paired Mac its own send key. After pairing, the only thing left for a person
- to do is allow notifications.
+ The phone registers itself, proving with App Attest that it is a genuine
+ Telar build, and gives each paired Mac its own send key. After pairing, the
+ only thing left for a person to do is allow notifications.
 
  - Register once: challenge → attest a fresh key → `POST /v2/devices` → handle.
  - Keep the relay's copy of the tokens current: `PUT` whenever they change.
@@ -47,9 +46,14 @@ extension DCAppAttestService: AppAttesting {}
 
  Every request after registration carries an App Attest assertion over
  `"<METHOD> <path>\n<body>"`. A registration the relay no longer knows is
- started over, which also rotates every Mac's key. Wherever App Attest is
- unavailable (the simulator, an unknown bundle) this answers nil, and the
- phone keeps using v1.
+ started over, which also rotates every Mac's key.
+
+ WITHOUT APP ATTEST THERE IS NO PUSH. The simulator, a device that does not
+ support it, an unknown bundle, or a relay that refuses the attestation: this
+ answers nil, `unavailable` turns true, and it stays true until the next
+ launch — no sync spends another attestation or request on it. Everything
+ else in the app works as before; only a Mac with its own developer APNs key
+ can still reach such a phone.
  */
 @MainActor final class PushRelayClient {
     struct State: Codable, Equatable {
@@ -64,6 +68,8 @@ extension DCAppAttestService: AppAttesting {}
         }
     }
     struct RelayError: Error { var status: Int }
+    /// The relay rejected this phone's attestation: not something a retry fixes.
+    struct AttestationRefused: Error {}
 
     typealias Transport = (URLRequest) async throws -> (Data, URLResponse)
     nonisolated static let bundles: Set<String> = ["com.telar.mobile", "com.telar.mobile.dev"]
@@ -76,6 +82,10 @@ extension DCAppAttestService: AppAttesting {}
     static let shared = PushRelayClient()
 
     private(set) var state: State
+    /// This phone cannot register with the relay, so push is unavailable on it.
+    var unavailable: Bool { refused || !attest.isSupported || !Self.bundles.contains(bundle) }
+    /// Held for this launch only: an OS update may bring App Attest with it.
+    private var refused = false
     private let url: URL
     private let bundle: String
     private let sandbox: Bool
@@ -111,12 +121,19 @@ extension DCAppAttestService: AppAttesting {}
     }
 
     /// This Mac's credential, registering or refreshing first as needed. Nil
-    /// when v2 is unavailable here, and the Mac falls back to v1.
+    /// when this phone cannot register (see `unavailable`) or the relay could
+    /// not be reached; the next sync tries again only in the second case.
     func credential(for host: String, tokens: RelayTokens) async -> RelayCredential? {
-        guard attest.isSupported, Self.bundles.contains(bundle) else { return nil }
+        guard !unavailable else { return nil }
         do {
             try await synchronize(tokens)
             return try await key(for: host)
+        } catch is AttestationRefused {
+            refused = true
+            return nil
+        } catch let error as DCError where error.code == .featureUnsupported {
+            refused = true
+            return nil
         } catch {
             return nil
         }
@@ -173,6 +190,7 @@ extension DCAppAttestService: AppAttesting {}
         }
         let body = try JSONEncoder().encode(Registration(keyId: keyId, attestation: attestation.base64EncodedString(), challenge: challenge, bundle: bundle, sandbox: sandbox, token: tokens.token, pushToStartToken: tokens.pushToStartToken, activities: tokens.activities))
         let (created, answer) = try await request("POST", "/v2/devices", body: body)
+        if created == 401 { throw AttestationRefused() }
         guard created == 201, let handle = try JSONDecoder().decode([String: String].self, from: answer)["handle"] else { throw RelayError(status: created) }
         // A new registration: every Mac's old key belonged to the old one.
         state = State(attestKeyId: keyId, handle: handle, registered: tokens, refreshedAt: now())

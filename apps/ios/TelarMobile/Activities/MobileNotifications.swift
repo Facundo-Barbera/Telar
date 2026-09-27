@@ -21,8 +21,9 @@ struct PushRegistration: Encodable {
     var liveActivities: Bool = false
     var pushToStartToken: String? = nil
     var hostName: String? = nil
-    /// Relay v2: how this Mac sends to this phone without holding its tokens.
-    /// An older Mac ignores it and keeps using the fields above.
+    /// How this Mac sends to this phone through the push relay. Nil when this
+    /// phone cannot register there; the raw tokens above then reach only a Mac
+    /// with its own developer APNs key, and every other Mac sends nothing.
     var relay: RelayCredential? = nil
 }
 struct PushStatus: Decodable {
@@ -37,13 +38,9 @@ struct PushStatus: Decodable {
     var visibleSession: ScopedSessionID?
     var settings: AppSettings?
     var status = "Notifications are off"
-    /// WHICH MACS CANNOT PUSH, AND WHY — issue #579.
-    ///
-    /// This used to be one integer called `unavailable`, counting a Mac with no
-    /// relay and a Mac that did not answer as the same thing. They are not: one
-    /// is a credential somebody has to go and write, in a named screen, on that
-    /// machine; the other is a network. Kept apart so the banner and the status
-    /// line can point at the right one — see `PushReadiness`.
+    /// WHICH MACS CANNOT PUSH, AND WHY — issue #579. A Mac that will not send
+    /// and a Mac that did not answer are kept apart so the status line can say
+    /// which — see `PushReadiness`.
     var readiness = PushReadiness()
     var activityError: String?
     var followed: Set<ScopedSessionID> = []
@@ -175,7 +172,11 @@ struct PushStatus: Decodable {
             attemptedRegistration = true
             UIApplication.shared.registerForRemoteNotifications()
         }
-        guard let token else { return }
+        guard let token else {
+            // No device token and no relay: nothing can ever reach this phone.
+            if PushRelayClient.shared.unavailable { status = PushReadiness.unsupportedLine }
+            return
+        }
         let authorization = await UNUserNotificationCenter.current().notificationSettings()
         let allowed = authorization.authorizationStatus == .authorized || authorization.authorizationStatus == .provisional
         var next = PushReadiness()
@@ -202,13 +203,13 @@ struct PushStatus: Decodable {
                     mutedSessions: mutedSessions, activities: subscriptions,
                     liveActivities: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
                     pushToStartToken: startToken, hostName: host.name, relay: relay))
-                // REGISTERED, AND TOLD IT WILL HEAR NOTHING. The Mac has this
-                // phone's token and no relay to send with; that is a fact about
-                // the Mac, and the banner says which one.
-                if !reply.configured { next.missingRelay.insert(host.id) }
+                // REGISTERED, AND TOLD IT WILL HEAR NOTHING: this phone gave the
+                // Mac no relay credential, and it has no APNs key of its own.
+                if !reply.configured { next.notSending.insert(host.id) }
                 if let report = reply.activity { reports[host.id] = report }
             } catch { next.unreachable.insert(host.id) }
         }
+        next.deviceUnsupported = PushRelayClient.shared.unavailable
         readiness = next
         activityReports = reports
         // A Mac says the relay has no start token for this phone: re-read it from
@@ -451,7 +452,10 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         Task { @MainActor in MobileNotifications.shared.registered(deviceToken) }
     }
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        Task { @MainActor in MobileNotifications.shared.status = "Push registration failed. Check network and signing." }
+        Task { @MainActor in
+            MobileNotifications.shared.status = PushRelayClient.shared.unavailable
+                ? PushReadiness.unsupportedLine : "Push registration failed. Check network and signing."
+        }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         if response.actionIdentifier == NotificationActions.approve,

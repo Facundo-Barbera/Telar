@@ -261,27 +261,31 @@ The card aggregates active sessions, prioritizes work needing input, and ends
 when that Mac has no active work. There is no per-session Follow step. Stale activities explicitly say they
 are waiting for an update. Finished activities dismiss after five minutes.
 
-The provisioned Mac sends **host → Cloudflare relay → APNs → iPhone**.
+Each Mac sends **host → Cloudflare push relay → APNs → iPhone**.
 Conversations, approvals, and notification registration use the paired host
 connection, including Tailscale. The Mac remains the source of session events.
 The relay uses the existing Cloudflare Free plan; exceeding its free quotas
 stops service rather than enabling a paid plan. See the
-[relay setup](../../workers/push-relay/README.md) and
-[transport probe evidence](../../workers/apns-probe/README.md).
+[relay README](../../workers/push-relay/README.md).
 
-Deployment credentials remain in GitHub Actions secrets. The APNs key is
-supplied to Cloudflare as a Worker secret by the deployment workflow. The Mac
-uses its own revocable relay identity in Keychain (`com.telar.push-relay`,
-account `host`); only its public hash is registered through GitHub. No credential
-is bundled into the iPhone or desktop application. Cockpit startup enables the
-Keychain adapter; builds and test imports do not read it.
+The phone registers itself with the relay: it proves with App Attest that it
+is a genuine `com.telar.mobile` or `com.telar.mobile.dev` build
+(`POST /v2/devices`), keeps the relay's copy of its APNs tokens current, and
+mints one revocable send key per paired Mac, handed over in
+`PUT /api/mobile/push` (`PushRelayClient.swift`). A Mac needs no relay setup of
+its own, and no credential is bundled into the iPhone or desktop application.
 
-The existing Apple key supports production `com.telar.mobile` only. Sandbox
-and `com.telar.mobile.dev` registrations are unavailable through this relay.
-A signed production build is required to verify device delivery.
+**Without App Attest there is no push.** On the Simulator, a device where
+`DCAppAttestService.isSupported` is false, an unknown bundle id, or when the
+relay refuses the attestation, the phone gets no relay credential. Settings →
+Notifications & activities then says "Notifications can't be set up on this
+device." The phone does not retry until the next launch, and everything else
+in the app works as usual.
 
-Direct APNs delivery remains available for a host without a relay identity by
-configuring its cockpit process with a protected key file:
+The phone still includes its raw APNs tokens in `PUT /api/mobile/push`. They
+are only used by a Mac in developer direct mode, which sends with its own APNs
+key instead of the relay. Configure the cockpit process with a protected key
+file:
 
 ```
 TELAR_APNS_KEY_ID=<APNs key identifier>
