@@ -77,6 +77,17 @@ import Testing
         #expect(many.count == 8)
     }
 
+    @Test func theFingerprintIsTheMacsFormulaAndNamesWhichTokenWasRefused() {
+        // Same formula as tokenFingerprint in apps/web/lib/mobile/push.ts.
+        #expect(StartTokenPolicy.fingerprint(String(repeating: "b", count: 64)) == "a0fab1377f49a759")
+        var old = ActivityReport(card: false, lastStart: .init(at: 1_800_000_000 - 5, status: 410, reason: "Unregistered", relay: false, token: "1111111111111111"))
+        #expect(LiveActivityDiagnosis.line(old, currentToken: "2222222222222222", now: now).hasPrefix("Apple refused an older start token"))
+        #expect(LiveActivityDiagnosis.line(old, currentToken: "1111111111111111", now: now).hasPrefix("Apple refused the start token iOS currently gives Telar"))
+        old.lastStart?.token = nil
+        #expect(LiveActivityDiagnosis.line(old, currentToken: "1111111111111111", now: now).hasPrefix("Apple no longer accepts this phone's start token"))
+        #expect(StartTokenPolicy.remember(print: "1111111111111111", in: ["1111111111111111"]) == ["1111111111111111"])
+    }
+
     @Test func theMacsReportDecodesAsTheMacSendsIt() throws {
         let json = #"{"configured":true,"activity":{"card":false,"lastStart":{"at":1800000000,"status":200,"relay":false}}}"#
         let status = try JSONDecoder().decode(PushStatus.self, from: Data(json.utf8))

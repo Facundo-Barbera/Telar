@@ -106,6 +106,7 @@ struct PushStatus: Decodable {
     var liveActivityDiagnosis: [String] {
         LiveActivityDiagnosis.lines(systemAllowed: ActivityAuthorizationInfo().areActivitiesEnabled, toggle: liveActivities,
                                     hasStartToken: startToken != nil, startTokenRejected: startTokenRejected,
+                                    currentToken: startToken.map(StartTokenPolicy.fingerprint),
                                     macs: (settings?.hosts ?? []).map { ($0.name, activityReports[$0.id]) })
     }
     func setLiveActivities(_ enabled: Bool) async {
@@ -219,14 +220,17 @@ struct PushStatus: Decodable {
         }
         // APPLE REFUSED THE START TOKEN ITSELF (410 Unregistered and the like):
         // stop sending it, and take a new one only when iOS offers a different one.
-        let rejected = reports.values.filter(LiveActivityDiagnosis.startTokenRejectedByApple).compactMap { $0.lastStart?.at }
-        if let latest = rejected.max(), latest > handledStartRejectionAt {
-            handledStartRejectionAt = latest
-            if let dead = startToken {
-                rejectedStartTokens = StartTokenPolicy.remember(dead, in: rejectedStartTokens)
+        // Only THE token that start used is condemned: a refusal of an old token
+        // must not throw away a newer one iOS has since issued.
+        let rejected = reports.values.compactMap { report -> ActivityReport.Start? in
+            LiveActivityDiagnosis.startTokenRejectedByApple(report) ? report.lastStart : nil
+        }
+        if let latest = rejected.max(by: { $0.at < $1.at }), latest.at > handledStartRejectionAt {
+            handledStartRejectionAt = latest.at
+            if let dead = latest.token ?? startToken.map(StartTokenPolicy.fingerprint) {
+                rejectedStartTokens = StartTokenPolicy.remember(print: dead, in: rejectedStartTokens)
                 defaults.set(rejectedStartTokens, forKey: "telar.activity.rejectedStartTokens")
-                startToken = nil
-                startTokenRejected = true
+                if startToken.map(StartTokenPolicy.fingerprint) == dead { startToken = nil; startTokenRejected = true }
             }
             if let data = Activity<SessionActivityAttributes>.pushToStartToken { saveStartToken(data) }
             PushRelayClient.shared.forceRefresh()

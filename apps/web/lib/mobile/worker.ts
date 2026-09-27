@@ -4,7 +4,7 @@ import { readRemote } from "../remote/store";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
 import { desktopAttached, listenForDesktop, macTookAlert, notifyDesktop } from "./desktop";
 import { collectReads, noteAlert, READ_SYNC_BATCH, readSyncDelivery, readSyncDue, readSyncWanted } from "./read-sync";
-import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, turnIsOver, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
+import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, tokenFingerprint, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, turnIsOver, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 /** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
  *  on `activityUpdates` and the app re-registers straight away. A receipt still standing alone after
@@ -102,7 +102,7 @@ export async function deliverRecord(
   if (record.liveActivities && active.length && !automatic.length && (!record.automaticStartedAt || staleStart)
       && record.pushToStartToken && (record.automaticStarts ?? 0) < AUTOMATIC_START_ATTEMPTS) {
     const result = await safeSend(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, true));
-    next.automaticStart = { at: now, status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(result.relay ? { relay: true as const } : {}) };
+    next.automaticStart = { at: now, status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(result.relay ? { relay: true as const } : {}), token: tokenFingerprint(record.pushToStartToken) };
     if (result.status === 200) { next.automaticStartedAt = now; next.automaticStarts = (record.automaticStarts ?? 0) + 1; }
     // Expiration of a start token must never unregister ordinary phone notifications.
     if (isDeadToken(result)) next.pushToStartToken = undefined;
