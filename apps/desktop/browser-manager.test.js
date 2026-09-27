@@ -1945,12 +1945,19 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
 describe("per-tab viewports — intrinsic size independent of the column, presentation-only fit", () => {
   const { fitViewport, resolveViewport } = require("./browser-manager");
 
-  test("fitViewport scales down to fit, centres across and top-aligns, never scales up", () => {
+  test("fitViewport scales down to fit, centres on both axes, never scales up", () => {
     expect(fitViewport({ width: 1280, height: 800 }, { x: 10, y: 20, width: 640, height: 400 })).toEqual({ scale: 0.5, rect: { x: 10, y: 20, width: 640, height: 400 } });
-    // A stage taller than the fitted page: the page starts at the stage's
-    // top, as a device toolbar shows a screen — not centred over a band.
-    expect(fitViewport({ width: 1280, height: 800 }, { x: 0, y: 0, width: 640, height: 600 })).toEqual({ scale: 0.5, rect: { x: 0, y: 0, width: 640, height: 400 } });
-    expect(fitViewport({ width: 390, height: 844 }, { x: 0, y: 30, width: 1000, height: 900 })).toEqual({ scale: 1, rect: { x: 305, y: 30, width: 390, height: 844 } });
+    expect(fitViewport({ width: 1280, height: 800 }, { x: 0, y: 0, width: 640, height: 600 })).toEqual({ scale: 0.5, rect: { x: 0, y: 100, width: 640, height: 400 } });
+    expect(fitViewport({ width: 390, height: 844 }, { x: 0, y: 30, width: 1000, height: 900 })).toEqual({ scale: 1, rect: { x: 305, y: 58, width: 390, height: 844 } });
+  });
+
+  test("a presentation zoom scales the page below fit, never past it", () => {
+    const { resolveZoom } = require("./browser-manager");
+    expect(fitViewport({ width: 390, height: 844 }, { x: 0, y: 0, width: 1000, height: 900 }, 0.5)).toEqual({ scale: 0.5, rect: { x: 402, y: 239, width: 195, height: 422 } });
+    expect(fitViewport({ width: 1280, height: 800 }, { x: 0, y: 0, width: 640, height: 400 }, 1).scale).toBe(0.5);
+    expect(resolveZoom("fit")).toBe("fit");
+    expect(resolveZoom(0.75)).toBe(0.75);
+    expect(() => resolveZoom(2)).toThrow(/Unknown zoom/);
   });
 
   test("resolveViewport accepts presets and clamps custom sizes", () => {
@@ -2649,7 +2656,7 @@ describe("fit-to-panel viewport mode", () => {
   });
 });
 
-describe("a fixed tab's view is exactly the emulated page — bounds and emulation cannot disagree, and the page is top-aligned", () => {
+describe("a fixed tab's view is exactly the emulated page — bounds and emulation cannot disagree, and the page is centred", () => {
   /** The rectangle the page renders into (viewport × the scale last sent)
    *  against the rectangle the view was given. Chromium lays the page out
    *  at the emulated size whatever the view's size is, so any difference
@@ -2678,20 +2685,19 @@ describe("a fixed tab's view is exactly the emulated page — bounds and emulati
 
     await manager.resizeTab(tab, { preset: "default" });
     await tab.geometry.queue;
-    // 1280×800 at 858/1280: 858×536, at the TOP of the stage (y: 40, not
-    // 40 + 127) — a device toolbar's screen, not a page floating mid-panel.
-    expectAgreed(view, { x: 12, y: 40, width: 858, height: 536 });
-    expect(manager.state("s").presentation).toMatchObject({ mode: "fixed", rect: { x: 12, y: 40, width: 858, height: 536 } });
+    // 1280×800 at 858/1280: 858×536, centred in the stage's height (40 + 127).
+    expectAgreed(view, { x: 12, y: 167, width: 858, height: 536 });
+    expect(manager.state("s").presentation).toMatchObject({ mode: "fixed", zoom: "fit", rect: { x: 12, y: 167, width: 858, height: 536 } });
     expect(Math.abs(manager.state("s").presentation.scale - 858 / 1280)).toBeLessThan(1e-9);
 
     // The renderer, now in fixed mode, republishes the stage inside its
-    // resize rails (12px off each axis). The view follows the smaller fit
-    // and so does the emulation — a full pass, not the drag fast path.
+    // resize rails. The view follows the smaller fit and so does the
+    // emulation — a full pass, not the drag fast path.
     manager.setBounds("s", { x: 12, y: 40, width: 846, height: 778 });
     await tab.geometry.queue;
-    expectAgreed(view, { x: 12, y: 40, width: 846, height: 529 });
+    expectAgreed(view, { x: 12, y: 164, width: 846, height: 529 });
 
-    // A tall preset in the same stage: height-bound, centred across, top-aligned.
+    // A tall preset in the same stage: height-bound, centred across.
     await manager.resizeTab(tab, { preset: "phone" });
     await tab.geometry.queue;
     expectAgreed(view, { x: 255, y: 40, width: 360, height: 778 });
@@ -2700,10 +2706,10 @@ describe("a fixed tab's view is exactly the emulated page — bounds and emulati
     await manager.resizeTab(tab, { preset: "default" });
     setCockpitZoom(0.9);
     await tab.geometry.queue;
-    expectAgreed(view, { x: 11, y: 36, width: 761, height: 476 });
+    expectAgreed(view, { x: 11, y: 148, width: 761, height: 476 });
   });
 
-  test("a hidden fixed tab is emulated at its own size, and shown again in a taller stage it is placed at the top, agreed", async () => {
+  test("a hidden fixed tab is emulated at its own size, and shown again in a taller stage it is centred, agreed", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("s", "https://one.example/");
     const tab = manager.activeTab("s");
@@ -2715,13 +2721,76 @@ describe("a fixed tab's view is exactly the emulated page — bounds and emulati
     manager.setBounds("s", { x: 0, y: 0, width: 640, height: 600 });
     await manager.setVisible("s", true);
     await tab.geometry.queue;
-    expectAgreed(view, { x: 0, y: 0, width: 640, height: 400 });
+    expectAgreed(view, { x: 0, y: 100, width: 640, height: 400 });
     await manager.setVisible("s", false);
     await tab.geometry.queue;
     expect(view.webContents.debugger.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
     await manager.setVisible("s", true);
     await tab.geometry.queue;
-    expectAgreed(view, { x: 0, y: 0, width: 640, height: 400 });
+    expectAgreed(view, { x: 0, y: 100, width: 640, height: 400 });
+  });
+});
+
+describe("a drag on the device frame relays the page out live, and only the release is remembered", () => {
+  test("live frames move the view and emit nothing; the release emits once against the size the drag started at", async () => {
+    const { manager, messages, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    manager.setBounds("s", { x: 0, y: 0, width: 1000, height: 900 });
+    await manager.setVisible("s", true);
+    await manager.resizeTab(tab, { width: 600, height: 500 });
+    await tab.geometry.queue;
+    const pushes = () => messages.filter((message) => message.channel === "telar:browser:state").length;
+    const before = pushes();
+    const generation = tab.generation;
+
+    expect(await manager.action("s", { action: "resize", width: 640, height: 500, live: true })).toBeNull();
+    await manager.action("s", { action: "resize", width: 700, height: 500, live: true });
+    await tab.geometry.queue;
+    expect(views[0].bounds).toEqual({ x: 150, y: 200, width: 700, height: 500 });
+    expect(pushes()).toBe(before);
+    // An agent's snapshot from before the drag is stale the moment it moves.
+    expect(tab.generation).toBeGreaterThan(generation);
+
+    await manager.action("s", { action: "resize", width: 700, height: 500 });
+    expect(pushes()).toBe(before + 1);
+    expect(manager.viewportInfo(tab)).toMatchObject({ width: 700, height: 500, mode: "fixed" });
+    expect(tab.liveResizeFrom).toBeUndefined();
+  });
+
+  test("an abandoned drag commits the start size: the view goes back and nothing is said to have changed", async () => {
+    const { manager, messages, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    manager.setBounds("s", { x: 0, y: 0, width: 1000, height: 900 });
+    await manager.setVisible("s", true);
+    await manager.resizeTab(tab, { width: 600, height: 500 });
+    await tab.geometry.queue;
+    const pushes = () => messages.filter((message) => message.channel === "telar:browser:state").length;
+    const before = pushes();
+
+    await manager.action("s", { action: "resize", width: 800, height: 700, live: true });
+    await tab.geometry.queue;
+    expect(views[0].bounds).toEqual({ x: 100, y: 100, width: 800, height: 700 });
+    await manager.action("s", { action: "resize", width: 600, height: 500 });
+    await tab.geometry.queue;
+    expect(views[0].bounds).toEqual({ x: 200, y: 200, width: 600, height: 500 });
+    expect(pushes()).toBe(before);
+  });
+
+  test("a zoom changes how the page is shown, never its layout", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    manager.setBounds("s", { x: 0, y: 0, width: 1000, height: 900 });
+    await manager.setVisible("s", true);
+    await manager.resizeTab(tab, { width: 600, height: 500 });
+    await manager.action("s", { action: "resize", zoom: 0.5 });
+    await tab.geometry.queue;
+    expect(views[0].bounds).toEqual({ x: 350, y: 325, width: 300, height: 250 });
+    expect(manager.viewportInfo(tab)).toMatchObject({ width: 600, height: 500 });
+    expect(manager.state("s").presentation).toMatchObject({ zoom: 0.5, scale: 0.5 });
+    await expect(manager.action("s", { action: "resize", zoom: 3 })).rejects.toThrow(/Unknown zoom/);
   });
 });
 
@@ -4716,8 +4785,8 @@ describe("a fixed page's widget is the view's size, never the override's", () =>
   test("shown: the override leaves the widget alone and the widget is pinned to the view's bounds", async () => {
     const { manager, views, last } = await fixedInTallStage();
     const { rect } = manager.state("s").presentation;
-    // Top-aligned, full width, only as tall as the scaled page.
-    expect(rect).toEqual({ x: 8, y: 120, width: 975, height: 609 });
+    // Centred, full width, only as tall as the scaled page.
+    expect(rect).toEqual({ x: 8, y: 212, width: 975, height: 609 });
     expect(views[0].bounds).toEqual(rect);
     expect(last("Emulation.setDeviceMetricsOverride").params).toMatchObject({ width: 1280, height: 800, dontSetVisibleSize: true });
     expect(last("Emulation.setVisibleSize").params).toEqual({ width: 975, height: 609 });
@@ -4758,6 +4827,6 @@ describe("a fixed page's widget is the view's size, never the override's", () =>
     const frame = await manager.freezeView("s");
     expect(views[0].webContents.captures.at(-1).rect).toEqual({ x: 0, y: 0, width: 1219, height: 761 });
     // The rect stays in the panel's CSS pixels — what the renderer paints in.
-    expect(frame.rect).toEqual({ x: 8, y: 120, width: 975, height: 609 });
+    expect(frame.rect).toEqual({ x: 8, y: 212, width: 975, height: 609 });
   });
 });

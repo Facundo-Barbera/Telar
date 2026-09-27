@@ -29,8 +29,9 @@ import {
   CodeXmlIcon,
   DownloadIcon,
   EllipsisIcon,
-  FlipHorizontalIcon,
   KeyRoundIcon,
+  LockIcon,
+  LockOpenIcon,
   Loader2Icon,
   MinusIcon,
   MonitorSmartphoneIcon,
@@ -38,6 +39,7 @@ import {
   PencilIcon,
   PlusIcon,
   RotateCwIcon,
+  RotateCwSquareIcon,
   SquareArrowOutUpRightIcon,
   TriangleAlertIcon,
   UserRoundIcon,
@@ -65,7 +67,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { describeViewport, fitViewport, groupedViewportPresets, resizeByDrag, resizeByKey, sizeFromFields, stageOf, viewportPreset, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
+import { axesOf, describeViewport, fitViewport, groupedViewportPresets, keepRatio, ratioOf, resizeByKey, resizeToEdge, sizeFromFields, stageOf, stepField, viewportPreset, VIEWPORT_RAIL, VIEWPORT_ZOOMS, zoomFits, type ResizeDirection, type StageRect, type ViewportMode, type ViewportPresetKey, type ViewportZoom } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { createOverlayFreezer, onNativeViewOverlay, useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
 import { useCommandHandlers } from "@/lib/use-command-keys";
@@ -174,6 +176,9 @@ export type DesktopBrowserPresentation = {
   width: number;
   height: number;
   scale: number;
+  /** The presentation zoom picked in the device toolbar; absent from an
+   *  older shell, which only ever fits. */
+  zoom?: ViewportZoom;
   rect: { x: number; y: number; width: number; height: number };
 };
 
@@ -526,8 +531,8 @@ function hostRadius(host: HTMLElement): number {
 }
 
 /**
- * Glue Fit mode to the whole host. Fixed viewports reserve right and bottom
- * rails (`stageOf`) so the native layer cannot cover their resize handles.
+ * Glue Fit mode to the whole host. Fixed viewports reserve a rail on every
+ * side (`stageOf`) so the native layer cannot cover their resize handles.
  *
  * `layoutKey` is anything that moves the host WITHOUT changing its size — a
  * toolbar row opening above it changes its size (ResizeObserver sees that),
@@ -547,12 +552,12 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
     let visibilityRequested = false;
     const applyBounds = async () => {
       const rect = host.getBoundingClientRect();
-      const stage = mode === "fixed" ? stageOf(rect) : rect;
+      const stage = mode === "fixed" ? stageOf(rect) : { x: 0, y: 0, width: rect.width, height: rect.height };
       // A FIXED VIEWPORT'S STAGE IS SQUARE: it sits inside a padded host with
       // resize rails around it and never reaches the panel's corner. Only the
       // edge-to-edge fit page wears the panel's radius.
       const radius = mode === "fixed" ? 0 : hostRadius(host);
-      await bridge.setBounds(scopeKey, { x: rect.left, y: rect.top, width: rect.width === 0 ? 0 : stage.width, height: rect.height === 0 ? 0 : stage.height, radius });
+      await bridge.setBounds(scopeKey, { x: rect.left + stage.x, y: rect.top + stage.y, width: rect.width === 0 ? 0 : stage.width, height: rect.height === 0 ? 0 : stage.height, radius });
       if (disposed) return;
       // The zero-area latch — see the header comment.
       if (rect.width === 0 || rect.height === 0) {
@@ -611,33 +616,52 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
     const frame = window.requestAnimationFrame(() => {
       const rect = host.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
-      const stage = mode === "fixed" ? stageOf(rect) : rect;
-      void bridge.setBounds(scopeKey, { x: rect.left, y: rect.top, width: stage.width, height: stage.height, radius: mode === "fixed" ? 0 : hostRadius(host) });
+      const stage = mode === "fixed" ? stageOf(rect) : { x: 0, y: 0, width: rect.width, height: rect.height };
+      void bridge.setBounds(scopeKey, { x: rect.left + stage.x, y: rect.top + stage.y, width: stage.width, height: stage.height, radius: mode === "fixed" ? 0 : hostRadius(host) });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [bridge, hostRef, scopeKey, layoutKey, mode]);
 }
 
 /**
- * THE RESIZE RAILS — right edge, bottom edge, corner — at the fitted page's
- * edges inside the stage, in the rail the native view never enters.
- * Pointer-captured drags; arrow keys for the keyboard; a drag in progress
- * shows its size live and commits on release (Escape/cancel drops it).
+ * THE RESIZE RAILS — four edges and four corners — at the fitted page's
+ * edges, in the rails the native view never enters. Pointer-captured drags
+ * that keep the grabbed edge under the pointer (`resizeToEdge`); the page
+ * relays out once per frame while dragging (`onLive`) and only the release
+ * commits. Escape, cancel or losing the drag puts the start size back.
+ * Arrow keys for the keyboard.
  */
-function ViewportRails({ viewport, scale, fit, onPreview, onCommit }: {
+const RAIL_HANDLES: ReadonlyArray<{ direction: ResizeDirection; label: string; cursor: string }> = [
+  { direction: "north", label: "top edge", cursor: "cursor-ns-resize" },
+  { direction: "south", label: "bottom edge", cursor: "cursor-ns-resize" },
+  { direction: "west", label: "left edge", cursor: "cursor-ew-resize" },
+  { direction: "east", label: "right edge", cursor: "cursor-ew-resize" },
+  { direction: "northwest", label: "top-left corner", cursor: "cursor-nwse-resize" },
+  { direction: "southeast", label: "bottom-right corner", cursor: "cursor-nwse-resize" },
+  { direction: "northeast", label: "top-right corner", cursor: "cursor-nesw-resize" },
+  { direction: "southwest", label: "bottom-left corner", cursor: "cursor-nesw-resize" },
+];
+
+function ViewportRails({ viewport, stage, fit, zoom, lockRatio, onPreview, onLive, onCommit }: {
   viewport: { width: number; height: number };
-  scale: number;
+  stage: StageRect;
+  /** The fitted page, relative to the stage — the preview's while dragging. */
   fit: { x: number; y: number; width: number; height: number };
+  zoom: ViewportZoom;
+  lockRatio: boolean;
   onPreview: (size: { width: number; height: number } | undefined) => void;
+  onLive: (size: { width: number; height: number }) => void;
   onCommit: (size: { width: number; height: number }) => void;
 }) {
   /**
    * THE ONE DRAG THIS COMPONENT MAY HOLD, and how it ends. Every ending —
    * release, cancel, Escape, the window losing focus, capture lost, or this
    * component unmounting (the rails are keyed per tab, so a session or tab
-   * switch unmounts them) — runs the same cleanup. A drag that is not
-   * finished by a `pointerup` this component saw commits NOTHING: a release
-   * after a scope switch must never write into the session it started in.
+   * switch unmounts them) — runs the same cleanup. Only a `pointerup` this
+   * component saw commits the dragged size; any other ending that already
+   * moved the page commits the START size, which puts it back. Unmounting
+   * commits nothing: a release after a scope switch must never write into
+   * the session it started in.
    */
   const dragRef = useRef<(() => void) | null>(null);
   useEffect(() => () => dragRef.current?.(), []);
@@ -647,24 +671,42 @@ function ViewportRails({ viewport, scale, fit, onPreview, onCommit }: {
     dragRef.current?.();
     const target = event.currentTarget;
     const pointerId = event.pointerId;
-    const startX = event.clientX;
-    const startY = event.clientY;
+    const host = (target.offsetParent ?? target.parentElement)?.getBoundingClientRect();
+    if (!host) return;
+    const axes = axesOf(direction);
+    const center = { x: host.left + stage.x + stage.width / 2, y: host.top + stage.y + stage.height / 2 };
     const start = { width: viewport.width, height: viewport.height };
+    const startFit = fitViewport(start, stage, zoom);
+    // Where on the rail the pointer took hold, so the edge does not jump to it.
+    const outward = (clientX: number, clientY: number) => ({ x: (clientX - center.x) * axes.x, y: (clientY - center.y) * axes.y });
+    const grabbed = outward(event.clientX, event.clientY);
+    const offset = { x: grabbed.x - startFit.width / 2, y: grabbed.y - startFit.height / 2 };
     let latest = start;
+    let sent = start;
+    let movedPage = false;
+    let frame = 0;
     try { target.setPointerCapture(pointerId); } catch { /* window listeners below still work */ }
     const move = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
       moveEvent.preventDefault();
-      latest = resizeByDrag(start, { x: moveEvent.clientX - startX, y: moveEvent.clientY - startY }, scale, direction);
+      const at = outward(moveEvent.clientX, moveEvent.clientY);
+      latest = resizeToEdge(start, direction, { x: at.x - offset.x, y: at.y - offset.y }, stage, lockRatio, zoom);
       onPreview(latest);
-    };
-    // Drop the drag without committing — every ending but a seen release.
-    const abandon = () => {
-      cleanup();
-      onPreview(undefined);
+      // ONE RELAYOUT PER FRAME, of the latest size.
+      if (!frame) {
+        frame = window.requestAnimationFrame(() => {
+          frame = 0;
+          if (latest.width === sent.width && latest.height === sent.height) return;
+          sent = latest;
+          movedPage = true;
+          onLive(latest);
+        });
+      }
     };
     const cleanup = () => {
       if (dragRef.current === cleanup) dragRef.current = null;
+      window.cancelAnimationFrame(frame);
+      frame = 0;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", abandon);
@@ -673,6 +715,12 @@ function ViewportRails({ viewport, scale, fit, onPreview, onCommit }: {
       target.removeEventListener("lostpointercapture", abandon);
       try { target.releasePointerCapture(pointerId); } catch { /* already released */ }
     };
+    // Drop the drag — every ending but a seen release.
+    const abandon = () => {
+      cleanup();
+      onPreview(undefined);
+      if (movedPage) onCommit(start);
+    };
     const finish = (upEvent: PointerEvent) => {
       if (upEvent.pointerId !== pointerId) return;
       // Capture is released by `cleanup` BEFORE the commit, and the
@@ -680,7 +728,7 @@ function ViewportRails({ viewport, scale, fit, onPreview, onCommit }: {
       // a release we saw.
       cleanup();
       onPreview(undefined);
-      if (latest.width !== start.width || latest.height !== start.height) onCommit(latest);
+      if (movedPage || latest.width !== start.width || latest.height !== start.height) onCommit(latest);
     };
     const escape = (keyEvent: KeyboardEvent) => {
       if (keyEvent.key !== "Escape") return;
@@ -696,27 +744,45 @@ function ViewportRails({ viewport, scale, fit, onPreview, onCommit }: {
     target.addEventListener("lostpointercapture", abandon);
   };
   const onKey = (direction: ResizeDirection, event: React.KeyboardEvent<HTMLButtonElement>) => {
-    const next = resizeByKey(viewport, event.key, event.shiftKey, direction);
+    const next = resizeByKey(viewport, event.key, event.shiftKey, direction, lockRatio);
     if (!next) return;
     event.preventDefault();
     event.stopPropagation();
     onCommit(next);
   };
-  const right = fit.x + fit.width;
-  const bottom = fit.y + fit.height;
+  const left = stage.x + fit.x;
+  const top = stage.y + fit.y;
+  const place = (direction: ResizeDirection): React.CSSProperties => {
+    const axes = axesOf(direction);
+    return {
+      left: axes.x < 0 ? left - VIEWPORT_RAIL : axes.x > 0 ? left + fit.width : left,
+      top: axes.y < 0 ? top - VIEWPORT_RAIL : axes.y > 0 ? top + fit.height : top,
+      width: axes.x ? VIEWPORT_RAIL : fit.width,
+      height: axes.y ? VIEWPORT_RAIL : fit.height,
+    };
+  };
   const rail = "group absolute z-20 touch-none rounded-sm bg-transparent outline-none focus-visible:bg-foreground/10";
   const grip = "pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted-foreground/50 group-hover:bg-foreground/70 group-focus-visible:bg-foreground group-active:bg-foreground";
   return (
     <>
-      <button type="button" aria-label="Resize viewport width. Use left and right arrow keys." title="Drag to change the viewport width" className={cn(rail, "cursor-ew-resize")} style={{ left: right, top: fit.y, width: VIEWPORT_RAIL, height: fit.height }} onPointerDown={(event) => startDrag("east", event)} onKeyDown={(event) => onKey("east", event)}>
-        <span aria-hidden className={cn(grip, "h-8 w-1")} />
-      </button>
-      <button type="button" aria-label="Resize viewport height. Use up and down arrow keys." title="Drag to change the viewport height" className={cn(rail, "cursor-ns-resize")} style={{ left: fit.x, top: bottom, width: fit.width, height: VIEWPORT_RAIL }} onPointerDown={(event) => startDrag("south", event)} onKeyDown={(event) => onKey("south", event)}>
-        <span aria-hidden className={cn(grip, "h-1 w-8")} />
-      </button>
-      <button type="button" aria-label="Resize viewport. Use arrow keys." title="Drag to resize the viewport" className={cn(rail, "z-30 cursor-nwse-resize")} style={{ left: right, top: bottom, width: VIEWPORT_RAIL, height: VIEWPORT_RAIL }} onPointerDown={(event) => startDrag("southeast", event)} onKeyDown={(event) => onKey("southeast", event)}>
-        <span aria-hidden className={cn(grip, "size-1.5")} />
-      </button>
+      {RAIL_HANDLES.map(({ direction, label, cursor }) => {
+        const axes = axesOf(direction);
+        const corner = axes.x !== 0 && axes.y !== 0;
+        return (
+          <button
+            key={direction}
+            type="button"
+            aria-label={`Resize viewport from the ${label}. Use arrow keys.`}
+            title="Drag to resize the viewport"
+            className={cn(rail, cursor, corner && "z-30")}
+            style={place(direction)}
+            onPointerDown={(event) => startDrag(direction, event)}
+            onKeyDown={(event) => onKey(direction, event)}
+          >
+            <span aria-hidden className={cn(grip, corner ? "size-1.5" : axes.x ? "h-8 w-1" : "h-1 w-8")} />
+          </button>
+        );
+      })}
     </>
   );
 }
@@ -746,38 +812,42 @@ function useHostSize(hostRef: RefObject<HTMLDivElement | null>): { width: number
  * The frame, rails and readout around the fitted page. The SAME fit
  * arithmetic the shell applies to the native view (`fitViewport` over the
  * stage), so what is drawn here and the pixels the view shows are one rect.
- * `preview` is a drag in progress: the frame and readout follow it live
- * while the native view stays at the committed size until release.
+ * `preview` is a drag in progress: the frame and readout follow it at once,
+ * and the native view follows a frame later (`onLive`).
  */
-function DeviceFrame({ viewport, mode, hostSize, preview, onPreview, onCommit, railsKey }: {
+function DeviceFrame({ viewport, mode, hostSize, zoom, lockRatio, preview, onPreview, onLive, onCommit, railsKey }: {
   viewport: { width: number; height: number };
   mode: ViewportMode;
   /** The session + tab the rails belong to: a change REMOUNTS them, which
    *  ends any drag in progress without committing (see ViewportRails). */
   railsKey: string;
   hostSize: { width: number; height: number };
+  zoom: ViewportZoom;
+  lockRatio: boolean;
   preview: { width: number; height: number } | undefined;
   onPreview: (size: { width: number; height: number } | undefined) => void;
+  onLive: (size: { width: number; height: number }) => void;
   onCommit: (size: { width: number; height: number }) => void;
 }) {
   const stage = stageOf(hostSize);
-  const fit = fitViewport(viewport, stage);
   const shown = preview ?? viewport;
-  const previewFit = preview ? fitViewport(preview, stage) : fit;
+  const fit = fitViewport(shown, stage, zoom);
+  const left = stage.x + fit.x;
+  const top = stage.y + fit.y;
   return (
     <>
       <div
         aria-hidden
         className={cn("pointer-events-none absolute rounded-sm ring-1", preview ? "ring-primary/70" : "ring-border/70")}
-        style={{ left: previewFit.x, top: previewFit.y, width: previewFit.width, height: previewFit.height, boxShadow: "0 0 0 9999px color-mix(in oklab, var(--muted) 55%, transparent)" }}
+        style={{ left, top, width: fit.width, height: fit.height, boxShadow: "0 0 0 9999px color-mix(in oklab, var(--muted) 55%, transparent)" }}
       />
       {preview && (
-        <span aria-live="polite" className="pointer-events-none absolute z-30 rounded-md bg-foreground px-1.5 py-0.5 font-mono text-3xs text-background" style={{ left: previewFit.x + 6, top: previewFit.y + 6 }}>
+        <span aria-live="polite" className="pointer-events-none absolute z-30 rounded-md bg-foreground px-1.5 py-0.5 font-mono text-3xs text-background" style={{ left: left + 6, top: top + 6 }}>
           {shown.width}×{shown.height}
         </span>
       )}
       {/* Fit mode has no edges to drag: the viewport IS the stage. */}
-      {mode === "fixed" && <ViewportRails key={railsKey} viewport={viewport} scale={fit.scale} fit={previewFit} onPreview={onPreview} onCommit={onCommit} />}
+      {mode === "fixed" && <ViewportRails key={railsKey} viewport={viewport} stage={stage} fit={fit} zoom={zoom} lockRatio={lockRatio} onPreview={onPreview} onLive={onLive} onCommit={onCommit} />}
     </>
   );
 }
@@ -798,6 +868,13 @@ export const APPEARANCES: ReadonlyArray<{ key: "light" | "dark" | "system"; labe
   { key: "dark", label: "Dark" },
   { key: "system", label: "System" },
 ];
+
+/** The device toolbar's zoom readout: "Fit" with the scale it lands on, or
+ *  the picked percentage. */
+export function presentationZoomLabel(presentation: DesktopBrowserPresentation | null | undefined): string {
+  const percent = `${Math.round((presentation?.scale ?? 1) * 100)}%`;
+  return (presentation?.zoom ?? "fit") === "fit" ? `Fit · ${percent}` : percent;
+}
 
 /** The zoom readout: a whole percentage, and never a bare "NaN%" for a tab
  *  whose factor has not arrived yet. */
@@ -1022,7 +1099,7 @@ export function DesktopBrowserSurface({
    * a menu cannot be added here without joining the thing that hides the
    * native view underneath it (see `lib/native-view-overlay.ts`).
    */
-  const [openOverlay, setOpenOverlay] = useState<"profile" | "options" | "device" | "site" | null>(null);
+  const [openOverlay, setOpenOverlay] = useState<"profile" | "options" | "device" | "zoom" | "site" | null>(null);
   useNativeViewOverlay(openOverlay !== null);
   /** Which pane the profile menu shows: its list, or one of its two forms. */
   const [profilePane, setProfilePane] = useState<"menu" | "rename" | "new">("menu");
@@ -1147,6 +1224,9 @@ export function DesktopBrowserSurface({
   const draftSize = sizeDraft && sizeDraft.tabId === activeTab?.id ? sizeDraft : undefined;
   /** A rail drag in progress — shown live, committed on release. */
   const [dragPreview, setDragPreview] = useState<{ width: number; height: number }>();
+  /** The device toolbar's aspect-ratio lock: the rails and the size fields
+   *  keep the tab's current shape while it is on. The panel's, not the tab's. */
+  const [lockRatio, setLockRatio] = useState(false);
   const hostSize = useHostSize(hostRef);
   /**
    * THE DEVICE TOOLBAR IS THE FIXED VIEWPORT (#473) — it is shown exactly
@@ -1606,9 +1686,37 @@ export function DesktopBrowserSurface({
     const viewport = activeTab?.viewport;
     if (!draftSize || !viewport || !activeTab) return;
     setSizeDraft(undefined);
-    const next = sizeFromFields(draftSize.width, draftSize.height);
+    const typed = sizeFromFields(draftSize.width, draftSize.height);
+    const next = typed && lockRatio ? keepRatio(typed, viewport, ratioOf(viewport)) : typed;
     if (!next || (next.width === viewport.width && next.height === viewport.height)) return;
     void act({ action: "resize", index: activeTab.index, width: next.width, height: next.height });
+  };
+
+  /** ↑/↓ in a size field: step the draft and commit it at once, the way a
+   *  number field does — the page follows each press. */
+  const stepSize = (field: "width" | "height", event: React.KeyboardEvent<HTMLInputElement>) => {
+    const viewport = activeTab?.viewport;
+    if (!viewport || !activeTab) return;
+    const current = draftSize?.[field] ?? String(viewport[field]);
+    const stepped = stepField(current, event.key, event.shiftKey);
+    if (stepped === undefined) return;
+    event.preventDefault();
+    const typed = { width: viewport.width, height: viewport.height, [field]: Number(stepped) };
+    const next = lockRatio ? keepRatio(typed, viewport, ratioOf(viewport)) : typed;
+    setSizeDraft(undefined);
+    if (next.width === viewport.width && next.height === viewport.height) return;
+    void act({ action: "resize", index: activeTab.index, width: next.width, height: next.height });
+  };
+
+  /**
+   * ONE FRAME OF A RAIL DRAG, straight to the shell. Not through `act`: the
+   * shell answers a live frame with nothing (it emits and persists only on
+   * release), so there is no state to set, and a failed frame is not an error
+   * worth a banner — the release reports it if the size really cannot be had.
+   */
+  const liveResize = (size: { width: number; height: number }) => {
+    if (!activeTab) return;
+    void bridge.action(scopeKey, { action: "resize", index: activeTab.index, width: size.width, height: size.height, live: true }).catch(() => {});
   };
 
   /**
@@ -2506,7 +2614,8 @@ export function DesktopBrowserSurface({
               onChange={(event) => setSizeDraft({ tabId: activeTab.id, width: event.target.value, height: draftSize?.height ?? String(activeTab.viewport!.height) })}
               // A portal's events bubble through the REACT tree, so the panel's
               // browser chords would otherwise read what is typed here.
-              onKeyDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => { event.stopPropagation(); stepSize("width", event); }}
+              title="↑/↓ steps 1, with Shift 10"
               onBlur={commitSize}
               className="h-6 w-14 rounded-md border border-border bg-background px-1.5 text-center font-mono text-2xs outline-none focus:border-ring"
             />
@@ -2516,11 +2625,22 @@ export function DesktopBrowserSurface({
               inputMode="numeric"
               value={draftSize?.height ?? String(activeTab.viewport.height)}
               onChange={(event) => setSizeDraft({ tabId: activeTab.id, width: draftSize?.width ?? String(activeTab.viewport!.width), height: event.target.value })}
-              onKeyDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => { event.stopPropagation(); stepSize("height", event); }}
+              title="↑/↓ steps 1, with Shift 10"
               onBlur={commitSize}
               className="h-6 w-14 rounded-md border border-border bg-background px-1.5 text-center font-mono text-2xs outline-none focus:border-ring"
             />
           </form>
+          <button
+            type="button"
+            aria-label={lockRatio ? "Unlock the aspect ratio" : "Lock the aspect ratio"}
+            aria-pressed={lockRatio}
+            title="Keep the width and height in proportion while resizing"
+            onClick={() => setLockRatio((locked) => !locked)}
+            className={cn("shrink-0 rounded-md p-1 hover:bg-muted hover:text-foreground", lockRatio ? "text-foreground" : "text-muted-foreground")}
+          >
+            {lockRatio ? <LockIcon className="size-3.5" /> : <LockOpenIcon className="size-3.5" />}
+          </button>
           <button
             type="button"
             aria-label="Rotate the viewport"
@@ -2531,14 +2651,56 @@ export function DesktopBrowserSurface({
             }}
             className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            <FlipHorizontalIcon className="size-3.5" />
+            <RotateCwSquareIcon className="size-3.5" />
           </button>
-          {/* WHAT THE PANEL IS ACTUALLY SHOWING IT AT. A page laid out at
-              1440 in a 500px column is drawn at about a third, and the person
-              deserves to know that before they judge a layout by it. */}
-          <span className="ml-auto shrink-0 font-mono text-3xs text-muted-foreground" title="How much the panel is scaling the page down to fit">
-            {Math.round((state?.presentation?.scale ?? 1) * 100)}%
-          </span>
+          {/* HOW BIG THE PANEL SHOWS THE PAGE. Fit is what it was always
+              doing; a smaller zoom shows more margin around a small device.
+              A zoom the page would not fit at is offered but disabled — the
+              native view cannot reach outside the stage to be scrolled. */}
+          <Popover open={openOverlay === "zoom"} onOpenChange={(open) => (open ? setOpenOverlay("zoom") : closeOverlay())}>
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Presentation zoom: ${presentationZoomLabel(state?.presentation)}`}
+                  title="How big the panel shows the page"
+                  className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-3xs text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+                >
+                  <span>{presentationZoomLabel(state?.presentation)}</span>
+                  <ChevronRightIcon aria-hidden className="size-3 shrink-0 rotate-90" />
+                </button>
+              }
+            />
+            <PopoverContent align="end" side="bottom" sideOffset={6} aria-label="Presentation zoom" className="w-36 gap-0 p-1">
+              {VIEWPORT_ZOOMS.map((entry) => {
+                const on = (state?.presentation?.zoom ?? "fit") === entry.key;
+                const fits = !hostSize || zoomFits(entry.key, activeTab.viewport!, stageOf(hostSize));
+                return (
+                  <button
+                    key={entry.label}
+                    type="button"
+                    aria-pressed={on}
+                    disabled={!fits}
+                    title={fits ? undefined : "The page does not fit the panel at this size"}
+                    onClick={() => { closeOverlay(); void act({ action: "resize", index: activeTab.index, zoom: entry.key }); }}
+                    className={cn(menuRow, on && "text-foreground")}
+                  >
+                    <CheckIcon className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
+                    <span className="min-w-0 flex-1">{entry.label}</span>
+                  </button>
+                );
+              })}
+            </PopoverContent>
+          </Popover>
+          <button
+            type="button"
+            aria-label="Close the device toolbar"
+            title="Follow the panel again"
+            onClick={() => { setSizeDraft(undefined); void act({ action: "resize", index: activeTab.index, mode: "fit" }); }}
+            className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <XIcon className="size-3.5" />
+          </button>
         </div>
       ) : null}
       {/* A GENUINE BROWSER-ACTION FAILURE on this scope, surfaced rather than
@@ -2627,8 +2789,11 @@ export function DesktopBrowserSurface({
             viewport={activeTab.viewport}
             mode={viewportMode}
             hostSize={hostSize}
+            zoom={state?.presentation?.zoom ?? "fit"}
+            lockRatio={lockRatio}
             preview={dragPreview}
             onPreview={setDragPreview}
+            onLive={liveResize}
             onCommit={(size) => void act({ action: "resize", index: activeTab.index, width: size.width, height: size.height })}
             railsKey={`${scopeKey}:${activeTab.id}`}
           />
