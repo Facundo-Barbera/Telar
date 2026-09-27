@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import http2 from "node:http2";
-import { relayConfig, relayHostId } from "./relay";
 import { parseRelayCredential } from "./relay-v2";
 import type { ReadSyncState } from "./read-sync";
 import { remoteHome } from "../remote/store";
@@ -21,7 +20,8 @@ export interface MobileRegistration {
   mutedSessions: string[];
   activities: { sessionId: string; token: string; startedAt: number }[];
   /** Relay v2: how this Mac sends to the phone without its tokens. Absent
-   *  from a phone that could not register itself, which stays on v1. */
+   *  from a phone that could not register itself: such a phone is sent nothing
+   *  unless this Mac has a direct key (`pushConfigured`). */
   relay?: RelayCredential;
 }
 /** What the phone minted for THIS Mac at the relay — see `relay-v2.ts`. */
@@ -38,6 +38,12 @@ export interface SessionSignal {
    *  exactly one and it is an approval rather than a question or a secret. */
   approvable?: string;
 }
+/**
+ * RECORDS WRITTEN BEFORE RELAY V1 WAS RETIRED may still carry `relayRevision`
+ * and `relayHostId`. Neither is read any more and neither filters anything: a
+ * record is served by the Mac whose store it is in, and v2 is per pair already.
+ * They ride along untouched and fall away on the phone's next registration.
+ */
 export interface PushRecord extends MobileRegistration {
   deviceId: string;
   revision: string;
@@ -67,27 +73,6 @@ export interface PushRecord extends MobileRegistration {
    *  (#584). A status only: never a token, never a payload. */
   lastStatus?: number;
   lastReason?: string;
-  /**
-   * THE REVISION THE RELAY LAST ACCEPTED A REGISTRATION FOR — issue #584.
-   *
-   * Every push used to be TWO relay calls: a PUT of the device registration
-   * followed by the POST. The registration only changes when the record does,
-   * so re-sending it per push doubled the invocation count for nothing. When
-   * this equals `revision`, a push is the single POST.
-   */
-  relayRevision?: string;
-  /**
-   * WHICH MAC OWNS THIS PHONE — issue #584, and the "one sender per relay host"
-   * half of it. Both the MacBook and the mini held the same three records and
-   * each sent everything, so every alert went twice and every dead token was
-   * retried twice. This is the relay host id of the Mac the registration
-   * arrived at; a Mac serves only its own.
-   *
-   * NOT `hostId`: that one is the PHONE's local UUID for this Mac, minted on
-   * the phone (`apps/ios/TelarMobile/Stores/Host.swift`), so it is the same
-   * value in both copies of the file and identifies nothing from here.
-   */
-  relayHostId?: string;
   /** The test alert sent for this relay key, and what came of it: what
    *  Settings shows as "working" or the exact reason (`relay-v2.ts`). */
   relayTest?: { keyId: string; at: number; status: number; reason?: string; relay?: true };
@@ -142,9 +127,6 @@ export type DeliveryResult = {
   reason?: string;
   /** The RELAY refused, so `status` is not Apple's answer about this token. */
   relay?: true;
-  /** The relay accepted a fresh device registration during this delivery, so
-   *  the record's `relayRevision` may advance (#584). */
-  registered?: true;
   /** Seconds from a relay 429's `Retry-After`: this host's daily budget is
    *  spent and nothing more may be sent until it resets. */
   retryAfter?: number;
@@ -242,7 +224,7 @@ export function writePushRecords(records: PushRecord[], file = pushFile()): void
   fs.writeFileSync(tmp, JSON.stringify(records), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
-export function saveRegistration(deviceId: string, registration: MobileRegistration, file?: string, ownHostId = relayHostId()): void {
+export function saveRegistration(deviceId: string, registration: MobileRegistration, file?: string): void {
   // `file` UNRESOLVED ON THE READ and resolved on the write: absent means read
   // the legacy path too and write only the new one, which is the whole of the
   // migration. See `readPushRecords`.
@@ -261,10 +243,7 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   // the consecutive-failure count and drops any pending backoff — an app open is
   // exactly the evidence that the phone is reachable again, and it is what the
   // dead-token drop relies on to bring a re-registered phone back.
-  //
-  // `relayRevision` is deliberately NOT carried: the revision below is new, so
-  // the relay has not seen this registration and must be sent it once.
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, readSync: old?.readSync, ...(ownHostId === undefined ? {} : { relayHostId: ownHostId }), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, readSync: old?.readSync, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 /**
@@ -324,8 +303,9 @@ export function activityDelivery(record: MobileRegistration, follow: MobileRegis
     } } };
 }
 
-export function pushConfigured(sandbox = false): boolean {
-  if (relayConfig()) return !sandbox;
+/** The developer mode: this Mac holds a push key of its own and sends straight
+ *  to Apple, sandbox or production, for phones that brought no relay credential. */
+export function pushConfigured(): boolean {
   if (!process.env.TELAR_APNS_KEY_ID || !process.env.TELAR_APNS_TEAM_ID || !process.env.TELAR_APNS_KEY_PATH) return false;
   try {
     const key = crypto.createPrivateKey(fs.readFileSync(process.env.TELAR_APNS_KEY_PATH));
@@ -333,8 +313,8 @@ export function pushConfigured(sandbox = false): boolean {
   } catch { return false; }
 }
 /**
- * WHETHER THIS MAC CAN SEND TO ANYBODY: a v1 relay or APNs key of its own, or
- * any phone that brought a relay v2 credential — which needs nothing here.
+ * WHETHER THIS MAC CAN SEND TO ANYBODY: a direct key of its own, or any phone
+ * that brought a relay v2 credential — which needs nothing here.
  */
 export function pushAvailable(): boolean {
   if (pushConfigured()) return true;

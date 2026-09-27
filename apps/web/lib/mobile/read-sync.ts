@@ -21,10 +21,6 @@ import type { Delivery, MobileRegistration, SessionSignal } from "./push";
  * ONLY SESSIONS THIS PHONE WAS ALERTED ABOUT. `alerted` is written when APNs
  * accepts an alert, so a silent push is never spent on a session that has no
  * notification on that phone to remove.
- *
- * RELAY v1 PHONES GET NONE OF THIS. v1 is being retired and does not carry the
- * `background` kind; such a phone keeps its alerts until it opens the app,
- * where the launch reconcile (`/api/mobile/read-state`) clears them.
  */
 
 /**

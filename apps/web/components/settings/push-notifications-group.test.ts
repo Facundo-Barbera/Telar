@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { detailLines, deviceLine, NOTIFY_ON_LABELS, pausedLine, phoneSummary, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
+import { detailLines, deviceLine, NOT_REGISTERED, NOTIFY_ON_LABELS, pausedLine, phoneSummary, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
 import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES } from "@/lib/mobile/desktop";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 
@@ -29,7 +29,7 @@ describe("Notify on", () => {
  */
 const device = (patch: Partial<PushRelayStatus["devices"][number]> = {}): PushRelayStatus["devices"][number] => ({
   deviceId: "phone", name: "Facundo's iPhone", paired: true, topic: "com.telar.mobile", sandbox: false,
-  enabled: true, liveActivities: false, updatedAt: 1000, consecutiveFailures: 0, parked: false, mine: true, ...patch,
+  enabled: true, liveActivities: false, updatedAt: 1000, consecutiveFailures: 0, parked: false, transport: "v2", ...patch,
 });
 
 describe("a phone's line", () => {
@@ -56,13 +56,15 @@ describe("a phone's line", () => {
     expect(deviceLine(device({ parked: true, consecutiveFailures: 20 }), 0)).toContain("open Telar on it");
   });
 
-  test("another Mac's phone is not this Mac's fault, and says so first", () => {
-    expect(deviceLine(device({ mine: false }), 0).startsWith("registered against another Mac")).toBe(true);
+  test("a phone that never handed this Mac a key says what finishes it, and nothing else", () => {
+    expect(deviceLine(device({ transport: "none", consecutiveFailures: 2, lastStatus: 400 }), 0)).toBe(NOT_REGISTERED);
+    expect(NOT_REGISTERED).toBe("This phone hasn't registered for notifications. Open Telar on it to finish.");
+    expect(deviceLine(device({ transport: "none", paired: false }), 0)).toContain("no longer paired");
   });
 });
 
 describe("the one summary line", () => {
-  const status = (...devices: PushRelayStatus["devices"]): PushRelayStatus => ({ configured: true, relay: false, v2: true, sandbox: false, devices });
+  const status = (...devices: PushRelayStatus["devices"]): PushRelayStatus => ({ configured: true, devices });
   const now = 10 * 3600_000;
 
   test("counts 0, 1 or n phones", () => {
@@ -85,10 +87,17 @@ describe("the one summary line", () => {
     expect(phoneSummary(status(busy), now)).toEqual({ label: "Alerts reach 1 phone", ok: true });
   });
 
-  test("stopped, unpaired and other Macs' registrations are not counted", () => {
+  test("stopped and unpaired registrations are not counted", () => {
     const parked = device({ deviceId: "old", sandbox: true, parked: true, consecutiveFailures: 20, lastStatus: 400 });
     expect(phoneSummary(status(parked, device()), now)).toEqual({ label: "Alerts reach 1 phone", ok: true });
-    expect(phoneSummary(status(device({ paired: false }), device({ mine: false })), now).label).toBe("No phone registered yet");
+    expect(phoneSummary(status(device({ paired: false })), now).label).toBe("No phone registered yet");
+  });
+
+  test("a phone with no key yet is named as unfinished, not as failing", () => {
+    expect(phoneSummary(status(device({ transport: "none" })), now)).toEqual({ label: "Facundo's iPhone hasn't finished registering for notifications", ok: false });
+    expect(phoneSummary(status(device({ transport: "none" }), device({ deviceId: "b", transport: "none" })), now).label).toBe("2 phones haven't finished registering for notifications");
+    // A phone that is failing outranks one that has a step left to do.
+    expect(phoneSummary(status(device({ transport: "none" }), device({ deviceId: "b", consecutiveFailures: 2 })), now).label).toBe("Alerts aren't reaching Facundo's iPhone");
   });
 
   test("details still carry every registration's diagnostics", () => {
@@ -110,20 +119,27 @@ describe("the daily budget", () => {
 });
 
 describe("the header badge", () => {
-  test("says which of the two ways this Mac can push, or that it cannot", () => {
-    const status = (patch: Partial<PushRelayStatus>): PushRelayStatus => ({ configured: true, relay: true, sandbox: false, devices: [], ...patch });
-    expect(relayHeadline(status({}))).toEqual({ label: "Relay configured", ok: true });
-    expect(relayHeadline(status({ relay: false }))).toEqual({ label: "APNs key configured", ok: true });
-    expect(relayHeadline(status({ configured: false }))).toEqual({ label: "Not configured", ok: false });
-    // A phone that registered itself needs nothing provisioned on this Mac.
-    expect(relayHeadline(status({ relay: false, v2: true }))).toEqual({ label: "Ready", ok: true });
+  test("says whether this Mac can push, and never how it was set up", () => {
+    expect(relayHeadline({ configured: true, devices: [] })).toEqual({ label: "Ready", ok: true });
+    expect(relayHeadline({ configured: false, devices: [] })).toEqual({ label: "Not ready", ok: false });
+  });
+});
+
+/** The pane is status only: nothing about setting up a relay, and no vendor names on screen. */
+describe("the pane's copy", () => {
+  test("never asks for a relay to be provisioned or a config pasted", () => {
+    const source = readFileSync(new URL("./push-notifications-group.tsx", import.meta.url), "utf8");
+    const copy = [...source.matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)].map((match) => match[1] ?? match[2]).join("\n");
+    for (const banned of [/provision/i, /paste/i, /relay host/i, /relay config/i, /\bApple\b/, /APNs/, /Keychain/, /Cloudflare/]) {
+      expect(copy).not.toMatch(banned);
+    }
   });
 });
 
 describe("the test notification sent after pairing", () => {
   test("reads as working, or as the exact reason, and says whose refusal it was", () => {
     expect(testLine({ at: 1, status: 200, relay: false })).toBe("Working — test notification delivered");
-    expect(testLine({ at: 1, status: 400, reason: "BadDeviceToken", relay: false })).toBe("Apple refused the test notification (400 BadDeviceToken)");
+    expect(testLine({ at: 1, status: 400, reason: "BadDeviceToken", relay: false })).toBe("Push service refused the test notification (400 BadDeviceToken)");
     expect(testLine({ at: 1, status: 401, relay: true })).toBe("Relay refused the test notification (401)");
     expect(testLine({ at: 1, status: 0, relay: true })).toBe("Test notification could not reach the relay");
   });
@@ -132,8 +148,8 @@ describe("the test notification sent after pairing", () => {
     expect(deviceLine(device({ transport: "v2", test: { at: 1, status: 200, relay: false } }), 0).startsWith("Working")).toBe(true);
   });
 
-  test("a sandbox build is only a problem on v1", () => {
+  test("a sandbox build is not a problem", () => {
     expect(deviceLine(device({ sandbox: true, transport: "v2" }), 0)).not.toContain("sandbox");
-    expect(deviceLine(device({ sandbox: true, transport: "v1" }), 0)).toContain("sandbox build");
+    expect(deviceLine(device({ sandbox: true, transport: "direct" }), 0)).not.toContain("sandbox");
   });
 });

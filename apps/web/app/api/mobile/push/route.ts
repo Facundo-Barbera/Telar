@@ -42,7 +42,7 @@ export async function PUT(request: Request) {
     // Not awaited: the phone is not kept waiting on APNs to hear it registered.
     if (registration.relay) void sendRelayTest(device.id, registration.topic);
     // A phone that brought a relay v2 credential needs nothing from this Mac.
-    return Response.json({ configured: registration.relay !== undefined || pushConfigured(registration.sandbox), ...activityFor(device.id, registration.topic) });
+    return Response.json({ configured: registration.relay !== undefined || pushConfigured(), ...activityFor(device.id, registration.topic) });
   } catch (error) {
     if (error instanceof PushInputError || error instanceof SyntaxError) return Response.json({ error: { message: "Invalid push registration." } }, { status: 400 });
     return Response.json({ error: { message: "Couldn't save push registration." } }, { status: 503 });

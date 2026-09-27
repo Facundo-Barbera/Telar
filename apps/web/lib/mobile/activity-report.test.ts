@@ -53,8 +53,8 @@ describe("the report", () => {
 
 describe("in the Mac's own Settings", () => {
   test("an accepted start with no card says iOS dropped it, not that it worked", () => {
-    expect(activityLine({ card: false, lastStart: { at: 1, status: 200, relay: false } })).toBe("Apple accepted the last start, but no card appeared on the phone");
-    expect(activityLine({ card: false, lastStart: { at: 1, status: 400, reason: "TopicDisallowed", relay: false } })).toBe("Apple refused the last start (400 TopicDisallowed)");
+    expect(activityLine({ card: false, lastStart: { at: 1, status: 200, relay: false } })).toBe("the last start was accepted, but no card appeared on the phone");
+    expect(activityLine({ card: false, lastStart: { at: 1, status: 400, reason: "TopicDisallowed", relay: false } })).toBe("push service refused the last start (400 TopicDisallowed)");
     expect(activityLine({ card: false, lastStart: { at: 1, status: 401, relay: true } })).toBe("relay refused the last start (401)");
     expect(activityLine({ card: true })).toBe("card running");
     expect(activityLine({ card: false, blocker: "no-start-token" })).toContain("no push-to-start token");

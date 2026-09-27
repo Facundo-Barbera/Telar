@@ -4,23 +4,17 @@
  * PUSH NOTIFICATIONS, IN REMOTE ACCESS — issue #579.
  *
  * ── THE FAILURE THIS PANE EXISTS TO END ─────────────────────────────────────
- * Notifications on the owner's phone never arrived, and nothing anywhere said
- * why. The chain is: the cockpit's worker refuses to start without a relay
- * credential in this Mac's Keychain; `PUT /api/mobile/push` answers
- * `{ configured: false }`; and the only surface that reported that was a status
- * line under a toggle on the phone. Nothing on the MAC — the machine that owns
- * the missing credential and is the only place it can be written — mentioned
- * push at all.
+ * Notifications on the owner's phone never arrived, and nothing on the Mac
+ * said why. So this group answers two questions in the order somebody asks
+ * them: can this Mac push, and is each phone actually being reached.
  *
- * So this group answers two questions in the order somebody asks them: can
- * this Mac push, and is each phone actually being reached.
- *
- * ── STATUS ONLY, NOTHING TO PASTE ───────────────────────────────────────────
- * With relay v2 a phone registers itself and hands this Mac its own send key
- * when it pairs, so there is nothing to provision here. What the pane adds
- * instead is the proof: the test alert sent straight after pairing, reported
- * as "working" or Apple's exact reason. No credential is shown or stored in
- * state; the route sends none.
+ * ── STATUS ONLY, NOTHING TO PROVISION ───────────────────────────────────────
+ * A phone registers itself with the relay and hands this Mac its own send key
+ * when it pairs, so there is nothing to set up here and never will be. What
+ * the pane shows instead is the proof: the test alert sent straight after
+ * pairing, reported as "working" or the exact reason. A phone that has not
+ * handed over a key yet is told apart from a failing one. No credential is
+ * shown or stored in state; the route sends none.
  *
  * ── ONE SETTING: "NOTIFY ON" ────────────────────────────────────────────────
  * With the Mac's own banners on, every alert could arrive on both devices. The
@@ -38,14 +32,6 @@ import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 export interface PushRelayStatus {
   /** The worker's own gate. False here means this Mac sends nothing. */
   configured: boolean;
-  /** Whether a relay is what makes it configured, as opposed to a local APNs
-   *  key — the two are provisioned in different places. */
-  relay: boolean;
-  /** Some phone registered itself with relay v2: nothing to provision here. */
-  v2?: boolean;
-  /** Whether a DEBUG build's `sandbox: true` registration could ever be
-   *  delivered to. The available Apple key is production-only. */
-  sandbox: boolean;
   /** Milliseconds. This Mac is past the relay's daily budget and sends nothing
    *  until then — the relay's own `Retry-After`, honoured (#584). */
   pausedUntil?: number;
@@ -65,11 +51,9 @@ export interface PushRelayStatus {
     consecutiveFailures: number;
     /** Twenty consecutive failures: stopped until the phone registers again. */
     parked: boolean;
-    /** Whether THIS Mac is the one that serves it. A record registered against
-     *  another Mac is left alone rather than sent twice (#584). */
-    mine: boolean;
-    /** v2: the phone registered itself and gave this Mac a key. v1: this Mac's own relay. */
-    transport?: "v1" | "v2";
+    /** v2: the phone registered itself and gave this Mac a key. direct: this
+     *  Mac's own developer key. none: neither, so nothing is sent to it. */
+    transport?: "v2" | "direct" | "none";
     /** The test alert sent when this phone gave this Mac its current key. */
     test?: { at: number; status: number; reason?: string; relay: boolean };
     /** Why this phone has, or has not, got an automatic Live Activity. */
@@ -79,10 +63,12 @@ export interface PushRelayStatus {
 
 /** What the header badge says, in the words a person would use about it. */
 export function relayHeadline(status: PushRelayStatus): { label: string; ok: boolean } {
-  if (!status.configured) return { label: "Not configured", ok: false };
-  if (status.v2) return { label: "Ready", ok: true };
-  return { label: status.relay ? "Relay configured" : "APNs key configured", ok: true };
+  return status.configured ? { label: "Ready", ok: true } : { label: "Not ready", ok: false };
 }
+
+/** A phone that registered without handing this Mac a key: sent nothing, and
+ *  not failing either — it has a step left to do. */
+export const NOT_REGISTERED = "This phone hasn't registered for notifications. Open Telar on it to finish.";
 
 /**
  * What a phone's row says about whether it is actually being reached.
@@ -93,21 +79,17 @@ export function relayHeadline(status: PushRelayStatus): { label: string; ok: boo
  * something.
  */
 export function deviceLine(device: PushRelayStatus["devices"][number], now = Date.now()): string {
+  // NOTHING IS SENT TO IT, so delivery history would only read as a fault.
+  if (device.transport === "none") return device.paired ? NOT_REGISTERED : `${NOT_REGISTERED} · no longer paired — will be dropped`;
   const parts: string[] = [];
-  // ANOTHER MAC'S PHONE IS NOT THIS MAC'S PROBLEM, and saying so first stops the
-  // rest of the line being read as a fault here (#584).
-  if (!device.mine) parts.push("registered against another Mac — served from there");
   if (device.test) parts.push(testLine(device.test));
   parts.push(device.enabled ? "Alerts on" : "Alerts off");
   if (device.liveActivities) {
     const activity = device.activity ? activityLine(device.activity) : undefined;
     parts.push(activity ? `Live Activities: ${activity}` : "Live Activities");
   }
-  // A DEBUG BUILD REGISTERS SANDBOX and can never be delivered to through the
-  // relay, which is worth saying beside a phone that shows up and never rings.
-  if (device.sandbox && device.transport !== "v2") parts.push("sandbox build — update the phone app to reach it");
   parts.push(device.lastDeliveryAt ? `last delivery ${fmtAgo(device.lastDeliveryAt * 1000, now)}` : "never delivered to");
-  // WHY IT IS FAILING, NOT JUST THAT IT IS. Apple's reason is the difference
+  // WHY IT IS FAILING, NOT JUST THAT IT IS. The reason is the difference
   // between "this phone's token is dead" and "the relay had a bad minute".
   if (device.lastStatus !== undefined && device.lastStatus !== 200) {
     parts.push(device.lastReason ? `last refused ${device.lastStatus} ${device.lastReason}` : `last refused ${device.lastStatus}`);
@@ -129,7 +111,7 @@ export function testLine(test: NonNullable<PushRelayStatus["devices"][number]["t
   if (test.status === 200 && !test.relay) return TEST_OK;
   const said = test.reason ? `${test.status} ${test.reason}` : String(test.status);
   if (test.relay) return test.status === 0 ? "Test notification could not reach the relay" : `Relay refused the test notification (${said})`;
-  return `Apple refused the test notification (${said})`;
+  return `Push service refused the test notification (${said})`;
 }
 
 /**
@@ -143,9 +125,9 @@ export function activityLine(report: ActivityReport): string | undefined {
   if (report.blocker === "gave-up") return "gave up after 3 starts that never appeared; retries when work next starts";
   const start = report.lastStart;
   if (!start) return undefined;
-  if (start.status === 200 && !start.relay) return "Apple accepted the last start, but no card appeared on the phone";
+  if (start.status === 200 && !start.relay) return "the last start was accepted, but no card appeared on the phone";
   const said = start.reason ? `${start.status} ${start.reason}` : String(start.status);
-  return start.relay ? `relay refused the last start (${said})` : `Apple refused the last start (${said})`;
+  return start.relay ? `relay refused the last start (${said})` : `push service refused the last start (${said})`;
 }
 
 /** "Push paused until 14:32" — the relay's daily budget, in the words somebody
@@ -169,6 +151,7 @@ export function isStale(device: Device): boolean {
 /** Alerts are not getting through: sends are failing with no recent delivery,
  *  or the test notification sent after pairing was refused and nothing has landed since. */
 export function isFailing(device: Device, now = Date.now()): boolean {
+  if (device.transport === "none") return false;
   const reached = device.lastDeliveryAt !== undefined && now - device.lastDeliveryAt * 1000 < REACHED_WITHIN_MS;
   if (device.consecutiveFailures > 0 && !reached) return true;
   return device.test !== undefined && testLine(device.test) !== TEST_OK && device.lastDeliveryAt === undefined;
@@ -177,14 +160,17 @@ export function isFailing(device: Device, now = Date.now()): boolean {
 const phones = (n: number) => `${n} phone${n === 1 ? "" : "s"}`;
 
 /**
- * THE WHOLE PANE IN ONE LINE. Only this Mac's live phones count; stopped and
- * other Macs' registrations stay in the details, where the diagnostics are.
+ * THE WHOLE PANE IN ONE LINE. Only live phones count; stopped registrations
+ * stay in the details, where the diagnostics are.
  */
 export function phoneSummary(status: PushRelayStatus, now = Date.now()): { label: string; ok: boolean } {
-  const live = status.devices.filter((device) => device.mine && !isStale(device));
+  const live = status.devices.filter((device) => !isStale(device));
   const failing = live.filter((device) => isFailing(device, now));
   if (failing.length === 1) return { label: `Alerts aren't reaching ${failing[0]!.name ?? "your phone"}`, ok: false };
   if (failing.length > 1) return { label: `Alerts aren't reaching ${phones(failing.length)}`, ok: false };
+  const unregistered = live.filter((device) => device.transport === "none");
+  if (unregistered.length === 1) return { label: `${unregistered[0]!.name ?? "Your phone"} hasn't finished registering for notifications`, ok: false };
+  if (unregistered.length > 1) return { label: `${phones(unregistered.length)} haven't finished registering for notifications`, ok: false };
   const on = live.filter((device) => device.enabled).length;
   if (on > 0) return { label: `Alerts reach ${phones(on)}`, ok: true };
   if (live.length > 0) return { label: `Alerts are off on ${live.length === 1 ? "your phone" : phones(live.length)}`, ok: true };
@@ -299,7 +285,7 @@ export function PushNotificationsGroup() {
         id="push-phones"
         label={summary.label}
         icon={SmartphoneIcon}
-        {...(summary.ok ? {} : { hint: "Open Telar on the phone to register it again." })}
+        {...(summary.ok ? {} : { hint: "Open Telar on the phone to register it." })}
         info="A paired phone registers when it first asks for notification permission. A registration that stops working is removed automatically, and the phone registers again the next time Telar opens on it."
         control={null}
       >
