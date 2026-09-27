@@ -1449,6 +1449,10 @@ describe("subscribing and answering", () => {
     expect(made.isError).toBe(false);
     expect(made.json!.id as string).toStartWith("coh_");
     expect(made.json!.note as string).toContain("ONE notification when all 2 are done");
+    // The same sessions again: the same cohort, and the note says so first.
+    const again = await call(tools, "sessions_subscribe", { sessionIds: [two.id, one.id] });
+    expect(again.json!.id).toBe(made.json!.id);
+    expect(again.json!.note as string).toStartWith(`Already subscribed (${made.json!.id as string})`);
     const listed = await call(tools, "sessions_subscriptions");
     expect(listed.json!.cohorts).toEqual([{ id: made.json!.id, expiresAt: made.json!.expiresAt, pending: [one.id, two.id], members: 2 }]);
     const removed = await call(tools, "sessions_unsubscribe", { subscriptionId: made.json!.id });

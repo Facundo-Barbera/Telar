@@ -82,7 +82,7 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, SessionSettleEnded, Subscription, Cohort, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, SessionSettleEnded, Subscription, Cohort, SubscribedCohort, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
 import { HOLD_REPORTS, MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
 
 /**
@@ -233,7 +233,7 @@ export type SessionsCapability = {
   subscribeCohort?(
     subscriberSessionId: string,
     input: { sessionIds: string[]; timeoutMinutes?: number; completionWake?: Cohort["completionWake"] },
-  ): Promise<Cohort>;
+  ): Promise<SubscribedCohort>;
   cohorts?(subscriberSessionId: string): Promise<Cohort[]>;
   /** Every OPEN request a session has, plus possibly some resolved ones; the
    *  wall keeps the open ones. */
@@ -1836,14 +1836,20 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             ...(typeof args.timeoutMinutes === "number" ? { timeoutMinutes: args.timeoutMinutes } : {}),
           });
           const pending = cohort.members.filter((member) => !member.outcome).length;
+          // Said first, so a coordinator that re-subscribes learns it need not.
+          const already = cohort.alreadySubscribed
+            ? `Already subscribed (${cohort.id}): nothing new was made, and it still expires at ${new Date(cohort.expiresAt).toISOString()}. `
+            : cohort.movedFrom
+              ? `Moved from ${cohort.movedFrom.join(", ")}, which no longer track${cohort.movedFrom.length === 1 ? "s" : ""} these sessions. `
+              : "";
           return json({
             ...cohort,
             ...(deprecated ? { deprecated: SUBSCRIBE_DEPRECATED } : {}),
-            note: pending === 0
+            note: already + (pending === 0
               ? "Every session was already done, so the notification is on its way now."
               : cohort.members.length === 1
                 ? `You will get ONE notification when ${sessionIds[0]} is done, quoting what it said, or at ${new Date(cohort.expiresAt).toISOString()} if it never is. A blocker or parked request still reaches you at once. End your turn now.`
-                : `You will get ONE notification when all ${cohort.members.length} are done (${pending} still pending), or at ${new Date(cohort.expiresAt).toISOString()} with whatever arrived. Their results are held for it, not delivered one by one; a blocker or parked request still reaches you at once, and a member that sent a blocker stays pending until you answer it. End your turn now.`,
+                : `You will get ONE notification when all ${cohort.members.length} are done (${pending} still pending), or at ${new Date(cohort.expiresAt).toISOString()} with whatever arrived. Their results are held for it, not delivered one by one; a blocker or parked request still reaches you at once, and a member that sent a blocker stays pending until you answer it. End your turn now.`),
           });
         } catch (error) {
           return err(`Could not subscribe to the cohort: ${failure(error)}`);
