@@ -16,6 +16,9 @@ import type {
   GitHubReactionResult,
   GitHubThreadReplyResult,
   GitHubThreadResolveResult,
+  GitHubLineCommentInput,
+  GitHubLineCommentResult,
+  GitHubPullAnchor,
   GitHubPullCreateResult,
   GitPushResult,
   GitHubPullFilter,
@@ -1439,6 +1442,12 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  which needs `gh` and a GitHub remote where the push arm needs neither. */
     openSessionPullRequest: (sessionId: string, input: { title: string; body?: string; base?: string }) =>
       request<GitHubPullCreateResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/github/pull`, input),
+    /** The session branch's pull request and what anchoring a Diff line to it needs (#1014). */
+    sessionPullAnchor: (sessionId: string) =>
+      request<GitHubPullAnchor>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/github/pull/anchor`),
+    /** Start a review thread on a line or range of that pull request (#1014). */
+    commentOnSessionPullLine: (sessionId: string, input: GitHubLineCommentInput) =>
+      request<GitHubLineCommentResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/github/pull/comments`, input),
     /** What the session's browser is looking at. `screenshot` costs a round trip
      *  through Chromium and `start` would LAUNCH one, so both are opt-in. */
     browserState: (sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}) => {

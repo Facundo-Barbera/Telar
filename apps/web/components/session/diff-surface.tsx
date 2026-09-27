@@ -102,6 +102,7 @@ import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
 import { fileReference, lineRangeReference, startReferenceDrag, type LineSide } from "@/lib/drag-reference";
 import { DiffCodeView, readPatchShape, toLineRange, type PatchReading } from "@/components/session/diff-code-view";
+import { PullLineComment, type PullCommentContext } from "@/components/session/pull-line-comment";
 import { DiffFileTree } from "@/components/session/diff-file-tree";
 import {
   DropdownMenu,
@@ -369,6 +370,7 @@ export function ReviewFileRow({
   onOpenFile,
   onOpenInNewPanelTab,
   onInsertReference,
+  pullComment,
 }: {
   /** Session-scoped or project-scoped — the row does not care which, which is
    *  what lets one surface serve a conversation and a canvas. */
@@ -422,6 +424,8 @@ export function ReviewFileRow({
   /** Put the row's reference into the message being written — the same string
    *  and the same `fileReference` the row's own DRAG already carries. */
   onInsertReference?: (text: string) => void;
+  /** Selected lines can start a review thread on the branch's pull request (#1014). */
+  pullComment?: PullCommentContext;
 }) {
   /**
    * THE WHOLE ANSWER, not just its text — `patch: ""` alone could not say
@@ -568,7 +572,7 @@ export function ReviewFileRow({
         patch.incomplete ? (
           <>
             <p className="px-4 pb-2 text-2xs text-warning">{INCOMPLETE_PATCH[patch.incomplete][witness]}</p>
-            {patch.patch !== "" && <PatchBody patch={patch.patch} view={view} path={file.path} {...(onInsertReference ? { onInsertReference } : {})} />}
+            {patch.patch !== "" && <PatchBody patch={patch.patch} view={view} path={file.path} {...(onInsertReference ? { onInsertReference } : {})} {...(pullComment ? { pullComment } : {})} />}
           </>
         ) : patch.binary ? (
           <p className="px-4 pb-2 text-2xs text-muted-foreground">Binary file — no textual diff.</p>
@@ -577,7 +581,7 @@ export function ReviewFileRow({
           // its answer is that nothing in this file differs.
           <p className="px-4 pb-2 text-2xs text-muted-foreground">No textual difference.</p>
         ) : (
-          <PatchBody patch={patch.patch} view={view} path={file.path} {...(onInsertReference ? { onInsertReference } : {})} />
+          <PatchBody patch={patch.patch} view={view} path={file.path} {...(onInsertReference ? { onInsertReference } : {})} {...(pullComment ? { pullComment } : {})} />
         ))}
       {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-2xs text-muted-foreground">Renamed from {file.renamedFrom}</p>}
     </div>
@@ -606,12 +610,14 @@ function PatchBody({
   view,
   path,
   onInsertReference,
+  pullComment,
 }: {
   patch: string;
   view: DiffView;
   /** The row's path — the NEW one for a rename, which is what a range names. */
   path: string;
   onInsertReference?: (text: string) => void;
+  pullComment?: PullCommentContext;
 }) {
   const reading = useMemo(() => readPatchShape(patch), [patch]);
   const [selection, setSelection] = useState<LineRange>();
@@ -647,7 +653,7 @@ function PatchBody({
             patch={patch}
             layout={view.layout}
             wrap={view.wrap}
-            {...(onInsertReference ? { onLinesSelected } : {})}
+            {...(onInsertReference || pullComment ? { onLinesSelected } : {})}
           />
         </div>
       )}
@@ -659,6 +665,17 @@ function PatchBody({
             onInsertReference(text);
             setSelection(undefined);
           }}
+        />
+      )}
+      {/* KEYED BY THE SELECTION, so each one reads the pull request afresh and
+          starts with an empty composer. */}
+      {selection && pullComment && (
+        <PullLineComment
+          key={`${selection.startSide}:${selection.start}-${selection.endSide}:${selection.end}`}
+          context={pullComment}
+          path={path}
+          patch={patch}
+          range={selection}
         />
       )}
     </>
@@ -1783,6 +1800,25 @@ export function DiffSurface({
   }, [publishable, projectId, github]);
 
   /**
+   * SELECTED LINES CAN START A REVIEW THREAD (#1014) — only where the publish arm
+   * could exist and `gh` answered. The pull request is read per selection rather
+   * than here: see `PullLineComment`.
+   */
+  const ahead = diff?.ahead;
+  const pullComment = useMemo<PullCommentContext | undefined>(
+    () =>
+      sessionId && publishable && github === true
+        ? {
+            read: () => api.sessionPullAnchor(sessionId),
+            scope: tab.kind,
+            ...(ahead === undefined ? {} : { ahead }),
+            send: (input) => api.commentOnSessionPullLine(sessionId, input),
+          }
+        : undefined,
+    [sessionId, publishable, github, tab.kind, ahead],
+  );
+
+  /**
    * IGNORING WHITESPACE IS PART OF THE REQUEST, not part of the rendering
    * (#694) — git decides which hunks exist. So the toggle is in this callback's
    * dependencies, and an open row re-reads when it flips: see the effect in
@@ -1887,7 +1923,12 @@ export function DiffSurface({
 
   /** Built once and spread onto both row lists, so the two can never drift
    *  into offering different menus for the same kind of row. */
-  const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
+  const rowMenu = {
+    ...(onOpenFile ? { onOpenFile } : {}),
+    ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}),
+    ...(onInsertReference ? { onInsertReference } : {}),
+    ...(pullComment ? { pullComment } : {}),
+  };
   /** Which party a row may name when it has no patch to draw (#694). Decided
    *  once here, beside `readPatch`, because the two answer the same question
    *  from the same place. */
