@@ -77,6 +77,7 @@ import { contextNoticeDue } from "@/lib/context-notice";
 import { contextNoticeDismissal, writeContextNoticeDismissed } from "@/lib/context-notice-dismissal";
 import { ComposerMenu } from "./composer-menu";
 import { DictationButton } from "./dictation-button";
+import { DictationGlow } from "./dictation-glow";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
 import {
@@ -1635,6 +1636,7 @@ export function Composer({
             keep their own menus: Base UI's trigger stops the `contextmenu` it
             handles, so the innermost one wins and a press on a chip never
             reaches this one. */}
+        <DictationGlow phase={dictation.phase} layer="halo" />
         <ComposerChromeMenu
           draft={draft}
           attachments={attachments}
@@ -1973,6 +1975,7 @@ export function Composer({
           </InputGroupAddon>
         </InputGroup>
         </ComposerChromeMenu>
+        <DictationGlow phase={dictation.phase} layer="ring" />
         </div>
       </form>
 
