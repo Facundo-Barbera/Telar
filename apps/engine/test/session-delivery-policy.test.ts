@@ -8,6 +8,8 @@ const stores: EngineStore[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.closeExecutionStore(); for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true }); });
 function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-delivery-")); homes.push(home);
+  // A resolvable model, so `claimNextTurn` can build a claim (held mail rides its notes).
+  fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
   const store = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   for (const id of ["session_host", "session_worker", "session_observer"]) store.createSession({ id, projectId: "project_one" });
@@ -16,8 +18,8 @@ function setup() {
   store.markRunning("session_worker", "run_source", claimToken);
   return { store, home, proof: { sessionId: "session_worker", runId: "run_source", claimToken } };
 }
-/** Make the recipient BUSY, which since #631 part 2 is what `passive` turns on.
- *  Hands back the claim so a test can settle it and drain the mailbox. */
+/** Make the recipient BUSY (a report is passive either way since the
+ *  session-tools audit). Hands back the claim so a test can settle it. */
 function busy(store: EngineStore, runId = "run_host"): string {
   store.submitTurn("session_host", { runId, input: "a long think" });
   const token = store.claimTurn("session_host", "worker_two")!.claim!.token;
@@ -44,40 +46,35 @@ test("routine reports are durable activity, never a claimed run or a notificatio
 });
 
 /**
- * #631 PART 2 — A PASSIVE MESSAGE TO AN IDLE SESSION USED TO BE A LOST MESSAGE.
- *
- * It waited for a next turn that nobody was going to give it. That cost a real
- * finding: a measurement about `git worktree lock` on removable media was
- * reported to an orchestrator, never read, and surfaced only because a person
- * asked aloud whether it had arrived.
- *
- * The wake is paid ONLY where the message would otherwise be lost. A busy
- * recipient is untouched (the test above); an idle one takes the message as a
- * turn, which is the cheapest moment a turn can be paid.
+ * A REPORT NEVER OPENS A TURN, EVEN ON AN IDLE RECIPIENT — the session-tools
+ * audit, inverting #631 part 2. Waking an idle coordinator for a progress note
+ * cost a turn whose whole content was "noted". The report is held instead, and
+ * handed over as a note on whatever turn starts next — here, the person's own
+ * (`claimNextTurn` is where the note rides).
  */
-test("a report to an IDLE session is delivered, because passive there means never", () => {
+test("a report to an IDLE session is held, and rides the next turn as a note", () => {
   const { store, proof } = setup();
   const report = store.submitAgentTurn("session_host", { runId: "run_report", input: "routine progress" }, proof);
-  expect(report.turn).toMatchObject({ state: "queued", agentIntent: "report", agentDelivery: "wake" });
-  // It is the MESSAGE that was delivered, not a wake about one: the turn keeps
-  // its sender and its intent, exactly as a task does.
+  expect(report.turn).toMatchObject({ state: "completed", agentIntent: "report", agentDelivery: "passive" });
   expect(report.turn.sender).toEqual({ sessionId: "session_worker" });
-  expect(store.claimTurn("session_host", "worker_two")?.runId).toBe("run_report");
+  // Nothing to claim: no turn was opened for it.
+  expect(store.claimTurn("session_host", "worker_two")).toBeUndefined();
+  expect(store.pendingNotifications("session_host")).toHaveLength(1);
+
+  store.submitTurn("session_host", { runId: "run_person", input: "what's new?" });
+  const claim = store.claimNextTurn("worker_two")!;
+  expect(claim.turn.runId).toBe("run_person");
+  expect(claim.notes!.join("\n")).toContain("Held for you while you were busy; no reply needed.");
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
 });
 
 /**
- * THE HALF THAT "WAKE IF IDLE ON ARRIVAL" WOULD HAVE MISSED.
- *
- * Report #1 wakes an idle coordinator; report #2 lands while that turn is
- * running, stays passive, and under an arrival-only rule is dropped exactly as
- * before — the same bug, one step later. The rule is on the IDLE TRANSITION, so
- * everything held arrives when the session next comes up for air.
- *
- * AND IT COSTS ONE TURN, NOT N. Three reports during one long turn are three
- * lines in one notice, which is the whole reason the mailbox and the cohort
- * merge exist.
+ * HELD PEER MAIL IS NOT FLUSHED INTO A TURN WHEN THE BUSY TURN ENDS — the
+ * session-tools audit, inverting the idle-transition flush. Three reports during
+ * a long turn stay in the mailbox and arrive together, as ONE note, on the next
+ * turn that is claimed.
  */
-test("messages held during a long turn arrive together, as ONE turn, when it ends", () => {
+test("messages held during a long turn stay held when it ends, and arrive together on the next turn", () => {
   const { store, proof } = setup();
   const token = busy(store);
   for (const n of [1, 2, 3]) {
@@ -88,26 +85,24 @@ test("messages held during a long turn arrive together, as ONE turn, when it end
 
   store.completeTurn("session_host", "run_host", token, { text: "done" });
 
-  const delivered = store.turns("session_host").filter((turn) => turn.state === "queued");
-  expect(delivered).toHaveLength(1);
-  const notification = delivered[0]!.notification!;
-  expect(notification.entries!.map((entry) => entry.kind)).toEqual(["peer_message", "peer_message", "peer_message"]);
+  expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
+  expect(store.pendingNotifications("session_host")).toHaveLength(3);
+
+  store.submitTurn("session_host", { runId: "run_person", input: "next" });
+  const notes = store.claimNextTurn("worker_two")!.notes!;
+  const held = notes.filter((note) => note.startsWith("Held for you while you were busy"));
+  expect(held).toHaveLength(1);
   expect(store.pendingNotifications("session_host")).toHaveLength(0);
-  // A HELD PEER MESSAGE IS NOT A WAKE. Nothing this session subscribed to did
-  // anything, so the turn carries its sender rather than an invented
-  // `turn_completed` that would have told every surface a run had finished.
-  expect(delivered[0]!.wakeReason).toBeUndefined();
-  expect(delivered[0]!.sender).toEqual({ sessionId: "session_worker" });
-  expect(delivered[0]!.input).toBe("[notification: peer message · session session_worker]");
 });
 
-test("a single held message says it was held, so the arrival row and the delivery do not read as one event twice", () => {
+test("a single held message says it was held, and the message row itself is untouched", () => {
   const { store, proof } = setup();
   const token = busy(store);
   store.submitAgentTurn("session_host", { runId: "run_one", input: "progress", intent: "report" }, proof);
   store.completeTurn("session_host", "run_host", token, { text: "done" });
-  const delivered = store.turns("session_host").find((turn) => turn.state === "queued")!;
-  expect(delivered.notification!.body).toContain("It arrived while this session was working and was held until now");
+  store.submitTurn("session_host", { runId: "run_person", input: "next" });
+  const notes = store.claimNextTurn("worker_two")!.notes!;
+  expect(notes.some((note) => note.startsWith("Held for you while you were busy; no reply needed."))).toBe(true);
   // The body it points at is still the message, untouched and unabridged.
   expect(store.turns("session_host").find((turn) => turn.runId === "run_one")!.input).toBe("progress");
 });

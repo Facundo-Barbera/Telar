@@ -546,6 +546,9 @@ const TERMINAL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed
  */
 /** The intents that speak for the run that sent them — see `messageDeliveredTo`. */
 const FOLDING_INTENTS: ReadonlySet<NonNullable<Turn["agentIntent"]>> = new Set(["report", "result", "blocker"]);
+/** Held mail that is a peer talking — a report or an unawaited result — rather
+ *  than a wake. It never opens a turn of its own. */
+const isPeerMail = (detail: NotificationDetail): boolean => detail.kind === "peer_message";
 const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
 
 /** The contract's own list, as a set, so an unknown mode is refused at the edge
@@ -2769,6 +2772,20 @@ export class EngineStore {
     const notes = this.nextTurnNotes.get(sessionId) ?? [];
     if (!notes.includes(note)) notes.push(note);
     this.nextTurnNotes.set(sessionId, notes.slice(-5));
+  }
+
+  /**
+   * PEER MAIL, HANDED OVER WITH WHATEVER TURN STARTS NEXT. Reports never open
+   * a turn of their own (`submitAgentTurn`), so this is how they arrive: as a
+   * note ahead of the next turn's input, whether that is a wake or the person
+   * typing. Only a box of peer mail alone — anything else in it is a wake the
+   * turn-end flush delivers as its own notification.
+   */
+  private takeHeldMail(sessionId: string): string[] {
+    const pending = this.readPendingNotifications(sessionId);
+    if (pending.length === 0 || !pending.every(isPeerMail)) return [];
+    this.writePendingNotifications(sessionId, []);
+    return [`Held for you while you were busy; no reply needed.\n${mergeNotifications(pending).body}`];
   }
 
   private takeNextTurnNotes(sessionId: string): string[] {
@@ -10372,7 +10389,14 @@ export class EngineStore {
     }
     // A compaction is a gesture on the session, not words for the running
     // model; it always waits its turn.
-    if (kind !== "compact" && !session.paused && PROVIDER_CAPABILITIES[session.driver].liveSteering) {
+    /**
+     * ONLY A PERSON, A TASK OR A BLOCKER INTERRUPTS A RUNNING TURN. Everything
+     * else a peer or a subscription sends waits for the turn to end: a result
+     * or a finished run mid-reasoning is the interruption the audit measured,
+     * and it is news that keeps.
+     */
+    const interrupts = turn.origin !== "session" || turn.agentIntent === "task" || turn.agentIntent === "blocker";
+    if (kind !== "compact" && interrupts && !session.paused && PROVIDER_CAPABILITIES[session.driver].liveSteering) {
       const steered = this.steerIfRunning(sessionId, turn.runId);
       // A STEERED NOTIFICATION'S ROW IS THE DRIVER'S, not this one's. The turn
       // is being folded into a RUNNING one, so its row belongs on that turn's
@@ -10541,63 +10565,17 @@ export class EngineStore {
       ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
       : undefined;
     /**
-     * A PASSIVE MESSAGE TO AN IDLE SESSION IS A LOST MESSAGE — issue #631 part 2.
+     * A REPORT NEVER OPENS A TURN — the session-tools audit, replacing #631
+     * part 2 and the report window (#723, #784).
      *
-     * `report` and an unawaited `result` wait for the recipient's next turn.
-     * That is right while it is WORKING: a report is a peer talking, and
-     * interrupting a coordinator mid-reasoning is the cost `passive` exists to
-     * refuse. But a session that is idle and that nobody gives a turn to waits
-     * FOREVER, and the wait is silent. It cost a real finding: a session had
-     * measured that `git worktree lock` is mandatory for worktrees on removable
-     * media — without it, unmounting makes git prune the registration and
-     * destroy sessions — reported it, and the orchestrator never saw it while
-     * another session built the feature without it. The sender could see the
-     * message was going nowhere and sent it anyway, because passive was the
-     * documented default.
-     *
-     * SO THE WAKE IS PAID ONLY WHERE THE MESSAGE WOULD OTHERWISE BE LOST. A
-     * BUSY recipient is not woken and not steered — unchanged, and that is the
-     * expensive case this whole mechanism exists for. An IDLE one takes the
-     * message as a turn, which is the cheapest moment a turn can be paid: there
-     * is no context in flight to interrupt, and since #631 the notice it opens
-     * on is ~345 characters.
-     *
-     * AND NOT ON ARRIVAL ALONE, which is the version of this that fixes the
-     * incident and not the class. Report #1 wakes an idle coordinator; report #2
-     * lands while that turn runs, stays passive, and is dropped exactly as
-     * before. So the held ones are delivered at the IDLE TRANSITION too — see
-     * the passive branch of `submitTurn`, which hands them to the mailbox
-     * `flushPendingNotifications` already drains on every `completeTurn`,
-     * `failTurn`, `stopTurn` and `stopSession`. N messages arriving during one
-     * long turn cost ONE wake carrying one merged notice, not N.
-     *
-     * A SHELVED OR SNOOZED SESSION IS NOT WOKEN, and that exclusion is
-     * deliberate rather than an oversight. `wakeSessionForNewWork` treats new
-     * work as the shelf lifting itself; a peer's routine report is not a person
-     * changing their mind about a row they put away. Those sessions keep
-     * today's behaviour — the message is recorded, the row is written, and the
-     * session's own row carries it whenever the person comes back.
+     * `report` and an unawaited `result` used to wake an IDLE recipient, so a
+     * coordinator finishing its reply was woken again to read a progress note
+     * and answer "noted". Now they are always mail: held, and handed over with
+     * the recipient's next turn, whatever starts it — a real wake, or the
+     * person's next message (`takeHeldMail`). Nothing is lost: the row is in the
+     * transcript at once and `sessions_status` lists what is held. A worker
+     * that needs the coordinator NOW sends a `blocker`.
      */
-    const shelved = this.getSession(sessionId);
-    const wouldBeLost = !this.hasLiveTurn(sessionId) && shelved.settledOverride !== "settled" && shelved.snoozedUntil === undefined;
-    /**
-     * AND A RECIPIENT MAY ASK TO BE TOLD ON A CLOCK INSTEAD — issue #723.
-     *
-     * `wouldBeLost` above is what makes an idle recipient take a routine report
-     * the moment it lands. That is right for one sender and unreadable for five:
-     * a coordinator with five workers is woken five times, and the interleaving
-     * is what made hand-run orchestration illegible rather than the per-message
-     * cost. A window says "hold them and tell me together".
-     *
-     * IT ONLY WITHDRAWS THE `wouldBeLost` WAKE, and that is the whole change.
-     * The message is not lost — it goes to the same mailbox a busy recipient's
-     * does, and `sweepReportWindows` delivers the cohort when the window closes.
-     * The other three clauses are untouched, so a `task`, a `blocker` and an
-     * AWAITED `result` still wake a session that set a window: one is work
-     * arriving, one is a peer asking for intervention now, and one is the event
-     * this session called `sessions_subscribe` to be woken for.
-     */
-    const windowed = shelved.reportWindowMinutes !== undefined;
     /**
      * A CORRECTION — issue #784, step 3. See `Turn.corrects` for the rule and
      * `correctionOf` for how the earlier message's state is read. A retry of
@@ -10613,7 +10591,7 @@ export class EngineStore {
      * A second result (a correction, say) replaces the first there.
      */
     const cohortHeld = intent === "result" && sender.sessionId !== undefined && this.cohortHolds(sessionId, sender.sessionId);
-    const delivery = !cohortHeld && (intent === "task" || intent === "blocker" || waiting || (wouldBeLost && !windowed) || correction === "read" || correction === "queued")
+    const delivery = !cohortHeld && (intent === "task" || intent === "blocker" || waiting || correction === "read" || correction === "queued")
       ? "wake"
       : "passive";
     /**
@@ -11717,7 +11695,7 @@ export class EngineStore {
          */
         ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
         ...(() => {
-          const notes = this.takeNextTurnNotes(session.id);
+          const notes = [...this.takeNextTurnNotes(session.id), ...this.takeHeldMail(session.id)];
           return notes.length > 0 ? { notes } : {};
         })(),
         turn,
@@ -14102,94 +14080,11 @@ export class EngineStore {
     return settled;
   }
 
-  /**
-   * EVERY REPORT WINDOW THAT HAS CLOSED — the cadence tick, issue #723.
-   *
-   * The mailbox's four existing drains all hang off a turn ENDING, which is
-   * exactly what does not happen to the session this feature is for: a
-   * coordinator that set a window and then went quiet has nothing to end. So the
-   * window needs something that ticks, and this is it — the same shape, and the
-   * same argument, as `sweepDelegatedSettling` above.
-   *
-   * A CLOSED WINDOW WITH AN EMPTY BOX DELIVERS NOTHING. No turn, no event, no
-   * row: a turn that says "no reports this window" is a model invocation paid
-   * for silence, and #199's rule is that passive traffic costs none. Absence of
-   * a delivery IS the report, and `sessions_status` reports the box meanwhile.
-   *
-   * CHEAP REFUSALS FIRST, in the order that costs least: a session with no
-   * window is one document read, and a window with an empty box is one more.
-   * Only a box that is both non-empty and due reaches the flush.
-   *
-   * Returns the sessions it delivered to, so a caller — and a test — can see the
-   * tick's work without waiting on a timer.
-   */
+  /** Delivered what a report window had held — see the body. */
   sweepReportWindows(): string[] {
-    const now = this.now();
-    const delivered: string[] = [];
-    for (const sessionId of this.sessionIds()) {
-      try {
-        const session = this.getSession(sessionId);
-        const minutes = session.reportWindowMinutes;
-        if (minutes === undefined) continue;
-        /**
-         * A SHELVED OR SNOOZED SESSION IS NOT DELIVERED TO, and this is the one
-         * place that has to say so out loud. `flushPendingNotifications` submits
-         * a turn, and `submitTurn` treats new work as the shelf lifting itself —
-         * so a tick that flushed here would un-shelve a row a person put away,
-         * which is precisely the exclusion #631 part 2 made deliberate for a
-         * peer's routine report. The mail keeps waiting, as that comment
-         * promises, and `sessions_status` reports it meanwhile.
-         *
-         * IT IS NOT A CONDITION ON THE FLUSH ITSELF: a session that ENDS A TURN
-         * is awake by demonstration, whatever its pin says, and the four
-         * turn-boundary drains are unchanged.
-         */
-        if (session.settledOverride === "settled" || session.snoozedUntil !== undefined) continue;
-        /**
-         * AND A SESSION SET TO HOLD IS NEVER DELIVERED TO BY THIS TICK — issue
-         * #784, step 2.
-         *
-         * THE SAME SHAPE AS THE SHELF ABOVE, deliberately: a `continue` in the
-         * sweep, not a condition on the flush. A session that ENDS A TURN is
-         * awake by demonstration whatever its cadence says, and the four
-         * turn-boundary drains stay exactly as they are — so a person who
-         * actually speaks to this session still gets their mail, merged, at the
-         * moment they were already paying for a turn.
-         *
-         * WHAT THIS REMOVES IS THE DELIVERY NOBODY ASKED FOR. Every other
-         * cadence ends in a flush, and a flush is a turn: a row in a
-         * conversation, a provider call, the thing the person was reading
-         * moving under them, and — because it moves `lastTurnEndedAt` —
-         * `push.ts`'s "A session finished" on their phone. At 3am that is
-         * quieter than forty wakes and no better. Held, the mailbox IS the
-         * delivery, and the count beside the cadence in the Agents panel is how
-         * they see it.
-         *
-         * BEFORE THE BOX IS READ, on this sweep's own "cheap refusals first"
-         * rule: this is a comparison on a document already in hand, and the
-         * read below is another file.
-         */
-        if (minutes === HOLD_REPORTS) continue;
-        if (this.readPendingNotifications(sessionId).length === 0) continue;
-        /**
-         * A BOX WITH NO STAMP IS DUE NOW. It was filled before this field
-         * existed, so its mail has already waited at least as long as any window
-         * — inventing `now` as its start would make the oldest mail in the store
-         * the last to be delivered.
-         */
-        const since = this.heldSince(sessionId);
-        if (since !== undefined && now - since < minutes * 60_000) continue;
-        // A live turn is not interrupted. `flushPendingNotifications` refuses on
-        // its own, and the turn's own end is the drain — so the cohort goes out
-        // one turn boundary later rather than into the middle of a thought.
-        const before = this.readPendingNotifications(sessionId).length;
-        this.flushPendingNotifications(sessionId);
-        if (this.readPendingNotifications(sessionId).length < before) delivered.push(sessionId);
-      } catch {
-        // One unreadable session must not stop the sweep for the rest.
-      }
-    }
-    return delivered;
+    // Deprecated with `sessions_report_window`: peer mail never opens a turn,
+    // so no cadence has anything to deliver. Kept for one release as a no-op.
+    return [];
   }
 
   /**
@@ -14938,6 +14833,8 @@ export class EngineStore {
     const pending = this.readPendingNotifications(sessionId);
     if (pending.length === 0) return;
     if (this.hasLiveTurn(sessionId)) return;
+    // Peer mail alone is not a reason for a turn: it rides with the next one.
+    if (pending.every(isPeerMail)) return;
     const merged = heldDelivery(mergeNotifications(pending));
     // CLEARED BEFORE THE SUBMIT, so a submit that throws cannot be retried into
     // a duplicate — and after it, the facts live on the turn, which is durable.

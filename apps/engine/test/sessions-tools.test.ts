@@ -388,9 +388,8 @@ describe("driving a session", () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
-    // BUSY IS WHAT PASSIVE MEANS NOW (#631 part 2): the cost it exists to refuse
-    // is interrupting a session mid-turn. Sending to an IDLE one used to be
-    // passive too, and that was a message nobody would ever read.
+    // Busy or idle, a routine send is passive (session-tools audit); busy is
+    // the case where steering would have been the cost.
     store.submitTurn(id, { runId: "run_busy", input: "a long think" });
     const token = store.claimTurn(id, "worker_busy")!.claim!.token;
     store.markRunning(id, "run_busy", token);
@@ -401,14 +400,17 @@ describe("driving a session", () => {
     expect(store.claimTurn(id, "worker_test")).toBeUndefined();
   });
 
-  test("send to an IDLE session is delivered rather than left for a turn nobody gives it", async () => {
+  // THE SESSION-TOOLS AUDIT inverted #631 part 2: an idle recipient is no longer
+  // woken by a routine message. It is held, and rides whatever turn comes next.
+  test("send to an IDLE session is held as mail, not turned into a turn", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     const sent = await call(tools, "sessions_send", { sessionId: id, input: "routine checkpoint" });
     expect(sent.isError).toBe(false);
-    expect(sent.json!.delivery).toBe("wake");
-    expect(store.claimTurn(id, "worker_test")).toBeDefined();
+    expect(sent.json!.delivery).toBe("passive");
+    expect(store.claimTurn(id, "worker_test")).toBeUndefined();
+    expect(store.pendingNotifications(id)).toHaveLength(1);
   });
 
   test("send queues one turn and says plainly that it is not the answer", async () => {
@@ -482,58 +484,43 @@ describe("driving a session", () => {
   });
 
   /**
-   * THE CADENCE VERB — issue #723. It names no session, so there is nothing here
-   * to point at somebody else's: a peer setting another peer's cadence would be
-   * one session deciding how another may be interrupted.
+   * THE CADENCE VERB IS DEPRECATED — the session-tools audit. Reports never open
+   * a turn now, so there is no cadence to set: the tool answers `deprecated` and
+   * changes nothing. It is still refused where there is no caller.
    */
-  test("the report window is the CALLER's own, settable and clearable, and refused where there is no caller", async () => {
+  test("the report window is a deprecated no-op for the caller, and refused where there is no caller", async () => {
     const { store, projectId } = engine();
     const mine = store.createSession({ projectId, title: "coordinator" });
-    const other = store.createSession({ projectId, title: "somebody else" });
     const tools = wall(store, { sessionId: mine.id });
 
     const set = await call(tools, "sessions_report_window", { minutes: 25 });
     expect(set.isError).toBe(false);
-    expect(set.json).toMatchObject({ sessionId: mine.id, reportWindowMinutes: 25 });
-    expect(String(set.json!.note)).toContain("held and delivered together");
-    expect(store.getSession(mine.id).reportWindowMinutes).toBe(25);
-    // NOBODY ELSE'S. The shape carries no session id at all, so the only proof
-    // needed is that the other session was untouched.
-    expect(store.getSession(other.id).reportWindowMinutes).toBeUndefined();
-
-    const off = await call(tools, "sessions_report_window", { minutes: null });
-    expect(off.json).toMatchObject({ reportWindowMinutes: null });
-    expect(String(off.json!.note)).toContain("as they arrive");
+    expect(set.json).toMatchObject({ sessionId: mine.id, deprecated: true });
+    expect(String(set.json!.note)).toContain("reports never open a turn");
     expect(store.getSession(mine.id).reportWindowMinutes).toBeUndefined();
 
-    // Out of bounds is the store's refusal, surfaced rather than swallowed.
-    const bad = await call(tools, "sessions_report_window", { minutes: 0 });
-    expect(bad.isError).toBe(true);
-
-    // And on the outward socket there is no session to set a cadence for.
+    // On the outward socket there is still no session to speak for.
     const socket = wall(store);
     const nobody = await call(socket, "sessions_report_window", { minutes: 25 });
     expect(nobody.isError).toBe(true);
     expect(nobody.text).toContain("no session");
   });
 
-  test("status reports a window beside the mail it is holding, so held never reads as lost", async () => {
+  test("status lists the mail a session is holding, so held never reads as lost", async () => {
     const { store, projectId } = engine();
     const host = store.createSession({ projectId, title: "coordinator" });
     const worker = store.createSession({ projectId, title: "worker" });
     const tools = wall(store, { sessionId: host.id });
-    await call(tools, "sessions_report_window", { minutes: 25 });
 
-    // A routine report from a proven sender, which the window now holds.
+    // A routine report from a proven sender to an idle host: held, not a turn.
     store.submitTurn(worker.id, { runId: "run_source", input: "work" });
     const token = store.claimTurn(worker.id, "worker_one")!.claim!.token;
     store.markRunning(worker.id, "run_source", token);
     store.submitAgentTurn(host.id, { runId: "run_report", input: "progress", intent: "report" }, { sessionId: worker.id, runId: "run_source", claimToken: token });
 
     const status = await call(tools, "sessions_status", { sessionId: host.id });
-    expect(status.json!.reportWindowMinutes).toBe(25);
     expect((status.json!.pendingNotifications as string[]).length).toBe(1);
-    expect(String(status.json!.note)).toContain("at most every 25 minutes");
+    expect(status.json!.running).toBe(false);
   });
 
   test("stop STOPS the session: the running turn ends, what was queued is settled, and it is idle after", async () => {
