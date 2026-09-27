@@ -26,8 +26,9 @@ import Testing
     }
 
     @Test func aRefusalNamesWhoseAndWhy() {
-        #expect(LiveActivityDiagnosis.line(start(400, reason: "BadDeviceToken"), now: now).contains("Apple refused the start"))
-        #expect(LiveActivityDiagnosis.line(start(400, reason: "BadDeviceToken"), now: now).hasSuffix("(400 BadDeviceToken)."))
+        // A refusal that is not about the token itself (a dead one has its own line).
+        #expect(LiveActivityDiagnosis.line(start(400, reason: "PayloadTooLarge"), now: now).contains("Apple refused the start"))
+        #expect(LiveActivityDiagnosis.line(start(400, reason: "PayloadTooLarge"), now: now).hasSuffix("(400 PayloadTooLarge)."))
         #expect(LiveActivityDiagnosis.line(start(409, relay: true), now: now).contains("push relay refused"))
     }
 
