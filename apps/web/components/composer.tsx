@@ -447,6 +447,7 @@ export function Composer({
   onViewBackground,
   onRuntimeMode,
   onResumeAfterRateLimit,
+  resumeAfterRateLimitDefault,
   onModelChange,
   onOpenChanges,
   onCompact,
@@ -584,6 +585,8 @@ export function Composer({
   /** Sit out a usage limit and carry on, or stay stopped. Absent on a session
    *  that does not exist yet — there is nothing to patch. */
   onResumeAfterRateLimit?: (next: boolean) => void;
+  /** This Mac's standing answer, shown when the session has not chosen for itself. */
+  resumeAfterRateLimitDefault?: boolean;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
   onModelChange?: (next: ModelChoice) => void;
@@ -1540,6 +1543,8 @@ export function Composer({
    * A VALUE rather than inline JSX because it has two homes: the box's
    * toolbar, and the tray under the box while it is compact.
    */
+  // The session's own choice, else this Mac's standing answer.
+  const resumeAfterRateLimit = session?.resumeAfterRateLimit ?? resumeAfterRateLimitDefault;
   const pills = (session || (fresh && driver)) && (
     <>
       <AgentControl
@@ -1568,7 +1573,7 @@ export function Composer({
               runtimeMode={runtimeMode}
               onRuntimeMode={onRuntimeMode}
               driver={activeDriver}
-              {...(session?.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: session.resumeAfterRateLimit })}
+              {...(resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit })}
               {...(onResumeAfterRateLimit ? { onResumeAfterRateLimit } : {})}
             />
           </>
@@ -1591,7 +1596,7 @@ export function Composer({
           {...(runtimeMode ? { onRuntimeMode } : {})}
           {...(onDriverChange ? { onDriverChange } : {})}
           {...(onEnvMode ? { onEnvMode } : {})}
-          {...(session?.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: session.resumeAfterRateLimit })}
+          {...(resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit })}
           {...(onResumeAfterRateLimit ? { onResumeAfterRateLimit } : {})}
         />
       </div>

@@ -45,13 +45,15 @@ const MODELS = [row("claude-sonnet-5", "Sonnet", ["low", "medium", "high"], true
 
 const realFetch = globalThis.fetch;
 
-function wire(defaultModel?: ModelSelection) {
+function wire(defaultModel?: ModelSelection, extra: { envMode?: "local" | "worktree"; sessionDefaults?: Record<string, unknown> } = {}) {
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
     if (url.includes("/api/projects")) {
-      return Response.json({ projects: [{ id: "project_1", name: "exoplanets", root: "/tmp", ...(defaultModel ? { defaultModel } : {}) }] });
+      return Response.json({
+        projects: [{ id: "project_1", name: "exoplanets", root: "/tmp", ...(defaultModel ? { defaultModel } : {}), ...(extra.envMode ? { envMode: extra.envMode } : {}) }],
+      });
     }
-    if (url.includes("/api/session-defaults")) return Response.json({ sessionDefaults: { envMode: "local" } });
+    if (url.includes("/api/session-defaults")) return Response.json({ sessionDefaults: { envMode: "local", ...extra.sessionDefaults } });
     if (url.includes("/api/models")) return Response.json({ catalogue: { driver: "claude", instanceId: "claude", readAt: 1, models: MODELS } });
     if (url.includes("/browser")) return Response.json({ browser: { tabs: [], canStart: false } });
     return Response.json({});
@@ -124,5 +126,20 @@ describe("a new conversation's composer", () => {
     await openCanvas();
     expect(pill(/^Model: /)?.getAttribute("aria-label")).toContain("Sonnet");
     expect(pill(/^Reasoning effort: /)?.getAttribute("aria-label")).toContain("Auto");
+  });
+
+  test("starts in the project's own workspace before this Mac's", async () => {
+    // The trigger names the checkout for a shared one, and the base ref for a worktree.
+    const lands = () => document.querySelector('[aria-label="Where this lands"]')?.textContent;
+    wire(undefined, { envMode: "worktree" });
+    await openCanvas();
+    expect(lands()).toContain("HEAD");
+    expect(lands()).not.toContain("checkout");
+  });
+
+  test("starts in the standing access mode", async () => {
+    wire(undefined, { sessionDefaults: { runtimeMode: "full-access" } });
+    await openCanvas();
+    expect(pill(/^Access: /)?.getAttribute("aria-label")).toBe("Access: Full access");
   });
 });

@@ -1484,12 +1484,18 @@ export function SessionCockpit({
   const [envModeTouched, setEnvModeTouched] = useState(false);
   const { defaults: sessionDefaults, loading: sessionDefaultsLoading } = useSessionDefaults();
   const [seededEnvMode, setSeededEnvMode] = useState<"local" | "worktree">();
+  /** The project's own answer, once its record arrives. Absent means it follows the Mac. */
+  const [projectEnvMode, setProjectEnvMode] = useState<{ projectId: string; envMode?: "local" | "worktree" }>();
+  // THE PROJECT BEFORE THE MAC, the ladder the engine's create path walks, so
+  // the canvas shows what an untouched first message will actually build.
+  const projectAnswered = projectId === undefined || projectEnvMode?.projectId === projectId;
+  const envModeSeed = (projectId !== undefined ? projectEnvMode?.envMode : undefined) ?? sessionDefaults.envMode;
   // A render-phase adjustment, not an effect — this app's lint enforces that
   // for "adjust state when a value changes", and the value here is the
   // engine's answer arriving.
-  if (!sessionDefaultsLoading && !envModeTouched && seededEnvMode !== sessionDefaults.envMode) {
-    setSeededEnvMode(sessionDefaults.envMode);
-    setDraftEnvMode(sessionDefaults.envMode);
+  if (!sessionDefaultsLoading && projectAnswered && !envModeTouched && seededEnvMode !== envModeSeed) {
+    setSeededEnvMode(envModeSeed);
+    setDraftEnvMode(envModeSeed);
   }
   /** EVERY human pick goes through here, so the seed above can never overwrite
    *  one — including the implicit pick of choosing a base ref. */
@@ -1536,6 +1542,14 @@ export function SessionCockpit({
    * Reasoning.
    */
   const [draftRuntimeMode, setDraftRuntimeMode] = useState<RuntimeMode>("auto");
+  /**
+   * …OR THE STANDING DEFAULT (General ▸ New sessions ▸ Access), which the
+   * engine applies itself on create. `touched` keeps a late answer from
+   * overwriting a pick, and an untouched draft is not sent.
+   */
+  const [runtimeModeTouched, setRuntimeModeTouched] = useState(false);
+  const runtimeModeSeed = sessionDefaults.runtimeMode ?? "auto";
+  if (!sessionDefaultsLoading && !runtimeModeTouched && draftRuntimeMode !== runtimeModeSeed) setDraftRuntimeMode(runtimeModeSeed);
   /**
    * Every provider knob the first message will create the session with. One
    * value, so no control can clear another's field — see `ModelChoice`.
@@ -2997,7 +3011,10 @@ export function SessionCockpit({
         // Mac", and only the second is worth saying out loud.
         setProjectResolved(true);
         // Where a new conversation's composer starts; see `draftModel`.
-        if (projectId !== undefined) setProjectModel({ projectId, seed: projectDraftModel(found?.defaultModel) });
+        if (projectId !== undefined) {
+          setProjectModel({ projectId, seed: projectDraftModel(found?.defaultModel) });
+          setProjectEnvMode({ projectId, ...(found?.envMode ? { envMode: found.envMode } : {}) });
+        }
         const plugins = cockpitPlugins(found);
         setDataScience(plugins.dataScience);
         setLatex(plugins.latex);
@@ -3530,7 +3547,7 @@ export function SessionCockpit({
         // the second to fail after the first landed.
         const model = sessionModelSelection(created.session.providerInstanceId, draftPick);
         const creationPatch = {
-          ...(draftRuntimeMode === "auto" ? {} : { runtimeMode: draftRuntimeMode }),
+          ...(runtimeModeTouched ? { runtimeMode: draftRuntimeMode } : {}),
           ...(model ? { model } : {}),
         };
         if (Object.keys(creationPatch).length > 0) {
@@ -4372,8 +4389,16 @@ export function SessionCockpit({
           {...(solo ? {} : { onViewBackground: showProcesses })}
           // Before a session exists there is nothing to patch, so both choices
           // are held locally and applied by the one patch that follows creation.
-          onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
+          onRuntimeMode={
+            fresh
+              ? (mode) => {
+                  setRuntimeModeTouched(true);
+                  setDraftRuntimeMode(mode);
+                }
+              : (mode) => void setRuntimeMode(mode)
+          }
           {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void setResumeAfterRateLimit(next) })}
+          {...(sessionDefaults.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimitDefault: sessionDefaults.resumeAfterRateLimit })}
           onModelChange={fresh ? chooseDraftModel : (next) => void setModel(next)}
           // The composer's foot links its change count to the Diff surface —
           // a right-panel tab, so on the solo route the count stays a count

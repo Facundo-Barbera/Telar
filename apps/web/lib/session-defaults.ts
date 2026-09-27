@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_SESSION_DEFAULTS, type EnvMode, type SessionDefaults } from "@telar/engine-client";
+import { DEFAULT_SESSION_DEFAULTS, type SessionDefaults, type SessionDefaultsPatch } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 
 const api = createEngineApi();
@@ -33,7 +33,7 @@ export type SessionDefaultsHandle = {
   /** True until the engine has answered once. The composer seeds its draft off
    *  the first answer rather than the placeholder — see `useEffect` there. */
   loading: boolean;
-  save: (patch: { envMode?: EnvMode; resumeAfterRestart?: boolean }) => Promise<void>;
+  save: (patch: SessionDefaultsPatch) => Promise<void>;
   /** The engine refused, or is not answering. */
   error?: string;
 };
@@ -64,7 +64,7 @@ export function useSessionDefaults(): SessionDefaultsHandle {
     };
   }, []);
 
-  const save = useCallback(async (patch: { envMode?: EnvMode; resumeAfterRestart?: boolean }) => {
+  const save = useCallback(async (patch: SessionDefaultsPatch) => {
     try {
       const result = await api.setSessionDefaults(patch);
       setDefaults(result.sessionDefaults);
