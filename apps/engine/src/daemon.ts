@@ -1416,6 +1416,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     } catch {
       /* the next tick tries again */
     }
+    // And so does a subscription's: its target finished, or it outlived its bound.
+    try {
+      store.sweepSubscriptions();
+    } catch {
+      /* the next tick tries again */
+    }
   }, options.reportWindowSweepIntervalMs ?? 30_000);
   reportWindowSweeper.unref();
   /**
