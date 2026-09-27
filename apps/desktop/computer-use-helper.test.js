@@ -29,8 +29,10 @@ describe("the pin", () => {
   test("the helper's identity is Telar's, never cua's, and attributes cua in its display name", () => {
     // Changing it orphans every grant a person gave the helper; the engine's
     // tccutil reset names the same id.
+    // It no longer sits under Telar's own id: the app moved to
+    // io.github.novarix.telar and the helper deliberately did not (#1042).
     expect(pin.bundleId).toBe("com.telar.desktop.computer-use");
-    expect(pin.bundleId.startsWith(`${manifest.build.appId}.`)).toBe(true);
+    expect(pin.bundleId.startsWith(`${manifest.build.appId}.`)).toBe(false);
     expect(pin.displayName).toContain("cua");
     const engine = fs.readFileSync(path.join(__dirname, "..", "engine", "src", "computer-use.ts"), "utf8");
     expect(engine).toContain(`"${pin.bundleId}"`);
