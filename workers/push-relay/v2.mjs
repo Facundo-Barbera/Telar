@@ -1,8 +1,8 @@
 /**
  * RELAY v2: PHONES REGISTER THEMSELVES, MACS NEVER SEE A DEVICE TOKEN.
  *
- * v1 needs every Mac hand-provisioned (a Keychain token plus an entry in
- * `TELAR_PUSH_HOSTS` plus a redeploy). v2 turns that around:
+ * v1, now retired, needed every Mac hand-provisioned (a Keychain token plus a
+ * host registry entry plus a redeploy). v2 turns that around:
  *
  *   1. The phone asks for a one-time challenge and proves with App Attest that
  *      it is a genuine Telar build (`POST /v2/devices`). It gets back an opaque
@@ -21,13 +21,11 @@
  *
  * LIMITS, because the registration endpoint is public:
  *   - per IP, for each kind of request (`IP_LIMITS`);
- *   - per handle: 120 sends a minute and 5,000 a day, as for a v1 host, of
+ *   - per handle: 120 sends a minute and 5,000 a day, of
  *     which background (read-sync) pushes may spend only the first 4,000;
  *   - one global daily budget across all of v2 that answers 503 well before the
  *     Cloudflare account's 100k-a-day quota, which is shared with the updater
  *     (#584 took that down once).
- *
- * v1 is untouched and keeps serving Macs that were provisioned by hand.
  */
 import { verifyAssertion, verifyAttestation } from './appattest.mjs';
 import { DAY, DEAD_TOKEN, appleReason, b64url, readText, reply, unb64 } from './shared.mjs';
@@ -257,7 +255,7 @@ export class RelayDevice {
     const background = body?.kind === 'background';
     const ceiling = Number(this.env.HANDLE_BACKGROUND_CEILING) || BACKGROUND_CEILING;
 
-    // One transaction for the replay check and both limits, as in v1.
+    // One transaction for the replay check and both limits.
     const minute = Math.floor(now / 60000), day = Math.floor(now / DAY);
     const allowed = await storage.transaction(async tx => {
       // A signature is remembered for as long as its timestamp is accepted.

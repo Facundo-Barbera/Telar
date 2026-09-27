@@ -1,4 +1,4 @@
-// What v1 (`worker.mjs`) and v2 (`v2.mjs`) both need, so neither imports the other.
+// What `worker.mjs` and `v2.mjs` both need, so neither imports the other.
 export const reply = (status, body = {}, headers = {}) => Response.json(body, { status, headers: { 'cache-control': 'no-store', ...headers } });
 export const DAY = 86400000;
 /** Apple names a rejection in its JSON body. ONLY that word travels back to the
@@ -35,4 +35,3 @@ export async function readText(request, max = 16384) {
   for (const chunk of chunks) { bytes.set(chunk,offset); offset += chunk.length; }
   return new TextDecoder().decode(bytes);
 }
-export async function readJSON(request, max = 16384) { return JSON.parse(await readText(request, max)); }

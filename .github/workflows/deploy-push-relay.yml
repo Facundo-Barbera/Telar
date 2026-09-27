@@ -31,5 +31,4 @@ jobs:
           TELAR_APNS_KEY_P8_BASE64: ${{ secrets.TELAR_APNS_KEY_P8_BASE64 }}
           TELAR_APNS_KEY_ID: ${{ secrets.TELAR_APNS_KEY_ID }}
           TELAR_APNS_TEAM_ID: ${{ secrets.TELAR_APNS_TEAM_ID }}
-          TELAR_PUSH_HOSTS: ${{ vars.TELAR_PUSH_HOSTS }}
         run: node workers/push-relay/deploy.mjs
