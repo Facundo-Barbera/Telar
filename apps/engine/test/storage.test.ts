@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -213,9 +213,21 @@ describe("what Telar is keeping", () => {
 
   test("the answer carries the moment it was taken, which is what the pane shows", async () => {
     write("projects.json", 1024);
-    const report = await measureStorage({ root, worktreesRoot: path.join(root, "worktrees"), now: 1_700_000_000_000 });
-    expect(report.measuredAt).toBe(1_700_000_000_000);
-    expect(report.tookMs).toBeGreaterThanOrEqual(0);
+    // A held clock: the first reading is the start, every later one is 250 ms
+    // on. `>= 0` would pass on a frozen clock, a zero, or a swapped subtraction.
+    let first = true;
+    const clock = spyOn(Date, "now").mockImplementation(() => {
+      const at = first ? 1_000 : 1_250;
+      first = false;
+      return at;
+    });
+    try {
+      const report = await measureStorage({ root, worktreesRoot: path.join(root, "worktrees"), now: 1_700_000_000_000 });
+      expect(report.measuredAt).toBe(1_700_000_000_000);
+      expect(report.tookMs).toBe(250);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   test("nothing is written to the store it measures", async () => {

@@ -240,6 +240,10 @@ jobs:
   # `test:${{ matrix.suite }}` meaning exactly one thing; the five left here
   # finish in well under a minute each.
   #
+  # `operations` is scripts/*.test.mjs — the dev stack's own decisions, which
+  # no job ran until #760. It takes the directory, not a list of names, so a
+  # test added there is gated the day it lands.
+  #
   # fail-fast: false because one red suite must not hide the state of the
   # others — "what else is broken" is the question you ask next.
   test:
@@ -250,7 +254,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [web, desktop, engine-client, workers]
+        suite: [web, desktop, engine-client, workers, operations]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
