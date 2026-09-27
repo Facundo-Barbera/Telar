@@ -20,6 +20,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import {
   DesktopBrowserSurface,
+  presentationZoomLabel,
   type DesktopBrowserBridge,
   type DesktopBrowserPanelState,
   type DesktopBrowserTab,
@@ -653,5 +654,15 @@ describe("the panel drag", () => {
     window.dispatchEvent(new Event("telar:panel-resized"));
     window.dispatchEvent(new Event("telar:panel-resized"));
     expect(bounds).toBe(before + 3);
+  });
+});
+
+describe("the device toolbar's zoom readout", () => {
+  test("fit says so with the scale it lands on; a picked zoom is its percentage", () => {
+    expect(presentationZoomLabel({ width: 1280, height: 800, scale: 0.5, zoom: "fit", rect: { x: 0, y: 0, width: 640, height: 400 } })).toBe("Fit · 50%");
+    expect(presentationZoomLabel({ width: 390, height: 844, scale: 0.75, zoom: 0.75, rect: { x: 0, y: 0, width: 293, height: 633 } })).toBe("75%");
+    // An older shell sends no zoom: it only ever fits.
+    expect(presentationZoomLabel({ width: 1280, height: 800, scale: 1, rect: { x: 0, y: 0, width: 1280, height: 800 } })).toBe("Fit · 100%");
+    expect(presentationZoomLabel(null)).toBe("Fit · 100%");
   });
 });
