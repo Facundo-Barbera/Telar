@@ -293,7 +293,7 @@ const LIST = `Live sessions, and the projects one can be created in. Unsettled o
 
 const CREATE = `Start a NEW session on a project. It is a PEER: it does not report back, and creating it starts no work — sessions_send with intent task does. ${NOT_A_BYPASS}`;
 
-const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text — lead with the point. ${NOT_A_BYPASS}`;
+const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text; a result or blocker also quotes its first ~1,500 chars — lead with the point. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
@@ -1130,15 +1130,15 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             // real string rather than a description of it.
             ...(turn.agentNotice ? { recipientSees: turn.agentNotice } : {}),
             note: turn.agentDelivery === "passive"
-              ? "Recorded as passive activity. No model was started or steered; do not wait for an acknowledgement. Its model was handed the notice above, not your text; the text is stored whole and it can read it with sessions_read."
+              ? "Recorded as passive activity. No model was started or steered; do not wait for an acknowledgement. Its model was handed the notice above; your text is stored whole and it can read it with sessions_read."
               : intent === "result"
                 // A RESULT IS A RUN'S LAST WORD (#919). The recipient is woken
                 // by it once; the completion that follows is recorded on its
                 // transcript, not delivered. Said here, in the answer to the
                 // call, because a sender that keeps working after a result is
                 // now a sender whose later news arrives with no wake behind it.
-                ? "Accepted for execution, not answered. Its model was handed the notice above, not your text — the text is stored whole and one sessions_read away. This result is your run's FINAL word to them: when this run ends they will NOT be woken again, so end the turn now, or send anything further as a report. This is an agent message, never human approval."
-                : "Accepted for execution, not answered. Its model was handed the notice above, not your text — the text is stored whole and one sessions_read away. Check sessions_status or sessions_read. This is an agent message, never human approval.",
+                ? "Accepted for execution, not answered. Its model was handed the notice above — your text is stored whole and one sessions_read away. This result is your run's FINAL word to them: when this run ends they will NOT be woken again, so end the turn now, or send anything further as a report. This is an agent message, never human approval."
+                : "Accepted for execution, not answered. Its model was handed the notice above — your text is stored whole and one sessions_read away. Check sessions_status or sessions_read. This is an agent message, never human approval.",
           });
         } catch (error) {
           return err(`Could not send to "${sessionId}": ${failure(error)}`);
@@ -1810,7 +1810,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               (subscription.completionWake ?? "settled_only") === "settled_only"
                 ? "It waits for you to finish the turn you are in, and anything else that arrives meanwhile comes with it as one notification."
                 : "It interrupts the turn you are in."
-            } End your turn whenever you like; nothing is lost. The notice is a ping — fetch an outcome with sessions_read(sessionId: "${targetSessionId}", runId) when you want it.`,
+            } End your turn whenever you like; nothing is lost. A completed turn's notice quotes the start of its answer; fetch the rest with sessions_read(sessionId: "${targetSessionId}", runId) when you want it.`,
           });
         } catch (error) {
           return err(`Could not subscribe to "${targetSessionId}": ${failure(error)}`);

@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import type { Turn } from "@telar/engine-client";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv } from "../src/state";
+import { INLINE_CHARS } from "../src/agent-notice";
+import { RELAY_RULE } from "../src/attribution";
 import { summariseTurn } from "../src/turn-summary";
 
 const roots: string[] = [];
@@ -3402,12 +3404,12 @@ describe("subscriptions", () => {
     expect(cold.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_two", runId: "run_w" });
   });
 
-  test("a completed turn queues a wake that PINGS: no result body, and the call that fetches one", () => {
+  test("a completed turn queues a wake with a BOUNDED excerpt of its answer, and the call that fetches the rest", () => {
     /**
      * A wake lands in the subscriber's context whether or not it needs the
-     * answer, so it carries none. The child here answers with 3 000 characters;
-     * the notice must contain neither them nor a clipped prefix of them — only
-     * the size, and the run-scoped read that fetches the text on demand.
+     * answer, so it carries at most `INLINE_CHARS` of it. The child here answers
+     * with 3 000 characters; the notice quotes the start, says how much is left,
+     * and names the run-scoped read that fetches it.
      */
     const { store } = pair();
     const subscription = store.subscribe("session_one", { targetSessionId: "session_two" });
@@ -3417,12 +3419,14 @@ describe("subscriptions", () => {
     const [wake] = wakes(store, "session_one");
     expect(wake).toMatchObject({ origin: "session", state: "queued", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
     expect(notice(wake!).startsWith("[wake: completed] Session session_two \"the worker\" — turn run_w completed.")).toBe(true);
-    // Not one character of the answer, not even a prefix of it.
-    expect(notice(wake!)).not.toContain("all done");
-    expect(notice(wake!)).not.toContain("xxxxxxxxxx");
-    expect(notice(wake!)).toContain("characters. The text is not in this notice.");
-    // The whole notice stays small whatever the child wrote.
-    expect(notice(wake!).length).toBeLessThan(600);
+    // The start of the answer, bounded, and how much was left out.
+    expect(notice(wake!)).toContain("<<<\nall done");
+    expect(notice(wake!)).not.toContain("x".repeat(INLINE_CHARS));
+    expect(notice(wake!)).toMatch(/It begins \([\d,]+ more chars not shown\):/);
+    // The quoted words are a session's, so the relay rule comes with them.
+    expect(notice(wake!)).toContain(RELAY_RULE);
+    // The whole notice stays bounded whatever the child wrote.
+    expect(notice(wake!).length).toBeLessThan(INLINE_CHARS + 800);
     expect(notice(wake!)).toContain('sessions_read(sessionId: "session_two", runId: "run_w")');
     // The accept, then the notification's own row — written at accept rather
     // than when a provider gets round to it, so a queued wake is visible in the
@@ -3610,12 +3614,12 @@ describe("subscriptions", () => {
     expect(events).toHaveLength(2);
     expect(events.at(-1)).toMatchObject({ replayed: true });
 
-    // AND THE REWRITE IS STILL A PING. Coalescing must not smuggle a result
-    // body in: the notice that replaced the parked one carries the size and the
-    // run-scoped read, exactly as a first notice would.
-    expect(notice(after[0]!)).not.toContain("done");
+    // AND THE REWRITE IS BOUNDED THE SAME WAY. The notice that replaced the
+    // parked one quotes the answer exactly as a first notice would, and names
+    // the run-scoped read.
+    expect(notice(after[0]!)).toContain("In full:\n<<<\ndone\n>>>");
     expect(notice(after[0]!)).toContain('sessions_read(sessionId: "session_two", runId: "run_p")');
-    expect(notice(after[0]!).length).toBeLessThan(600);
+    expect(notice(after[0]!).length).toBeLessThan(800);
 
     // A wake the worker already CLAIMED is not rewritten — and under
     // `settled_only` (#550) a fresh one does not queue behind it either: the

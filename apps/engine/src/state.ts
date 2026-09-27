@@ -231,6 +231,8 @@ import {
 } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
+import { quotedExcerpt } from "./agent-notice";
+import { RELAY_RULE } from "./attribution";
 import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import {
   commentOn,
@@ -298,11 +300,11 @@ import type { ResolvedLatex } from "./latex/compile";
  *
  * It begins with `[wake: …]` so a model can tell it from a person, names the
  * peer, the turn and what happened, and then names the ONE call that fetches
- * the detail. It deliberately carries no result body: a wake is injected into
- * the subscriber's context whether or not it needs the answer, and a child that
- * wrote fifty kilobytes used to spend that on every coordinator subscribed to
- * it. The outcome is one `sessions_read(sessionId, runId)` away, and the
- * recipient decides whether it is worth reading.
+ * the detail. It carries at most a bounded excerpt of a completed turn's answer
+ * (`INLINE_CHARS`): a wake is injected into the subscriber's context whether or
+ * not it needs the answer, and a child that wrote fifty kilobytes used to spend
+ * that on every coordinator subscribed to it. The rest is one
+ * `sessions_read(sessionId, runId)` away.
  *
  * A PARKED REQUEST IS NO EXCEPTION. It names the request, its kind and a short
  * title, and then the two calls: read it, answer it. The fields used to ride
@@ -331,14 +333,18 @@ function wakeMessage(
   switch (kind) {
     case "turn_completed": {
       const text = (context.resultText ?? "").trim();
-      lines.push(
-        `[wake: completed] ${who} — turn ${turn.runId} completed.`,
-        // The SIZE, not the text: enough for the recipient to judge whether
-        // fetching it is worth the context, and honest about there being
-        // nothing to fetch.
-        text ? `It answered with ${text.length} characters. The text is not in this notice.` : "It ended with no answer text.",
-      );
-      break;
+      lines.push(`[wake: completed] ${who} — turn ${turn.runId} completed.`);
+      if (!text) {
+        lines.push("It ended with no answer text.");
+        break;
+      }
+      // A BOUNDED EXCERPT, not the whole answer (see `INLINE_CHARS`): enough
+      // that the common case needs no read, and a large answer still costs
+      // every subscriber little. The quoted words are a session's, so the relay
+      // rule comes with them.
+      const where = `sessions_read(sessionId: "${target.id}", runId: "${turn.runId}")`;
+      lines.push(`It answered with ${text.length} characters.`, ...quotedExcerpt(text, where), RELAY_RULE, "—", "The same read has that run's events; its diff is sessions_diff.");
+      return lines.join("\n");
     }
     case "turn_failed":
       lines.push(

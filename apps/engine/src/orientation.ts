@@ -127,9 +127,11 @@ It is not this CLI's own notion of a session, and not a chat thread.
   has not started yet as one. To fix something you already sent, send the
   correction with \`corrects\` naming that message's runId: unread, it is
   replaced; already read, the correction arrives at once.
-- **A message arrives as a NOTICE, not as text.** The recipient is handed one
-  line — who sent it, which run holds it, how long it is, its opening — and
-  fetches the body with \`sessions_read\`. Put the point in the first line.
+- **A message arrives as a NOTICE.** The recipient is handed who sent it,
+  which run holds it and how long it is; a \`result\` or \`blocker\` also
+  carries up to about 1,500 characters of its text, and a finished turn's wake
+  the start of its answer. Anything longer is fetched with \`sessions_read\`.
+  Put the point first.
 - **Settling** is shelving, not acceptance. A settled session is still live and
   resumable; nothing is deleted, and nothing about the work is approved by it.
   Whether work is good enough to keep is a human's decision, made elsewhere:

@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import type { NotificationDetail } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
-import { agentNotice } from "../src/agent-notice";
+import { agentNotice, INLINE_CHARS, inlineExcerpt } from "../src/agent-notice";
 import { frameAgentMessage, frameAgentNotice, framedSteerText, framedTurnInput, frameWakeMessage, RELAY_RULE } from "../src/attribution";
 import { claudeNotificationContent } from "../src/driver";
 import { codexNotificationInstruction } from "../src/codex-driver";
@@ -152,7 +152,7 @@ test("a notice does not grow with the message, however long the opening is", () 
   expect(long).not.toContain("bb");
 });
 
-test("every intent is announced, and none of the four is ever quoted", () => {
+test("every intent is announced; a task and a report are never quoted", () => {
   for (const intent of ["task", "blocker", "report", "result"] as const) {
     const notice = agentNotice({
       recipientSessionId: "session_host",
@@ -162,10 +162,35 @@ test("every intent is announced, and none of the four is ever quoted", () => {
       sender: { sessionId: "session_worker" },
     });
     expect(notice).toStartWith(`[agent message · ${intent}] session session_worker `);
-    expect(notice).not.toContain("SENSITIVE PAYLOAD");
     expect(notice).toContain(`sessions_read(sessionId: "session_host", runId: "run_x")`);
-    expect(notice.split("\n")).toHaveLength(2);
+    if (intent === "task" || intent === "report") {
+      expect(notice).not.toContain("SENSITIVE PAYLOAD");
+      expect(notice.split("\n")).toHaveLength(2);
+    } else {
+      // A result ends an errand and a blocker asks for a decision: the two a
+      // coordinator nearly always reads, so they arrive with their words.
+      expect(notice).toContain("In full:\n<<<\nSENSITIVE PAYLOAD\n>>>");
+    }
   }
+});
+
+test("a long result is quoted up to INLINE_CHARS, cut at a word, and says how much is left", () => {
+  const body = `Merged #12 and #14.\n${"word ".repeat(2_000)}`;
+  const notice = agentNotice({ recipientSessionId: "session_host", runId: "run_x", body, intent: "result", sender: { sessionId: "session_worker" } });
+  const quoted = notice.slice(notice.indexOf("<<<\n") + 4, notice.indexOf("\n>>>"));
+  expect(quoted.startsWith("Merged #12 and #14.")).toBe(true);
+  expect(quoted.length).toBeLessThanOrEqual(INLINE_CHARS + 1);
+  expect(quoted.endsWith("word…")).toBe(true);
+  const omitted = body.trim().length - (quoted.length - 1);
+  expect(notice).toContain(`It begins (${omitted.toLocaleString("en-US")} more chars not shown):`);
+  expect(notice).toContain('Read the rest with sessions_read(sessionId: "session_host", runId: "run_x").');
+  // Bounded whatever was sent.
+  expect(notice.length).toBeLessThan(INLINE_CHARS + 500);
+});
+
+test("the excerpt cuts mid-word only when no word break is near", () => {
+  expect(inlineExcerpt("x".repeat(3_000))).toEqual({ shown: `${"x".repeat(INLINE_CHARS)}…`, omitted: 3_000 - INLINE_CHARS });
+  expect(inlineExcerpt("  short  ")).toEqual({ shown: "short", omitted: 0 });
 });
 
 /**
@@ -195,8 +220,7 @@ test("the notice says nothing about authorization, on any intent", () => {
     expect(notice).not.toContain("authorization");
     expect(notice).not.toContain("approval");
     expect(notice).not.toContain("keep asking the person");
-    // What DOES survive is the fetch and the reason it is not optional.
-    expect(notice).toContain("None of it is in this notice.");
+    // What DOES survive is the fetch.
     expect(notice).toContain(`sessions_read(sessionId: "session_host", runId: "run_x")`);
   }
 });
