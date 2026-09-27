@@ -13,6 +13,7 @@ const {
 } = require("./site-permissions");
 const { browserContextMenuTemplate } = require("./browser-context-menu");
 const { installDownloadHandler } = require("./browser-downloads");
+const { VIEWPORT_PRESETS, VIEWPORT_PRESET_KEYS, viewportPreset, presetOf, orient } = require("./viewport-presets");
 
 const CURSOR_MOVE_MS = 160;
 const CURSOR_CLICK_LEAD_MS = 40;
@@ -29,13 +30,8 @@ const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
 /** Kept under its old name for the callers/tests that speak of the
  *  unmounted case; it is the same standard size. */
 const UNMOUNTED_VIEWPORT = DEFAULT_VIEWPORT;
-/** Named sizes the toolbar and `browser_resize {preset}` offer. */
-const VIEWPORT_PRESETS = {
-  default: { width: 1280, height: 800, label: "Default" },
-  laptop: { width: 1440, height: 900, label: "Laptop" },
-  tablet: { width: 768, height: 1024, label: "Tablet" },
-  phone: { width: 390, height: 844, label: "Phone" },
-};
+// The named sizes the toolbar and `browser_resize {preset}` offer live in
+// viewport-presets.js — the one table the cockpit and the engine read too.
 const VIEWPORT_MIN = 200;
 const VIEWPORT_MAX = 5_000;
 /** A rendered size is CSS width×height×scale²; bounded so a resize cannot
@@ -64,19 +60,35 @@ const VIEWPORT_MAX_AREA = 5_000 * 3_000;
 const PAGE_CANVAS = "#ffffff";
 const NO_CANVAS = "#00000000";
 
-/** A requested viewport → the clamped one, or a thrown reason. */
-function resolveViewport(input) {
-  if (input && typeof input === "object" && typeof input.preset === "string") {
-    const preset = VIEWPORT_PRESETS[input.preset];
-    if (!preset) throw new Error(`Unknown viewport preset ${JSON.stringify(input.preset)}. Presets: ${Object.keys(VIEWPORT_PRESETS).join(", ")}.`);
-    return { width: preset.width, height: preset.height };
+/**
+ * A requested viewport → the clamped one, or a thrown reason.
+ *
+ * ONE DIMENSION ALONE keeps the other from `current` — the tab's own
+ * viewport, which `resizeTab` passes — so testing a breakpoint can name only
+ * the width. `orientation` turns the preset, or whatever size results.
+ */
+function resolveViewport(input, current = DEFAULT_VIEWPORT) {
+  const request = input && typeof input === "object" ? input : {};
+  const given = (value) => value !== undefined && value !== null;
+  let size;
+  if (typeof request.preset === "string") {
+    const preset = viewportPreset(request.preset);
+    if (!preset) throw new Error(`Unknown viewport preset ${JSON.stringify(request.preset)}. Presets: ${VIEWPORT_PRESET_KEYS.join(", ")}.`);
+    size = { width: preset.width, height: preset.height };
+  } else {
+    if (!given(request.width) && !given(request.height) && !given(request.orientation)) {
+      throw new Error("A viewport needs a numeric width and height, or a preset.");
+    }
+    size = {
+      width: Math.round(Number(given(request.width) ? request.width : current.width)),
+      height: Math.round(Number(given(request.height) ? request.height : current.height)),
+    };
+    if (!Number.isFinite(size.width) || !Number.isFinite(size.height)) throw new Error("A viewport needs a numeric width and height, or a preset.");
   }
-  const width = Math.round(Number(input?.width));
-  const height = Math.round(Number(input?.height));
-  if (!Number.isFinite(width) || !Number.isFinite(height)) throw new Error("A viewport needs a numeric width and height, or a preset.");
+  if (given(request.orientation)) size = orient(size, request.orientation);
   const clamp = (value) => Math.min(VIEWPORT_MAX, Math.max(VIEWPORT_MIN, value));
-  let w = clamp(width);
-  let h = clamp(height);
+  let w = clamp(size.width);
+  let h = clamp(size.height);
   if (w * h > VIEWPORT_MAX_AREA) h = Math.max(VIEWPORT_MIN, Math.floor(VIEWPORT_MAX_AREA / w));
   return { width: w, height: h };
 }
@@ -103,14 +115,6 @@ function zoomStep(factor, direction) {
 function resolveColorScheme(value) {
   if (value === "light" || value === "dark" || value === "system") return value;
   throw new Error(`Unknown appearance ${JSON.stringify(value)}. Use light, dark or system.`);
-}
-
-/** Which preset (if any) a size is — the toolbar shows a name over numbers. */
-function presetOf(viewport) {
-  for (const [key, preset] of Object.entries(VIEWPORT_PRESETS)) {
-    if (preset.width === viewport.width && preset.height === viewport.height) return key;
-  }
-  return null;
 }
 
 /**
@@ -2036,7 +2040,8 @@ class DesktopBrowserManager {
   }
 
   /**
-   * Set a tab's viewport: a preset or explicit size (→ fixed mode), or
+   * Set a tab's viewport: a preset, an explicit size (one dimension alone
+   * keeps the other), or an orientation (→ fixed mode), or
    * `{ mode: "fit" }` / `{ mode: "fixed" }`. Agents and humans both come
    * through here; the page reflows wherever the tab is shown (or not), and
    * a snapshot taken before this is stale by definition. A failed emulation
@@ -2049,9 +2054,9 @@ class DesktopBrowserManager {
       tab.viewportMode = "fit";
       this.syncFitViewport(tab);
     } else {
-      const explicit = input && typeof input === "object" && (input.preset !== undefined || input.width !== undefined || input.height !== undefined);
-      if (explicit) tab.viewport = resolveViewport(input);
-      else if (input?.mode !== "fixed") throw new Error("A viewport needs a preset, a width and height, or a mode.");
+      const explicit = input && typeof input === "object" && (input.preset !== undefined || input.width !== undefined || input.height !== undefined || input.orientation !== undefined);
+      if (explicit) tab.viewport = resolveViewport(input, this.viewportOf(tab));
+      else if (input?.mode !== "fixed") throw new Error("A viewport needs a preset, a width or height, an orientation, or a mode.");
       tab.viewportMode = "fixed";
     }
     const current = this.viewportOf(tab);

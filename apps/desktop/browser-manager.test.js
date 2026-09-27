@@ -1878,7 +1878,7 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
       ["a", "https://one.example/", "One", false, true, "human"],
       ["b", "https://two.example/", "Two", true, true, "agent"],
     ]);
-    expect(state.tabs[1].viewport).toEqual({ width: 768, height: 1024, preset: "tablet", mode: "fixed" });
+    expect(state.tabs[1].viewport).toEqual({ width: 768, height: 1024, preset: "ipad-mini", mode: "fixed" });
     // The partition comes from the profile, never from the file: neither scope
     // picked one and neither has a jar of its own, so both are the default's.
     const fallback = manager.profiles.get(manager.profiles.defaultProfileId).partition;
@@ -1953,6 +1953,20 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     expect(() => resolveViewport({})).toThrow(/numeric width and height/);
   });
 
+  test("resolveViewport takes the grouped presets, one dimension alone, and an orientation", () => {
+    expect(resolveViewport({ preset: "ipad-air" })).toEqual({ width: 820, height: 1180 });
+    expect(resolveViewport({ preset: "phone" })).toEqual({ width: 390, height: 844 });
+    // One dimension keeps the CURRENT viewport's other one.
+    expect(resolveViewport({ width: 600 }, { width: 1440, height: 900 })).toEqual({ width: 600, height: 900 });
+    expect(resolveViewport({ height: 700 }, { width: 1440, height: 900 })).toEqual({ width: 1440, height: 700 });
+    expect(resolveViewport({ width: 600 })).toEqual({ width: 600, height: 800 });
+    // Orientation turns a preset, or the size that results.
+    expect(resolveViewport({ preset: "iphone-se", orientation: "landscape" })).toEqual({ width: 667, height: 375 });
+    expect(resolveViewport({ preset: "default", orientation: "landscape" })).toEqual({ width: 1280, height: 800 });
+    expect(resolveViewport({ orientation: "portrait" }, { width: 1280, height: 800 })).toEqual({ width: 800, height: 1280 });
+    expect(() => resolveViewport({ preset: "phone", orientation: "sideways" })).toThrow(/Unknown orientation/);
+  });
+
   test("a FIXED tab in a narrow panel keeps the page at 1280×800 and scales the presentation; hidden tabs are emulated at scale 1", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("s", "https://one.example/");
@@ -1999,7 +2013,7 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     expect(manager.state("s").tabs.map((tab) => tab.viewport)).toEqual([
       // Untouched: fit, never shown, reporting the stable fallback.
       { width: 1280, height: 800, preset: "default", mode: "fit" },
-      { width: 390, height: 844, preset: "phone", mode: "fixed" },
+      { width: 390, height: 844, preset: "iphone-12-pro", mode: "fixed" },
     ]);
     const debug = views[1].webContents.debugger;
     expect(debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride").at(-1).params).toMatchObject({ width: 390, height: 844 });
@@ -2010,7 +2024,12 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     // The toolbar path: a custom size on the addressed tab.
     const state = await manager.action("s", { action: "resize", index: 0, width: 1000, height: 700 });
     expect(state.tabs[0].viewport).toEqual({ width: 1000, height: 700, preset: null, mode: "fixed" });
-    expect(state.tabs[1].viewport).toEqual({ width: 390, height: 844, preset: "phone", mode: "fixed" });
+    expect(state.tabs[1].viewport).toEqual({ width: 390, height: 844, preset: "iphone-12-pro", mode: "fixed" });
+    // A width alone keeps the tab's own height; an orientation turns it.
+    await manager.callTool("s", "browser_resize", { width: 768 });
+    expect(manager.state("s").tabs[1].viewport).toEqual({ width: 768, height: 844, preset: null, mode: "fixed" });
+    await manager.callTool("s", "browser_resize", { orientation: "landscape" });
+    expect(manager.state("s").tabs[1].viewport).toEqual({ width: 844, height: 768, preset: null, mode: "fixed" });
   });
 });
 
