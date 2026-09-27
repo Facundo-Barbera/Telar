@@ -8,8 +8,8 @@
  * NOT A SANDBOX header in `contract.ts`); the SHAPE is not.
  */
 import { helloPlugin, helloToolModule, type HelloSession } from "./hello";
-import { latexPlugin, type LatexPluginDeps } from "./latex";
-import { dataSciencePlugin, type DataSciencePluginDeps } from "./data-science";
+import { latexPlugin, latexToolModule, type LatexPluginDeps } from "./latex";
+import { dataSciencePlugin, dataScienceToolModule, type DataSciencePluginDeps } from "./data-science";
 import type { PluginEngineModule } from "./contract";
 import type { PluginToolModule } from "./tool-module";
 
@@ -48,21 +48,21 @@ export function bundledPlugins(deps: BundledPluginDeps, env: NodeJS.ProcessEnv =
 }
 
 /**
- * THE SAME LIST, SEEN FROM THE WORKER — MINUS THE MIGRATED TOOLKITS.
+ * THE SAME LIST, SEEN FROM THE WORKER.
  *
- * `latex` is absent on purpose and its absence is the compatibility decision:
- * its wall ships as `mcp__telar__latex_*` and stays registered in-process under
- * that key (`driver.ts`), because moving it to this socket would rename every
- * tool and orphan every stored approval. See `plugins/latex.ts`.
+ * Every wall rides the `telar` key, so a plugin tool keeps the one name it
+ * shipped with (`mcp__telar__latex_compile`) whichever transport carries it —
+ * which is what lets LaTeX and Data Science live here without orphaning a
+ * single stored approval.
  *
- * THE ORIGINAL NOTE, still true: It has to be a second function rather
- * than a field on the first because the two halves live in different processes:
- * the worker has no store to resolve capabilities against, so it can build the
- * walls but not the modules. The GATE is read in both places from the same env
- * var, so a plugin cannot be registered on one side and missing on the other.
+ * It has to be a second function rather than a field on the first because the
+ * two halves live in different processes: the worker has no store to resolve
+ * capabilities against, so it can build the walls but not the modules. The
+ * GATE is read in both places from the same env var, so a plugin cannot be
+ * registered on one side and missing on the other.
  */
 export function bundledPluginToolModules(env: NodeJS.ProcessEnv = process.env): PluginToolModule[] {
-  const modules: PluginToolModule[] = [];
+  const modules: PluginToolModule[] = [latexToolModule, dataScienceToolModule];
   if (env[HELLO_GATE] === "1") modules.push(helloToolModule);
   return modules;
 }
@@ -72,9 +72,10 @@ export function bundledPluginToolModules(env: NodeJS.ProcessEnv = process.env): 
  * and replaceable — the worker serves what it was built with, and a test
  * installs its own so a proof plugin's wall can be driven without the env gate.
  *
- * It lives beside the list rather than in the driver because the driver no
- * longer registers plugin tools at all: they reach both providers through
- * `plugins/socket.ts`, and the worker is what binds it.
+ * It lives beside the list rather than in the driver because three places
+ * register from it — the Claude in-process server, the Claude driver's `telar`
+ * socket and the worker's lease for Codex and OpenCode — and none of them names
+ * a plugin.
  */
 let registered: readonly PluginToolModule[] = bundledPluginToolModules();
 
@@ -84,4 +85,14 @@ export function pluginToolModules(): readonly PluginToolModule[] {
 
 export function setPluginToolModules(modules: readonly PluginToolModule[]): void {
   registered = [...modules];
+}
+
+/**
+ * THE PARAGRAPHS A SESSION IS TOLD, one per enabled plugin that has one — in
+ * registration order, so the same set always reads the same way and a reused
+ * query's system prompt does not churn.
+ */
+export function pluginBriefings(enabled: Iterable<string>): string[] {
+  const ids = new Set(enabled);
+  return registered.flatMap((module) => (ids.has(module.meta.id) && module.meta.briefing ? [module.meta.briefing] : []));
 }

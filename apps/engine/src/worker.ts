@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim, WorkerTurnFailure } from "@telar/engine-client";
-import { clientDsCapability } from "./ds/client-capability";
 import { collectTelarWall, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
 import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
@@ -10,11 +9,7 @@ import { sessionsTools } from "./sessions-tools/tools";
 import { notesTools, type NotesCapability } from "./notes-tools/tools";
 import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
 import { promptsForComposer } from "./prompts";
-import { dsTools } from "./ds/ds-tools";
-import { notebookTools } from "./ds/notebook-tools";
-import { latexTools } from "./latex/latex-tools";
 import { createDisplayCapability } from "./display/capability";
-import { clientLatexCapability } from "./latex/client-capability";
 import { clientRunCapability } from "./run/client-capability";
 import { runTools } from "./run/tools";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
@@ -1616,10 +1611,13 @@ export class EngineWorker {
         this.sessionsLeases.set(sessionId, sessionsLease);
       }
       /**
-       * EVERY ENABLED PLUGIN'S CAPABILITY, BY ID. The claim carries IDS only —
-       * a plugin's settings stay in the daemon behind its capability — and an
-       * id this binary does not bundle is simply absent, so an older worker
-       * against a newer daemon builds fewer walls rather than crashing.
+       * EVERY ENABLED PLUGIN'S CAPABILITY, BY ID — Data Science and LaTeX
+       * included. Every verb is an HTTP call to the daemon, which owns the
+       * kernel and the jobs; the worker holds no process and no store. The
+       * claim carries IDS only — a plugin's settings stay in the daemon behind
+       * its capability — and an id this binary does not bundle is simply
+       * absent, so an older worker against a newer daemon builds fewer walls
+       * rather than crashing.
        */
       const pluginCapabilities = Object.fromEntries(
         pluginToolModules()
@@ -1643,8 +1641,6 @@ export class EngineWorker {
         sessions: sessionsCapability,
         ...(notesCapability ? { notes: notesCapability } : {}),
         ...(promptsCapability ? { prompts: promptsCapability } : {}),
-        ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
-        ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
         ...(claim.projectId && claim.projectRoot ? { run: clientRunCapability(this.options.client, sessionId) } : {}),
         ...pluginCapabilities,
       };
@@ -1660,9 +1656,6 @@ export class EngineWorker {
               { name: "sessions", build: sessionsTools as never, capability: () => box.current.sessions },
               { name: "notes", build: notesTools as never, capability: () => box.current.notes },
               { name: "prompts", build: promptsTools as never, capability: () => box.current.prompts },
-              { name: "ds", build: dsTools as never, capability: () => box.current.ds },
-              { name: "notebook", build: notebookTools as never, capability: () => box.current.ds },
-              { name: "latex", build: latexTools as never, capability: () => box.current.latex },
               { name: "run", build: runTools as never, capability: () => box.current.run },
               ...pluginToolModules().map((module) => ({
                 name: `plugin:${module.meta.id}`,
@@ -1769,15 +1762,6 @@ export class EngineWorker {
         // The sessions wall over HTTP, for the provider that takes servers as
         // config. Same absent-means-absent rule as `browserSocket`.
         ...(sessionsLease ? { sessionsSocket: { url: sessionsLease.url, token: sessionsLease.token } } : {}),
-        /**
-         * THE KERNEL, WHEN THE CLAIM SAYS THE PROJECT OPTED IN. Every verb is
-         * an HTTP call to the daemon, which owns the kernel — the worker holds
-         * no process and no store, exactly as with everything above. Absent on
-         * the claim means absent here, and the driver registers no toolkit.
-         */
-        ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
-        // The compile door, same shape: HTTP to the daemon, which owns the jobs.
-        ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
         /**
          * THE RUN DOOR, same shape again. `clientRunCapability` and the `run_*`
          * toolkit shipped with #198 W4, and every driver gates its toolkit and

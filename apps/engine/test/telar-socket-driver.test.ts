@@ -95,7 +95,7 @@ test("the `telar` key is the worker-hosted http entry, and the in-process server
   sockets.push(socket);
   const { turn, queries } = driverWith(socket);
 
-  await turn({ latex: latexCapability() });
+  await turn({ plugins: { latex: latexCapability() } });
 
   const entry = queries[0]?.servers?.[TELAR_MCP_SERVER] as { type: string; url: string; headers: Record<string, string> };
   expect(entry?.type).toBe("http");
@@ -124,8 +124,8 @@ test("one lease serves many turns — a reused query keeps a valid credential", 
   sockets.push(socket);
   const { turn, queries } = driverWith(socket);
 
-  await turn({ latex: latexCapability() });
-  await turn({ latex: latexCapability() });
+  await turn({ plugins: { latex: latexCapability() } });
+  await turn({ plugins: { latex: latexCapability() } });
 
   // Same capability set, so the query is REUSED and the entry is not rebuilt.
   expect(queries).toHaveLength(1);
@@ -145,7 +145,7 @@ test("on → off → on refreshes what a reused provider ADVERTISES, with no dup
   sockets.push(socket);
   const { turn, queries } = driverWith(socket);
 
-  await turn({ latex: latexCapability() });
+  await turn({ plugins: { latex: latexCapability() } });
   expect(queries).toHaveLength(1);
   const first = queries[0]!.servers![TELAR_MCP_SERVER] as { url: string; headers: Record<string, string> };
   expect(await advertised(first)).toContain("latex_compile");
@@ -157,7 +157,7 @@ test("on → off → on refreshes what a reused provider ADVERTISES, with no dup
   expect(await advertised(off)).not.toContain("latex_compile");
 
   // ON again: rebuilt once more, and the tool is back exactly once.
-  await turn({ latex: latexCapability() });
+  await turn({ plugins: { latex: latexCapability() } });
   expect(queries).toHaveLength(3);
   const back = queries[2]!.servers![TELAR_MCP_SERVER] as { url: string; headers: Record<string, string> };
   const names = await advertised(back);
@@ -173,7 +173,7 @@ test("server-side dispatch refuses a disabled tool even against a stale catalog"
   sockets.push(socket);
   const { turn, queries } = driverWith(socket);
 
-  await turn({ latex: latexCapability() });
+  await turn({ plugins: { latex: latexCapability() } });
   const entry = queries[0]!.servers![TELAR_MCP_SERVER] as { url: string; headers: Record<string, string> };
   expect(await advertised(entry)).toContain("latex_compile");
 

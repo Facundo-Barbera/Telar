@@ -51,7 +51,7 @@ import { requireCli } from "./cli-resolution";
 import { claudeEffortFor, claudeFixedWindowOf, claudeWindowTokensOf } from "./model-manifest";
 import { collectTelarWall, type TelarSocketLease, type TelarWallPart } from "./telar-socket";
 import { runTools } from "./run/tools";
-import { pluginToolModules } from "./plugins/bundled";
+import { pluginBriefings, pluginToolModules } from "./plugins/bundled";
 import type { ToolFactory } from "./tool-kit";
 import type { RunCapability } from "./run/capability";
 import {
@@ -80,11 +80,6 @@ import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notesTools, type NotesCapability } from "./notes-tools/tools";
 import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
-import { notebookTools } from "./ds/notebook-tools";
-import { dsTools } from "./ds/ds-tools";
-import { latexTools } from "./latex/latex-tools";
-import type { LatexCapability } from "./latex/capability";
-import type { DsCapability } from "./ds/capability";
 
 export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";
 export type { DriverRequest, DriverRequestOutcome, DriverRun, DriverResult, ProviderTurnBinding, DriverSessionHooks, TurnDriver,
@@ -276,11 +271,10 @@ type ClaudeTurnBindings = {
   notes: NotesCapability | undefined;
   /** The project's prompt shelf, scoped to this turn's project AND session. */
   prompts: PromptsCapability | undefined;
-  ds: DsCapability | undefined;
   display: DisplayCapability | undefined;
-  latex: LatexCapability | undefined;
   /** The project's runs, when the turn carries them. See `run/capability.ts`. */
   run: RunCapability | undefined;
+  /** Every enabled plugin's capability, by id — Data Science and LaTeX included. */
   plugins: Record<string, unknown> | undefined;
 };
 
@@ -1356,9 +1350,7 @@ export function createClaudeDriver(
       sessions,
       notes,
       prompts,
-      ds,
       display,
-      latex,
       steer,
       tasks: seededTasks,
       session: sessionHooks,
@@ -2581,9 +2573,7 @@ export function createClaudeDriver(
         sessions,
         notes,
         prompts,
-        ds,
         display,
-        latex,
         run,
         plugins,
       };
@@ -2629,6 +2619,9 @@ export function createClaudeDriver(
         ...(mainBriefing ? [mainBriefing] : []),
         ...(browserSocket ? [BROWSER_BRIEFING] : []),
         ...(run ? [RUN_BRIEFING] : []),
+        // Each enabled plugin's own paragraph, from its manifest. Carried by
+        // the fingerprint's `plugins` field: the same set, the same words.
+        ...pluginBriefings(Object.keys(plugins ?? {})),
       ];
 
       /**
@@ -2651,9 +2644,6 @@ export function createClaudeDriver(
         { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
         { name: "notes", build: notesTools as never, capability: () => telarRef.current?.current.notes },
         { name: "prompts", build: promptsTools as never, capability: () => telarRef.current?.current.prompts },
-        { name: "ds", build: dsTools as never, capability: () => telarRef.current?.current.ds },
-        { name: "notebook", build: notebookTools as never, capability: () => telarRef.current?.current.ds },
-        { name: "latex", build: latexTools as never, capability: () => telarRef.current?.current.latex },
         { name: "display", build: displayTools as never, capability: () => telarRef.current?.current.display },
         { name: "run", build: runTools as never, capability: () => telarRef.current?.current.run },
         /**
@@ -2702,11 +2692,6 @@ export function createClaudeDriver(
         notes: Boolean(notes),
         // Same rule again: the prompt wall is baked into the query at creation.
         prompts: Boolean(prompts),
-        // Toggling the project's data-science switch must cold-start: the
-        // toolkits are baked into the query at creation.
-        ds: Boolean(ds),
-        // Same rule for the LaTeX switch.
-        latex: Boolean(latex),
         display: Boolean(display),
         /** Same rule, and here it is the system prompt rather than a toolkit:
          *  `RUN_BRIEFING` is appended at creation, so a project-less session
@@ -2736,10 +2721,11 @@ export function createClaudeDriver(
          */
         telarSocket: telarLease ? `${telarLease.url}#${telarLease.generation}` : null,
         /**
-         * THE ENABLED PLUGIN SET. The wall re-collects per request, so dispatch
-         * is already honest — but a reused query keeps advertising the catalog
-         * it was started with, so a plugin toggled on or off must cold-start it.
-         * Sorted: a map's key order is not a decision anybody made.
+         * THE ENABLED PLUGIN SET — Data Science and LaTeX among them. The wall
+         * re-collects per request, so dispatch is already honest — but a reused
+         * query keeps advertising the catalog (and the briefings) it was started
+         * with, so a plugin toggled on or off must cold-start it. Sorted: a
+         * map's key order is not a decision anybody made.
          */
         plugins: Object.keys(plugins ?? {}).sort(),
         gate: Boolean(canUseTool),
@@ -2813,23 +2799,20 @@ export function createClaudeDriver(
         if (prompts && sdk.tool) telarTools.push(...promptsTools(sdk.tool, delegatingCapability(() => bindings.current.prompts)));
 
         /**
-         * THE DATA-SCIENCE TOOLKITS, WHEN THE PROJECT OPTED IN. No approval
-         * gate: a kernel runs in the session's own working directory under
-         * the same permissions the agent's Bash tool already has, and every
-         * write these do is to a notebook the file tools could write anyway.
+         * EVERY ENABLED PLUGIN'S WALL, from the host's list — Data Science and
+         * LaTeX are two entries in it, not two branches here. A plugin the
+         * project did not enable has no capability in `plugins` and so no
+         * tools. No approval gate is added: plugin tools answer to the same
+         * `canUseTool` ladder as every other `mcp__telar__` tool, and the host's
+         * ratified read table (`plugins/policy.ts`) is what classifies them.
          */
-        if (ds && sdk.tool) {
-          telarTools.push(...notebookTools(sdk.tool, delegatingCapability(() => bindings.current.ds)));
-          telarTools.push(...dsTools(sdk.tool, delegatingCapability(() => bindings.current.ds)));
+        if (sdk.tool) {
+          for (const module of pluginToolModules()) {
+            const id = module.meta.id;
+            if (plugins?.[id] === undefined) continue;
+            telarTools.push(...module.tools(sdk.tool, delegatingCapability(() => bindings.current.plugins?.[id] as object | undefined)));
+          }
         }
-
-        /**
-         * THE LATEX TOOLKIT, WHEN THE PROJECT OPTED IN. No approval gate, the
-         * data-science judgement again: a compile runs in the session's own
-         * tree under the permissions Bash already has, and tlmgr writes to a
-         * distribution the person configured for exactly this.
-         */
-        if (latex && sdk.tool) telarTools.push(...latexTools(sdk.tool, delegatingCapability(() => bindings.current.latex)));
 
         /**
          * THE DISPLAY TOOLKIT, WHEN THE TURN CARRIES ONE. No approval gate,

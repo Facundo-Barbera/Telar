@@ -161,27 +161,16 @@ export type DriverRun = {
    */
   prompts?: PromptsCapability;
   /**
-   * The session's kernel, notebooks and analysis tools — present only when
-   * the project opted in (the claim carried `dataScience`). Per-run like
-   * `sessions`: assembled from the worker's client, scoped to this session.
-   * ABSENT MEANS THE TOOLKITS DO NOT EXIST, never an empty kernel.
-   */
-  ds?: DsCapability;
-  /**
-   * The session's TeX compiles and packages — present only when the project
-   * opted in (the claim carried `latex`). Same rules as `ds` above.
-   * ABSENT MEANS THE TOOLKIT DOES NOT EXIST, never an empty toolchain.
-   */
-  latex?: LatexCapability;
-  /**
    * THE PROJECT'S RUNS. A core capability, not a plugin: the daemon owns the
    * process group so a dev server outlives the conversation that started it.
    */
   run?: RunCapability;
   /**
    * Every enabled plugin's capability, by id — the arm that does not grow when
-   * a feature is added. Its walls join the `telar` socket beside the core ones,
-   * under the same key, so a plugin tool has one qualified name everywhere.
+   * a feature is added, and where Data Science (`data-science`) and LaTeX
+   * (`latex`) arrive. Its walls join the `telar` key beside the core ones, so a
+   * plugin tool has one qualified name everywhere. ABSENT (or an id missing
+   * from it) MEANS THAT PLUGIN'S TOOLS DO NOT EXIST for this turn.
    */
   plugins?: Record<string, unknown>;
   /**

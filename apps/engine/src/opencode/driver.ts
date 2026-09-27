@@ -77,7 +77,9 @@ export function openCodePartDetail(part: Part): ItemDetail | undefined {
  */
 export function openCodeServerIdentity(input: DriverRun): string {
   return JSON.stringify([input.cwd, input.binaryPath, input.providerInstanceId, input.env, input.orientation ?? null,
-    input.autoCompact ?? null, input.autoCompact?.mode === "limits" ? input.model ?? null : null]);
+    input.autoCompact ?? null, input.autoCompact?.mode === "limits" ? input.model ?? null : null,
+    // Each enabled plugin's briefing is baked in too, so a toggled plugin restarts.
+    Object.keys(input.plugins ?? {}).sort()]);
 }
 
 /** Snapshot reconciliation is authoritative; SSE only accelerates refresh.

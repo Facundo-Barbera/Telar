@@ -6,6 +6,7 @@ import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2";
 import { autoCompactLimitFor, type AutoCompact } from "@telar/engine-client";
 import { BROWSER_BRIEFING } from "../browser/briefing";
 import { RUN_BRIEFING } from "../run/briefing";
+import { pluginBriefings } from "../plugins/bundled";
 import { writeOrientationInstructions } from "../orientation";
 import type { DriverRun } from "../provider-contract";
 
@@ -31,6 +32,7 @@ export function openCodeBriefings(input: DriverRun): string[] {
     ...(input.mainBriefing ? [input.mainBriefing] : []),
     ...(input.browserSocket ? [BROWSER_BRIEFING] : []),
     ...(input.run ? [RUN_BRIEFING] : []),
+    ...pluginBriefings(Object.keys(input.plugins ?? {})),
   ];
 }
 

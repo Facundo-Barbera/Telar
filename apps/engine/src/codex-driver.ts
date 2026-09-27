@@ -47,6 +47,7 @@
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "./browser/briefing";
 import { RUN_BRIEFING } from "./run/briefing";
+import { pluginBriefings } from "./plugins/bundled";
 import type { ItemDetail, ItemSeed, McpServer, NotificationDetail, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot, UserInputField } from "@telar/engine-client";
 import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./computer-use";
@@ -329,6 +330,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       orientation,
       mainBriefing,
       run,
+      plugins,
       onObservations,
       onRequest,
       steer,
@@ -818,6 +820,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           ...(mainBriefing ? [mainBriefing] : []),
           ...(browserSocket ? [BROWSER_BRIEFING] : []),
           ...(run ? [RUN_BRIEFING] : []),
+          ...pluginBriefings(Object.keys(plugins ?? {})),
           /**
            * THE NOTICE AS A DEVELOPER INSTRUCTION — issue #550.
            *

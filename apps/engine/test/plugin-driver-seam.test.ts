@@ -23,7 +23,7 @@ import {
 } from "@telar/engine-client";
 import { codexApprovalRequest, codexItemDetail, MCP_ELICITATION } from "../src/codex/items";
 import { createClaudeDriver, requestKindForTool, setPluginReadTools } from "../src/driver";
-import { setPluginToolModules } from "../src/plugins/bundled";
+import { bundledPluginToolModules, setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import { HOST_RATIFIED_READ_TOOLS } from "../src/plugins/policy";
 import { PluginToolSocket } from "../src/plugins/socket";
@@ -44,7 +44,7 @@ const telarSockets: TelarToolSocket[] = [];
 afterEach(async () => {
   for (const socket of sockets.splice(0)) await socket.close();
   for (const socket of telarSockets.splice(0)) await socket.close();
-  setPluginToolModules([]);
+  setPluginToolModules(bundledPluginToolModules());
   setPluginReadTools(new Set(Object.values(HOST_RATIFIED_READ_TOOLS).flat()));
 });
 

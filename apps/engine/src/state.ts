@@ -11700,10 +11700,16 @@ export class EngineStore {
           const latex = this.resolveLatex(session);
           return latex ? { latex: { kind: latex.kind } } : {};
         })(),
-        // Every other plugin the project turned on, as ids — the arm that does
-        // not grow when a third feature arrives.
+        // Every plugin this turn gets, as ids — the list the worker builds its
+        // walls and briefings from. The mirrored two join it under the SAME
+        // gate as their legacy fields above (the resolved opt-in, worktree
+        // rule included), so a plugin reaches a turn exactly when it did before.
         ...(() => {
-          const ids = this.enabledPluginIds(session);
+          const ids = [
+            ...this.enabledPluginIds(session),
+            ...(this.resolveDataScience(session) ? ["data-science"] : []),
+            ...(this.resolveLatex(session) ? ["latex"] : []),
+          ].sort();
           return ids.length > 0 ? { plugins: ids } : {};
         })(),
         ...(resumeCursor ? { resumeCursor } : {}),
