@@ -7,6 +7,7 @@ import { unifiedDiff } from "../src/diff";
 import {
   createClaudeDriver as createRealClaudeDriver,
   itemDetailForToolCall,
+  pathFromPartialInput,
   planDetailForTodos,
   ProviderUnavailableError,
   RateLimitedError,
@@ -331,6 +332,64 @@ test("a tool row opens as the model starts writing the call, and the envelope up
   });
   const closed = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_toolu_1");
   expect(closed?.kind === "item.completed" && closed.status).toBe("completed");
+});
+
+test("a streamed edit names its file as soon as the path arrives, never a made-up one", async () => {
+  /**
+   * "Edited: (unknown)". The row opened with no input, and the path only
+   * reached it with the envelope — after the whole edit had been generated.
+   */
+  let releaseHead!: () => void;
+  let releaseTail!: () => void;
+  const head = new Promise<void>((resolve) => (releaseHead = resolve));
+  const tail = new Promise<void>((resolve) => (releaseTail = resolve));
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "stream_event", event: { type: "message_start", message: {} } };
+      yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_e", name: "Edit", input: {} } } };
+      // The path split across fragments: nothing is claimed until its closing quote.
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path":"/tmp/sr' } } };
+      await head;
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: 'c/a.ts","old_string":"x' } } };
+      await tail;
+      yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_e", name: "Edit", input: { file_path: "/tmp/src/a.ts", old_string: "x", new_string: "y" } }] } };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_e", content: "ok" }] } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  const forRow = () => sink.observations.filter((o) => (o.kind === "item.started" || o.kind === "item.updated") && o.item.id === "item_toolu_e");
+  await until("the edit row opened", () => forRow().length > 0);
+  const started = forRow()[0];
+  expect(started?.kind === "item.started" && started.item.title).toBe("Edit");
+  expect(JSON.stringify(started)).not.toContain("/tmp/sr");
+
+  releaseHead();
+  await until("the path reached the row", () => forRow().length > 1);
+  const named = forRow()[1];
+  expect(named?.kind === "item.updated" && named.item).toMatchObject({
+    title: "/tmp/src/a.ts",
+    detail: { type: "file_change", change: { path: "/tmp/src/a.ts", kind: "edit" } },
+  });
+
+  releaseTail();
+  await result;
+  expect(forRow().filter((o) => o.kind === "item.started")).toHaveLength(1);
+});
+
+describe("pathFromPartialInput", () => {
+  test("reads a path whose closing quote has arrived", () => {
+    expect(pathFromPartialInput('{"file_path": "/a/b c.ts", "content": "unfin')).toBe("/a/b c.ts");
+    expect(pathFromPartialInput('{"notebook_path":"/n.ipynb"')).toBe("/n.ipynb");
+    expect(pathFromPartialInput('{"file_path":"C:\\\\x\\"y.ts"')).toBe('C:\\x"y.ts');
+  });
+
+  test("claims nothing from a path still arriving, or a key quoted inside a string", () => {
+    expect(pathFromPartialInput('{"file_path":"/a/b')).toBeUndefined();
+    expect(pathFromPartialInput('{"content":"see \\"path\\": \\"/etc\\"')).toBeUndefined();
+    expect(pathFromPartialInput("")).toBeUndefined();
+  });
 });
 
 test("a tool call opens a row and its result closes the SAME row", async () => {
