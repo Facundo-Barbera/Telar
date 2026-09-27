@@ -73,7 +73,8 @@ import Testing
         // A fingerprint, not the token, and a bounded list with no repeats.
         #expect(!rejected.contains(dead) && rejected.first?.count == 16)
         #expect(StartTokenPolicy.remember(dead, in: rejected) == rejected)
-        let many = (0..<12).reduce([String]()) { StartTokenPolicy.remember(String(repeating: "\($0 % 10)", count: 64) + "\($0)", in: $1) }
+        var many: [String] = []
+        for n in 0..<12 { many = StartTokenPolicy.remember(String(repeating: "c", count: 62) + String(format: "%02d", n), in: many) }
         #expect(many.count == 8)
     }
 
