@@ -111,6 +111,8 @@ import {
   type GitHubCommentResult,
   type GitHubReactionContent,
   type GitHubReactionResult,
+  type GitHubThreadReplyResult,
+  type GitHubThreadResolveResult,
   type GitHubFacets,
   type GitHubIssueFilter,
   type GitHubIssueRead,
@@ -233,6 +235,8 @@ import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, m
 import {
   commentOn,
   reactOn,
+  replyToThread,
+  resolveThread,
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
   defaultGhRunner,
@@ -7414,6 +7418,28 @@ export class EngineStore {
     const target = this.forgeNumber(input.number);
     const result = await reactOn(this.gh, project.root, { subjectId: input.subjectId, content: input.content, react: input.react });
     if (result.reacted) this.githubDetailCache.delete(`${project.id}:${input.kind}:${target}`);
+    return structuredClone(result);
+  }
+
+  /**
+   * Reply to, resolve or unresolve one review thread on a pull request — #842.
+   *
+   * Person-driven like a reaction, so no claim is checked; the detail is dropped
+   * on success for the same staleness reason.
+   */
+  async projectThreadReply(projectId: string, number: number, input: { threadId: string; body: string }): Promise<GitHubThreadReplyResult> {
+    const project = this.getProject(projectId);
+    const target = this.forgeNumber(number);
+    const result = await replyToThread(this.gh, project.root, input);
+    if (result.replied) this.githubDetailCache.delete(`${project.id}:pull:${target}`);
+    return structuredClone(result);
+  }
+
+  async projectThreadResolve(projectId: string, number: number, input: { threadId: string; resolved: boolean }): Promise<GitHubThreadResolveResult> {
+    const project = this.getProject(projectId);
+    const target = this.forgeNumber(number);
+    const result = await resolveThread(this.gh, project.root, input);
+    if (result.changed) this.githubDetailCache.delete(`${project.id}:pull:${target}`);
     return structuredClone(result);
   }
 
