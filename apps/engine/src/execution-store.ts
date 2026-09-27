@@ -116,6 +116,24 @@ const COMPACT_WATERMARK_PREFIX = "journal-compacted/";
 const USAGE_WATERMARK_PREFIX = "journal-usage-folded/";
 
 /**
+ * WHERE THE SLIMMING OF ONE SESSION GOT TO — issue #858, and its own key for
+ * `USAGE_WATERMARK_PREFIX`'s reason: sharing either of the two above would
+ * start a store that has been compacted and folded for months past every row
+ * this is for.
+ */
+const SLIM_WATERMARK_PREFIX = "journal-slimmed/";
+
+/**
+ * THE MARKER A SLIMMED `item.completed` CARRIES — issue #858.
+ *
+ * A slimmed row keeps its id, `at`, `runId` and type, and its `item` shrinks to
+ * `{ id }`: the whole item is the `items` row (#658), which the slimming proved
+ * identical before it wrote the stub. `events()` puts it back on every read, so
+ * no reader outside this file ever sees a stub.
+ */
+const SLIM_MARKER = "itemRow";
+
+/**
  * THE SESSION'S LAST TERMINAL TURN EVENT, WRITTEN WHEN IT ARRIVES — issue #894,
  * and the reason it exists is that THE BOUND WAS THE COST, NOT THE DELETES.
  *
@@ -469,6 +487,8 @@ export type ExecutionHousekeeping = {
    *  `refused` is sessions whose fold rolled back on the conservation check;
    *  it is zero unless something is wrong, which is why it is counted. */
   usage?: { rows: number; turns: number; sessions: number; refused: number };
+  /** `item.completed` rows slimmed to a reference to their `items` row — #858. */
+  slimmed?: { rows: number; sessions: number };
 };
 
 /** What a directory holds, in bytes and files — so a deletion can say what it
@@ -1110,6 +1130,7 @@ export class ExecutionStore {
     this.walk = walk;
     const swept = { deltas: 0, starts: 0, sessions: 0 };
     const folded = { rows: 0, turns: 0, sessions: 0, refused: 0 };
+    const slimmed = { rows: 0, sessions: 0 };
     let index = 0;
     const done = (): void => {
       this.walk = undefined;
@@ -1122,6 +1143,7 @@ export class ExecutionStore {
         this.onJournalCompacted?.(swept);
       }
       if (folded.turns > 0 || folded.refused > 0) this.housekeeping.usage = folded;
+      if (slimmed.rows > 0) this.housekeeping.slimmed = slimmed;
       try { this.onRetentionSweep?.(); } catch { /* the next sweep covers whatever this one missed */ }
     };
     const step = (): void => {
@@ -1131,6 +1153,9 @@ export class ExecutionStore {
       index += 1;
       try { this.compactInto(sessionId, swept); } catch { /* as above */ }
       try { this.foldInto(sessionId, folded); } catch { /* as above */ }
+      // LAST, because it is bounded by what the compaction has already read:
+      // the compaction measures deltas against `item.completed` text.
+      try { this.slimInto(sessionId, slimmed); } catch { /* as above */ }
       this.sweepYield(step);
     };
     this.sweepYield(step);
@@ -1516,6 +1541,102 @@ export class ExecutionStore {
   }
 
   /**
+   * SLIM A SETTLED TURN'S `item.completed` ROWS TO A REFERENCE — issue #858.
+   *
+   * After #646 and #697 the journal a settled turn leaves behind is mostly
+   * `item.completed`, and each one is the same item the `items` row holds
+   * (#658) — measured on a synthetic 1,000-turn session at 19.8 of 23.0 MB of
+   * events, beside 19.0 MB of items. So the row keeps its id, `at`, `runId`
+   * and type, its `item` becomes `{ id }`, and `events()` puts the row's item
+   * back on every read.
+   *
+   * ══ LOSSLESS BY CONSTRUCTION, NOT BY BELIEF ══
+   *
+   * A row is slimmed ONLY where the `items` row is byte-identical to the event's
+   * item once both are minified by `json()`. Where they differ — an item a
+   * later event rewrote, a session whose items are still a blob — the row stays
+   * whole and nothing is lost. `upsertItems` restores a stub before it lets a
+   * row change under it, so the equality holds for as long as the stub exists.
+   *
+   * NOTIFICATIONS ARE NEVER SLIMMED: `rewriteNotificationItem` rewrites a
+   * completed notification's row when a coalesce supersedes it, and those rows
+   * are small anyway.
+   *
+   * BOUNDED BY THE COMPACTION, not only by `terminalHigh`: the compaction reads
+   * `item.completed` text to decide which deltas may go, so nothing it has not
+   * read yet is slimmed. One transaction per session and its own watermark, for
+   * `compactSession`'s reasons.
+   */
+  slimJournal(): { rows: number; sessions: number } {
+    const total = { rows: 0, sessions: 0 };
+    for (const sessionId of this.sessionIds()) this.slimInto(sessionId, total);
+    return total;
+  }
+
+  private slimInto(sessionId: string, total: { rows: number; sessions: number }): void {
+    const rows = this.slimSession(sessionId);
+    if (rows === 0) return;
+    total.rows += rows;
+    total.sessions += 1;
+  }
+
+  /** One session's share of `slimJournal`, in a transaction of its own. */
+  slimSession(sessionId: string): number {
+    let slimmed = 0;
+    this.alone(() => {
+      const key = `${SLIM_WATERMARK_PREFIX}${sessionId}`;
+      const low = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(key)?.value ?? 0);
+      const compacted = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(`${COMPACT_WATERMARK_PREFIX}${sessionId}`)?.value ?? 0);
+      const high = Math.min(this.terminalHigh(sessionId), compacted);
+      if (high <= low) return;
+      this.statement(
+        `UPDATE events SET value = json_set(json_set(value,'$.item',json_object('id',json_extract(value,'$.item.id'))),'$.${SLIM_MARKER}',json('true'))
+          WHERE session_id=? AND id>? AND id<=?
+            AND json_extract(value,'$.type')='item.completed'
+            AND json_extract(value,'$.${SLIM_MARKER}') IS NULL
+            AND COALESCE(json_extract(value,'$.item.detail.type'),'') <> 'notification'
+            AND EXISTS (SELECT 1 FROM items WHERE items.session_id=events.session_id
+                          AND items.item_id=json_extract(events.value,'$.item.id')
+                          AND json(items.value)=json(json_extract(events.value,'$.item')))`,
+      ).run(sessionId, low, high);
+      slimmed = Number(this.statement("SELECT changes() AS count").get()?.count ?? 0);
+      this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(key, String(high));
+    });
+    return slimmed;
+  }
+
+  /** A stored row as every reader sees it: a slimmed `item.completed` gets its
+   *  item back from the `items` row the slimming proved identical to it. */
+  private rehydrate(sessionId: string, value: string): EngineEvent {
+    const event = JSON.parse(value) as EngineEvent & { item?: { id?: string }; [SLIM_MARKER]?: boolean };
+    if (event[SLIM_MARKER] !== true) return event;
+    const row = this.statement("SELECT value FROM items WHERE session_id=? AND item_id=?").get(sessionId, event.item?.id ?? "");
+    if (!row) return event;
+    event.item = JSON.parse(String(row.value));
+    delete event[SLIM_MARKER];
+    return event;
+  }
+
+  /**
+   * PUT A STUB'S ITEM BACK BEFORE ITS ROW CHANGES — what keeps `rehydrate`
+   * honest. Only a completed row can have been slimmed, and one changing is
+   * rare (an item id a later turn reused), so the scan below runs only then.
+   */
+  private unslim(sessionId: string, itemId: string, next: string): void {
+    const old = this.statement("SELECT value, json_extract(value,'$.status') AS status FROM items WHERE session_id=? AND item_id=?")
+      .get(sessionId, itemId);
+    if (!old || old.status === "inProgress" || String(old.value) === next) return;
+    const slimmedTo = this.statement("SELECT value FROM metadata WHERE key=?").get(`${SLIM_WATERMARK_PREFIX}${sessionId}`)?.value;
+    if (slimmedTo === undefined || slimmedTo === null) return;
+    this.statement(
+      `UPDATE events SET value = json_remove(json_set(value,'$.item',json(?)),'$.${SLIM_MARKER}')
+        WHERE session_id=? AND id<=? AND json_extract(value,'$.${SLIM_MARKER}') IS NOT NULL
+          AND json_extract(value,'$.item.id')=?`,
+    ).run(String(old.value), sessionId, Number(slimmedTo), itemId);
+  }
+
+  /**
    * ══════════════ RETENTION — issues #542 and #646 ══════════════
    *
    * WHAT THIS IS AND IS NOT. It drops a settled session's raw `events` and
@@ -1855,6 +1976,7 @@ export class ExecutionStore {
     // its DELETEs return no bytes either, and the VACUUM below is the only
     // thing that turns either sweep into a smaller file.
     const usage = this.foldJournalUsage();
+    this.slimJournal();
     // Everything held must be on disk before the rewrite: VACUUM cannot run
     // inside a transaction, so there is no scope here to carry them into.
     this.flush();
@@ -2066,7 +2188,10 @@ export class ExecutionStore {
     const insert = this.statement("INSERT INTO items(session_id,item_id,run_id,ord,value) "
       + "VALUES(?,?,?,(SELECT COALESCE(MAX(ord),0)+1 FROM items WHERE session_id=?),?) "
       + "ON CONFLICT(session_id,item_id) DO UPDATE SET run_id=excluded.run_id, value=excluded.value");
-    for (const row of rows) insert.run(sessionId, row.id, row.runId, sessionId, row.value);
+    for (const row of rows) {
+      this.unslim(sessionId, row.id, row.value);
+      insert.run(sessionId, row.id, row.runId, sessionId, row.value);
+    }
   }
 
   /** DOES THIS ITEM EXIST — the streaming path's one question, answered by the
@@ -2120,7 +2245,7 @@ export class ExecutionStore {
     const stored = (bounded
       ? this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id LIMIT ?").all(sessionId, after, limit)
       : this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id").all(sessionId, after)
-    ).map((row) => JSON.parse(String(row.value)) as EngineEvent);
+    ).map((row) => this.rehydrate(sessionId, String(row.value)));
     if (bounded && stored.length >= limit!) return stored;
     const held = this.held().filter((event) => event.sessionId === sessionId && event.id > after);
     if (!held.length) return stored;
@@ -2560,10 +2685,19 @@ export class ExecutionStore {
    */
   grepEvents(sessionId: string, needle: string, before: number | undefined, limit: number): Array<{ id: number; value: string }> {
     const like = `%${escapeLike(needle)}%`;
+    // A SLIMMED ROW (#858) IS SEARCHED THROUGH ITS `items` ROW, which holds the
+    // text the stub gave up, and is answered whole — so a match reads the same
+    // whether or not the sweep has been here.
+    const matches = `(value LIKE ?1 ESCAPE '\\' OR (json_extract(value,'$.${SLIM_MARKER}') IS NOT NULL AND EXISTS (
+      SELECT 1 FROM items WHERE items.session_id=events.session_id AND items.item_id=json_extract(events.value,'$.item.id')
+        AND items.value LIKE ?1 ESCAPE '\\')))`;
     const rows = before === undefined
-      ? this.statement("SELECT id, value FROM events WHERE session_id=? AND value LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?").all(sessionId, like, limit)
-      : this.statement("SELECT id, value FROM events WHERE session_id=? AND id<? AND value LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?").all(sessionId, before, like, limit);
-    return rows.map((row) => ({ id: Number(row.id), value: String(row.value) }));
+      ? this.statement(`SELECT id, value FROM events WHERE session_id=?2 AND ${matches} ORDER BY id DESC LIMIT ?3`).all(like, sessionId, limit)
+      : this.statement(`SELECT id, value FROM events WHERE session_id=?2 AND id<?4 AND ${matches} ORDER BY id DESC LIMIT ?3`).all(like, sessionId, limit, before);
+    return rows.map((row) => {
+      const value = String(row.value);
+      return { id: Number(row.id), value: value.includes(`"${SLIM_MARKER}"`) ? JSON.stringify(this.rehydrate(sessionId, value)) : value };
+    });
   }
 
   /** Which sessions have no turn rows at all — what the backfill folds. Keys on
@@ -2598,6 +2732,7 @@ export class ExecutionStore {
       // somehow came back, would skip the whole journal below it.
       this.statement("DELETE FROM metadata WHERE key=?").run(`${COMPACT_WATERMARK_PREFIX}${sessionId}`);
       this.statement("DELETE FROM metadata WHERE key=?").run(`${USAGE_WATERMARK_PREFIX}${sessionId}`);
+      this.statement("DELETE FROM metadata WHERE key=?").run(`${SLIM_WATERMARK_PREFIX}${sessionId}`);
       // And the bound those two are compared against (#894), for their reason:
       // a row describing a journal that no longer exists.
       this.statement("DELETE FROM metadata WHERE key=?").run(`${TERMINAL_HIGH_PREFIX}${sessionId}`);
