@@ -130,6 +130,7 @@ import type {
   GitFilePatch,
   DiffBaseOption,
   FilePatchOptions,
+  TaskOutputPage,
 } from "@telar/engine-client";
 import { diffBaseQuery, filePatchQuery, forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pathnameFetcher, pinnedHost } from "@/lib/hosts/client";
@@ -1604,6 +1605,13 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** Close a session's terminals, as the person (#883). */
     closeSessionTerminals: (sessionId: string) =>
       request<{ closed: number }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/terminals/close`, {}),
+    /** A page of a background task's log from byte `after`; without it, the tail. */
+    taskOutput: (sessionId: string, taskId: string, after?: number) =>
+      request<TaskOutputPage>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/output${after === undefined ? "" : `?after=${after}`}`,
+      ),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
     /** Run a message recovery held, now that a person has re-read it. Dropping
