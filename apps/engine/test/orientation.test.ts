@@ -310,6 +310,19 @@ test("the skill says the things a coordinator gets wrong", () => {
   expect(TELAR_SKILL.toLowerCase()).toContain("refused");
 });
 
+test("the skill teaches the cohort rule, not one subscribe per peer", () => {
+  // Agents kept subscribing one session at a time out of habit after cohorts
+  // landed (#1018). The rule is stated as a rule, with its three don'ts.
+  const skill = TELAR_SKILL.replace(/\s+/g, " ");
+  expect(skill).toContain("then ONE `sessions_subscribe({ sessionIds: [...] })`, then END YOUR TURN");
+  expect(skill).toContain("Do not subscribe per session");
+  expect(skill).toContain("Do not poll `sessions_status`, and do not sleep");
+  expect(skill).toContain("Answer it; the member stays in the cohort");
+  expect(skill).toContain("call `sessions_read` only when it says it was cut");
+  expect(skill).toContain("Do not send progress `report`s");
+  expect(ORIENTATION_VERSION).toBeGreaterThanOrEqual(9);
+});
+
 test("the skill no longer offers the built-in Agent as an address (#908)", () => {
   // It left the binary; a session told `sessions_send` to `agent` reaches the
   // person would send into a session id that does not exist.
