@@ -173,13 +173,45 @@ const ConversationPlacement = ({ at, landed }: { at: string; landed: boolean }) 
 };
 
 /**
+ * How far from the end the reader has to be before they count as reading back.
+ * Well past the library's 70px "at the end" slack plus what the compact
+ * composer gives back to the viewport — see `ConversationAtBottom`.
+ */
+export const READING_BACK_PX = 200;
+
+/**
  * Tells a caller OUTSIDE the provider whether the reader is at the end — the
  * composer, which is a sibling of the viewport rather than a child of it, draws
  * itself compact while somebody is reading back.
+ *
+ * WITH HYSTERESIS, because the report moves the thing it measures (#1020).
+ * Compacting the composer makes the viewport taller, which brings the end
+ * closer; if that alone crossed the library's 70px slack, `isAtBottom` flipped
+ * back, the composer expanded, and the next content resize flipped it again —
+ * two cockpit renders per streamed chunk, and a reader parked short of the end
+ * who no longer followed it. So "at the end" is reported as soon as the library
+ * says so, but "reading back" only once the reader is `READING_BACK_PX` away,
+ * which no composer resize can undo.
  */
 const ConversationAtBottom = ({ onChange }: { onChange: (atBottom: boolean) => void }) => {
-  const { isAtBottom } = useStickToBottomContext();
-  useEffect(() => onChange(isAtBottom), [isAtBottom, onChange]);
+  const { isAtBottom, scrollRef } = useStickToBottomContext();
+  const reported = useRef<boolean | undefined>(undefined);
+  useEffect(() => {
+    const report = (atBottom: boolean) => {
+      if (reported.current === atBottom) return;
+      reported.current = atBottom;
+      onChange(atBottom);
+    };
+    if (isAtBottom) return report(true);
+    const element = scrollRef.current;
+    if (!element) return;
+    const measure = () => {
+      if (element.scrollHeight - element.clientHeight - element.scrollTop > READING_BACK_PX) report(false);
+    };
+    measure();
+    element.addEventListener("scroll", measure, { passive: true });
+    return () => element.removeEventListener("scroll", measure);
+  }, [isAtBottom, onChange, scrollRef]);
   return null;
 };
 
