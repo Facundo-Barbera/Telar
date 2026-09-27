@@ -775,18 +775,18 @@ describe("commitSessionWork", () => {
 describe("normalizeRemote", () => {
   test("every spelling of one repository is one string", () => {
     const spellings = [
-      "git@github.com:Facundo-Barbera/telar.git",
-      "git@github.com:Facundo-Barbera/telar",
-      "https://github.com/Facundo-Barbera/telar.git",
-      "https://github.com/Facundo-Barbera/telar",
-      "https://github.com/Facundo-Barbera/telar/",
-      "ssh://git@github.com:22/Facundo-Barbera/telar.git",
-      "ssh://git@github.com/Facundo-Barbera/telar.git",
-      "git://github.com/Facundo-Barbera/telar.git",
-      "  https://github.com/facundo-barbera/telar.git\n",
+      "git@github.com:NovarixHQ/telar.git",
+      "git@github.com:NovarixHQ/telar",
+      "https://github.com/NovarixHQ/telar.git",
+      "https://github.com/NovarixHQ/telar",
+      "https://github.com/NovarixHQ/telar/",
+      "ssh://git@github.com:22/NovarixHQ/telar.git",
+      "ssh://git@github.com/NovarixHQ/telar.git",
+      "git://github.com/NovarixHQ/telar.git",
+      "  https://github.com/novarixhq/telar.git\n",
     ];
     for (const spelling of spellings) {
-      expect([spelling, normalizeRemote(spelling)]).toEqual([spelling, "github.com/facundo-barbera/telar"]);
+      expect([spelling, normalizeRemote(spelling)]).toEqual([spelling, "github.com/novarixhq/telar"]);
     }
   });
 

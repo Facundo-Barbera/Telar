@@ -6,7 +6,7 @@
   "author": "Facundo Barbera <facundo.barbera@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/Facundo-Barbera/Telar.git"
+    "url": "git+ssh://git@github.com/NovarixHQ/Telar.git"
   },
   "workspaces": ["apps/*", "packages/*"],
   "packageManager": "bun@1.3.11",

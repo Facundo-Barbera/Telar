@@ -8,7 +8,7 @@ Revise the execution core incrementally. Give the engine explicit ownership of l
 
 Do not replace the application wholesale with current T3 Code. Its useful advances are ownership boundaries, provider adapters, committed command/event processing, and connection synchronization. Adopting its entire framework or transport would add migration work without establishing that it fixes this incident.
 
-The immediate disconnect mitigation is separate: [draft PR #215](https://github.com/Facundo-Barbera/Telar/pull/215). It is tested locally but **not installed or released**. The user's main app must continue to update through nightlies only.
+The immediate disconnect mitigation is separate: [draft PR #215](https://github.com/NovarixHQ/Telar/pull/215). It is tested locally but **not installed or released**. The user's main app must continue to update through nightlies only.
 
 ## Evidence and limits
 
@@ -23,7 +23,7 @@ Baselines:
 | Current T3 source | `e16b8b059c9f5ff6dfed1addecffb831c6aee043` |
 | OpenCode release | `v1.18.30`, `3104c1428ec91f809e5ab86631300de41eb6952e` |
 
-The existing [OpenCode investigation #205](https://github.com/Facundo-Barbera/Telar/issues/205) is useful input, but its older Telar baseline and Pause/Resume recommendations are superseded by the user's current requirements. OpenCode's development branch has moved beyond the release pin; proposed compatibility must be tested against an exact CLI/SDK pair.
+The existing [OpenCode investigation #205](https://github.com/NovarixHQ/Telar/issues/205) is useful input, but its older Telar baseline and Pause/Resume recommendations are superseded by the user's current requirements. OpenCode's development branch has moved beyond the release pin; proposed compatibility must be tested against an exact CLI/SDK pair.
 
 The running desktop and engine remained alive while multiple sessions recorded worker-loss failures. The installed worker could expire its own lease after 15 seconds of a shared event-loop stall, although the daemon exempted that embedded registration from pruning. Claims also shared scheduling with heartbeats. These are demonstrated defects; absent historical diagnostics, the exact trigger for every observed incident is **not proven**. Closing Dev as the trigger remains unproven.
 
@@ -44,13 +44,13 @@ Codex's separate “Reconnecting…2/5” messages are provider upstream retries
 
 ### 1. Embedded execution has a fictitious network failure boundary — high priority
 
-The daemon creates an `EngineClient` for its own worker. Registration, claims, heartbeat cancellation delivery, and settlement travel through loopback HTTP. Worker and daemon share the event loop, but maintain separate liveness judgments and retirement paths. See [embedded startup](https://github.com/Facundo-Barbera/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/daemon.ts#L3529) and [worker connectivity handling](https://github.com/Facundo-Barbera/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/worker.ts#L897).
+The daemon creates an `EngineClient` for its own worker. Registration, claims, heartbeat cancellation delivery, and settlement travel through loopback HTTP. Worker and daemon share the event loop, but maintain separate liveness judgments and retirement paths. See [embedded startup](https://github.com/NovarixHQ/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/daemon.ts#L3529) and [worker connectivity handling](https://github.com/NovarixHQ/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/worker.ts#L897).
 
 Introduce an execution port with direct in-process calls and explicit lifecycle cancellation for embedded execution. Keep an HTTP adapter, leases, and registration generations for genuinely external workers. Both adapters use the same command handlers and fencing rules. Provider processes remain separately supervised; a direct port does not make them immortal or eliminate event-loop stalls.
 
 ### 2. Stop still names different operations — high priority
 
-`stopSession`, `stopTurn`, and `stopBackgroundTasks` implement different ownership rules. Session Stop explicitly excludes background tasks, while a no-active-turn path in `stopTurn` can sweep them. Legacy pause/held state also remains. See [the actual transitions](https://github.com/Facundo-Barbera/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/state.ts#L6710). Web and iOS do not yet share one complete Stop contract.
+`stopSession`, `stopTurn`, and `stopBackgroundTasks` implement different ownership rules. Session Stop explicitly excludes background tasks, while a no-active-turn path in `stopTurn` can sweep them. Legacy pause/held state also remains. See [the actual transitions](https://github.com/NovarixHQ/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/state.ts#L6710). Web and iOS do not yet share one complete Stop contract.
 
 Define session Stop as cancellation of session-owned active work, pending messages, undelivered steering, approvals, and background tasks. A deliberately detached project Run service has separate ownership and an explicit stop action. Preserve already delivered user words in history. Store the cancellation fence before invoking provider abort; late completion cannot resurrect cancelled work. The next message needs no Resume gate.
 
@@ -58,7 +58,7 @@ This background ownership rule is a proposed correction, not a claim about #215'
 
 ### 3. Provider abstraction exists, but orchestration still knows too much — high priority
 
-The shared factory is a useful foundation. However, its registry is statically Claude/Codex, the driver contract lives beside Claude implementation, and the worker branches for provider-specific sockets and task control. See [factory](https://github.com/Facundo-Barbera/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/drivers.ts), [driver module](https://github.com/Facundo-Barbera/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/driver.ts), and [worker](https://github.com/Facundo-Barbera/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/worker.ts).
+The shared factory is a useful foundation. However, its registry is statically Claude/Codex, the driver contract lives beside Claude implementation, and the worker branches for provider-specific sockets and task control. See [factory](https://github.com/NovarixHQ/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/drivers.ts), [driver module](https://github.com/NovarixHQ/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/driver.ts), and [worker](https://github.com/NovarixHQ/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/worker.ts).
 
 Extract a provider-neutral contract and registry keyed by driver kind and configured instance. Adapters own protocol details and upstream process/session handles. The execution coordinator owns commands, cancellation generations, durable state, and normalized events. Preserve early resume-cursor persistence, provider identity checks, and existing shared capability hosts.
 
@@ -66,7 +66,7 @@ T3 is a reference for the separation between [instance factories](https://github
 
 ### 4. Individual atomic files are not an atomic execution record — high priority
 
-Queue, items, requests, session metadata, and journal updates cross separate writes. A serialized state lock prevents concurrent interleaving but cannot make those writes crash-atomic. See [queue persistence](https://github.com/Facundo-Barbera/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/state.ts#L7992) and [journal append](https://github.com/Facundo-Barbera/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/state.ts#L8544).
+Queue, items, requests, session metadata, and journal updates cross separate writes. A serialized state lock prevents concurrent interleaving but cannot make those writes crash-atomic. See [queue persistence](https://github.com/NovarixHQ/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/state.ts#L7992) and [journal append](https://github.com/NovarixHQ/Telar/blob/e5503329e47cd89efaa957f0121bde34f55a6bfa/apps/engine/src/state.ts#L8544).
 
 Introduce a storage boundary for execution commands, receipts, events, and projections. Commit them together and publish only committed events. Keep provider side effects outside transactions. A crash between provider admission and receipt still requires upstream reconciliation; a database cannot guarantee exactly-once external execution.
 
@@ -156,6 +156,6 @@ Persist bounded structured diagnostics with engine instance, worker generation, 
 
 ## Current readiness
 
-Immediate repair validation at `e5503329`: engine **1,849 passed / 3 skipped**, web **1,512 passed**, engine client **68 passed**, desktop **188 passed / 2 skipped**; typecheck and lint passed with existing warnings. Final local production packaging and engine/worker/dependency smoke checks passed. GitHub [Verify run 34404319664](https://github.com/Facundo-Barbera/Telar/actions/runs/34404319664) also passed. These checks use fixtures and do not establish live-provider reliability or complete iOS/background Stop parity.
+Immediate repair validation at `e5503329`: engine **1,849 passed / 3 skipped**, web **1,512 passed**, engine client **68 passed**, desktop **188 passed / 2 skipped**; typecheck and lint passed with existing warnings. Final local production packaging and engine/worker/dependency smoke checks passed. GitHub [Verify run 34404319664](https://github.com/NovarixHQ/Telar/actions/runs/34404319664) also passed. These checks use fixtures and do not establish live-provider reliability or complete iOS/background Stop parity.
 
 The review above records the pre-implementation baseline. The user subsequently requested the complete revision. Implementation now covers the five migration stages: session Stop; a direct embedded execution port and provider-neutral contract; transactional SQLite execution storage and acknowledged task-stop delivery; an opt-in OpenCode adapter; and shared client synchronization, Swift prefix handling, and streaming presentation. See [implementation and rollout](engine-revision-implementation.md) for the actual scope, validation, and remaining limits. The installed application remains on its nightly update path.

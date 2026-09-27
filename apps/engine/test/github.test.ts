@@ -350,25 +350,25 @@ describe("the author's face", () => {
  */
 describe("the issue↔PR link", () => {
   /** One reference, in `gh`'s own shape. */
-  const ref = (number: number, owner = "Facundo-Barbera", name = "Telar", kind = "pull") => ({
+  const ref = (number: number, owner = "NovarixHQ", name = "Telar", kind = "pull") => ({
     id: `PR_${number}`,
     number,
     url: `https://github.com/${owner}/${name}/${kind}/${number}`,
     repository: { id: "R_1", name, owner: { id: "U_1", login: owner } },
   });
 
-  const issueWith = (refs: unknown, url = "https://github.com/Facundo-Barbera/Telar/issues/488") =>
+  const issueWith = (refs: unknown, url = "https://github.com/NovarixHQ/Telar/issues/488") =>
     parseIssues(JSON.stringify([{ number: 488, title: "t", state: "CLOSED", url, updatedAt: DAY, closedByPullRequestsReferences: refs }]))[0]!;
-  const pullWith = (refs: unknown, url = "https://github.com/Facundo-Barbera/Telar/pull/786") =>
+  const pullWith = (refs: unknown, url = "https://github.com/NovarixHQ/Telar/pull/786") =>
     parsePulls(JSON.stringify([{ number: 786, title: "t", state: "MERGED", url, updatedAt: DAY, closingIssuesReferences: refs }]))[0]!;
 
   test("an issue names the pull requests linked to close it", () => {
-    expect(issueWith([ref(786)]).linkedPulls).toEqual([{ number: 786, url: "https://github.com/Facundo-Barbera/Telar/pull/786" }]);
+    expect(issueWith([ref(786)]).linkedPulls).toEqual([{ number: 786, url: "https://github.com/NovarixHQ/Telar/pull/786" }]);
   });
 
   test("and a pull request names the issues it closes — the same relation, other end", () => {
-    expect(pullWith([ref(488, "Facundo-Barbera", "Telar", "issues")]).linkedIssues).toEqual([
-      { number: 488, url: "https://github.com/Facundo-Barbera/Telar/issues/488" },
+    expect(pullWith([ref(488, "NovarixHQ", "Telar", "issues")]).linkedIssues).toEqual([
+      { number: 488, url: "https://github.com/NovarixHQ/Telar/issues/488" },
     ]);
   });
 
@@ -399,7 +399,7 @@ describe("the issue↔PR link", () => {
     expect(parseRepoFromUrl("https://github.com/o/r/pull/7")).toBe("o/r");
     expect(parseRepoFromUrl("")).toBeUndefined();
     expect(parseRepoFromUrl("#488")).toBeUndefined();
-    expect(issueWith([ref(786)], "").linkedPulls[0]!.repository).toBe("Facundo-Barbera/Telar");
+    expect(issueWith([ref(786)], "").linkedPulls[0]!.repository).toBe("NovarixHQ/Telar");
   });
 
   test("a reference with no number is dropped, the way a row with no number is", () => {
@@ -424,7 +424,7 @@ describe("the issue↔PR link", () => {
         number: 488,
         title: "t",
         state: "CLOSED",
-        url: "https://github.com/Facundo-Barbera/Telar/issues/488",
+        url: "https://github.com/NovarixHQ/Telar/issues/488",
         createdAt: DAY,
         closedByPullRequestsReferences: [ref(786)],
       }),
@@ -436,9 +436,9 @@ describe("the issue↔PR link", () => {
         number: 786,
         title: "t",
         state: "MERGED",
-        url: "https://github.com/Facundo-Barbera/Telar/pull/786",
+        url: "https://github.com/NovarixHQ/Telar/pull/786",
         createdAt: DAY,
-        closingIssuesReferences: [ref(488, "Facundo-Barbera", "Telar", "issues")],
+        closingIssuesReferences: [ref(488, "NovarixHQ", "Telar", "issues")],
       }),
       1,
     );
@@ -1956,7 +1956,7 @@ describe("openPullRequest", () => {
   const SESSION_ID = "session_db5cb38d5339445aa30d5d1b2fdd71a2";
   const HEAD = "telar/670-push";
   const BASE = "main";
-  const OPENED = "https://github.com/Facundo-Barbera/Telar/pull/812";
+  const OPENED = "https://github.com/NovarixHQ/Telar/pull/812";
 
   const open = (
     replies: Record<string, GhResult | GhResult[]>,
@@ -2075,7 +2075,7 @@ describe("openPullRequest", () => {
   test("a number is read out of a url or left absent, never guessed", () => {
     expect(parsePullNumber(OPENED)).toBe(812);
     expect(parsePullNumber(`${OPENED}/files`)).toBe(812);
-    expect(parsePullNumber("https://github.com/Facundo-Barbera/Telar/issues/670")).toBeUndefined();
+    expect(parsePullNumber("https://github.com/NovarixHQ/Telar/issues/670")).toBeUndefined();
     expect(parsePullNumber("telar/670-push → main")).toBeUndefined();
   });
 });

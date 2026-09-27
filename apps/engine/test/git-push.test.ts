@@ -67,7 +67,7 @@ const TRACKING = `refs/remotes/origin/${BRANCH}`;
 const READY: Record<string, GitResult> = {
   "rev-parse --is-inside-work-tree": ok("true\n"),
   "rev-parse --abbrev-ref": ok(`${BRANCH}\n`),
-  "config --get": ok("git@github.com:Facundo-Barbera/Telar.git\n"),
+  "config --get": ok("git@github.com:NovarixHQ/Telar.git\n"),
   "rev-parse --verify": ok("0f1c2d3\n"),
   "rev-list --count": ok("3\n"),
   "push --set-upstream": ok(),
@@ -272,8 +272,8 @@ describe("classifyPushFailure", () => {
   /** TRANSCRIBED — GitHub's 403 for an account without write access. Producing
    *  this needs GitHub's own server, and no test here talks to one. */
   const FORBIDDEN = [
-    "remote: Permission to Facundo-Barbera/Telar.git denied to someone.",
-    "fatal: unable to access 'https://github.com/Facundo-Barbera/Telar.git/': The requested URL returned error: 403",
+    "remote: Permission to NovarixHQ/Telar.git denied to someone.",
+    "fatal: unable to access 'https://github.com/NovarixHQ/Telar.git/': The requested URL returned error: 403",
   ].join("\n");
 
   /** TRANSCRIBED — what `GIT_TERMINAL_PROMPT=0` turns a credential prompt into.
@@ -392,7 +392,7 @@ describe("sessionBranchFacts", () => {
     expect(await sessionBranchFacts(git, "/repo")).toEqual({
       repository: true,
       branch: BRANCH,
-      origin: "git@github.com:Facundo-Barbera/Telar.git",
+      origin: "git@github.com:NovarixHQ/Telar.git",
       upstream: true,
       ahead: 3,
     });
@@ -412,7 +412,7 @@ describe("sessionBranchFacts", () => {
     const { git } = spy({ ...READY, "rev-parse --abbrev-ref": ok("HEAD\n") });
     expect(await sessionBranchFacts(git, "/repo")).toEqual({
       repository: true,
-      origin: "git@github.com:Facundo-Barbera/Telar.git",
+      origin: "git@github.com:NovarixHQ/Telar.git",
     });
   });
 
@@ -436,7 +436,7 @@ describe("pullRequestBlockedBy", () => {
   const facts = {
     repository: true,
     branch: BRANCH,
-    origin: "git@github.com:Facundo-Barbera/Telar.git",
+    origin: "git@github.com:NovarixHQ/Telar.git",
   } as const;
 
   test("a branch level with its upstream blocks a push and not a pull request", async () => {

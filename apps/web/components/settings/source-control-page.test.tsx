@@ -18,7 +18,7 @@ test("no GitHub remote means gh works, not that anything is wrong", () => {
   // checkout has no GitHub remote. Reading it as a failure would tell somebody
   // to reinstall a CLI that is already fine.
   expect(readGhState({ unavailable: "no_repository" })).toEqual({ status: "ready" });
-  expect(readGhState({ repository: "Facundo-Barbera/Telar" })).toEqual({ status: "ready", repository: "Facundo-Barbera/Telar" });
+  expect(readGhState({ repository: "NovarixHQ/Telar" })).toEqual({ status: "ready", repository: "NovarixHQ/Telar" });
   // #670 split `not_github` out of `no_repository`. This pane's answer is the
   // same for both — `gh` is working either way — and that sameness is worth
   // pinning, because the split exists for the surfaces that OFFER something.

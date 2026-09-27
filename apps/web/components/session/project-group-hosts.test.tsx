@@ -19,7 +19,7 @@ import { projectPlaces } from "@/lib/hosts/project-places";
 import { groupSessions } from "@/lib/session-groups";
 import type { SidebarSession } from "@/lib/session-list";
 
-const REMOTE = "github.com/facundo-barbera/telar";
+const REMOTE = "github.com/novarixhq/telar";
 
 const session = (id: string, extra: Partial<SidebarSession> = {}): SidebarSession =>
   ({ id, title: id, projectId: "p1", projectName: "Telar", activity: "idle", createdAt: 1, ...extra }) as SidebarSession;

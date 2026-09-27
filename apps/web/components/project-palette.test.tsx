@@ -185,8 +185,8 @@ test("pasting a repository URL collapses the page to the one row that would act 
   expect(sourceRows("ssh://git@example.com/owner/repo.git").map((row) => row.id)).toEqual(["git-url"]);
   // `owner/repo` is GitHub's shorthand, and the ENGINE expands it — this side
   // only decides which row to draw.
-  expect(sourceRows("Facundo-Barbera/Telar").map((row) => row.id)).toEqual(["github"]);
-  expect(sourceRows("Facundo-Barbera/Telar")[0].hint).toBe("Clone Facundo-Barbera/Telar");
+  expect(sourceRows("NovarixHQ/Telar").map((row) => row.id)).toEqual(["github"]);
+  expect(sourceRows("NovarixHQ/Telar")[0].hint).toBe("Clone NovarixHQ/Telar");
 });
 
 test("ordinary words are not mistaken for URLs", () => {

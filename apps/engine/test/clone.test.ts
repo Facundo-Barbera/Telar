@@ -65,7 +65,7 @@ describe("repoFolderName", () => {
 
 describe("githubShorthand", () => {
   test("`owner/repo` is the one shorthand, and only when it is bare", () => {
-    expect(githubShorthand("Facundo-Barbera/Telar")).toBe("https://github.com/Facundo-Barbera/Telar.git");
+    expect(githubShorthand("NovarixHQ/Telar")).toBe("https://github.com/NovarixHQ/Telar.git");
     expect(githubShorthand(" owner/repo.git ")).toBe("https://github.com/owner/repo.git");
   });
 
@@ -104,9 +104,9 @@ describe("cloneRepository", () => {
   test("`owner/repo` is expanded here, so the cockpit holds no opinion about forges", async () => {
     const parent = scratch();
     const git = stubGit();
-    const outcome = await cloneRepository(git.run, { url: "Facundo-Barbera/Telar", parent });
+    const outcome = await cloneRepository(git.run, { url: "NovarixHQ/Telar", parent });
     expect(outcome).toEqual({ root: path.join(parent, "Telar") });
-    expect(git.calls[0].args[2]).toBe("https://github.com/Facundo-Barbera/Telar.git");
+    expect(git.calls[0].args[2]).toBe("https://github.com/NovarixHQ/Telar.git");
   });
 
   test("a URL that reads as an option never reaches git", async () => {

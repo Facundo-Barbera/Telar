@@ -624,8 +624,8 @@ test("POST /v2/projects/clone clones and registers in one request, with git stub
 
   // `owner/repo` is expanded by the engine, so the cockpit holds no opinion
   // about which forge a bare pair belongs to.
-  await client.cloneProject({ url: "Facundo-Barbera/Telar", parent });
-  expect(clones()[1]?.[2]).toBe("https://github.com/Facundo-Barbera/Telar.git");
+  await client.cloneProject({ url: "NovarixHQ/Telar", parent });
+  expect(clones()[1]?.[2]).toBe("https://github.com/NovarixHQ/Telar.git");
 
   // The same target twice is a conflict rather than a merge into it, and it is
   // refused BEFORE git runs.

@@ -10,7 +10,7 @@ import { parseForgeLink, sameRepository } from "./session-links";
 
 describe("parseForgeLink", () => {
   test("an issue or pull URL carries its kind, number and repository", () => {
-    expect(parseForgeLink("https://github.com/Facundo-Barbera/Telar/issues/167")).toEqual({ kind: "issue", number: 167, repository: "Facundo-Barbera/Telar" });
+    expect(parseForgeLink("https://github.com/NovarixHQ/Telar/issues/167")).toEqual({ kind: "issue", number: 167, repository: "NovarixHQ/Telar" });
     expect(parseForgeLink("https://github.com/o/r/pull/9/")).toEqual({ kind: "pull", number: 9, repository: "o/r" });
     expect(parseForgeLink("https://www.github.com/o/r/issues/3")).toMatchObject({ kind: "issue", number: 3 });
   });
@@ -27,7 +27,7 @@ describe("parseForgeLink", () => {
 
 describe("sameRepository", () => {
   test("GitHub's case-insensitive way, and unknown never matches", () => {
-    expect(sameRepository("Facundo-Barbera/Telar", "facundo-barbera/telar")).toBe(true);
+    expect(sameRepository("NovarixHQ/Telar", "novarixhq/telar")).toBe(true);
     expect(sameRepository("o/r", "o/other")).toBe(false);
     expect(sameRepository(undefined, "o/r")).toBe(false);
   });
