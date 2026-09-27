@@ -13735,8 +13735,13 @@ export class EngineStore {
        *
        * ONLY A CLEAN ENDING. A failure or a stop after a result is a run that
        * fell over having already reported, and that is actionable: it takes
-       * the ordinary path. And only for `settled_only` — `always` is an opt-in
-       * to interrupts that this rule does not quietly take back.
+       * the ordinary path.
+       *
+       * A RESULT OR BLOCKER COUNTS FROM THE MOMENT IT IS SENT, however it was
+       * delivered — woken, held for a cohort, left in the mailbox, or joined to
+       * another waiting notice — and whatever `completionWake` says. Keying
+       * this on delivery state left gaps where the ending woke the coordinator
+       * a second time, just to acknowledge (`reportedTo`).
        */
       /**
        * AND A COMPLETION THAT SAYS NOTHING. A turn that journalled no answer and
@@ -13748,8 +13753,8 @@ export class EngineStore {
        */
       if (
         kind === "turn_completed" &&
-        (subscription.completionWake ?? "settled_only") === "settled_only" &&
-        (this.messageDeliveredTo(subscriberId, targetSessionId, turn.runId) || silentTurn)
+        (this.reportedTo(subscriberId, targetSessionId, turn.runId) ||
+          ((subscription.completionWake ?? "settled_only") === "settled_only" && (this.messageDeliveredTo(subscriberId, targetSessionId, turn.runId) || silentTurn)))
       ) {
         const recorded: NotificationDetail = { ...notification, deliveries: 1 };
         try {
@@ -14789,6 +14794,29 @@ export class EngineStore {
         ? this.itemRowsOf(sessionId, [turn.runId])
         : [];
     return !items.some((item) => item.detail.type === "assistant_message" && item.detail.text.trim().length > 0);
+  }
+
+  /**
+   * HAS THE TARGET ALREADY GIVEN THIS SUBSCRIBER ITS ANSWER — a `result` or a
+   * `blocker` from `runId`, or a `result` since the subscriber's latest errand
+   * to it. Either way its turn ending is not news: the result IS the
+   * completion, and a blocker already woke the subscriber.
+   *
+   * Counted from when it was SENT: any delivery (woken, cohort-held, mailbox,
+   * joined) and any state but discarded.
+   */
+  private reportedTo(subscriberId: string, targetSessionId: string, runId: string): boolean {
+    const errandAt = this.scanQueue(targetSessionId).turns
+      .filter((turn) => turn.agentDelivery !== "passive" && turn.sender?.sessionId === subscriberId)
+      .at(-1)?.acceptedAt;
+    return this.scanQueue(subscriberId).turns.some(
+      (candidate) =>
+        candidate.origin === "session" &&
+        candidate.state !== "discarded" &&
+        candidate.sender?.sessionId === targetSessionId &&
+        (((candidate.agentIntent === "result" || candidate.agentIntent === "blocker") && candidate.agentSourceRunId === runId) ||
+          (candidate.agentIntent === "result" && errandAt !== undefined && candidate.acceptedAt >= errandAt)),
+    );
   }
 
   private messageDeliveredTo(subscriberId: string, targetSessionId: string, runId: string): boolean {

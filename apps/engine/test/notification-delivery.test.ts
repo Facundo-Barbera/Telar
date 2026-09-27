@@ -570,7 +570,7 @@ test("a completion from a run that sent NO result wakes exactly as before, even 
   expect(recordOf(store, "run_two")).toBeUndefined();
 });
 
-test("completionWake: always is unchanged — the completion still interrupts a host that has read the result", () => {
+test("a completion after a sent result never interrupts, even under completionWake: always", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a", completionWake: "always" });
   const worker = reports(store);
@@ -580,13 +580,13 @@ test("completionWake: always is unchanged — the completion still interrupts a 
 
   worker.end();
 
-  // An explicit opt-in to interrupts is not quietly taken back by #919.
-  const interrupt = store.turns("session_host").find((turn) => turn.state === "steering");
-  expect(interrupt?.notification).toMatchObject({ wakeKind: "turn_completed", runId: worker.runId });
-  expect(recordOf(store, worker.runId)).toBeUndefined();
+  // The result IS the completion; interrupting to say the run ended is the
+  // second wake the audit measured.
+  expect(store.turns("session_host").some((turn) => turn.state === "steering")).toBe(false);
+  expect(recordOf(store, worker.runId)).toBeDefined();
 });
 
-test("a result nobody was awaiting reached no model, so the completion that follows still carries it out", () => {
+test("a result nobody was awaiting still reaches the host once — the completion after it is only recorded", () => {
   const { store } = setup();
   // Sent while the host was busy and UNSUBSCRIBED: passive, and in the mailbox.
   // The host subscribes afterwards, which is the only way this completion can
@@ -599,12 +599,14 @@ test("a result nobody was awaiting reached no model, so the completion that foll
 
   worker.end();
 
-  expect(recordOf(store, worker.runId)).toBeUndefined();
-  expect(store.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message", "wake"]);
+  // Counted from when it was SENT: the ending is recorded, and the result
+  // itself still waits in the mailbox for the host's next idle moment.
+  expect(recordOf(store, worker.runId)).toBeDefined();
+  expect(store.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
   store.completeTurn("session_host", host.runId, host.token, { text: "done" });
   const woken = store.turns("session_host").filter((turn) => turn.state === "queued");
   expect(woken).toHaveLength(1);
-  expect(woken[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
+  expect(woken[0]!.notification!.kind).toBe("peer_message");
 });
 
 test("the merge spends a delivery; a fresh errand joining the queued turn does not", () => {
@@ -623,7 +625,9 @@ test("the merge spends a delivery; a fresh errand joining the queued turn does n
   const rows = notifications(store).filter((turn) => turn.agentDelivery !== "passive");
   expect(rows).toHaveLength(1);
   expect(rows[0]!.notification!.deliveries).toBe(MAX_DELIVERIES);
-  expect(rows[0]!.notification!.entries).toHaveLength(4);
+  // Result, completion, second result — the second run's ending is recorded,
+  // not added: its result already said it.
+  expect(rows[0]!.notification!.entries).toHaveLength(3);
   expect(store.pendingNotifications("session_host")).toHaveLength(0);
 });
 
@@ -767,4 +771,63 @@ test("a report and a result from one run, before the host has started: one deliv
   // And the clean ending folds into the same waiting turn (#590).
   worker.end();
   expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(1);
+});
+
+/**
+ * A RESULT COUNTS FROM WHEN IT IS SENT — the audit's gaps in #919.
+ *
+ * Keyed on delivery state, the rule missed a result held for a cohort, one in
+ * the mailbox, and a later turn on the same errand; each cost the coordinator
+ * a turn just to acknowledge.
+ */
+
+test("a result held for a cohort also silences a plain subscription's completion", () => {
+  const { store } = setup();
+  store.subscribe("session_host", { targetSessionId: "session_a" });
+  store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  const worker = reports(store);
+  expect(worker.sent.agentDelivery).toBe("passive");
+
+  worker.end();
+
+  expect(recordOf(store, worker.runId)).toBeDefined();
+  expect(notifications(store).filter((turn) => turn.agentDelivery !== "passive")).toHaveLength(0);
+});
+
+test("after its result, a later turn on the same errand does not wake the host", () => {
+  const { store } = setup();
+  store.subscribe("session_host", { targetSessionId: "session_a", once: false });
+  // The host's errand, then the result, read.
+  const host = busy(store);
+  store.submitAgentTurn("session_a", { runId: "run_task", input: "do it", intent: "task" }, { sessionId: "session_host", runId: host.runId, claimToken: host.token });
+  store.completeTurn("session_host", host.runId, host.token, { text: "dispatched" });
+  const child = store.claimTurn("session_a", "worker_child")!;
+  store.markRunning("session_a", child.runId, child.claim!.token);
+  store.submitAgentTurn("session_host", { runId: "run_result", input: "PR green.", intent: "result" }, { sessionId: "session_a", runId: child.runId, claimToken: child.claim!.token });
+  store.completeTurn("session_a", child.runId, child.claim!.token, { text: "Result sent." });
+  const before = notifications(store).filter((turn) => turn.agentDelivery !== "passive").length;
+
+  // A background wake on the worker, same errand, ends with words.
+  runTurn(store, "session_a", "run_later");
+
+  expect(notifications(store).filter((turn) => turn.agentDelivery !== "passive")).toHaveLength(before);
+  expect(recordOf(store, "run_later")).toBeDefined();
+});
+
+test("a new errand resets it: the next run's completion without a result wakes as before", () => {
+  const { store } = setup();
+  store.subscribe("session_host", { targetSessionId: "session_a", once: false });
+  const first = reports(store, { runId: "run_one" });
+  first.end();
+  // The host hands the worker something new.
+  const host = store.claimTurn("session_host", "worker_host")!;
+  store.markRunning("session_host", host.runId, host.claim!.token);
+  store.submitAgentTurn("session_a", { runId: "run_task_two", input: "next", intent: "task" }, { sessionId: "session_host", runId: host.runId, claimToken: host.claim!.token });
+  store.completeTurn("session_host", host.runId, host.claim!.token, { text: "sent" });
+  const child = store.claimTurn("session_a", "worker_child")!;
+  store.markRunning("session_a", child.runId, child.claim!.token);
+  store.completeTurn("session_a", child.runId, child.claim!.token, { text: "Stopped halfway." });
+
+  expect(recordOf(store, child.runId)).toBeUndefined();
+  expect(store.turns("session_host").some((turn) => turn.state === "queued" && turn.notification?.runId === child.runId)).toBe(true);
 });
