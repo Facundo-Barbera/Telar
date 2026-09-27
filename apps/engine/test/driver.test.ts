@@ -2776,7 +2776,7 @@ test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   expect(seen[2]).toMatchObject({ model: undefined, env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
 });
 
-test("a login's auto-compact percentage is made exact for the session's window (#587)", async () => {
+test("a login's per-class auto-compact limit follows the session's window (#587)", async () => {
   const seen: (Record<string, unknown> | undefined)[] = [];
   const driver = createClaudeDriver(async () => ({
     async *query(input) {
@@ -2784,18 +2784,20 @@ test("a login's auto-compact percentage is made exact for the session's window (
       yield { type: "result", subtype: "success" };
     },
   }));
-  const env = { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "80" };
-  await run(driver, { model: "claude-opus-5-5", env }).result;
-  await run(driver, { model: "claude-opus-5-5[1m]", env }).result;
-  await run(driver, { model: "claude-mystery-9", env }).result;
-  // 160 000 of 200 000 and 800 000 of 1 000 000, through the CLI's own
-  // `effective = window − 20 000`.
-  expect(seen[0]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "200000", CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "88.888889" });
-  expect(seen[1]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "1000000", CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "81.632654" });
-  // A window it cannot name: the login's percentage as it is, and no window
-  // pinned over whatever the engine's own environment holds.
-  expect(seen[2]).toMatchObject({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "80" });
-  expect(seen[2]?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+  const autoCompact = { mode: "limits", standard: 150_000, long: 400_000 } as const;
+  // A stale row from before #587 in the login's own env: the setting wins.
+  const env = { DISABLE_AUTO_COMPACT: "1" };
+  await run(driver, { model: "claude-opus-5-5", env, autoCompact }).result;
+  await run(driver, { model: "claude-opus-5-5[1m]", env, autoCompact }).result;
+  await run(driver, { model: "claude-mystery-9", autoCompact }).result;
+  await run(driver, { model: "claude-opus-5-5", autoCompact: { mode: "never" } }).result;
+  // N + 33 000 declared, and a percentage that lands both arms of the CLI's min on N.
+  expect(seen[0]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "183000", CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "92.02454" });
+  expect(seen[0]).not.toHaveProperty("DISABLE_AUTO_COMPACT");
+  expect(seen[1]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "433000" });
+  // A window it cannot name takes the standard limit, the earlier one.
+  expect(seen[2]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "183000" });
+  expect(seen[3]).toMatchObject({ DISABLE_AUTO_COMPACT: "1" });
 });
 
 test("MCP tool schemas are deferred behind tool search unless the environment says otherwise", async () => {

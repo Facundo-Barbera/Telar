@@ -23,7 +23,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { ProviderInstance, ProviderInstanceEnvVar } from "@telar/engine-client";
+import type { AutoCompact, ProviderInstance, ProviderInstanceEnvVar } from "@telar/engine-client";
 import { compactionEdit, ProviderInstanceCard, type InheritanceNotice, type InstancePatch } from "./provider-instance-card";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
@@ -35,8 +35,8 @@ afterAll(async () => {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
-function instanceWith(driver: ProviderInstance["driver"], env: ProviderInstanceEnvVar[] = []): ProviderInstance {
-  return { id: driver, driver, enabled: true, env, createdAt: 1, updatedAt: 1 };
+function instanceWith(driver: ProviderInstance["driver"], env: ProviderInstanceEnvVar[] = [], autoCompact?: AutoCompact): ProviderInstance {
+  return { id: driver, driver, enabled: true, env, createdAt: 1, updatedAt: 1, ...(autoCompact ? { autoCompact } : {}) };
 }
 
 async function mount(instance: ProviderInstance, inheritance?: InheritanceNotice) {
@@ -66,7 +66,8 @@ async function mount(instance: ProviderInstance, inheritance?: InheritanceNotice
         | undefined,
     radio: (label: string) =>
       [...host.querySelectorAll("[role=radio]")].find((button) => button.textContent?.trim() === label) as HTMLButtonElement | undefined,
-    field: () => host.querySelector("[aria-label='Compact at what percentage of the context window']") as HTMLInputElement | null,
+    field: (label = "200k models") => host.querySelector(`[aria-label='Compact ${label} after how many tokens']`) as HTMLInputElement | null,
+    info: () => host.querySelector("[aria-label='More about auto-compaction']")?.getAttribute("data-info") ?? "",
     unmount: () => {
       act(() => root.unmount());
       host.remove();
@@ -82,73 +83,50 @@ async function press(button: HTMLElement) {
 }
 
 describe("the compaction control", () => {
-  test("a Claude login has it and a Codex login does not", async () => {
-    const claude = await mount(instanceWith("claude"));
-    expect(claude.radio("Never compact")).toBeTruthy();
-    expect(claude.host.textContent).toContain("Auto-compaction");
-    claude.unmount();
+  const LIMITS: AutoCompact = { mode: "limits", standard: 120_000, long: 500_000 };
 
+  test("every provider has it, each with what it cannot do behind the ⓘ", async () => {
+    for (const driver of ["claude", "codex", "opencode"] as const) {
+      const view = await mount(instanceWith(driver));
+      expect(view.radio("Never compact")).toBeTruthy();
+      expect(view.info()).not.toBe("");
+      view.unmount();
+    }
     const codex = await mount(instanceWith("codex"));
-    expect(codex.radio("Never compact")).toBeUndefined();
-    expect(codex.host.textContent).not.toContain("Auto-compaction");
-    // The variables list is still there — this removes a control, not a card.
-    expect(codex.host.textContent).toContain("Environment variables");
+    expect(codex.info()).toContain("no switch that turns auto-compaction off");
     codex.unmount();
   });
 
-  test("a login nobody has configured reads as Default", async () => {
+  test("a login with no setting reads as Default", async () => {
     const view = await mount(instanceWith("claude"));
     expect(view.radio("Default")!.getAttribute("aria-checked")).toBe("true");
     expect(view.field()).toBeNull();
+    expect(view.host.textContent).toContain("The provider decides");
     view.unmount();
   });
 
-  test("a stored percentage is what the control reads back", async () => {
-    const view = await mount(instanceWith("claude", [{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "75", sensitive: false }]));
-    expect(view.radio("Compact at…")!.getAttribute("aria-checked")).toBe("true");
-    expect(view.field()!.value).toBe("75");
-    expect(view.host.textContent).toContain("of its model's context window");
+  test("the stored limits show one row per window class", async () => {
+    const view = await mount(instanceWith("codex", [], LIMITS));
+    expect(view.radio("Compact after…")!.getAttribute("aria-checked")).toBe("true");
+    expect(view.field("200k models")!.value).toBe("120,000");
+    expect(view.field("1M models")!.value).toBe("500,000");
+    expect(view.host.textContent).toContain("the limit for its model's context window");
     view.unmount();
   });
 
-  test("a window row set by hand claims no state", async () => {
-    const view = await mount(instanceWith("claude", [{ name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW", value: "200000", sensitive: false }]));
-    expect(view.field()).toBeNull();
-    expect(view.host.textContent).toContain("Set by hand");
-    for (const label of ["Default", "Compact at…", "Never compact"]) {
-      expect(view.radio(label)!.getAttribute("aria-checked")).toBe("false");
-    }
-    view.unmount();
-  });
-
-  test("Compact at… starts at 80%", async () => {
+  test("Compact after… starts at 150,000 and 400,000; Never and Default save their states", async () => {
     const view = await mount(instanceWith("claude"));
-    await press(view.radio("Compact at…")!);
-    expect(view.patches.at(-1)!.env).toEqual([{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "80", sensitive: false }]);
-    view.unmount();
-  });
-
-  test("Never compact writes the one variable, and Default writes none at all", async () => {
-    const view = await mount(instanceWith("claude", [{ name: "ANTHROPIC_BASE_URL", value: "https://example.test", sensitive: false }]));
+    await press(view.radio("Compact after…")!);
+    expect(view.patches.at(-1)).toEqual({ autoCompact: { mode: "limits", standard: 150_000, long: 400_000 } });
     await press(view.radio("Never compact")!);
-    expect(view.patches.at(-1)!.env).toEqual([
-      { name: "ANTHROPIC_BASE_URL", value: "https://example.test", sensitive: false },
-      { name: "DISABLE_AUTO_COMPACT", value: "1", sensitive: false },
-    ]);
+    expect(view.patches.at(-1)).toEqual({ autoCompact: { mode: "never" } });
     view.unmount();
 
-    const configured = await mount(
-      instanceWith("claude", [
-        { name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "80", sensitive: false },
-      ]),
-    );
+    const configured = await mount(instanceWith("claude", [], LIMITS));
     await press(configured.radio("Default")!);
-    // THE KEYS GO, rather than being set to "". An empty string is a value the
-    // CLI reads.
-    expect(configured.patches.at(-1)!.env).toEqual([]);
+    expect(configured.patches.at(-1)).toEqual({ autoCompact: null });
     configured.unmount();
   });
-
 });
 
 /**
@@ -217,19 +195,17 @@ describe("the inheritance notice", () => {
  * NOT covered either way is the wiring from the field to this function — one
  * call site, and the kind of thing a driven test should now take.
  */
-describe("what a typed percentage does", () => {
-  const configured: ProviderInstanceEnvVar[] = [{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "80", sensitive: false }];
+describe("what a typed limit does", () => {
+  const current = { mode: "limits", standard: 150_000, long: 400_000 } as const;
 
-  test("a whole number from 1 to 100 becomes the percentage row, % sign and all", () => {
-    expect(compactionEdit(configured, "70 %")).toEqual({
-      env: [{ name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", value: "70", sensitive: false }],
-    });
-    expect(compactionEdit(configured, "100")).toHaveProperty("env");
+  test("a whole number of tokens replaces that class's limit, separators and all", () => {
+    expect(compactionEdit(current, "long", "600,000")).toEqual({ autoCompact: { mode: "limits", standard: 150_000, long: 600_000 } });
+    expect(compactionEdit(current, "standard", "1000000")).toHaveProperty("autoCompact");
   });
 
   test("anything else is refused rather than clamped", () => {
-    for (const typed of ["0", "101", "", "lots", "75.5"]) {
-      expect(compactionEdit(configured, typed)).toEqual({ refused: "A whole number from 1 to 100." });
+    for (const typed of ["0", "1000001", "", "lots", "1.5"]) {
+      expect(compactionEdit(current, "standard", typed)).toEqual({ refused: "A whole number of tokens from 1 to 1,000,000." });
     }
   });
 });

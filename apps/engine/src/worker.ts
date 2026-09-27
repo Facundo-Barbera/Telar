@@ -1735,6 +1735,7 @@ export class EngineWorker {
         // rather than the driver's default, or the settings pane would be
         // describing an executable no turn ever runs.
         ...(claim.providerInstance?.binaryPath ? { binaryPath: claim.providerInstance.binaryPath } : {}),
+        ...(claim.providerInstance?.autoCompact ? { autoCompact: claim.providerInstance.autoCompact } : {}),
         // WHICH LOGIN, by id. Not spent on spawning anything — it is what lets a
         // task row name whose account ran it, which the contract requires of any
         // row that names a model at all.

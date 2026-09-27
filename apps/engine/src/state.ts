@@ -183,6 +183,9 @@ import {
   type WorktreeReclaimResult,
   seedSessionTitle,
   turnHasContent,
+  AUTO_COMPACT_MAX_TOKENS,
+  AutoCompact as AutoCompactSchema,
+  type AutoCompact,
   CLAUDE_COMPACTION_ENV_NAMES,
   migrateClaudeCompaction,
 } from "@telar/engine-client";
@@ -446,10 +449,6 @@ const TURN_FAILURE_CODES = new Set<TurnFailureCode>(WorkerTurnFailureCodeSchema.
  * turn transition.
  */
 const MAX_QUEUED_TURNS = 16;
-
-/** The window a pre-#587 token threshold is converted against. See
- *  `migrateClaudeCompactionToPercent`. */
-const CLAUDE_COMPACTION_MIGRATION_WINDOW = 200_000;
 
 /**
  * How old the shell's `planned-restart.json` may be and still mean "this
@@ -4285,6 +4284,9 @@ export class EngineStore {
     /** A whole percentage of the model's window, or `null` to fall back to the
      *  cockpit's default. Never a token count — see the contract's field. */
     contextNoticePercent?: number | null;
+    /** When this login's sessions compact; `null` returns it to the provider's
+     *  own default. */
+    autoCompact?: unknown;
     enabled?: boolean;
     configDir?: string | null;
     binaryPath?: string | null;
@@ -4343,6 +4345,7 @@ export class EngineStore {
         }
         return value;
       }),
+      ...this.autoCompactPatch(input.autoCompact, existing?.autoCompact),
       ...optionalPatch("configDir", input.configDir, existing?.configDir, (value) => {
         const dir = value.trim();
         if (!dir.startsWith("/") && !dir.startsWith("~")) {
@@ -4497,6 +4500,18 @@ export class EngineStore {
     const found = this.readProviderInstances().find((instance) => instance.id === id);
     if (!found) throw new EngineStateError("not_found", "provider instance does not exist");
     return found;
+  }
+
+  /** The same clear / keep / set rule, for the compaction setting. A limit
+   *  outside what the schema allows is refused rather than moved. */
+  private autoCompactPatch(submitted: unknown, existing: AutoCompact | undefined): { autoCompact?: AutoCompact } {
+    if (submitted === null) return {};
+    if (submitted === undefined) return existing ? { autoCompact: existing } : {};
+    const parsed = AutoCompactSchema.safeParse(submitted);
+    if (!parsed.success) {
+      throw new EngineStateError("invalid_request", `auto-compaction limits must be whole token counts from 1 to ${AUTO_COMPACT_MAX_TOKENS}`);
+    }
+    return { autoCompact: parsed.data };
   }
 
   /** On disk, seeded on first read so a fresh install has the two built-in
@@ -4930,7 +4945,7 @@ export class EngineStore {
     }
     // On both backends, and before anything can claim a turn — see the method.
     this.claudeLongWindowMigration = this.migrateBareClaudeIds();
-    this.claudeCompactionMigration = this.migrateClaudeCompactionToPercent();
+    this.claudeCompactionMigration = this.migrateClaudeCompactionToLimits();
   }
 
   /** How many logins the one-time #587 rewrite changed on this open, or nothing
@@ -4938,32 +4953,31 @@ export class EngineStore {
   readonly claudeCompactionMigration?: number;
 
   /**
-   * TOKEN AUTO-COMPACT THRESHOLDS BECOME PERCENTAGES OF THE WINDOW — once,
-   * marked (#587).
+   * CLAUDE'S COMPACTION ROWS BECOME THE PER-CLASS SETTING — once, marked (#587).
    *
-   * A Claude login configured before #587 holds its threshold as a window and
-   * percentage pair that says a token count. The count is converted against the
-   * 200k window — a bare id's window since #986 — rounded down and clamped to
-   * 1–100%, so a 200k session compacts at or before where it did.
+   * Before #587 the Claude login's compaction was a token count written as
+   * environment rows. `migrateClaudeCompaction` reads them back as the setting
+   * they meant — T becomes the 200k-class limit, 1M takes the default — and the
+   * rows leave the list, so the setting and a stale row cannot disagree.
    *
    * The raw registry, not `readProviderInstances`, which seeds one on first
    * read. A login whose compaction rows are sensitive keeps them: their values
    * live in the secrets file and are not this pass's to read.
    */
-  private migrateClaudeCompactionToPercent(): number | undefined {
+  private migrateClaudeCompactionToLimits(): number | undefined {
     if (this.readDocument(this.paths.claudeCompactionMigration) !== undefined) return undefined;
-    return this.executeCommand("migrateClaudeCompactionToPercent", () => {
+    return this.executeCommand("migrateClaudeCompactionToLimits", () => {
       let logins = 0;
       try {
         const stored = this.readDocument(this.paths.providerInstances) as { providerInstances?: Record<string, unknown>[] } | undefined;
         const next = (stored?.providerInstances ?? []).map((instance) => {
           const env = instance.env as ProviderInstanceEnvVar[] | undefined;
-          if (instance.driver !== "claude" || !Array.isArray(env)) return instance;
+          if (instance.driver !== "claude" || !Array.isArray(env) || instance.autoCompact !== undefined) return instance;
           if (env.some((variable) => CLAUDE_COMPACTION_ENV_NAMES.includes(variable.name) && variable.sensitive)) return instance;
-          const migrated = migrateClaudeCompaction(env, CLAUDE_COMPACTION_MIGRATION_WINDOW);
+          const migrated = migrateClaudeCompaction(env);
           if (!migrated) return instance;
           logins += 1;
-          return { ...instance, env: migrated };
+          return { ...instance, env: migrated.env, ...(migrated.autoCompact ? { autoCompact: migrated.autoCompact } : {}) };
         });
         if (logins > 0) this.writeDocument(this.paths.providerInstances, { ...stored, providerInstances: next });
       } catch {

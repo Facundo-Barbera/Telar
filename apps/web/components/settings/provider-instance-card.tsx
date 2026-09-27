@@ -36,12 +36,12 @@
  */
 
 import { useState } from "react";
-import { ArrowUpCircleIcon, ChevronDownIcon, DownloadIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ArrowUpCircleIcon, ChevronDownIcon, DownloadIcon, InfoIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
-  applyClaudeCompaction,
-  claudeCompactionOf,
-  CLAUDE_COMPACTION_DEFAULT_PERCENT,
-  type ClaudeCompaction,
+  AUTO_COMPACT_DEFAULTS,
+  AUTO_COMPACT_MAX_TOKENS,
+  type AutoCompact,
   type ProviderInstance,
   type ProviderInstanceEnvVar,
   type ProviderProbe,
@@ -67,6 +67,7 @@ export type InstancePatch = {
   displayName?: string | null;
   accentColor?: string | null;
   contextNoticePercent?: number | null;
+  autoCompact?: AutoCompact | null;
   configDir?: string | null;
   binaryPath?: string | null;
   enabled?: boolean;
@@ -271,71 +272,96 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
   );
 }
 
+type CompactionMode = "default" | AutoCompact["mode"];
+
 /** The three answers, in the order a reader considers them: leave it alone,
  *  move it, turn it off. */
-const COMPACTION_MODES: { value: ClaudeCompaction["mode"]; label: string }[] = [
+const COMPACTION_MODES: { value: CompactionMode; label: string }[] = [
   { value: "default", label: "Default" },
-  { value: "percent", label: "Compact at…" },
+  { value: "limits", label: "Compact after…" },
   { value: "never", label: "Never compact" },
 ];
 
+const COMPACTION_CLASSES = [
+  { key: "standard", label: "200k models" },
+  { key: "long", label: "1M models" },
+] as const;
+
+/** What each provider does with the setting that a reader could not guess. */
+const COMPACTION_INFO: Record<ProviderInstance["driver"], string> = {
+  claude: "A limit past a model's own ceiling — its window less 33,000 tokens — compacts at that ceiling instead.",
+  codex: "Codex has no switch that turns auto-compaction off, so Never leaves Codex's own behaviour. Its long window is 872k.",
+  opencode:
+    "Applies to sessions that name their model, since the provider's default model has no window to read. A limit only ever brings compaction earlier.",
+};
+
 /**
- * WHAT A TYPED PERCENTAGE DOES TO THIS LOGIN'S VARIABLES — exported so the
- * refusals at its edges are pinned by a test rather than typed into a field.
+ * WHAT A TYPED LIMIT DOES TO THE SETTING — exported so the refusals at its
+ * edges are pinned by a test rather than typed into a field.
  */
 export function compactionEdit(
-  env: readonly ProviderInstanceEnvVar[],
+  current: Extract<AutoCompact, { mode: "limits" }>,
+  which: "standard" | "long",
   typed: string,
-): { env: ProviderInstanceEnvVar[] } | { refused: string } {
-  const trimmed = typed.replace(/[%\s]/g, "");
-  const next = /^\d+$/.test(trimmed) ? applyClaudeCompaction(env, { mode: "percent", percent: Number(trimmed) }) : null;
-  return next ? { env: next } : { refused: "A whole number from 1 to 100." };
+): { autoCompact: AutoCompact } | { refused: string } {
+  // Separators go in on the way out, so they come back off on the way in.
+  const digits = typed.replace(/[,\s_]/g, "");
+  const wanted = /^\d+$/.test(digits) ? Number(digits) : Number.NaN;
+  if (!Number.isSafeInteger(wanted) || wanted < 1 || wanted > AUTO_COMPACT_MAX_TOKENS) {
+    return { refused: `A whole number of tokens from 1 to ${AUTO_COMPACT_MAX_TOKENS.toLocaleString("en-US")}.` };
+  }
+  return { autoCompact: { ...current, [which]: wanted } };
 }
 
 /**
- * WHEN THIS LOGIN'S SESSIONS COMPACT THEMSELVES — a view of the compaction
- * variables the list below already shows, read from and written to
- * `instance.env`.
- *
- * WHAT IS TYPED IS A PERCENTAGE OF THE MODEL'S WINDOW (#587), so the same
- * setting fits a 200k session and a 1M one; the driver makes it exact for each
- * session's window at spawn (`claudeCompactionEnvFor`).
- *
- * CLAUDE ONLY — see the call site. Codex compacts on its own terms and reads
- * none of these.
+ * WHEN THIS LOGIN'S SESSIONS COMPACT THEMSELVES (#587): a token count per
+ * window class, which each driver writes into its provider's own knob for the
+ * window the session's model runs.
  */
-function CompactionField({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange: (next: ProviderInstanceEnvVar[]) => void }) {
-  const stored = claudeCompactionOf(env);
+function CompactionField({
+  driver,
+  value,
+  onChange,
+}: {
+  driver: ProviderInstance["driver"];
+  value: AutoCompact | undefined;
+  onChange: (next: AutoCompact | null) => void;
+}) {
   const [refused, setRefused] = useState<string | null>(null);
-  const percent = stored?.mode === "percent" ? stored.percent : undefined;
+  const mode: CompactionMode = value?.mode ?? "default";
 
-  const select = (mode: ClaudeCompaction["mode"]): void => {
-    const next =
-      mode === "percent"
-        ? applyClaudeCompaction(env, { mode, percent: percent ?? CLAUDE_COMPACTION_DEFAULT_PERCENT })
-        : applyClaudeCompaction(env, { mode });
-    if (next) {
-      setRefused(null);
-      onChange(next);
-    }
-  };
-
-  const commit = (typed: string): void => {
-    const edit = compactionEdit(env, typed);
-    if ("refused" in edit) {
-      setRefused(edit.refused);
-      return;
-    }
+  const select = (next: CompactionMode): void => {
     setRefused(null);
-    onChange(edit.env);
+    if (next === "default") onChange(null);
+    else if (next === "never") onChange({ mode: "never" });
+    else onChange(value?.mode === "limits" ? value : { mode: "limits", ...AUTO_COMPACT_DEFAULTS });
   };
 
   return (
     <div>
-      <span className="text-xs font-medium text-foreground">Auto-compaction</span>
+      <span className="flex items-center gap-1.5">
+        <span className="text-xs font-medium text-foreground">Auto-compaction</span>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label="More about auto-compaction"
+                data-info={COMPACTION_INFO[driver]}
+                className="flex shrink-0 items-center text-muted-foreground/60 transition-colors hover:text-foreground"
+              >
+                <InfoIcon className="size-3.5" />
+              </button>
+            }
+          />
+          <TooltipContent side="top" className="max-w-72 text-xs leading-snug">
+            {COMPACTION_INFO[driver]}
+          </TooltipContent>
+        </Tooltip>
+      </span>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Auto-compaction">
         {COMPACTION_MODES.map((option) => {
-          const on = stored?.mode === option.value;
+          const on = mode === option.value;
           return (
             <Button
               key={option.value}
@@ -351,34 +377,44 @@ function CompactionField({ env, onChange }: { env: ProviderInstanceEnvVar[]; onC
             </Button>
           );
         })}
-        {stored?.mode === "percent" && (
-          <span className="flex items-center gap-1.5">
-            <BlurInput
-              // Re-keyed on the STORED number, so an accepted edit reseeds the
-              // draft from what was really kept. A refused one leaves the typed
-              // text alone with the reason under it — Escape is the way back.
-              key={percent}
-              value={String(percent ?? CLAUDE_COMPACTION_DEFAULT_PERCENT)}
-              onCommit={commit}
-              aria-label="Compact at what percentage of the context window"
-              inputMode="numeric"
-              className="h-7 w-14 text-right font-mono text-xs"
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <span className="text-2xs text-muted-foreground">% of the context window</span>
-          </span>
-        )}
       </div>
+      {value?.mode === "limits" && (
+        <div className="mt-1.5 flex flex-col gap-1">
+          {COMPACTION_CLASSES.map((entry) => (
+            <label key={entry.key} className="flex items-center gap-1.5">
+              <span className="w-20 text-2xs text-muted-foreground">{entry.label}</span>
+              <BlurInput
+                // Re-keyed on the STORED number, so an accepted edit reseeds the
+                // draft from what was really kept.
+                key={value[entry.key]}
+                value={value[entry.key].toLocaleString("en-US")}
+                onCommit={(typed) => {
+                  const edit = compactionEdit(value, entry.key, typed);
+                  if ("refused" in edit) {
+                    setRefused(edit.refused);
+                    return;
+                  }
+                  setRefused(null);
+                  onChange(edit.autoCompact);
+                }}
+                aria-label={`Compact ${entry.label} after how many tokens`}
+                inputMode="numeric"
+                className="h-7 w-28 text-right font-mono text-xs"
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <span className="text-2xs text-muted-foreground">tokens</span>
+            </label>
+          ))}
+        </div>
+      )}
       {refused && <p className="mt-1 text-2xs leading-snug text-destructive">{refused}</p>}
       <p className="mt-1 text-2xs leading-snug text-muted-foreground">
-        {stored === undefined
-          ? "Set by hand in the variables below. Picking a state above replaces it."
-          : stored.mode === "default"
-            ? "The provider decides when a session compacts."
-            : stored.mode === "never"
-              ? "A session grows until the model refuses the prompt; compacting by hand still works."
-              : "A session compacts once its conversation fills this share of its model's context window."}
+        {mode === "default"
+          ? "The provider decides when a session compacts."
+          : mode === "never"
+            ? "A session grows until the model refuses the prompt; compacting by hand still works."
+            : "A session compacts once its conversation reaches the limit for its model's context window."}
       </p>
     </div>
   );
@@ -787,14 +823,7 @@ export function ProviderInstanceCard({
               </span>
             </label>
 
-            {/* CLAUDE ONLY, because only Claude Code reads these. Codex has its
-                own compaction and would be given a control that does nothing. */}
-            {instance.driver === "claude" && (
-              // Keyed like the env editor below, and for the same reason: both
-              // are views of `instance.env`, and a save has to reseed them from
-              // what the engine actually kept.
-              <CompactionField key={instance.updatedAt} env={instance.env} onChange={(env) => onPatch({ env })} />
-            )}
+            <CompactionField driver={instance.driver} value={instance.autoCompact} onChange={(autoCompact) => onPatch({ autoCompact })} />
 
             <div>
               <span className="text-xs font-medium text-foreground">Environment variables</span>

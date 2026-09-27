@@ -39,8 +39,8 @@ export type EngineStatePaths = {
   /** The one-time rewrite of bare 1M-default Claude ids to `[1m]` — its
    *  presence is the marker that it ran. See `migrateBareClaudeIds`. */
   claudeLongWindowMigration: string;
-  /** The one-time rewrite of token auto-compact thresholds to percentages
-   *  (#587). See `migrateClaudeCompactionToPercent`. */
+  /** The one-time move of Claude's compaction rows to the per-class setting
+   *  (#587). See `migrateClaudeCompactionToLimits`. */
   claudeCompactionMigration: string;
   sessions: string;
   /** User-configured MCP servers. ENVIRONMENT-SCOPED, beside projects.json

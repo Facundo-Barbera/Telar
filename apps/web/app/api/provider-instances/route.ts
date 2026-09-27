@@ -1,4 +1,5 @@
 import { requestObject, requiredString, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import type { AutoCompact } from "@telar/engine-client";
 
 /**
  * The configured logins — Telar's account registry.
@@ -41,6 +42,7 @@ export async function PUT(request: Request) {
       ...(body.displayName === undefined ? {} : { displayName: body.displayName as string | null }),
       ...(body.accentColor === undefined ? {} : { accentColor: body.accentColor as string | null }),
       ...(body.contextNoticePercent === undefined ? {} : { contextNoticePercent: body.contextNoticePercent as number | null }),
+      ...(body.autoCompact === undefined ? {} : { autoCompact: body.autoCompact as AutoCompact | null }),
       ...(body.configDir === undefined ? {} : { configDir: body.configDir as string | null }),
       ...(body.binaryPath === undefined ? {} : { binaryPath: body.binaryPath as string | null }),
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),

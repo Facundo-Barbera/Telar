@@ -1064,190 +1064,141 @@ export const ProviderInstanceEnvVar = z.object({
 export type ProviderInstanceEnvVar = z.infer<typeof ProviderInstanceEnvVar>;
 
 /**
- * WHEN A CLAUDE CODE SESSION COMPACTS ITSELF — three states over the
- * environment a login already carries.
+ * WHEN A SESSION COMPACTS ITSELF — a token count per context-window class, on
+ * the provider login (#587).
  *
- * THERE IS ONE MECHANISM, WHICH IS THE ENVIRONMENT. Claude Code's own dials are
- * these three variables, the SDK forwards them to the child, and a person could
- * always have typed them into the Environment variables list by hand. So the
- * control does not store a setting of its own beside them: it WRITES those rows
- * and READS them back.
+ * ONE NUMBER PER CLASS, because a single count means different things on a
+ * 200k session and a 1M one, and a percentage of the window is not how anyone
+ * thinks about "compact before it gets slow". A session's class comes from the
+ * window its model runs, resolved by each driver at spawn; the driver then
+ * writes the limit into its provider's own knob.
  *
- * WHAT THE CLI ACTUALLY DOES WITH THEM, read out of the installed binary
- * (2.1.273 — the bundle is plain JS inside the executable) rather than inferred
- * from the names:
+ * ABSENT MEANS DEFAULT: the provider decides, and nothing is written.
+ */
+export const AUTO_COMPACT_MAX_TOKENS = 1_000_000;
+const AutoCompactTokens = z.number().int().min(1).max(AUTO_COMPACT_MAX_TOKENS);
+export const AutoCompact = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("limits"), standard: AutoCompactTokens, long: AutoCompactTokens }),
+  z.object({ mode: z.literal("never") }),
+]);
+export type AutoCompact = z.infer<typeof AutoCompact>;
+
+/** A model's window class: `standard` is the ~200k–400k family, `long` 1M. */
+export type ContextClass = "standard" | "long";
+
+export function contextClassOf(window: number): ContextClass {
+  return window >= 500_000 ? "long" : "standard";
+}
+
+/**
+ * Where "Compact after…" starts, and what a migrated login's 1M limit becomes.
  *
- *   · `DISABLE_AUTO_COMPACT` is a boolean over `1`/`true`/`yes`/`on`, trimmed
- *     and case-insensitive. Anything else — including `0` and `false` — is not
- *     "off", it is INERT, and the CLI carries on as if the variable were absent.
- *   · `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is a TOKEN COUNT. It is raised to
- *     100,000, capped at 1,000,000, and then clamped down to the model's own
- *     window.
- *   · `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is a percentage on 0–100 (exclusive of
- *     0, inclusive of 100), read with `parseFloat`. It can only LOWER the
- *     threshold: `min(floor(effective × pct / 100), effective − 13,000)`.
+ * 150k on a 200k window is the old control's seed: late enough to use most of
+ * the window, early enough to leave the summary room. 400k on 1M is what #587
+ * asked for — well short of the ~967k Claude Code compacts at on its own, which
+ * was the complaint, and not T scaled up, because quality on a long context
+ * falls off well before the window does.
+ */
+export const AUTO_COMPACT_DEFAULTS = { standard: 150_000, long: 400_000 } as const;
+
+/** The limit for a session whose window is `window`, or the standard one when
+ *  the window is unknown — the earlier of the two, never the later. */
+export function autoCompactLimitFor(limits: { standard: number; long: number }, window: number | undefined): number {
+  return window !== undefined && contextClassOf(window) === "long" ? limits.long : limits.standard;
+}
+
+/**
+ * CLAUDE CODE'S DIALS, read out of the installed binary (2.1.273):
+ *
+ *   · `DISABLE_AUTO_COMPACT` is a boolean over `1`/`true`/`yes`/`on`.
+ *   · `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is a TOKEN COUNT: raised to 100,000,
+ *     capped at 1,000,000, then clamped down to the model's own window.
+ *   · `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is a percentage on (0, 100] that can
+ *     only LOWER the threshold: `min(floor(effective × pct / 100), effective − 13,000)`,
  *
  * where `effective = window − min(the model's max output tokens, 20,000)`.
+ * Watched doing it: a two-turn session compacted under a percentage that put
+ * the threshold at 10,000, did not with the same window and no percentage, and
+ * did not once `DISABLE_AUTO_COMPACT=1` was added.
  *
- * WHAT THE LOGIN STORES IS A PERCENTAGE OF THE MODEL'S WINDOW (#587), so one
- * setting means the same on a 200k session and a 1M one. It is stored as the
- * percentage variable ALONE, and the Claude driver — which knows the session's
- * model and so its window — turns it into the exact pair for that window at
- * spawn (`claudeCompactionEnvFor`). The CLI's own reading of a bare percentage
- * is of `effective`, 20,000 short of the window; the pair removes that gap. A
- * session whose window the driver cannot name gets the bare percentage, which
- * compacts slightly EARLIER than asked and never later.
- *
- * A login configured before #587 holds a token count as a window/percentage
- * pair. The engine rewrites it once into a percentage (`migrateClaudeCompaction`).
- *
- * THE TWO CONSTANTS BELOW ARE THE CLI'S, and they are the one thing here that
- * can rot: a moved reserve lands a threshold off by the difference, not by a
- * factor.
+ * THE TWO RESERVES BELOW ARE THE CLI'S, and are the one thing here that can
+ * rot: a moved reserve lands a threshold off by the difference, not a factor.
  */
 export const CLAUDE_COMPACTION_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 export const CLAUDE_COMPACTION_PERCENT_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
 export const CLAUDE_COMPACTION_DISABLE_ENV = "DISABLE_AUTO_COMPACT";
-
-/** Every variable the control owns. A row named here is the control's to write;
- *  every other row in the list is untouched by it. */
 export const CLAUDE_COMPACTION_ENV_NAMES: readonly string[] = [
   CLAUDE_COMPACTION_WINDOW_ENV,
   CLAUDE_COMPACTION_PERCENT_ENV,
   CLAUDE_COMPACTION_DISABLE_ENV,
 ];
 
-/**
- * Where the field starts when somebody picks "Compact at…". 80% is 160k on a
- * 200k window and 800k on 1M: a little earlier than Claude Code's own ~83% on
- * 200k, and far earlier than its ~97% on 1M, which is the late compaction #587
- * was filed about. It leaves room for the summary on both.
- */
-export const CLAUDE_COMPACTION_DEFAULT_PERCENT = 80;
-
-/** What the CLI holds back from the window for the model's own reply. */
 const OUTPUT_RESERVE = 20_000;
-/** What it holds back again for the summary compaction is about to write. */
 const SUMMARY_BUFFER = 13_000;
-/** The CLI's own bounds on a declared window. */
 const WINDOW_FLOOR = 100_000;
 const WINDOW_CEILING = 1_000_000;
+/** Past this the declared window would exceed the CLI's ceiling. */
+const CLAUDE_MAX_TOKENS = WINDOW_CEILING - OUTPUT_RESERVE - SUMMARY_BUFFER;
 
-export type ClaudeCompaction =
-  /** Send nothing. Claude Code's own behaviour. */
-  | { mode: "default" }
-  /** Compact once the conversation fills this share of the model's window. */
-  | { mode: "percent"; percent: number }
-  /** `DISABLE_AUTO_COMPACT`. Manual `/compact` still works — that is
-   *  `DISABLE_COMPACT`, a different variable this never writes. */
-  | { mode: "never" };
-
-/** The CLI's own truthiness, so a value it ignores is one this reads as absent
- *  rather than as "off". */
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
-const validPercent = (percent: number): boolean => Number.isInteger(percent) && percent >= 1 && percent <= 100;
-
-/** Only a plain run of digits — a value spelled any other way is one this
- *  cannot be SURE the CLI reads the same. */
-function digits(value: string | undefined): number | undefined {
-  const trimmed = value?.trim() ?? "";
-  if (!/^\d+$/.test(trimmed)) return undefined;
-  const parsed = Number(trimmed);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function cliPercent(raw: string | undefined): number | undefined {
-  const percent = raw === undefined ? undefined : Number.parseFloat(raw.trim());
-  return percent !== undefined && Number.isFinite(percent) && percent > 0 && percent <= 100 ? percent : undefined;
+function boundedWindow(declared: number): number {
+  return Math.max(WINDOW_FLOOR, Math.min(declared, WINDOW_CEILING));
 }
 
 /**
- * WHAT THIS LOGIN'S ENVIRONMENT SAYS. `undefined` means "not something the
- * control can state": a window row (a pre-#587 pair or one typed by hand), a
- * fractional percentage, or a value the CLI would ignore.
- */
-export function claudeCompactionOf(env: readonly ProviderInstanceEnvVar[]): ClaudeCompaction | undefined {
-  const byName = new Map(env.map((variable) => [variable.name, variable.value]));
-  if (TRUTHY.has((byName.get(CLAUDE_COMPACTION_DISABLE_ENV) ?? "").trim().toLowerCase())) return { mode: "never" };
-  const rawPercent = byName.get(CLAUDE_COMPACTION_PERCENT_ENV);
-  if (byName.has(CLAUDE_COMPACTION_WINDOW_ENV)) return undefined;
-  if (rawPercent === undefined) return { mode: "default" };
-  const percent = cliPercent(rawPercent);
-  return percent !== undefined && validPercent(percent) ? { mode: "percent", percent } : undefined;
-}
-
-/**
- * The same list with this login's compaction rows replaced. `null` refuses a
- * percentage outside 1–100 rather than moving it. Every other variable keeps
- * its place; Default removes the rows, because an empty string is a value the
- * CLI reads.
- */
-export function applyClaudeCompaction(
-  env: readonly ProviderInstanceEnvVar[],
-  next: ClaudeCompaction,
-): ProviderInstanceEnvVar[] | null {
-  if (next.mode === "percent" && !validPercent(next.percent)) return null;
-  const kept = env.filter((variable) => !CLAUDE_COMPACTION_ENV_NAMES.includes(variable.name));
-  if (next.mode === "default") return kept;
-  if (next.mode === "never") return [...kept, { name: CLAUDE_COMPACTION_DISABLE_ENV, value: "1", sensitive: false }];
-  return [...kept, { name: CLAUDE_COMPACTION_PERCENT_ENV, value: String(next.percent), sensitive: false }];
-}
-
-/**
- * THE PAIR A SESSION ON A `window`-TOKEN MODEL IS SPAWNED WITH, so it compacts
- * at exactly `percent`% of that window. Undefined — leave the login's rows as
- * they are — when the login holds no percentage or the window is unknown.
+ * THE ENVIRONMENT A CLAUDE SESSION IS SPAWNED WITH, so it compacts at exactly
+ * `tokens` on any model with at least `tokens + 33,000` of window, and earlier
+ * — at that model's own ceiling — on a smaller one.
  *
- * The window is declared as the model's own, which also makes the CLI compact
- * deterministically at the threshold. The percentage is scaled from the whole
- * window to the CLI's `effective` one and ROUNDED UP at six decimals, so the
- * CLI's `floor` lands on the target rather than a token under it. Past
- * `window − 33,000` the CLI's own summary buffer wins and compacts there.
+ * The window is declared as `tokens + 33,000` (the CLI clamps it down to the
+ * model's own), and the percentage makes both arms of the CLI's `min` name the
+ * same number, which is what carries a threshold under the CLI's 100,000 window
+ * floor. ROUNDED UP at six decimals, so `floor` lands on the number rather than
+ * a token under it. The disable variable is deleted, so a hand-typed one does
+ * not silently override the limit the control shows.
  */
-export function claudeCompactionEnvFor(
-  env: readonly ProviderInstanceEnvVar[],
-  window: number | undefined,
-): Record<string, string> | undefined {
-  const stored = claudeCompactionOf(env);
-  if (stored?.mode !== "percent" || window === undefined || window < WINDOW_FLOOR || window > WINDOW_CEILING) return undefined;
-  const target = Math.floor((window * stored.percent) / 100);
-  const scaled = Math.min(100, Math.ceil((target / (window - OUTPUT_RESERVE)) * 100 * 1e6) / 1e6);
-  return { [CLAUDE_COMPACTION_WINDOW_ENV]: String(window), [CLAUDE_COMPACTION_PERCENT_ENV]: String(scaled) };
-}
-
-/** The token count a window/percentage pair compacts at — the CLI's arithmetic
- *  re-run. Undefined when there is no usable window row. */
-function legacyTokensOf(env: readonly ProviderInstanceEnvVar[]): number | undefined {
-  const byName = new Map(env.map((variable) => [variable.name, variable.value]));
-  const declared = digits(byName.get(CLAUDE_COMPACTION_WINDOW_ENV));
-  if (declared === undefined) return undefined;
-  const effective = Math.max(WINDOW_FLOOR, Math.min(declared, WINDOW_CEILING)) - OUTPUT_RESERVE;
-  const byWindow = effective - SUMMARY_BUFFER;
-  const percent = cliPercent(byName.get(CLAUDE_COMPACTION_PERCENT_ENV));
-  return percent === undefined ? byWindow : Math.min(Math.floor((effective * percent) / 100), byWindow);
+export function claudeCompactionEnv(autoCompact: AutoCompact | undefined, window: number | undefined): Record<string, string | undefined> | undefined {
+  if (!autoCompact) return undefined;
+  if (autoCompact.mode === "never") return { [CLAUDE_COMPACTION_DISABLE_ENV]: "1" };
+  const tokens = Math.min(autoCompactLimitFor(autoCompact, window), CLAUDE_MAX_TOKENS);
+  const declared = boundedWindow(tokens + OUTPUT_RESERVE + SUMMARY_BUFFER);
+  const percent = Math.ceil((tokens / (declared - OUTPUT_RESERVE)) * 100 * 1e6) / 1e6;
+  return {
+    [CLAUDE_COMPACTION_WINDOW_ENV]: String(declared),
+    [CLAUDE_COMPACTION_PERCENT_ENV]: String(percent),
+    [CLAUDE_COMPACTION_DISABLE_ENV]: undefined,
+  };
 }
 
 /**
- * A PRE-#587 TOKEN THRESHOLD AS A PERCENTAGE OF `window`, or undefined when the
- * list holds no window row to convert. The percentage is rounded DOWN and
- * clamped to 1–100, so a converted login compacts at or before its old number
- * on that window, never after it. `DISABLE_AUTO_COMPACT` still wins: a list
- * that says Never keeps saying it, with the stale window row dropped.
+ * A PRE-#587 CLAUDE LOGIN'S COMPACTION ROWS, as the setting they meant — or
+ * undefined when the list holds none.
+ *
+ * The old control wrote a token count T as a window/percentage pair; the CLI's
+ * arithmetic re-run recovers T, which becomes the standard-window limit, and the
+ * 1M limit takes the default rather than T scaled (see `AUTO_COMPACT_DEFAULTS`)
+ * — or T itself when larger, so a 1M session never compacts earlier than it did.
+ * `DISABLE_AUTO_COMPACT` truthy is Never. Rows the CLI would ignore mean
+ * Default. The compaction rows leave the list either way.
  */
 export function migrateClaudeCompaction(
   env: readonly ProviderInstanceEnvVar[],
-  window: number,
-): ProviderInstanceEnvVar[] | undefined {
-  if (!env.some((variable) => variable.name === CLAUDE_COMPACTION_WINDOW_ENV)) return undefined;
-  if (claudeCompactionOf(env)?.mode === "never") {
-    return applyClaudeCompaction(env, { mode: "never" })!;
+): { env: ProviderInstanceEnvVar[]; autoCompact?: AutoCompact } | undefined {
+  if (!env.some((variable) => CLAUDE_COMPACTION_ENV_NAMES.includes(variable.name))) return undefined;
+  const byName = new Map(env.map((variable) => [variable.name, variable.value]));
+  const kept = env.filter((variable) => !CLAUDE_COMPACTION_ENV_NAMES.includes(variable.name));
+  if (TRUTHY.has((byName.get(CLAUDE_COMPACTION_DISABLE_ENV) ?? "").trim().toLowerCase())) {
+    return { env: kept, autoCompact: { mode: "never" } };
   }
-  const tokens = legacyTokensOf(env);
-  // A window row the CLI would ignore compacts at the CLI's default.
-  if (tokens === undefined) return applyClaudeCompaction(env, { mode: "default" })!;
-  const percent = Math.min(100, Math.max(1, Math.floor((tokens / window) * 100)));
-  return applyClaudeCompaction(env, { mode: "percent", percent })!;
+  const rawWindow = byName.get(CLAUDE_COMPACTION_WINDOW_ENV)?.trim() ?? "";
+  if (!/^\d+$/.test(rawWindow) || Number(rawWindow) <= 0) return { env: kept };
+  const effective = boundedWindow(Number(rawWindow)) - OUTPUT_RESERVE;
+  const byWindow = effective - SUMMARY_BUFFER;
+  const rawPercent = Number.parseFloat(byName.get(CLAUDE_COMPACTION_PERCENT_ENV)?.trim() ?? "");
+  const tokens =
+    Number.isFinite(rawPercent) && rawPercent > 0 && rawPercent <= 100 ? Math.min(Math.floor((effective * rawPercent) / 100), byWindow) : byWindow;
+  return { env: kept, autoCompact: { mode: "limits", standard: Math.max(1, tokens), long: Math.max(AUTO_COMPACT_DEFAULTS.long, tokens) } };
 }
 
 /**
@@ -1286,6 +1237,9 @@ export const ProviderInstance = z.object({
    *  model's window. Absent means the default (70). A share rather than a token
    *  count, so it stays right across windows of different sizes. */
   contextNoticePercent: z.number().int().min(1).max(100).optional(),
+  /** When this login's sessions compact themselves. Absent means the provider
+   *  decides. See `AutoCompact`. */
+  autoCompact: AutoCompact.optional(),
   /** Off is a state, not deletion — same rule as an MCP server. */
   enabled: z.boolean(),
   /**
