@@ -1923,12 +1923,7 @@ export function DiffSurface({
 
   /** Built once and spread onto both row lists, so the two can never drift
    *  into offering different menus for the same kind of row. */
-  const rowMenu = {
-    ...(onOpenFile ? { onOpenFile } : {}),
-    ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}),
-    ...(onInsertReference ? { onInsertReference } : {}),
-    ...(pullComment ? { pullComment } : {}),
-  };
+  const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
   /** Which party a row may name when it has no patch to draw (#694). Decided
    *  once here, beside `readPatch`, because the two answer the same question
    *  from the same place. */
@@ -2221,6 +2216,7 @@ export function DiffSurface({
                 onToggle={() => toggleRow(row.file.path)}
                 {...(row.registration ? { registration: row.registration } : {})}
                 {...rowMenu}
+                {...(pullComment ? { pullComment } : {})}
               />
             ))}
           {framing.journal && shown.rows.some((row) => row.reported) && shown.rows.some((row) => !row.reported) && (
@@ -2240,6 +2236,7 @@ export function DiffSurface({
                 onToggle={() => toggleRow(row.file.path)}
                 {...(row.edits ? { edits: row.edits } : {})}
                 {...rowMenu}
+                {...(pullComment ? { pullComment } : {})}
               />
             ))}
         </div>
