@@ -32,6 +32,10 @@ import {
   hunkTail,
   threadAnchor,
   threadsByFile,
+  applyThreadReply,
+  applyThreadResolve,
+  PENDING_REPLY_URL,
+  THREAD_REFUSAL,
   reviewLabel,
   STATUS_LABEL,
   STATUS_TONE,
@@ -664,5 +668,81 @@ describe("threadsByFile", () => {
       ["a.ts", ["a0", "a1"]],
       ["b.ts", ["b1", "b2"]],
     ]);
+  });
+});
+
+describe("applyThreadResolve — fold now, GitHub's state or a rollback after (#842)", () => {
+  const open = reviewThread();
+
+  test("folds at once, then takes GitHub's state and who may flip it back", async () => {
+    const drawn: { isResolved: boolean; resolvedBy?: string; viewerCanUnresolve: boolean }[] = [];
+    const said = await applyThreadResolve({
+      current: open,
+      resolved: true,
+      send: async () => ({ changed: true, isResolved: true, resolvedBy: "ada", viewerCanResolve: false, viewerCanUnresolve: true }),
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(said).toBeUndefined();
+    expect(drawn[0]!.isResolved).toBe(true);
+    expect(drawn.at(-1)).toMatchObject({ isResolved: true, resolvedBy: "ada", viewerCanUnresolve: true });
+  });
+
+  test("A REFUSAL PUTS THE THREAD BACK exactly, and says why", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyThreadResolve({
+      current: open,
+      resolved: true,
+      send: async () => ({ changed: false, refusal: "scope" }),
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(drawn.at(-1)).toBe(open);
+    expect(said).toBe(THREAD_REFUSAL.scope);
+  });
+});
+
+describe("applyThreadReply — a pending reply, then GitHub's comment or a rollback (#842)", () => {
+  const open = reviewThread({ comments: [{ body: "Off by one?", createdAt: 1, url: "u1", reactions: [] }] });
+  const stored = { author: "ada", body: "Fixed.", createdAt: 5, url: "https://github.com/o/r/pull/7#discussion_r2", reactions: [], subjectId: "PRRC_2" };
+
+  test("the reply shows at once as pending, then becomes the comment GitHub stored", async () => {
+    const drawn: { comments: { url: string; body: string }[] }[] = [];
+    const said = await applyThreadReply({
+      current: open,
+      body: " Fixed. ",
+      now: 99,
+      send: async () => ({ replied: true, comment: stored }),
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(said).toBeUndefined();
+    expect(drawn[0]!.comments.at(-1)).toMatchObject({ body: "Fixed.", url: `${PENDING_REPLY_URL}99` });
+    expect(drawn.at(-1)!.comments.map((comment) => comment.url)).toEqual(["u1", stored.url]);
+  });
+
+  test("A REFUSED REPLY IS TAKEN BACK OFF THE THREAD, and says why", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyThreadReply({
+      current: open,
+      body: "Fixed.",
+      now: 99,
+      send: async () => ({ replied: false, refusal: "not_permitted" }),
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(drawn.at(-1)).toBe(open);
+    expect(said).toBe(THREAD_REFUSAL.not_permitted);
+  });
+
+  test("an engine that does not answer rolls the reply back too", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyThreadReply({
+      current: open,
+      body: "Fixed.",
+      now: 99,
+      send: async () => {
+        throw new Error("connection refused");
+      },
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(drawn.at(-1)).toBe(open);
+    expect(said).toBe("connection refused");
   });
 });

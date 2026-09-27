@@ -3248,6 +3248,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         );
         return;
       }
+      /**
+       * Reply to, resolve or unresolve one review thread — #842. The thread id is
+       * matched as a GitHub node id IN THE PATTERN, for the reason the number is.
+       */
+      const projectThread = /^\/v2\/projects\/([^/]+)\/github\/pulls\/(\d+)\/threads\/([A-Za-z0-9_=-]{1,200})\/(replies|resolve)$/.exec(url.pathname);
+      if (request.method === "POST" && projectThread) {
+        const input = await body(request);
+        const projectId = decodeURIComponent(projectThread[1]);
+        const number = Number(projectThread[2]);
+        const threadId = projectThread[3];
+        if (projectThread[4] === "replies") {
+          if (typeof input.body !== "string") throw new HttpError(400, "invalid_request", "body must be a string");
+          writeJson(response, 200, await store.projectThreadReply(projectId, number, { threadId, body: input.body }));
+        } else {
+          if (typeof input.resolved !== "boolean") throw new HttpError(400, "invalid_request", "resolved must be true or false");
+          writeJson(response, 200, await store.projectThreadResolve(projectId, number, { threadId, resolved: input.resolved }));
+        }
+        return;
+      }
       const projectMerge = /^\/v2\/projects\/([^/]+)\/github\/pulls\/(\d+)\/merge$/.exec(url.pathname);
       if (request.method === "POST" && projectMerge) {
         const input = await body(request);

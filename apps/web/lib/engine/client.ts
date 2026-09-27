@@ -14,6 +14,8 @@ import type {
   GitHubMergeResult,
   GitHubReactionContent,
   GitHubReactionResult,
+  GitHubThreadReplyResult,
+  GitHubThreadResolveResult,
   GitHubPullCreateResult,
   GitPushResult,
   GitHubPullFilter,
@@ -898,6 +900,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         "POST",
         `/api/projects/${encodeURIComponent(projectId)}/github/${kind === "issue" ? "issues" : "pulls"}/${number}/reactions`,
         input,
+      ),
+    /** Reply to, or resolve and unresolve, one review thread (#842). */
+    replyToProjectThread: (projectId: string, number: number, threadId: string, body: string) =>
+      request<GitHubThreadReplyResult>(
+        fetcher,
+        "POST",
+        `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/replies`,
+        { body },
+      ),
+    resolveProjectThread: (projectId: string, number: number, threadId: string, resolved: boolean) =>
+      request<GitHubThreadResolveResult>(
+        fetcher,
+        "POST",
+        `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/resolve`,
+        { resolved },
       ),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),

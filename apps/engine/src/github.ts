@@ -55,6 +55,8 @@ import type {
   GitHubReview,
   GitHubReviewComment,
   GitHubReviewThread,
+  GitHubThreadReplyResult,
+  GitHubThreadResolveResult,
   GitHubSnapshot,
   GitHubUnavailable,
 } from "@telar/engine-client";
@@ -1803,6 +1805,89 @@ export async function reactOn(
     // Fall through: exit 0 with nothing readable is a refusal worth naming.
   }
   return { reacted: false, ...classifyGraphqlWriteFailure(result) };
+}
+
+// ── acting on a review thread (#842) ───────────────────────────────────────
+
+/** The fields a reply is read back with — the same a thread read asks for, so
+ *  one parser (`reviewComment`) serves both. */
+const REVIEW_COMMENT_FIELDS =
+  "id url body createdAt diffHunk authorAssociation author { __typename login avatarUrl } reactionGroups { content viewerHasReacted users { totalCount } }";
+
+/**
+ * Reply to one review thread.
+ *
+ * A PERSON'S REPLY, typed into the panel, so there is no session marker to stamp —
+ * the marker exists for comments an AGENT posts (#791), and one on a human's words
+ * would claim a conversation that did not write them. The body travels as a
+ * GraphQL variable in argv, bounded by `MAX_COMMENT_BODY` for `commentOn`'s reason.
+ */
+export function threadReplyArgv(threadId: string, body: string): string[] {
+  return [
+    "api",
+    "graphql",
+    "-F",
+    `thread=${threadId}`,
+    "-f",
+    `body=${body}`,
+    "-f",
+    `query=mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) { comment { ${REVIEW_COMMENT_FIELDS} } } }`,
+  ];
+}
+
+export async function replyToThread(gh: GhRunner, cwd: string, input: { threadId: string; body: string }): Promise<GitHubThreadReplyResult> {
+  const body = input.body.trim();
+  if (!body) return { replied: false, refusal: "invalid_body", message: "A reply needs something in it." };
+  if (body.length > MAX_COMMENT_BODY) {
+    return { replied: false, refusal: "invalid_body", message: `That reply is ${body.length} characters; GitHub takes at most ${MAX_COMMENT_BODY}.` };
+  }
+  const result = await gh(cwd, threadReplyArgv(input.threadId, body));
+  if (result.status === 0) {
+    try {
+      const data = (JSON.parse(result.stdout) as { data?: { addPullRequestReviewThreadReply?: { comment?: unknown } | null } | null }).data;
+      const comment = reviewComment(data?.addPullRequestReviewThreadReply?.comment);
+      if (comment) return { replied: true, comment };
+    } catch {
+      // Fall through to the classifier, which reads GitHub's own words.
+    }
+  }
+  return { replied: false, ...classifyGraphqlWriteFailure(result) };
+}
+
+/** Resolve (`resolved: true`) or unresolve one review thread. */
+export function threadResolveArgv(threadId: string, resolved: boolean): string[] {
+  const mutation = resolved ? "resolveReviewThread" : "unresolveReviewThread";
+  return [
+    "api",
+    "graphql",
+    "-F",
+    `thread=${threadId}`,
+    "-f",
+    `query=mutation($thread: ID!) { ${mutation}(input: { threadId: $thread }) { thread { isResolved resolvedBy { login } viewerCanResolve viewerCanUnresolve } } }`,
+  ];
+}
+
+export async function resolveThread(gh: GhRunner, cwd: string, input: { threadId: string; resolved: boolean }): Promise<GitHubThreadResolveResult> {
+  const result = await gh(cwd, threadResolveArgv(input.threadId, input.resolved));
+  if (result.status === 0) {
+    try {
+      const data = (JSON.parse(result.stdout) as { data?: Record<string, { thread?: Record<string, unknown> | null } | null> | null }).data;
+      const thread = (data?.resolveReviewThread ?? data?.unresolveReviewThread)?.thread;
+      if (thread && typeof thread.isResolved === "boolean") {
+        const by = login(thread.resolvedBy);
+        return {
+          changed: true,
+          isResolved: thread.isResolved,
+          ...(by ? { resolvedBy: by } : {}),
+          viewerCanResolve: thread.viewerCanResolve === true,
+          viewerCanUnresolve: thread.viewerCanUnresolve === true,
+        };
+      }
+    } catch {
+      // Fall through to the classifier.
+    }
+  }
+  return { changed: false, ...classifyGraphqlWriteFailure(result) };
 }
 
 // ── opening one pull request ────────────────────────────────────────────────

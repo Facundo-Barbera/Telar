@@ -857,6 +857,42 @@ export const GitHubReactionResult = z.union([
 ]);
 export type GitHubReactionResult = z.infer<typeof GitHubReactionResult>;
 
+// ── acting on a review thread ──────────────────────────────────────────────
+
+/** Why a reply or a resolve did not land: a reaction's four, plus a reply body
+ *  that was empty or past `MAX_COMMENT_BODY`. */
+export const GitHubThreadRefusal = z.enum([...GitHubReactionRefusal.options, "invalid_body"]);
+export type GitHubThreadRefusal = z.infer<typeof GitHubThreadRefusal>;
+
+/**
+ * What replying to a review thread answers — #842.
+ *
+ * SUCCESS CARRIES THE COMMENT AS GITHUB STORED IT, so the surface swaps its
+ * pending reply for the real one — with its url, its time and its node id —
+ * without re-reading the pull request.
+ */
+export const GitHubThreadReplyResult = z.union([
+  z.object({ replied: z.literal(true), comment: GitHubReviewComment }),
+  z.object({ replied: z.literal(false), refusal: GitHubThreadRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitHubThreadReplyResult = z.infer<typeof GitHubThreadReplyResult>;
+
+/**
+ * What resolving or unresolving a review thread answers — the thread's state as
+ * GitHub now holds it, including who may flip it back.
+ */
+export const GitHubThreadResolveResult = z.union([
+  z.object({
+    changed: z.literal(true),
+    isResolved: z.boolean(),
+    resolvedBy: z.string().min(1).optional(),
+    viewerCanResolve: z.boolean(),
+    viewerCanUnresolve: z.boolean(),
+  }),
+  z.object({ changed: z.literal(false), refusal: GitHubThreadRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitHubThreadResolveResult = z.infer<typeof GitHubThreadResolveResult>;
+
 // ── opening one pull request ────────────────────────────────────────────────
 
 /** How long a pull request's title may be. GitHub's own ceiling is 256; held

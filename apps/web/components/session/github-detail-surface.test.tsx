@@ -513,3 +513,51 @@ describe("review threads", () => {
     expect(renderToStaticMarkup(<ReviewThreadsBlock threads={[thread()]} more={4} />)).toContain("4 older threads are not shown");
   });
 });
+
+describe("acting on review threads (#842)", () => {
+  const actions = {
+    reply: async () => ({ replied: false as const, refusal: "failed" as const }),
+    resolve: async () => ({ changed: false as const, refusal: "failed" as const }),
+  };
+  const thread = (over: Partial<GitHubReviewThread> = {}): GitHubReviewThread => ({
+    id: "PRRT_1",
+    path: "a.ts",
+    line: 3,
+    isResolved: false,
+    isOutdated: false,
+    viewerCanResolve: true,
+    viewerCanUnresolve: false,
+    viewerCanReply: true,
+    diffHunk: "@@ -1 +1 @@\n+x",
+    comments: [{ author: "ada", body: "hm", createdAt: NOW, url: "u1", reactions: [] }],
+    moreComments: 0,
+    ...over,
+  });
+
+  test("an open thread the viewer may settle offers Resolve and Reply", () => {
+    const markup = renderToStaticMarkup(<ReviewThreadsBlock threads={[thread()]} more={0} actions={actions} />);
+    expect(markup).toContain(">Resolve<");
+    expect(markup).toContain("Reply…");
+  });
+
+  test("a resolved thread the viewer may reopen offers Unresolve", () => {
+    const markup = renderToStaticMarkup(
+      <ReviewThreadsBlock threads={[thread({ isResolved: true, viewerCanResolve: false, viewerCanUnresolve: true })]} more={0} actions={actions} />,
+    );
+    expect(markup).toContain(">Unresolve<");
+  });
+
+  test("WHAT GITHUB SAYS THIS VIEWER CANNOT DO IS NOT OFFERED — no button that can only be refused", () => {
+    const markup = renderToStaticMarkup(
+      <ReviewThreadsBlock threads={[thread({ viewerCanResolve: false, viewerCanReply: false })]} more={0} actions={actions} />,
+    );
+    expect(markup).not.toContain(">Resolve<");
+    expect(markup).not.toContain("Reply…");
+  });
+
+  test("with nowhere to write, a thread is a read", () => {
+    const markup = renderToStaticMarkup(<ReviewThreadsBlock threads={[thread()]} more={0} />);
+    expect(markup).not.toContain(">Resolve<");
+    expect(markup).not.toContain("Reply…");
+  });
+});

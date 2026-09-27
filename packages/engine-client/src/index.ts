@@ -25,6 +25,8 @@ import {
   type GitHubMergeResult,
   type GitHubReactionContent,
   type GitHubReactionResult,
+  type GitHubThreadReplyResult,
+  type GitHubThreadResolveResult,
   type GitHubPullCreateResult,
   type GitHubPullFilter,
   type GitHubPullRead,
@@ -1958,6 +1960,16 @@ export class EngineClient {
     input: { subjectId: string; content: GitHubReactionContent; react: boolean },
   ): Promise<GitHubReactionResult> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/${kind === "issue" ? "issues" : "pulls"}/${number}/reactions`, input);
+  }
+
+  /** Reply to one review thread on a pull request (#842). */
+  replyToProjectThread(projectId: string, number: number, threadId: string, body: string): Promise<GitHubThreadReplyResult> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/replies`, { body });
+  }
+
+  /** Resolve (`true`) or unresolve one review thread (#842). */
+  resolveProjectThread(projectId: string, number: number, threadId: string, resolved: boolean): Promise<GitHubThreadResolveResult> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/resolve`, { resolved });
   }
 
   /** What is uncommitted in a project right now — the review a canvas shows
