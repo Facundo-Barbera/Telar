@@ -10,7 +10,16 @@
  * every approval granted to it, for a tidier string.
  */
 import { z } from "zod";
-import { DataScienceMachineSettings, DataScienceMachineSettingsWrite, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
+import {
+  DataScienceBootstrap,
+  DataScienceCreateEnvironment,
+  DataScienceMachineSettings,
+  DataScienceMachineSettingsWrite,
+  PLUGIN_API_VERSION,
+  type PluginMeta,
+} from "@telar/engine-client";
+import type { EngineStore } from "../state";
+import { jobCursor, PluginInputError, requiredString, type PluginMachineRoutes, type PluginProjectRoutes } from "./routes";
 import type { DsCapability } from "../ds/capability";
 import { clientDsCapability } from "../ds/client-capability";
 import { dsTools } from "../ds/ds-tools";
@@ -120,7 +129,87 @@ export type DataSciencePluginDeps = {
   };
   /** Which project a session belongs to, for per-project `busy` and release. */
   projectOf: (sessionId: string) => string | undefined;
+  /**
+   * The settings pages' verbs, which are still the store's: environments,
+   * packages and installers run as jobs on the store's `dsJobs` runner.
+   */
+  settings: Pick<
+    EngineStore,
+    | "dataScienceEnvironments"
+    | "dataScienceCreateEnvironment"
+    | "dataSciencePackages"
+    | "dataScienceInstall"
+    | "dataScienceProbe"
+    | "dataScienceBootstrap"
+    | "dataScienceToolchain"
+    | "dataScienceJob"
+    | "dataScienceCancelJob"
+  >;
 };
+
+/**
+ * THE PROJECT AND MACHINE DOORS — what the settings pages call. Same verbs,
+ * bodies, statuses and refusals as the hand-written routes they replace, which
+ * now forward here.
+ */
+function dataScienceScopedRoutes(settings: DataSciencePluginDeps["settings"]): {
+  project: PluginProjectRoutes;
+  machine: PluginMachineRoutes;
+} {
+  const list = (input: Record<string, unknown>, key: string) =>
+    Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined;
+  return {
+    project: {
+      // Choosing an environment comes before turning data science on.
+      "GET environments": { beforeEnable: true, handle: (_request, { projectId }) => settings.dataScienceEnvironments(projectId) },
+      "POST environments": {
+        status: 202,
+        beforeEnable: true,
+        handle: ({ input }, { projectId }) => {
+          const parsed = DataScienceCreateEnvironment.safeParse(input);
+          if (!parsed.success) throw new PluginInputError("not a valid environment request");
+          return settings.dataScienceCreateEnvironment(projectId, parsed.data);
+        },
+      },
+      "POST probe": {
+        beforeEnable: true,
+        handle: async ({ input }, { projectId }) => ({
+          probe: await settings.dataScienceProbe(projectId, requiredString(input.path, "python path")),
+        }),
+      },
+      "GET packages": { handle: (_request, { projectId }) => settings.dataSciencePackages(projectId) },
+      "POST packages": {
+        status: 202,
+        handle: ({ input }, { projectId }) =>
+          settings.dataScienceInstall(projectId, {
+            ...(list(input, "add") ? { add: list(input, "add")! } : {}),
+            ...(list(input, "remove") ? { remove: list(input, "remove")! } : {}),
+            ...(typeof input.requirements === "string"
+              ? { requirements: input.requirements as Parameters<typeof settings.dataScienceInstall>[1]["requirements"] }
+              : {}),
+          }),
+      },
+    },
+    machine: {
+      "POST bootstrap": {
+        status: 202,
+        handle: ({ input }) => {
+          const parsed = DataScienceBootstrap.safeParse(input);
+          if (!parsed.success) throw new PluginInputError("not a valid bootstrap request");
+          return settings.dataScienceBootstrap(parsed.data);
+        },
+      },
+      "GET toolchain": { handle: async ({ query }) => ({ toolchain: await settings.dataScienceToolchain(query.get("fresh") === "1") }) },
+      "GET jobs/:id": { handle: ({ query, params }) => ({ job: settings.dataScienceJob(params.id!, jobCursor(query)) }) },
+      "DELETE jobs/:id": {
+        handle: ({ params }) => {
+          settings.dataScienceCancelJob(params.id!);
+          return {};
+        },
+      },
+    },
+  };
+}
 
 export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModule<DataScienceSettings> {
   /** Sessions whose kernel belongs to a project, resolved fresh each time. */
@@ -129,6 +218,7 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
       .list()
       .map((kernel) => kernel.sessionId)
       .filter((sessionId) => deps.projectOf(sessionId) === projectId);
+  const scoped = dataScienceScopedRoutes(deps.settings);
 
   return {
     meta: dataScienceMeta,
@@ -274,6 +364,9 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
           ...(input.metrics && typeof input.metrics === "object" ? { metrics: input.metrics as Record<string, number> } : {}),
         }),
     },
+
+    projectRoutes: scoped.project,
+    machineRoutes: scoped.machine,
 
     resolve: (sessionId) => deps.resolve(sessionId),
   };

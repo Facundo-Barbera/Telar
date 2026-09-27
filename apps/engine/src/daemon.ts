@@ -14,9 +14,6 @@ import {
   GitHubLineCommentInput,
   GitHubReactionContent,
   GitHubSubjectId,
-  DataScienceBootstrap,
-  DataScienceCreateEnvironment,
-  LatexBootstrap,
   parseForgeQuery,
   RequestOpenInput,
   AgentTurnInput,
@@ -76,6 +73,7 @@ import {
 import { KernelHost } from "./ds/kernel-host";
 import { bundledPlugins } from "./plugins/bundled";
 import { PluginHost } from "./plugins/host";
+import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type PluginScopedRoute } from "./plugins/routes";
 import { setPluginReadTools } from "./driver";
 import { createRunMount } from "./run/mount";
 import { RunError } from "./run/types";
@@ -378,6 +376,9 @@ function errorFor(error: unknown): HttpError {
   }
   // The notebook's own refusals, carried out whole: they are sentences written
   // for a person, and a 500 would replace each one with "internal error".
+  // A plugin route's refusal about the request — the same 400 the hand-written
+  // routes it replaced answered with.
+  if (error instanceof PluginInputError) return new HttpError(400, "invalid_request", error.message);
   if (error instanceof ProjectNotesError) {
     return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
   }
@@ -1235,9 +1236,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // The SAME capabilities the aliases and the tool walls already use —
       // migrating a door must not change what is behind it. Each gate is the
       // store's own, which reads the plugin map.
-      latex: { resolve: (sessionId) => store.latex(sessionId), jobs: store.latexJobs },
+      latex: { resolve: (sessionId) => store.latex(sessionId), jobs: store.latexJobs, settings: store },
       dataScience: {
         resolve: (sessionId) => store.dataScience(sessionId),
+        settings: store,
         kernels: {
           list: () => (kernelsRef.current?.list() ?? []).map((info) => ({ sessionId: info.sessionId, state: info.state })),
           dispose: (sessionId, reason) => kernelsRef.current?.dispose(sessionId, reason),
@@ -1254,6 +1256,69 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       log: (message, detail) => console.warn(`[telar] ${message}${detail ? ` ${JSON.stringify(detail)}` : ""}`),
     },
   );
+  /**
+   * ONE SERVER FOR EVERY PLUGIN'S PROJECT AND MACHINE VERBS — the generic doors
+   * and the old hand-written paths alike, so the two cannot drift apart.
+   *
+   * `legacy` is the ALIAS mode, and it exists to keep a released client's
+   * behaviour byte for byte: no enablement gate (those paths never had one — a
+   * settings page lists environments before anything is on), and a plugin's
+   * unexpected throw is left to the daemon's ordinary handler rather than
+   * relabelled. The generic doors gate and relabel, like the session door.
+   */
+  const servePluginScoped = async (
+    input: {
+      pluginId: string;
+      scope: "project" | "machine";
+      projectId?: string;
+      verb: string;
+      legacy?: boolean;
+    },
+    request: http.IncomingMessage,
+    url: URL,
+    response: http.ServerResponse,
+  ): Promise<boolean> => {
+    const module = pluginHost.ready(input.pluginId);
+    const table: Record<string, PluginScopedRoute<never>> | undefined =
+      input.scope === "project" ? module?.projectRoutes : module?.machineRoutes;
+    const method = request.method as PluginRouteMethod;
+    const matched = matchPluginRoute(table, method, input.verb);
+    if (!matched) {
+      if (input.legacy) return false;
+      if (!module) throw new HttpError(404, "not_found", `no plugin ${input.pluginId}`);
+      throw new HttpError(404, "not_found", `plugin ${input.pluginId} has no ${method} ${input.verb}`);
+    }
+    const { route, params } = matched;
+    const beforeEnable = route.beforeEnable === true;
+    if (!input.legacy) {
+      // THE SAME GATE AND WORDS AS THE SESSION DOOR: off for this Mac refuses
+      // every scope; at project scope, a project that has not turned the
+      // plugin on refuses too, unless the verb is how it chooses to.
+      if (!machineAllows(store.machinePlugins(), input.pluginId)) {
+        throw new EngineStateError("invalid_request", `${input.pluginId} is turned off for this Mac`);
+      }
+      if (input.projectId !== undefined) {
+        const project = store.getProject(input.projectId);
+        if (!beforeEnable && !store.pluginRuns(project, input.pluginId)) {
+          throw new EngineStateError("invalid_request", `${input.pluginId} is not enabled for this project`);
+        }
+      }
+    }
+    const parsedBody = method === "POST" ? await body(request) : {};
+    const routeRequest = { input: parsedBody, query: url.searchParams, params };
+    let answer: unknown;
+    try {
+      answer = await (route.handle as (request: typeof routeRequest, scope: unknown) => unknown)(
+        routeRequest,
+        input.projectId !== undefined ? { projectId: input.projectId } : {},
+      );
+    } catch (error) {
+      if (input.legacy || error instanceof HttpError || error instanceof EngineStateError || error instanceof PluginInputError) throw error;
+      throw new HttpError(400, "plugin_error", `${input.pluginId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    writeJson(response, route.status ?? 200, answer ?? {});
+    return true;
+  };
   /**
    * RUN CONFIGURATIONS, and the terminals they open. The daemon is what talks
    * to the desktop's terminal host — a process a worker spawned would die with
@@ -3431,141 +3496,50 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * THE ENVIRONMENT MANAGER'S READ: every environment a project could run
-       * on, each probed, plus the toolchain and the checkout's dependency
-       * manifests. A LIST, so the settings page can ask rather than the engine
-       * guessing — see `ds/environments.ts`. Slow by nature (it spawns each
-       * interpreter); only a human opening the page calls it.
+       * A PLUGIN'S PROJECT AND MACHINE VERBS — environments, packages,
+       * distributions, toolchains, installers and their jobs. They live in each
+       * plugin's `projectRoutes` / `machineRoutes` table (see
+       * `plugins/routes.ts`) and are served here at
+       *
+       *   /v2/projects/:id/plugins/<plugin>/<verb>   gated on Mac and project
+       *   /v2/plugins/<plugin>/<verb>                gated on Mac
        */
-      const projectDsEnvs = /^\/v2\/projects\/([^/]+)\/data-science\/environments$/.exec(url.pathname);
-      if (request.method === "GET" && projectDsEnvs) {
-        writeJson(response, 200, await store.dataScienceEnvironments(decodeURIComponent(projectDsEnvs[1])));
+      const projectPluginPath = /^\/v2\/projects\/([^/]+)\/plugins\/([a-z][a-z0-9-]*)\/([A-Za-z0-9_.%-]+(?:\/[A-Za-z0-9_.%-]+)*)$/.exec(url.pathname);
+      if (projectPluginPath) {
+        const [, projectId, pluginId, verb] = projectPluginPath as unknown as [string, string, string, string];
+        await servePluginScoped({ pluginId, scope: "project", projectId: decodeURIComponent(projectId), verb }, request, url, response);
         return;
       }
-      /** Make an environment — `uv venv` or `conda create` — as a job. Body is a `DataScienceCreateEnvironment`. */
-      const projectDsCreate = /^\/v2\/projects\/([^/]+)\/data-science\/environments$/.exec(url.pathname);
-      if (request.method === "POST" && projectDsCreate) {
-        const input = await body(request);
-        const parsed = DataScienceCreateEnvironment.safeParse(input);
-        if (!parsed.success) throw new HttpError(400, "invalid_request", "not a valid environment request");
-        writeJson(response, 202, await store.dataScienceCreateEnvironment(decodeURIComponent(projectDsCreate[1]), parsed.data));
-        return;
-      }
-      /** What is installed in the project's configured environment. */
-      const projectDsPackages = /^\/v2\/projects\/([^/]+)\/data-science\/packages$/.exec(url.pathname);
-      if (request.method === "GET" && projectDsPackages) {
-        writeJson(response, 200, await store.dataSciencePackages(decodeURIComponent(projectDsPackages[1])));
-        return;
-      }
-      /** Install into / remove from the project's environment, as a job. */
-      if (request.method === "POST" && projectDsPackages) {
-        const input = await body(request);
-        const list = (key: string) => (Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined);
-        writeJson(response, 202, await store.dataScienceInstall(decodeURIComponent(projectDsPackages[1]), {
-          ...(list("add") ? { add: list("add")! } : {}),
-          ...(list("remove") ? { remove: list("remove")! } : {}),
-          ...(typeof input.requirements === "string" ? { requirements: input.requirements as Parameters<typeof store.dataScienceInstall>[1]["requirements"] } : {}),
-        }));
-        return;
-      }
-      /** Install a tool: uv, a Python version, Miniforge. Machine-wide, so no project in the path. */
-      if (request.method === "POST" && url.pathname === "/v2/data-science/bootstrap") {
-        const input = await body(request);
-        const parsed = DataScienceBootstrap.safeParse(input);
-        if (!parsed.success) throw new HttpError(400, "invalid_request", "not a valid bootstrap request");
-        writeJson(response, 202, await store.dataScienceBootstrap(parsed.data));
-        return;
-      }
-      /** The toolchain alone, for pages that do not need the environment list. */
-      if (request.method === "GET" && url.pathname === "/v2/data-science/toolchain") {
-        writeJson(response, 200, { toolchain: await store.dataScienceToolchain(url.searchParams.get("fresh") === "1") });
-        return;
-      }
-      /** Read a job by cursor; DELETE cancels it. */
-      const dsJob = /^\/v2\/data-science\/jobs\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "GET" && dsJob) {
-        const after = Number(url.searchParams.get("after") ?? "0");
-        writeJson(response, 200, { job: store.dataScienceJob(decodeURIComponent(dsJob[1]), Number.isFinite(after) ? after : 0) });
-        return;
-      }
-      if (request.method === "DELETE" && dsJob) {
-        store.dataScienceCancelJob(decodeURIComponent(dsJob[1]));
-        writeJson(response, 200, {});
-        return;
-      }
-      /** Probe one interpreter or venv directory a person named. */
-      const projectDsProbe = /^\/v2\/projects\/([^/]+)\/data-science\/probe$/.exec(url.pathname);
-      if (request.method === "POST" && projectDsProbe) {
-        const input = await body(request);
-        writeJson(response, 200, { probe: await store.dataScienceProbe(decodeURIComponent(projectDsProbe[1]), stringValue(input.path, "python path")!) });
-        return;
-      }
-      /** Every TeX distribution the machine carries, plus main-file candidates.
-       *  A LIST for a person to choose from, like the environments route. */
-      const projectLatexDists = /^\/v2\/projects\/([^/]+)\/latex\/distributions$/.exec(url.pathname);
-      if (request.method === "GET" && projectLatexDists) {
-        writeJson(response, 200, await store.latexDistributions(decodeURIComponent(projectLatexDists[1])));
-        return;
-      }
-      /** What the project's TeX distribution has installed — or why nothing lists. */
-      const projectLatexPackages = /^\/v2\/projects\/([^/]+)\/latex\/packages$/.exec(url.pathname);
-      if (request.method === "GET" && projectLatexPackages) {
-        writeJson(response, 200, await store.latexPackages(decodeURIComponent(projectLatexPackages[1])));
-        return;
-      }
-      /** tlmgr install / remove, as a job. */
-      if (request.method === "POST" && projectLatexPackages) {
-        const input = await body(request);
-        const list = (key: string) => (Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined);
-        writeJson(response, 202, await store.latexInstall(decodeURIComponent(projectLatexPackages[1]), {
-          ...(list("add") ? { add: list("add")! } : {}),
-          ...(list("remove") ? { remove: list("remove")! } : {}),
-        }));
-        return;
-      }
-      /** Install Tectonic or TinyTeX. Machine-wide, so no project in the path. */
-      if (request.method === "POST" && url.pathname === "/v2/latex/bootstrap") {
-        const input = await body(request);
-        const parsed = LatexBootstrap.safeParse(input);
-        if (!parsed.success) throw new HttpError(400, "invalid_request", "not a valid bootstrap request");
-        writeJson(response, 202, await store.latexBootstrap(parsed.data));
-        return;
-      }
-      /** The TeX toolchain alone, for pages that do not need the candidates. */
-      if (request.method === "GET" && url.pathname === "/v2/latex/toolchain") {
-        writeJson(response, 200, { toolchain: await store.latexToolchain(url.searchParams.get("fresh") === "1") });
+      const machinePluginPath = /^\/v2\/plugins\/([a-z][a-z0-9-]*)\/([A-Za-z0-9_.%-]+(?:\/[A-Za-z0-9_.%-]+)*)$/.exec(url.pathname);
+      if (machinePluginPath) {
+        const [, pluginId, verb] = machinePluginPath as unknown as [string, string, string];
+        await servePluginScoped({ pluginId, scope: "machine", verb }, request, url, response);
         return;
       }
       /**
-       * TELAR'S OWN TECTONIC — the one distribution the engine can promise on a
-       * machine it has never seen. GET is cheap enough to poll while an install
-       * runs; POST starts one and is IDEMPOTENT, so a second press while the
-       * first is still downloading joins it rather than starting a second.
-       *
-       * NOT A JOB. The other bootstraps shell out to curl and an installer
-       * script, so they are steps a JobRunner can stream; this one is an
-       * in-process fetch whose whole contract is "verify the digest before
-       * anything is published". There is no subprocess to stream, and the state
-       * a pane needs is the four fields GET already answers.
+       * THE OLD PATHS, NOW ALIASES. `/v2/projects/:id/{data-science,latex}/*`
+       * and `/v2/{data-science,latex}/*` are what the web settings pages and
+       * a released client call; they forward to the same tables ungated and
+       * unrelabelled, so their behaviour is unchanged. A verb neither table
+       * has falls through, exactly as an unmatched path always did.
        */
-      if (request.method === "GET" && url.pathname === "/v2/latex/managed") {
-        writeJson(response, 200, { managed: store.managedTectonic() });
+      const legacyProjectPlugin = /^\/v2\/projects\/([^/]+)\/(data-science|latex)\/([^/]+(?:\/[^/]+)*)$/.exec(url.pathname);
+      if (
+        legacyProjectPlugin &&
+        (await servePluginScoped(
+          { pluginId: legacyProjectPlugin[2]!, scope: "project", projectId: decodeURIComponent(legacyProjectPlugin[1]!), verb: legacyProjectPlugin[3]!, legacy: true },
+          request,
+          url,
+          response,
+        ))
+      ) {
         return;
       }
-      if (request.method === "POST" && url.pathname === "/v2/latex/managed") {
-        writeJson(response, 202, { managed: await store.installManagedTectonic() });
-        return;
-      }
-      /** Read a latex job by cursor; DELETE cancels it. */
-      const latexJob = /^\/v2\/latex\/jobs\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "GET" && latexJob) {
-        const after = Number(url.searchParams.get("after") ?? "0");
-        writeJson(response, 200, { job: store.latexJob(decodeURIComponent(latexJob[1]), Number.isFinite(after) ? after : 0) });
-        return;
-      }
-      if (request.method === "DELETE" && latexJob) {
-        store.latexCancelJob(decodeURIComponent(latexJob[1]));
-        writeJson(response, 200, {});
+      const legacyMachinePlugin = /^\/v2\/(data-science|latex)\/([^/]+(?:\/[^/]+)*)$/.exec(url.pathname);
+      if (
+        legacyMachinePlugin &&
+        (await servePluginScoped({ pluginId: legacyMachinePlugin[1]!, scope: "machine", verb: legacyMachinePlugin[2]!, legacy: true }, request, url, response))
+      ) {
         return;
       }
       /**
