@@ -29,7 +29,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver } from "../src/driver";
 import type { DriverRun, TurnDriver } from "../src/provider-contract";
 import { TelarToolSocket } from "../src/telar-socket";
-import { setPluginToolModules } from "../src/plugins/bundled";
+import { bundledPluginToolModules, setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import type { PluginToolModule } from "../src/plugins/tool-module";
 import { stubModels } from "./stub-models";
@@ -56,7 +56,7 @@ afterEach(async () => {
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
   for (const socket of telarSockets.splice(0)) await socket.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
-  setPluginToolModules([]);
+  setPluginToolModules(bundledPluginToolModules());
 });
 
 /**

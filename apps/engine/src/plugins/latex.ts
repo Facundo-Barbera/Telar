@@ -12,7 +12,10 @@
 import { z } from "zod";
 import { LatexMachineSettings, LatexMachineSettingsWrite, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
 import type { LatexCapability } from "../latex/capability";
+import { clientLatexCapability } from "../latex/client-capability";
+import { latexTools } from "../latex/latex-tools";
 import type { PluginEngineModule, PluginInitContext } from "./contract";
+import type { PluginToolModule } from "./tool-module";
 
 /** The lenient reader, for the store's own resolve. See `protocol/plugins.ts`. */
 export { LatexMachineSettings };
@@ -64,6 +67,11 @@ export const latexMeta: PluginMeta = {
   icon: "FileText",
   toolPrefixes: ["latex"],
   readTools: [],
+  briefing: [
+    "This project has LaTeX on.",
+    "`latex_compile` builds the project's main document (or a path you name) and `latex_log` reads the log around an error;",
+    "`latex_packages` and `latex_install` manage the distribution's packages. Compile with these rather than invoking TeX from the shell.",
+  ].join(" "),
   eventKinds: ["latex.compile.state"],
   settings: [
     {
@@ -81,6 +89,13 @@ export const latexMeta: PluginMeta = {
       icon: "FileText",
     },
   ],
+};
+
+/** THE WALL, under the names it always shipped with (`mcp__telar__latex_*`). */
+export const latexToolModule: PluginToolModule = {
+  meta: latexMeta,
+  capability: (call) => clientLatexCapability(call),
+  tools: (tool, capability) => latexTools(tool, capability as LatexCapability),
 };
 
 /**

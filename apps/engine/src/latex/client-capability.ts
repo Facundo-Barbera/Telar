@@ -1,13 +1,14 @@
 /**
- * `LatexCapability` out of `EngineClient` calls — the worker's copy. Every
- * verb lands on a `/v2/sessions/:id/latex/*` route that calls `store.latex()`,
- * so there is one implementation of every rule and the worker runs no TeX.
+ * `LatexCapability` over the generic plugin wire — the worker's copy. Every
+ * verb lands on `/v2/sessions/:id/plugins/latex/*`, whose route table calls
+ * `store.latex()`, so there is one implementation of every rule and the worker
+ * runs no TeX.
  */
-import type { EngineClient } from "@telar/engine-client";
+import type { PluginCall } from "../plugins/tool-module";
 import type { LatexCapability } from "./capability";
 
-export function clientLatexCapability(client: Pick<EngineClient, "latex">, sessionId: string): LatexCapability {
-  const latex = (method: string, body?: unknown) => client.latex<never>(sessionId, method, body);
+export function clientLatexCapability(call: PluginCall): LatexCapability {
+  const latex = (method: string, body?: unknown) => call<never>(method, body);
   return {
     toolchain: () => latex("toolchain"),
     compile: (input) => latex("compile", input ?? {}),

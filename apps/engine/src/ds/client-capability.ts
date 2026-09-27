@@ -1,13 +1,14 @@
 /**
- * `DsCapability` out of `EngineClient` calls — the worker's copy. Every verb
- * lands on a `/v2/sessions/:id/ds/*` route that calls `store.dataScience()`,
- * so there is one implementation of every rule and the worker holds no kernel.
+ * `DsCapability` over the generic plugin wire — the worker's copy. Every verb
+ * lands on `/v2/sessions/:id/plugins/data-science/*`, whose route table calls
+ * `store.dataScience()`, so there is one implementation of every rule and the
+ * worker holds no kernel.
  */
-import type { EngineClient } from "@telar/engine-client";
+import type { PluginCall } from "../plugins/tool-module";
 import type { DsCapability } from "./capability";
 
-export function clientDsCapability(client: Pick<EngineClient, "ds">, sessionId: string): DsCapability {
-  const ds = (method: string, body?: unknown) => client.ds<never>(sessionId, method, body);
+export function clientDsCapability(call: PluginCall): DsCapability {
+  const ds = (method: string, body?: unknown) => call<never>(method, body);
   return {
     kernel: () => ds("kernel"),
     execute: (input) => ds("execute", input),

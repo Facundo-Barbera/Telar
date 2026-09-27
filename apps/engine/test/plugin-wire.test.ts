@@ -101,7 +101,8 @@ const text = (result: { content: unknown[] }) => (result.content[0] as { text: s
 
 test("the gate decides on BOTH sides, and an ungated daemon has no door at all", async () => {
   gateOff();
-  expect(bundledPluginToolModules()).toHaveLength(0);
+  // The walls match the modules: the two shipped ones, and no proof plugin.
+  expect(bundledPluginToolModules().map((module) => module.meta.id)).toEqual(["latex", "data-science"]);
   const { client, sessionId } = await ready({ enable: true });
   const health = await client.health();
   // LaTeX is a migrated plugin and is always registered, so the health document

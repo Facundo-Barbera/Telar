@@ -104,6 +104,13 @@ export const PluginMeta = z.object({
    * ratifies. Names are unqualified (`latex_status`, not `mcp__telar__…`).
    */
   readTools: z.array(z.string().min(1)).default([]),
+  /**
+   * The paragraph a session is told when this plugin is on for it — what the
+   * tools are for, in a few lines. Appended beside the browser and run
+   * briefings by every driver, and absent from a session whose project did not
+   * enable the plugin, so no agent is taught tools it does not have.
+   */
+  briefing: z.string().min(1).max(2000).optional(),
   /** Journal event kinds this plugin emits, inside the `plugin.event` envelope. */
   eventKinds: z.array(z.string().min(1)).default([]),
   /**

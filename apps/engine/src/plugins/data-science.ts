@@ -12,7 +12,11 @@
 import { z } from "zod";
 import { DataScienceMachineSettings, DataScienceMachineSettingsWrite, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
 import type { DsCapability } from "../ds/capability";
+import { clientDsCapability } from "../ds/client-capability";
+import { dsTools } from "../ds/ds-tools";
+import { notebookTools } from "../ds/notebook-tools";
 import type { PluginEngineModule, PluginInitContext } from "./contract";
+import type { PluginToolModule } from "./tool-module";
 
 /** The lenient reader, for the store's own resolve. See `protocol/plugins.ts`. */
 export { DataScienceMachineSettings };
@@ -48,6 +52,11 @@ export const dataScienceMeta: PluginMeta = {
   icon: "FlaskConical",
   toolPrefixes: ["ds", "notebook"],
   readTools: ["ds_packages", "ds_kernel"],
+  briefing: [
+    "This project has data science on: a Python kernel per session, in the session's own directory.",
+    "`notebook_*` opens, edits and runs `.ipynb` cells in that kernel; `ds_*` works with its state (vars, plots, snapshots, packages).",
+    "Prefer these over shelling out to Python, and read each tool's description for its contract.",
+  ].join(" "),
   eventKinds: ["kernel.state.changed"],
   sessionStateDir: "ds",
   gitignore: {
@@ -75,6 +84,20 @@ export const dataScienceMeta: PluginMeta = {
       blurb: "The Python and packages a project inherits on this Mac.",
       icon: "FlaskConical",
     },
+  ],
+};
+
+/**
+ * THE WALL, registered wherever the host's tool modules are — the Claude
+ * in-process server, the `telar` socket, the worker's lease — under the names
+ * it always shipped with (`mcp__telar__ds_*`, `mcp__telar__notebook_*`).
+ */
+export const dataScienceToolModule: PluginToolModule = {
+  meta: dataScienceMeta,
+  capability: (call) => clientDsCapability(call),
+  tools: (tool, capability) => [
+    ...notebookTools(tool, capability as DsCapability),
+    ...dsTools(tool, capability as DsCapability),
   ],
 };
 

@@ -127,12 +127,12 @@ test("the legacy mirror is still written, so rolling back keeps the user's setti
 
 test("LaTeX's tools keep their shipped names, so no stored approval is orphaned", () => {
   // THE COMPATIBILITY DECISION, pinned. `latex_compile` ships as
-  // `mcp__telar__latex_compile`; serving it from the plugin socket would rename
-  // it and orphan every grant a user has given it.
+  // `mcp__telar__latex_compile`; a rename would orphan every grant a user has
+  // given it.
   expect(canonicalToolName(TELAR_MCP_SERVER, "latex_compile")).toBe("mcp__telar__latex_compile");
   expect(parseToolName("mcp__telar__latex_compile").capability).toBe("latex");
 
-  // …which is why LaTeX contributes NO wall to the plugin socket. Its engine
-  // module migrated; its tool registration deliberately did not.
-  expect(bundledPluginToolModules().map((module) => module.meta.id)).not.toContain("latex");
+  // Its wall is now a host tool module, registered on the `telar` key like
+  // every other — which is what keeps the name above.
+  expect(bundledPluginToolModules().map((module) => module.meta.id)).toContain("latex");
 });

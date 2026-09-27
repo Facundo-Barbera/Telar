@@ -331,9 +331,9 @@ Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
   \`run_output\` and \`run_wait\` still answer for one release; use the
   terminal ones.
 
-A project may also opt into data science (\`ds_*\`, \`notebook_*\`) and LaTeX
-(\`latex_*\`). Those toolkits exist only where the project turned them on, and
-each tool's own description carries its contract.
+A project may also turn on plugins, which add toolkits of their own. They exist
+only where the project turned them on, the session is told about each one it
+has, and each tool's own description carries its contract.
 `;
 
 /** The content hash the installer compares against. Exported so a test and the
