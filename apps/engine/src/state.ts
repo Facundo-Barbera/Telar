@@ -13415,6 +13415,7 @@ export class EngineStore {
     const notification: NotificationDetail = {
       ...cohortNotification({
         cohortId: cohort.id,
+        openedAt: cohort.createdAt,
         members,
         reason,
         minutes: Math.round((cohort.expiresAt - cohort.createdAt) / 60_000),
