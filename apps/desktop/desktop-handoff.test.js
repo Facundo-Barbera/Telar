@@ -215,7 +215,7 @@ describe("N's boot record", () => {
     const dir = tmp("telar-ho-");
     core.writeJson(core.paths(dir).pending, { version: "2.0.0", bundleId: core.NEW_BUNDLE_ID });
     expect(core.confirmBoot(dir, { bundleId: core.NEW_BUNDLE_ID, version: "2.0.0", now: 0 })).toEqual({ action: "confirmed" });
-    expect(core.readJson(core.paths(dir).confirmed)).toEqual({ version: "2.0.0", bundleId: core.NEW_BUNDLE_ID, confirmedAt: 0, launches: 1 });
+    expect(core.readJson(core.paths(dir).confirmed)).toEqual({ version: "2.0.0", bundleId: core.NEW_BUNDLE_ID, confirmedAt: 0 });
     expect(fs.existsSync(core.paths(dir).pending)).toBe(false);
   });
 
@@ -226,22 +226,77 @@ describe("N's boot record", () => {
     expect(fs.existsSync(core.paths(dir).confirmed)).toBe(false);
   });
 
-  test("last-good goes on a later launch at least a week after confirming, once", () => {
+  test("a confirmed swap is cleaned up on every launch until it has been, then never again", () => {
     const dir = tmp("telar-ho-");
-    core.writeJson(core.paths(dir).confirmed, { version: "2.0.0", bundleId: core.NEW_BUNDLE_ID, confirmedAt: 0, launches: 1 });
-    const boot = (now) => core.confirmBoot(dir, { bundleId: core.NEW_BUNDLE_ID, version: "2.0.0", now }).action;
-    expect(boot(1 * DAY)).toBe("none");
-    expect(boot(6 * DAY)).toBe("none");
-    expect(boot(7 * DAY)).toBe("remove-last-good");
-    expect(boot(8 * DAY)).toBe("none");
+    // A record from before this rule, still counting launches toward the old week.
+    core.writeJson(core.paths(dir).confirmed, { version: "2.0.0", bundleId: core.NEW_BUNDLE_ID, confirmedAt: 0, launches: 3 });
+    const boot = () => core.confirmBoot(dir, { bundleId: core.NEW_BUNDLE_ID, version: "2.0.0", now: DAY }).action;
+    expect(boot()).toBe("clean-up");
+    expect(boot()).toBe("clean-up");
+    core.markCleanedUp(dir);
+    expect(boot()).toBe("none");
+  });
+
+  test("the old app never cleans up after a swap it rolled back to", () => {
+    const dir = tmp("telar-ho-");
+    core.writeJson(core.paths(dir).confirmed, { version: "2.0.0", bundleId: core.NEW_BUNDLE_ID, confirmedAt: 0 });
+    expect(core.confirmBoot(dir, { bundleId: core.LEGACY_BUNDLE_ID, version: "1.0.0" })).toEqual({ action: "none" });
   });
 
   test("nothing on disk is nothing to do", () => {
     expect(core.confirmBoot(tmp("telar-ho-"), { bundleId: core.NEW_BUNDLE_ID, version: "2.0.0" })).toEqual({ action: "none" });
   });
+});
 
-  test("the old id's leftovers never include the computer-use helper's state", () => {
-    for (const parts of core.LEGACY_LEFTOVERS) expect(parts.join("/")).not.toContain("computer-use");
+describe("what the cleanup removes", () => {
+  const work = "/Users/x/Library/Application Support/Telar/handoff";
+  const home = "/Users/x";
+
+  test("only the rollback copy, the stub, staging and exact old-id names in ~/Library", () => {
+    expect(core.legacyLeftovers(work, home)).toEqual([
+      `${work}/last-good.app`,
+      `${work}/legacy-id.app`,
+      `${work}/staged`,
+      `${home}/Library/Caches/com.telar.desktop.ShipIt`,
+      `${home}/Library/Saved Application State/com.telar.desktop.savedState`,
+      `${home}/Library/HTTPStorages/com.telar.desktop`,
+      `${home}/Library/Preferences/com.telar.desktop.plist`,
+    ]);
+  });
+
+  test("never userData, the hand-off folder, the new id or the computer-use helper", () => {
+    const userData = path.dirname(work);
+    for (const target of core.legacyLeftovers(work, home)) {
+      expect(target).not.toBe(userData);
+      expect(target).not.toBe(work);
+      expect(target.startsWith(`${work}/`) || target.startsWith(`${home}/Library/`)).toBe(true);
+      expect(target).not.toContain("computer-use");
+      expect(target).not.toContain(core.NEW_BUNDLE_ID);
+      // Anything outside the hand-off folder names the old id exactly.
+      if (!target.startsWith(`${work}/`)) expect(path.basename(target).replace(/\.(ShipIt|savedState|plist)$/, "")).toBe(core.LEGACY_BUNDLE_ID);
+    }
+  });
+
+  test("the permission reset names the old id alone", () => {
+    expect(core.TCC_RESET_ARGS).toEqual(["reset", "All", core.LEGACY_BUNDLE_ID]);
+  });
+
+  test("the stub carries the old id and an executable that does nothing", () => {
+    const dir = tmp("telar-ho-");
+    const stub = core.writeLegacyStub(dir);
+    expect(stub).toBe(core.paths(dir).legacyStub);
+    const plist = fs.readFileSync(path.join(stub, "Contents", "Info.plist"), "utf8");
+    expect(plist).toContain(`<string>${core.LEGACY_BUNDLE_ID}</string>`);
+    expect(plist).toContain("<key>CFBundleExecutable</key><string>stub</string>");
+    expect(fs.readFileSync(path.join(stub, "Contents", "MacOS", "stub"), "utf8")).toBe("#!/bin/sh\n");
+  });
+
+  test("the swap helper is found by its script path, whatever else is running", () => {
+    const script = `${work}/handoff.sh`;
+    const ps = `/sbin/launchd\nbash ${script} 123 ${work}/../.Telar.handoff.app /Applications/Telar.app\n/usr/bin/tail -f x`;
+    expect(core.helperRunning(ps, script)).toBe(true);
+    expect(core.helperRunning("/sbin/launchd\nbash /tmp/other.sh", script)).toBe(false);
+    expect(core.helperRunning("", script)).toBe(false);
   });
 });
 
