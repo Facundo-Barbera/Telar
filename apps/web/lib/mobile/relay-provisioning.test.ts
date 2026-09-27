@@ -1,19 +1,22 @@
 /**
- * WHAT AN UNPROVISIONED MAC SAYS, AND WHO IT TELLS — issue #579.
+ * WHAT A MAC WITH NOBODY TO SEND TO SAYS, AND WHO IT TELLS — issue #579.
  *
  * Notifications never arrived on the owner's phone, and no code was broken:
- * the relay was unprovisioned and every surface that knew stayed quiet. The
- * worker returns without starting, the registration route answers
- * `{ configured: false }`, and until now the only place that fact was rendered
- * was a status line under a toggle on the phone.
+ * nothing could send and every surface that knew stayed quiet. The worker
+ * returns without starting, the registration route answers
+ * `{ configured: false }`, and until then the only place that fact was
+ * rendered was a status line under a toggle on the phone.
  *
  * What must not drift:
  *
- *   - the worker does NOT start without a relay, and the route says so, so a
- *     phone can tell "unavailable" from "nothing has happened yet";
+ *   - the worker does NOT start with no phone registered through the relay and
+ *     no direct key, and the route says so, so a phone can tell "unavailable"
+ *     from "nothing has happened yet";
+ *   - a phone that registered without a relay credential is reported as not
+ *     having finished registering, never as failing;
  *   - the status route answers the same predicate the worker gates on — a pane
  *     that disagreed with the sender would be worse than no pane;
- *   - NO CREDENTIAL leaves that route: not the relay token, not a device token,
+ *   - NO CREDENTIAL leaves that route: not a relay key, not a device token,
  *     not a push-to-start token;
  *   - `notification()` pushes for the two things a person must be told about —
  *     a session that opened a request, and a turn that failed — and the second
@@ -30,7 +33,6 @@ import { addDevice, mintDeviceToken } from "../remote/store";
 import { GET as pushGET } from "../../app/api/mobile/push/route";
 import { GET as relayGET } from "../../app/api/mobile/relay/route";
 import { notification, pushConfigured, readPushRecords, saveRegistration, signalKey, writePushRecords, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
-import { parseRelayConfig } from "./relay-config";
 import { startMobilePushWorker } from "./worker";
 import { deliverRecord } from "./worker";
 
@@ -51,9 +53,8 @@ function setup() {
   folder = fs.mkdtempSync(path.join(os.tmpdir(), "telar-relay-"));
   process.env.TELAR_HOME = folder;
   process.env.TELAR_COCKPIT = "1";
-  // No relay item is readable in a test (`relayConfig` needs the cockpit's own
-  // startup hook), and no APNs key is in the environment — which is exactly the
-  // owner's Mac before this batch.
+  // No phone has registered and no direct key is in the environment — which is
+  // exactly the owner's Mac before this batch.
   delete process.env.TELAR_APNS_KEY_ID;
 }
 
@@ -70,7 +71,7 @@ const registration: MobileRegistration = {
 };
 const working: SessionSignal = { id: "session_a", title: "Private repository task", activity: "working", activityAt: 1000 };
 
-describe("an unprovisioned Mac", () => {
+describe("a Mac with nobody to send to", () => {
   test("the worker does not start, and nothing schedules a tick", () => {
     setup();
     expect(pushConfigured()).toBe(false);
@@ -90,17 +91,24 @@ describe("an unprovisioned Mac", () => {
 
   test("the status route answers the same predicate the worker gates on", async () => {
     setup();
-    const answer = await relayGET(new Request("http://localhost/api/mobile/relay"));
-    const body = (await answer.json()) as { configured: boolean; relay: boolean; sandbox: boolean; devices: unknown[] };
+    const answer = await relayGET();
+    const body = (await answer.json()) as Record<string, unknown>;
     expect(body.configured).toBe(pushConfigured());
     expect(body.configured).toBe(false);
-    expect(body.relay).toBe(false);
     expect(body.devices).toEqual([]);
+    // Nothing about provisioning is left to report.
+    expect(Object.keys(body).sort()).toEqual(["configured", "devices"]);
   });
 
-  test("the fresh read that follows provisioning starts nothing while there is still no relay", async () => {
+  test("a phone that brought no relay credential is shown as not yet registered, and not sent to", async () => {
     setup();
-    await relayGET(new Request("http://localhost/api/mobile/relay?fresh=1"));
+    const device = addDevice("Phone", mintDeviceToken());
+    saveRegistration(device.id, registration);
+    const body = (await (await relayGET()).json()) as { configured: boolean; devices: Array<{ transport: string }> };
+    expect(body.devices[0]!.transport).toBe("none");
+    // Nothing can reach it, so the worker does not start to try.
+    expect(body.configured).toBe(false);
+    startMobilePushWorker();
     expect((globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer).toBeUndefined();
   });
 });
@@ -112,7 +120,7 @@ describe("the status route never carries a credential", () => {
     const device = addDevice("Facundo's iPhone", token);
     saveRegistration(device.id, { ...registration, pushToStartToken: "b".repeat(64), liveActivities: true });
 
-    const answer = await relayGET(new Request("http://localhost/api/mobile/relay"));
+    const answer = await relayGET();
     const text = await answer.text();
     // The three secrets a push record holds. None of them is a thing a Settings
     // pane has any use for.
@@ -133,7 +141,7 @@ describe("the status route never carries a credential", () => {
   test("a record whose device is no longer paired is shown as what it is", async () => {
     setup();
     saveRegistration("gone", registration);
-    const answer = await relayGET(new Request("http://localhost/api/mobile/relay"));
+    const answer = await relayGET();
     const body = (await answer.json()) as { devices: Array<{ paired: boolean; name?: string }> };
     expect(body.devices[0]!.paired).toBe(false);
     expect(body.devices[0]!.name).toBeUndefined();
@@ -208,54 +216,15 @@ describe("the status route says why a phone is not being reached", () => {
     saveRegistration(device.id, registration);
     writePushRecords([{ ...readPushRecords()[0]!, lastStatus: 400, lastReason: "BadDeviceToken", failures: 20, parked: true }]);
 
-    const body = (await (await relayGET(new Request("http://localhost/api/mobile/relay"))).json()) as {
-      devices: Array<{ lastStatus?: number; lastReason?: string; consecutiveFailures: number; parked: boolean; mine: boolean }>;
+    const body = (await (await relayGET()).json()) as {
+      devices: Array<{ lastStatus?: number; lastReason?: string; consecutiveFailures: number; parked: boolean }>;
     };
     expect(body.devices[0]).toMatchObject({ lastStatus: 400, lastReason: "BadDeviceToken", consecutiveFailures: 20, parked: true });
-    // No relay is readable in a test, so this Mac has no host id — and the
-    // record carries none either, which is the single-Mac install.
-    expect(body.devices[0]!.mine).toBe(true);
-  });
-
-  test("a record another Mac registered is reported as not this one's to send", async () => {
-    setup();
-    const device = addDevice("Phone", mintDeviceToken());
-    saveRegistration(device.id, registration, undefined, "mac-two");
-    const body = (await (await relayGET(new Request("http://localhost/api/mobile/relay"))).json()) as { devices: Array<{ mine: boolean }> };
-    expect(body.devices[0]!.mine).toBe(false);
   });
 
   test("a quiet Mac reports no pause, and the pause is never a guess", async () => {
     setup();
-    const body = (await (await relayGET(new Request("http://localhost/api/mobile/relay"))).json()) as { pausedUntil?: number };
+    const body = (await (await relayGET()).json()) as { pausedUntil?: number };
     expect(body.pausedUntil).toBeUndefined();
-  });
-});
-
-describe("what counts as a relay config", () => {
-  const token = "a".repeat(64);
-  test("an https origin with no path, and a 64-hex token", () => {
-    expect(parseRelayConfig({ url: "https://relay.example.com/", token })).toEqual({ url: "https://relay.example.com", token });
-  });
-  test("the host id rides along when the Keychain item carries one", () => {
-    expect(parseRelayConfig({ url: "https://relay.example.com/", token, id: "mac-one" })).toEqual({ url: "https://relay.example.com", token, id: "mac-one" });
-    // An id that is not one names nobody; the config still pushes without it.
-    expect(parseRelayConfig({ url: "https://relay.example.com/", token, id: "not a host id!" })).toEqual({ url: "https://relay.example.com", token });
-  });
-  test("every plausible paste that must not be stored", () => {
-    for (const input of [
-      { url: "http://relay.example.com", token },
-      // A base carrying its own path would silently retarget every relay route
-      // appended to it.
-      { url: "https://relay.example.com/v1", token },
-      { url: "https://user:pw@relay.example.com", token },
-      { url: "https://relay.example.com?x=1", token },
-      { url: "https://relay.example.com", token: token.slice(1) },
-      { url: "https://relay.example.com" },
-      "https://relay.example.com",
-      null,
-    ]) {
-      expect(parseRelayConfig(input)).toBeUndefined();
-    }
   });
 });
