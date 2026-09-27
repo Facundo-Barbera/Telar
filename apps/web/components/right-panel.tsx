@@ -1273,14 +1273,9 @@ function AgentsSurface({
 }) {
   const { agents: loose } = useMemo(() => splitRoster(tasks), [tasks]);
   /**
-   * THE CADENCE INTRODUCES THE RELATIONSHIP REGION — issue #723, and the owner's
-   * own choice of home for it. How often this conversation is told about its
-   * peers is a property of the relationships listed underneath, so it sits
-   * directly above them rather than in the composer or the header.
-   *
-   * ALWAYS, NOT ONLY WHEN A PEER EXISTS. A window is what you set BEFORE
-   * dispatching several peers — a control that appeared once they were already
-   * talking would arrive exactly one decision too late.
+   * WHAT THIS CONVERSATION IS HOLDING FROM ITS PEERS introduces the relationship
+   * region — a count of reports waiting for its next turn, directly above the
+   * relationships they came from.
    */
   const related = (
     <>
