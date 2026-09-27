@@ -628,10 +628,15 @@ export function projectJournal(
  * A coordinator with five workers ended every long turn with a column of them.
  *
  * So each one moves into the turn that was running when it was accepted, at
- * its time among that turn's rows, the way a steered notice already sits. One
- * with no such turn in view (an idle session with a report window, a page that
- * does not reach back that far) stays a row of its own. A copy of the host is
- * returned, never the projector's cached fold.
+ * its time among that turn's rows, the way a steered notice already sits.
+ *
+ * ONE THAT ARRIVED WHILE THE SESSION WAS IDLE moves into the NEXT turn — the
+ * one that handed it over (the engine gives held mail to whatever turn starts
+ * next) — at its head. The same goes for a result held for a cohort and a
+ * completion recorded rather than woken on: none of them is a turn the model
+ * took, and drawn as rows of their own they read as a coordinator woken once
+ * per worker. Only one with no turn after it yet stays a row of its own. A copy
+ * of the host is returned, never the projector's cached fold.
  */
 export function hostPassiveArrivals(turns: readonly JournalTurn[]): JournalTurn[] {
   const guestsOf = new Map<string, JournalTurn[]>();
@@ -648,7 +653,7 @@ export function hostPassiveArrivals(turns: readonly JournalTurn[]): JournalTurn[
           candidate.startedAt !== undefined &&
           candidate.startedAt <= arrived &&
           (candidate.endedAt === undefined ? candidate.state === "claimed" || candidate.state === "running" : candidate.endedAt >= arrived),
-      );
+      ) ?? turns.slice(index + 1).find((candidate) => candidate.agentDelivery !== "passive" && !candidate.decidedForBackgroundWork);
     if (!host) continue;
     guestsOf.set(host.runId, [...(guestsOf.get(host.runId) ?? []), turn]);
     hosted.add(turn.runId);

@@ -823,9 +823,19 @@ describe("passive arrivals", () => {
     expect(shown.map((row) => row.runId)).toEqual(["run_386", "run_399"]);
   });
 
-  test("a passive arrival with no turn running stays a row", () => {
+  test("a passive arrival with no turn running, and none after it yet, stays a row", () => {
     const idle: Turn = { ...host, state: "completed", completedAt: 105 };
     expect(hostPassiveArrivals(projectJournal([idle, ...guests], rows, [])).map((row) => row.runId)).toEqual(["run_386", "run_392", "run_394", "run_397"]);
+  });
+
+  test("arrivals while idle fold into the head of the NEXT turn — the one that handed them over", () => {
+    // Held results for a cohort, recorded completions, reports: none is a turn
+    // the model took, and as rows they read as one wake per worker.
+    const idle: Turn = { ...host, state: "completed", completedAt: 105 };
+    const next: Turn = { ...turn, runId: "run_398", sequence: 398, input: "[cohort done]", state: "running", acceptedAt: 200, updatedAt: 200, startedAt: 200 };
+    const shown = hostPassiveArrivals(projectJournal([idle, ...guests, next], rows, []));
+    expect(shown.map((row) => row.runId)).toEqual(["run_386", "run_398"]);
+    expect(shown[1]!.items.map((row) => row.id)).toEqual(["notification_run_392", "notification_run_394", "notification_run_397"]);
   });
 
   test("a wake — delivered, not passive — is still a turn of its own", () => {
