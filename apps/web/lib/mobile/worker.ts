@@ -256,6 +256,24 @@ export function ownRecords(records: PushRecord[], ownHostId: string | undefined)
   return records.filter(record => record.relayHostId === ownHostId);
 }
 
+/** A parked record the phone has not re-registered for in this long is dead. */
+export const PARKED_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * WHICH PARKED RECORDS WILL NEVER COME BACK, so Settings stops listing them.
+ *
+ * A parked record is already sent nothing; dropping it changes no delivery, and
+ * the phone's next app open registers afresh (`saveRegistration`). Two cases:
+ * the same phone has a record that is not parked (a debug build's registration
+ * outlived by the release one), or the phone has not opened the app in
+ * `PARKED_TTL_MS`. Never an unparked record, and never another Mac's.
+ */
+export function stalePushRecords(records: PushRecord[], ownHostId: string | undefined, now = Date.now()): PushRecord[] {
+  const live = new Set(records.filter(record => !record.parked).map(record => record.deviceId));
+  return ownRecords(records, ownHostId).filter(record =>
+    record.parked && (live.has(record.deviceId) || now - record.updatedAt >= PARKED_TTL_MS));
+}
+
 /** The sessions whose signal moved since the last pass, plus every one this Mac
  *  has not seen before. Everything else is, by definition, nothing to say. */
 export function changedSessions(sessions: SessionSignal[], previous: SessionSignal[] | undefined): Set<string> {
@@ -468,6 +486,11 @@ export function startMobilePushWorker(): void {
         // A v2 phone revokes its own key at the relay when it unpairs; there is nothing here to revoke.
         if (relay && !record.relay) await revokeRelayDevice(relay, record.deviceId);
         writePushRecords(readPushRecords().filter(r => r.deviceId !== record.deviceId));
+      }
+      if (stored.length) {
+        const current = readPushRecords();
+        const stale = new Set(stalePushRecords(current, ownHostId, nowMs));
+        if (stale.size) writePushRecords(current.filter(r => !stale.has(r)));
       }
       const records = stored.length ? ownRecords(readPushRecords(), ownHostId).filter(record => !record.parked) : [];
       if (!records.length && !desktop) return;

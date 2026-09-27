@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { ACTIVITY_REFRESH_S, ACTIVITY_STALE_S, isDeadToken, readPushRecords, saveRegistration, signalKey, writePushRecords, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import { relayDelivery } from "./relay";
-import { changedSessions, deliverRecord, heartbeatDue, heartbeatWanted, ownRecords, pauseHost, pushPausedUntil, PARK_AFTER_FAILURES } from "./worker";
+import { changedSessions, deliverRecord, heartbeatDue, heartbeatWanted, ownRecords, pauseHost, pushPausedUntil, PARK_AFTER_FAILURES, PARKED_TTL_MS, stalePushRecords } from "./worker";
 
 /**
  * THE QUOTA FAILURE, COVERED — issue #584.
@@ -183,6 +183,16 @@ describe("one Mac per phone", () => {
     // AND NEITHER DELETES THE OTHER'S. Both Macs read the same file; a Mac that
     // swept what it does not own would take the other one's phone away.
     expect(records).toHaveLength(2);
+  });
+
+  test("a parked record is pruned once superseded or left for two weeks, and nothing else is", () => {
+    const now = PARKED_TTL_MS * 2;
+    const live = record({ deviceId: "phone", topic: "com.telar.mobile", updatedAt: 1, relayHostId: "mac" });
+    const superseded = record({ deviceId: "phone", topic: "com.telar.mobile.dev", sandbox: true, parked: true, updatedAt: now, relayHostId: "mac" });
+    const abandoned = record({ deviceId: "gone", parked: true, updatedAt: now - PARKED_TTL_MS, relayHostId: "mac" });
+    const recent = record({ deviceId: "lonely", parked: true, updatedAt: now - 1000, relayHostId: "mac" });
+    const theirs = record({ deviceId: "other", parked: true, updatedAt: 1, relayHostId: "mac-two" });
+    expect(stalePushRecords([live, superseded, abandoned, recent, theirs], "mac", now)).toEqual([superseded, abandoned]);
   });
 
   test("a Mac with no relay id serves the records that carry none, and no others", () => {
