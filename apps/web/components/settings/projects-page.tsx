@@ -66,8 +66,8 @@ import {
   MonitorIcon,
   SparklesIcon,
 } from "lucide-react";
-import type { EnvMode, PluginStatus, Project, ProviderDriverKind, ProviderInstance, ProviderModel } from "@telar/engine-client";
-import { defaultInstanceIdForDriver, pluginEnabled, readProjectPlugins } from "@telar/engine-client";
+import type { EnvMode, PluginStatus, Project, ProjectPlugins, ProviderDriverKind, ProviderInstance, ProviderModel } from "@telar/engine-client";
+import { defaultInstanceIdForDriver, machineAllows, pluginEnabled, readProjectPlugins } from "@telar/engine-client";
 import type { PublicHost } from "@/lib/hosts/store";
 import { choiceNamesAnything, choiceOf, sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { createEngineApi } from "@/lib/engine/client";
@@ -84,7 +84,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DataScienceSection } from "./data-science-section";
 import { LatexSection } from "./latex-section";
 import { McpSection } from "./mcp-section";
-import { PluginSettings } from "./plugin-settings";
+import { machineOffReason, PluginSettings } from "./plugin-settings";
 import { RemoveProjectSection } from "./remove-project-section";
 import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 import { ProjectWorkspaceSection } from "./workspace-config-section";
@@ -442,10 +442,13 @@ export function ProjectConversationRows({
 export function ProjectPluginRows({
   project,
   plugins,
+  machine,
   onChange,
 }: {
   project?: ScopedProject;
   plugins?: PluginStatus[];
+  /** This Mac's plugin switches; a plugin off here is off for every project on it. */
+  machine?: ProjectPlugins;
   onChange?: (project: Project) => void;
 }) {
   const [busy, setBusy] = useState<string>();
@@ -481,7 +484,9 @@ export function ProjectPluginRows({
             ? `Registered on ${project?.hostName ?? "another Mac"}. Change it in that Mac's own settings.`
             : failed
               ? (entry.error ?? "This plugin did not start, so turning it on would do nothing.")
-              : undefined;
+              : !machineAllows(machine, entry.pluginId)
+                ? machineOffReason(entry.label)
+                : undefined;
         return (
           <ToggleRow
             key={entry.key}
@@ -514,13 +519,15 @@ export function ProjectPluginRows({
  * lib/plugins/sections.ts says why: silently replacing an environment picker
  * with a checkbox is a downgrade nobody would notice until they needed it.
  */
-function ProjectPluginPanes({
+export function ProjectPluginPanes({
   project,
   plugins,
+  machine,
   onChange,
 }: {
   project: Project;
   plugins?: PluginStatus[];
+  machine?: ProjectPlugins;
   onChange: (project: Project) => void;
 }) {
   const entries = useMemo(() => projectPluginSections(plugins), [plugins]);
@@ -529,7 +536,11 @@ function ProjectPluginPanes({
   return (
     <>
       {entries.map((entry) =>
-        !pluginEnabled(enabled, entry.pluginId) ? (
+        // OFF FOR THE MAC WINS over the project's own answer: the bespoke pane
+        // would offer a plugin the engine refuses, so the generic one says why.
+        !machineAllows(machine, entry.pluginId) ? (
+          <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} machineOff />
+        ) : !pluginEnabled(enabled, entry.pluginId) ? (
           <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />
         ) : entry.pluginId === "data-science" ? (
           <DataScienceSection key={entry.key} project={project} onChange={onChange} />
@@ -549,6 +560,7 @@ export function ProjectsPage() {
   const [byHost, setByHost] = useState<Record<string, ScopedProject[]>>({});
   const [selected, setSelected] = useState<string>(ALL_PROJECTS);
   const [plugins, setPlugins] = useState<PluginStatus[]>();
+  const [machine, setMachine] = useState<ProjectPlugins>();
   const [instances, setInstances] = useState<ProviderInstance[]>();
   const [unreachable, setUnreachable] = useState(false);
   const [busy, setBusy] = useState<string>();
@@ -609,6 +621,9 @@ export function ProjectsPage() {
         // WHICH PLUGINS EXIST is this Mac's answer. A project on another Mac
         // still lists them, and says so rather than offering a write.
         setPlugins(await api.health().then((health) => health.plugins ?? []).catch(() => []));
+        // THIS MAC'S SWITCHES, so a plugin it has off is not offered per project.
+        // Never fatal: without an answer every plugin reads as allowed, as the engine does.
+        setMachine(await api.machinePlugins().then((answer) => answer.machine).catch(() => undefined));
         // WHICH LOGINS EXIST, so the model row can map a stored selection's
         // instance id back to the provider it belongs to. Never fatal: with no
         // answer the picker opens on Claude, which is where the engine's own
@@ -786,7 +801,12 @@ export function ProjectsPage() {
           be editors bound to nothing: the switch list stays, visible and inert,
           so the reader still learns which plugins the setting is about. */}
       {(!project || project.hostId) && (
-        <ProjectPluginRows {...(project ? { project } : {})} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+        <ProjectPluginRows
+          {...(project ? { project } : {})}
+          {...(plugins ? { plugins } : {})}
+          {...(machine ? { machine } : {})}
+          onChange={replaceProject}
+        />
       )}
 
       {/* WHAT THE STANDALONE PAGE HELD (#363). Only for a project on THIS Mac:
@@ -797,7 +817,12 @@ export function ProjectsPage() {
           <McpSection scope={{ projectId: project.id, projectName: project.name }} />
           {/* Keyed so one project's view never renders under another's name. */}
           <ProjectWorkspaceSection key={project.id} projectId={project.id} />
-          <ProjectPluginPanes project={project} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+          <ProjectPluginPanes
+            project={project}
+            {...(plugins ? { plugins } : {})}
+            {...(machine ? { machine } : {})}
+            onChange={replaceProject}
+          />
         </>
       )}
 

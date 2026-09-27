@@ -26,6 +26,7 @@ import { CircleAlertIcon, FlaskConicalIcon, PackageIcon } from "lucide-react";
 import type { DataScienceToolchain, ProjectPlugins } from "@telar/engine-client";
 import { dataScienceMachineSettings } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { machineSettingsPatch } from "@/lib/plugins/sections";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -85,9 +86,7 @@ export function DataScienceMachineSettings({
       // key must actually go rather than be stored as an empty string.
       if (!next.python) delete next.python;
       if (!next.packages?.length) delete next.packages;
-      // `enabled: true` rather than omitted: writing a setting for a plugin the
-      // Mac has turned off would silently turn it back on.
-      const answer = await api.updateMachinePlugins({ "data-science": { enabled: true, settings: next } });
+      const answer = await api.updateMachinePlugins(machineSettingsPatch(machine, "data-science", next));
       onChange(answer.machine);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

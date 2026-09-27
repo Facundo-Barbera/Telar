@@ -31,6 +31,7 @@ import { CircleAlertIcon, DownloadIcon, HardDriveIcon, PackagePlusIcon, Settings
 import type { LatexToolchain, ManagedTectonic, PluginLatexEngine, ProjectPlugins } from "@telar/engine-client";
 import { latexMachineSettings } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { machineSettingsPatch } from "@/lib/plugins/sections";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -136,9 +137,7 @@ export function LatexMachineSettings({
       // An undefined field means "no default", and the blob is replaced whole,
       // so the key has to actually go rather than be written as undefined.
       for (const key of Object.keys(next) as (keyof typeof next)[]) if (next[key] === undefined) delete next[key];
-      // `enabled: true` rather than omitted: writing a setting for a plugin the
-      // Mac has turned off would silently turn it back on.
-      const answer = await api.updateMachinePlugins({ latex: { enabled: true, settings: next } });
+      const answer = await api.updateMachinePlugins(machineSettingsPatch(machine, "latex", next));
       onChange(answer.machine);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

@@ -174,6 +174,12 @@ describe("what the pane shows before anybody has chosen", () => {
     await unmount();
   });
 
+  test("the provider trigger reads the provider's name, not its id (#318)", async () => {
+    const { host, unmount } = await pane({ provider: "deepgram", configured: true, language: "multi", languages: [] });
+    expect(host.querySelector('[aria-label="Dictation provider"] [data-slot="select-value"]')?.textContent).toBe("Deepgram");
+    await unmount();
+  });
+
   /* ---------------------------------------------------------------- *
    * WHICH LANGUAGE — issue #560.
    * ---------------------------------------------------------------- */
