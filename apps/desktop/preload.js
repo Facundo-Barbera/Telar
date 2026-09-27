@@ -304,6 +304,17 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     runaway: () => ipcRenderer.invoke("telar:metrics:runaway"),
     onRunaway: (listener) => on("telar:metrics:runaway", listener),
   },
+  /**
+   * WHETHER ANYBODY CAN SEE THIS WINDOW (#834). The page's own Page Visibility
+   * API is dead in this shell — `backgroundThrottling: false` suppresses it —
+   * so the main process says it instead. `get` for a renderer that mounted
+   * after the last edge, `onChange` for every edge after. See
+   * window-visibility.js, and apps/web/lib/host-visibility.ts for the reader.
+   */
+  visibility: {
+    get: () => ipcRenderer.invoke("telar:window:visibility"),
+    onChange: (listener) => on("telar:window:visibility", listener),
+  },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     // ANSWERS WHAT IT DID WITH THE PRESS — `{ status: "restarting" }` for the

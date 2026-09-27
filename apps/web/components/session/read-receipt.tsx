@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher } from "@/lib/hosts/client";
+import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
 import {
   ReadReceiptCourier,
   type ReceiptAnswer,
@@ -41,18 +42,19 @@ import {
  * BOTH HALVES. `visibilityState` alone says a background tab is hidden but
  * calls an unfocused window in the corner of a second monitor visible, and
  * `hasFocus` alone is true for a tab whose window is focused while another tab
- * is showing. Neither is enough on its own and both are one listener.
+ * is showing. Neither is enough on its own and both are one listener. The
+ * visibility half is `hostVisible()`, which the desktop shell can answer.
  */
 function useForeground(): boolean {
   const [foreground, setForeground] = useState(false);
   useEffect(() => {
-    const read = () => setForeground(document.visibilityState === "visible" && document.hasFocus());
+    const read = () => setForeground(hostVisible() && document.hasFocus());
     read();
-    document.addEventListener("visibilitychange", read);
+    const unsubscribe = subscribeHostVisibility(read);
     window.addEventListener("focus", read);
     window.addEventListener("blur", read);
     return () => {
-      document.removeEventListener("visibilitychange", read);
+      unsubscribe();
       window.removeEventListener("focus", read);
       window.removeEventListener("blur", read);
     };

@@ -418,7 +418,7 @@ jobs:
 
   # THE ELECTRON SUITE, WHICH NOTHING RAN UNTIL NOW (#622).
   #
-  # Fourteen `*.electron-test.js` files drive a REAL Electron against real pages,
+  # Fifteen `*.electron-test.js` files drive a REAL Electron against real pages,
   # the real OS clipboard, real popups and a real pseudo-terminal. They are the
   # only proof of several
   # browser behaviours — #618 and #621 both landed verified by nothing else —
@@ -521,6 +521,11 @@ jobs:
           # page join off and on, so a run that dropped either arm matches
           # nothing. The number is meant to be edited when a section is added.
           run_case metrics         "PROCESS_METRICS_OK 6/6 orphan=named page=not-named"
+          # #834: the cockpit's page cannot see itself hidden under
+          # `backgroundThrottling: false`, so the shell says so. Only a real
+          # window on a real window server can prove the events fire and the
+          # answer crosses the bridge; it shows a window, which is why here.
+          run_case visibility      "WINDOW_VISIBILITY_OK 5/5 hidden=false shown=true"
           # THE MARKER IS A COUNT AND A PAIR OF OPPOSITE ANSWERS, not a name.
           #
           # A test-name grep is the dangerous idiom here — a SKIPPED test prints
