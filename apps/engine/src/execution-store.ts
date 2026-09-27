@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { EngineEvent, idleSince, isShelved, settlingActivityOf, type SessionActivity } from "@telar/engine-client";
+import { autoResolution, EngineEvent, idleSince, isShelved, RuntimeMode, settlingActivityOf, type RequestKind, type SessionActivity } from "@telar/engine-client";
 import type { ScheduleRule } from "./schedules";
 import { atomicWrite } from "./atomic";
 import { statePaths } from "./state-paths";
@@ -132,6 +132,13 @@ const SLIM_WATERMARK_PREFIX = "journal-slimmed/";
  * no reader outside this file ever sees a stub.
  */
 const SLIM_MARKER = "itemRow";
+
+/**
+ * WHERE THE POLICY-REQUEST PRUNE OF ONE SESSION GOT TO — issue #697 part B, and
+ * its own key for `USAGE_WATERMARK_PREFIX`'s reason: sharing any of the three
+ * above would start a store swept for months past every pair this is for.
+ */
+const REQUEST_PRUNE_WATERMARK_PREFIX = "journal-requests-pruned/";
 
 /**
  * THE SESSION'S LAST TERMINAL TURN EVENT, WRITTEN WHEN IT ARRIVES — issue #894,
@@ -489,7 +496,17 @@ export type ExecutionHousekeeping = {
   usage?: { rows: number; turns: number; sessions: number; refused: number };
   /** `item.completed` rows slimmed to a reference to their `items` row — #858. */
   slimmed?: { rows: number; sessions: number };
+  /** Policy-resolved request pairs pruned into per-turn counts — #697 part B.
+   *  `refused` is turns with prunable pairs but no summary row to count them in. */
+  requests?: { pairs: number; turns: number; sessions: number; refused: number };
 };
+
+/**
+ * HOW MANY REQUESTS THE POLICY RESOLVED IN ONE TURN, by kind and decision —
+ * what stays answerable once the pairs themselves are pruned. "Which command"
+ * lives on in the item's `item.completed`; "how many" lives here.
+ */
+export type TurnPolicyRequests = Record<string, Record<string, number>>;
 
 /** What a directory holds, in bytes and files — so a deletion can say what it
  *  took. Tolerant by design: a tree being swept is a tree nothing else should
@@ -1028,6 +1045,8 @@ export class ExecutionStore {
     for (const column of [
       "usage_input INTEGER", "usage_output INTEGER", "usage_cache_read INTEGER",
       "usage_cache_create INTEGER", "usage_reasoning INTEGER", "usage_rows INTEGER",
+      // #697 part B: `TurnPolicyRequests` as JSON. NULL until a pair is pruned.
+      "policy_requests TEXT",
     ]) {
       const name = column.split(" ")[0]!;
       if (!this.db.prepare("PRAGMA table_info(turn_summaries)").all().some((existing) => String(existing.name) === name))
@@ -1131,6 +1150,7 @@ export class ExecutionStore {
     const swept = { deltas: 0, starts: 0, sessions: 0 };
     const folded = { rows: 0, turns: 0, sessions: 0, refused: 0 };
     const slimmed = { rows: 0, sessions: 0 };
+    const pruned = { pairs: 0, turns: 0, sessions: 0, refused: 0 };
     let index = 0;
     const done = (): void => {
       this.walk = undefined;
@@ -1144,6 +1164,7 @@ export class ExecutionStore {
       }
       if (folded.turns > 0 || folded.refused > 0) this.housekeeping.usage = folded;
       if (slimmed.rows > 0) this.housekeeping.slimmed = slimmed;
+      if (pruned.pairs > 0 || pruned.refused > 0) this.housekeeping.requests = pruned;
       try { this.onRetentionSweep?.(); } catch { /* the next sweep covers whatever this one missed */ }
     };
     const step = (): void => {
@@ -1156,6 +1177,7 @@ export class ExecutionStore {
       // LAST, because it is bounded by what the compaction has already read:
       // the compaction measures deltas against `item.completed` text.
       try { this.slimInto(sessionId, slimmed); } catch { /* as above */ }
+      try { this.pruneRequestsInto(sessionId, pruned); } catch { /* as above */ }
       this.sweepYield(step);
     };
     this.sweepYield(step);
@@ -1606,6 +1628,171 @@ export class ExecutionStore {
     return slimmed;
   }
 
+  /**
+   * PRUNE THE REQUEST PAIRS THE POLICY RESOLVED — issue #697 part B.
+   *
+   * A request the runtime mode allows is opened and resolved in the same
+   * instant, and both rows say only "the engine permitted what it was always
+   * going to permit". Measured on the owner's store (26 Sep): 94,775 such pairs,
+   * 109.8 of 110.1 MiB of request rows. A request a person, a session or a
+   * cancellation resolved is a decision somebody made, and is never touched.
+   *
+   * ══ THE PREDICATE — ALL OF IT, OR THE PAIR STAYS ══
+   *
+   * 1. BOTH HALVES, EXACTLY ONCE, IN THIS RANGE: one `request.opened` whose
+   *    request is resolved by `policy`, one `request.resolved` by `policy` after
+   *    it, on the same run and with the same decision.
+   * 2. THE TURN HAS ENDED — its own terminal event, as `foldUsage` requires.
+   * 3. THE POLICY WOULD HAVE SAID SO: `autoResolution(mode, kind)` equals the
+   *    decision, with `mode` read from the newest `session.created`/`updated`
+   *    below the opened row. A row claiming `policy` that the mode at the time
+   *    would not have produced is a bug or a tampered row, and it survives.
+   *
+   * WHAT IS KEPT IN THEIR PLACE: a per-turn count by kind and decision in
+   * `turn_summaries.policy_requests`, so "how many did this turn auto-run"
+   * stays answerable. "Which command" lives on in the item's `item.completed`.
+   * A turn with no summary row has nowhere to put the count, so its pairs stay
+   * and it is counted as `refused`.
+   *
+   * IDEMPOTENT because a pruned pair is gone and cannot be counted twice; the
+   * counts are ADDED to, so a turn swept in two ranges sums correctly. Same
+   * per-session transaction and terminal bound as `compactSession`, with its
+   * own watermark for the reason `REQUEST_PRUNE_WATERMARK_PREFIX` gives.
+   */
+  pruneJournalRequests(): { pairs: number; turns: number; sessions: number; refused: number } {
+    const total = { pairs: 0, turns: 0, sessions: 0, refused: 0 };
+    for (const sessionId of this.sessionIds()) this.pruneRequestsInto(sessionId, total);
+    return total;
+  }
+
+  private pruneRequestsInto(sessionId: string, total: { pairs: number; turns: number; sessions: number; refused: number }): void {
+    const pruned = this.pruneRequests(sessionId);
+    total.refused += pruned.refused;
+    if (pruned.pairs === 0) return;
+    total.pairs += pruned.pairs;
+    total.turns += pruned.turns;
+    total.sessions += 1;
+  }
+
+  /** One session's share of `pruneJournalRequests`, in a transaction of its own. */
+  pruneRequests(sessionId: string): { pairs: number; turns: number; refused: number } {
+    const pruned = { pairs: 0, turns: 0, refused: 0 };
+    this.alone(() => {
+      this.drain(this.depth > 0);
+      const key = `${REQUEST_PRUNE_WATERMARK_PREFIX}${sessionId}`;
+      const low = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(key)?.value ?? 0);
+      const high = this.terminalHigh(sessionId);
+      if (high <= low) return;
+      const rows = this.statement(
+        `SELECT id, json_extract(value,'$.type') AS type, json_extract(value,'$.runId') AS run_id,
+                CASE WHEN json_extract(value,'$.type') LIKE 'request.%' THEN value END AS value,
+                json_extract(value,'$.session.runtimeMode') AS mode
+           FROM events WHERE session_id=? AND id>? AND id<=?
+            AND json_extract(value,'$.type') IN ('request.opened','request.resolved','session.created','session.updated')
+          ORDER BY id`,
+      ).all(sessionId, low, high);
+
+      type Opened = { id: number; runId: string; kind: string; decision: string; mode: string | undefined };
+      type Resolved = { id: number; runId: string; decision: string };
+      const opened = new Map<string, Opened[]>();
+      const resolved = new Map<string, Resolved[]>();
+      let mode: string | undefined;
+      let modeRead = false;
+      for (const row of rows) {
+        const type = String(row.type);
+        if (type === "session.created" || type === "session.updated") {
+          mode = typeof row.mode === "string" ? row.mode : undefined;
+          modeRead = true;
+          continue;
+        }
+        let event: { requestId?: string; decision?: string; resolvedBy?: string; request?: { id?: string; state?: string; resolvedBy?: string; decision?: string; detail?: { kind?: string } } };
+        try { event = JSON.parse(String(row.value)); } catch { continue; }
+        const runId = typeof row.run_id === "string" ? row.run_id : "";
+        if (type === "request.opened") {
+          const request = event.request;
+          if (!request?.id) continue;
+          // The mode below the first opened row is only looked up when there
+          // is one — the range's own session rows cover everything after it.
+          if (!modeRead) {
+            const before = this.statement(
+              `SELECT json_extract(value,'$.session.runtimeMode') AS mode FROM events WHERE session_id=? AND id<=?
+                 AND json_extract(value,'$.type') IN ('session.created','session.updated') ORDER BY id DESC LIMIT 1`,
+            ).get(sessionId, low);
+            mode = typeof before?.mode === "string" ? before.mode : undefined;
+            modeRead = true;
+          }
+          const list = opened.get(request.id) ?? [];
+          list.push({
+            id: Number(row.id), runId,
+            kind: request.state === "resolved" && request.resolvedBy === "policy" ? String(request.detail?.kind ?? "") : "",
+            decision: String(request.decision ?? ""), mode,
+          });
+          opened.set(request.id, list);
+        } else if (event.requestId) {
+          const list = resolved.get(event.requestId) ?? [];
+          list.push({ id: Number(row.id), runId, decision: event.resolvedBy === "policy" ? String(event.decision ?? "") : "" });
+          resolved.set(event.requestId, list);
+        }
+      }
+
+      const byRun = new Map<string, { ids: number[]; counts: TurnPolicyRequests }>();
+      const settled = new Map<string, boolean>();
+      const placeholders = TERMINAL_TURN_TYPES.map(() => "?").join(",");
+      for (const [requestId, [open, ...extraOpen]] of opened) {
+        const [close, ...extraClose] = resolved.get(requestId) ?? [];
+        if (!open || !close || extraOpen.length > 0 || extraClose.length > 0) continue;
+        if (!open.kind || !open.decision || !open.runId) continue;
+        if (close.decision !== open.decision || close.runId !== open.runId || close.id <= open.id) continue;
+        if (!open.mode || !(RuntimeMode.options as readonly string[]).includes(open.mode)) continue;
+        if (autoResolution(open.mode as RuntimeMode, open.kind as RequestKind) !== open.decision) continue;
+        if (!settled.has(open.runId)) {
+          settled.set(open.runId, !!this.statement(
+            `SELECT 1 AS ok FROM events WHERE session_id=? AND id<=?
+               AND json_extract(value,'$.runId')=? AND json_extract(value,'$.type') IN (${placeholders}) LIMIT 1`,
+          ).get(sessionId, high, open.runId, ...TERMINAL_TURN_TYPES));
+        }
+        if (!settled.get(open.runId)) continue;
+        const run = byRun.get(open.runId) ?? { ids: [], counts: {} };
+        run.ids.push(open.id, close.id);
+        const kind = (run.counts[open.kind] ??= {});
+        kind[open.decision] = (kind[open.decision] ?? 0) + 1;
+        byRun.set(open.runId, run);
+      }
+
+      for (const [runId, run] of byRun) {
+        const summary = this.statement("SELECT policy_requests FROM turn_summaries WHERE session_id=? AND run_id=?").get(sessionId, runId);
+        if (!summary) { pruned.refused += 1; continue; }
+        const counts: TurnPolicyRequests = summary.policy_requests ? JSON.parse(String(summary.policy_requests)) : {};
+        for (const [kind, decisions] of Object.entries(run.counts)) {
+          const into = (counts[kind] ??= {});
+          for (const [decision, count] of Object.entries(decisions)) into[decision] = (into[decision] ?? 0) + count;
+        }
+        let went = 0;
+        for (const id of run.ids) {
+          this.statement("DELETE FROM events WHERE session_id=? AND id=?").run(sessionId, id);
+          went += Number(this.statement("SELECT changes() AS count").get()?.count ?? 0);
+        }
+        // The rows the counts describe are the rows that went, or the counts
+        // describe a journal that no longer exists — roll the session back.
+        if (went !== run.ids.length) throw new Error(`request prune: ${went} rows went where ${run.ids.length} were counted`);
+        this.statement("UPDATE turn_summaries SET policy_requests=? WHERE session_id=? AND run_id=?")
+          .run(JSON.stringify(counts), sessionId, runId);
+        pruned.pairs += run.ids.length / 2;
+        pruned.turns += 1;
+      }
+      this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(key, String(high));
+    });
+    return pruned;
+  }
+
+  /** How many requests the policy resolved in one turn, once their pairs have
+   *  been pruned. `undefined` until the prune has removed one. */
+  turnPolicyRequests(sessionId: string, runId: string): TurnPolicyRequests | undefined {
+    const row = this.statement("SELECT policy_requests FROM turn_summaries WHERE session_id=? AND run_id=?").get(sessionId, runId);
+    return row?.policy_requests ? JSON.parse(String(row.policy_requests)) : undefined;
+  }
+
   /** A stored row as every reader sees it: a slimmed `item.completed` gets its
    *  item back from the `items` row the slimming proved identical to it. */
   private rehydrate(sessionId: string, value: string): EngineEvent {
@@ -1977,6 +2164,7 @@ export class ExecutionStore {
     // thing that turns either sweep into a smaller file.
     const usage = this.foldJournalUsage();
     this.slimJournal();
+    this.pruneJournalRequests();
     // Everything held must be on disk before the rewrite: VACUUM cannot run
     // inside a transaction, so there is no scope here to carry them into.
     this.flush();
@@ -2733,6 +2921,7 @@ export class ExecutionStore {
       this.statement("DELETE FROM metadata WHERE key=?").run(`${COMPACT_WATERMARK_PREFIX}${sessionId}`);
       this.statement("DELETE FROM metadata WHERE key=?").run(`${USAGE_WATERMARK_PREFIX}${sessionId}`);
       this.statement("DELETE FROM metadata WHERE key=?").run(`${SLIM_WATERMARK_PREFIX}${sessionId}`);
+      this.statement("DELETE FROM metadata WHERE key=?").run(`${REQUEST_PRUNE_WATERMARK_PREFIX}${sessionId}`);
       // And the bound those two are compared against (#894), for their reason:
       // a row describing a journal that no longer exists.
       this.statement("DELETE FROM metadata WHERE key=?").run(`${TERMINAL_HIGH_PREFIX}${sessionId}`);

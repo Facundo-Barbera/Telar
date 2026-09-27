@@ -64,9 +64,11 @@ test("the document keeps the newest 50 resolved requests and drops the rest", ()
   expect(kept.every((request) => request.state === "resolved")).toBe(true);
 });
 
-test("a resolved request older than the window is still readable from the journal", () => {
+test("a person-resolved request older than the window is still readable from the journal", () => {
   // This is what makes the trim safe: the document is a window, the journal is
-  // the record, and `request.opened` / `request.resolved` are never trimmed.
+  // the record, and a request a PERSON resolved is never trimmed from it. Only
+  // policy-resolved pairs are pruned (#697 part B) — see
+  // `request-prune.test.ts`, which holds this same row through the sweep.
   const store = readyStore();
   const token = runningSession(store);
   churn(store, token, 140);

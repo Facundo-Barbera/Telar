@@ -605,9 +605,11 @@ function pageEventsFromEnd(
  *     PERSON or a SESSION resolved is kept, always: that is a decision somebody
  *     made, and it is exactly what a caller auditing a peer came to read.
  *
- * `verbose: true` keeps everything. The filter is about what a page spends its
- * budget on, never about what the journal holds — nothing here is deleted, and
- * the answer says how many rows it passed over.
+ * `verbose: true` keeps everything the journal STILL HOLDS. The filter is about
+ * what a page spends its budget on, and nothing here is deleted — but the
+ * journal sweep folds a settled turn's `usage.updated` rows down to the last
+ * one and prunes its policy-resolved pairs (#697), so for a settled turn
+ * `verbose` shows the kept journal, not every row ever appended.
  */
 /**
  * THE END OF A JOURNAL, FOUND WITHOUT WALKING IT.
@@ -1177,7 +1179,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         verbose: z
           .boolean()
           .optional()
-          .describe("Keep usage rows and policy-resolved requests."),
+          .describe("Keep usage rows and policy-resolved requests. Settled turns keep only their last usage row and no policy-resolved requests."),
         mode: z
           .enum(["events", "summary"])
           .optional()

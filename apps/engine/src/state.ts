@@ -609,9 +609,13 @@ const SNAPSHOT_SETTLED_REQUESTS = 50;
  * every activity fold re-read to find the handful that were open.
  *
  * SO THE DOCUMENT IS A WINDOW, NOT A LEDGER, and the ledger is the journal:
- * `request.opened` and `request.resolved` are appended for every one of these
- * and are never trimmed, so a resolved request that falls out of this window is
- * still answerable from `readEvents`. What the window has to keep is what a
+ * `request.opened` and `request.resolved` are appended for every one of these,
+ * so a resolved request that falls out of this window is still answerable from
+ * `readEvents` — EXCEPT a pair the POLICY resolved, which the journal sweep
+ * prunes once its turn has ended (#697 part B, `ExecutionStore.pruneRequests`).
+ * Those leave a per-turn count by kind and decision on `turn_summaries`, and the
+ * command itself stays on its item. A request a person, a session or a
+ * cancellation resolved is never trimmed. What the window has to keep is what a
  * client RENDERS — which is the same tail `boundedRequests` already chose, so
  * it is the same number.
  *
@@ -15546,7 +15550,7 @@ export class EngineStore {
     const pruned = this.pruneResolvedRequestHistory();
     if (pruned.dropped > 0) {
       const freed = pruned.bytes >= 1e6 ? `${(pruned.bytes / 1e6).toFixed(1)} MB` : `${Math.round(pruned.bytes / 1e3)} KB`;
-      console.log(`[engine] trimmed ${pruned.dropped} resolved requests out of ${pruned.sessions} session${pruned.sessions === 1 ? "" : "s"} (${freed}); the journal still holds every one of them.`);
+      console.log(`[engine] trimmed ${pruned.dropped} resolved requests out of ${pruned.sessions} session${pruned.sessions === 1 ? "" : "s"} (${freed}); the journal still holds them, except policy-resolved pairs of settled turns.`);
     }
     // LAST, once every queue is terminal: nothing above may see the turn this
     // opens, and nothing claims before the caller publishes discovery.
