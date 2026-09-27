@@ -99,7 +99,6 @@ import { useDictationSettings } from "@/lib/dictation/settings";
 import { DICTATION_AUTOMATIC } from "@/lib/dictation/automatic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { DictationMicrophoneSection } from "./dictation-microphone-section";
 import { Dropdown, Row, SettingsGroup } from "./settings-shell";
@@ -169,27 +168,15 @@ export function DictationSection() {
           {...(PROVIDERS.some(({ id }) => id === provider) ? {} : { hint: "Not a provider this build can drive. Update Telar, or pick another." })}
           {...(error ? { error } : {})}
           control={
-            <Select
+            // `Dropdown`, so the trigger reads "Deepgram" rather than the id (#318).
+            <Dropdown<DictationProviderId>
               value={provider}
-              // base-ui hands back `null` for a cleared selection; this Select is
-              // never clearable, so that case is ignored rather than written
-              // through as a provider of "null".
-              onValueChange={(next) => {
-                if (typeof next === "string") void save({ provider: next as DictationProviderId });
-              }}
+              onChange={(next) => void save({ provider: next })}
+              options={PROVIDERS.map(({ id, label }) => ({ value: id, label }))}
+              className="w-36"
+              label="Dictation provider"
               disabled={loading}
-            >
-              <SelectTrigger size="sm" className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PROVIDERS.map(({ id, label }) => (
-                  <SelectItem key={id} value={id}>
-                    {label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            />
           }
         />
         {/* THE PROVIDER'S OWN ROWS, and only when there is a provider. A key
