@@ -243,7 +243,7 @@ import {
 } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { quotedExcerpt } from "./agent-notice";
+import { inlineExcerpt, quotedExcerpt } from "./agent-notice";
 import { RELAY_RULE } from "./attribution";
 import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import {
@@ -310,6 +310,12 @@ import { storeLatexCapability } from "./latex/store-capability";
 import type { ResolvedLatex } from "./latex/compile";
 
 /** The first line with anything on it, clamped for a cohort's member line. */
+/** A cohort member's `excerpt` and `chars` — see `CohortMember`. */
+function excerptOf(text: string): Pick<CohortMember, "excerpt" | "chars"> {
+  const trimmed = text.trim();
+  return trimmed ? { excerpt: inlineExcerpt(trimmed).shown, chars: trimmed.length } : {};
+}
+
 function firstLineOf(text: string): string {
   const line = text.split("\n").find((candidate) => candidate.trim().length > 0)?.trim() ?? "";
   return line.length <= COHORT_LINE_CHARS ? line : `${line.slice(0, COHORT_LINE_CHARS - 1)}…`;
@@ -13289,18 +13295,18 @@ export class EngineStore {
       (turn) => turn.sender?.sessionId === target.id && turn.acceptedAt >= errand.acceptedAt && (turn.agentIntent === "result" || turn.agentIntent === "blocker"),
     ).at(-1);
     if (said?.agentIntent === "blocker") return { ...base, blocked: true };
-    if (said) return { ...base, outcome: "result", fetch: { sessionId: subscriberSessionId, runId: said.runId }, firstLine: firstLineOf(said.input), at };
+    if (said) return { ...base, outcome: "result", fetch: { sessionId: subscriberSessionId, runId: said.runId }, firstLine: firstLineOf(said.input), ...excerptOf(said.input), at };
     // A turn that merely completed is not the errand's end; only its result is.
     if (last.state === "completed") return base;
     const kind: WakeKind = last.state === "failed" ? "turn_failed" : "turn_stopped";
     return { ...base, ...this.cohortOutcome(target.id, kind, last, { ...(last.resultText ? { resultText: last.resultText } : {}), ...(last.failure ? { failure: last.failure } : {}) }), at };
   }
 
-  private cohortOutcome(sessionId: string, kind: WakeKind, turn: Turn, context: { resultText?: string; failure?: Turn["failure"] }): Pick<CohortMember, "outcome" | "fetch" | "firstLine"> {
+  private cohortOutcome(sessionId: string, kind: WakeKind, turn: Turn, context: { resultText?: string; failure?: Turn["failure"] }): Pick<CohortMember, "outcome" | "fetch" | "firstLine" | "excerpt" | "chars"> {
     const outcome = kind === "turn_completed" ? "completed" : kind === "turn_failed" ? "failed" : "stopped";
     const text = kind === "turn_failed" ? [context.failure?.code, context.failure?.message].filter(Boolean).join(": ") : context.resultText ?? "";
     const line = firstLineOf(text);
-    return { outcome, fetch: { sessionId, runId: turn.runId }, ...(line ? { firstLine: line } : {}) };
+    return { outcome, fetch: { sessionId, runId: turn.runId }, ...(line ? { firstLine: line } : {}), ...excerptOf(text) };
   }
 
   /**
@@ -13363,7 +13369,7 @@ export class EngineStore {
       this.updateCohortMembers(senderSessionId, recipientSessionId, (member) =>
         member.outcome && member.outcome !== "result"
           ? undefined
-          : { sessionId: member.sessionId, ...(member.title ? { title: member.title } : {}), outcome: "result", fetch: { sessionId: recipientSessionId, runId }, ...(line ? { firstLine: line } : {}), at: this.now() },
+          : { sessionId: member.sessionId, ...(member.title ? { title: member.title } : {}), outcome: "result", fetch: { sessionId: recipientSessionId, runId }, ...(line ? { firstLine: line } : {}), ...excerptOf(body), at: this.now() },
       );
     } else if (intent === "blocker") {
       this.updateCohortMembers(senderSessionId, recipientSessionId, (member) => (member.outcome || member.blocked ? undefined : { ...member, blocked: true }));

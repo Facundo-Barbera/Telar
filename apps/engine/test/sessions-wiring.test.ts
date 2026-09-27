@@ -579,14 +579,15 @@ test("a Codex turn is handed the wall over the socket with its own self bound; a
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "sessions_subscribe", arguments: { sessionId: claude.id, events: ["turn_completed"] } },
+      params: { name: "sessions_subscribe", arguments: { sessionIds: [claude.id] } },
     }),
   });
   const { result } = (await answered.json()) as { result: { content: Array<{ text: string }>; isError?: boolean } };
   expect(result.isError).not.toBe(true);
-  const { subscriptions } = await client.subscriptions(codex.id);
-  expect(subscriptions).toHaveLength(1);
-  expect(subscriptions[0]).toMatchObject({ subscriberSessionId: codex.id, targetSessionId: claude.id });
+  // One session is a cohort of one now (session-tools audit).
+  const { cohorts } = await client.cohorts(codex.id);
+  expect(cohorts).toHaveLength(1);
+  expect(cohorts[0]).toMatchObject({ subscriberSessionId: codex.id, members: [{ sessionId: claude.id }] });
 });
 
 // ── 4. attribution over the wire ─────────────────────────────────────────────

@@ -132,9 +132,11 @@ test("`self` rides the binding: a subscription made over this socket names the b
   const subscribed = await callTool(lease, "sessions_subscribe", { sessionId: "session_target", events: ["turn_completed"] });
   expect(subscribed.isError).toBe(false);
   expect(calls).toEqual([
-    { verb: "subscribe", args: ["session_host", { targetSessionId: "session_target", events: ["turn_completed"], once: true }] },
+    // This door has no cohorts, so the fallback is a plain one-shot; the
+    // deprecated `events` is ignored (session-tools audit).
+    { verb: "subscribe", args: ["session_host", { targetSessionId: "session_target", once: true }] },
   ]);
-  expect(JSON.parse(subscribed.text)).toMatchObject({ subscriberSessionId: "session_host", targetSessionId: "session_target" });
+  expect(JSON.parse(subscribed.text)).toMatchObject({ subscriptions: [{ subscriberSessionId: "session_host", targetSessionId: "session_target" }], deprecated: expect.any(String) });
 });
 
 test("tokens isolate bindings, and a released token is a 401 — which is the whole revocation story", async () => {
@@ -151,7 +153,7 @@ test("tokens isolate bindings, and a released token is a 401 — which is the wh
   expect(callsA.map((call) => call.verb)).toEqual(["list"]);
   // B's subscribe names B, never A — the capability came with the token.
   expect(callsB).toEqual([{ verb: "subscribe", args: ["session_b", { targetSessionId: "session_a", once: true }] }]);
-  expect(JSON.parse(subscribedB.text)).toMatchObject({ subscriberSessionId: "session_b" });
+  expect(JSON.parse(subscribedB.text)).toMatchObject({ subscriptions: [{ subscriberSessionId: "session_b" }] });
 
   const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
   expect((await rpc(leaseA, ping, "not-a-token")).status).toBe(401);

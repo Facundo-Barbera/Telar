@@ -338,7 +338,11 @@ function cadencePhrase(cadence: Session["reportWindowMinutes"]): string {
 const NO_SESSION_TO_SCHEDULE =
   "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
-const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request. It is a PING; sessions_read fetches the outcome. Fanning out? Send the tasks, then pass sessionIds: ONE notification when all are done, a line each; blockers and requests still arrive at once. A completion is not delivered when you already have a message from that run.`;
+const SUBSCRIBE = `Be woken ONCE when the session(s) you tasked are done: each sent its result, or a turn failed or was stopped, or it was settled. Pass sessionIds — one id or many, the same call. Blockers and parked requests still arrive at once. Send the tasks first, subscribe, then end your turn.`;
+
+/** Said when a caller still passes a knob `sessions_subscribe` no longer has. */
+const SUBSCRIBE_DEPRECATED =
+  "events, once and completionWake are deprecated and were ignored: every subscription now wakes once, when the errand is done, and never mid-turn. They go away in a later release.";
 
 const UNSUBSCRIBE = `Stop being woken by a session or a cohort, by the id sessions_subscribe returned. Queued wakes are withdrawn. One that is not yours answers removed: false — not an error.`;
 
@@ -1792,7 +1796,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_subscribe",
       SUBSCRIBE,
       {
-        sessionId: z.string().min(1).optional().describe("The session to be woken by. Or sessionIds."),
+        sessionId: z.string().min(1).optional().describe("Deprecated alias for sessionIds: [id]."),
         sessionIds: z
           .array(z.string().min(1))
           .min(1)
@@ -1803,57 +1807,46 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         events: z
           .array(z.enum(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]))
           .optional()
-          .describe("Omit for all four."),
-        once: z.boolean().optional().describe("Default true: removed after the first wake. Prefer one-shot."),
-        completionWake: z
-          .enum(["settled_only", "always"])
-          .optional()
-          .describe(
-            "settled_only (default) queues a wake while a turn is running and delivers what piled up as one when you go idle; always interrupts.",
-          ),
+          .describe("Deprecated; ignored."),
+        once: z.boolean().optional().describe("Deprecated; ignored."),
+        completionWake: z.enum(["settled_only", "always"]).optional().describe("Deprecated; ignored."),
       },
       async (args) => {
         if (!capability.self) return err(NO_SELF);
-        if (Array.isArray(args.sessionIds) && args.sessionIds.length > 0) {
-          if (!capability.subscribeCohort) return err("Cohorts are not available on this connection; subscribe to each session instead.");
-          const sessionIds = args.sessionIds.map(String);
+        /**
+         * ONE SUBSCRIPTION, NO KNOBS — the session-tools audit. One session or
+         * many is the same cohort: woken once when the errand is done, never
+         * mid-turn. `sessionId` and the old knobs are accepted for one release.
+         */
+        const sessionIds = Array.isArray(args.sessionIds) && args.sessionIds.length > 0 ? args.sessionIds.map(String) : args.sessionId ? [String(args.sessionId)] : [];
+        if (sessionIds.length === 0) return err("Name the sessions to be woken by: sessionIds.");
+        const deprecated = args.events !== undefined || args.once !== undefined || args.completionWake !== undefined;
+        if (!capability.subscribeCohort) {
+          // A door with no cohorts: one plain, one-shot subscription each.
           try {
-            const cohort = await capability.subscribeCohort(capability.self.sessionId, {
-              sessionIds,
-              ...(typeof args.timeoutMinutes === "number" ? { timeoutMinutes: args.timeoutMinutes } : {}),
-              ...(args.completionWake === "always" || args.completionWake === "settled_only" ? { completionWake: args.completionWake } : {}),
-            });
-            const pending = cohort.members.filter((member) => !member.outcome).length;
-            return json({
-              ...cohort,
-              note: pending === 0
-                ? "Every session was already done, so the notification is on its way now."
-                : `You will get ONE notification when all ${cohort.members.length} are done (${pending} still pending), or at ${new Date(cohort.expiresAt).toISOString()} with whatever arrived. Their results are held for it, not delivered one by one; a blocker or parked request still reaches you at once, and a member that sent a blocker stays pending until you answer it. End your turn now.`,
-            });
+            const subscriptions = await Promise.all(sessionIds.map((targetSessionId) => capability.subscribe(capability.self!.sessionId, { targetSessionId, once: true })));
+            return json({ subscriptions, ...(deprecated ? { deprecated: SUBSCRIBE_DEPRECATED } : {}), note: "You will be woken once per session when it ends a turn. End your turn now." });
           } catch (error) {
-            return err(`Could not subscribe to the cohort: ${failure(error)}`);
+            return err(`Could not subscribe: ${failure(error)}`);
           }
         }
-        if (!args.sessionId) return err("Name the session to be woken by (sessionId), or several (sessionIds).");
-        const targetSessionId = String(args.sessionId ?? "");
-        const events = Array.isArray(args.events) ? (args.events.filter((each) => typeof each === "string") as WakeKind[]) : undefined;
         try {
-          const subscription = await capability.subscribe(capability.self.sessionId, {
-            targetSessionId,
-            ...(events && events.length > 0 ? { events } : {}),
-            once: args.once !== false,
-            ...(args.completionWake === "always" || args.completionWake === "settled_only" ? { completionWake: args.completionWake } : {}),
+          const cohort = await capability.subscribeCohort(capability.self.sessionId, {
+            sessionIds,
+            ...(typeof args.timeoutMinutes === "number" ? { timeoutMinutes: args.timeoutMinutes } : {}),
           });
+          const pending = cohort.members.filter((member) => !member.outcome).length;
           return json({
-            ...subscription,
-            note: `You will be woken with a notification when ${targetSessionId} does any of: ${subscription.events.join(", ")}${subscription.once ? " — once" : ""}. ${
-              (subscription.completionWake ?? "settled_only") === "settled_only"
-                ? "It waits for you to finish the turn you are in, and anything else that arrives meanwhile comes with it as one notification."
-                : "It interrupts the turn you are in."
-            } End your turn whenever you like; nothing is lost. A completed turn's notice quotes the start of its answer; fetch the rest with sessions_read(sessionId: "${targetSessionId}", runId) when you want it.`,
+            ...cohort,
+            ...(deprecated ? { deprecated: SUBSCRIBE_DEPRECATED } : {}),
+            note: pending === 0
+              ? "Every session was already done, so the notification is on its way now."
+              : cohort.members.length === 1
+                ? `You will get ONE notification when ${sessionIds[0]} is done, quoting what it said, or at ${new Date(cohort.expiresAt).toISOString()} if it never is. A blocker or parked request still reaches you at once. End your turn now.`
+                : `You will get ONE notification when all ${cohort.members.length} are done (${pending} still pending), or at ${new Date(cohort.expiresAt).toISOString()} with whatever arrived. Their results are held for it, not delivered one by one; a blocker or parked request still reaches you at once, and a member that sent a blocker stays pending until you answer it. End your turn now.`,
           });
         } catch (error) {
-          return err(`Could not subscribe to "${targetSessionId}": ${failure(error)}`);
+          return err(`Could not subscribe to the cohort: ${failure(error)}`);
         }
       },
     ),
