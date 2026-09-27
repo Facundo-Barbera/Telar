@@ -367,8 +367,10 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // Read-only by construction — see `SessionsQueryCapability`, which has no
     // member that writes for one to be misfiled as.
     // The verb that addressed the built-in Agent came and went with it (#784, #908).
+    // `subscribeCohort` and `cohorts` are a subscription to several sessions at
+    // once, and its list: the same reach `subscribe` already has.
     expect(surface).toEqual([
-      "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscriptions", "turn", "unsubscribe",
+      "cohorts", "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "turn", "unsubscribe",
     ]);
     expect(Object.keys(sessions.query).sort()).toEqual(["answer", "find", "grep", "outline", "step", "steps"]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
@@ -513,9 +515,9 @@ test("a turn's capability knows who it is, and a subscription made mid-turn wake
   expect(wake!.notification!.kind).toBe("wake");
   expect(wake!.notification!.body).toContain("[wake: completed]");
   expect(wake!.input).toStartWith("[notification: wake");
-  // A PING OVER THE WIRE TOO: the answer is not in the notice, the run-scoped
-  // read that fetches it is.
-  expect(wake!.notification!.body).not.toContain("all done here");
+  // BOUNDED OVER THE WIRE TOO: a short answer rides the notice whole, and the
+  // run-scoped read that fetches it is named.
+  expect(wake!.notification!.body).toContain("all done here");
   expect(wake!.notification!.body).toContain(`runId: "run_made"`);
   // A REAL TURN: the worker on this daemon may already have claimed and run
   // it by the time we look — which is the point. Queued or done, never lost.

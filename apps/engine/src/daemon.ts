@@ -11,6 +11,8 @@ import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineClientError,
+  GitHubReactionContent,
+  GitHubSubjectId,
   DataScienceBootstrap,
   DataScienceCreateEnvironment,
   LatexBootstrap,
@@ -1404,6 +1406,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     } catch {
       /* the next tick tries again */
     }
+    // A cohort's expiry rides the same tick: a minute is its shortest timeout.
+    try {
+      store.sweepCohorts();
+    } catch {
+      /* the next tick tries again */
+    }
   }, options.reportWindowSweepIntervalMs ?? 30_000);
   reportWindowSweeper.unref();
   /**
@@ -1613,6 +1621,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
       unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
       subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
+      subscribeCohort: async (subscriber, input) => store.subscribeCohort(subscriber, input),
+      cohorts: async (subscriber) => store.cohortsFor(subscriber),
       requests: async (sessionId) => store.requests(sessionId),
       resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
       /**
@@ -3218,6 +3228,51 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           200,
           projectForge[2] === "issues" ? await store.projectIssue(projectId, number, { force }) : await store.projectPull(projectId, number, { force }),
         );
+        return;
+      }
+      /**
+       * One reaction, added or removed — #842. The content and the subject id are
+       * refused HERE when they are not shaped like GitHub's, so nothing but one of
+       * the eight words and an opaque node id ever reaches a `gh` argv.
+       */
+      const projectReaction = /^\/v2\/projects\/([^/]+)\/github\/(issues|pulls)\/(\d+)\/reactions$/.exec(url.pathname);
+      if (request.method === "POST" && projectReaction) {
+        const input = await body(request);
+        const content = GitHubReactionContent.safeParse(input.content);
+        if (!content.success) throw new HttpError(400, "invalid_request", "content must be one of GitHub's eight reactions");
+        const subject = GitHubSubjectId.safeParse(input.subjectId);
+        if (!subject.success) throw new HttpError(400, "invalid_request", "subjectId must be a GitHub node id");
+        if (typeof input.react !== "boolean") throw new HttpError(400, "invalid_request", "react must be true or false");
+        writeJson(
+          response,
+          200,
+          await store.projectGitHubReaction(decodeURIComponent(projectReaction[1]), {
+            kind: projectReaction[2] === "issues" ? "issue" : "pull",
+            number: Number(projectReaction[3]),
+            subjectId: subject.data,
+            content: content.data,
+            react: input.react,
+          }),
+        );
+        return;
+      }
+      /**
+       * Reply to, resolve or unresolve one review thread — #842. The thread id is
+       * matched as a GitHub node id IN THE PATTERN, for the reason the number is.
+       */
+      const projectThread = /^\/v2\/projects\/([^/]+)\/github\/pulls\/(\d+)\/threads\/([A-Za-z0-9_=-]{1,200})\/(replies|resolve)$/.exec(url.pathname);
+      if (request.method === "POST" && projectThread) {
+        const input = await body(request);
+        const projectId = decodeURIComponent(projectThread[1]);
+        const number = Number(projectThread[2]);
+        const threadId = projectThread[3];
+        if (projectThread[4] === "replies") {
+          if (typeof input.body !== "string") throw new HttpError(400, "invalid_request", "body must be a string");
+          writeJson(response, 200, await store.projectThreadReply(projectId, number, { threadId, body: input.body }));
+        } else {
+          if (typeof input.resolved !== "boolean") throw new HttpError(400, "invalid_request", "resolved must be true or false");
+          writeJson(response, 200, await store.projectThreadResolve(projectId, number, { threadId, resolved: input.resolved }));
+        }
         return;
       }
       const projectMerge = /^\/v2\/projects\/([^/]+)\/github\/pulls\/(\d+)\/merge$/.exec(url.pathname);
@@ -5008,6 +5063,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "GET" && session.tail === "/subscriptions") {
           writeJson(response, 200, { subscriptions: store.subscriptionsFor(session.sessionId) });
+          return;
+        }
+        if (request.method === "POST" && session.tail === "/cohorts") {
+          const input = await body(request);
+          const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.filter((each): each is string => typeof each === "string") : [];
+          writeJson(response, 201, {
+            cohort: store.subscribeCohort(session.sessionId, {
+              sessionIds,
+              ...(typeof input.timeoutMinutes === "number" ? { timeoutMinutes: input.timeoutMinutes } : {}),
+              ...(input.completionWake === "always" || input.completionWake === "settled_only" ? { completionWake: input.completionWake } : {}),
+            }),
+          });
+          return;
+        }
+        if (request.method === "GET" && session.tail === "/cohorts") {
+          writeJson(response, 200, { cohorts: store.cohortsFor(session.sessionId) });
           return;
         }
         /**

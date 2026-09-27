@@ -17,8 +17,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { GitHubIssueDetail, GitHubLink, GitHubPullDetail } from "@telar/engine-client";
-import { EntryCard, ForgeFacts, MergeFooter } from "./github-detail-surface";
+import type { GitHubIssueDetail, GitHubLink, GitHubPullDetail, GitHubReviewThread } from "@telar/engine-client";
+import { EntryCard, ForgeFacts, MergeFooter, ReviewThreadsBlock } from "./github-detail-surface";
 import { buildForgeTimeline, type ForgeEntry } from "@/lib/github-forge";
 
 const NOW = Date.now();
@@ -378,5 +378,186 @@ describe("a comment's session", () => {
     const markup = renderToStaticMarkup(<EntryCard entry={entry({ author: "Facundo-Barbera", body: "a finding" })} />);
     expect(markup).not.toContain("/sessions/");
     expect(markup).not.toContain("session");
+  });
+});
+
+/** WHAT PEOPLE REACTED WITH — #842. Counted pills at the foot of the card. */
+describe("a card's reactions", () => {
+  test("draws a counted pill per reaction, and marks the one the viewer is in", () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard
+        entry={entry({
+          body: "a finding",
+          reactions: [
+            { content: "THUMBS_UP", count: 3, viewerHasReacted: true },
+            { content: "ROCKET", count: 1, viewerHasReacted: false },
+          ],
+        })}
+      />,
+    );
+    expect(markup).toContain("👍");
+    expect(markup).toContain("🚀");
+    expect(markup).toContain('aria-label="3 thumbs up, including you"');
+    expect(markup).toContain('aria-label="1 rocket"');
+    // Only the viewer's pill is marked.
+    expect(markup.match(/data-mine="true"/g)).toHaveLength(1);
+  });
+
+  test("the opening post carries the issue's own reactions too", () => {
+    const [body] = buildForgeTimeline({ body: "the ask", createdAt: NOW, comments: [], reactions: [{ content: "HEART", count: 2, viewerHasReacted: false }] });
+    expect(renderToStaticMarkup(<EntryCard entry={body!} />)).toContain("❤️");
+  });
+
+  test("nobody reacted draws no row at all — and neither does a read that did not ask", () => {
+    expect(renderToStaticMarkup(<EntryCard entry={entry({ body: "x", reactions: [] })} />)).not.toContain("data-reactions");
+    expect(renderToStaticMarkup(<EntryCard entry={entry({ body: "x" })} />)).not.toContain("data-reactions");
+  });
+
+  test("a comment the repository hid does not show its reactions until revealed", () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard entry={entry({ body: "spam", minimized: true, reactions: [{ content: "EYES", count: 5, viewerHasReacted: false }] })} />,
+    );
+    expect(markup).not.toContain("👀");
+  });
+});
+
+describe("reacting from a card (#842)", () => {
+  const react = async () => ({ reacted: true as const, reactions: [] });
+
+  test("with somewhere to write, pills are toggles and the picker is offered", () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard
+        entry={entry({ body: "x", subjectId: "IC_1", reactions: [{ content: "HEART", count: 2, viewerHasReacted: true }] })}
+        onReact={react}
+      />,
+    );
+    expect(markup).toContain('aria-pressed="true"');
+    expect(markup).toContain('aria-label="Add a reaction"');
+  });
+
+  test("nobody has reacted yet — the picker is still there, so the first one can be added", () => {
+    const markup = renderToStaticMarkup(<EntryCard entry={entry({ body: "x", subjectId: "IC_1", reactions: [] })} onReact={react} />);
+    expect(markup).toContain('aria-label="Add a reaction"');
+  });
+
+  test("WITHOUT a node id there is nothing to write against, so the pills stay a read", () => {
+    const markup = renderToStaticMarkup(
+      <EntryCard entry={entry({ body: "x", reactions: [{ content: "HEART", count: 2, viewerHasReacted: false }] })} onReact={react} />,
+    );
+    expect(markup).toContain("❤️");
+    expect(markup).not.toContain("aria-pressed");
+    expect(markup).not.toContain("Add a reaction");
+  });
+});
+
+/** The line-bound review conversations (#842), drawn after the timeline. */
+describe("review threads", () => {
+  const thread = (over: Partial<GitHubReviewThread> = {}): GitHubReviewThread => ({
+    id: "PRRT_1",
+    path: "apps/web/lib/x.ts",
+    line: 42,
+    diffSide: "RIGHT",
+    isResolved: false,
+    isOutdated: false,
+    viewerCanResolve: true,
+    viewerCanUnresolve: false,
+    viewerCanReply: true,
+    diffHunk: "@@ -1,2 +1,2 @@\n ctx\n-old\n+new",
+    comments: [
+      {
+        author: "ada",
+        body: "Off by one?",
+        createdAt: NOW - HOUR,
+        url: "https://github.com/o/r/pull/7#discussion_r1",
+        reactions: [{ content: "EYES", count: 1, viewerHasReacted: false }],
+        subjectId: "PRRC_1",
+      },
+    ],
+    moreComments: 0,
+    ...over,
+  });
+
+  test("an open thread shows its file, its line, the code it is about, and what was said", () => {
+    const markup = renderToStaticMarkup(<ReviewThreadsBlock threads={[thread()]} more={0} />);
+    expect(markup).toContain("apps/web/lib/x.ts");
+    expect(markup).toContain("L42");
+    expect(markup).toContain("new");
+    expect(markup).toContain("Off by one?");
+    expect(markup).toContain("👀");
+    expect(markup).toContain("1 review thread");
+  });
+
+  test("A RESOLVED THREAD IS FOLDED to one line, never dropped", () => {
+    const markup = renderToStaticMarkup(<ReviewThreadsBlock threads={[thread({ isResolved: true, resolvedBy: "grace" })]} more={0} />);
+    expect(markup).toContain("resolved by grace");
+    expect(markup).toContain('aria-expanded="false"');
+    // The first line of what was said survives the fold; the hunk does not.
+    expect(markup).toContain("ada: Off by one?");
+    expect(markup).not.toContain("<pre");
+    expect(markup).toContain("1 resolved");
+  });
+
+  test("an outdated thread says so", () => {
+    expect(renderToStaticMarkup(<ReviewThreadsBlock threads={[thread({ line: undefined, originalLine: 12, isOutdated: true })]} more={0} />)).toContain("outdated");
+  });
+
+  test("a read that failed SAYS it failed, rather than drawing no threads", () => {
+    expect(renderToStaticMarkup(<ReviewThreadsBlock more={0} />)).toContain("could not be read");
+  });
+
+  test("a pull request nobody reviewed on the lines draws nothing at all", () => {
+    expect(renderToStaticMarkup(<ReviewThreadsBlock threads={[]} more={0} />)).toBe("");
+  });
+
+  test("threads past the cap are counted, never silently dropped", () => {
+    expect(renderToStaticMarkup(<ReviewThreadsBlock threads={[thread()]} more={4} />)).toContain("4 older threads are not shown");
+  });
+});
+
+describe("acting on review threads (#842)", () => {
+  const actions = {
+    reply: async () => ({ replied: false as const, refusal: "failed" as const }),
+    resolve: async () => ({ changed: false as const, refusal: "failed" as const }),
+  };
+  const thread = (over: Partial<GitHubReviewThread> = {}): GitHubReviewThread => ({
+    id: "PRRT_1",
+    path: "a.ts",
+    line: 3,
+    isResolved: false,
+    isOutdated: false,
+    viewerCanResolve: true,
+    viewerCanUnresolve: false,
+    viewerCanReply: true,
+    diffHunk: "@@ -1 +1 @@\n+x",
+    comments: [{ author: "ada", body: "hm", createdAt: NOW, url: "u1", reactions: [] }],
+    moreComments: 0,
+    ...over,
+  });
+
+  test("an open thread the viewer may settle offers Resolve and Reply", () => {
+    const markup = renderToStaticMarkup(<ReviewThreadsBlock threads={[thread()]} more={0} actions={actions} />);
+    expect(markup).toContain(">Resolve<");
+    expect(markup).toContain("Reply…");
+  });
+
+  test("a resolved thread the viewer may reopen offers Unresolve", () => {
+    const markup = renderToStaticMarkup(
+      <ReviewThreadsBlock threads={[thread({ isResolved: true, viewerCanResolve: false, viewerCanUnresolve: true })]} more={0} actions={actions} />,
+    );
+    expect(markup).toContain(">Unresolve<");
+  });
+
+  test("WHAT GITHUB SAYS THIS VIEWER CANNOT DO IS NOT OFFERED — no button that can only be refused", () => {
+    const markup = renderToStaticMarkup(
+      <ReviewThreadsBlock threads={[thread({ viewerCanResolve: false, viewerCanReply: false })]} more={0} actions={actions} />,
+    );
+    expect(markup).not.toContain(">Resolve<");
+    expect(markup).not.toContain("Reply…");
+  });
+
+  test("with nowhere to write, a thread is a read", () => {
+    const markup = renderToStaticMarkup(<ReviewThreadsBlock threads={[thread()]} more={0} />);
+    expect(markup).not.toContain(">Resolve<");
+    expect(markup).not.toContain("Reply…");
   });
 });

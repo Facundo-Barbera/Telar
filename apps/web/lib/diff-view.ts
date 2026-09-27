@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * HOW YOU LIKE TO READ A DIFF — three toggles, remembered.
+ * HOW YOU LIKE TO READ A DIFF — four toggles, remembered.
  *
  * NOT IN THE TAB'S PARAMS, and that is the distinction this module exists to
  * draw. A Diff tab's FILTER is its identity: it is what the strip names the tab
@@ -42,12 +42,18 @@ export type DiffView = {
    * about the commit that is about to happen.
    */
   ignoreWhitespace: boolean;
+  /**
+   * THE FILE TREE BESIDE THE ROWS (#855). ON, because a review of more than a
+   * handful of files is a directory structure and a flat list hides it; folded
+   * away by somebody reading in a narrow panel, and kept folded for them.
+   */
+  tree: boolean;
 };
 
-export const DEFAULT_DIFF_VIEW: DiffView = { layout: "stacked", wrap: false, ignoreWhitespace: false };
+export const DEFAULT_DIFF_VIEW: DiffView = { layout: "stacked", wrap: false, ignoreWhitespace: false, tree: true };
 
 /** Total: anything unrecognised is the default for that field alone, so one bad
- *  key cannot cost the other two. */
+ *  key cannot cost the others. */
 export function parseDiffView(raw: string | null): DiffView {
   if (!raw) return DEFAULT_DIFF_VIEW;
   try {
@@ -58,6 +64,7 @@ export function parseDiffView(raw: string | null): DiffView {
       layout: record.layout === "split" ? "split" : "stacked",
       wrap: record.wrap === true,
       ignoreWhitespace: record.ignoreWhitespace === true,
+      tree: record.tree !== false,
     };
   } catch {
     return DEFAULT_DIFF_VIEW;

@@ -1645,6 +1645,10 @@ export function SessionCockpit({
   const [readKey, setReadKey] = useState<string>();
   /** The transcript's scroll layer, reachable from `submit`. */
   const follow = useRef<ConversationFollowHandle>(null);
+  /** The reader has scrolled back through the transcript — the composer steps
+   *  down to its compact shape so it covers less of what they are reading. */
+  const [readingBack, setReadingBack] = useState(false);
+  const onAtBottomChange = useCallback((atBottom: boolean) => setReadingBack(!atBottom), []);
   const [sending, setSending] = useState(false);
   /**
    * The panel's open tabs, and whether the panel itself is showing.
@@ -4160,7 +4164,7 @@ export function SessionCockpit({
         )}
         {/* `display: contents` — a click boundary, never a layout box. */}
         <div className="contents" onClickCapture={onConversationClick}>
-        <ConversationViewport className="min-w-0 flex-1" conversation={syncKey} landed={transcriptLanded} followRef={follow}>
+        <ConversationViewport className="min-w-0 flex-1" conversation={syncKey} landed={transcriptLanded} followRef={follow} onAtBottomChange={onAtBottomChange}>
           <ConversationContent>
             {projectId !== session?.projectId && session && (
               <Alert variant="destructive" className="mx-auto max-w-[50rem]">
@@ -4265,6 +4269,7 @@ export function SessionCockpit({
           // A fresh canvas is READY: there is nothing to wait for, because the
           // message you type is the thing that creates the session.
           ready={fresh || Boolean(session)}
+          compact={readingBack}
           attachments={attachments}
           onAttach={setAttachments}
           fresh={fresh}

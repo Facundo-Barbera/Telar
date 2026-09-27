@@ -24,6 +24,18 @@ import {
   PUSH_REFUSAL,
   offersMerge,
   pullStatus,
+  applyReaction,
+  reactionPills,
+  REACTIONS,
+  REACTION_REFUSAL,
+  toggleReaction,
+  hunkTail,
+  threadAnchor,
+  threadsByFile,
+  applyThreadReply,
+  applyThreadResolve,
+  PENDING_REPLY_URL,
+  THREAD_REFUSAL,
   reviewLabel,
   STATUS_LABEL,
   STATUS_TONE,
@@ -457,5 +469,280 @@ describe("a comment's session", () => {
     // THE FAILURE DIRECTION: without this, a builder that stamped every entry
     // with the same id would satisfy the assertion above.
     expect(timeline.find((entry) => entry.at === 300)?.sessionId).toBeUndefined();
+  });
+});
+
+describe("reactions (#842)", () => {
+  test("the body card carries the thing's own reactions and each comment its own", () => {
+    const timeline = buildForgeTimeline({
+      body: "b",
+      createdAt: 1,
+      reactions: [{ content: "HEART", count: 2, viewerHasReacted: false }],
+      comments: [{ body: "c", createdAt: 2, minimized: false, url: "u1", reactions: [{ content: "ROCKET", count: 1, viewerHasReacted: true }] }],
+    });
+    expect(timeline[0]!.reactions).toEqual([{ content: "HEART", count: 2, viewerHasReacted: false }]);
+    expect(timeline[1]!.reactions).toEqual([{ content: "ROCKET", count: 1, viewerHasReacted: true }]);
+  });
+
+  test("absent stays absent — a failed read must not become \"nobody reacted\"", () => {
+    const timeline = buildForgeTimeline({ body: "b", createdAt: 1, comments: [{ body: "c", createdAt: 2, minimized: false, url: "u1" }] });
+    expect("reactions" in timeline[0]!).toBe(false);
+    expect("reactions" in timeline[1]!).toBe(false);
+  });
+
+  test("pills come out in GitHub's order, with glyphs, whatever order they arrived in", () => {
+    const pills = reactionPills([
+      { content: "EYES", count: 1, viewerHasReacted: false },
+      { content: "THUMBS_UP", count: 3, viewerHasReacted: true },
+    ]);
+    expect(pills.map((pill) => [pill.glyph, pill.count, pill.viewerHasReacted])).toEqual([
+      ["👍", 3, true],
+      ["👀", 1, false],
+    ]);
+  });
+
+  test("a content this cockpit does not know is dropped, not drawn as a bare word", () => {
+    expect(reactionPills([{ content: "SMILE", count: 1, viewerHasReacted: false }])).toEqual([]);
+  });
+
+  test("all eight of GitHub's reactions are known, once each", () => {
+    expect(new Set(REACTIONS.map((reaction) => reaction.content)).size).toBe(8);
+  });
+});
+
+describe("toggleReaction — the optimistic guess (#842)", () => {
+  const HEART = (count: number, viewerHasReacted: boolean) => ({ content: "HEART", count, viewerHasReacted });
+
+  test("adding to somebody else's pill counts you in", () => {
+    expect(toggleReaction([HEART(2, false)], "HEART", true)).toEqual([HEART(3, true)]);
+  });
+
+  test("a reaction nobody used yet appears as yours, at one", () => {
+    expect(toggleReaction([], "ROCKET", true)).toEqual([{ content: "ROCKET", count: 1, viewerHasReacted: true }]);
+  });
+
+  test("taking back the only one removes the pill rather than leaving a zero", () => {
+    expect(toggleReaction([HEART(1, true)], "HEART", false)).toEqual([]);
+  });
+
+  test("taking back yours from a crowd leaves the crowd", () => {
+    expect(toggleReaction([HEART(4, true)], "HEART", false)).toEqual([HEART(3, false)]);
+  });
+
+  test("asking for what is already true changes nothing — a double click cannot count you twice", () => {
+    expect(toggleReaction([HEART(2, true)], "HEART", true)).toEqual([HEART(2, true)]);
+  });
+});
+
+describe("applyReaction — optimistic, then GitHub's answer or a rollback (#842)", () => {
+  const before = [{ content: "HEART", count: 1, viewerHasReacted: false }];
+
+  test("draws the guess at once, then GitHub's count", async () => {
+    const drawn: unknown[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const pending = applyReaction({
+      current: before,
+      content: "HEART",
+      react: true,
+      send: async () => {
+        await gate;
+        return { reacted: true, reactions: [{ content: "HEART", count: 7, viewerHasReacted: true }] };
+      },
+      draw: (reactions) => drawn.push(reactions),
+    });
+    // The guess is on screen before GitHub has said anything.
+    expect(drawn).toEqual([[{ content: "HEART", count: 2, viewerHasReacted: true }]]);
+    release();
+    expect(await pending).toBeUndefined();
+    expect(drawn.at(-1)).toEqual([{ content: "HEART", count: 7, viewerHasReacted: true }]);
+  });
+
+  test("A REFUSAL ROLLS BACK to exactly what was there, and says why", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyReaction({
+      current: before,
+      content: "HEART",
+      react: true,
+      send: async () => ({ reacted: false, refusal: "scope" }),
+      draw: (reactions) => drawn.push(reactions),
+    });
+    expect(drawn.at(-1)).toBe(before);
+    expect(said).toBe(REACTION_REFUSAL.scope);
+    expect(said).toContain("gh auth refresh");
+  });
+
+  test("an engine that does not answer rolls back too", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyReaction({
+      current: before,
+      content: "HEART",
+      react: true,
+      send: async () => {
+        throw new Error("connection refused");
+      },
+      draw: (reactions) => drawn.push(reactions),
+    });
+    expect(drawn.at(-1)).toBe(before);
+    expect(said).toBe("connection refused");
+  });
+});
+
+// ── review threads (#842) ────────────────────────────────────────────────────
+
+const reviewThread = (over: Record<string, unknown> = {}) =>
+  ({
+    id: "PRRT_1",
+    path: "src/a.ts",
+    line: 42,
+    diffSide: "RIGHT",
+    subjectType: "LINE",
+    isResolved: false,
+    isOutdated: false,
+    viewerCanResolve: true,
+    viewerCanUnresolve: false,
+    viewerCanReply: true,
+    diffHunk: "@@ -1,3 +1,3 @@",
+    comments: [],
+    moreComments: 0,
+    ...over,
+  }) as Parameters<typeof threadAnchor>[0];
+
+describe("threadAnchor — where a thread sits", () => {
+  test("one line on the head", () => {
+    expect(threadAnchor(reviewThread())).toMatchObject({ path: "src/a.ts", from: 42, to: 42, side: "head", outdated: false, label: "L42" });
+  });
+
+  test("a multi-line thread spans its start to its line", () => {
+    expect(threadAnchor(reviewThread({ startLine: 40 })).label).toBe("L40–42");
+  });
+
+  test("AN OUTDATED THREAD FALLS BACK TO WHERE IT WAS WRITTEN, and says it is outdated", () => {
+    const anchor = threadAnchor(reviewThread({ line: undefined, originalLine: 17, originalStartLine: 15, isOutdated: true }));
+    expect(anchor).toMatchObject({ from: 15, to: 17, outdated: true, label: "L15–17" });
+  });
+
+  test("a line with no current place is outdated even when GitHub did not flag it", () => {
+    expect(threadAnchor(reviewThread({ line: undefined, originalLine: 3 })).outdated).toBe(true);
+  });
+
+  test("a comment on the base side is marked as such", () => {
+    expect(threadAnchor(reviewThread({ diffSide: "LEFT" }))).toMatchObject({ side: "base", label: "L42 (base)" });
+  });
+
+  test("a whole-file comment has no line", () => {
+    expect(threadAnchor(reviewThread({ subjectType: "FILE", line: undefined }))).toMatchObject({ label: "file" });
+  });
+});
+
+describe("hunkTail — the lines a thread is about", () => {
+  const hunk = "@@ -10,6 +10,7 @@ fn()\n a\n b\n c\n-d\n+D\n+E\n f";
+
+  test("drops the header and keeps the commented line plus three above", () => {
+    expect(hunkTail(hunk)).toEqual([
+      { kind: "del", text: "d" },
+      { kind: "add", text: "D" },
+      { kind: "add", text: "E" },
+      { kind: "ctx", text: "f" },
+    ]);
+  });
+
+  test("a multi-line thread keeps its whole span", () => {
+    expect(hunkTail(hunk, 3)).toHaveLength(6);
+  });
+
+  test("a hunk shorter than the window is kept whole, without its header", () => {
+    expect(hunkTail("@@ -1 +1 @@\n-x\n+y\n").map((line) => line.kind)).toEqual(["del", "add"]);
+  });
+});
+
+describe("threadsByFile", () => {
+  test("files in path order, threads top to bottom inside each", () => {
+    const grouped = threadsByFile([
+      reviewThread({ id: "b2", path: "b.ts", line: 9 }),
+      reviewThread({ id: "a1", path: "a.ts", line: 30 }),
+      reviewThread({ id: "b1", path: "b.ts", line: 2 }),
+      reviewThread({ id: "a0", path: "a.ts", subjectType: "FILE", line: undefined }),
+    ]);
+    expect(grouped.map((file) => [file.path, file.threads.map((thread) => thread.id)])).toEqual([
+      ["a.ts", ["a0", "a1"]],
+      ["b.ts", ["b1", "b2"]],
+    ]);
+  });
+});
+
+describe("applyThreadResolve — fold now, GitHub's state or a rollback after (#842)", () => {
+  const open = reviewThread();
+
+  test("folds at once, then takes GitHub's state and who may flip it back", async () => {
+    const drawn: { isResolved: boolean; resolvedBy?: string; viewerCanUnresolve: boolean }[] = [];
+    const said = await applyThreadResolve({
+      current: open,
+      resolved: true,
+      send: async () => ({ changed: true, isResolved: true, resolvedBy: "ada", viewerCanResolve: false, viewerCanUnresolve: true }),
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(said).toBeUndefined();
+    expect(drawn[0]!.isResolved).toBe(true);
+    expect(drawn.at(-1)).toMatchObject({ isResolved: true, resolvedBy: "ada", viewerCanUnresolve: true });
+  });
+
+  test("A REFUSAL PUTS THE THREAD BACK exactly, and says why", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyThreadResolve({
+      current: open,
+      resolved: true,
+      send: async () => ({ changed: false, refusal: "scope" }),
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(drawn.at(-1)).toBe(open);
+    expect(said).toBe(THREAD_REFUSAL.scope);
+  });
+});
+
+describe("applyThreadReply — a pending reply, then GitHub's comment or a rollback (#842)", () => {
+  const open = reviewThread({ comments: [{ body: "Off by one?", createdAt: 1, url: "u1", reactions: [] }] });
+  const stored = { author: "ada", body: "Fixed.", createdAt: 5, url: "https://github.com/o/r/pull/7#discussion_r2", reactions: [], subjectId: "PRRC_2" };
+
+  test("the reply shows at once as pending, then becomes the comment GitHub stored", async () => {
+    const drawn: { comments: { url: string; body: string }[] }[] = [];
+    const said = await applyThreadReply({
+      current: open,
+      body: " Fixed. ",
+      now: 99,
+      send: async () => ({ replied: true, comment: stored }),
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(said).toBeUndefined();
+    expect(drawn[0]!.comments.at(-1)).toMatchObject({ body: "Fixed.", url: `${PENDING_REPLY_URL}99` });
+    expect(drawn.at(-1)!.comments.map((comment) => comment.url)).toEqual(["u1", stored.url]);
+  });
+
+  test("A REFUSED REPLY IS TAKEN BACK OFF THE THREAD, and says why", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyThreadReply({
+      current: open,
+      body: "Fixed.",
+      now: 99,
+      send: async () => ({ replied: false, refusal: "not_permitted" }),
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(drawn.at(-1)).toBe(open);
+    expect(said).toBe(THREAD_REFUSAL.not_permitted);
+  });
+
+  test("an engine that does not answer rolls the reply back too", async () => {
+    const drawn: unknown[] = [];
+    const said = await applyThreadReply({
+      current: open,
+      body: "Fixed.",
+      now: 99,
+      send: async () => {
+        throw new Error("connection refused");
+      },
+      draw: (thread) => drawn.push(thread),
+    });
+    expect(drawn.at(-1)).toBe(open);
+    expect(said).toBe("connection refused");
   });
 });

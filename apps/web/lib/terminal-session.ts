@@ -15,6 +15,7 @@
  * the size, and the lifecycle.
  */
 import { ptyBytesForKey, type TerminalKeyEvent } from "@/lib/terminal-keys";
+import { kittyApcRewriter } from "@/lib/terminal-kitty/apc";
 import type { TerminalBridge, TerminalEnding } from "@/lib/terminal-bridge";
 
 /** As much of xterm's `Terminal` as the wiring touches. Structural so a test
@@ -135,8 +136,9 @@ export function iipSizeFiller(): (data: string) => string {
 /**
  * EVERY BYTE FROM A PTY GOES THROUGH THIS, WHICHEVER SURFACE OWNS THE PTY.
  *
- * The three corrections above (short colon truecolour, a CSI split across
- * chunks, an inline image without `size=`) are properties of xterm.js and of
+ * The corrections above (short colon truecolour, a CSI split across chunks,
+ * an inline image without `size=`) and the kitty graphics APC that xterm.js
+ * would otherwise discard (lib/terminal-kitty/apc.ts) are properties of xterm.js and of
  * the programs that write to a PTY, not of the Terminal tab. A Run tab reads
  * the same kind of bytes from the engine's journal and draws them with the
  * same emulator, so it takes the same writer; a second copy of the pipeline
@@ -145,8 +147,9 @@ export function iipSizeFiller(): (data: string) => string {
 export function ptyByteWriter(term: Pick<TerminalLike, "write">): (data: string) => void {
   let pending = "";
   const fillImageSize = iipSizeFiller();
+  const kittyAsOsc = kittyApcRewriter();
   return (data) => {
-    const split = splitTrailingCsi(pending + fillImageSize(data));
+    const split = splitTrailingCsi(pending + fillImageSize(kittyAsOsc(data)));
     pending = split.pending;
     if (split.ready !== "") term.write(normaliseTruecolourSgr(split.ready));
   };

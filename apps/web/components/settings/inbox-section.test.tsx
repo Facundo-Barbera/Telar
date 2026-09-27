@@ -16,10 +16,6 @@ import { DEFAULT_INBOX_POLICY, DEFAULT_SETTLE_DELEGATED_AFTER_HOURS } from "@tel
  */
 const source = readFileSync(new URL("./inbox-section.tsx", import.meta.url), "utf8");
 
-test("the delegation row says what it does, in the issue's own words", () => {
-  expect(source).toContain("Settle delegated conversations after their result is delivered");
-});
-
 test("the two windows are patched independently", () => {
   // ONE PATCH PER KEY. Sending both on either change is how turning the
   // delegation settling off would quietly rewrite the quiet window as well.

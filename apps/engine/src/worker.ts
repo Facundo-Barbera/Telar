@@ -119,6 +119,8 @@ type WorkerClient = Pick<
   | "subscribe"
   | "unsubscribe"
   | "subscriptions"
+  | "subscribeCohort"
+  | "cohorts"
   | "resolveRequest"
   // #516's five query routes, and every one of them a GET. They are what lets
   // the wall's six query tools be mounted HERE as well as in the daemon's
@@ -1478,6 +1480,8 @@ export class EngineWorker {
         subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,
         unsubscribe: async (id, subscriber) => (await this.options.client.unsubscribe(id, { subscriberSessionId: subscriber })).removed,
         subscriptions: async (subscriber) => (await this.options.client.subscriptions(subscriber)).subscriptions,
+        subscribeCohort: async (subscriber, input) => (await this.options.client.subscribeCohort(subscriber, input)).cohort,
+        cohorts: async (subscriber) => (await this.options.client.cohorts(subscriber)).cohorts,
         // Every OPEN request rides every windowed page wherever its turn sits,
         // and open ones are all the wall reads — so one turn is enough.
         requests: async (id) => (await this.options.client.session(id, { turns: 1 })).requests,

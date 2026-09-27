@@ -12,6 +12,7 @@ import {
   classifyCommentFailure,
   classifyDetailFailure,
   classifyGhFailure,
+  classifyGraphqlWriteFailure,
   classifyMergeFailure,
   classifyProjectFailure,
   commentOn,
@@ -36,7 +37,13 @@ import {
   parsePulls,
   parseRepoFromUrl,
   parseReviews,
-  parseThreadAuthors,
+  parseThread,
+  parseReviewThreads,
+  reactionArgv,
+  reactOn,
+  replyToThread,
+  resolveThread,
+  threadReplyArgv,
   readCheckLog,
   readForgeFacets,
   readGitHub,
@@ -1511,15 +1518,42 @@ describe("the thread read asks GitHub who wrote each comment", () => {
     if (!("pull" in read)) throw new Error(`expected a pull request, got ${read.unavailable}`);
     expect(read.pull.comments[0]!.authorAvatar).toBe(APP_FACE);
   });
+
+  test("THE ISSUE'S OWN REACTIONS ride the thread read, with the viewer's marked (#842)", async () => {
+    const issue = await thread(
+      detail([]),
+      ok(
+        JSON.stringify({
+          data: {
+            repository: {
+              issueOrPullRequest: {
+                reactionGroups: [
+                  { content: "THUMBS_UP", viewerHasReacted: true, users: { totalCount: 4 } },
+                  { content: "CONFUSED", viewerHasReacted: false, users: { totalCount: 0 } },
+                ],
+                comments: { nodes: [] },
+              },
+            },
+          },
+        }),
+      ),
+    );
+    expect(issue.reactions).toEqual([{ content: "THUMBS_UP", count: 4, viewerHasReacted: true }]);
+  });
+
+  test("a failed thread read leaves the issue's own reactions ABSENT, never `[]`", async () => {
+    const issue = await thread(detail([]), failed("HTTP 502"));
+    expect(issue.reactions).toBeUndefined();
+  });
 });
 
-describe("parseThreadAuthors", () => {
+describe("parseThread", () => {
   const nodes = (entries: unknown[]) => JSON.stringify({ data: { repository: { issueOrPullRequest: { comments: { nodes: entries } } } } });
 
   test("folds by url, which is the identifier the two reads share", () => {
     // Measured: `gh issue view --json comments` and the GraphQL connection return
     // byte-identical `…#issuecomment-<id>` urls for the same comment.
-    const authors = parseThreadAuthors(
+    const { authors } = parseThread(
       nodes([
         { url: "https://github.com/o/r/issues/7#issuecomment-1", author: { __typename: "User", login: "ada", avatarUrl: "https://a/1" }, reactionGroups: [] },
         { url: "https://github.com/o/r/issues/7#issuecomment-2", author: { __typename: "Bot", login: "app", avatarUrl: "https://a/in/2" }, reactionGroups: [] },
@@ -1531,11 +1565,11 @@ describe("parseThreadAuthors", () => {
   });
 
   test("a node with no url cannot be folded onto anything, and is dropped", () => {
-    expect(parseThreadAuthors(nodes([{ author: { __typename: "User", login: "ada", avatarUrl: "https://a/1" } }])).size).toBe(0);
+    expect(parseThread(nodes([{ author: { __typename: "User", login: "ada", avatarUrl: "https://a/1" } }])).authors.size).toBe(0);
   });
 
   test("a null author is still an entry — GitHub answered, and the answer is nobody", () => {
-    const authors = parseThreadAuthors(nodes([{ url: "c1", author: null, reactionGroups: [] }]));
+    const { authors } = parseThread(nodes([{ url: "c1", author: null, reactionGroups: [] }]));
     expect(authors.has("c1")).toBe(true);
     expect(authors.get("c1")).toEqual({ reactions: [] });
   });
@@ -1543,8 +1577,55 @@ describe("parseThreadAuthors", () => {
   test("an answer with no thread in it is an empty map, not a throw", () => {
     // A number that resolves to neither an issue nor a pull request, and a partial
     // GraphQL error, both arrive shaped like this.
-    expect(parseThreadAuthors(JSON.stringify({ data: { repository: { issueOrPullRequest: null } } })).size).toBe(0);
-    expect(parseThreadAuthors(JSON.stringify({ data: null })).size).toBe(0);
+    expect(parseThread(JSON.stringify({ data: { repository: { issueOrPullRequest: null } } })).authors.size).toBe(0);
+    expect(parseThread(JSON.stringify({ data: null })).authors.size).toBe(0);
+  });
+
+  test("the thing's OWN reactions are read beside its comments, empty groups dropped", () => {
+    const read = parseThread(
+      JSON.stringify({
+        data: {
+          repository: {
+            issueOrPullRequest: {
+              reactionGroups: [
+                { content: "HEART", viewerHasReacted: true, users: { totalCount: 2 } },
+                { content: "EYES", viewerHasReacted: false, users: { totalCount: 0 } },
+              ],
+              comments: { nodes: [] },
+            },
+          },
+        },
+      }),
+    );
+    expect(read.reactions).toEqual([{ content: "HEART", count: 2, viewerHasReacted: true }]);
+  });
+
+  test("node ids travel so a reaction has something to be written against", () => {
+    const read = parseThread(
+      JSON.stringify({
+        data: {
+          repository: {
+            issueOrPullRequest: {
+              id: "I_kwDOabc",
+              reactionGroups: [],
+              comments: { nodes: [{ id: "IC_kwDOdef", url: "c1", author: null, reactionGroups: [] }] },
+            },
+          },
+        },
+      }),
+    );
+    expect(read.subjectId).toBe("I_kwDOabc");
+    expect(read.authors.get("c1")!.subjectId).toBe("IC_kwDOdef");
+  });
+
+  test("an id no GitHub node has ever looked like is dropped, not carried to a write", () => {
+    const read = parseThread(JSON.stringify({ data: { repository: { issueOrPullRequest: { id: "x y; drop", comments: { nodes: [] } } } } }));
+    expect(read.subjectId).toBeUndefined();
+  });
+
+  test("no `reactionGroups` in the answer is ABSENT, not \"nobody reacted\"", () => {
+    expect(parseThread(nodes([])).reactions).toBeUndefined();
+    expect(parseThread(JSON.stringify({ data: null })).reactions).toBeUndefined();
   });
 });
 
@@ -1996,5 +2077,296 @@ describe("openPullRequest", () => {
     expect(parsePullNumber(`${OPENED}/files`)).toBe(812);
     expect(parsePullNumber("https://github.com/Facundo-Barbera/Telar/issues/670")).toBeUndefined();
     expect(parsePullNumber("telar/670-push → main")).toBeUndefined();
+  });
+});
+
+// ── reacting (#842) ──────────────────────────────────────────────────────────
+
+describe("reactOn", () => {
+  const answer = (mutation: string, groups: unknown[]) => ok(JSON.stringify({ data: { [mutation]: { subject: { reactionGroups: groups } } } }));
+
+  test("adds through `addReaction`, with the id and content as VARIABLES, never query text", () => {
+    const argv = reactionArgv({ subjectId: "IC_1", content: "HEART", react: true });
+    expect(argv.slice(0, 2)).toEqual(["api", "graphql"]);
+    expect(argv).toContain("subject=IC_1");
+    expect(argv).toContain("content=HEART");
+    const query = argv.find((arg) => arg.startsWith("query="))!;
+    expect(query).toContain("addReaction");
+    expect(query).not.toContain("IC_1");
+  });
+
+  test("removes through `removeReaction`", () => {
+    expect(reactionArgv({ subjectId: "IC_1", content: "HEART", react: false }).find((arg) => arg.startsWith("query="))).toContain("removeReaction");
+  });
+
+  test("answers GitHub's count as it now stands, not the guess", async () => {
+    const seen: string[][] = [];
+    const result = await reactOn(
+      verbRunner({ "api graphql": answer("addReaction", [{ content: "HEART", viewerHasReacted: true, users: { totalCount: 5 } }]) }, seen),
+      "/repo",
+      { subjectId: "IC_1", content: "HEART", react: true },
+    );
+    expect(result).toEqual({ reacted: true, reactions: [{ content: "HEART", count: 5, viewerHasReacted: true }] });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("A MISSING SCOPE IS ITS OWN REFUSAL, carrying GitHub's sentence", async () => {
+    const result = await reactOn(
+      verbRunner({
+        "api graphql": {
+          status: 1,
+          stdout: JSON.stringify({
+            errors: [{ type: "INSUFFICIENT_SCOPES", message: "Your token has not been granted the required scopes to execute this query." }],
+          }),
+          stderr: "gh: Your token has not been granted the required scopes to execute this query.",
+        },
+      }),
+      "/repo",
+      { subjectId: "IC_1", content: "HEART", react: true },
+    );
+    expect(result).toEqual({ reacted: false, refusal: "scope", message: "Your token has not been granted the required scopes to execute this query." });
+  });
+
+  test("a locked conversation is not_permitted, and a vanished subject is not_found", () => {
+    expect(classifyGraphqlWriteFailure(failed("gh: Lock conversation is enabled; reactions are locked")).refusal).toBe("not_permitted");
+    expect(classifyGraphqlWriteFailure(failed("gh: Could not resolve to a node with the global id of 'IC_1'")).refusal).toBe("not_found");
+    expect(classifyGraphqlWriteFailure(failed("gh: something new")).refusal).toBe("failed");
+  });
+
+  test("exit 0 with errors and no answer is still a refusal — never a silent success", async () => {
+    const result = await reactOn(
+      verbRunner({ "api graphql": ok(JSON.stringify({ data: { addReaction: null }, errors: [{ message: "Resource not accessible by integration" }] })) }),
+      "/repo",
+      { subjectId: "IC_1", content: "HEART", react: true },
+    );
+    expect(result).toEqual({ reacted: false, refusal: "not_permitted", message: "Resource not accessible by integration" });
+  });
+});
+
+// ── review threads (#842) ────────────────────────────────────────────────────
+
+/** A `reviewThreads` answer shaped like GitHub's — every field the query names. */
+const reviewThreadsReply = (nodes: unknown[], totalCount = nodes.length) =>
+  JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { totalCount, nodes } } } } });
+
+const threadNode = (over: Record<string, unknown> = {}) => ({
+  id: "PRRT_1",
+  path: "apps/web/lib/x.ts",
+  line: 42,
+  startLine: 40,
+  originalLine: 41,
+  originalStartLine: 39,
+  diffSide: "RIGHT",
+  subjectType: "LINE",
+  isResolved: false,
+  isOutdated: false,
+  resolvedBy: null,
+  viewerCanResolve: true,
+  viewerCanUnresolve: false,
+  viewerCanReply: true,
+  comments: {
+    totalCount: 2,
+    nodes: [
+      {
+        id: "PRRC_1",
+        url: "https://github.com/o/r/pull/7#discussion_r1",
+        body: "Off by one?",
+        createdAt: "2026-09-01T10:00:00Z",
+        diffHunk: "@@ -38,4 +38,5 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;",
+        authorAssociation: "MEMBER",
+        author: { __typename: "User", login: "ada", avatarUrl: "https://avatars/u/1" },
+        reactionGroups: [{ content: "EYES", viewerHasReacted: true, users: { totalCount: 1 } }],
+      },
+      {
+        id: "PRRC_2",
+        url: "https://github.com/o/r/pull/7#discussion_r2",
+        body: "Fixed.",
+        createdAt: "2026-09-01T11:00:00Z",
+        diffHunk: "ignored — only the first comment's hunk is the thread's",
+        author: { __typename: "Bot", login: "helper", avatarUrl: "https://avatars/in/9" },
+        reactionGroups: [],
+      },
+    ],
+  },
+  ...over,
+});
+
+describe("parseReviewThreads", () => {
+  test("a thread is anchored to its file and lines, with the first comment's hunk", () => {
+    const read = parseReviewThreads(reviewThreadsReply([threadNode()]))!;
+    expect(read.more).toBe(0);
+    const [thread] = read.threads;
+    expect(thread).toMatchObject({
+      id: "PRRT_1",
+      path: "apps/web/lib/x.ts",
+      line: 42,
+      startLine: 40,
+      originalLine: 41,
+      diffSide: "RIGHT",
+      isResolved: false,
+      isOutdated: false,
+      viewerCanResolve: true,
+      viewerCanReply: true,
+      moreComments: 0,
+    });
+    expect(thread!.diffHunk.startsWith("@@ -38,4 +38,5 @@")).toBe(true);
+    expect(thread!.comments.map((comment) => comment.body)).toEqual(["Off by one?", "Fixed."]);
+  });
+
+  test("replies carry their own reactions and node ids, and a bot's face is GitHub's", () => {
+    const [thread] = parseReviewThreads(reviewThreadsReply([threadNode()]))!.threads;
+    expect(thread!.comments[0]).toMatchObject({
+      author: "ada",
+      authorAssociation: "MEMBER",
+      subjectId: "PRRC_1",
+      reactions: [{ content: "EYES", count: 1, viewerHasReacted: true }],
+    });
+    expect(thread!.comments[1]!.authorAvatar).toBe("https://avatars/in/9");
+    expect(thread!.comments[1]!.reactions).toEqual([]);
+  });
+
+  test("an OUTDATED thread has no current line and keeps where it was written", () => {
+    const [thread] = parseReviewThreads(reviewThreadsReply([threadNode({ line: null, startLine: null, isOutdated: true })]))!.threads;
+    expect(thread!.line).toBeUndefined();
+    expect(thread!.startLine).toBeUndefined();
+    expect(thread!.originalLine).toBe(41);
+    expect(thread!.isOutdated).toBe(true);
+  });
+
+  test("a resolved thread is CARRIED, with who resolved it — the surface folds it, the read does not hide it", () => {
+    const [thread] = parseReviewThreads(reviewThreadsReply([threadNode({ isResolved: true, resolvedBy: { login: "grace" } })]))!.threads;
+    expect(thread!.isResolved).toBe(true);
+    expect(thread!.resolvedBy).toBe("grace");
+  });
+
+  test("the cuts are never silent: replies past the cap, and threads past the cap", () => {
+    const node = threadNode();
+    (node.comments as { totalCount: number }).totalCount = 60;
+    const read = parseReviewThreads(reviewThreadsReply([node], 130))!;
+    expect(read.threads[0]!.moreComments).toBe(58);
+    expect(read.more).toBe(129);
+  });
+
+  test("a thread with no id, no path, or no surviving comment is dropped", () => {
+    const read = parseReviewThreads(
+      reviewThreadsReply([threadNode({ id: null }), threadNode({ path: "" }), threadNode({ comments: { totalCount: 0, nodes: [] } })]),
+    )!;
+    expect(read.threads).toEqual([]);
+  });
+
+  test("an answer with no pull request in it is ABSENT, not \"no threads\"", () => {
+    expect(parseReviewThreads(JSON.stringify({ data: { repository: { pullRequest: null } } }))).toBeUndefined();
+    expect(parseReviewThreads(JSON.stringify({ data: null }))).toBeUndefined();
+  });
+});
+
+describe("readPull carries review threads", () => {
+  /** Answers each GraphQL call by which query it is, since both share `api graphql`. */
+  const runner = (threads: GhResult): GhRunner => async (_cwd, args) => {
+    const key = args.slice(0, 2).join(" ");
+    if (key === "pr view") return ok(JSON.stringify({ number: 7, title: "t", state: "OPEN", isDraft: false, url: "https://github.com/o/r/pull/7", createdAt: "2026-09-01T00:00:00Z" }));
+    if (key === "repo view") return ok("{}");
+    if (key === "api graphql") return args.some((arg) => arg.includes("reviewThreads")) ? threads : ok(JSON.stringify({ data: null }));
+    return failed(`unexpected call: ${key}`);
+  };
+
+  test("a PR's threads arrive on its detail", async () => {
+    const read = await readPull(runner(ok(reviewThreadsReply([threadNode()]))), "/repo", 7, () => 1, { skipProjects: true });
+    if (!("pull" in read)) throw new Error(read.unavailable);
+    expect(read.pull.reviewThreads).toHaveLength(1);
+    expect(read.pull.moreReviewThreads).toBe(0);
+  });
+
+  test("A FAILED THREAD READ COSTS THE THREADS, NOT THE PULL REQUEST — and says so by being absent", async () => {
+    const read = await readPull(runner(failed("HTTP 502")), "/repo", 7, () => 1, { skipProjects: true });
+    if (!("pull" in read)) throw new Error(read.unavailable);
+    expect(read.pull.number).toBe(7);
+    expect(read.pull.reviewThreads).toBeUndefined();
+  });
+});
+
+describe("acting on a review thread (#842)", () => {
+  test("a reply's body and thread id are VARIABLES, never query text", () => {
+    const argv = threadReplyArgv("PRRT_1", "looks } good {");
+    expect(argv).toContain("thread=PRRT_1");
+    expect(argv).toContain("body=looks } good {");
+    expect(argv.find((arg) => arg.startsWith("query="))).not.toContain("looks");
+  });
+
+  test("an empty reply is refused before GitHub is asked", async () => {
+    const seen: string[][] = [];
+    const result = await replyToThread(verbRunner({}, seen), "/repo", { threadId: "PRRT_1", body: "   " });
+    expect(result).toMatchObject({ replied: false, refusal: "invalid_body" });
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a reply comes back as GitHub stored it, ready to replace the pending one", async () => {
+    const result = await replyToThread(
+      verbRunner({
+        "api graphql": ok(
+          JSON.stringify({
+            data: {
+              addPullRequestReviewThreadReply: {
+                comment: {
+                  id: "PRRC_9",
+                  url: "https://github.com/o/r/pull/7#discussion_r9",
+                  body: "Done.",
+                  createdAt: "2026-09-26T12:00:00Z",
+                  author: { __typename: "User", login: "ada", avatarUrl: "https://avatars/u/1" },
+                  reactionGroups: [],
+                },
+              },
+            },
+          }),
+        ),
+      }),
+      "/repo",
+      { threadId: "PRRT_1", body: " Done. " },
+    );
+    expect(result).toMatchObject({ replied: true, comment: { subjectId: "PRRC_9", body: "Done.", author: "ada", reactions: [] } });
+  });
+
+  test("a reply without the scope is refused as `scope`", async () => {
+    const result = await replyToThread(
+      verbRunner({ "api graphql": failed("gh: Your token has not been granted the required scopes to execute this query.") }),
+      "/repo",
+      { threadId: "PRRT_1", body: "x" },
+    );
+    expect(result).toMatchObject({ replied: false, refusal: "scope" });
+  });
+
+  test("resolving answers the thread's state as GitHub now holds it", async () => {
+    const seen: string[][] = [];
+    const result = await resolveThread(
+      verbRunner(
+        {
+          "api graphql": ok(
+            JSON.stringify({
+              data: { resolveReviewThread: { thread: { isResolved: true, resolvedBy: { login: "ada" }, viewerCanResolve: false, viewerCanUnresolve: true } } },
+            }),
+          ),
+        },
+        seen,
+      ),
+      "/repo",
+      { threadId: "PRRT_1", resolved: true },
+    );
+    expect(result).toEqual({ changed: true, isResolved: true, resolvedBy: "ada", viewerCanResolve: false, viewerCanUnresolve: true });
+    expect(seen[0]!.find((arg) => arg.startsWith("query="))).toContain("resolveReviewThread");
+  });
+
+  test("unresolving asks `unresolveReviewThread`", async () => {
+    const seen: string[][] = [];
+    await resolveThread(verbRunner({ "api graphql": ok("{}") }, seen), "/repo", { threadId: "PRRT_1", resolved: false });
+    expect(seen[0]!.find((arg) => arg.startsWith("query="))).toContain("unresolveReviewThread");
+  });
+
+  test("a resolve GitHub would not take is a refusal, not a silent success", async () => {
+    const result = await resolveThread(
+      verbRunner({ "api graphql": ok(JSON.stringify({ data: { resolveReviewThread: null }, errors: [{ message: "Resource not accessible by integration" }] })) }),
+      "/repo",
+      { threadId: "PRRT_1", resolved: true },
+    );
+    expect(result).toMatchObject({ changed: false, refusal: "not_permitted" });
   });
 });

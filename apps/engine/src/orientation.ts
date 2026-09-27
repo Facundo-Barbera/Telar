@@ -127,9 +127,11 @@ It is not this CLI's own notion of a session, and not a chat thread.
   has not started yet as one. To fix something you already sent, send the
   correction with \`corrects\` naming that message's runId: unread, it is
   replaced; already read, the correction arrives at once.
-- **A message arrives as a NOTICE, not as text.** The recipient is handed one
-  line — who sent it, which run holds it, how long it is, its opening — and
-  fetches the body with \`sessions_read\`. Put the point in the first line.
+- **A message arrives as a NOTICE.** The recipient is handed who sent it,
+  which run holds it and how long it is; a \`result\` or \`blocker\` also
+  carries up to about 1,500 characters of its text, and a finished turn's wake
+  the start of its answer. Anything longer is fetched with \`sessions_read\`.
+  Put the point first.
 - **Settling** is shelving, not acceptance. A settled session is still live and
   resumable; nothing is deleted, and nothing about the work is approved by it.
   Whether work is good enough to keep is a human's decision, made elsewhere:
@@ -191,6 +193,22 @@ trace.
   reads the one you chose.
 - \`sessions_grep\` — where a phrase appears in one session's journal. A
   substring, not a regular expression.
+
+### Fanning out: one wake when they are ALL done
+
+Subscribing to each of N peers wakes you N times, once per result, and never
+says "all done". When you dispatch several peers and want their results
+together, send the tasks, then \`sessions_subscribe({ sessionIds: [...] })\`.
+
+- You get ONE notification when every member has sent its \`result\` or ended a
+  turn, with a line per member: its final state, the first line of what it said,
+  and the \`sessions_read\` call for the rest.
+- Their results are held for it, not delivered one by one. A \`blocker\` or a
+  parked request still reaches you at once, and a member that sent a blocker
+  stays pending until you answer it.
+- A member settled, archived or deleted before it reported counts as done.
+- It expires after \`timeoutMinutes\` (default 240) with whatever arrived, naming
+  who is still pending. \`sessions_unsubscribe\` takes its id.
 
 ### Being told on a clock instead of one at a time
 

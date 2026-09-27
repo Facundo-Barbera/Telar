@@ -66,8 +66,9 @@ export const OLDER_PAGE_TURNS = 20;
  * for the life of the window and `visibilitychange` never fires, so a gate
  * written against it is dead code on the only platform this app ships.
  * Measured in a real Electron with a one-token control; see the #490 comment of
- * 2026-09-20. This cadence needs none of that — it follows turn state, which is
- * true on every platform.
+ * 2026-09-20. (The shell now says it instead — `hostVisible()` in
+ * lib/host-visibility.ts, #834 — but this cadence needs none of that: it
+ * follows turn state, which is true on every platform.)
  *
  * AND IT CANNOT WEDGE, which is the property that matters more than the
  * saving. Every tick still happens; only the spacing changes. A settled cockpit

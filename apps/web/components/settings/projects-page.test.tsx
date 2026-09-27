@@ -24,8 +24,7 @@ import {
  * take their project as a prop rather than fetching it.
  *
  * The pane itself fetches on mount, so a static render is its All-projects
- * first paint; what only exists after a click is pinned against source, the way
- * settings-search-nav.test.tsx pins its keyboard.
+ * first paint; what only exists after a click is pinned against source.
  */
 const source = readFileSync(new URL("./projects-page.tsx", import.meta.url), "utf8");
 

@@ -188,6 +188,9 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     adopt: (id) => ipcRenderer.invoke("telar:terminal:adopt", { id }),
     /** Put those frames down. Does not stop the run — the engine owns it. */
     abandon: (id) => ipcRenderer.invoke("telar:terminal:abandon", { id }),
+    /** A kitty image sent as a path (`t=f`): `{ ok, bytes }` or `{ ok: false,
+     *  code }`. PNG only; the guards are in kitty-image-file.js. */
+    readImageFile: (path) => ipcRenderer.invoke("telar:terminal:read-image-file", { path }),
     onData: (listener) => on("telar:terminal:data", listener),
     onExit: (listener) => on("telar:terminal:exit", listener),
   },
@@ -303,6 +306,17 @@ contextBridge.exposeInMainWorld("telarDesktop", {
      */
     runaway: () => ipcRenderer.invoke("telar:metrics:runaway"),
     onRunaway: (listener) => on("telar:metrics:runaway", listener),
+  },
+  /**
+   * WHETHER ANYBODY CAN SEE THIS WINDOW (#834). The page's own Page Visibility
+   * API is dead in this shell — `backgroundThrottling: false` suppresses it —
+   * so the main process says it instead. `get` for a renderer that mounted
+   * after the last edge, `onChange` for every edge after. See
+   * window-visibility.js, and apps/web/lib/host-visibility.ts for the reader.
+   */
+  visibility: {
+    get: () => ipcRenderer.invoke("telar:window:visibility"),
+    onChange: (listener) => on("telar:window:visibility", listener),
   },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),

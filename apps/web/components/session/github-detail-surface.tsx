@@ -53,11 +53,13 @@ import {
   CircleSlashIcon,
   ClockIcon,
   ExternalLinkIcon,
+  FileCodeIcon,
   GitMergeIcon,
   GitPullRequestIcon,
   GripVerticalIcon,
   MilestoneIcon,
   RotateCwIcon,
+  SmilePlusIcon,
   SquareKanbanIcon,
   TriangleAlertIcon,
   UserIcon,
@@ -66,6 +68,12 @@ import {
 import type {
   GitHubCheck,
   GitHubIssueDetail,
+  GitHubReaction,
+  GitHubReactionContent,
+  GitHubReactionResult,
+  GitHubReviewThread,
+  GitHubThreadReplyResult,
+  GitHubThreadResolveResult,
   GitHubLink,
   GitHubMergeMethod,
   GitHubMergeRefusal,
@@ -80,7 +88,16 @@ import {
   issueStatus,
   mergeReadiness,
   MERGE_REFUSAL,
+  applyReaction,
+  applyThreadReply,
+  applyThreadResolve,
+  PENDING_REPLY_URL,
+  hunkTail,
+  threadAnchor,
+  threadsByFile,
   pullStatus,
+  reactionPills,
+  REACTIONS,
   reviewLabel,
   STATUS_LABEL,
   STATUS_TONE,
@@ -95,6 +112,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { MessageResponse } from "@/components/ui/message";
 import { PanelDivider, PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -337,7 +355,11 @@ const REVIEW_TONE: Record<string, string> = {
  * author bar in light mode, where `bg-muted/40` over --sidebar was 0.952 over
  * 0.955 — a boundary marker nobody could see. On --card it finally is one.
  */
-export function EntryCard({ entry }: { entry: ForgeEntry }) {
+/** Send one reaction for a subject. Supplied by the surface that knows which
+ *  project and which issue it is; absent where nothing may be written. */
+export type ReactHandler = (subjectId: string, content: GitHubReactionContent, react: boolean) => Promise<GitHubReactionResult>;
+
+export function EntryCard({ entry, onReact }: { entry: ForgeEntry; onReact?: ReactHandler }) {
   const [revealed, setRevealed] = useState(false);
   const hidden = entry.minimized === true && !revealed;
   const verdict = entry.state ? (REVIEW_TONE[entry.state.toUpperCase()] ?? "text-muted-foreground") : undefined;
@@ -420,8 +442,165 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
           /* A bare approval has no body, and that is not a missing one. */
           <p className="text-2xs text-muted-foreground">{entry.kind === "review" ? "No comment left with this review." : "No description was written."}</p>
         )}
+        {!hidden && entry.reactions && (
+          <ReactionRow
+            reactions={entry.reactions}
+            {...(onReact && entry.subjectId ? { onReact: onReact.bind(null, entry.subjectId) } : {})}
+          />
+        )}
       </div>
     </div>
+  );
+}
+
+/**
+ * WHAT PEOPLE REACTED WITH, UNDER WHAT THEY REACTED TO — #842.
+ *
+ * INSIDE THE CARD, AT THE FOOT OF THE BODY, because a reaction is a reply to that
+ * text and nothing else; github.com puts it there too, and a reader who has used it
+ * looks there. Counted pills rather than a list of names: in this repository the
+ * names are one account, so a count is the whole of what a name list would say.
+ *
+ * YOURS IS TINTED, in the accent, because "did I already say this" is the question
+ * the row answers before any other. Nothing else about a pill changes — a count is
+ * a count whoever is in it.
+ *
+ * NO ROW AT ALL WHEN NOBODY REACTED, rather than an empty strip — the ordinary case
+ * for most comments, and a strip of nothing on every card is noise.
+ */
+export function ReactionRow({
+  reactions,
+  onReact,
+}: {
+  reactions: readonly GitHubReaction[];
+  /** Present when this row may be changed. Without it the pills are a read. */
+  onReact?: (content: GitHubReactionContent, react: boolean) => Promise<GitHubReactionResult>;
+}) {
+  /**
+   * THE PILLS DRAW LOCAL STATE, NOT THE PROP. A click redraws at once and GitHub's
+   * answer (or the rollback) lands later; the prop only moves when the detail is
+   * read again, and when it does it wins — tracked by identity, which is React's
+   * own "adjust state when a prop changes" pattern rather than an effect.
+   */
+  const [shown, setShown] = useState(reactions);
+  const [source, setSource] = useState(reactions);
+  const [refused, setRefused] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  if (source !== reactions) {
+    setSource(reactions);
+    setShown(reactions);
+  }
+
+  const pills = reactionPills(shown);
+  if (pills.length === 0 && !onReact) return null;
+
+  const toggle = (content: GitHubReactionContent, react: boolean) => {
+    // One write in flight per row: a second click before GitHub answers would
+    // compute its guess from a guess, and roll back to one too.
+    if (!onReact || busy) return;
+    setBusy(true);
+    setRefused(undefined);
+    void applyReaction({ current: shown, content, react, send: () => onReact(content, react), draw: setShown })
+      .then(setRefused)
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div data-reactions className="mt-1.5 flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {pills.map((pill) => {
+          const words = `${pill.count} ${pill.label}${pill.viewerHasReacted ? ", including you" : ""}`;
+          const hover = !pill.viewerHasReacted
+            ? `${pill.count} reacted with ${pill.label}`
+            : pill.count === 1
+              ? `You reacted with ${pill.label}`
+              : `You and ${pill.count - 1} more reacted with ${pill.label}`;
+          const look = cn(
+            "inline-flex h-5 items-center gap-1 rounded-full border px-1.5 text-3xs tabular-nums",
+            pill.viewerHasReacted ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted-foreground",
+          );
+          const face = (
+            <>
+              <span aria-hidden className="text-2xs leading-none">
+                {pill.glyph}
+              </span>
+              {pill.count}
+            </>
+          );
+          /* A PILL IS ITS OWN TOGGLE when the row can write, as on the website:
+             pressing yours takes it back, pressing anybody else's adds you. */
+          return onReact ? (
+            <button
+              key={pill.content}
+              type="button"
+              data-mine={pill.viewerHasReacted || undefined}
+              aria-pressed={pill.viewerHasReacted}
+              aria-label={words}
+              title={hover}
+              disabled={busy}
+              onClick={() => toggle(pill.content as GitHubReactionContent, !pill.viewerHasReacted)}
+              className={cn(look, "transition-colors hover:border-primary/60 disabled:opacity-60")}
+            >
+              {face}
+            </button>
+          ) : (
+            <span key={pill.content} data-mine={pill.viewerHasReacted || undefined} aria-label={words} title={hover} className={look}>
+              {face}
+            </span>
+          );
+        })}
+        {onReact && <ReactionPicker reactions={shown} disabled={busy} onPick={toggle} />}
+      </div>
+      {refused && (
+        <p role="status" className="text-3xs leading-snug text-destructive">
+          {refused}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * GITHUB'S EIGHT, ONE CLICK AWAY. The ones you already used are marked and
+ * picking one again takes it back — the same toggle the pills are, so there is
+ * no second meaning to learn.
+ */
+function ReactionPicker({
+  reactions,
+  disabled,
+  onPick,
+}: {
+  reactions: readonly GitHubReaction[];
+  disabled: boolean;
+  onPick: (content: GitHubReactionContent, react: boolean) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        disabled={disabled}
+        aria-label="Add a reaction"
+        title="Add a reaction"
+        className="inline-flex h-5 items-center rounded-full border border-dashed border-border px-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
+      >
+        <SmilePlusIcon className="size-3" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="flex w-auto flex-row gap-0.5 p-1">
+        {REACTIONS.map(({ content, glyph, label }) => {
+          const mine = reactions.some((reaction) => reaction.content === content && reaction.viewerHasReacted);
+          return (
+            <DropdownMenuItem
+              key={content}
+              aria-label={mine ? `Take back ${label}` : `React with ${label}`}
+              title={label}
+              onClick={() => onPick(content, !mine)}
+              className={cn("justify-center px-1.5 text-sm", mine && "bg-primary/10")}
+            >
+              {glyph}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -433,7 +612,7 @@ export function EntryCard({ entry }: { entry: ForgeEntry }) {
  * answering a comment appeared above the thing it answered, in a different section.
  * See `buildForgeTimeline` for what is merged and what is dropped.
  */
-function Timeline({ entries, older }: { entries: readonly ForgeEntry[]; older: number }) {
+function Timeline({ entries, older, onReact }: { entries: readonly ForgeEntry[]; older: number; onReact?: ReactHandler }) {
   const said = entries.filter((entry) => entry.kind !== "body").length;
   return (
     <>
@@ -449,10 +628,296 @@ function Timeline({ entries, older }: { entries: readonly ForgeEntry[]; older: n
         {entries
           .filter((entry) => entry.kind !== "body")
           .map((entry) => (
-            <EntryCard key={entry.id} entry={entry} />
+            <EntryCard key={entry.id} entry={entry} {...(onReact ? { onReact } : {})} />
           ))}
       </div>
     </>
+  );
+}
+
+/**
+ * THE LINE-BOUND REVIEW CONVERSATIONS — #842.
+ *
+ * THEIR OWN BLOCK, NOT CARDS IN THE TIMELINE. A thread is anchored to a place in
+ * the code and the timeline is anchored to time; interleaving them put "line 42"
+ * between two replies about the description, and a reader lost both threads. So
+ * they follow the conversation, grouped by file the way the Diff surface lists
+ * files, each with the lines it is about.
+ *
+ * A RESOLVED THREAD IS FOLDED, NOT HIDDEN — one line saying where it was and who
+ * resolved it, open on a click. That is GitHub's own treatment, and the reason
+ * the read carries `isResolved` at all: without it every settled nit is drawn open
+ * forever; without the fold the history of how the pull request got here is lost.
+ *
+ * AN ABSENT READ SAYS SO. "No review comments" over a read that failed would be
+ * the surface inventing an answer.
+ */
+/** The two writes a thread takes, supplied by the surface that knows the pull
+ *  request. Absent where nothing may be written. */
+export type ThreadActions = {
+  reply: (threadId: string, body: string) => Promise<GitHubThreadReplyResult>;
+  resolve: (threadId: string, resolved: boolean) => Promise<GitHubThreadResolveResult>;
+};
+
+export function ReviewThreadsBlock({
+  threads,
+  more,
+  onReact,
+  actions,
+}: {
+  threads?: readonly GitHubReviewThread[];
+  more: number;
+  onReact?: ReactHandler;
+  actions?: ThreadActions;
+}) {
+  if (threads === undefined) {
+    return <p className="px-3 pb-2 text-3xs leading-snug text-muted-foreground">The review comments on lines of the diff could not be read.</p>;
+  }
+  if (threads.length === 0) return null;
+  const open = threads.filter((thread) => !thread.isResolved).length;
+  const label = `${threads.length} review ${threads.length === 1 ? "thread" : "threads"}${open < threads.length ? ` · ${threads.length - open} resolved` : ""}`;
+  return (
+    <>
+      <PanelDivider label={label} />
+      {more > 0 && (
+        <p className="px-3 pb-2 text-3xs leading-snug text-muted-foreground">
+          {more} older {more === 1 ? "thread is" : "threads are"} not shown — open it on GitHub for all of them.
+        </p>
+      )}
+      <div className="flex flex-col gap-3 px-3 pb-3">
+        {threadsByFile(threads).map((file) => (
+          <section key={file.path} className={cn("flex w-full min-w-0 flex-col gap-1.5 self-center", READING_MEASURE)}>
+            <h4 className="flex min-w-0 items-center gap-1 text-3xs text-muted-foreground" title={file.path}>
+              <FileCodeIcon className="size-3 shrink-0" />
+              {/* The file NAME is the part a reader scans for; a long path is
+                  truncated from the left so it survives. */}
+              <span className="min-w-0 truncate font-mono [direction:rtl]">
+                <bdi>{file.path}</bdi>
+              </span>
+            </h4>
+            {file.threads.map((thread) => (
+              <ReviewThreadCard key={thread.id} thread={thread} {...(onReact ? { onReact } : {})} {...(actions ? { actions } : {})} />
+            ))}
+          </section>
+        ))}
+      </div>
+    </>
+  );
+}
+
+const HUNK_LINE: Record<"add" | "del" | "ctx", string> = {
+  add: "tint-success text-foreground",
+  del: "tint-destructive text-foreground",
+  ctx: "text-muted-foreground",
+};
+const HUNK_MARK: Record<"add" | "del" | "ctx", string> = { add: "+", del: "−", ctx: " " };
+
+export function ReviewThreadCard({ thread: given, onReact, actions }: { thread: GitHubReviewThread; onReact?: ReactHandler; actions?: ThreadActions }) {
+  // Local, like a reaction row's: a write redraws at once and GitHub's answer (or
+  // the rollback) lands later; a fresh read of the pull request wins when it comes.
+  const [thread, setThread] = useState(given);
+  const [source, setSource] = useState(given);
+  if (source !== given) {
+    setSource(given);
+    setThread(given);
+  }
+  const [unfolded, setUnfolded] = useState(false);
+  const [draft, setDraft] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState<string>();
+
+  const anchor = threadAnchor(thread);
+  const folded = thread.isResolved && !unfolded;
+  const span = anchor.from !== undefined && anchor.to !== undefined ? anchor.to - anchor.from + 1 : 1;
+  const lines = anchor.label === "file" ? [] : hunkTail(thread.diffHunk, span);
+  const canFlip = actions && (thread.isResolved ? thread.viewerCanUnresolve : thread.viewerCanResolve);
+
+  const flip = () => {
+    if (!actions || busy) return;
+    setBusy(true);
+    setRefused(undefined);
+    const resolved = !thread.isResolved;
+    // Unresolving opens the thread; resolving folds it — the state IS the fold.
+    setUnfolded(!resolved);
+    void applyThreadResolve({ current: thread, resolved, send: () => actions.resolve(thread.id, resolved), draw: setThread })
+      .then(setRefused)
+      .finally(() => setBusy(false));
+  };
+
+  const send = () => {
+    const body = draft?.trim();
+    if (!actions || busy || !body) return;
+    setBusy(true);
+    setRefused(undefined);
+    void applyThreadReply({ current: thread, body, now: Date.now(), send: () => actions.reply(thread.id, body), draw: setThread })
+      .then((said) => {
+        setRefused(said);
+        // THE DRAFT SURVIVES A REFUSAL — a reply lost to a missing scope must not
+        // have to be typed again. It clears only once GitHub has it.
+        if (!said) setDraft(undefined);
+      })
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div data-thread={thread.id} className="w-full min-w-0 overflow-hidden rounded-md border border-border bg-card">
+      <div className={cn("flex min-w-0 items-center gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-3xs text-muted-foreground", folded && "border-b-0")}>
+        <button
+          type="button"
+          aria-expanded={!folded}
+          disabled={!thread.isResolved}
+          onClick={() => setUnfolded((was) => !was)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left disabled:cursor-default"
+        >
+          {thread.isResolved && <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", !folded && "rotate-90")} />}
+          <span className="shrink-0 font-mono text-foreground">{anchor.label}</span>
+          {anchor.outdated && (
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
+              outdated
+            </Badge>
+          )}
+          {thread.isResolved && (
+            <Badge variant="outline" className="shrink-0 border-success/40 px-1 py-0 text-4xs font-normal text-success">
+              resolved{thread.resolvedBy ? ` by ${thread.resolvedBy}` : ""}
+            </Badge>
+          )}
+          {folded && (
+            <span className="min-w-0 truncate">
+              {thread.comments[0]?.author ?? "someone"}: {thread.comments[0]?.body.split("\n")[0]}
+            </span>
+          )}
+        </button>
+        {/* ONLY WHEN GITHUB SAYS THIS VIEWER MAY — `viewerCanResolve` is read, not
+            assumed, so the button never offers a refusal. */}
+        {canFlip && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={flip}
+            title={thread.isResolved ? "Reopen this conversation" : "Mark this conversation as settled"}
+            className="shrink-0 rounded px-1 transition-colors hover:text-foreground disabled:opacity-60"
+          >
+            {thread.isResolved ? "Unresolve" : "Resolve"}
+          </button>
+        )}
+      </div>
+      {refused && folded && (
+        <p role="status" className="px-2 py-1 text-3xs leading-snug text-destructive">
+          {refused}
+        </p>
+      )}
+      {!folded && (
+        <>
+          {lines.length > 0 && (
+            <pre className="overflow-x-auto border-b border-border bg-card py-0.5 font-mono text-3xs leading-relaxed">
+              {lines.map((line, index) => (
+                <div key={index} className={cn("flex px-2", HUNK_LINE[line.kind])}>
+                  <span aria-hidden className="w-3 shrink-0 select-none opacity-60">
+                    {HUNK_MARK[line.kind]}
+                  </span>
+                  <span className="whitespace-pre">{line.text || " "}</span>
+                </div>
+              ))}
+            </pre>
+          )}
+          <div className="flex flex-col divide-y divide-border">
+            {thread.comments.map((comment) => {
+              const pending = comment.url.startsWith(PENDING_REPLY_URL);
+              return (
+                <div key={comment.url} data-pending={pending || undefined} className={cn("min-w-0 px-2 py-1.5", pending && "opacity-60")}>
+                  <div className="mb-1 flex min-w-0 items-center gap-1.5 text-3xs text-muted-foreground">
+                    <GitHubAvatar {...(comment.author ? { login: comment.author } : {})} {...(comment.authorAvatar ? { src: comment.authorAvatar } : {})} className="size-4" />
+                    <span className="min-w-0 truncate font-medium text-foreground">{pending ? "you" : (comment.author ?? "someone")}</span>
+                    {comment.authorAssociation && comment.authorAssociation !== "NONE" && (
+                      <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
+                        {comment.authorAssociation.toLowerCase()}
+                      </Badge>
+                    )}
+                    {pending ? (
+                      <span className="flex shrink-0 items-center gap-1">
+                        <Spinner className="size-2.5" /> sending
+                      </span>
+                    ) : (
+                      <>
+                        <span className="shrink-0 tabular-nums" title={when(comment.createdAt)}>
+                          {fmtAgo(comment.createdAt)}
+                        </span>
+                        <a
+                          href={comment.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label="Open this review comment on GitHub"
+                          className="ml-auto shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
+                        >
+                          <ExternalLinkIcon className="size-2.5" />
+                        </a>
+                      </>
+                    )}
+                  </div>
+                  <Markdown>{comment.body}</Markdown>
+                  {!pending && (
+                    <ReactionRow
+                      reactions={comment.reactions}
+                      {...(onReact && comment.subjectId ? { onReact: onReact.bind(null, comment.subjectId) } : {})}
+                    />
+                  )}
+                </div>
+              );
+            })}
+            {thread.moreComments > 0 && (
+              <p className="px-2 py-1 text-3xs text-muted-foreground">
+                {thread.moreComments} more {thread.moreComments === 1 ? "reply" : "replies"} on GitHub.
+              </p>
+            )}
+            {actions && thread.viewerCanReply && (
+              <div className="px-2 py-1.5">
+                {draft === undefined ? (
+                  <button
+                    type="button"
+                    onClick={() => setDraft("")}
+                    className="w-full rounded border border-border px-2 py-1 text-left text-3xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Reply…
+                  </button>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <Textarea
+                      autoFocus
+                      value={draft}
+                      disabled={busy}
+                      placeholder="Reply to this thread. ⌘↩ sends."
+                      aria-label="Reply to this review thread"
+                      onChange={(event) => setDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                          event.preventDefault();
+                          send();
+                        }
+                        if (event.key === "Escape" && !busy) setDraft(undefined);
+                      }}
+                      className="min-h-16 text-xs"
+                    />
+                    <div className="flex justify-end gap-1">
+                      <Button size="xs" variant="ghost" disabled={busy} onClick={() => setDraft(undefined)}>
+                        Cancel
+                      </Button>
+                      <Button size="xs" disabled={busy || !draft.trim()} onClick={send}>
+                        Reply
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          {refused && (
+            <p role="status" className="border-t border-border px-2 py-1 text-3xs leading-snug text-destructive">
+              {refused}
+            </p>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1220,7 +1685,10 @@ export function ForgeDetailSurface({
     createdAt: openedAt,
     comments: thing.comments,
     ...(pull ? { reviews: pull.reviews } : {}),
+    ...(thing.reactions ? { reactions: thing.reactions } : {}),
+    ...(thing.subjectId ? { subjectId: thing.subjectId } : {}),
   });
+  const react: ReactHandler = (subjectId, content, add) => api.reactOnProjectForge(projectId, kind, thing.number, { subjectId, content, react: add });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -1257,10 +1725,22 @@ export function ForgeDetailSurface({
          * named the author and the hour.
          */}
         <div className="flex flex-col border-t border-border px-3 py-2.5">
-          <EntryCard entry={timeline[0]!} />
+          <EntryCard entry={timeline[0]!} onReact={react} />
         </div>
 
-        <Timeline entries={timeline} older={thing.olderComments} />
+        <Timeline entries={timeline} older={thing.olderComments} onReact={react} />
+
+        {pull && (
+          <ReviewThreadsBlock
+            threads={pull.reviewThreads}
+            more={pull.moreReviewThreads ?? 0}
+            onReact={react}
+            actions={{
+              reply: (threadId, body) => api.replyToProjectThread(projectId, pull.number, threadId, body),
+              resolve: (threadId, resolved) => api.resolveProjectThread(projectId, pull.number, threadId, resolved),
+            }}
+          />
+        )}
 
         {/**
          * CHECKS AT THE BOTTOM, AGAINST THE MERGE.

@@ -15,7 +15,7 @@
  * types faster than this file can learn them.
  */
 import { requestKindForTool } from "../driver";
-import { canonicalToolName, parseToolName, type ItemDetail, type ItemStatus, type RequestDetail, type RequestKind, type UsageSnapshot } from "@telar/engine-client";
+import { canonicalToolName, parseToolName, type ItemDetail, type ItemStatus, type RequestDetail, type RequestKind, type UsageSnapshot, UNKNOWN_PATH } from "@telar/engine-client";
 import { titleForToolCall } from "../driver";
 
 export type CodexItem = Record<string, unknown>;
@@ -144,7 +144,7 @@ export function codexItemDetail(item: CodexItem): { detail: ItemDetail; title?: 
       const detail: ItemDetail = {
         type: "file_change",
         change: {
-          path: str(first.path) ?? "(unknown)",
+          path: str(first.path) ?? UNKNOWN_PATH,
           kind: fileChangeKind(first.kind),
         },
       };
@@ -153,7 +153,8 @@ export function codexItemDetail(item: CodexItem): { detail: ItemDetail; title?: 
       // in the title so a multi-file patch does not read as a single-file one;
       // `FileChangeDetail` has nowhere to carry the rest, and inventing extra
       // rows would leave them open when only the parent item completes.
-      const title = changes.length > 1 ? `${detail.change.path} (+${changes.length - 1} more)` : detail.change.path;
+      const path = detail.change.path === UNKNOWN_PATH ? "File change" : detail.change.path;
+      const title = changes.length > 1 ? `${path} (+${changes.length - 1} more)` : path;
       return { detail, title };
     }
 
@@ -286,7 +287,7 @@ export function codexApprovalRequest(
     kind: "file_change",
     detail: {
       kind: "file_change",
-      change: { path: str(first.path) ?? str(params.path) ?? "(unknown)", kind: fileChangeKind(first.kind) },
+      change: { path: str(first.path) ?? str(params.path) ?? UNKNOWN_PATH, kind: fileChangeKind(first.kind) },
     },
     toolUseId,
   };

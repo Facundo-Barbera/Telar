@@ -21,6 +21,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
 
 export type ProcessTypeTotal = {
   /** Electron's own `ProcessMetric.type`. */
@@ -186,9 +187,9 @@ type MetricsState = {
  * POLL WHILE SOMEBODY IS LOOKING, and not otherwise.
  *
  * A hidden tab is nobody watching, and a background poll every two seconds for
- * the rest of the day is the kind of thing this page exists to find. The
- * listener is on `visibilitychange` rather than a mount check because the tab
- * this cockpit lives in is routinely left open behind other windows.
+ * the rest of the day is the kind of thing this page exists to find. The gate
+ * is `hostVisible()`, not `document.visibilityState`, which the desktop shell
+ * pins to "visible" (#834) — see host-visibility.ts.
  *
  * A FAILED FIRST READ WITH NO BRIDGE IS SILENCE, deliberately — it cannot tell
  * "no desktop shell" from "the shell is wedged", and telling somebody browsing
@@ -227,19 +228,16 @@ export function useProcessMetrics(intervalMs = 2_000): MetricsState {
 
   useEffect(() => {
     const tick = () => {
-      if (typeof document === "undefined" || document.visibilityState === "visible") void refresh();
+      if (hostVisible()) void refresh();
     };
+    // Back in front of somebody: answer now rather than up to one interval
+    // later, so the first thing they read is not a stale sample.
+    const unsubscribe = subscribeHostVisibility(tick);
     tick();
     const timer = window.setInterval(tick, intervalMs);
-    const onVisible = () => {
-      // Back in front of somebody: answer now rather than up to one interval
-      // later, so the first thing they read is not a stale sample.
-      if (document.visibilityState === "visible") void refresh();
-    };
-    document.addEventListener("visibilitychange", onVisible);
     return () => {
       window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
+      unsubscribe();
     };
   }, [refresh, intervalMs]);
 

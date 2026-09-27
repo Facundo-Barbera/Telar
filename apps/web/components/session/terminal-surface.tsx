@@ -52,6 +52,7 @@ import { endTerminal, mayClose } from "@/lib/terminal-close";
 import { runAsChip } from "@/lib/terminal-reveal";
 export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
 import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
+import { domImageBackend, KittyGraphicsAddon } from "@/lib/terminal-kitty/addon";
 import { attachTerminal, gridMeasurer, terminalKeyHandler } from "@/lib/terminal-session";
 import {
   activateShell,
@@ -80,10 +81,10 @@ const api = createEngineApi();
  * `~/.zshrc` runs `fastfetch --logo-type iterm` when it detects an iTerm-ish
  * terminal, so his logo arrives as IIP on every new tab.
  *
- * KITTY IS NOT TURNED OFF HERE BECAUSE THERE IS NOTHING TO TURN OFF.
- * `@xterm/addon-image@0.9.0` implements SIXEL and IIP and nothing else — its
- * options carry no kitty key and its source contains no kitty handler. Saying
- * "kitty: disabled" would describe a switch that does not exist.
+ * KITTY HAS NO SWITCH HERE because the addon has none to set:
+ * `@xterm/addon-image@0.9.0` implements SIXEL and IIP and nothing else. Kitty
+ * graphics is Telar's own `KittyGraphicsAddon` (lib/terminal-kitty/), loaded
+ * right after this one and drawing through its image store (#884).
  *
  * WHAT IS ALPHA IS IIP, not kitty. The addon's own README §Status: "Sixel
  * support and image handling in xterm.js is considered beta quality. IIP
@@ -787,7 +788,13 @@ function TerminalPane({
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
-      term.loadAddon(new ImageAddon(TERMINAL_IMAGE_OPTIONS));
+      const images = new ImageAddon(TERMINAL_IMAGE_OPTIONS);
+      term.loadAddon(images);
+      // After the image addon: kitty images are drawn through its store.
+      // `readFile` is what lets a `kitty-direct` logo (`t=f`) draw; the bridge
+      // exists only on the local host, so a remote session never reads here.
+      const readFile = bridge.readImageFile?.bind(bridge);
+      term.loadAddon(new KittyGraphicsAddon(images, { ...domImageBackend, readFile }));
       term.open(element);
       /**
        * WEBGL IS AN OPTIMISATION, NOT A REQUIREMENT. A machine with no GL

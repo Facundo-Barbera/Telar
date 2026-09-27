@@ -19,7 +19,16 @@ import type {
   GitHubMergeRefusal,
   GitHubPullCreateRefusal,
   GitHubPullDetail,
+  GitHubReaction,
+  GitHubReactionContent,
+  GitHubReactionRefusal,
+  GitHubReactionResult,
   GitHubReview,
+  GitHubReviewComment,
+  GitHubReviewThread,
+  GitHubThreadRefusal,
+  GitHubThreadReplyResult,
+  GitHubThreadResolveResult,
   GitPushRefusal,
 } from "@telar/engine-client";
 
@@ -439,6 +448,13 @@ export type ForgeEntry = {
    * difference is the whole of what the marker can honestly say.
    */
   sessionId?: string;
+  /** The node id a reaction on this entry is written against. Absent means the
+   *  reactions can be shown and not changed. */
+  subjectId?: string;
+  /** What GitHub is holding against this entry (#842). Absent when the engine did
+   *  not get to ask — a review has none this read can reach — and the card then
+   *  draws no reaction row at all rather than an empty one. */
+  reactions?: readonly GitHubReaction[];
 };
 
 export function buildForgeTimeline(input: {
@@ -448,6 +464,9 @@ export function buildForgeTimeline(input: {
   createdAt: number;
   comments: readonly GitHubComment[];
   reviews?: readonly GitHubReview[];
+  /** The issue's or pull request's own reactions, which belong on the body card. */
+  reactions?: readonly GitHubReaction[];
+  subjectId?: string;
 }): ForgeEntry[] {
   const entries: ForgeEntry[] = input.comments.map((comment) => ({
     id: comment.url,
@@ -461,6 +480,8 @@ export function buildForgeTimeline(input: {
     ...(comment.minimizedReason ? { minimizedReason: comment.minimizedReason } : {}),
     url: comment.url,
     ...(comment.attribution ? { sessionId: comment.attribution.sessionId } : {}),
+    ...(comment.reactions ? { reactions: comment.reactions } : {}),
+    ...(comment.subjectId ? { subjectId: comment.subjectId } : {}),
   }));
 
   for (const [at, review] of (input.reviews ?? []).entries()) {
@@ -471,7 +492,8 @@ export function buildForgeTimeline(input: {
      * the review row exists to hold them and its own body is blank. Rendering those
      * puts "someone commented" cards with nothing in them through the middle of the
      * conversation. An empty APPROVED is kept, because who approved and when is the
-     * whole content of an approval.
+     * whole content of an approval. The inline comments such a shell holds are
+     * drawn by the review threads block, anchored to their lines (#842).
      */
     if (!review.body.trim() && review.state.toUpperCase() === "COMMENTED") continue;
     entries.push({
@@ -500,9 +522,45 @@ export function buildForgeTimeline(input: {
       ...(input.author ? { author: input.author } : {}),
       ...(input.authorAvatar ? { avatar: input.authorAvatar } : {}),
       body: input.body,
+      ...(input.reactions ? { reactions: input.reactions } : {}),
+      ...(input.subjectId ? { subjectId: input.subjectId } : {}),
     },
     ...entries,
   ];
+}
+
+/**
+ * GITHUB'S EIGHT REACTIONS, in GitHub's own order, as the glyph each one is.
+ *
+ * DECIDED HERE, ONCE — the engine passes `THUMBS_UP` through unmapped on the
+ * grounds that which emoji stands for `HOORAY` is a display decision. The order is
+ * GitHub's, so a pill row reads the same left to right as it does on the website
+ * and the picker offers them in the order a GitHub user already knows.
+ */
+export const REACTIONS = [
+  { content: "THUMBS_UP", glyph: "👍", label: "thumbs up" },
+  { content: "THUMBS_DOWN", glyph: "👎", label: "thumbs down" },
+  { content: "LAUGH", glyph: "😄", label: "laugh" },
+  { content: "HOORAY", glyph: "🎉", label: "hooray" },
+  { content: "CONFUSED", glyph: "😕", label: "confused" },
+  { content: "HEART", glyph: "❤️", label: "heart" },
+  { content: "ROCKET", glyph: "🚀", label: "rocket" },
+  { content: "EYES", glyph: "👀", label: "eyes" },
+] as const;
+
+export type ReactionContent = GitHubReactionContent;
+
+/**
+ * The pills a card draws: the reactions somebody used, in GitHub's order, each with
+ * its glyph. A content this cockpit does not know is dropped rather than drawn as a
+ * bare word — GitHub has not added one since 2016, and a pill reading `SMILE` would
+ * be a bug report rather than a reaction.
+ */
+export function reactionPills(reactions: readonly GitHubReaction[]): (GitHubReaction & { glyph: string; label: string })[] {
+  return REACTIONS.flatMap(({ content, glyph, label }) => {
+    const held = reactions.find((reaction) => reaction.content === content);
+    return held && held.count > 0 ? [{ ...held, glyph, label }] : [];
+  });
 }
 
 /** GitHub's review vocabulary, in words a row has space for. An unfamiliar state
@@ -516,4 +574,213 @@ export function reviewLabel(state: string): string {
     PENDING: "pending",
   };
   return labels[state.toUpperCase()] ?? state.toLowerCase().replaceAll("_", " ");
+}
+
+/**
+ * What the pills say BEFORE GitHub has answered — one reaction added or removed.
+ *
+ * A GUESS, and written as one: the count moves by exactly the viewer, and a group
+ * the viewer leaves empty disappears, so the row looks the way GitHub will draw it
+ * in the ordinary case. The mutation's own answer then replaces the guess with
+ * GitHub's count, which is the only one that knows who else reacted meanwhile.
+ */
+export function toggleReaction(reactions: readonly GitHubReaction[], content: GitHubReactionContent, react: boolean): GitHubReaction[] {
+  const held = reactions.find((reaction) => reaction.content === content);
+  // Asking for what is already true changes nothing — a double click must not
+  // count the viewer twice.
+  if (react === Boolean(held?.viewerHasReacted)) return [...reactions];
+  if (!held) return [...reactions, { content, count: 1, viewerHasReacted: true }];
+  const count = held.count + (react ? 1 : -1);
+  return count <= 0
+    ? reactions.filter((reaction) => reaction !== held)
+    : reactions.map((reaction) => (reaction === held ? { content, count, viewerHasReacted: react } : reaction));
+}
+
+/** What a refused reaction says, in one sentence a person can act on. */
+export const REACTION_REFUSAL: Record<GitHubReactionRefusal, string> = {
+  scope: "Your GitHub sign-in can read here but not react. Run `gh auth refresh -s repo` in a terminal, then try again.",
+  not_permitted: "GitHub will not take a reaction here — it may be locked or archived.",
+  not_found: "That is gone from GitHub. Refresh to see what is there now.",
+  failed: "GitHub did not take that reaction.",
+};
+
+/**
+ * ONE REACTION, OPTIMISTICALLY — the whole write, without a component.
+ *
+ * The guess is drawn at once, GitHub is asked, and then EITHER its count replaces
+ * the guess OR the row goes back to exactly what it was before the click and the
+ * sentence saying why is returned. Pure apart from the two callbacks, so the
+ * rollback — the part that matters when it goes wrong — is testable without a DOM.
+ */
+export async function applyReaction(input: {
+  current: readonly GitHubReaction[];
+  content: GitHubReactionContent;
+  react: boolean;
+  send: () => Promise<GitHubReactionResult>;
+  draw: (reactions: readonly GitHubReaction[]) => void;
+}): Promise<string | undefined> {
+  input.draw(toggleReaction(input.current, input.content, input.react));
+  let result: GitHubReactionResult;
+  try {
+    result = await input.send();
+  } catch (cause) {
+    input.draw(input.current);
+    return cause instanceof Error && cause.message ? cause.message : "The engine did not answer.";
+  }
+  if (result.reacted) {
+    input.draw(result.reactions);
+    return undefined;
+  }
+  input.draw(input.current);
+  return REACTION_REFUSAL[result.refusal];
+}
+
+// ── review threads (#842) ────────────────────────────────────────────────────
+
+/**
+ * WHERE A REVIEW THREAD SITS, in the words a reader uses: a file and a line range.
+ *
+ * AN OUTDATED THREAD IS PUT WHERE IT WAS WRITTEN. GitHub drops `line` once a push
+ * changed those lines, and a thread with no place at all is unreadable — so it
+ * falls back to `originalLine` and says it is outdated, which is what github.com
+ * does. A thread on a whole file has no line and says so.
+ */
+export type ThreadAnchor = { path: string; from?: number; to?: number; side: "base" | "head"; outdated: boolean; label: string };
+
+export function threadAnchor(thread: GitHubReviewThread): ThreadAnchor {
+  const side = thread.diffSide === "LEFT" ? "base" : "head";
+  const current = thread.line !== undefined;
+  const to = current ? thread.line : thread.originalLine;
+  const from = current ? (thread.startLine ?? to) : (thread.originalStartLine ?? to);
+  const outdated = thread.isOutdated || (!current && to !== undefined);
+  if (thread.subjectType === "FILE" || to === undefined) return { path: thread.path, side, outdated, label: "file" };
+  const span = from !== undefined && from < to ? `L${from}–${to}` : `L${to}`;
+  return { path: thread.path, from: from ?? to, to, side, outdated, label: side === "base" ? `${span} (base)` : span };
+}
+
+/** One line of a hunk, classified the way a diff is drawn. */
+export type HunkLine = { kind: "add" | "del" | "ctx"; text: string };
+
+/**
+ * THE LINES A THREAD IS ABOUT, and a little above them.
+ *
+ * GitHub's `diffHunk` runs from the hunk header DOWN TO the commented line, so the
+ * commented lines are its tail. A whole hunk in a 320px card buries the comment
+ * under forty lines of context; the tail is the part the reviewer pointed at. The
+ * span a multi-line thread covers is always kept, plus `context` lines above it.
+ */
+export function hunkTail(diffHunk: string, span = 1, context = 3): HunkLine[] {
+  const lines = diffHunk.split(/\r?\n/).filter((line, index) => !(index === 0 && line.startsWith("@@")));
+  while (lines.length > 0 && lines.at(-1) === "") lines.pop();
+  return lines.slice(-(Math.max(1, span) + context)).map((line) => {
+    const mark = line[0];
+    if (mark === "+") return { kind: "add", text: line.slice(1) };
+    if (mark === "-") return { kind: "del", text: line.slice(1) };
+    return { kind: "ctx", text: mark === " " ? line.slice(1) : line };
+  });
+}
+
+/**
+ * THE THREADS, BY FILE, IN FILE ORDER — the order the Diff surface lists them in,
+ * so a reader moving between the two finds the same file in the same place. Inside
+ * a file, top to bottom by line; a whole-file thread first, because it is about
+ * everything below it.
+ */
+export function threadsByFile(threads: readonly GitHubReviewThread[]): { path: string; threads: GitHubReviewThread[] }[] {
+  const files = new Map<string, GitHubReviewThread[]>();
+  for (const thread of threads) files.set(thread.path, [...(files.get(thread.path) ?? []), thread]);
+  return [...files.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, list]) => ({
+      path,
+      threads: [...list].sort((left, right) => (threadAnchor(left).to ?? 0) - (threadAnchor(right).to ?? 0)),
+    }));
+}
+
+// ── acting on a review thread (#842) ─────────────────────────────────────────
+
+/** What a refused reply or resolve says. */
+export const THREAD_REFUSAL: Record<GitHubThreadRefusal, string> = {
+  scope: "Your GitHub sign-in can read here but not write. Run `gh auth refresh -s repo` in a terminal, then try again.",
+  not_permitted: "GitHub will not take that here — the conversation may be locked, or this account cannot.",
+  not_found: "That thread is gone from GitHub. Refresh to see what is there now.",
+  invalid_body: "A reply needs something in it, and at most 65,536 characters.",
+  failed: "GitHub did not take that.",
+};
+
+/**
+ * RESOLVE OR UNRESOLVE, OPTIMISTICALLY. The thread folds (or unfolds) at once;
+ * GitHub's answer then sets the state and who may flip it back, or the thread
+ * goes back to exactly what it was and the sentence is returned.
+ */
+export async function applyThreadResolve(input: {
+  current: GitHubReviewThread;
+  resolved: boolean;
+  send: () => Promise<GitHubThreadResolveResult>;
+  draw: (thread: GitHubReviewThread) => void;
+}): Promise<string | undefined> {
+  const { current } = input;
+  input.draw({ ...current, isResolved: input.resolved });
+  let result: GitHubThreadResolveResult;
+  try {
+    result = await input.send();
+  } catch (cause) {
+    input.draw(current);
+    return cause instanceof Error && cause.message ? cause.message : "The engine did not answer.";
+  }
+  if (!result.changed) {
+    input.draw(current);
+    return result.message && result.refusal === "failed" ? result.message : THREAD_REFUSAL[result.refusal];
+  }
+  const next: GitHubReviewThread = {
+    ...current,
+    isResolved: result.isResolved,
+    viewerCanResolve: result.viewerCanResolve,
+    viewerCanUnresolve: result.viewerCanUnresolve,
+  };
+  // An unresolved thread has nobody who resolved it; the old name must not linger.
+  if (result.resolvedBy) next.resolvedBy = result.resolvedBy;
+  else delete next.resolvedBy;
+  input.draw(next);
+  return undefined;
+}
+
+/**
+ * REPLY, OPTIMISTICALLY. The reply appears at once as a pending comment (no url
+ * yet, so nothing can link or react to it); GitHub's stored comment then takes its
+ * place, or it is removed and the sentence returned — and the caller keeps the
+ * draft, because a reply lost to a missing scope must not have to be typed again.
+ */
+export const PENDING_REPLY_URL = "pending:";
+
+export async function applyThreadReply(input: {
+  current: GitHubReviewThread;
+  body: string;
+  author?: string;
+  now: number;
+  send: () => Promise<GitHubThreadReplyResult>;
+  draw: (thread: GitHubReviewThread) => void;
+}): Promise<string | undefined> {
+  const { current } = input;
+  const pending: GitHubReviewComment = {
+    ...(input.author ? { author: input.author } : {}),
+    body: input.body.trim(),
+    createdAt: input.now,
+    url: `${PENDING_REPLY_URL}${input.now}`,
+    reactions: [],
+  };
+  input.draw({ ...current, comments: [...current.comments, pending] });
+  let result: GitHubThreadReplyResult;
+  try {
+    result = await input.send();
+  } catch (cause) {
+    input.draw(current);
+    return cause instanceof Error && cause.message ? cause.message : "The engine did not answer.";
+  }
+  if (!result.replied) {
+    input.draw(current);
+    return result.message && (result.refusal === "failed" || result.refusal === "invalid_body") ? result.message : THREAD_REFUSAL[result.refusal];
+  }
+  input.draw({ ...current, comments: [...current.comments, result.comment] });
+  return undefined;
 }

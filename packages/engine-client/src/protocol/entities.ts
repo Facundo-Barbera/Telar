@@ -2108,6 +2108,49 @@ export const Subscription = z.object({
 });
 export type Subscription = z.infer<typeof Subscription>;
 
+/**
+ * ONE MEMBER OF A COHORT, and how its errand ended.
+ *
+ * `result` — it sent the subscriber its final `result`; `fetch` names the
+ * subscriber's turn holding it. `completed`, `failed`, `stopped` — a turn ended
+ * with no blocker waiting. `settled`, `archived`, `deleted` — it was put away
+ * before it reported, which ends the wait rather than hanging it.
+ */
+export const CohortMember = z.object({
+  sessionId: Id,
+  title: z.string().max(200).optional(),
+  outcome: z.enum(["result", "completed", "failed", "stopped", "settled", "archived", "deleted"]).optional(),
+  /** It sent a `blocker` and has not been answered: it stays pending whatever its turns do. */
+  blocked: z.boolean().optional(),
+  fetch: z.object({ sessionId: Id, runId: Id }).optional(),
+  /** The first line of its result or answer, clamped. */
+  firstLine: z.string().max(400).optional(),
+  at: Timestamp.optional(),
+});
+export type CohortMember = z.infer<typeof CohortMember>;
+
+/**
+ * SEVERAL SESSIONS, ONE WAKE WHEN THEY ARE ALL DONE.
+ *
+ * A fan-out subscribed member by member woke its coordinator once per child.
+ * A cohort holds each member's result and ending and delivers ONE notification
+ * when every member has one, a line per member. A `blocker` or a parked request
+ * still reaches the subscriber at once. Removed when it delivers or expires;
+ * `sessions_unsubscribe` takes its id.
+ */
+export const Cohort = z.object({
+  id: Id,
+  subscriberSessionId: Id,
+  members: z.array(CohortMember).min(1).max(20),
+  completionWake: z.enum(["settled_only", "always"]).optional(),
+  createdAt: Timestamp,
+  /** Past this the cohort delivers what it has, naming who is still pending. */
+  expiresAt: Timestamp,
+  /** Closed while the subscriber was working: delivered when it next settles. */
+  ready: z.enum(["all", "expired"]).optional(),
+});
+export type Cohort = z.infer<typeof Cohort>;
+
 export const AgentMessageIntent = z.enum(["task", "report", "result", "blocker"]);
 export type AgentMessageIntent = z.infer<typeof AgentMessageIntent>;
 
@@ -2204,6 +2247,8 @@ export const NotificationDetail = z.object({
    * spending a busy coordinator's context on the same errand indefinitely.
    */
   deliveries: z.number().int().positive().optional(),
+  /** Set on a cohort's one notification (see `Cohort`). */
+  cohortId: Id.optional(),
 });
 export type NotificationDetail = z.infer<typeof NotificationDetail>;
 

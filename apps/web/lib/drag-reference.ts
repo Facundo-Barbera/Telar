@@ -84,6 +84,47 @@ export function fileReference(path: string): TelarReference {
 }
 
 /**
+ * A RANGE OF LINES IN A FILE — what selecting lines in a diff inserts (#855).
+ *
+ * `path:10-20`, or `path:10` for one line, because that is the spelling every
+ * editor, stack trace and grep result already uses, and an agent's Read tool
+ * takes the path and an offset straight out of it.
+ *
+ * THE LINE NUMBERS ARE A SIDE'S, and a diff has two. A range on the added side
+ * is the file as it is now, which is what the path names — for a renamed file,
+ * the NEW path, since the old one is no longer on disk. A range on the removed
+ * side counts lines of the file BEFORE the change, and says so: the same
+ * numbers read against today's file would point at the wrong code. A range
+ * that starts on one side and ends on the other has no single numbering, so it
+ * names both ends in words rather than pretending the two counts are one.
+ */
+export type LineSide = "before" | "after";
+
+export function lineRangeReference(
+  path: string,
+  range: { start: number; end: number; startSide?: LineSide; endSide?: LineSide },
+): TelarReference {
+  const startSide = range.startSide ?? "after";
+  const endSide = range.endSide ?? startSide;
+  const name = path.split("/").at(-1) || path;
+  if (startSide !== endSide) {
+    return {
+      kind: "file",
+      label: `${name}:${range.start}–${range.end}`,
+      text: `\`${path}\` from line ${range.start} ${startSide} the change to line ${range.end} ${endSide} it`,
+    };
+  }
+  const low = Math.min(range.start, range.end);
+  const high = Math.max(range.start, range.end);
+  const lines = low === high ? `${low}` : `${low}-${high}`;
+  return {
+    kind: "file",
+    label: `${name}:${lines}`,
+    text: `\`${path}:${lines}\`${startSide === "before" ? " (lines before the change)" : ""}`,
+  };
+}
+
+/**
  * A DIRECTORY KEEPS ITS TRAILING SLASH, and that one character is the point: an
  * agent handed `` `apps/engine` `` has to guess whether to Read it or Glob it,
  * and handed `` `apps/engine/` `` it does not. Same reason `ls` prints one.

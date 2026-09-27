@@ -23,6 +23,10 @@ import {
   type GitHubIssueRead,
   type GitHubMergeMethod,
   type GitHubMergeResult,
+  type GitHubReactionContent,
+  type GitHubReactionResult,
+  type GitHubThreadReplyResult,
+  type GitHubThreadResolveResult,
   type GitHubPullCreateResult,
   type GitHubPullFilter,
   type GitHubPullRead,
@@ -116,6 +120,7 @@ import {
   type Session,
   type SessionOrigin,
   type Subscription,
+  type Cohort,
   type Task,
   type EngineRequest,
   type RequestDecision,
@@ -1944,6 +1949,31 @@ export class EngineClient {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input);
   }
 
+  /**
+   * Add (`react: true`) or remove one reaction on an issue, a pull request, or
+   * a comment on one — #842. `subjectId` is the node id the detail read carried;
+   * `kind` and `number` name the detail it belongs to, so its cache is dropped.
+   * A refusal is `{ reacted: false, refusal }`, not an exception.
+   */
+  reactOnProjectForge(
+    projectId: string,
+    kind: "issue" | "pull",
+    number: number,
+    input: { subjectId: string; content: GitHubReactionContent; react: boolean },
+  ): Promise<GitHubReactionResult> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/${kind === "issue" ? "issues" : "pulls"}/${number}/reactions`, input);
+  }
+
+  /** Reply to one review thread on a pull request (#842). */
+  replyToProjectThread(projectId: string, number: number, threadId: string, body: string): Promise<GitHubThreadReplyResult> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/replies`, { body });
+  }
+
+  /** Resolve (`true`) or unresolve one review thread (#842). */
+  resolveProjectThread(projectId: string, number: number, threadId: string, resolved: boolean): Promise<GitHubThreadResolveResult> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/resolve`, { resolved });
+  }
+
   /** What is uncommitted in a project right now — the review a canvas shows
    *  before its conversation exists. */
   projectDiff(projectId: string): Promise<{ diff: SessionDiff }> {
@@ -3269,6 +3299,18 @@ export class EngineClient {
 
   subscriptions(sessionId: string): Promise<{ subscriptions: Subscription[] }> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/subscriptions`);
+  }
+
+  /** A COHORT: one wake when every session in `sessionIds` is done. See `Cohort`. */
+  subscribeCohort(
+    sessionId: string,
+    input: { sessionIds: string[]; timeoutMinutes?: number; completionWake?: Cohort["completionWake"] },
+  ): Promise<{ cohort: Cohort }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/cohorts`, input);
+  }
+
+  cohorts(sessionId: string): Promise<{ cohorts: Cohort[] }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/cohorts`);
   }
 
   /** `subscriberSessionId` narrows the delete to that session's own

@@ -453,16 +453,20 @@ export const ComposerEditor = forwardRef<
     /** The caret entered this box. The composer registry's "most recently
      *  focused" is this event and nothing else — see lib/composer-registry.ts. */
     onFocus?: () => void;
+    onBlur?: () => void;
     placeholder?: string;
     disabled?: boolean;
     id?: string;
     /** WHICH COMPOSER THIS IS, ON THE EDITABLE ROOT ITSELF. Documented as
      *  stable for external clients in `docs/page-api.md`, beside `data-slot`. */
     "data-composer"?: "session";
+    /** One line tall — the composer's reading-back shape. A class swap on the
+     *  same node, so the caret and the undo stack survive the change. */
+    compact?: boolean;
     className?: string;
   }
 >(function ComposerEditor(
-  { value, onChange, onKeyDown, onSelectionChange, onPasteFiles, onFocus, placeholder, disabled, id, "data-composer": dataComposer, className },
+  { value, onChange, onKeyDown, onSelectionChange, onPasteFiles, onFocus, onBlur, placeholder, disabled, id, "data-composer": dataComposer, compact, className },
   ref,
 ) {
   const root = useRef<HTMLDivElement>(null);
@@ -605,7 +609,8 @@ export const ComposerEditor = forwardRef<
         // single target on the screen and the type has to hold its own against
         // the transcript it sits under.
         className={cn(
-          "max-h-48 min-h-[76px] w-full overflow-y-auto whitespace-pre-wrap break-words px-3 pt-3 pb-2 text-[0.9375rem] leading-6 outline-none",
+          "w-full whitespace-pre-wrap break-words px-3 text-[0.9375rem] leading-6 outline-none",
+          compact ? "max-h-11 overflow-hidden py-2.5" : "max-h-48 min-h-[76px] overflow-y-auto pt-3 pb-2",
           "data-dictating:caret-primary",
           disabled && "opacity-60",
         )}
@@ -637,7 +642,10 @@ export const ComposerEditor = forwardRef<
         onFocus={() => onFocus?.()}
         onKeyUp={() => onSelectionChange?.()}
         onMouseUp={() => onSelectionChange?.()}
-        onBlur={() => onSelectionChange?.()}
+        onBlur={() => {
+          onSelectionChange?.();
+          onBlur?.();
+        }}
         onPaste={(event) => {
           /**
            * PASTE A SCREENSHOT AND IT ATTACHES — the textarea's behaviour, kept
@@ -669,7 +677,13 @@ export const ComposerEditor = forwardRef<
         }}
       />
       {empty && placeholder ? (
-        <span aria-hidden className="pointer-events-none absolute left-3 top-3 select-none text-[0.9375rem] leading-6 text-muted-foreground">
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute left-3 select-none text-[0.9375rem] leading-6 text-muted-foreground",
+            compact ? "top-2.5 right-3 truncate" : "top-3",
+          )}
+        >
           {placeholder}
         </span>
       ) : null}

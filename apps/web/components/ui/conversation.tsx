@@ -173,6 +173,17 @@ const ConversationPlacement = ({ at, landed }: { at: string; landed: boolean }) 
 };
 
 /**
+ * Tells a caller OUTSIDE the provider whether the reader is at the end — the
+ * composer, which is a sibling of the viewport rather than a child of it, draws
+ * itself compact while somebody is reading back.
+ */
+const ConversationAtBottom = ({ onChange }: { onChange: (atBottom: boolean) => void }) => {
+  const { isAtBottom } = useStickToBottomContext();
+  useEffect(() => onChange(isAtBottom), [isAtBottom, onChange]);
+  return null;
+};
+
+/**
  * How far above the top edge a page of history starts loading.
  *
  * Far enough that an unhurried scroll never reaches a wall, near enough that a
@@ -312,6 +323,8 @@ export type ConversationViewportProps = ComponentProps<typeof StickToBottom> & {
   /** Lets a caller put the viewport back at the end on its own events —
    *  sending a message, above all. */
   followRef?: Ref<ConversationFollowHandle>;
+  /** Called whenever the reader arrives at, or leaves, the end. */
+  onAtBottomChange?: (atBottom: boolean) => void;
 };
 
 export const ConversationViewport = ({
@@ -319,6 +332,7 @@ export const ConversationViewport = ({
   conversation,
   landed = true,
   followRef,
+  onAtBottomChange,
   children,
   ...props
 }: ConversationViewportProps) => {
@@ -332,6 +346,7 @@ export const ConversationViewport = ({
       {rendered}
       {placement}
       {follow}
+      {onAtBottomChange && <ConversationAtBottom onChange={onAtBottomChange} />}
     </>
   );
   return (

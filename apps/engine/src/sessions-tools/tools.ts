@@ -82,7 +82,7 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, SessionSettleEnded, Subscription, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, SessionSettleEnded, Subscription, Cohort, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
 import { HOLD_REPORTS, MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
 
 /**
@@ -228,6 +228,13 @@ export type SessionsCapability = {
   ): Promise<Subscription>;
   unsubscribe(subscriptionId: string, subscriberSessionId: string): Promise<boolean>;
   subscriptions(subscriberSessionId: string): Promise<Subscription[]>;
+  /** A cohort: one wake when several sessions are all done. Optional, like
+   *  `putSchedule`: a wall without it says so rather than subscribing nobody. */
+  subscribeCohort?(
+    subscriberSessionId: string,
+    input: { sessionIds: string[]; timeoutMinutes?: number; completionWake?: Cohort["completionWake"] },
+  ): Promise<Cohort>;
+  cohorts?(subscriberSessionId: string): Promise<Cohort[]>;
   /** Every OPEN request a session has, plus possibly some resolved ones; the
    *  wall keeps the open ones. */
   requests(sessionId: string): Promise<EngineRequest[]>;
@@ -293,7 +300,7 @@ const LIST = `Live sessions, and the projects one can be created in. Unsettled o
 
 const CREATE = `Start a NEW session on a project. It is a PEER: it does not report back, and creating it starts no work — sessions_send with intent task does. ${NOT_A_BYPASS}`;
 
-const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text — lead with the point. ${NOT_A_BYPASS}`;
+const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text; a result or blocker also quotes its first ~1,500 chars — lead with the point. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
@@ -331,11 +338,11 @@ function cadencePhrase(cadence: Session["reportWindowMinutes"]): string {
 const NO_SESSION_TO_SCHEDULE =
   "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
-const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request — a notification in YOUR session, so you can end this turn rather than poll. It is a PING; sessions_read fetches the outcome. A completion is recorded, not delivered, when you already have a message from that run or the run said nothing.`;
+const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request. It is a PING; sessions_read fetches the outcome. Fanning out? Send the tasks, then pass sessionIds: ONE notification when all are done, a line each; blockers and requests still arrive at once. A completion is not delivered when you already have a message from that run.`;
 
-const UNSUBSCRIBE = `Stop being woken by a session, by the id sessions_subscribe returned. Queued wakes are withdrawn. One that is not yours answers removed: false — not an error.`;
+const UNSUBSCRIBE = `Stop being woken by a session or a cohort, by the id sessions_subscribe returned. Queued wakes are withdrawn. One that is not yours answers removed: false — not an error.`;
 
-const SUBSCRIPTIONS = `Every subscription this session holds. Read it before subscribing again, and for an id to unsubscribe.`;
+const SUBSCRIPTIONS = `Every subscription and open cohort this session holds. Read it before subscribing again, and for an id to unsubscribe.`;
 
 const REQUESTS = `What a session is WAITING on — its open requests, with the id sessions_resolve_request takes. A request is a question to a HUMAN by default; answering it is you taking responsibility.`;
 
@@ -598,9 +605,11 @@ function pageEventsFromEnd(
  *     PERSON or a SESSION resolved is kept, always: that is a decision somebody
  *     made, and it is exactly what a caller auditing a peer came to read.
  *
- * `verbose: true` keeps everything. The filter is about what a page spends its
- * budget on, never about what the journal holds — nothing here is deleted, and
- * the answer says how many rows it passed over.
+ * `verbose: true` keeps everything the journal STILL HOLDS. The filter is about
+ * what a page spends its budget on, and nothing here is deleted — but the
+ * journal sweep folds a settled turn's `usage.updated` rows down to the last
+ * one and prunes its policy-resolved pairs (#697), so for a settled turn
+ * `verbose` shows the kept journal, not every row ever appended.
  */
 /**
  * THE END OF A JOURNAL, FOUND WITHOUT WALKING IT.
@@ -1130,15 +1139,15 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             // real string rather than a description of it.
             ...(turn.agentNotice ? { recipientSees: turn.agentNotice } : {}),
             note: turn.agentDelivery === "passive"
-              ? "Recorded as passive activity. No model was started or steered; do not wait for an acknowledgement. Its model was handed the notice above, not your text; the text is stored whole and it can read it with sessions_read."
+              ? "Recorded as passive activity. No model was started or steered; do not wait for an acknowledgement. Its model was handed the notice above; your text is stored whole and it can read it with sessions_read."
               : intent === "result"
                 // A RESULT IS A RUN'S LAST WORD (#919). The recipient is woken
                 // by it once; the completion that follows is recorded on its
                 // transcript, not delivered. Said here, in the answer to the
                 // call, because a sender that keeps working after a result is
                 // now a sender whose later news arrives with no wake behind it.
-                ? "Accepted for execution, not answered. Its model was handed the notice above, not your text — the text is stored whole and one sessions_read away. This result is your run's FINAL word to them: when this run ends they will NOT be woken again, so end the turn now, or send anything further as a report. This is an agent message, never human approval."
-                : "Accepted for execution, not answered. Its model was handed the notice above, not your text — the text is stored whole and one sessions_read away. Check sessions_status or sessions_read. This is an agent message, never human approval.",
+                ? "Accepted for execution, not answered. Its model was handed the notice above — your text is stored whole and one sessions_read away. This result is your run's FINAL word to them: when this run ends they will NOT be woken again, so end the turn now, or send anything further as a report. This is an agent message, never human approval."
+                : "Accepted for execution, not answered. Its model was handed the notice above — your text is stored whole and one sessions_read away. Check sessions_status or sessions_read. This is an agent message, never human approval.",
           });
         } catch (error) {
           return err(`Could not send to "${sessionId}": ${failure(error)}`);
@@ -1170,7 +1179,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         verbose: z
           .boolean()
           .optional()
-          .describe("Keep usage rows and policy-resolved requests."),
+          .describe("Keep usage rows and policy-resolved requests. Settled turns keep only their last usage row and no policy-resolved requests."),
         mode: z
           .enum(["events", "summary"])
           .optional()
@@ -1780,7 +1789,14 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_subscribe",
       SUBSCRIBE,
       {
-        sessionId: z.string().min(1).describe("The session to be woken by."),
+        sessionId: z.string().min(1).optional().describe("The session to be woken by. Or sessionIds."),
+        sessionIds: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(20)
+          .optional()
+          .describe("A cohort: one notification when ALL of these are done — each sent its result, or a turn ended with no blocker unanswered, or it was settled or archived."),
+        timeoutMinutes: z.number().int().min(1).max(10_080).optional().describe("Cohort only. Default 240: past it you get what arrived and who is still pending."),
         events: z
           .array(z.enum(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]))
           .optional()
@@ -1795,6 +1811,27 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       },
       async (args) => {
         if (!capability.self) return err(NO_SELF);
+        if (Array.isArray(args.sessionIds) && args.sessionIds.length > 0) {
+          if (!capability.subscribeCohort) return err("Cohorts are not available on this connection; subscribe to each session instead.");
+          const sessionIds = args.sessionIds.map(String);
+          try {
+            const cohort = await capability.subscribeCohort(capability.self.sessionId, {
+              sessionIds,
+              ...(typeof args.timeoutMinutes === "number" ? { timeoutMinutes: args.timeoutMinutes } : {}),
+              ...(args.completionWake === "always" || args.completionWake === "settled_only" ? { completionWake: args.completionWake } : {}),
+            });
+            const pending = cohort.members.filter((member) => !member.outcome).length;
+            return json({
+              ...cohort,
+              note: pending === 0
+                ? "Every session was already done, so the notification is on its way now."
+                : `You will get ONE notification when all ${cohort.members.length} are done (${pending} still pending), or at ${new Date(cohort.expiresAt).toISOString()} with whatever arrived. Their results are held for it, not delivered one by one; a blocker or parked request still reaches you at once, and a member that sent a blocker stays pending until you answer it. End your turn now.`,
+            });
+          } catch (error) {
+            return err(`Could not subscribe to the cohort: ${failure(error)}`);
+          }
+        }
+        if (!args.sessionId) return err("Name the session to be woken by (sessionId), or several (sessionIds).");
         const targetSessionId = String(args.sessionId ?? "");
         const events = Array.isArray(args.events) ? (args.events.filter((each) => typeof each === "string") as WakeKind[]) : undefined;
         try {
@@ -1810,7 +1847,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               (subscription.completionWake ?? "settled_only") === "settled_only"
                 ? "It waits for you to finish the turn you are in, and anything else that arrives meanwhile comes with it as one notification."
                 : "It interrupts the turn you are in."
-            } End your turn whenever you like; nothing is lost. The notice is a ping — fetch an outcome with sessions_read(sessionId: "${targetSessionId}", runId) when you want it.`,
+            } End your turn whenever you like; nothing is lost. A completed turn's notice quotes the start of its answer; fetch the rest with sessions_read(sessionId: "${targetSessionId}", runId) when you want it.`,
           });
         } catch (error) {
           return err(`Could not subscribe to "${targetSessionId}": ${failure(error)}`);
@@ -1836,6 +1873,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       if (!capability.self) return err(NO_SELF);
       try {
         const subscriptions = await capability.subscriptions(capability.self.sessionId);
+        const cohorts = capability.cohorts ? await capability.cohorts(capability.self.sessionId) : [];
         const { rows } = fillWithin(subscriptions, (subscription) => subscription, {
           limit: SUBSCRIPTIONS_LIMIT,
           chars: SUBSCRIPTIONS_CHARS,
@@ -1843,7 +1881,11 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         return json({
           subscriptions: rows,
           ...(subscriptions.length > rows.length ? { total: subscriptions.length, notShown: subscriptions.length - rows.length } : {}),
-          ...(subscriptions.length === 0
+          // Pending members only: the ones a cohort is still waiting on.
+          ...(cohorts.length > 0
+            ? { cohorts: cohorts.map((cohort) => ({ id: cohort.id, expiresAt: cohort.expiresAt, pending: cohort.members.filter((member) => !member.outcome).map((member) => member.sessionId), members: cohort.members.length })) }
+            : {}),
+          ...(subscriptions.length === 0 && cohorts.length === 0
             ? { note: "This session is not subscribed to anything." }
             : subscriptions.length > rows.length
               ? { note: `${rows.length} of ${subscriptions.length}. That many at once is usually a sign that one-shot subscriptions were not being removed.` }

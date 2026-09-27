@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AutoCompact, McpServer, NotificationDetail, RequestDecision, TurnObservation } from "@telar/engine-client";
 import { codexMcpServers, codexNotificationInstruction, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
-import { codexApprovalRequest, codexUsage } from "../src/codex/items";
+import { codexApprovalRequest, codexItemDetail, codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
 import { SteerMailbox } from "../src/steering";
 import { allowCliInThisFile } from "./allow-cli";
@@ -1048,4 +1048,9 @@ test("a notification STEERED mid-turn carries the same header, because turn/stee
   // between the queued path and this one.
   const rows = started(observations).filter((o) => o.kind === "item.started" && o.item.detail.type === "notification");
   expect(rows).toHaveLength(1);
+});
+
+test("a file change that names no path is titled neutrally, never with the placeholder", () => {
+  expect(codexItemDetail({ type: "fileChange", id: "fc_1", changes: [] })?.title).toBe("File change");
+  expect(codexItemDetail({ type: "fileChange", id: "fc_2", changes: [{ path: "src/a.ts", kind: { type: "update" } }] })?.title).toBe("src/a.ts");
 });

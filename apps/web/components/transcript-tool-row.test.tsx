@@ -8,6 +8,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { UNKNOWN_PATH } from "@telar/engine-client";
 import { TranscriptItem } from "./transcript";
 import type { JournalItem } from "@/lib/engine/journal";
 
@@ -50,6 +51,39 @@ describe("a tool row's argument", () => {
   test("a running call shimmers the same one line", () => {
     const html = text(call("ds_scratch", { code: "plot(df)" }, "inProgress"));
     expect(html).toContain("ds_scratch · plot(df)");
+  });
+});
+
+/**
+ * "Edited: (unknown)" — a streamed edit's row opens before its input has named
+ * the file, and it said so in the past tense with the placeholder for a path.
+ */
+describe("a file row whose path has not arrived", () => {
+  const edit = (path: string, status: JournalItem["status"]): JournalItem => ({
+    ...base,
+    id: "item_c",
+    status,
+    ...(status === "inProgress" ? {} : { completedAt: 2 }),
+    title: "Edit",
+    detail: { type: "file_change", change: { path, kind: "edit" } },
+  });
+
+  test("while running, is a present-tense verb and no path", () => {
+    const html = text(edit(UNKNOWN_PATH, "inProgress"));
+    expect(html).toContain("Editing file…");
+    expect(html).not.toContain(UNKNOWN_PATH);
+    expect(html).not.toContain("Edited");
+  });
+
+  test("while running with its path, names it in the present tense", () => {
+    expect(text(edit("src/a.ts", "inProgress"))).toContain("Editing file · src/a.ts");
+  });
+
+  test("once done, is the past-tense verb — and never the placeholder", () => {
+    expect(text(edit("src/a.ts", "completed"))).toContain("Edited file src/a.ts");
+    const html = text(edit(UNKNOWN_PATH, "completed"));
+    expect(html).toContain("Edited file");
+    expect(html).not.toContain(UNKNOWN_PATH);
   });
 });
 

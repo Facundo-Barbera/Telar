@@ -26,6 +26,7 @@ import type { QrMatrix } from "@/lib/remote/qr";
 import { describeServeError, type TailscaleServeError } from "@/lib/remote/tailscale-serve";
 import { fmtAgo } from "@/lib/format";
 import { desktopApp } from "@/lib/desktop-app";
+import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
 import { cn } from "@/lib/utils";
 import { QrCodeView } from "./qr-code";
 import { CopyCommand } from "./copy-command";
@@ -328,14 +329,14 @@ export function RemoteSection() {
     await load();
   }, [load]);
 
-  // Last seen ages while the tab is hidden; refresh on return.
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void load();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [load]);
+  // Last seen ages while the window is hidden; refresh on return.
+  useEffect(
+    () =>
+      subscribeHostVisibility(() => {
+        if (hostVisible()) void load();
+      }),
+    [load],
+  );
 
   if (!status) {
     return (

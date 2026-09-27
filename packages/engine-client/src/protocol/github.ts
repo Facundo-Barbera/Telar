@@ -335,7 +335,8 @@ export type GitHubSnapshot = z.infer<typeof GitHubSnapshot>;
 // ── one issue, one pull request ─────────────────────────────────────────────
 
 /**
- * One reaction GitHub is holding on a comment.
+ * One reaction GitHub is holding on a comment, or on the issue or pull request
+ * itself (#842).
  *
  * GITHUB'S OWN WORD FOR THE CONTENT — `THUMBS_UP`, `HEART`, `ROCKET` — passed
  * through rather than mapped to a glyph, because which emoji stands for
@@ -345,11 +346,26 @@ export type GitHubSnapshot = z.infer<typeof GitHubSnapshot>;
  * every comment whether or not anybody used them — measured — so a comment
  * nobody reacted to would otherwise arrive as eight zeroes.
  *
- * `viewerHasReacted` IS CARRIED AND NOTHING CAN ACT ON IT YET. It is free on the
- * read that already happens, and the write half (`addReaction`/`removeReaction`)
- * does not exist — `gh`'s own comment projection drops the field entirely, so
- * having it at all is the reason the thread read is GraphQL. See #814's issue B.
+ * `viewerHasReacted` IS WHAT MAKES A PILL YOURS. `gh`'s own comment projection
+ * drops the field entirely, so having it at all is the reason the thread read is
+ * GraphQL (#814). The surface highlights the pills the viewer is counted in.
  */
+/** GitHub's eight reactions, in GitHub's own order. The READ passes whatever
+ *  GitHub sends through as a string; the WRITE only takes these, because a
+ *  mutation with any other word is a GraphQL error rather than a reaction. */
+export const GitHubReactionContent = z.enum(["THUMBS_UP", "THUMBS_DOWN", "LAUGH", "HOORAY", "CONFUSED", "HEART", "ROCKET", "EYES"]);
+export type GitHubReactionContent = z.infer<typeof GitHubReactionContent>;
+
+/**
+ * GitHub's node id for something that can be reacted to — #842.
+ *
+ * THE ONLY HANDLE `addReaction` AND `removeReaction` TAKE. It is opaque, and it
+ * goes into a GraphQL variable rather than into the query text, so the pattern
+ * here is not escaping — it is refusing anything no GitHub id has ever looked
+ * like before a process is spawned for it.
+ */
+export const GitHubSubjectId = z.string().regex(/^[A-Za-z0-9_=-]{1,200}$/);
+
 export const GitHubReaction = z.object({
   content: z.string().min(1),
   count: z.number().int().positive(),
@@ -393,13 +409,16 @@ export const GitHubComment = z.object({
    * absent is "this engine did not get to ask", `[]` is "asked, and nobody
    * reacted". A surface that conflated them would draw "no reactions" over a
    * failed read.
-   *
-   * NO SURFACE YET, on purpose. Where a reaction chip sits and whether it is
-   * actionable is the display decision #814's issue B is about; this is the half
-   * that was free on a read already being made, and it travels so that issue is
-   * a display change and not another round trip.
    */
   reactions: z.array(GitHubReaction).optional(),
+  /**
+   * What a reaction on this comment is written against — #842.
+   *
+   * GitHub's node id, carried from the same second read as `reactions` and absent
+   * exactly when they are: with no id there is nothing to write against, and the
+   * surface draws the reactions without the controls.
+   */
+  subjectId: GitHubSubjectId.optional(),
   /**
    * WHICH TELAR SESSION THIS COMMENT CLAIMS TO COME FROM — issue #791, the one
    * thing github.com structurally cannot show.
@@ -440,6 +459,66 @@ export const GitHubReview = z.object({
   submittedAt: Timestamp,
 });
 export type GitHubReview = z.infer<typeof GitHubReview>;
+
+/**
+ * One comment inside a review thread — #842.
+ *
+ * A COMMENT, NOT A `GitHubComment`, because it is read by a different call and
+ * carries different facts: no minimisation flag reaches this read, and no
+ * attribution marker is parsed because the engine never writes these bodies
+ * with one. `url` identifies it exactly as a conversation comment's does.
+ */
+export const GitHubReviewComment = z.object({
+  author: z.string().optional(),
+  ...authorAvatarField,
+  authorAssociation: z.string().optional(),
+  body: z.string(),
+  createdAt: Timestamp,
+  url: z.string().min(1),
+  /** Asked on the same read, so `[]` here is always an answer. */
+  reactions: z.array(GitHubReaction),
+  subjectId: GitHubSubjectId.optional(),
+});
+export type GitHubReviewComment = z.infer<typeof GitHubReviewComment>;
+
+/**
+ * One conversation anchored to lines of the diff — #842.
+ *
+ * `line` IS WHERE IT SITS ON THE CURRENT HEAD and is ABSENT WHEN THE CODE MOVED ON:
+ * GitHub answers null once a push has changed those lines, and `isOutdated` says
+ * the same thing in words. `originalLine` is where it sat on the commit it was
+ * written against, which is the only place an outdated thread can still be put.
+ *
+ * `diffHunk` IS THE FIRST COMMENT'S, which is GitHub's own: the hunk up to and
+ * including the line the thread is about, as the reviewer saw it.
+ *
+ * `isResolved` IS CARRIED, NOT FILTERED. A resolved nit is still part of how the
+ * pull request got here; the surface folds it rather than this read hiding it.
+ */
+export const GitHubReviewThread = z.object({
+  /** The node id resolving, unresolving and replying are written against. */
+  id: GitHubSubjectId,
+  path: z.string().min(1),
+  line: z.number().int().positive().optional(),
+  startLine: z.number().int().positive().optional(),
+  originalLine: z.number().int().positive().optional(),
+  originalStartLine: z.number().int().positive().optional(),
+  /** `LEFT` for the base side of the diff, `RIGHT` for the head. */
+  diffSide: z.string().optional(),
+  /** `LINE` or `FILE` — a comment on a whole file has no line at all. */
+  subjectType: z.string().optional(),
+  isResolved: z.boolean(),
+  isOutdated: z.boolean(),
+  resolvedBy: z.string().min(1).optional(),
+  viewerCanResolve: z.boolean(),
+  viewerCanUnresolve: z.boolean(),
+  viewerCanReply: z.boolean(),
+  diffHunk: z.string(),
+  comments: z.array(GitHubReviewComment),
+  /** Replies past the per-thread cap. Never silent, for `olderComments`' reason. */
+  moreComments: z.number().int().nonnegative(),
+});
+export type GitHubReviewThread = z.infer<typeof GitHubReviewThread>;
 
 /**
  * One check on a pull request's head commit.
@@ -521,6 +600,18 @@ export const GitHubIssueDetail = GitHubIssue.extend({
    * half a conversation without saying so has lied about the conversation.
    */
   olderComments: z.number().int().nonnegative(),
+  /**
+   * What GitHub is holding against the issue itself — #842.
+   *
+   * ON THE DETAIL, NOT THE ROW. The list could carry counts cheaply, but not
+   * whether the viewer is among them — `gh`'s projection drops that — so it rides
+   * the thread read a detail already makes. Absent and `[]` differ exactly as they
+   * do on `GitHubComment.reactions`.
+   */
+  reactions: z.array(GitHubReaction).optional(),
+  /** What a reaction on the issue itself is written against; see
+   *  `GitHubComment.subjectId`. */
+  subjectId: GitHubSubjectId.optional(),
   createdAt: Timestamp,
   closedAt: Timestamp.optional(),
   /** When this was read. Same reason as the snapshot's: a network read is not
@@ -584,6 +675,19 @@ export const GitHubPullDetail = GitHubPullRequest.extend({
   comments: z.array(GitHubComment),
   /** Capped like an issue's, and for the same reason. */
   olderComments: z.number().int().nonnegative(),
+  /** The pull request's own reactions, read like an issue's. */
+  reactions: z.array(GitHubReaction).optional(),
+  subjectId: GitHubSubjectId.optional(),
+  /**
+   * The line-bound review conversations — #842.
+   *
+   * ITS OWN READ, because no `gh pr view` field carries a path or a line —
+   * measured. Absent when that read failed, which the surface says rather than
+   * drawing "no review comments" over a question it did not get to ask.
+   */
+  reviewThreads: z.array(GitHubReviewThread).optional(),
+  /** Threads past the cap. */
+  moreReviewThreads: z.number().int().nonnegative().optional(),
   /** EVERY review, not the latest per reviewer. `reviewDecision` above is
    *  already the aggregate; this is the conversation, and hiding the round that
    *  requested changes because a later one approved loses why it was approved. */
@@ -717,6 +821,77 @@ export const GitHubCommentResult = z.union([
   z.object({ posted: z.literal(false), refusal: GitHubCommentRefusal, message: z.string().min(1).optional() }),
 ]);
 export type GitHubCommentResult = z.infer<typeof GitHubCommentResult>;
+
+// ── reacting ───────────────────────────────────────────────────────────────
+
+/**
+ * Why a reaction did not land — #842.
+ *
+ * `scope` IS ITS OWN ANSWER because it is the one with a fix the reader can run:
+ * a token GitHub will read with but not write with. Folding it into
+ * `not_permitted` would tell somebody who is one command away that they are not
+ * allowed.
+ */
+export const GitHubReactionRefusal = z.enum([
+  /** The token lacks the scope to write here. */
+  "scope",
+  /** Locked, archived, or this account cannot react here. */
+  "not_permitted",
+  /** The thing reacted to is gone. */
+  "not_found",
+  /** Anything else. `message` is GitHub's own words, never invented. */
+  "failed",
+]);
+export type GitHubReactionRefusal = z.infer<typeof GitHubReactionRefusal>;
+
+/**
+ * What adding or removing one reaction answers.
+ *
+ * SUCCESS CARRIES THE SUBJECT'S REACTIONS AS GITHUB NOW HOLDS THEM, read back in
+ * the mutation's own answer. An optimistic pill is a guess — somebody else may
+ * have reacted in the meantime — and this replaces the guess with the count.
+ */
+export const GitHubReactionResult = z.union([
+  z.object({ reacted: z.literal(true), reactions: z.array(GitHubReaction) }),
+  z.object({ reacted: z.literal(false), refusal: GitHubReactionRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitHubReactionResult = z.infer<typeof GitHubReactionResult>;
+
+// ── acting on a review thread ──────────────────────────────────────────────
+
+/** Why a reply or a resolve did not land: a reaction's four, plus a reply body
+ *  that was empty or past `MAX_COMMENT_BODY`. */
+export const GitHubThreadRefusal = z.enum([...GitHubReactionRefusal.options, "invalid_body"]);
+export type GitHubThreadRefusal = z.infer<typeof GitHubThreadRefusal>;
+
+/**
+ * What replying to a review thread answers — #842.
+ *
+ * SUCCESS CARRIES THE COMMENT AS GITHUB STORED IT, so the surface swaps its
+ * pending reply for the real one — with its url, its time and its node id —
+ * without re-reading the pull request.
+ */
+export const GitHubThreadReplyResult = z.union([
+  z.object({ replied: z.literal(true), comment: GitHubReviewComment }),
+  z.object({ replied: z.literal(false), refusal: GitHubThreadRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitHubThreadReplyResult = z.infer<typeof GitHubThreadReplyResult>;
+
+/**
+ * What resolving or unresolving a review thread answers — the thread's state as
+ * GitHub now holds it, including who may flip it back.
+ */
+export const GitHubThreadResolveResult = z.union([
+  z.object({
+    changed: z.literal(true),
+    isResolved: z.boolean(),
+    resolvedBy: z.string().min(1).optional(),
+    viewerCanResolve: z.boolean(),
+    viewerCanUnresolve: z.boolean(),
+  }),
+  z.object({ changed: z.literal(false), refusal: GitHubThreadRefusal, message: z.string().min(1).optional() }),
+]);
+export type GitHubThreadResolveResult = z.infer<typeof GitHubThreadResolveResult>;
 
 // ── opening one pull request ────────────────────────────────────────────────
 

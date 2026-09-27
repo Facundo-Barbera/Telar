@@ -178,6 +178,17 @@ export const FileChangeDetail = z.object({
 });
 export type FileChangeDetail = z.infer<typeof FileChangeDetail>;
 
+/**
+ * THE PATH A FILE ROW CARRIES WHEN NOBODY HAS SAID ONE YET. `path` is required,
+ * and a streamed tool call opens its row before its input arrives. A sentinel,
+ * not a path: clients render the row without an argument rather than print it.
+ */
+export const UNKNOWN_PATH = "(unknown)";
+
+export function isKnownPath(path: string): boolean {
+  return path !== UNKNOWN_PATH;
+}
+
 export const FileReadDetail = z.object({
   path: z.string().min(1),
   /** Present when the agent read a slice rather than the whole file. */

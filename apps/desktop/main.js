@@ -24,6 +24,7 @@ const { attachHostHeader } = require("./host-header");
 const { createLinkRouting } = require("./link-routing");
 const { startBrowserControlServer } = require("./browser-control-server");
 const { startRunTerminalServer } = require("./run-terminal-server");
+const { readKittyImageFile } = require("./kitty-image-file");
 const tailscale = require("./tailscale");
 const remoteFile = require("./remote-file");
 const { claimedCommandIds, keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
@@ -31,6 +32,7 @@ const { ChordScopes } = require("./chord-scope");
 const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
+const { watchWindowVisibility, windowVisible } = require("./window-visibility");
 const { provisionPushRelay } = require("./push-relay");
 const { ACTIVE_IDLE_SECONDS, DESKTOP_NOTIFICATIONS_ENV, createDesktopNotifier, createPresenceReporter, routeOf } = require("./desktop-notifications");
 const { watchVolumes } = require("./volume-watch");
@@ -1257,6 +1259,9 @@ function createWindow(url) {
       backgroundThrottling: false,
     },
   });
+  // Which is also why the page cannot see itself hidden — this process tells
+  // it instead (window-visibility.js, #834).
+  watchWindowVisibility(win);
   // NAMED BROWSER PROFILES (browser-profiles.js): the registry is read once
   // from userData; a bad file is a startup error, not a silent fallback to the
   // shared jar.
@@ -2172,6 +2177,15 @@ ipcMain.handle("telar:terminal:active", async (event, input) => {
   const host = requireTerminalHost();
   const ids = Array.isArray(input?.ids) ? input.ids.map(String) : undefined;
   return { terminals: await host.activeProcesses(ids ? { ids } : { owner: RENDERER }) };
+});
+/**
+ * A KITTY IMAGE SENT AS A PATH (`t=f`, #884) — fastfetch's `kitty-direct` logo.
+ * Every guard and the reason it is no new privilege are in kitty-image-file.js.
+ * The bytes go back to the renderer that drew the request and nowhere else.
+ */
+ipcMain.handle("telar:terminal:read-image-file", (event, input) => {
+  requireCockpitSender(event, "read a terminal image file");
+  return readKittyImageFile(input?.path);
 });
 /** What is live right now — how a remounted panel finds the terminals its
  *  previous render left running. Facts only; no handles cross this, and no ids
@@ -3621,6 +3635,10 @@ ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
 // The last thing the watchdog said, for a window that mounted between polls —
 // see `broadcastRunawayNotice`. Same shape as the push.
 ipcMain.handle("telar:metrics:runaway", () => lastRunawayNotice);
+
+// Whether the asking window can be seen, for a renderer that mounted after the
+// last edge — see window-visibility.js. One boolean; nothing to guard.
+ipcMain.handle("telar:window:visibility", (event) => windowVisible(BrowserWindow.fromWebContents(event.sender)));
 
 /**
  * A SECOND WINDOW ON A PAGE OF THE APP — "Open in a new window", from the

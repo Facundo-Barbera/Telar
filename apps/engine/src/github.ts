@@ -50,11 +50,17 @@ import type {
   GitHubPullRead,
   GitHubPullRequest,
   GitHubReaction,
+  GitHubReactionContent,
+  GitHubReactionResult,
   GitHubReview,
+  GitHubReviewComment,
+  GitHubReviewThread,
+  GitHubThreadReplyResult,
+  GitHubThreadResolveResult,
   GitHubSnapshot,
   GitHubUnavailable,
 } from "@telar/engine-client";
-import { MAX_COMMENT_BODY, MAX_PULL_TITLE } from "@telar/engine-client";
+import { GitHubSubjectId, MAX_COMMENT_BODY, MAX_PULL_TITLE } from "@telar/engine-client";
 
 export type GhResult = { status: number; stdout: string; stderr: string };
 /** Injectable so tests never touch the network. */
@@ -221,7 +227,7 @@ function isBot(value: unknown): boolean {
  * `{login: "renovate"}` with no prefix and no flag, so a bot commenting is
  * indistinguishable from a person, and a bot whose bare slug is also a real
  * account would wear that person's face. That is #814, and it is fixed a layer
- * up rather than here — `readThreadAuthors` asks GitHub who wrote each comment
+ * up rather than here — `readThread` asks GitHub who wrote each comment
  * and `comment()` takes the answer over this derivation. This function is left
  * as the ROW's answer, where `is_bot` does arrive and the derivation is sound.
  *
@@ -715,7 +721,7 @@ export const MAX_THREAD_COMMENTS = 100;
  * measured against cli/cli#14443 — which no login can be turned into. For a person
  * on GitHub Enterprise Server it is that server's, not public github.com's.
  */
-type ThreadAuthor = { login?: string; avatarUrl?: string; reactions: GitHubReaction[] };
+type ThreadAuthor = { login?: string; avatarUrl?: string; reactions: GitHubReaction[]; subjectId?: string };
 
 /**
  * Ask GitHub who wrote each comment, and what it is holding against them.
@@ -734,17 +740,24 @@ type ThreadAuthor = { login?: string; avatarUrl?: string; reactions: GitHubReact
  * `{owner}` AND `{repo}` ARE `gh`'s OWN PLACEHOLDERS — it resolves them from the
  * checkout, so this never parses a remote URL, and on GHES it resolves against
  * that host.
+ *
+ * THE THING'S OWN REACTIONS RIDE THE SAME READ (#842), through `Reactable`, which
+ * both types implement. The list field sets could carry counts, but not the
+ * viewer's own — so they stay lean and this read, made once per opened detail,
+ * carries the whole answer.
  */
 const THREAD_AUTHORS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!, $last: Int!) {
   repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
+      ... on Reactable { id reactionGroups { content viewerHasReacted users { totalCount } } }
       ... on Issue { comments(last: $last) { nodes { ...threadAuthor } } }
       ... on PullRequest { comments(last: $last) { nodes { ...threadAuthor } } }
     }
   }
 }
 fragment threadAuthor on IssueComment {
+  id
   url
   author { __typename login avatarUrl }
   reactionGroups { content viewerHasReacted users { totalCount } }
@@ -786,6 +799,15 @@ function reactions(value: unknown): GitHubReaction[] {
   });
 }
 
+/** The second read's answer: each comment's author and reactions by url, and the
+ *  thing's own reactions — absent when GitHub did not answer for the thing. */
+export type ThreadRead = { authors: Map<string, ThreadAuthor>; reactions?: GitHubReaction[]; subjectId?: string };
+
+/** A node id GitHub sent, or nothing — never one the write would refuse. */
+function subjectId(value: unknown): string | undefined {
+  return GitHubSubjectId.safeParse(value).success ? (value as string) : undefined;
+}
+
 /**
  * The GraphQL answer, folded by comment url.
  *
@@ -793,13 +815,21 @@ function reactions(value: unknown): GitHubReaction[] {
  * deleted account, and "GitHub says this comment has no identifiable author" is an
  * answer — it must suppress the derived face rather than fall through to it.
  */
-export function parseThreadAuthors(stdout: string): Map<string, ThreadAuthor> {
+export function parseThread(stdout: string): ThreadRead {
   const byUrl = new Map<string, ThreadAuthor>();
   const parsed = JSON.parse(stdout) as {
-    data?: { repository?: { issueOrPullRequest?: { comments?: { nodes?: unknown } } | null } | null };
+    data?: { repository?: { issueOrPullRequest?: { id?: unknown; reactionGroups?: unknown; comments?: { nodes?: unknown } } | null } | null };
   };
-  const nodes = parsed.data?.repository?.issueOrPullRequest?.comments?.nodes;
-  if (!Array.isArray(nodes)) return byUrl;
+  const thing = parsed.data?.repository?.issueOrPullRequest;
+  // Only an ANSWERED `reactionGroups` is an answer; a missing one stays absent
+  // rather than becoming "nobody reacted".
+  const ownId = subjectId(thing?.id);
+  const own = {
+    ...(Array.isArray(thing?.reactionGroups) ? { reactions: reactions(thing.reactionGroups) } : {}),
+    ...(ownId ? { subjectId: ownId } : {}),
+  };
+  const nodes = thing?.comments?.nodes;
+  if (!Array.isArray(nodes)) return { authors: byUrl, ...own };
   for (const entry of nodes) {
     const node = entry as Record<string, unknown>;
     const url = text(node.url);
@@ -807,30 +837,187 @@ export function parseThreadAuthors(stdout: string): Map<string, ThreadAuthor> {
     const author = node.author as { login?: unknown; avatarUrl?: unknown } | null;
     const name = login(author);
     const face = text(author?.avatarUrl);
+    const id = subjectId(node.id);
     byUrl.set(url, {
       ...(name ? { login: name } : {}),
       ...(face ? { avatarUrl: face } : {}),
       reactions: reactions(node.reactionGroups),
+      ...(id ? { subjectId: id } : {}),
     });
   }
-  return byUrl;
+  return { authors: byUrl, ...own };
+}
+
+// ── review threads (#842) ──────────────────────────────────────────────────
+
+/** How many review threads one read carries, newest kept, and how many comments
+ *  each. A thread is a reviewer's point and its replies; fifty replies is past
+ *  the point where a panel card is still the right place to read it. */
+export const MAX_REVIEW_THREADS = 100;
+export const MAX_THREAD_REPLIES = 50;
+
+/**
+ * The line-bound review conversations on one pull request.
+ *
+ * `gh` CANNOT REACH THESE ON ANY VERB — `pr view`'s 46 fields include `reviews`
+ * and `comments`, and none carries a path or a line (measured on #814). GraphQL
+ * `reviewThreads` is also the only place `isResolved` and `isOutdated` exist, and
+ * without them every resolved nit would be drawn open forever.
+ *
+ * `author` IS READ, NOT DERIVED, for #814's reason: a bot's face is its App's.
+ */
+const REVIEW_THREADS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!, $threads: Int!, $replies: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(last: $threads) {
+        totalCount
+        nodes {
+          id path line startLine originalLine originalStartLine diffSide subjectType
+          isResolved isOutdated resolvedBy { login }
+          viewerCanResolve viewerCanUnresolve viewerCanReply
+          comments(first: $replies) {
+            totalCount
+            nodes {
+              id url body createdAt diffHunk authorAssociation
+              author { __typename login avatarUrl }
+              reactionGroups { content viewerHasReacted users { totalCount } }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+export function reviewThreadsArgv(number: number): string[] {
+  return [
+    "api",
+    "graphql",
+    "-F",
+    "owner={owner}",
+    "-F",
+    "name={repo}",
+    "-F",
+    `number=${number}`,
+    "-F",
+    `threads=${MAX_REVIEW_THREADS}`,
+    "-F",
+    `replies=${MAX_THREAD_REPLIES}`,
+    "-f",
+    `query=${REVIEW_THREADS_QUERY}`,
+  ];
+}
+
+function positive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function reviewComment(entry: unknown): GitHubReviewComment | undefined {
+  const node = entry as Record<string, unknown>;
+  const url = text(node.url);
+  if (!url) return undefined;
+  const author = node.author as { avatarUrl?: unknown } | null;
+  const name = login(author);
+  const face = text(author?.avatarUrl);
+  const id = subjectId(node.id);
+  const association = text(node.authorAssociation);
+  return {
+    ...(name ? { author: name } : {}),
+    ...(face ? { authorAvatar: face } : {}),
+    ...(association ? { authorAssociation: association } : {}),
+    body: text(node.body),
+    createdAt: epoch(node.createdAt),
+    url,
+    reactions: reactions(node.reactionGroups),
+    ...(id ? { subjectId: id } : {}),
+  };
 }
 
 /**
- * Who wrote each comment on one thread.
+ * The GraphQL answer, as threads.
+ *
+ * A THREAD WITH NO ID OR NO PATH IS DROPPED: with no id it cannot be replied to or
+ * resolved, and with no path it cannot be put anywhere — neither has been seen.
+ * A thread whose every comment was deleted is dropped too; GitHub keeps the shell.
+ */
+export function parseReviewThreads(stdout: string): { threads: GitHubReviewThread[]; more: number } | undefined {
+  const parsed = JSON.parse(stdout) as {
+    data?: { repository?: { pullRequest?: { reviewThreads?: { totalCount?: unknown; nodes?: unknown } } | null } | null };
+  };
+  const connection = parsed.data?.repository?.pullRequest?.reviewThreads;
+  if (!connection || !Array.isArray(connection.nodes)) return undefined;
+  const threads = connection.nodes.flatMap((entry): GitHubReviewThread[] => {
+    const node = entry as Record<string, unknown>;
+    const id = subjectId(node.id);
+    const path = text(node.path);
+    if (!id || !path) return [];
+    const replies = node.comments as { totalCount?: unknown; nodes?: unknown } | null;
+    const nodes = Array.isArray(replies?.nodes) ? replies.nodes : [];
+    const comments = nodes.flatMap((comment) => {
+      const parsed = reviewComment(comment);
+      return parsed ? [parsed] : [];
+    });
+    if (comments.length === 0) return [];
+    const total = positive(replies?.totalCount) ?? comments.length;
+    const line = positive(node.line);
+    const startLine = positive(node.startLine);
+    const originalLine = positive(node.originalLine);
+    const originalStartLine = positive(node.originalStartLine);
+    const resolvedBy = login(node.resolvedBy);
+    return [
+      {
+        id,
+        path,
+        ...(line ? { line } : {}),
+        ...(startLine ? { startLine } : {}),
+        ...(originalLine ? { originalLine } : {}),
+        ...(originalStartLine ? { originalStartLine } : {}),
+        ...(text(node.diffSide) ? { diffSide: text(node.diffSide) } : {}),
+        ...(text(node.subjectType) ? { subjectType: text(node.subjectType) } : {}),
+        isResolved: node.isResolved === true,
+        isOutdated: node.isOutdated === true,
+        ...(resolvedBy ? { resolvedBy } : {}),
+        viewerCanResolve: node.viewerCanResolve === true,
+        viewerCanUnresolve: node.viewerCanUnresolve === true,
+        viewerCanReply: node.viewerCanReply === true,
+        diffHunk: text((nodes[0] as Record<string, unknown> | undefined)?.diffHunk),
+        comments,
+        moreComments: Math.max(0, total - comments.length),
+      },
+    ];
+  });
+  const total = positive(connection.totalCount) ?? threads.length;
+  return { threads, more: Math.max(0, total - connection.nodes.length) };
+}
+
+/** The `readBoards` bargain again: a failed read costs the threads, not the pull
+ *  request, and says so by being absent. */
+export async function readReviewThreads(gh: GhRunner, cwd: string, number: number): Promise<{ threads: GitHubReviewThread[]; more: number } | undefined> {
+  const result = await gh(cwd, reviewThreadsArgv(number));
+  if (result.status !== 0) return undefined;
+  try {
+    return parseReviewThreads(result.stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Who wrote each comment on one thread, and what everybody reacted with.
  *
  * THE `readBoards` SHAPE, INCLUDING ITS FAILURE MODE: a failed second read answers
- * an empty map, and an empty map costs the faces rather than the issue. Every
- * comment then falls back to the derivation, which is what shipped in #790 — worse
- * than this read and better than a blank panel.
+ * an empty map, and an empty map costs the faces and the reactions rather than the
+ * issue. Every comment then falls back to the derivation, which is what shipped in
+ * #790 — worse than this read and better than a blank panel.
  */
-export async function readThreadAuthors(gh: GhRunner, cwd: string, number: number): Promise<Map<string, ThreadAuthor>> {
+export async function readThread(gh: GhRunner, cwd: string, number: number): Promise<ThreadRead> {
   const result = await gh(cwd, threadAuthorsArgv(number));
-  if (result.status !== 0) return new Map();
+  if (result.status !== 0) return { authors: new Map() };
   try {
-    return parseThreadAuthors(result.stdout);
+    return parseThread(result.stdout);
   } catch {
-    return new Map();
+    return { authors: new Map() };
   }
 }
 
@@ -882,6 +1069,7 @@ function comment(entry: unknown, authors?: Map<string, ThreadAuthor>): GitHubCom
     // Absent when the second read did not answer for this comment, `[]` when it
     // answered and nobody reacted — see the contract for why those differ.
     ...(known ? { reactions: known.reactions } : {}),
+    ...(known?.subjectId ? { subjectId: known.subjectId } : {}),
     ...(attribution ? { attribution } : {}),
   };
 }
@@ -1061,12 +1249,12 @@ export function parseIssueDetail(
   stdout: string,
   now: number,
   projects: string[] = [],
-  authors?: Map<string, ThreadAuthor>,
+  second?: ThreadRead,
 ): GitHubIssueDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = issueRow(row);
   if (!base) throw new Error("gh returned an issue with no number");
-  const thread = parseComments(row.comments, authors);
+  const thread = parseComments(row.comments, second?.authors);
   const closedAt = epoch(row.closedAt);
   return {
     // `base` already carries the author, labels, assignees, milestone and state
@@ -1076,6 +1264,8 @@ export function parseIssueDetail(
     body: text(row.body),
     comments: thread.comments,
     olderComments: thread.olderComments,
+    ...(second?.reactions ? { reactions: second.reactions } : {}),
+    ...(second?.subjectId ? { subjectId: second.subjectId } : {}),
     createdAt: epoch(row.createdAt),
     // `epoch` answers 0 for an absent date, and an open issue has no closing
     // time — 0 would render as January 1970.
@@ -1115,12 +1305,13 @@ export function parsePullDetail(
   now: number,
   mergeMethods: GitHubMergeMethod[] = [],
   projects: string[] = [],
-  authors?: Map<string, ThreadAuthor>,
+  second?: ThreadRead,
+  review?: { threads: GitHubReviewThread[]; more: number },
 ): GitHubPullDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = pullRow(row);
   if (!base) throw new Error("gh returned a pull request with no number");
-  const thread = parseComments(row.comments, authors);
+  const thread = parseComments(row.comments, second?.authors);
   const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
   return {
     // Labels, assignees, milestone, the merge time and the review decision all
@@ -1141,6 +1332,9 @@ export function parsePullDetail(
     changedFiles: count(row.changedFiles),
     comments: thread.comments,
     olderComments: thread.olderComments,
+    ...(second?.reactions ? { reactions: second.reactions } : {}),
+    ...(second?.subjectId ? { subjectId: second.subjectId } : {}),
+    ...(review ? { reviewThreads: review.threads, moreReviewThreads: review.more } : {}),
     reviews: parseReviews(row.reviews, text(row.url)),
     checks: parseChecks(row.statusCheckRollup),
     createdAt: epoch(row.createdAt),
@@ -1203,17 +1397,17 @@ export async function readIssue(
   now: () => number = Date.now,
   options: { skipProjects?: boolean } = {},
 ): Promise<GitHubIssueRead> {
-  const [result, boards, authors] = await Promise.all([
+  const [result, boards, second] = await Promise.all([
     gh(cwd, ["issue", "view", String(number), "--json", ISSUE_DETAIL_FIELDS]),
     readBoards(gh, cwd, "issue", number, options.skipProjects),
     // In the SAME `Promise.all`, so the wall clock is the max and not the sum —
     // measured at 0.77s for a thread read, which sequentially would have been
     // visible on every click (#814).
-    readThreadAuthors(gh, cwd, number),
+    readThread(gh, cwd, number),
   ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { issue: parseIssueDetail(result.stdout, now(), boards, authors) };
+    return { issue: parseIssueDetail(result.stdout, now(), boards, second) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }
@@ -1236,15 +1430,17 @@ export async function readPull(
   now: () => number = Date.now,
   options: { skipProjects?: boolean } = {},
 ): Promise<GitHubPullRead> {
-  const [result, repo, boards, authors] = await Promise.all([
+  const [result, repo, boards, second, review] = await Promise.all([
     gh(cwd, ["pr", "view", String(number), "--json", PULL_DETAIL_FIELDS]),
     gh(cwd, ["repo", "view", "--json", MERGE_METHOD_FIELDS]),
     readBoards(gh, cwd, "pr", number, options.skipProjects),
-    readThreadAuthors(gh, cwd, number),
+    readThread(gh, cwd, number),
+    // Beside the rest, so the wall clock is still the slowest call and not the sum.
+    readReviewThreads(gh, cwd, number),
   ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards, authors) };
+    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards, second, review) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }
@@ -1519,6 +1715,179 @@ export async function commentOn(
    * merge does not.
    */
   return { posted: true, url: url ?? `#${input.number}`, attribution: { sessionId: input.sessionId } };
+}
+
+// ── reacting ───────────────────────────────────────────────────────────────
+
+/**
+ * Add or remove one reaction — #842.
+ *
+ * `gh api graphql` BECAUSE `gh` HAS NO REACTION VERB, and GraphQL rather than
+ * REST because the subject is already known by its node id from the thread read,
+ * whatever it is — an issue, a pull request, a comment or a review comment all
+ * take the same mutation. The subject's reactions come back in the SAME answer,
+ * so the surface replaces its optimistic guess with GitHub's count without a
+ * second read.
+ *
+ * VARIABLES, NEVER INTERPOLATION. The id and the content travel as `-F` fields,
+ * so nothing a caller sends can become query text.
+ */
+const REACTION_GROUPS = "reactionGroups { content viewerHasReacted users { totalCount } }";
+
+export function reactionArgv(input: { subjectId: string; content: GitHubReactionContent; react: boolean }): string[] {
+  const mutation = input.react ? "addReaction" : "removeReaction";
+  return [
+    "api",
+    "graphql",
+    "-F",
+    `subject=${input.subjectId}`,
+    "-F",
+    `content=${input.content}`,
+    "-f",
+    `query=mutation($subject: ID!, $content: ReactionContent!) { ${mutation}(input: { subjectId: $subject, content: $content }) { subject { ${REACTION_GROUPS} } } }`,
+  ];
+}
+
+/**
+ * Why a GraphQL write refused, from GitHub's own words.
+ *
+ * `gh api graphql` EXITS 1 ON A GraphQL ERROR and prints `gh: <message>` on stderr,
+ * and a partial answer can still carry `errors` beside exit 0 — so both are read.
+ * The scope case is matched on GitHub's error TYPE as well as its sentence, because
+ * that is the one refusal with a command behind it.
+ */
+export function classifyGraphqlWriteFailure(result: GhResult): { refusal: "scope" | "not_permitted" | "not_found" | "failed"; message?: string } {
+  const said = `${result.stderr}\n${result.stdout}`;
+  const lower = said.toLowerCase();
+  let message = result.stderr.trim().replace(/^gh:\s*/, "");
+  try {
+    const errors = (JSON.parse(result.stdout) as { errors?: { message?: unknown }[] }).errors;
+    const first = errors?.map((error) => text(error.message)).find(Boolean);
+    if (first) message = first;
+  } catch {
+    // Not JSON — stderr is the sentence.
+  }
+  const carry = message ? { message } : {};
+  if (lower.includes("insufficient_scopes") || lower.includes("required scopes") || lower.includes("not been granted")) return { refusal: "scope", ...carry };
+  if (lower.includes("could not resolve to a node") || lower.includes("not_found")) return { refusal: "not_found", ...carry };
+  if (
+    lower.includes("locked") ||
+    lower.includes("archived") ||
+    lower.includes("forbidden") ||
+    lower.includes("not accessible") ||
+    lower.includes("permission") ||
+    lower.includes("http 403")
+  ) {
+    return { refusal: "not_permitted", ...carry };
+  }
+  return { refusal: "failed", ...carry };
+}
+
+/** The subject's reactions out of a mutation's answer, whichever mutation it was. */
+export function parseReactionAnswer(stdout: string): GitHubReaction[] | undefined {
+  const data = (JSON.parse(stdout) as { data?: Record<string, { subject?: { reactionGroups?: unknown } } | null> | null }).data;
+  const answer = data?.addReaction ?? data?.removeReaction;
+  const groups = answer?.subject?.reactionGroups;
+  return Array.isArray(groups) ? reactions(groups) : undefined;
+}
+
+export async function reactOn(
+  gh: GhRunner,
+  cwd: string,
+  input: { subjectId: string; content: GitHubReactionContent; react: boolean },
+): Promise<GitHubReactionResult> {
+  const result = await gh(cwd, reactionArgv(input));
+  if (result.status !== 0) return { reacted: false, ...classifyGraphqlWriteFailure(result) };
+  try {
+    const now = parseReactionAnswer(result.stdout);
+    if (now) return { reacted: true, reactions: now };
+  } catch {
+    // Fall through: exit 0 with nothing readable is a refusal worth naming.
+  }
+  return { reacted: false, ...classifyGraphqlWriteFailure(result) };
+}
+
+// ── acting on a review thread (#842) ───────────────────────────────────────
+
+/** The fields a reply is read back with — the same a thread read asks for, so
+ *  one parser (`reviewComment`) serves both. */
+const REVIEW_COMMENT_FIELDS =
+  "id url body createdAt diffHunk authorAssociation author { __typename login avatarUrl } reactionGroups { content viewerHasReacted users { totalCount } }";
+
+/**
+ * Reply to one review thread.
+ *
+ * A PERSON'S REPLY, typed into the panel, so there is no session marker to stamp —
+ * the marker exists for comments an AGENT posts (#791), and one on a human's words
+ * would claim a conversation that did not write them. The body travels as a
+ * GraphQL variable in argv, bounded by `MAX_COMMENT_BODY` for `commentOn`'s reason.
+ */
+export function threadReplyArgv(threadId: string, body: string): string[] {
+  return [
+    "api",
+    "graphql",
+    "-F",
+    `thread=${threadId}`,
+    "-f",
+    `body=${body}`,
+    "-f",
+    `query=mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) { comment { ${REVIEW_COMMENT_FIELDS} } } }`,
+  ];
+}
+
+export async function replyToThread(gh: GhRunner, cwd: string, input: { threadId: string; body: string }): Promise<GitHubThreadReplyResult> {
+  const body = input.body.trim();
+  if (!body) return { replied: false, refusal: "invalid_body", message: "A reply needs something in it." };
+  if (body.length > MAX_COMMENT_BODY) {
+    return { replied: false, refusal: "invalid_body", message: `That reply is ${body.length} characters; GitHub takes at most ${MAX_COMMENT_BODY}.` };
+  }
+  const result = await gh(cwd, threadReplyArgv(input.threadId, body));
+  if (result.status === 0) {
+    try {
+      const data = (JSON.parse(result.stdout) as { data?: { addPullRequestReviewThreadReply?: { comment?: unknown } | null } | null }).data;
+      const comment = reviewComment(data?.addPullRequestReviewThreadReply?.comment);
+      if (comment) return { replied: true, comment };
+    } catch {
+      // Fall through to the classifier, which reads GitHub's own words.
+    }
+  }
+  return { replied: false, ...classifyGraphqlWriteFailure(result) };
+}
+
+/** Resolve (`resolved: true`) or unresolve one review thread. */
+export function threadResolveArgv(threadId: string, resolved: boolean): string[] {
+  const mutation = resolved ? "resolveReviewThread" : "unresolveReviewThread";
+  return [
+    "api",
+    "graphql",
+    "-F",
+    `thread=${threadId}`,
+    "-f",
+    `query=mutation($thread: ID!) { ${mutation}(input: { threadId: $thread }) { thread { isResolved resolvedBy { login } viewerCanResolve viewerCanUnresolve } } }`,
+  ];
+}
+
+export async function resolveThread(gh: GhRunner, cwd: string, input: { threadId: string; resolved: boolean }): Promise<GitHubThreadResolveResult> {
+  const result = await gh(cwd, threadResolveArgv(input.threadId, input.resolved));
+  if (result.status === 0) {
+    try {
+      const data = (JSON.parse(result.stdout) as { data?: Record<string, { thread?: Record<string, unknown> | null } | null> | null }).data;
+      const thread = (data?.resolveReviewThread ?? data?.unresolveReviewThread)?.thread;
+      if (thread && typeof thread.isResolved === "boolean") {
+        const by = login(thread.resolvedBy);
+        return {
+          changed: true,
+          isResolved: thread.isResolved,
+          ...(by ? { resolvedBy: by } : {}),
+          viewerCanResolve: thread.viewerCanResolve === true,
+          viewerCanUnresolve: thread.viewerCanUnresolve === true,
+        };
+      }
+    } catch {
+      // Fall through to the classifier.
+    }
+  }
+  return { changed: false, ...classifyGraphqlWriteFailure(result) };
 }
 
 // ── opening one pull request ────────────────────────────────────────────────
