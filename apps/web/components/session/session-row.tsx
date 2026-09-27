@@ -870,15 +870,9 @@ export function SessionRow({
 
   const row = (
     /**
-     * THREE WEIGHTS, NOT TWO, AND THE THIRD IS THE ONE THAT MATTERS.
-     *
-     * `card` versus `slim` separates live from history, but inside the live
-     * band a session that is WORKING or WAITING ON YOU is not the same as one
-     * that merely happens to be recent — and in t3's sidebar those are exactly
-     * the rows carrying the emphasis. A hairline in the status colour, drawn on
-     * the leading edge, is enough: it reads down a column of twenty rows
-     * without adding height, and it uses the colour the badge already
-     * established rather than inventing a second language for the same fact.
+     * NO LEADING-EDGE STRIPE. A working or waiting row already says so in its
+     * badge (label, spinner or dot), and the selected row is the tinted one; a
+     * coloured bar on the left repeated the badge and read as decoration.
      */
     <div
       ref={rowRef}
@@ -911,13 +905,7 @@ export function SessionRow({
       }
       className={`group/session relative flex items-center rounded-md ${
         active || searchSelected ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70"
-      } ${session.archived || session.stale !== undefined ? "opacity-60" : ""} ${
-        badge && variant === "card"
-          ? `before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full ${
-              badge.tone === "attention" ? "before:bg-warning" : "before:bg-primary"
-            }`
-          : ""
-      }`}
+      } ${session.archived || session.stale !== undefined ? "opacity-60" : ""}`}
     >
       {plain ? (
         <Link
