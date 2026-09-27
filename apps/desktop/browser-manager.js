@@ -2150,7 +2150,7 @@ class DesktopBrowserManager {
     const previous = tab.liveResizeFrom || { viewport: tab.viewport, mode: tab.viewportMode };
     if (live) {
       tab.liveResizeFrom = previous;
-      const next = resolveViewport(input);
+      const next = resolveViewport(input, this.viewportOf(tab));
       const current = this.viewportOf(tab);
       if (next.width === current.width && next.height === current.height && tab.viewportMode === "fixed") return current;
       tab.viewport = next;
