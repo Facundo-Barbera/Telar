@@ -29,6 +29,9 @@ import {
   REACTIONS,
   REACTION_REFUSAL,
   toggleReaction,
+  hunkTail,
+  threadAnchor,
+  threadsByFile,
   reviewLabel,
   STATUS_LABEL,
   STATUS_TONE,
@@ -578,5 +581,88 @@ describe("applyReaction — optimistic, then GitHub's answer or a rollback (#842
     });
     expect(drawn.at(-1)).toBe(before);
     expect(said).toBe("connection refused");
+  });
+});
+
+// ── review threads (#842) ────────────────────────────────────────────────────
+
+const reviewThread = (over: Record<string, unknown> = {}) =>
+  ({
+    id: "PRRT_1",
+    path: "src/a.ts",
+    line: 42,
+    diffSide: "RIGHT",
+    subjectType: "LINE",
+    isResolved: false,
+    isOutdated: false,
+    viewerCanResolve: true,
+    viewerCanUnresolve: false,
+    viewerCanReply: true,
+    diffHunk: "@@ -1,3 +1,3 @@",
+    comments: [],
+    moreComments: 0,
+    ...over,
+  }) as Parameters<typeof threadAnchor>[0];
+
+describe("threadAnchor — where a thread sits", () => {
+  test("one line on the head", () => {
+    expect(threadAnchor(reviewThread())).toMatchObject({ path: "src/a.ts", from: 42, to: 42, side: "head", outdated: false, label: "L42" });
+  });
+
+  test("a multi-line thread spans its start to its line", () => {
+    expect(threadAnchor(reviewThread({ startLine: 40 })).label).toBe("L40–42");
+  });
+
+  test("AN OUTDATED THREAD FALLS BACK TO WHERE IT WAS WRITTEN, and says it is outdated", () => {
+    const anchor = threadAnchor(reviewThread({ line: undefined, originalLine: 17, originalStartLine: 15, isOutdated: true }));
+    expect(anchor).toMatchObject({ from: 15, to: 17, outdated: true, label: "L15–17" });
+  });
+
+  test("a line with no current place is outdated even when GitHub did not flag it", () => {
+    expect(threadAnchor(reviewThread({ line: undefined, originalLine: 3 })).outdated).toBe(true);
+  });
+
+  test("a comment on the base side is marked as such", () => {
+    expect(threadAnchor(reviewThread({ diffSide: "LEFT" }))).toMatchObject({ side: "base", label: "L42 (base)" });
+  });
+
+  test("a whole-file comment has no line", () => {
+    expect(threadAnchor(reviewThread({ subjectType: "FILE", line: undefined }))).toMatchObject({ label: "file" });
+  });
+});
+
+describe("hunkTail — the lines a thread is about", () => {
+  const hunk = "@@ -10,6 +10,7 @@ fn()\n a\n b\n c\n-d\n+D\n+E\n f";
+
+  test("drops the header and keeps the commented line plus three above", () => {
+    expect(hunkTail(hunk)).toEqual([
+      { kind: "del", text: "d" },
+      { kind: "add", text: "D" },
+      { kind: "add", text: "E" },
+      { kind: "ctx", text: "f" },
+    ]);
+  });
+
+  test("a multi-line thread keeps its whole span", () => {
+    expect(hunkTail(hunk, 3)).toHaveLength(6);
+  });
+
+  test("a hunk shorter than the window is kept whole, without its header", () => {
+    expect(hunkTail("@@ -1 +1 @@\n-x\n+y\n").map((line) => line.kind)).toEqual(["del", "add"]);
+  });
+});
+
+describe("threadsByFile", () => {
+  test("files in path order, threads top to bottom inside each", () => {
+    const grouped = threadsByFile([
+      reviewThread({ id: "b2", path: "b.ts", line: 9 }),
+      reviewThread({ id: "a1", path: "a.ts", line: 30 }),
+      reviewThread({ id: "b1", path: "b.ts", line: 2 }),
+      reviewThread({ id: "a0", path: "a.ts", subjectType: "FILE", line: undefined }),
+    ]);
+    expect(grouped.map((file) => [file.path, file.threads.map((thread) => thread.id)])).toEqual([
+      ["a.ts", ["a0", "a1"]],
+      ["b.ts", ["b1", "b2"]],
+    ]);
   });
 });

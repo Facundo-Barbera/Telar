@@ -461,6 +461,66 @@ export const GitHubReview = z.object({
 export type GitHubReview = z.infer<typeof GitHubReview>;
 
 /**
+ * One comment inside a review thread — #842.
+ *
+ * A COMMENT, NOT A `GitHubComment`, because it is read by a different call and
+ * carries different facts: no minimisation flag reaches this read, and no
+ * attribution marker is parsed because the engine never writes these bodies
+ * with one. `url` identifies it exactly as a conversation comment's does.
+ */
+export const GitHubReviewComment = z.object({
+  author: z.string().optional(),
+  ...authorAvatarField,
+  authorAssociation: z.string().optional(),
+  body: z.string(),
+  createdAt: Timestamp,
+  url: z.string().min(1),
+  /** Asked on the same read, so `[]` here is always an answer. */
+  reactions: z.array(GitHubReaction),
+  subjectId: GitHubSubjectId.optional(),
+});
+export type GitHubReviewComment = z.infer<typeof GitHubReviewComment>;
+
+/**
+ * One conversation anchored to lines of the diff — #842.
+ *
+ * `line` IS WHERE IT SITS ON THE CURRENT HEAD and is ABSENT WHEN THE CODE MOVED ON:
+ * GitHub answers null once a push has changed those lines, and `isOutdated` says
+ * the same thing in words. `originalLine` is where it sat on the commit it was
+ * written against, which is the only place an outdated thread can still be put.
+ *
+ * `diffHunk` IS THE FIRST COMMENT'S, which is GitHub's own: the hunk up to and
+ * including the line the thread is about, as the reviewer saw it.
+ *
+ * `isResolved` IS CARRIED, NOT FILTERED. A resolved nit is still part of how the
+ * pull request got here; the surface folds it rather than this read hiding it.
+ */
+export const GitHubReviewThread = z.object({
+  /** The node id resolving, unresolving and replying are written against. */
+  id: GitHubSubjectId,
+  path: z.string().min(1),
+  line: z.number().int().positive().optional(),
+  startLine: z.number().int().positive().optional(),
+  originalLine: z.number().int().positive().optional(),
+  originalStartLine: z.number().int().positive().optional(),
+  /** `LEFT` for the base side of the diff, `RIGHT` for the head. */
+  diffSide: z.string().optional(),
+  /** `LINE` or `FILE` — a comment on a whole file has no line at all. */
+  subjectType: z.string().optional(),
+  isResolved: z.boolean(),
+  isOutdated: z.boolean(),
+  resolvedBy: z.string().min(1).optional(),
+  viewerCanResolve: z.boolean(),
+  viewerCanUnresolve: z.boolean(),
+  viewerCanReply: z.boolean(),
+  diffHunk: z.string(),
+  comments: z.array(GitHubReviewComment),
+  /** Replies past the per-thread cap. Never silent, for `olderComments`' reason. */
+  moreComments: z.number().int().nonnegative(),
+});
+export type GitHubReviewThread = z.infer<typeof GitHubReviewThread>;
+
+/**
  * One check on a pull request's head commit.
  *
  * FLATTENED FROM TWO DIFFERENT GITHUB TYPES. `statusCheckRollup` mixes
@@ -618,6 +678,16 @@ export const GitHubPullDetail = GitHubPullRequest.extend({
   /** The pull request's own reactions, read like an issue's. */
   reactions: z.array(GitHubReaction).optional(),
   subjectId: GitHubSubjectId.optional(),
+  /**
+   * The line-bound review conversations — #842.
+   *
+   * ITS OWN READ, because no `gh pr view` field carries a path or a line —
+   * measured. Absent when that read failed, which the surface says rather than
+   * drawing "no review comments" over a question it did not get to ask.
+   */
+  reviewThreads: z.array(GitHubReviewThread).optional(),
+  /** Threads past the cap. */
+  moreReviewThreads: z.number().int().nonnegative().optional(),
   /** EVERY review, not the latest per reviewer. `reviewDecision` above is
    *  already the aggregate; this is the conversation, and hiding the round that
    *  requested changes because a later one approved loses why it was approved. */

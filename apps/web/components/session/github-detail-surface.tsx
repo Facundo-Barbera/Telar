@@ -53,6 +53,7 @@ import {
   CircleSlashIcon,
   ClockIcon,
   ExternalLinkIcon,
+  FileCodeIcon,
   GitMergeIcon,
   GitPullRequestIcon,
   GripVerticalIcon,
@@ -70,6 +71,7 @@ import type {
   GitHubReaction,
   GitHubReactionContent,
   GitHubReactionResult,
+  GitHubReviewThread,
   GitHubLink,
   GitHubMergeMethod,
   GitHubMergeRefusal,
@@ -85,6 +87,9 @@ import {
   mergeReadiness,
   MERGE_REFUSAL,
   applyReaction,
+  hunkTail,
+  threadAnchor,
+  threadsByFile,
   pullStatus,
   reactionPills,
   REACTIONS,
@@ -621,6 +626,168 @@ function Timeline({ entries, older, onReact }: { entries: readonly ForgeEntry[];
           ))}
       </div>
     </>
+  );
+}
+
+/**
+ * THE LINE-BOUND REVIEW CONVERSATIONS — #842.
+ *
+ * THEIR OWN BLOCK, NOT CARDS IN THE TIMELINE. A thread is anchored to a place in
+ * the code and the timeline is anchored to time; interleaving them put "line 42"
+ * between two replies about the description, and a reader lost both threads. So
+ * they follow the conversation, grouped by file the way the Diff surface lists
+ * files, each with the lines it is about.
+ *
+ * A RESOLVED THREAD IS FOLDED, NOT HIDDEN — one line saying where it was and who
+ * resolved it, open on a click. That is GitHub's own treatment, and the reason
+ * the read carries `isResolved` at all: without it every settled nit is drawn open
+ * forever; without the fold the history of how the pull request got here is lost.
+ *
+ * AN ABSENT READ SAYS SO. "No review comments" over a read that failed would be
+ * the surface inventing an answer.
+ */
+export function ReviewThreadsBlock({
+  threads,
+  more,
+  onReact,
+}: {
+  threads?: readonly GitHubReviewThread[];
+  more: number;
+  onReact?: ReactHandler;
+}) {
+  if (threads === undefined) {
+    return <p className="px-3 pb-2 text-3xs leading-snug text-muted-foreground">The review comments on lines of the diff could not be read.</p>;
+  }
+  if (threads.length === 0) return null;
+  const open = threads.filter((thread) => !thread.isResolved).length;
+  const label = `${threads.length} review ${threads.length === 1 ? "thread" : "threads"}${open < threads.length ? ` · ${threads.length - open} resolved` : ""}`;
+  return (
+    <>
+      <PanelDivider label={label} />
+      {more > 0 && (
+        <p className="px-3 pb-2 text-3xs leading-snug text-muted-foreground">
+          {more} older {more === 1 ? "thread is" : "threads are"} not shown — open it on GitHub for all of them.
+        </p>
+      )}
+      <div className="flex flex-col gap-3 px-3 pb-3">
+        {threadsByFile(threads).map((file) => (
+          <section key={file.path} className={cn("flex w-full min-w-0 flex-col gap-1.5 self-center", READING_MEASURE)}>
+            <h4 className="flex min-w-0 items-center gap-1 text-3xs text-muted-foreground" title={file.path}>
+              <FileCodeIcon className="size-3 shrink-0" />
+              {/* The file NAME is the part a reader scans for; a long path is
+                  truncated from the left so it survives. */}
+              <span className="min-w-0 truncate font-mono [direction:rtl]">
+                <bdi>{file.path}</bdi>
+              </span>
+            </h4>
+            {file.threads.map((thread) => (
+              <ReviewThreadCard key={thread.id} thread={thread} {...(onReact ? { onReact } : {})} />
+            ))}
+          </section>
+        ))}
+      </div>
+    </>
+  );
+}
+
+const HUNK_LINE: Record<"add" | "del" | "ctx", string> = {
+  add: "tint-success text-foreground",
+  del: "tint-destructive text-foreground",
+  ctx: "text-muted-foreground",
+};
+const HUNK_MARK: Record<"add" | "del" | "ctx", string> = { add: "+", del: "−", ctx: " " };
+
+export function ReviewThreadCard({ thread, onReact }: { thread: GitHubReviewThread; onReact?: ReactHandler }) {
+  const [unfolded, setUnfolded] = useState(false);
+  const anchor = threadAnchor(thread);
+  const folded = thread.isResolved && !unfolded;
+  const span = anchor.from !== undefined && anchor.to !== undefined ? anchor.to - anchor.from + 1 : 1;
+  const lines = anchor.label === "file" ? [] : hunkTail(thread.diffHunk, span);
+
+  return (
+    <div data-thread={thread.id} className="w-full min-w-0 overflow-hidden rounded-md border border-border bg-card">
+      <button
+        type="button"
+        aria-expanded={!folded}
+        onClick={() => thread.isResolved && setUnfolded((was) => !was)}
+        className={cn(
+          "flex w-full min-w-0 items-center gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-left text-3xs text-muted-foreground",
+          folded && "border-b-0",
+          !thread.isResolved && "cursor-default",
+        )}
+      >
+        {thread.isResolved && <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", !folded && "rotate-90")} />}
+        <span className="shrink-0 font-mono text-foreground">{anchor.label}</span>
+        {anchor.outdated && (
+          <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
+            outdated
+          </Badge>
+        )}
+        {thread.isResolved && (
+          <Badge variant="outline" className="shrink-0 border-success/40 px-1 py-0 text-4xs font-normal text-success">
+            resolved{thread.resolvedBy ? ` by ${thread.resolvedBy}` : ""}
+          </Badge>
+        )}
+        {folded && (
+          <span className="min-w-0 truncate">
+            {thread.comments[0]?.author ?? "someone"}: {thread.comments[0]?.body.split("\n")[0]}
+          </span>
+        )}
+      </button>
+      {!folded && (
+        <>
+          {lines.length > 0 && (
+            <pre className="overflow-x-auto border-b border-border bg-card py-0.5 font-mono text-3xs leading-relaxed">
+              {lines.map((line, index) => (
+                <div key={index} className={cn("flex px-2", HUNK_LINE[line.kind])}>
+                  <span aria-hidden className="w-3 shrink-0 select-none opacity-60">
+                    {HUNK_MARK[line.kind]}
+                  </span>
+                  <span className="whitespace-pre">{line.text || " "}</span>
+                </div>
+              ))}
+            </pre>
+          )}
+          <div className="flex flex-col divide-y divide-border">
+            {thread.comments.map((comment) => (
+              <div key={comment.url} className="min-w-0 px-2 py-1.5">
+                <div className="mb-1 flex min-w-0 items-center gap-1.5 text-3xs text-muted-foreground">
+                  <GitHubAvatar {...(comment.author ? { login: comment.author } : {})} {...(comment.authorAvatar ? { src: comment.authorAvatar } : {})} className="size-4" />
+                  <span className="min-w-0 truncate font-medium text-foreground">{comment.author ?? "someone"}</span>
+                  {comment.authorAssociation && comment.authorAssociation !== "NONE" && (
+                    <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
+                      {comment.authorAssociation.toLowerCase()}
+                    </Badge>
+                  )}
+                  <span className="shrink-0 tabular-nums" title={when(comment.createdAt)}>
+                    {fmtAgo(comment.createdAt)}
+                  </span>
+                  <a
+                    href={comment.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Open this review comment on GitHub"
+                    className="ml-auto shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
+                  >
+                    <ExternalLinkIcon className="size-2.5" />
+                  </a>
+                </div>
+                <Markdown>{comment.body}</Markdown>
+                <ReactionRow
+                  reactions={comment.reactions}
+                  {...(onReact && comment.subjectId ? { onReact: onReact.bind(null, comment.subjectId) } : {})}
+                />
+              </div>
+            ))}
+            {thread.moreComments > 0 && (
+              <p className="px-2 py-1 text-3xs text-muted-foreground">
+                {thread.moreComments} more {thread.moreComments === 1 ? "reply" : "replies"} on GitHub.
+              </p>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1432,6 +1599,8 @@ export function ForgeDetailSurface({
         </div>
 
         <Timeline entries={timeline} older={thing.olderComments} onReact={react} />
+
+        {pull && <ReviewThreadsBlock threads={pull.reviewThreads} more={pull.moreReviewThreads ?? 0} onReact={react} />}
 
         {/**
          * CHECKS AT THE BOTTOM, AGAINST THE MERGE.

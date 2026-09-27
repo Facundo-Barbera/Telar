@@ -24,6 +24,7 @@ import type {
   GitHubReactionRefusal,
   GitHubReactionResult,
   GitHubReview,
+  GitHubReviewThread,
   GitPushRefusal,
 } from "@telar/engine-client";
 
@@ -487,7 +488,8 @@ export function buildForgeTimeline(input: {
      * the review row exists to hold them and its own body is blank. Rendering those
      * puts "someone commented" cards with nothing in them through the middle of the
      * conversation. An empty APPROVED is kept, because who approved and when is the
-     * whole content of an approval.
+     * whole content of an approval. The inline comments such a shell holds are
+     * drawn by the review threads block, anchored to their lines (#842).
      */
     if (!review.body.trim() && review.state.toUpperCase() === "COMMENTED") continue;
     entries.push({
@@ -627,4 +629,66 @@ export async function applyReaction(input: {
   }
   input.draw(input.current);
   return REACTION_REFUSAL[result.refusal];
+}
+
+// ── review threads (#842) ────────────────────────────────────────────────────
+
+/**
+ * WHERE A REVIEW THREAD SITS, in the words a reader uses: a file and a line range.
+ *
+ * AN OUTDATED THREAD IS PUT WHERE IT WAS WRITTEN. GitHub drops `line` once a push
+ * changed those lines, and a thread with no place at all is unreadable — so it
+ * falls back to `originalLine` and says it is outdated, which is what github.com
+ * does. A thread on a whole file has no line and says so.
+ */
+export type ThreadAnchor = { path: string; from?: number; to?: number; side: "base" | "head"; outdated: boolean; label: string };
+
+export function threadAnchor(thread: GitHubReviewThread): ThreadAnchor {
+  const side = thread.diffSide === "LEFT" ? "base" : "head";
+  const current = thread.line !== undefined;
+  const to = current ? thread.line : thread.originalLine;
+  const from = current ? (thread.startLine ?? to) : (thread.originalStartLine ?? to);
+  const outdated = thread.isOutdated || (!current && to !== undefined);
+  if (thread.subjectType === "FILE" || to === undefined) return { path: thread.path, side, outdated, label: "file" };
+  const span = from !== undefined && from < to ? `L${from}–${to}` : `L${to}`;
+  return { path: thread.path, from: from ?? to, to, side, outdated, label: side === "base" ? `${span} (base)` : span };
+}
+
+/** One line of a hunk, classified the way a diff is drawn. */
+export type HunkLine = { kind: "add" | "del" | "ctx"; text: string };
+
+/**
+ * THE LINES A THREAD IS ABOUT, and a little above them.
+ *
+ * GitHub's `diffHunk` runs from the hunk header DOWN TO the commented line, so the
+ * commented lines are its tail. A whole hunk in a 320px card buries the comment
+ * under forty lines of context; the tail is the part the reviewer pointed at. The
+ * span a multi-line thread covers is always kept, plus `context` lines above it.
+ */
+export function hunkTail(diffHunk: string, span = 1, context = 3): HunkLine[] {
+  const lines = diffHunk.split(/\r?\n/).filter((line, index) => !(index === 0 && line.startsWith("@@")));
+  while (lines.length > 0 && lines.at(-1) === "") lines.pop();
+  return lines.slice(-(Math.max(1, span) + context)).map((line) => {
+    const mark = line[0];
+    if (mark === "+") return { kind: "add", text: line.slice(1) };
+    if (mark === "-") return { kind: "del", text: line.slice(1) };
+    return { kind: "ctx", text: mark === " " ? line.slice(1) : line };
+  });
+}
+
+/**
+ * THE THREADS, BY FILE, IN FILE ORDER — the order the Diff surface lists them in,
+ * so a reader moving between the two finds the same file in the same place. Inside
+ * a file, top to bottom by line; a whole-file thread first, because it is about
+ * everything below it.
+ */
+export function threadsByFile(threads: readonly GitHubReviewThread[]): { path: string; threads: GitHubReviewThread[] }[] {
+  const files = new Map<string, GitHubReviewThread[]>();
+  for (const thread of threads) files.set(thread.path, [...(files.get(thread.path) ?? []), thread]);
+  return [...files.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, list]) => ({
+      path,
+      threads: [...list].sort((left, right) => (threadAnchor(left).to ?? 0) - (threadAnchor(right).to ?? 0)),
+    }));
 }

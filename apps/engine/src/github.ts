@@ -53,6 +53,8 @@ import type {
   GitHubReactionContent,
   GitHubReactionResult,
   GitHubReview,
+  GitHubReviewComment,
+  GitHubReviewThread,
   GitHubSnapshot,
   GitHubUnavailable,
 } from "@telar/engine-client";
@@ -844,6 +846,161 @@ export function parseThread(stdout: string): ThreadRead {
   return { authors: byUrl, ...own };
 }
 
+// ── review threads (#842) ──────────────────────────────────────────────────
+
+/** How many review threads one read carries, newest kept, and how many comments
+ *  each. A thread is a reviewer's point and its replies; fifty replies is past
+ *  the point where a panel card is still the right place to read it. */
+export const MAX_REVIEW_THREADS = 100;
+export const MAX_THREAD_REPLIES = 50;
+
+/**
+ * The line-bound review conversations on one pull request.
+ *
+ * `gh` CANNOT REACH THESE ON ANY VERB — `pr view`'s 46 fields include `reviews`
+ * and `comments`, and none carries a path or a line (measured on #814). GraphQL
+ * `reviewThreads` is also the only place `isResolved` and `isOutdated` exist, and
+ * without them every resolved nit would be drawn open forever.
+ *
+ * `author` IS READ, NOT DERIVED, for #814's reason: a bot's face is its App's.
+ */
+const REVIEW_THREADS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!, $threads: Int!, $replies: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(last: $threads) {
+        totalCount
+        nodes {
+          id path line startLine originalLine originalStartLine diffSide subjectType
+          isResolved isOutdated resolvedBy { login }
+          viewerCanResolve viewerCanUnresolve viewerCanReply
+          comments(first: $replies) {
+            totalCount
+            nodes {
+              id url body createdAt diffHunk authorAssociation
+              author { __typename login avatarUrl }
+              reactionGroups { content viewerHasReacted users { totalCount } }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+export function reviewThreadsArgv(number: number): string[] {
+  return [
+    "api",
+    "graphql",
+    "-F",
+    "owner={owner}",
+    "-F",
+    "name={repo}",
+    "-F",
+    `number=${number}`,
+    "-F",
+    `threads=${MAX_REVIEW_THREADS}`,
+    "-F",
+    `replies=${MAX_THREAD_REPLIES}`,
+    "-f",
+    `query=${REVIEW_THREADS_QUERY}`,
+  ];
+}
+
+function positive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function reviewComment(entry: unknown): GitHubReviewComment | undefined {
+  const node = entry as Record<string, unknown>;
+  const url = text(node.url);
+  if (!url) return undefined;
+  const author = node.author as { avatarUrl?: unknown } | null;
+  const name = login(author);
+  const face = text(author?.avatarUrl);
+  const id = subjectId(node.id);
+  const association = text(node.authorAssociation);
+  return {
+    ...(name ? { author: name } : {}),
+    ...(face ? { authorAvatar: face } : {}),
+    ...(association ? { authorAssociation: association } : {}),
+    body: text(node.body),
+    createdAt: epoch(node.createdAt),
+    url,
+    reactions: reactions(node.reactionGroups),
+    ...(id ? { subjectId: id } : {}),
+  };
+}
+
+/**
+ * The GraphQL answer, as threads.
+ *
+ * A THREAD WITH NO ID OR NO PATH IS DROPPED: with no id it cannot be replied to or
+ * resolved, and with no path it cannot be put anywhere — neither has been seen.
+ * A thread whose every comment was deleted is dropped too; GitHub keeps the shell.
+ */
+export function parseReviewThreads(stdout: string): { threads: GitHubReviewThread[]; more: number } | undefined {
+  const parsed = JSON.parse(stdout) as {
+    data?: { repository?: { pullRequest?: { reviewThreads?: { totalCount?: unknown; nodes?: unknown } } | null } | null };
+  };
+  const connection = parsed.data?.repository?.pullRequest?.reviewThreads;
+  if (!connection || !Array.isArray(connection.nodes)) return undefined;
+  const threads = connection.nodes.flatMap((entry): GitHubReviewThread[] => {
+    const node = entry as Record<string, unknown>;
+    const id = subjectId(node.id);
+    const path = text(node.path);
+    if (!id || !path) return [];
+    const replies = node.comments as { totalCount?: unknown; nodes?: unknown } | null;
+    const nodes = Array.isArray(replies?.nodes) ? replies.nodes : [];
+    const comments = nodes.flatMap((comment) => {
+      const parsed = reviewComment(comment);
+      return parsed ? [parsed] : [];
+    });
+    if (comments.length === 0) return [];
+    const total = positive(replies?.totalCount) ?? comments.length;
+    const line = positive(node.line);
+    const startLine = positive(node.startLine);
+    const originalLine = positive(node.originalLine);
+    const originalStartLine = positive(node.originalStartLine);
+    const resolvedBy = login(node.resolvedBy);
+    return [
+      {
+        id,
+        path,
+        ...(line ? { line } : {}),
+        ...(startLine ? { startLine } : {}),
+        ...(originalLine ? { originalLine } : {}),
+        ...(originalStartLine ? { originalStartLine } : {}),
+        ...(text(node.diffSide) ? { diffSide: text(node.diffSide) } : {}),
+        ...(text(node.subjectType) ? { subjectType: text(node.subjectType) } : {}),
+        isResolved: node.isResolved === true,
+        isOutdated: node.isOutdated === true,
+        ...(resolvedBy ? { resolvedBy } : {}),
+        viewerCanResolve: node.viewerCanResolve === true,
+        viewerCanUnresolve: node.viewerCanUnresolve === true,
+        viewerCanReply: node.viewerCanReply === true,
+        diffHunk: text((nodes[0] as Record<string, unknown> | undefined)?.diffHunk),
+        comments,
+        moreComments: Math.max(0, total - comments.length),
+      },
+    ];
+  });
+  const total = positive(connection.totalCount) ?? threads.length;
+  return { threads, more: Math.max(0, total - connection.nodes.length) };
+}
+
+/** The `readBoards` bargain again: a failed read costs the threads, not the pull
+ *  request, and says so by being absent. */
+export async function readReviewThreads(gh: GhRunner, cwd: string, number: number): Promise<{ threads: GitHubReviewThread[]; more: number } | undefined> {
+  const result = await gh(cwd, reviewThreadsArgv(number));
+  if (result.status !== 0) return undefined;
+  try {
+    return parseReviewThreads(result.stdout);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Who wrote each comment on one thread, and what everybody reacted with.
  *
@@ -1147,6 +1304,7 @@ export function parsePullDetail(
   mergeMethods: GitHubMergeMethod[] = [],
   projects: string[] = [],
   second?: ThreadRead,
+  review?: { threads: GitHubReviewThread[]; more: number },
 ): GitHubPullDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = pullRow(row);
@@ -1174,6 +1332,7 @@ export function parsePullDetail(
     olderComments: thread.olderComments,
     ...(second?.reactions ? { reactions: second.reactions } : {}),
     ...(second?.subjectId ? { subjectId: second.subjectId } : {}),
+    ...(review ? { reviewThreads: review.threads, moreReviewThreads: review.more } : {}),
     reviews: parseReviews(row.reviews, text(row.url)),
     checks: parseChecks(row.statusCheckRollup),
     createdAt: epoch(row.createdAt),
@@ -1269,15 +1428,17 @@ export async function readPull(
   now: () => number = Date.now,
   options: { skipProjects?: boolean } = {},
 ): Promise<GitHubPullRead> {
-  const [result, repo, boards, second] = await Promise.all([
+  const [result, repo, boards, second, review] = await Promise.all([
     gh(cwd, ["pr", "view", String(number), "--json", PULL_DETAIL_FIELDS]),
     gh(cwd, ["repo", "view", "--json", MERGE_METHOD_FIELDS]),
     readBoards(gh, cwd, "pr", number, options.skipProjects),
     readThread(gh, cwd, number),
+    // Beside the rest, so the wall clock is still the slowest call and not the sum.
+    readReviewThreads(gh, cwd, number),
   ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards, second) };
+    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards, second, review) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }
