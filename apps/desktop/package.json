@@ -75,6 +75,7 @@
       "browser-tab-store.js",
       "site-permissions.js",
       "command-keys.js",
+      "viewport-presets.js",
       "helper-exec.js",
       "host-header.js",
       "link-routing.js",
