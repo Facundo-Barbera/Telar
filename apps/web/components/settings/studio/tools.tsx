@@ -107,7 +107,7 @@ const ACCENT_LABEL: Record<Accent, string> = {
  * Keeping the old `px-3` here would simply have added 12px inside the card's 16.
  *
  * The LABELLED form is gone with the panel: a labelled block with a control on
- * the right is a `Row`, which is what Accent and Show-through are now — and a
+ * the right is a `Row`, which is what Accent and the layers row are now — and a
  * Row is also a search destination, which a hand-rolled strip never was.
  */
 function ToolBlock({ children }: { children: React.ReactNode }) {
@@ -564,15 +564,16 @@ export function TypeTool({ appearance, onChange }: TypeToolProps) {
 export function ShowThroughRow({ level, onChange, anchor }: { level: number; onChange: (next: number) => void; anchor?: string }) {
   return (
     // The SAME field is rendered twice — here under the backdrop it thins, and
-    // again in the Window group, which is where search points at "Show-through"
+    // again in the Window group, which is where search points at "Layers through canvas and rail"
     // (settings-registry.ts). Two rows deriving one id would be two elements
     // claiming one anchor, and `document.getElementById` would answer whichever
     // came first, so the backdrop's copy is stamped by hand. One value, two
     // honest homes, one destination.
     <Row
       {...(anchor ? { id: anchor } : {})}
-      label="Show-through"
-      hint="How much of the backdrop reaches the canvas and the rail."
+      // Says WHAT shows through WHAT; "Show-through" alone named neither.
+      label="Layers through canvas and rail"
+      info="With Translucency on, this also sets how much of the desktop shows behind the window."
       control={
         <div className="flex items-center gap-2.5">
           <input
@@ -581,7 +582,7 @@ export function ShowThroughRow({ level, onChange, anchor }: { level: number; onC
             max={MAX_TRANSLUCENCY}
             step={5}
             value={level}
-            aria-label="Show-through"
+            aria-label="Layers through canvas and rail"
             title="How much of the backdrop shows through the canvas and the rail"
             className="w-36 accent-primary"
             onChange={(event) => onChange(Number(event.target.value))}

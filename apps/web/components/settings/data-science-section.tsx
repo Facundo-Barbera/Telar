@@ -165,7 +165,7 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
     <>
       <SettingsGroup
         title="Data science"
-        // The order-of-operations sentence was the Enabled row's job, and that
+        // The order-of-operations sentence was the switch row's job, and that
         // row already does it better because it knows the state: "On, but no
         // environment is selected yet. Set one up below or ask the agent." A
         // header can only give the generic version, and giving it first means
@@ -178,7 +178,7 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
         }
       >
         <Row
-          label="Enabled"
+          label="Data science for this project"
           hint={enabled ? (current ? "Sessions get notebook and ds_* tools." : "On, but no environment is selected yet. Set one up below or ask the agent.") : current ? "Off. The chosen environment is kept." : "Off. You can turn it on before the environment exists."}
           {...(error ? { error } : {})}
           control={
