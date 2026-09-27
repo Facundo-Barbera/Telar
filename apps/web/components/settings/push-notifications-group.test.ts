@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { deviceLine, NOTIFY_ON_LABELS, pausedLine, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
+import { detailLines, deviceLine, NOTIFY_ON_LABELS, pausedLine, phoneSummary, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
 import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES } from "@/lib/mobile/desktop";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 
@@ -58,6 +58,46 @@ describe("a phone's line", () => {
 
   test("another Mac's phone is not this Mac's fault, and says so first", () => {
     expect(deviceLine(device({ mine: false }), 0).startsWith("registered against another Mac")).toBe(true);
+  });
+});
+
+describe("the one summary line", () => {
+  const status = (...devices: PushRelayStatus["devices"]): PushRelayStatus => ({ configured: true, relay: false, v2: true, sandbox: false, devices });
+  const now = 10 * 3600_000;
+
+  test("counts 0, 1 or n phones", () => {
+    expect(phoneSummary(status(), now)).toEqual({ label: "No phone registered yet", ok: true });
+    expect(phoneSummary(status(device()), now)).toEqual({ label: "Alerts reach 1 phone", ok: true });
+    expect(phoneSummary(status(device(), device({ deviceId: "b" }), device({ deviceId: "c" })), now).label).toBe("Alerts reach 3 phones");
+    expect(phoneSummary(status(device({ enabled: false })), now).label).toBe("Alerts are off on your phone");
+  });
+
+  test("a failing phone is named in plain words, with no codes", () => {
+    const failing = device({ consecutiveFailures: 4, lastStatus: 400, lastReason: "BadDeviceToken" });
+    const summary = phoneSummary(status(failing), now);
+    expect(summary).toEqual({ label: "Alerts aren't reaching Facundo's iPhone", ok: false });
+    expect(phoneSummary(status(failing, device({ ...failing, deviceId: "b" })), now).label).toBe("Alerts aren't reaching 2 phones");
+    expect(phoneSummary(status(device({ test: { at: 1, status: 400, reason: "BadDeviceToken", relay: false } })), now).ok).toBe(false);
+  });
+
+  test("a Live Activity refusal beside recent deliveries is not a failing phone", () => {
+    const busy = device({ consecutiveFailures: 3, lastStatus: 409, lastReason: "not_registered", lastDeliveryAt: now / 1000 - 60 });
+    expect(phoneSummary(status(busy), now)).toEqual({ label: "Alerts reach 1 phone", ok: true });
+  });
+
+  test("stopped, unpaired and other Macs' registrations are not counted", () => {
+    const parked = device({ deviceId: "old", sandbox: true, parked: true, consecutiveFailures: 20, lastStatus: 400 });
+    expect(phoneSummary(status(parked, device()), now)).toEqual({ label: "Alerts reach 1 phone", ok: true });
+    expect(phoneSummary(status(device({ paired: false }), device({ mine: false })), now).label).toBe("No phone registered yet");
+  });
+
+  test("details still carry every registration's diagnostics", () => {
+    const parked = device({ deviceId: "old", parked: true, consecutiveFailures: 20, lastStatus: 400 });
+    const lines = detailLines(status(device(), parked), now);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]!.name).toContain("stopped");
+    expect(lines[1]!.line).toContain("last refused 400");
+    expect(lines[1]!.line).toContain("20 failures in a row");
   });
 });
 
