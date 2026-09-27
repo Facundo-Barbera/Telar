@@ -378,8 +378,14 @@ function makeHarness(options = {}) {
    * the `zoom-changed` Electron emits for a wheel zoom.
    */
   const cockpitZoom = { factor: options.cockpitZoom || 1, listeners: [] };
+  // The window's own `moved`, which a drag to another display ends with.
+  const movedListeners = [];
+  const moveWindow = () => { for (const listener of movedListeners) listener(); };
   const window = {
     isDestroyed: () => false,
+    on: (event, listener) => {
+      if (event === "moved") movedListeners.push(listener);
+    },
     webContents: {
       send: (channel, payload) => messages.push({ channel, payload }),
       getZoomFactor: () => cockpitZoom.factor,
@@ -415,6 +421,8 @@ function makeHarness(options = {}) {
     ...(options.onChordScope ? { onChordScope: options.onChordScope } : {}),
     ...(options.onLoginEntryFinished ? { onLoginEntryFinished: options.onLoginEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
+    ...(options.timers ? { setTimer: options.timers.set, clearTimer: options.timers.clear } : {}),
+    ...(options.scaleFactor ? { scaleFactor: options.scaleFactor } : {}),
     ...(options.sessions ? { sessionFor } : {}),
     // A fixture folder and an empty in-memory disk: no test reaches the real
     // Downloads folder or writes anything.
@@ -430,7 +438,7 @@ function makeHarness(options = {}) {
     if (scopeKey && !manager.profileOf(scopeKey)) manager.declareProfile(scopeKey, "none");
     return origCreate(scopeKey, ...rest);
   };
-  return { children, clipboard, manager, menus, messages, previewWindows, sessions, setCockpitZoom, views, waits };
+  return { children, clipboard, manager, menus, messages, moveWindow, previewWindows, sessions, setCockpitZoom, views, waits };
 }
 
 /** Fire a real right-click on a tab's page and return the rows Chromium's menu
@@ -1986,6 +1994,158 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     await manager.callTool("s", "browser_take_screenshot", {});
     const shot = debug.commands.find((c) => c.method === "Page.captureScreenshot");
     expect(shot.params).toMatchObject({ clip: { x: 0, y: 0, width: 1280, height: 800, scale: 1 }, captureBeyondViewport: true });
+  });
+
+  test("a divider step on a shown FIXED tab sends the new scale BEFORE the view takes the new rect", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    await manager.resizeTab(manager.activeTab("s"), { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const view = views[0];
+    const debug = view.webContents.debugger;
+    // One timeline for both writers, so the ORDER is what is asserted.
+    const log = [];
+    const setBounds = view.setBounds.bind(view);
+    view.setBounds = (rect) => { log.push(`bounds ${rect.width}x${rect.height}`); setBounds(rect); };
+    const send = debug.sendCommand.bind(debug);
+    debug.sendCommand = (method, params) => {
+      if (method === "Emulation.setDeviceMetricsOverride") log.push(`scale ${params.scale}`);
+      return send(method, params);
+    };
+    manager.setBounds("s", { x: 0, y: 0, width: 320, height: 200 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(log).toEqual(["scale 0.25", "bounds 320x200"]);
+    // A republish of the same rect is still the fast path: one native write.
+    log.length = 0;
+    manager.setBounds("s", { x: 0, y: 0, width: 320, height: 200 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(log).toEqual(["bounds 320x200"]);
+  });
+
+  test("a shown fixed tab renders at the display's real pixel ratio; hidden tabs and agent screenshots stay at CSS pixels", async () => {
+    let ratio = 2;
+    const { manager, moveWindow, views } = makeHarness({ scaleFactor: () => ratio });
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    const debug = views[0].webContents.debugger;
+    const overrides = () => debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride");
+    // Hidden: nobody sees it, and its capturePage output must not double.
+    await manager.callTool("s", "browser_snapshot", {});
+    expect(overrides().at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await manager.resizeTab(tab, { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(overrides().at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 2, mobile: false, scale: 0.5, dontSetVisibleSize: true });
+    expect(tab.viewportOverride).toBe("1280x800@0.5*2 in 640x400");
+    // The agent's screenshot divides the ratio back out: a 1280×800 image.
+    await manager.callTool("s", "browser_take_screenshot", {});
+    expect(debug.commands.filter((c) => c.method === "Page.captureScreenshot").at(-1).params.clip).toEqual({ x: 0, y: 0, width: 1280, height: 800, scale: 0.5 });
+    // Dragged to a 1× display: the ratio is in the key, so it is re-sent.
+    const sent = overrides().length;
+    ratio = 1;
+    moveWindow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(overrides()).toHaveLength(sent + 1);
+    expect(overrides().at(-1).params.deviceScaleFactor).toBe(1);
+    // A move that stays on a display of the same density owes nothing.
+    moveWindow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(overrides()).toHaveLength(sent + 1);
+  });
+
+  test("a divider drag pushes no state and persists nothing per frame — one push once the rect settles", async () => {
+    // Timers the test fires by hand: the settle is driven, never slept.
+    const pending = new Map();
+    let nextTimer = 1;
+    const timers = {
+      set: (fn, ms) => { const id = nextTimer++; pending.set(id, { fn, ms }); return id; },
+      clear: (id) => pending.delete(id),
+    };
+    const fire = () => { const due = [...pending.values()]; pending.clear(); for (const { fn } of due) fn(); };
+    const saves = [];
+    const tabStore = { load: () => null, save: (doc) => saves.push(doc), flushSync: () => {} };
+    const { manager, messages } = makeHarness({ timers, tabStore });
+    await manager.createTab("s", "https://one.example/");
+    await manager.resizeTab(manager.activeTab("s"), { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const pushes = () => messages.filter((message) => message.channel === "telar:browser:state");
+    messages.length = 0;
+    saves.length = 0;
+    for (const width of [620, 600, 580, 560, 540]) {
+      manager.setBounds("s", { x: 0, y: 0, width, height: 400 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(pushes()).toHaveLength(0);
+    expect(saves).toHaveLength(0);
+    // One trailing push owed, not one per frame.
+    expect(pending.size).toBe(1);
+    expect([...pending.values()][0].ms).toBeGreaterThan(0);
+    fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pushes()).toHaveLength(1);
+    expect(pushes()[0].payload.presentation).toMatchObject({ bounds: { width: 540, height: 400 }, scale: 540 / 1280 });
+    // Bounds are not in the inventory: the settle push does not write it.
+    expect(saves).toHaveLength(0);
+    // A republish of the same rect owes nothing at all.
+    manager.setBounds("s", { x: 0, y: 0, width: 540, height: 400 });
+    expect(pending.size).toBe(0);
+    // Any other push already carries the bounds, so it retires the trailing one.
+    manager.setBounds("s", { x: 0, y: 0, width: 500, height: 400 });
+    expect(pending.size).toBe(1);
+    manager.emitState("s");
+    expect(pending.size).toBe(0);
+  });
+
+  test("a bounds-only change re-runs geometry for the shown tab alone — hidden tabs are not touched", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    await manager.createTab("s", "https://two.example/");
+    await manager.createTab("other", "https://three.example/");
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const shown = manager.activeTab("s");
+    const hidden = manager.tabs.filter((tab) => tab !== shown);
+    expect(hidden).toHaveLength(2);
+    const runs = new Map();
+    const original = manager.applyGeometry.bind(manager);
+    manager.applyGeometry = (tab) => { runs.set(tab.id, (runs.get(tab.id) || 0) + 1); return original(tab); };
+    const hiddenCommands = hidden.map((tab) => tab.view.webContents.debugger.commands.length);
+    const hiddenVisibility = views.filter((view) => view !== shown.view).map((view) => { const calls = []; const set = view.setVisible.bind(view); view.setVisible = (value) => { calls.push(value); set(value); }; return calls; });
+    for (const width of [600, 560, 520]) manager.setBounds("s", { x: 0, y: 0, width, height: 400 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runs.get(shown.id)).toBe(3);
+    for (const tab of hidden) expect(runs.get(tab.id)).toBeUndefined();
+    expect(hidden.map((tab) => tab.view.webContents.debugger.commands.length)).toEqual(hiddenCommands);
+    expect(hiddenVisibility.flat()).toEqual([]);
+    expect(shown.view.bounds).toEqual({ x: 0, y: 0, width: 520, height: 400 });
+  });
+
+  test("a shown fixed tab with no debugger yet is placed first — its attach must not delay the first show", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    tab.viewportMode = "fixed";
+    tab.debuggerReady = false;
+    const view = views[0];
+    const log = [];
+    const setBounds = view.setBounds.bind(view);
+    view.setBounds = (rect) => { log.push("bounds"); setBounds(rect); };
+    const send = view.webContents.debugger.sendCommand.bind(view.webContents.debugger);
+    view.webContents.debugger.sendCommand = (method, params) => {
+      if (method === "Emulation.setDeviceMetricsOverride") log.push("scale");
+      return send(method, params);
+    };
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    expect(log[0]).toBe("bounds");
+    expect(log).toContain("scale");
   });
 
   test("a resize (agent tool or toolbar) reflows the page, marks earlier snapshots stale, and is remembered per tab", async () => {

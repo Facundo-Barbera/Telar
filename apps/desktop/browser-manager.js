@@ -152,7 +152,9 @@ function fitViewport(viewport, bounds) {
  * gate already believed settled.
  */
 function emulationKey(target) {
-  const key = `${target.width}x${target.height}@${target.scale}`;
+  // The display's pixel ratio, when it is not 1: a move to a denser screen re-sends.
+  const ratio = target.deviceScaleFactor && target.deviceScaleFactor !== 1 ? `*${target.deviceScaleFactor}` : "";
+  const key = `${target.width}x${target.height}@${target.scale}${ratio}`;
   return target.view ? `${key} in ${target.view.width}x${target.view.height}` : key;
 }
 
@@ -169,6 +171,9 @@ const CAPTURE_TIMEOUT_MESSAGE = "Screenshot timed out — the page has no frame 
  */
 const FREEZE_TIMEOUT_MS = 150;
 const FREEZE_TIMEOUT_MESSAGE = "The page did not produce a frame in time to freeze.";
+/** How long the panel rect must stand still before its state push goes out
+ *  (see `scheduleBoundsEmit`). */
+const BOUNDS_SETTLE_MS = 120;
 const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
 /**
@@ -921,6 +926,11 @@ class DesktopBrowserManager {
      * view another session is showing.
      */
     this.radiusByScope = new Map();
+    /** The trailing state push a bounds change owes, `{ scope, timer }` or
+     *  null. Timers injected so a test drives the settle without sleeping. */
+    this.boundsEmit = null;
+    this.setTimer = dependencies.setTimer || setTimeout;
+    this.clearTimer = dependencies.clearTimer || clearTimeout;
     this.version = 0;
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
     this.rpcTimeoutMs = dependencies.rpcTimeoutMs || RPC_TIMEOUT_MS;
@@ -1044,6 +1054,17 @@ class DesktopBrowserManager {
     this.window?.webContents?.on?.("zoom-changed", () => {
       if (this._disposed) return;
       this.applyVisibility();
+    });
+    /**
+     * THE DISPLAY'S OWN PIXEL RATIO, for a shown fixed tab's emulation (see
+     * `viewportTarget`). Injected for the tests; off Electron it reads 1.
+     */
+    this.displayScaleFactor =
+      dependencies.scaleFactor || (() => this.electron().screen.getDisplayMatching(this.window.getBounds()).scaleFactor);
+    // A window dragged to a display of another density re-sends the emulation;
+    // the ratio is part of its key, so a same-density move is the fast path.
+    this.window?.on?.("moved", () => {
+      if (!this._disposed) this.applyShownGeometry();
     });
   }
 
@@ -1891,13 +1912,45 @@ class DesktopBrowserManager {
    * scope would close itself the instant it asked what was there.
    */
   emitState(scopeKey, extra) {
+    this.pushState(scopeKey, extra);
+    // Every emitted change is a change worth remembering; the store coalesces.
+    this.persist();
+  }
+
+  /** The state push alone — for a change the inventory does not hold. */
+  pushState(scopeKey, extra) {
     const scope = this.requireScope(scopeKey);
+    // This push carries the current bounds; a trailing one owed for them is moot.
+    if (this.boundsEmit?.scope === scope) this.cancelBoundsEmit();
     this.version += 1;
     if (!this.window.isDestroyed()) {
       this.window.webContents.send("telar:browser:state", extra ? { ...this.state(scope), ...extra } : this.state(scope));
     }
-    // Every emitted change is a change worth remembering; the store coalesces.
-    this.persist();
+  }
+
+  /**
+   * ONE STATE PUSH PER SETTLE, NOT PER FRAME. A divider drag publishes bounds
+   * every frame, and each push serialised the whole state for a renderer
+   * that draws its device frame from its own host size anyway — it reads the
+   * pushed scale only for the zoom label. So a bounds change pushes once the
+   * rect has stood still for BOUNDS_SETTLE_MS, and never persists: bounds are
+   * not in the inventory. (A fit tab adopting the stage size persists from
+   * the pipeline, where the viewport actually changes.)
+   */
+  scheduleBoundsEmit(scope) {
+    this.cancelBoundsEmit();
+    const timer = this.setTimer(() => {
+      if (this.boundsEmit?.timer !== timer) return;
+      this.boundsEmit = null;
+      if (!this._disposed) this.pushState(scope);
+    }, BOUNDS_SETTLE_MS);
+    this.boundsEmit = { scope, timer };
+  }
+
+  cancelBoundsEmit() {
+    if (!this.boundsEmit) return;
+    this.clearTimer(this.boundsEmit.timer);
+    this.boundsEmit = null;
   }
 
   /**
@@ -1995,6 +2048,17 @@ class DesktopBrowserManager {
   cockpitZoom() {
     const factor = this.window?.webContents?.getZoomFactor?.();
     return Number.isFinite(factor) && factor > 0 ? factor : 1;
+  }
+
+  /** Physical pixels per window pixel on the display the window is on — 2 on
+   *  a Retina screen. Read fresh like the zoom; 1 when it cannot be read. */
+  deviceScaleFactor() {
+    try {
+      const factor = this.displayScaleFactor();
+      return Number.isFinite(factor) && factor > 0 ? factor : 1;
+    } catch {
+      return 1;
+    }
   }
 
   /** A rect the renderer published (CSS px of the cockpit), in the window's
@@ -2156,7 +2220,17 @@ class DesktopBrowserManager {
     // ALL THREE READS ARE LOAD-BEARING. Gating on the stage size alone would
     // starve `resizeTab`'s preset path, which changes the emulation target
     // while the stage stands still.
-    place();
+    //
+    // EXCEPT A SHOWN FIXED TAB THAT OWES A SCALE: placed first, it shows a
+    // frame of the new rect at the old scale (clipped or stretched) on every
+    // divider step. With its debugger already bound the emulation is one CDP
+    // round trip, so it goes FIRST and the rect follows it. Everything else
+    // keeps placing first: native fit has no scale, a hidden or previewed tab
+    // no panel rect, and a cold tab's attach would delay its first show.
+    // (`target.view` = shown with real bounds and emulated: fixed mode.)
+    const target = this.viewportTarget(tab);
+    const scaleFirst = Boolean(target.view) && tab.debuggerReady && !this.isBlank(tab) && !this.emulationSettled(tab);
+    if (!scaleFirst) place();
     const placed = tab.lastPlaced;
     tab.lastPlaced = { width: this.bounds.width, height: this.bounds.height };
     if (
@@ -2179,7 +2253,13 @@ class DesktopBrowserManager {
     }
     const debug = await this.ensureDebuggerOnly(tab);
     if (tab.view !== view) return;
-    await this.syncViewport(tab, debug);
+    try {
+      await this.syncViewport(tab, debug);
+    } catch (error) {
+      // A refused emulation must not also strand the view at its old rect.
+      if (scaleFirst) place();
+      throw error;
+    }
     // Zoom and appearance ride the same pipeline (#473): both are page-level
     // facts a new document forgets, and dom-ready runs this.
     this.applyZoom(tab);
@@ -2187,7 +2267,7 @@ class DesktopBrowserManager {
     // The state may have moved while the emulation was in flight; the
     // coalesced follow-up run handles that. This re-assert covers the case
     // where nothing else changed but the view's bounds were written before
-    // the emulation existed.
+    // the emulation existed — and it is the one placement of a scale-first run.
     place();
   }
 
@@ -2248,6 +2328,14 @@ class DesktopBrowserManager {
     }
   }
 
+  /** The pipeline for the tab(s) the panel rect places: the visible scope's
+   *  active tab. A previewed one is its own window's, so not this rect's. */
+  applyShownGeometry() {
+    for (const tab of this.tabs) {
+      if (tab.view && this.isTabShown(tab)) this.applyGeometry(tab).catch(() => {});
+    }
+  }
+
   setBounds(scopeKey, input) {
     const next = {
       x: Math.max(0, Math.round(Number(input?.x) || 0)),
@@ -2268,8 +2356,12 @@ class DesktopBrowserManager {
     this.bounds = next;
     // A republish of unchanged bounds is still a request to re-place the
     // view (the renderer's self-heal); the pipeline makes it cheap.
-    this.applyVisibility();
-    if (!same && this.visibleScopeKey) this.emitState(this.visibleScopeKey);
+    // ONLY THE SHOWN TAB: nothing about a hidden tab's geometry reads the
+    // panel rect (intrinsic size, scale 1), and a per-frame run of every tab
+    // sent each one down the slow path — a debugger attach, per frame, per tab.
+    // Visibility itself does not change here; its own edges run them all.
+    this.applyShownGeometry();
+    if (!same && this.visibleScopeKey) this.scheduleBoundsEmit(this.visibleScopeKey);
   }
 
   async setVisible(scopeKey, visible) {
@@ -3986,10 +4078,12 @@ class DesktopBrowserManager {
     // to the view explicitly, undoing any size a hidden period left behind.
     // A HIDDEN tab still gets the full size: it has no view bounds worth the
     // name, and its captures and synthetic input need a real widget (above).
+    // An explicit ratio rather than 0 ("no override"): the same number is in
+    // the key, so a move to another display is a change the pipeline sees.
     await debug.sendCommand("Emulation.setDeviceMetricsOverride", {
       width: target.width,
       height: target.height,
-      deviceScaleFactor: 1,
+      deviceScaleFactor: target.deviceScaleFactor || 1,
       mobile: false,
       ...(target.scale === 1 ? {} : { scale: target.scale }),
       ...(target.view ? { dontSetVisibleSize: true } : {}),
@@ -4055,7 +4149,11 @@ class DesktopBrowserManager {
     // the emulation must not resize the page's widget past it (see
     // `syncViewport`), so the size travels with the target and its key.
     const native = this.windowRect(this.nativeRect(tab));
-    return { emulate: true, width: viewport.width, height: viewport.height, scale, view: { width: native.width, height: native.height } };
+    // THE DISPLAY'S REAL PIXEL RATIO, or a fixed page on a Retina screen is
+    // rendered at 1× and upscaled — blurry. Shown tabs only: nobody looks at
+    // a hidden one, and its `capturePage` screenshots stay CSS-pixel sized.
+    const deviceScaleFactor = this.deviceScaleFactor();
+    return { emulate: true, width: viewport.width, height: viewport.height, scale, deviceScaleFactor, view: { width: native.width, height: native.height } };
   }
 
   /**
@@ -4094,7 +4192,7 @@ class DesktopBrowserManager {
 
   /**
    * THE INTRINSIC SCREENSHOT — the page at its own viewport, whatever the
-   * panel scale. `captureScreenshot` with an explicit CSS clip at scale 1:
+   * panel scale. `captureScreenshot` with an explicit CSS clip at CSS scale:
    * measured, a plain capture (and `capturePage`) under a fit scale returns
    * the intrinsic dimensions with the content shrunk into a corner and the
    * rest blank; the clip renders the real layout. A visible view has a
@@ -4102,11 +4200,15 @@ class DesktopBrowserManager {
    */
   captureIntrinsic(debug, tab, format, fullPage, documentHeight) {
     const viewport = this.effectiveViewport(tab);
+    // CSS PIXELS OUT, whatever ratio the emulation renders at: the image is
+    // `clip × scale × deviceScaleFactor`, so a Retina fixed tab divides its
+    // ratio back out rather than handing an agent a 2× picture.
+    const ratio = this.viewportTarget(tab).deviceScaleFactor || 1;
     return debug.sendCommand("Page.captureScreenshot", {
       format,
       fromSurface: true,
       captureBeyondViewport: true,
-      clip: { x: 0, y: 0, width: viewport.width, height: fullPage && documentHeight ? documentHeight : viewport.height, scale: 1 },
+      clip: { x: 0, y: 0, width: viewport.width, height: fullPage && documentHeight ? documentHeight : viewport.height, scale: 1 / ratio },
     });
   }
 
@@ -4533,6 +4635,8 @@ class DesktopBrowserManager {
     let metrics = null;
     if (fullPage) {
       metrics = await this.measureDocument(debug);
+      // Ratio 1 on purpose, like every hidden tab's emulation: the capture
+      // comes back at CSS pixels.
       await debug.sendCommand("Emulation.setDeviceMetricsOverride", { width: metrics.width, height: metrics.height, deviceScaleFactor: 1, mobile: false });
     }
     try {
@@ -5159,6 +5263,7 @@ class DesktopBrowserManager {
     if (this.tabStore && !this._disposed) this.tabStore.flushSync(this.inventory());
     // Stop the auto-release loop: its next poll sees this and exits.
     this._disposed = true;
+    this.cancelBoundsEmit();
     // Nothing outlives the window that was asking: every open question is
     // settled as Block rather than left holding a page for a minute.
     this.permissionPrompts.dispose();
