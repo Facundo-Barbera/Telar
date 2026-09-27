@@ -4,18 +4,30 @@
  * at a chosen size and scales its presentation into the available stage.
  * These helpers keep the fixed frame and its drag handles aligned with the
  * desktop host's native view.
+ *
+ * THE PRESET TABLE LIVES ONCE, in `apps/desktop/viewport-presets.js`, which
+ * the host requires directly; this file is the cockpit's only import of it,
+ * by relative path for the reason in `docs/command-keys-web-port.md`.
  */
+import {
+  orient,
+  orientationOf,
+  presetOf,
+  viewportPreset,
+  VIEWPORT_PRESET_GROUPS,
+  VIEWPORT_PRESETS,
+  type ViewportOrientation,
+  type ViewportPreset,
+  type ViewportPresetEntryKey,
+  type ViewportPresetGroup,
+  type ViewportPresetKey,
+} from "../../desktop/viewport-presets.js";
+
+export { orient, orientationOf, viewportPreset, VIEWPORT_PRESET_GROUPS, VIEWPORT_PRESETS };
+export type { ViewportOrientation, ViewportPreset, ViewportPresetEntryKey, ViewportPresetGroup, ViewportPresetKey };
 
 export type ViewportSize = { width: number; height: number };
-export type ViewportPresetKey = "default" | "laptop" | "tablet" | "phone";
 export type ViewportMode = "fixed" | "fit";
-
-export const VIEWPORT_PRESETS: ReadonlyArray<{ key: ViewportPresetKey; label: string; width: number; height: number }> = [
-  { key: "default", label: "Default", width: 1280, height: 800 },
-  { key: "laptop", label: "Laptop", width: 1440, height: 900 },
-  { key: "tablet", label: "Tablet", width: 768, height: 1024 },
-  { key: "phone", label: "Phone", width: 390, height: 844 },
-];
 
 export const VIEWPORT_MIN = 200;
 export const VIEWPORT_MAX = 5_000;
@@ -29,15 +41,20 @@ export const VIEWPORT_MAX = 5_000;
 export const VIEWPORT_RAIL = 12;
 
 /** The preset a size is, or undefined for a custom size. */
-export function presetFor(size: ViewportSize): ViewportPresetKey | undefined {
-  return VIEWPORT_PRESETS.find((preset) => preset.width === size.width && preset.height === size.height)?.key;
+export function presetFor(size: ViewportSize): ViewportPresetEntryKey | undefined {
+  return presetOf(size) ?? undefined;
+}
+
+/** The presets under their group headings, in menu order; empty groups dropped. */
+export function groupedViewportPresets(): Array<{ key: ViewportPresetGroup; label: string; presets: ViewportPreset[] }> {
+  return VIEWPORT_PRESET_GROUPS.map((group) => ({ ...group, presets: VIEWPORT_PRESETS.filter((preset) => preset.group === group.key) })).filter((group) => group.presets.length > 0);
 }
 
 /** The toolbar's one-line label: the preset's name, or the numbers. */
 export function describeViewport(size: ViewportSize, mode: ViewportMode = "fit"): string {
   if (mode === "fit") return `Fit panel · ${size.width}×${size.height}`;
-  const preset = presetFor(size);
-  return preset ? `${VIEWPORT_PRESETS.find((entry) => entry.key === preset)!.label} · ${size.width}×${size.height}` : `${size.width}×${size.height}`;
+  const preset = viewportPreset(presetFor(size));
+  return preset ? `${preset.label} · ${size.width}×${size.height}` : `${size.width}×${size.height}`;
 }
 
 export function clampViewport(size: ViewportSize): ViewportSize {

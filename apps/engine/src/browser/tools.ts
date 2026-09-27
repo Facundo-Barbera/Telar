@@ -16,6 +16,7 @@
  * engine does not define is a tool an agent cannot reach.
  */
 import { z } from "zod";
+import { VIEWPORT_PRESET_KEYS, type ViewportPresetKey } from "../../../desktop/viewport-presets.js";
 
 // ── what a browser tool call returns ───────────────────────────────────────
 
@@ -91,16 +92,14 @@ export const BrowserToolName = z.enum([
   "browser_copy",
 ]);
 
-/** Named viewport sizes `browser_resize {preset}` accepts. The desktop host
- *  keeps the same table (browser-manager.js VIEWPORT_PRESETS); resolved to
- *  numbers here so the headless runtime, which has no presets, gets a size. */
-export const BROWSER_VIEWPORT_PRESETS = {
-  default: { width: 1280, height: 800 },
-  laptop: { width: 1440, height: 900 },
-  tablet: { width: 768, height: 1024 },
-  phone: { width: 390, height: 844 },
-} as const;
-export type BrowserViewportPreset = keyof typeof BROWSER_VIEWPORT_PRESETS;
+/** Named viewport sizes `browser_resize {preset}` accepts: THE SAME TABLE the
+ *  desktop host requires (apps/desktop/viewport-presets.js), imported by
+ *  relative path — `bun build` bundles it. The headless runtime, which has no
+ *  presets, gets them resolved to numbers in `headlessBrowserToolCall`. */
+export type BrowserViewportPreset = ViewportPresetKey;
+/** The size a headless resize falls back to for a dimension it was not given
+ *  — the headless browser's own starting size (transport.ts `viewportSize`). */
+export const BROWSER_DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
 export type BrowserToolName = z.infer<typeof BrowserToolName>;
 
 export type BrowserToolDefinition = {
@@ -302,18 +301,20 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_resize",
     description:
-      "Change the viewport of the tab you are working in, or the tabId you name — the size the page lays out for, not how it is shown. Pass a preset (default 1280×800, laptop, tablet, phone), an explicit width and height, or mode \"fit\" to follow the human's panel (\"fixed\" to stop). Snapshot again afterwards.",
+      "Set the size the page lays out for in your tab or the tabId you name. width and/or height test a breakpoint (one alone keeps the other); or a preset: phones, tablets, desktop (default 1280×800), foldables. orientation turns it. mode \"fit\" follows the human's panel, \"fixed\" stops. Snapshot again after.",
     input: z
       .object({
-        preset: z.enum(["default", "laptop", "tablet", "phone"]).optional(),
         width: z.number().int().min(200).max(5000).optional(),
         height: z.number().int().min(200).max(5000).optional(),
+        preset: z.enum(VIEWPORT_PRESET_KEYS).optional(),
+        orientation: z.enum(["portrait", "landscape"]).optional(),
         mode: z.enum(["fixed", "fit"]).optional(),
         ...tabId,
       })
-      .refine((input) => input.preset !== undefined || input.mode !== undefined || (input.width !== undefined && input.height !== undefined), {
-        message: "pass a preset, a mode, or both width and height",
-      }),
+      .refine(
+        (input) => input.width !== undefined || input.height !== undefined || input.preset !== undefined || input.orientation !== undefined || input.mode !== undefined,
+        { message: "pass a width or height, a preset, an orientation, or a mode" },
+      ),
   },
   {
     name: "browser_take_screenshot",

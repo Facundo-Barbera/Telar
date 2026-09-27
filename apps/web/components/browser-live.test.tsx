@@ -376,9 +376,23 @@ describe("the device toolbar", () => {
 
     await mouseClick(picker);
     expect(nativeViewOverlayHidden()).toBe(true);
-    await mouseClick(menuRow("Tablet768×1024"));
-    expect(actions.at(-1)).toEqual({ action: "resize", index: 0, preset: "tablet" });
+    await mouseClick(menuRow("iPad Mini768×1024"));
+    expect(actions.at(-1)).toEqual({ action: "resize", index: 0, preset: "ipad-mini" });
     expect(nativeViewOverlayHidden()).toBe(false);
+  });
+
+  test("the preset picker is grouped, marks the tab's preset through an older name, and leads with fit", async () => {
+    const fixed = tab({ viewport: { width: 390, height: 844, preset: "phone", mode: "fixed" } });
+    const { actions, host } = await mount(panelState({ tabs: [fixed] }));
+    await mouseClick(host.querySelector('[aria-label^="Device:"]')!);
+
+    const groups = [...document.querySelectorAll('[role="dialog"] [role="group"]')].map((group) => group.getAttribute("aria-label"));
+    expect(groups).toEqual(["Phones", "Tablets", "Desktop", "Foldables"]);
+    expect(menuRow("iPhone 12/13 Pro390×844").getAttribute("aria-pressed")).toBe("true");
+    expect(menuRows()[0]).toBe("Fit to panel");
+
+    await mouseClick(menuRow("Fit to panel"));
+    expect(actions.at(-1)).toEqual({ action: "resize", index: 0, mode: "fit" });
   });
 
   /**

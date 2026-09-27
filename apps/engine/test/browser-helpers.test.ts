@@ -55,6 +55,28 @@ describe("browser tool routing", () => {
     // The alias rides along, so the headless path needs only this one call.
     expect(headlessBrowserToolCall("browser_list_tabs", {})).toEqual({ name: "browser_tabs", args: { action: "list" } });
   });
+
+  test("the headless browser: grouped presets, one dimension over the standard size, and an orientation turn", () => {
+    expect(headlessBrowserToolCall("browser_resize", { preset: "ipad-air" })).toEqual({ name: "browser_resize", args: { width: 820, height: 1180 } });
+    // This runtime keeps no current size, so the missing dimension is the
+    // standard one it started at.
+    expect(headlessBrowserToolCall("browser_resize", { width: 600 })).toEqual({ name: "browser_resize", args: { width: 600, height: 800 } });
+    expect(headlessBrowserToolCall("browser_resize", { height: 700 })).toEqual({ name: "browser_resize", args: { width: 1280, height: 700 } });
+    expect(headlessBrowserToolCall("browser_resize", { preset: "phone", orientation: "landscape" })).toEqual({ name: "browser_resize", args: { width: 844, height: 390 } });
+    expect(headlessBrowserToolCall("browser_resize", { orientation: "portrait" })).toEqual({ name: "browser_resize", args: { width: 800, height: 1280 } });
+    // What the schema will refuse stays in, so the refusal names it.
+    expect(() => parseBrowserToolInput("browser_resize", headlessBrowserToolCall("browser_resize", { preset: "watch" }).args)).toThrow(/preset/);
+    expect(() => parseBrowserToolInput("browser_resize", headlessBrowserToolCall("browser_resize", { orientation: "sideways" }).args)).toThrow(/orientation/);
+  });
+
+  test("browser_resize's schema: one dimension alone is valid, and so is an orientation alone", () => {
+    expect(parseBrowserToolInput("browser_resize", { width: 768 })).toEqual({ width: 768 });
+    expect(parseBrowserToolInput("browser_resize", { height: 600 })).toEqual({ height: 600 });
+    expect(parseBrowserToolInput("browser_resize", { orientation: "landscape" })).toEqual({ orientation: "landscape" });
+    expect(parseBrowserToolInput("browser_resize", { preset: "galaxy-z-fold-5" })).toEqual({ preset: "galaxy-z-fold-5" });
+    expect(parseBrowserToolInput("browser_resize", { preset: "tablet" })).toEqual({ preset: "tablet" });
+    expect(() => parseBrowserToolInput("browser_resize", {})).toThrow();
+  });
 });
 
 describe("browser permission classification", () => {

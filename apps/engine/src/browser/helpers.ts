@@ -8,7 +8,8 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BROWSER_TOOL_NAMES, BROWSER_VIEWPORT_PRESETS, type BrowserToolResult, type BrowserViewportPreset } from "./tools";
+import { orient, viewportPreset } from "../../../desktop/viewport-presets.js";
+import { BROWSER_DEFAULT_VIEWPORT, BROWSER_TOOL_NAMES, type BrowserToolResult } from "./tools";
 
 /** One tab as Playwright MCP reports it. `index` IS the handle — the MCP tab
  *  tools address tabs positionally, so there is no stable id to carry. */
@@ -100,6 +101,10 @@ export function normalizeBrowserToolCall(
  * where the desktop client also ran it — so `browser_resize {mode: "fit"}`
  * reached the host as `{width: 1280, height: 800}`, which is a request for a
  * FIXED 1280×800, and the tool answered "resized" while the tab stayed fixed.
+ *
+ * ONE DIMENSION ALONE takes the other from the standard size: this runtime
+ * does not track what the page was last resized to, and the standard size is
+ * what it started at. `orientation` turns whichever size results.
  */
 export function headlessBrowserToolCall(
   name: string,
@@ -109,15 +114,26 @@ export function headlessBrowserToolCall(
   if (call.name !== "browser_resize") return call;
   // Numbers and nothing else: Playwright MCP rejects a parameter it does not
   // know, so `mode` never rides along with an explicit size either.
-  const { preset, mode, ...rest } = call.args;
-  if (typeof preset === "string") {
-    const size = BROWSER_VIEWPORT_PRESETS[preset as BrowserViewportPreset];
-    if (size) return { name: call.name, args: { width: size.width, height: size.height } };
+  const { preset, mode, orientation, ...rest } = call.args;
+  const turn = orientation === "portrait" || orientation === "landscape" ? orientation : undefined;
+  let size: { width: unknown; height: unknown } | undefined;
+  const entry = typeof preset === "string" ? viewportPreset(preset) : undefined;
+  if (entry) size = { width: entry.width, height: entry.height };
+  else if (rest.width !== undefined || rest.height !== undefined) {
+    size = { width: rest.width ?? BROWSER_DEFAULT_VIEWPORT.width, height: rest.height ?? BROWSER_DEFAULT_VIEWPORT.height };
+  } else if (typeof mode === "string" || turn) size = { ...BROWSER_DEFAULT_VIEWPORT };
+  // A preset or orientation the schema will refuse is left in, so the refusal
+  // names it instead of saying nothing was asked for.
+  const leftover = {
+    ...rest,
+    ...(preset !== undefined && !entry ? { preset } : {}),
+    ...(orientation !== undefined && !turn ? { orientation } : {}),
+  };
+  if (!size) return { name: call.name, args: leftover };
+  if (turn && typeof size.width === "number" && typeof size.height === "number") {
+    size = orient({ width: size.width, height: size.height }, turn);
   }
-  if (typeof mode === "string" && rest.width === undefined && rest.height === undefined) {
-    return { name: call.name, args: { width: BROWSER_VIEWPORT_PRESETS.default.width, height: BROWSER_VIEWPORT_PRESETS.default.height } };
-  }
-  return { name: call.name, args: rest };
+  return { name: call.name, args: { ...leftover, ...size } };
 }
 
 /**

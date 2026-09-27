@@ -364,7 +364,7 @@ async function main() {
     // HUMAN is on (index 0), not the one the agent just opened: an agent's new
     // tab deliberately does not take the screen. Asserting index 1 here was
     // reading the wrong tab and had been failing since fit mode landed.
-    assert(restored.tabs[0].viewport.preset === "tablet", "per-tab viewport not restored");
+    assert(restored.tabs[0].viewport.preset === "ipad-mini", "per-tab viewport not restored");
     assert(manager.profileOf("s1") === PROJECT && manager.profileOf("s2") === "none", "profiles not restored");
     assert(manager.state("s2").tabs.length === 1, "the extension page came back");
     assert(manager.tabs.every((t) => !t.view), "a restore navigated something at startup");

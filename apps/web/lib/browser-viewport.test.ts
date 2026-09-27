@@ -1,24 +1,39 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { describeViewport, fitViewport, parseViewportInput, presetFor, resizeByDrag, resizeByKey, sizeFromFields, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL } from "./browser-viewport";
+import { describeViewport, fitViewport, groupedViewportPresets, parseViewportInput, presetFor, resizeByDrag, resizeByKey, sizeFromFields, stageOf, viewportPreset, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ViewportPresetEntryKey } from "./browser-viewport";
 
 describe("the browser viewport vocabulary", () => {
   test("presets are named from their size, and a custom size is just its numbers", () => {
     expect(presetFor({ width: 1280, height: 800 })).toBe("default");
-    expect(presetFor({ width: 390, height: 844 })).toBe("phone");
+    expect(presetFor({ width: 390, height: 844 })).toBe("iphone-12-pro");
     expect(presetFor({ width: 1000, height: 700 })).toBeUndefined();
     expect(describeViewport({ width: 1280, height: 800 }, "fixed")).toBe("Default · 1280×800");
+    expect(describeViewport({ width: 390, height: 844 }, "fixed")).toBe("iPhone 12/13 Pro · 390×844");
     expect(describeViewport({ width: 1000, height: 700 }, "fixed")).toBe("1000×700");
     expect(describeViewport({ width: 640, height: 400 })).toBe("Fit panel · 640×400");
     expect(describeViewport({ width: 640, height: 400 }, "fit")).toBe("Fit panel · 640×400");
-    // The host's table and this one must agree, or a preset picked here is
-    // "custom" there.
-    expect(VIEWPORT_PRESETS.map((preset) => [preset.key, preset.width, preset.height])).toEqual([
-      ["default", 1280, 800],
-      ["laptop", 1440, 900],
-      ["tablet", 768, 1024],
-      ["phone", 390, 844],
+  });
+
+  test("the shared table is grouped, and the older names still resolve", () => {
+    // The host requires this same file, so a preset picked here is never
+    // "custom" there. What is pinned is the table's shape, and that the
+    // hand-written key union in viewport-presets.d.ts has not drifted.
+    const keys: ViewportPresetEntryKey[] = [
+      "iphone-se", "iphone-12-pro", "iphone-14-pro-max", "pixel-7", "galaxy-s8-plus",
+      "ipad-mini", "ipad-air", "ipad-pro", "surface-pro-7",
+      "default", "small-laptop", "laptop", "full-hd",
+      "galaxy-z-fold-5", "surface-duo",
+    ];
+    expect(VIEWPORT_PRESETS.map((preset) => preset.key)).toEqual(keys);
+    expect(groupedViewportPresets().map((group) => [group.label, group.presets.length])).toEqual([
+      ["Phones", 5],
+      ["Tablets", 4],
+      ["Desktop", 4],
+      ["Foldables", 2],
     ]);
+    expect(viewportPreset("phone")?.key).toBe("iphone-12-pro");
+    expect(viewportPreset("tablet")?.key).toBe("ipad-mini");
+    expect(viewportPreset("laptop")).toMatchObject({ width: 1440, height: 900 });
   });
 
   test("a typed size is read in the usual spellings and clamped to what the host accepts", () => {

@@ -65,7 +65,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { describeViewport, fitViewport, resizeByDrag, resizeByKey, sizeFromFields, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
+import { describeViewport, fitViewport, groupedViewportPresets, resizeByDrag, resizeByKey, sizeFromFields, stageOf, viewportPreset, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { createOverlayFreezer, onNativeViewOverlay, useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
 import { useCommandHandlers } from "@/lib/use-command-keys";
@@ -2455,28 +2455,38 @@ export function DesktopBrowserSurface({
                   aria-label={`Device: ${describeViewport(activeTab.viewport, "fixed")}`}
                   className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
                 >
-                  <span>{VIEWPORT_PRESETS.find((preset) => preset.key === activeTab.viewport?.preset)?.label ?? "Custom"}</span>
+                  <span>{viewportPreset(activeTab.viewport?.preset)?.label ?? "Custom"}</span>
                   <ChevronRightIcon aria-hidden className="size-3 shrink-0 rotate-90" />
                 </button>
               }
             />
-            <PopoverContent align="start" side="bottom" sideOffset={6} aria-label="Device preset" className="w-52 gap-0 p-1">
-              {VIEWPORT_PRESETS.map((preset) => {
-                const on = activeTab.viewport?.preset === preset.key;
-                return (
-                  <button
-                    key={preset.key}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => { closeOverlay(); void act({ action: "resize", index: activeTab.index, preset: preset.key }); }}
-                    className={cn(menuRow, on && "text-foreground")}
-                  >
-                    <CheckIcon className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
-                    <span className="min-w-0 flex-1">{preset.label}</span>
-                    <span className="shrink-0 font-mono text-3xs text-muted-foreground">{preset.width}×{preset.height}</span>
-                  </button>
-                );
-              })}
+            <PopoverContent align="start" side="bottom" sideOffset={6} aria-label="Device preset" className="max-h-(--available-height) w-60 gap-0 overflow-y-auto p-1">
+              {/* Fit leaves fixed mode, which is also what hides this toolbar. */}
+              <button type="button" onClick={() => { closeOverlay(); void act({ action: "resize", index: activeTab.index, mode: "fit" }); }} className={cn(menuRow, "pl-9")}>
+                <span className="min-w-0 flex-1">Fit to panel</span>
+              </button>
+              {groupedViewportPresets().map((group) => (
+                <div key={group.key} role="group" aria-label={group.label}>
+                  <div aria-hidden className="my-1 h-px bg-border" />
+                  <p aria-hidden className="px-2 pt-1 pb-0.5 text-3xs font-medium text-muted-foreground">{group.label}</p>
+                  {group.presets.map((preset) => {
+                    const on = viewportPreset(activeTab.viewport?.preset)?.key === preset.key;
+                    return (
+                      <button
+                        key={preset.key}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => { closeOverlay(); void act({ action: "resize", index: activeTab.index, preset: preset.key }); }}
+                        className={cn(menuRow, on && "text-foreground")}
+                      >
+                        <CheckIcon className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
+                        <span className="min-w-0 flex-1">{preset.label}</span>
+                        <span className="shrink-0 font-mono text-3xs text-muted-foreground">{preset.width}×{preset.height}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
             </PopoverContent>
           </Popover>
           {/* THE TWO NUMBERS, TYPEABLE. Committed on submit or blur rather
