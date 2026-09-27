@@ -415,6 +415,7 @@ function makeHarness(options = {}) {
     ...(options.onChordScope ? { onChordScope: options.onChordScope } : {}),
     ...(options.onLoginEntryFinished ? { onLoginEntryFinished: options.onLoginEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
+    ...(options.timers ? { setTimer: options.timers.set, clearTimer: options.timers.clear } : {}),
     ...(options.sessions ? { sessionFor } : {}),
     // A fixture folder and an empty in-memory disk: no test reaches the real
     // Downloads folder or writes anything.
@@ -2014,6 +2015,52 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     manager.setBounds("s", { x: 0, y: 0, width: 320, height: 200 });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(log).toEqual(["bounds 320x200"]);
+  });
+
+  test("a divider drag pushes no state and persists nothing per frame — one push once the rect settles", async () => {
+    // Timers the test fires by hand: the settle is driven, never slept.
+    const pending = new Map();
+    let nextTimer = 1;
+    const timers = {
+      set: (fn, ms) => { const id = nextTimer++; pending.set(id, { fn, ms }); return id; },
+      clear: (id) => pending.delete(id),
+    };
+    const fire = () => { const due = [...pending.values()]; pending.clear(); for (const { fn } of due) fn(); };
+    const saves = [];
+    const tabStore = { load: () => null, save: (doc) => saves.push(doc), flushSync: () => {} };
+    const { manager, messages } = makeHarness({ timers, tabStore });
+    await manager.createTab("s", "https://one.example/");
+    await manager.resizeTab(manager.activeTab("s"), { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const pushes = () => messages.filter((message) => message.channel === "telar:browser:state");
+    messages.length = 0;
+    saves.length = 0;
+    for (const width of [620, 600, 580, 560, 540]) {
+      manager.setBounds("s", { x: 0, y: 0, width, height: 400 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(pushes()).toHaveLength(0);
+    expect(saves).toHaveLength(0);
+    // One trailing push owed, not one per frame.
+    expect(pending.size).toBe(1);
+    expect([...pending.values()][0].ms).toBeGreaterThan(0);
+    fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pushes()).toHaveLength(1);
+    expect(pushes()[0].payload.presentation).toMatchObject({ bounds: { width: 540, height: 400 }, scale: 540 / 1280 });
+    // Bounds are not in the inventory: the settle push does not write it.
+    expect(saves).toHaveLength(0);
+    // A republish of the same rect owes nothing at all.
+    manager.setBounds("s", { x: 0, y: 0, width: 540, height: 400 });
+    expect(pending.size).toBe(0);
+    // Any other push already carries the bounds, so it retires the trailing one.
+    manager.setBounds("s", { x: 0, y: 0, width: 500, height: 400 });
+    expect(pending.size).toBe(1);
+    manager.emitState("s");
+    expect(pending.size).toBe(0);
   });
 
   test("a bounds-only change re-runs geometry for the shown tab alone — hidden tabs are not touched", async () => {

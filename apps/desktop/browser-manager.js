@@ -169,6 +169,9 @@ const CAPTURE_TIMEOUT_MESSAGE = "Screenshot timed out — the page has no frame 
  */
 const FREEZE_TIMEOUT_MS = 150;
 const FREEZE_TIMEOUT_MESSAGE = "The page did not produce a frame in time to freeze.";
+/** How long the panel rect must stand still before its state push goes out
+ *  (see `scheduleBoundsEmit`). */
+const BOUNDS_SETTLE_MS = 120;
 const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
 /**
@@ -921,6 +924,11 @@ class DesktopBrowserManager {
      * view another session is showing.
      */
     this.radiusByScope = new Map();
+    /** The trailing state push a bounds change owes, `{ scope, timer }` or
+     *  null. Timers injected so a test drives the settle without sleeping. */
+    this.boundsEmit = null;
+    this.setTimer = dependencies.setTimer || setTimeout;
+    this.clearTimer = dependencies.clearTimer || clearTimeout;
     this.version = 0;
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
     this.rpcTimeoutMs = dependencies.rpcTimeoutMs || RPC_TIMEOUT_MS;
@@ -1891,13 +1899,45 @@ class DesktopBrowserManager {
    * scope would close itself the instant it asked what was there.
    */
   emitState(scopeKey, extra) {
+    this.pushState(scopeKey, extra);
+    // Every emitted change is a change worth remembering; the store coalesces.
+    this.persist();
+  }
+
+  /** The state push alone — for a change the inventory does not hold. */
+  pushState(scopeKey, extra) {
     const scope = this.requireScope(scopeKey);
+    // This push carries the current bounds; a trailing one owed for them is moot.
+    if (this.boundsEmit?.scope === scope) this.cancelBoundsEmit();
     this.version += 1;
     if (!this.window.isDestroyed()) {
       this.window.webContents.send("telar:browser:state", extra ? { ...this.state(scope), ...extra } : this.state(scope));
     }
-    // Every emitted change is a change worth remembering; the store coalesces.
-    this.persist();
+  }
+
+  /**
+   * ONE STATE PUSH PER SETTLE, NOT PER FRAME. A divider drag publishes bounds
+   * every frame, and each push serialised the whole state for a renderer
+   * that draws its device frame from its own host size anyway — it reads the
+   * pushed scale only for the zoom label. So a bounds change pushes once the
+   * rect has stood still for BOUNDS_SETTLE_MS, and never persists: bounds are
+   * not in the inventory. (A fit tab adopting the stage size persists from
+   * the pipeline, where the viewport actually changes.)
+   */
+  scheduleBoundsEmit(scope) {
+    this.cancelBoundsEmit();
+    const timer = this.setTimer(() => {
+      if (this.boundsEmit?.timer !== timer) return;
+      this.boundsEmit = null;
+      if (!this._disposed) this.pushState(scope);
+    }, BOUNDS_SETTLE_MS);
+    this.boundsEmit = { scope, timer };
+  }
+
+  cancelBoundsEmit() {
+    if (!this.boundsEmit) return;
+    this.clearTimer(this.boundsEmit.timer);
+    this.boundsEmit = null;
   }
 
   /**
@@ -2297,7 +2337,7 @@ class DesktopBrowserManager {
     // sent each one down the slow path — a debugger attach, per frame, per tab.
     // Visibility itself does not change here; its own edges run them all.
     this.applyShownGeometry();
-    if (!same && this.visibleScopeKey) this.emitState(this.visibleScopeKey);
+    if (!same && this.visibleScopeKey) this.scheduleBoundsEmit(this.visibleScopeKey);
   }
 
   async setVisible(scopeKey, visible) {
@@ -5187,6 +5227,7 @@ class DesktopBrowserManager {
     if (this.tabStore && !this._disposed) this.tabStore.flushSync(this.inventory());
     // Stop the auto-release loop: its next poll sees this and exits.
     this._disposed = true;
+    this.cancelBoundsEmit();
     // Nothing outlives the window that was asking: every open question is
     // settled as Block rather than left holding a page for a minute.
     this.permissionPrompts.dispose();
