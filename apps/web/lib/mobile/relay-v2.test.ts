@@ -4,7 +4,7 @@
  * What must not drift:
  *
  *   - a phone's relay credential is kept when well formed and DROPPED, not
- *     refused, when not, so the rest of the registration still works on v1;
+ *     refused, when not, so the rest of the registration is still kept;
  *   - a send is signed over exactly the bytes sent, goes to the compiled-in
  *     relay and names WHAT to send, never a device token or a topic;
  *   - a new key earns one test alert, and its outcome is what Settings shows;
@@ -170,9 +170,8 @@ describe("the test alert after pairing", () => {
     const device = addDevice("Phone", mintDeviceToken());
     saveRegistration(device.id, registration);
     await sendRelayTest(device.id, registration.topic, async () => ({ status: 400, reason: "BadDeviceToken" }));
-    const text = await (await relayGET(new Request("http://localhost/api/mobile/relay"))).text();
+    const text = await (await relayGET()).text();
     const body = JSON.parse(text);
-    expect(body.v2).toBe(true);
     expect(body.configured).toBe(true);
     expect(body.devices[0]).toMatchObject({ transport: "v2", test: { status: 400, reason: "BadDeviceToken", relay: false } });
     for (const secret of [credential.sendKey, credential.handle, credential.keyId, registration.token]) expect(text).not.toContain(secret);

@@ -23,7 +23,8 @@ const SEND_KEY = /^[A-Za-z0-9_-]{43}$/;
 const ACTIVITY = /^[a-zA-Z0-9_-]{1,128}$/;
 
 /** A phone's relay credential, or nothing. A malformed one is DROPPED rather
- *  than refusing the registration: the rest of it still works over v1. */
+ *  than refusing the registration: the preferences are still kept, and the
+ *  phone shows in Settings as not yet registered for notifications. */
 export function parseRelayCredential(input: unknown): RelayCredential | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const x = input as Record<string, unknown>;

@@ -1,20 +1,20 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ACTIVITY_REFRESH_S, ACTIVITY_STALE_S, isDeadToken, readPushRecords, saveRegistration, signalKey, writePushRecords, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
-import { relayDelivery } from "./relay";
-import { changedSessions, deliverRecord, heartbeatDue, heartbeatWanted, ownRecords, pauseHost, pushPausedUntil, PARK_AFTER_FAILURES, PARKED_TTL_MS, stalePushRecords } from "./worker";
+import { ACTIVITY_REFRESH_S, ACTIVITY_STALE_S, isDeadToken, readPushRecords, saveRegistration, signalKey, writePushRecords, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type RelayCredential, type SessionSignal } from "./push";
+import { relayV2Delivery } from "./relay-v2";
+import { canReach, changedSessions, deliverRecord, heartbeatDue, heartbeatWanted, pauseHost, pushPausedUntil, PARK_AFTER_FAILURES, PARKED_TTL_MS, sendableRecords, stalePushRecords } from "./worker";
 
 /**
  * THE QUOTA FAILURE, COVERED — issue #584.
  *
  * One Mac made 173,000 relay invocations in a day and exhausted the Cloudflare
- * account's free quota, which took the desktop updater down with it. Four
- * things caused it and each has a test here: rejected tokens were retried for
- * ever, every push was two calls, two Macs served the same phones, and the
- * worker woke every five seconds to fold every session and find nothing.
+ * account's free quota, which took the desktop updater down with it. What
+ * caused it and is still this Mac's to prevent has a test here: rejected tokens
+ * were retried for ever, and the worker woke every five seconds to fold every
+ * session and find nothing.
  */
 
 const registration: MobileRegistration = {
@@ -102,7 +102,7 @@ describe("a rejected device token is dropped, never retried", () => {
 
       // A fresh registration is the way back, and it is what opening the app does.
       writePushRecords([next], file);
-      saveRegistration("paired", registration, file, undefined);
+      saveRegistration("paired", registration, file);
       const revived = readPushRecords(file)[0]!;
       expect(revived.parked).toBeUndefined();
       expect(revived.failures).toBeUndefined();
@@ -111,106 +111,55 @@ describe("a rejected device token is dropped, never retried", () => {
   });
 });
 
-describe("a push is one relay call", () => {
-  const config = { url: "https://relay.example", token: "b".repeat(64) };
-  const delivery: Delivery = { token: registration.token, topic: registration.topic, sandbox: false, kind: "alert", collapseId: "c".repeat(64), payload: { aps: { alert: "Test" } } };
+const credential: RelayCredential = { handle: "h".repeat(43), keyId: "k".repeat(22), sendKey: "s".repeat(43) };
 
-  test("N pushes on one revision are 1 PUT and N POSTs", async () => {
-    const original = globalThis.fetch;
-    const calls: string[] = [];
-    try {
-      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-        calls.push(String(init?.method));
-        return Response.json(init?.method === "POST" ? { status: 200 } : {});
-      }) as typeof fetch;
-      let held: PushRecord = record();
-      for (let push = 0; push < 5; push++) {
-        const result = await relayDelivery(config, held, delivery);
-        expect(result.status).toBe(200);
-        if (result.registered) held = { ...held, relayRevision: held.revision };
-      }
-      // This was 5 PUTs and 5 POSTs, which is most of the invocation count (#584).
-      expect(calls).toEqual(["PUT", "POST", "POST", "POST", "POST", "POST"]);
-
-      // A new revision — the phone changed a preference — is registered once more.
-      calls.length = 0;
-      await relayDelivery(config, { ...held, revision: "r2" }, delivery);
-      expect(calls).toEqual(["PUT", "POST"]);
-    } finally { globalThis.fetch = original; }
-  });
-
-  test("the relay's 24h registration expiry is re-registered once, then the push retried", async () => {
-    const original = globalThis.fetch;
-    const calls: string[] = [];
-    try {
-      let expired = true;
-      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-        calls.push(String(init?.method));
-        if (init?.method === "PUT") { expired = false; return Response.json({}); }
-        // The relay drops a registration after 24 hours and answers 409.
-        if (expired) return Response.json({ error: "expired" }, { status: 409 });
-        return Response.json({ status: 200 });
-      }) as typeof fetch;
-      const result = await relayDelivery(config, record({ relayRevision: "r1" }), delivery);
-      expect(result).toEqual({ status: 200, registered: true });
-      expect(calls).toEqual(["POST", "PUT", "POST"]);
-    } finally { globalThis.fetch = original; }
-  });
-
-  test("a relay that keeps answering 409 is given up on, not looped", async () => {
-    const original = globalThis.fetch;
-    let posts = 0;
-    try {
-      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-        if (init?.method === "PUT") return Response.json({});
-        posts++;
-        return Response.json({ error: "expired" }, { status: 409 });
-      }) as typeof fetch;
-      const result = await relayDelivery(config, record({ relayRevision: "r1" }), delivery);
-      expect(result).toEqual({ status: 409, relay: true, registered: true });
-      expect(posts).toBe(2);
-    } finally { globalThis.fetch = original; }
-  });
-});
-
-describe("one Mac per phone", () => {
-  test("two Macs, one record each: each sends only its own", () => {
-    const mine = record({ deviceId: "phone-a", relayHostId: "mac-one" });
-    const theirs = record({ deviceId: "phone-b", relayHostId: "mac-two" });
-    const records = [mine, theirs];
-    expect(ownRecords(records, "mac-one")).toEqual([mine]);
-    expect(ownRecords(records, "mac-two")).toEqual([theirs]);
-    // AND NEITHER DELETES THE OTHER'S. Both Macs read the same file; a Mac that
-    // swept what it does not own would take the other one's phone away.
-    expect(records).toHaveLength(2);
-  });
-
+describe("which records this Mac sends to", () => {
   test("a parked record is pruned once superseded or left for two weeks, and nothing else is", () => {
     const now = PARKED_TTL_MS * 2;
-    const live = record({ deviceId: "phone", topic: "com.telar.mobile", updatedAt: 1, relayHostId: "mac" });
-    const superseded = record({ deviceId: "phone", topic: "com.telar.mobile.dev", sandbox: true, parked: true, updatedAt: now, relayHostId: "mac" });
-    const abandoned = record({ deviceId: "gone", parked: true, updatedAt: now - PARKED_TTL_MS, relayHostId: "mac" });
-    const recent = record({ deviceId: "lonely", parked: true, updatedAt: now - 1000, relayHostId: "mac" });
-    const theirs = record({ deviceId: "other", parked: true, updatedAt: 1, relayHostId: "mac-two" });
-    expect(stalePushRecords([live, superseded, abandoned, recent, theirs], "mac", now)).toEqual([superseded, abandoned]);
+    const live = record({ deviceId: "phone", topic: "com.telar.mobile", updatedAt: 1 });
+    const superseded = record({ deviceId: "phone", topic: "com.telar.mobile.dev", sandbox: true, parked: true, updatedAt: now });
+    const abandoned = record({ deviceId: "gone", parked: true, updatedAt: now - PARKED_TTL_MS });
+    const recent = record({ deviceId: "lonely", parked: true, updatedAt: now - 1000 });
+    expect(stalePushRecords([live, superseded, abandoned, recent], now)).toEqual([superseded, abandoned]);
   });
 
-  test("a Mac with no relay id serves the records that carry none, and no others", () => {
-    const unstamped = record({ deviceId: "phone-a" });
-    const stamped = record({ deviceId: "phone-b", relayHostId: "mac-two" });
-    expect(ownRecords([unstamped, stamped], undefined)).toEqual([unstamped]);
-  });
-
-  test("a registration is stamped with the Mac it arrived at", () => {
-    const folder = mkdtempSync(path.join(os.tmpdir(), "telar-host-"));
+  /**
+   * RELAY V1 IS GONE, AND ITS STAMPS ARE STILL ON DISK. Records written before
+   * carry `relayHostId` and `relayRevision`; the host-id filter used to decide
+   * who served them, and a Mac with no id served only records with none. Kept,
+   * that filter would silently stop alerts to every phone registered under v1.
+   */
+  test("a record stamped by relay v1 still parses and is still served", async () => {
+    const folder = mkdtempSync(path.join(os.tmpdir(), "telar-v1-"));
     const file = path.join(folder, "push.json");
     try {
-      saveRegistration("paired", registration, file, "mac-one");
-      expect(readPushRecords(file)[0]!.relayHostId).toBe("mac-one");
-      // `hostId` is the PHONE's own UUID for this Mac and is the same value in
-      // both copies of the file, which is why it cannot be what decides this.
-      expect(readPushRecords(file)[0]!.hostId).toBe(registration.hostId);
+      writeFileSync(file, JSON.stringify([{ ...record({ relay: credential }), relayHostId: "mac-one", relayRevision: "r0" }]));
+      const [stamped] = readPushRecords(file);
+      expect(stamped!.relay).toEqual(credential);
+      expect(sendableRecords([stamped!], false)).toEqual([stamped!]);
+
+      let sent = 0;
+      const next = await deliverRecord(stamped!, [blocked, other], async () => { sent++; return { status: 200 }; }, 5000);
+      expect(sent).toBe(1);
+      expect(next!.failures).toBe(0);
+      writePushRecords([next!], file);
+      expect(readPushRecords(file)[0]!.seen[working.id]).toBe(signalKey(blocked));
+
+      // The stamps fall away on the phone's next registration.
+      saveRegistration("paired", { ...registration, relay: credential }, file);
+      expect(Object.keys(readPushRecords(file)[0]!)).not.toContain("relayHostId");
+      expect(Object.keys(readPushRecords(file)[0]!)).not.toContain("relayRevision");
     } finally { rmSync(folder, { recursive: true, force: true }); }
+  });
+
+  test("a phone with no relay credential is sent nothing unless this Mac has a direct key", () => {
+    const unregistered = record({ deviceId: "phone-a" });
+    const registered = record({ deviceId: "phone-b", relay: credential });
+    expect(canReach(unregistered, false)).toBe(false);
+    expect(sendableRecords([unregistered, registered], false)).toEqual([registered]);
+    // The developer mode: this Mac's own key reaches it directly.
+    expect(sendableRecords([unregistered, registered], true)).toEqual([unregistered, registered]);
+    expect(sendableRecords([record({ relay: credential, parked: true })], true)).toEqual([]);
   });
 });
 
@@ -276,13 +225,9 @@ describe("waking on what moved, not on a timer", () => {
 
 describe("the relay's daily budget is honoured, not discovered per push", () => {
   test("a 429 carries Retry-After through to the pause Settings shows", async () => {
-    const original = globalThis.fetch;
-    try {
-      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
-        init?.method === "PUT" ? Response.json({}) : Response.json({ error: "daily_budget" }, { status: 429, headers: { "retry-after": "3600" } })) as typeof fetch;
-      const result = await relayDelivery({ url: "https://relay.example", token: "b".repeat(64) }, record(), { token: registration.token, topic: registration.topic, sandbox: false, kind: "alert", collapseId: "c".repeat(64), payload: { aps: { alert: "Test" } } });
-      expect(result).toMatchObject({ status: 429, relay: true, retryAfter: 3600 });
-    } finally { globalThis.fetch = original; }
+    const fetchImpl = (async () => Response.json({ error: "daily_budget" }, { status: 429, headers: { "retry-after": "3600" } })) as unknown as typeof fetch;
+    const result = await relayV2Delivery(credential, { token: registration.token, topic: registration.topic, sandbox: false, kind: "alert", collapseId: "c".repeat(64), payload: { aps: { alert: "Test" } } }, fetchImpl);
+    expect(result).toMatchObject({ status: 429, relay: true, retryAfter: 3600 });
   });
 
   test("once the budget is spent, the rest of a record's sends cost nothing", async () => {

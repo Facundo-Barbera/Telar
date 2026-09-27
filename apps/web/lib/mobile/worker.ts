@@ -1,4 +1,3 @@
-import { relayConfig, relayDelivery, relayHostId, revokeRelayDevice } from "./relay";
 import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
@@ -39,7 +38,7 @@ export async function deliverRecord(
   send: (delivery: Delivery) => Promise<DeliveryResult>,
   now = Date.now() / 1000,
   /** `readSync`: this phone can take a silent push from here (relay v2 or a
-   *  direct APNs key; never relay v1). See `read-sync.ts`. */
+   *  direct APNs key). See `read-sync.ts`. */
   options: { changed?: ReadonlySet<string>; macTook?: (session: SessionSignal) => boolean; readSync?: boolean } = {},
 ): Promise<PushRecord | undefined> {
   if (record.parked || (record.retryAt ?? 0) > now) return record;
@@ -49,9 +48,6 @@ export async function deliverRecord(
   // (#579). A 410 is the device saying it is gone; that is not a delivery.
   let delivered: number | undefined;
   let last: DeliveryResult | undefined;
-  /** Advances only when the relay accepts a registration, so the next push can
-   *  skip the PUT and be one call (#584). */
-  let relayRevision = record.relayRevision;
   /** The relay's daily budget is spent. Spending further calls to be told so
    *  again is the failure this guard exists to prevent, so the rest of this
    *  record's sends are answered from here without touching the network. */
@@ -62,7 +58,6 @@ export async function deliverRecord(
     try { result = await send(delivery); } catch { result = { status: 0 }; }
     last = result;
     if (result.retryAfter !== undefined) budgetSpent = result;
-    if (result.registered) relayRevision = record.revision;
     if (result.status === 200) delivered = now;
     // A DEAD TOKEN IS NOT A FAILURE TO RETRY, it is an answer: the caller drops
     // what it names. Counting it would park a record that is already going away.
@@ -149,7 +144,6 @@ export async function deliverRecord(
     next.lastStatus = last.status;
     if (last.reason === undefined) delete next.lastReason; else next.lastReason = last.reason;
   }
-  next.relayRevision = relayRevision;
   next.baselined = true;
   return next;
 }
@@ -239,21 +233,23 @@ export function pauseHost(seconds: number, now = Date.now()): void {
 }
 
 /**
- * WHICH RECORDS ARE THIS MAC'S TO SEND — issue #584.
- *
- * Two Macs held the same three records and each served all of them, so every
- * alert arrived twice and every dead token was retried twice. A record is
- * stamped at registration with the relay host id of the Mac it registered
- * against; a Mac serves only its own, and leaves every other record untouched
- * rather than deleting it — the other Mac is still using it.
- *
- * A Mac with no relay id serves the records that carry none, which is the
- * single-Mac install and the local-APNs-key one. A record stamped for another
- * host on a Mac that has no id of its own is NOT served: it plainly belongs to
- * somebody else.
+ * WHETHER THIS MAC HAS ANY WAY TO REACH THIS PHONE: the relay v2 credential the
+ * phone gave it, or a direct key of this Mac's own. A phone with neither has not
+ * finished registering; it is sent nothing — no attempt, no failure, no backoff —
+ * and Settings says so, until the app registers from the phone.
  */
-export function ownRecords(records: PushRecord[], ownHostId: string | undefined): PushRecord[] {
-  return records.filter(record => record.relayHostId === ownHostId);
+export function canReach(record: PushRecord, direct: boolean): boolean {
+  return record.relay !== undefined || direct;
+}
+
+/**
+ * EVERY RECORD IN THIS MAC'S STORE IS THIS MAC'S TO SEND, bar the parked and
+ * the unreachable. Records stamped with a retired v1 `relayHostId` are served
+ * like any other: there is no host id left to compare it with, and filtering on
+ * one would silently stop alerts to phones that registered before v1 went.
+ */
+export function sendableRecords(records: PushRecord[], direct: boolean): PushRecord[] {
+  return records.filter(record => !record.parked && canReach(record, direct));
 }
 
 /** A parked record the phone has not re-registered for in this long is dead. */
@@ -266,11 +262,11 @@ export const PARKED_TTL_MS = 14 * 24 * 60 * 60 * 1000;
  * the phone's next app open registers afresh (`saveRegistration`). Two cases:
  * the same phone has a record that is not parked (a debug build's registration
  * outlived by the release one), or the phone has not opened the app in
- * `PARKED_TTL_MS`. Never an unparked record, and never another Mac's.
+ * `PARKED_TTL_MS`. Never an unparked record.
  */
-export function stalePushRecords(records: PushRecord[], ownHostId: string | undefined, now = Date.now()): PushRecord[] {
+export function stalePushRecords(records: PushRecord[], now = Date.now()): PushRecord[] {
   const live = new Set(records.filter(record => !record.parked).map(record => record.deviceId));
-  return ownRecords(records, ownHostId).filter(record =>
+  return records.filter(record =>
     record.parked && (live.has(record.deviceId) || now - record.updatedAt >= PARKED_TTL_MS));
 }
 
@@ -470,8 +466,7 @@ export function startMobilePushWorker(): void {
     workerGlobal.telarMobilePushHeartbeat = false;
     try {
       const nowMs = Date.now();
-      const relay = relayConfig();
-      const ownHostId = relayHostId();
+      const direct = pushConfigured();
       // PAUSED MEANS PAUSED — for the phones. Not a cheaper tick, not the
       // activities only: the relay has said this host is over its daily
       // budget, and the one useful thing to do with that is stop until it says
@@ -479,20 +474,19 @@ export function startMobilePushWorker(): void {
       const stored = pushPausedUntil(nowMs) === undefined ? readPushRecords() : [];
 
       // Sweep revoked devices first — it is the one thing that must happen
-      // whether or not a session moved, and it touches only this Mac's records.
+      // whether or not a session moved. A phone revokes its own relay key when
+      // it unpairs, so there is nothing to revoke from here.
       const paired = new Set(stored.length ? readRemote().devices.filter(d => d.role === "full").map(d => d.id) : []);
-      for (const record of ownRecords(stored, ownHostId)) {
+      for (const record of stored) {
         if (paired.has(record.deviceId)) continue;
-        // A v2 phone revokes its own key at the relay when it unpairs; there is nothing here to revoke.
-        if (relay && !record.relay) await revokeRelayDevice(relay, record.deviceId);
         writePushRecords(readPushRecords().filter(r => r.deviceId !== record.deviceId));
       }
       if (stored.length) {
         const current = readPushRecords();
-        const stale = new Set(stalePushRecords(current, ownHostId, nowMs));
+        const stale = new Set(stalePushRecords(current, nowMs));
         if (stale.size) writePushRecords(current.filter(r => !stale.has(r)));
       }
-      const records = stored.length ? ownRecords(readPushRecords(), ownHostId).filter(record => !record.parked) : [];
+      const records = stored.length ? sendableRecords(readPushRecords(), direct) : [];
       if (!records.length && !desktop) return;
 
       const reconcile = nowMs - (workerGlobal.telarMobilePushReconciledAt ?? 0) >= RECONCILE_INTERVAL;
@@ -529,11 +523,8 @@ export function startMobilePushWorker(): void {
       }
       workerGlobal.telarMobilePushBeatAt = nowMs;
 
-      // A phone on v1 needs this Mac's own relay or APNs key; one on v2 needs nothing here.
-      const v1Ready = pushConfigured();
       for (const record of records) {
         if (pushPausedUntil(Date.now()) !== undefined) break;
-        if (!record.relay && !v1Ready) continue;
         // A RECORD THAT WAS HELD BACK GETS THE WHOLE LIST. The change set is
         // global and names what moved since the LAST PASS; a record in backoff
         // sat out several of those, so narrowing it would hide every transition
@@ -545,10 +536,11 @@ export function startMobilePushWorker(): void {
           // Recheck at delivery time: revocation and preference changes can race a slow APNs connection.
           if (!readRemote().devices.some(d => d.id === record.deviceId && d.role === "full")) return { status: 410 };
           if (!readPushRecords().some(r => r.revision === record.revision)) return { status: 409, relay: true };
-          const sent = record.relay ? await relayV2Delivery(record.relay, delivery) : relay ? await relayDelivery(relay, record, delivery) : await sendAPNs(delivery);
+          // `records` holds only phones `canReach` allows, so no relay credential means the direct key.
+          const sent = record.relay ? await relayV2Delivery(record.relay, delivery) : await sendAPNs(delivery);
           if (sent.retryAfter !== undefined) pauseHost(sent.retryAfter);
           return sent;
-        }, Date.now() / 1000, { macTook: macTookAlert, ...(narrow === undefined ? {} : { changed: narrow }), readSync: record.relay !== undefined || !relay });
+        }, Date.now() / 1000, { macTook: macTookAlert, ...(narrow === undefined ? {} : { changed: narrow }), readSync: true });
         // Reads left over for next minute keep the timer at the heartbeat.
         if (result?.readSync?.pending.length) workerGlobal.telarMobilePushHeartbeat = true;
         // A phone may change preferences while APNs is in flight. Never overwrite it.

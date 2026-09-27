@@ -2,7 +2,6 @@
 import { describe, expect, test } from "bun:test";
 import { signalKey, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import { collectReads, noteAlert, READ_SYNC_BATCH, READ_SYNC_INTERVAL_S, readCleared, readSyncDelivery } from "./read-sync";
-import { relayDelivery } from "./relay";
 import { v2Body } from "./relay-v2";
 import { deliverRecord, readSyncPass } from "./worker";
 
@@ -41,18 +40,8 @@ describe("the silent push", () => {
     expect(delivery.token).toBe(registration.token);
     expect(delivery.payload).toEqual({ aps: { "content-available": 1 }, read: { host: registration.hostId, sessions: ["a", "b"] } });
     expect(JSON.stringify(delivery.payload)).not.toContain("Secret");
-    // Relay v2 carries it as a kind of its own; v1 is being retired and refuses it.
+    // Relay v2 carries it as a kind of its own.
     expect(v2Body(delivery)).toEqual({ kind: "background", collapseId: delivery.collapseId, payload: delivery.payload });
-  });
-  test("relay v1 never carries one", async () => {
-    let called = false;
-    const config = { url: "https://relay.invalid", hostId: "h", secret: "s" } as unknown as Parameters<typeof relayDelivery>[0];
-    const original = globalThis.fetch;
-    globalThis.fetch = (async () => { called = true; return new Response(null, { status: 200 }); }) as unknown as typeof fetch;
-    try {
-      expect(await relayDelivery(config, record([]), readSyncDelivery(registration, ["a"]))).toEqual({ status: 400, relay: true });
-    } finally { globalThis.fetch = original; }
-    expect(called).toBe(false);
   });
 });
 
@@ -138,7 +127,7 @@ describe("coalescing and the one-a-minute limit", () => {
     expect(later.readSync).toBeUndefined();
   });
 
-  test("a relay v1 phone gets no read sync and keeps no state for it", async () => {
+  test("a pass that does not ask for read sync keeps no state for it", async () => {
     const { sent, send } = recorder();
     const next = (await deliverRecord(record([working("a")], { readSync: { alerted: ["a"], pending: ["a"] } }), [finished("a")], send, 10_000, { readSync: false }))!;
     expect(background(sent)).toEqual([]);
