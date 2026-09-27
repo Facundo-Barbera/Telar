@@ -237,9 +237,82 @@ test("a cohort already waiting takes a fresh wake with it rather than queueing a
   store.completeTurn("session_host", host.runId, host.token, { text: "ok" });
   expect(notifications(store)).toHaveLength(1);
 
-  // Now idle with an empty box: the next wake queues on its own, as before.
+  // Idle with an empty box, but that notification turn is still QUEUED: the
+  // next wake joins it rather than queueing a second turn behind it.
   runTurn(store, "session_b", "run_b");
-  expect(notifications(store)).toHaveLength(2);
+  const delivered = notifications(store);
+  expect(delivered).toHaveLength(1);
+  expect(delivered[0]!.notification!.entries?.map((entry) => entry.runId)).toEqual(["run_a", "run_b"]);
+  expect(delivered[0]!.notification!.runId).toBe("run_b");
+});
+
+test("two children finishing a moment apart on an idle host make ONE queued turn", () => {
+  const { store } = setup();
+  store.subscribe("session_host", { targetSessionId: "session_a" });
+  store.subscribe("session_host", { targetSessionId: "session_b" });
+
+  runTurn(store, "session_a", "run_a");
+  runTurn(store, "session_b", "run_b", "fail");
+
+  const delivered = notifications(store);
+  expect(delivered).toHaveLength(1);
+  const detail = delivered[0]!.notification!;
+  expect(detail.entries?.map((entry) => [entry.sessionId, entry.wakeKind])).toEqual([
+    ["session_a", "turn_completed"],
+    ["session_b", "turn_failed"],
+  ]);
+  // The turn is stamped by the newest, and its row says what the turn says.
+  expect(delivered[0]!.wakeReason).toMatchObject({ sessionId: "session_b", runId: "run_b" });
+  const row = store.items("session_host").find((item) => item.runId === delivered[0]!.runId && item.detail.type === "notification")!;
+  expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(detail);
+
+  // Once claimed it is in front of a model, and the next wake is news of its own.
+  store.claimTurn("session_host", "worker_host");
+  runTurn(store, "session_a", "run_a2");
+  expect(store.pendingNotifications("session_host").map((each) => each.runId)).toEqual(["run_a2"]);
+});
+
+test("a newer fact about one run in a queued cohort replaces only that run's line", () => {
+  const { store } = setup();
+  store.subscribe("session_host", { targetSessionId: "session_a", once: false });
+  store.subscribe("session_host", { targetSessionId: "session_b", once: false });
+
+  runTurn(store, "session_b", "run_b");
+  store.submitTurn("session_a", { runId: "run_a", input: "work" });
+  const token = store.claimTurn("session_a", "worker_child")!.claim!.token;
+  store.markRunning("session_a", "run_a", token);
+  store.updateSession("session_a", { runtimeMode: "approval-required" });
+  store.openRequest("session_a", "run_a", token, {
+    requestId: "req_a",
+    kind: "user_input",
+    detail: { kind: "user_input", prompt: "Which?", fields: [{ key: "k", label: "K", kind: "choice", choices: ["x"] }] },
+  });
+  store.resolveRequest("session_a", "req_a", { decision: "accept", answers: { k: "x" } });
+  store.completeTurn("session_a", "run_a", token, { text: "done" });
+
+  const delivered = notifications(store);
+  expect(delivered).toHaveLength(1);
+  expect(delivered[0]!.notification!.entries?.map((entry) => [entry.runId, entry.wakeKind])).toEqual([
+    ["run_b", "turn_completed"],
+    ["run_a", "turn_completed"],
+  ]);
+});
+
+test("a peer's report to an idle host joins the wake already queued there", () => {
+  const { store } = setup();
+  store.subscribe("session_host", { targetSessionId: "session_a" });
+  runTurn(store, "session_a", "run_a");
+
+  store.submitTurn("session_b", { runId: "run_b", input: "work" });
+  const claim = store.claimTurn("session_b", "worker_child")!.claim!;
+  store.markRunning("session_b", "run_b", claim.token);
+  store.submitAgentTurn("session_host", { runId: "run_msg", input: "found the bug", intent: "report" }, { sessionId: "session_b", runId: "run_b", claimToken: claim.token });
+
+  const woken = notifications(store).filter((turn) => turn.agentDelivery !== "passive");
+  expect(woken).toHaveLength(1);
+  expect(woken[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["wake", "peer_message"]);
+  // The message itself is still on its own turn, whole, for sessions_read.
+  expect(store.turns("session_host").find((turn) => turn.runId === "run_msg")!.input).toBe("found the bug");
 });
 
 test("a held notification survives a restart — it is a file, not a field on a live store", () => {
@@ -341,7 +414,7 @@ test("a result and its completion from one run reach the subscriber as ONE notif
   expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(detail);
 });
 
-test("a result and a completion from DIFFERENT runs stay two", () => {
+test("a result and a completion from DIFFERENT runs stay two facts", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a", once: false });
   const reporting = reports(store, { runId: "run_one" });
@@ -350,13 +423,21 @@ test("a result and a completion from DIFFERENT runs stay two", () => {
 
   // A SECOND run of the same worker, ending without having sent anything. Same
   // session, different errand — and it lands while the merged result is still
-  // waiting, so nothing but the key stops it being folded in under it.
+  // waiting. It joins that queued turn as a line of its own (one turn per idle
+  // session), not as the ending of the result's run.
   runTurn(store, "session_a", "run_two");
 
   const delivered = notifications(store);
-  expect(delivered).toHaveLength(2);
-  expect(delivered.find((turn) => turn.notification!.kind === "peer_message")!.notification!.entries).toHaveLength(2);
-  expect(delivered.find((turn) => turn.notification!.kind === "wake")!.notification!.runId).toBe("run_two");
+  expect(delivered).toHaveLength(1);
+  const detail = delivered[0]!.notification!;
+  expect(detail.entries?.map((entry) => [entry.kind, entry.runId === "run_two"])).toEqual([
+    ["peer_message", false],
+    ["wake", false],
+    ["wake", true],
+  ]);
+  expect(detail.runId).toBe("run_two");
+  // The peer's words are still the turn's own.
+  expect(delivered[0]!.input).toBe(reporting.sent.input);
 });
 
 test("a completion with no preceding result is untouched", () => {
@@ -526,7 +607,7 @@ test("a result nobody was awaiting reached no model, so the completion that foll
   expect(woken[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
 });
 
-test("the merge spends a delivery, so a third fact about the run goes to the mailbox", () => {
+test("the merge spends a delivery; a fresh errand joining the queued turn does not", () => {
   const { store } = setup();
   store.subscribe("session_host", { targetSessionId: "session_a", once: false, events: ["turn_completed", "turn_failed", "request_opened"] });
   const worker = reports(store);
@@ -534,14 +615,16 @@ test("the merge spends a delivery, so a third fact about the run goes to the mai
   const merged = notifications(store)[0]!;
   expect(merged.notification!.deliveries).toBe(MAX_DELIVERIES);
 
-  // A SECOND run of the same worker, sending a second result — a fresh errand
-  // with a delivery of its own, so the cap is about ONE row being rewritten
-  // rather than about the worker.
+  // A SECOND run of the same worker, sending a second result — a fresh errand,
+  // so the cap is about ONE errand being re-announced rather than about the
+  // worker: it joins the queued turn instead of being refused into the mailbox.
   const second = reports(store, { runId: "run_two", sent: "and the changelog entry" });
   second.end();
-  const rows = notifications(store);
-  expect(rows).toHaveLength(2);
-  expect(rows.every((turn) => turn.notification!.deliveries === MAX_DELIVERIES)).toBe(true);
+  const rows = notifications(store).filter((turn) => turn.agentDelivery !== "passive");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.notification!.deliveries).toBe(MAX_DELIVERIES);
+  expect(rows[0]!.notification!.entries).toHaveLength(4);
+  expect(store.pendingNotifications("session_host")).toHaveLength(0);
 });
 
 test("an `always` subscriber that is BUSY still gets its interruption rather than a merge", () => {
