@@ -1,5 +1,5 @@
 // @ts-expect-error Bun test types are provided by the test runner.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { installNavigationMarks, isMeasuredHref, markNavigation, navigationTimings, startNavigation } from "./perf-marks";
 
@@ -30,13 +30,21 @@ test("the two openings anybody has complained about are the two that are measure
 
 test("a settings opening records commit and idle, and no transcript", () => {
   const href = "/settings";
-  startNavigation(href, "route");
-  markNavigation("commit", href);
-  markNavigation("idle", href);
+  // A held clock, so each phase has a known span. `typeof … "number"` passed on
+  // a zero, a NaN, or a span measured from the wrong stamp.
+  const readings = [1_000, 1_040, 1_090];
+  const clock = spyOn(performance, "now").mockImplementation(() => readings.shift() ?? 1_090);
+  try {
+    startNavigation(href, "route");
+    markNavigation("commit", href);
+    markNavigation("idle", href);
+  } finally {
+    clock.mockRestore();
+  }
   const timing = latest(href);
   expect(timing?.from).toBe("route");
-  expect(typeof timing?.commit).toBe("number");
-  expect(typeof timing?.idle).toBe("number");
+  expect(timing?.commit).toBe(40);
+  expect(timing?.idle).toBe(90);
   // There are no conversation rows on this screen, so the phase that means
   // "they landed" stays absent rather than being given a second meaning.
   expect(timing?.transcript).toBeUndefined();
