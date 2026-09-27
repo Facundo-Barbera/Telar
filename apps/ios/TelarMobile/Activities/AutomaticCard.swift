@@ -43,4 +43,14 @@ enum AutomaticCard {
         }
         return .init(title: title, status: status, updatedAt: now, startedAt: now, ended: false, sessionId: focus?.id, activeCount: active.count)
     }
+
+    /// What a showing card should read now, from what the open app already
+    /// knows — or nil when nothing on it would change. The Mac's push is
+    /// delivered when iOS chooses; the app in the foreground need not wait for it.
+    static func refreshed(_ current: SessionActivityAttributes.ContentState, _ sessions: [Session], previews: Bool, now: Date) -> SessionActivityAttributes.ContentState? {
+        var next = initialState(sessions, previews: previews, now: now)
+        next.startedAt = current.startedAt
+        let same = (next.title, next.status, next.sessionId, next.activeCount) == (current.title, current.status, current.sessionId, current.activeCount)
+        return same ? nil : next
+    }
 }

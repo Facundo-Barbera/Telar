@@ -48,4 +48,21 @@ struct AutomaticActivityTests {
         #expect(one.title == "Title b")
         #expect(AutomaticCard.initialState([try session("b", "queued")], previews: false, now: now).title == "Telar work")
     }
+
+    /// The open app updates its own card at once; an unchanged card is not touched.
+    @Test func aShowingCardFollowsTheInboxWithoutWaitingForThePush() throws {
+        func session(_ id: String, _ activity: String) throws -> Session {
+            try JSONDecoder().decode(Session.self, from: Data("""
+            {"id":"\(id)","title":"Title \(id)","createdAt":1,"updatedAt":1,"activity":"\(activity)",
+             "driver":"claude","workspace":{"mode":"worktree","path":"/tmp/x"}}
+            """.utf8))
+        }
+        let started = Date(timeIntervalSince1970: 1_800_000_000), later = started.addingTimeInterval(60)
+        let card = AutomaticCard.initialState([try session("a", "working")], previews: true, now: started)
+        #expect(AutomaticCard.refreshed(card, [try session("a", "working")], previews: true, now: later) == nil)
+        let blocked = try #require(AutomaticCard.refreshed(card, [try session("a", "blocked")], previews: true, now: later))
+        #expect(blocked.status == "Needs you")
+        #expect(blocked.startedAt == started)
+        #expect(blocked.updatedAt == later)
+    }
 }
