@@ -70,7 +70,7 @@ open "apps/desktop/release/dev/mac-arm64/Telar Dev.app"
 ```
 
 Same pipeline and smoke as `desktop:package`, but the artefact is a
-**different app**: bundle id `com.telar.desktop.dev`, product name
+**different app**: bundle id `io.github.novarix.telar.dev`, product name
 `Telar Dev`, its own state in `~/Library/Application Support/Telar Dev`
 (engine store under `engine/` inside it), updater off, `--publish never`,
 never signed. It **ignores an inherited `TELAR_HOME` or `TELAR_DESKTOP_URL`**,
@@ -85,3 +85,9 @@ in place, and macOS will not swap the binary out from under a running process.
 The installed Telar (nightly or otherwise) is a different app and can stay
 open throughout. The packaged smoke is bounded to 120 s (`TELAR_SMOKE_TIMEOUT`
 overrides) and enforced with Bun, so no coreutils `timeout` is required.
+
+**Reinstall Telar Dev once after the bundle id move (#1042).** A Telar Dev
+built before it answers to `com.telar.desktop.dev`, and its "Update from Local
+Checkout" refuses a candidate with the new id. Run `bun run package:dev` and
+copy the new `Telar Dev.app` over the old one by hand. Its state in
+`Telar Dev` is kept; its macOS permissions are asked for again.

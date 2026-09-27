@@ -139,8 +139,10 @@ jobs:
             # tag and produce the next one, releasing under a name nobody chose.
             VERSION_ARG=(--version "${GITHUB_REF_NAME#v}")
           fi
+          # Under the new id's prefix: the bucket root is frozen at the
+          # hand-off release for com.telar.desktop installs (#1042).
           bash scripts/build-desktop.sh --ref "$REF" --targets zip,dmg "${VERSION_ARG[@]}" \
-            --channel beta --publish-r2
+            --channel beta --publish-r2 --feed-prefix io.github.novarix.telar
 
       - name: Publish GitHub Release
         env:
