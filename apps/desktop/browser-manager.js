@@ -2264,6 +2264,14 @@ class DesktopBrowserManager {
     }
   }
 
+  /** The pipeline for the tab(s) the panel rect places: the visible scope's
+   *  active tab. A previewed one is its own window's, so not this rect's. */
+  applyShownGeometry() {
+    for (const tab of this.tabs) {
+      if (tab.view && this.isTabShown(tab)) this.applyGeometry(tab).catch(() => {});
+    }
+  }
+
   setBounds(scopeKey, input) {
     const next = {
       x: Math.max(0, Math.round(Number(input?.x) || 0)),
@@ -2284,7 +2292,11 @@ class DesktopBrowserManager {
     this.bounds = next;
     // A republish of unchanged bounds is still a request to re-place the
     // view (the renderer's self-heal); the pipeline makes it cheap.
-    this.applyVisibility();
+    // ONLY THE SHOWN TAB: nothing about a hidden tab's geometry reads the
+    // panel rect (intrinsic size, scale 1), and a per-frame run of every tab
+    // sent each one down the slow path — a debugger attach, per frame, per tab.
+    // Visibility itself does not change here; its own edges run them all.
+    this.applyShownGeometry();
     if (!same && this.visibleScopeKey) this.emitState(this.visibleScopeKey);
   }
 

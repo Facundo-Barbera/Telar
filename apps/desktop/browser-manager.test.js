@@ -2016,6 +2016,31 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     expect(log).toEqual(["bounds 320x200"]);
   });
 
+  test("a bounds-only change re-runs geometry for the shown tab alone — hidden tabs are not touched", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    await manager.createTab("s", "https://two.example/");
+    await manager.createTab("other", "https://three.example/");
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const shown = manager.activeTab("s");
+    const hidden = manager.tabs.filter((tab) => tab !== shown);
+    expect(hidden).toHaveLength(2);
+    const runs = new Map();
+    const original = manager.applyGeometry.bind(manager);
+    manager.applyGeometry = (tab) => { runs.set(tab.id, (runs.get(tab.id) || 0) + 1); return original(tab); };
+    const hiddenCommands = hidden.map((tab) => tab.view.webContents.debugger.commands.length);
+    const hiddenVisibility = views.filter((view) => view !== shown.view).map((view) => { const calls = []; const set = view.setVisible.bind(view); view.setVisible = (value) => { calls.push(value); set(value); }; return calls; });
+    for (const width of [600, 560, 520]) manager.setBounds("s", { x: 0, y: 0, width, height: 400 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runs.get(shown.id)).toBe(3);
+    for (const tab of hidden) expect(runs.get(tab.id)).toBeUndefined();
+    expect(hidden.map((tab) => tab.view.webContents.debugger.commands.length)).toEqual(hiddenCommands);
+    expect(hiddenVisibility.flat()).toEqual([]);
+    expect(shown.view.bounds).toEqual({ x: 0, y: 0, width: 520, height: 400 });
+  });
+
   test("a shown fixed tab with no debugger yet is placed first — its attach must not delay the first show", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("s", "https://one.example/");
