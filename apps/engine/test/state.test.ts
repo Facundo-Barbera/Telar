@@ -2652,6 +2652,12 @@ test("a settled task is not re-announced by a report that adds nothing", () => {
   expect(closes()).toHaveLength(1);
   expect(store.tasks("session_one")).toHaveLength(1);
   expect(store.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "tick 2" });
+  // The log path rides the same late notification, and is folded the same way.
+  store.ingestObservations("session_one", "run_two", token2, [
+    { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "background", state: "completed", outputFile: "/tmp/claude-501/p/s/tasks/b7ohaj89n.output" } },
+  ]);
+  expect(closes()).toHaveLength(1);
+  expect(store.tasks("session_one")[0]?.outputFile).toBe("/tmp/claude-501/p/s/tasks/b7ohaj89n.output");
 });
 
 test("a task's kind is decided once, and a later turn's partial report cannot downgrade it", () => {

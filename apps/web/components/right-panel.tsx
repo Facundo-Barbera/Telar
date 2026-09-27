@@ -119,6 +119,7 @@ const TableSurface = dynamic(() => import("@/components/session/table-surface").
 const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface));
 const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
 const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
+const TaskLog = dynamic(() => import("@/components/session/task-log").then((mod) => mod.TaskLog));
 /** THE HEAVIEST ARM ON THE LADDER: xterm.js, its WebGL renderer and its image
  *  decoder. Nothing but this tab needs a terminal emulator in the bundle, and
  *  the panel starts closed — so `dynamic` here is worth more than on any of the
@@ -1153,10 +1154,22 @@ function BrowserScreenshotSurface({ pageId, state, sessionId }: { pageId: string
  * transcript names a task; arriving to find it closed among five others would
  * make the gesture a navigation that lands you next to the answer.
  */
-function TaskRow({ task, focused }: { task: JournalTask; focused?: boolean }) {
+function TaskRow({
+  task,
+  focused,
+  log,
+}: {
+  task: JournalTask;
+  focused?: boolean;
+  /** Where to read a background task's log from — the Processes tab passes
+   *  it; the Agents tab has no logs to show. */
+  log?: { sessionId: string; hostId?: string; visible: boolean };
+}) {
   const body = task.failure ?? task.resultText;
   const steps = task.items ?? [];
-  const detail = steps.length > 0 || Boolean(body);
+  // The log leads the detail: for a shell it is the thing you opened the row for.
+  const logged = log !== undefined && task.kind === "background" && Boolean(task.outputFile);
+  const detail = logged || steps.length > 0 || Boolean(body);
   /**
    * OPEN BECAUSE OF HOW YOU ARRIVED, decided once at mount rather than synced
    * from a prop. A repeat press produces a fresh `key` (see `AgentsSurface`), so
@@ -1207,6 +1220,17 @@ function TaskRow({ task, focused }: { task: JournalTask; focused?: boolean }) {
       </PanelRow>
       {open && detail && (
         <div className="flex flex-col gap-0.5 px-4 pb-2 text-xs">
+          {logged && log && (
+            <Suspense fallback={<div className="h-60 rounded-md border border-border" />}>
+              <TaskLog
+                sessionId={log.sessionId}
+                taskId={task.id}
+                {...(log.hostId ? { hostId: log.hostId } : {})}
+                live={isLiveTask(task)}
+                visible={log.visible}
+              />
+            </Suspense>
+          )}
           {steps.map((item) => (
             <TranscriptItem key={item.id} item={item} />
           ))}
@@ -1331,8 +1355,21 @@ function AgentsSurface({
  * differs is the framing: this list can OUTLIVE the turn that started it, and
  * the empty state says who can put something here.
  */
-function ProcessesSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focused?: TaskFocus }) {
+function ProcessesSurface({
+  tasks,
+  focused,
+  sessionId,
+  hostId,
+  visible = true,
+}: {
+  tasks: readonly JournalTask[];
+  focused?: TaskFocus;
+  sessionId?: string;
+  hostId?: string;
+  visible?: boolean;
+}) {
   const { processes } = useMemo(() => splitRoster(tasks), [tasks]);
+  const log = sessionId ? { sessionId, ...(hostId ? { hostId } : {}), visible } : undefined;
   if (processes.length === 0) {
     return (
       <PanelEmpty icon={<TerminalIcon />} title="Background work appears here">
@@ -1344,9 +1381,9 @@ function ProcessesSurface({ tasks, focused }: { tasks: readonly JournalTask[]; f
   const finished = processes.filter((task) => !isLiveTask(task));
   const row = (task: JournalTask) =>
     focused?.id === task.id ? (
-      <TaskRow key={`${task.id}:${focused.nonce}`} task={task} focused />
+      <TaskRow key={`${task.id}:${focused.nonce}`} task={task} focused {...(log ? { log } : {})} />
     ) : (
-      <TaskRow key={task.id} task={task} />
+      <TaskRow key={task.id} task={task} {...(log ? { log } : {})} />
     );
   return (
     <div className="flex flex-col">
@@ -1669,7 +1706,16 @@ export function PanelSurface({
         visible={visible}
       />
     );
-  if (kind === "processes") return <ProcessesSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
+  if (kind === "processes")
+    return (
+      <ProcessesSurface
+        tasks={tasks}
+        {...(focusedTask ? { focused: focusedTask } : {})}
+        {...(sessionId ? { sessionId } : {})}
+        {...(hostId ? { hostId } : {})}
+        visible={visible}
+      />
+    );
   // Every tab kind is handled above. This used to be the Usage surface's arm;
   // as a fallthrough it would render some OTHER pane for an unknown tab id, so
   // an unknown tab now renders nothing rather than the wrong thing.

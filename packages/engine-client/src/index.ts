@@ -83,6 +83,7 @@ import {
   type McpServer,
   type McpServerSpec,
   type TurnAttachment,
+  type TaskOutputPage,
   type TurnModelSelection,
   type DataScienceBootstrap,
   type DataScienceConfig,
@@ -3131,6 +3132,14 @@ export class EngineClient {
    */
   closeSessionTerminals(sessionId: string): Promise<{ closed: number }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/terminals/close`, {});
+  }
+
+  /** A page of a background task's log from byte `after`; without it, the
+   *  tail. The Processes tab's row polls this while the task runs. */
+  taskOutput(sessionId: string, taskId: string, after?: number): Promise<TaskOutputPage> {
+    const params = new URLSearchParams();
+    if (after !== undefined) params.set("after", String(after));
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/output${query(params)}`);
   }
 
   /** Deprecated compatibility alias for session Stop; never creates a latch. */

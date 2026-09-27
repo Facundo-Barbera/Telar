@@ -2702,6 +2702,63 @@ test("a notification with no status is an ENDING, because that is the only thing
   expect(closed[0]?.kind === "task.completed" && closed[0].task).toMatchObject({ state: "completed", resultText: "found three" });
 });
 
+test("a backgrounded shell carries its log path from the moment its Bash call returns", async () => {
+  const file = "/private/tmp/claude-501/-proj/sess/tasks/bsh1.output";
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_b", name: "Bash", input: { command: "bun run dev", run_in_background: true } }] } };
+      yield { type: "system", subtype: "task_started", task_id: "bsh1", tool_use_id: "toolu_b", task_type: "local_bash", description: "Dev server", is_backgrounded: true };
+      yield {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_b", content: `Command running in background with ID: bsh1. Output is being written to: ${file}. You will be notified when it completes.` }] },
+        tool_use_result: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: "bsh1" },
+      };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const reports = sink.observations.flatMap((o) => (o.kind === "task.started" || o.kind === "task.progress" || o.kind === "task.completed" ? [o.task] : []));
+  expect(reports.at(-1)).toMatchObject({ id: "task_toolu_b", kind: "background", outputFile: file });
+});
+
+test("a result that lands before its task_started still reaches the row", async () => {
+  const file = "/tmp/claude-501/-proj/sess/tasks/bsh2.output";
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_c", name: "Bash", input: { command: "tail -f x", run_in_background: true } }] } };
+      yield {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_c", content: `Output is being written to: ${file}.` }] },
+        tool_use_result: { backgroundTaskId: "bsh2" },
+      };
+      yield { type: "system", subtype: "task_started", task_id: "bsh2", tool_use_id: "toolu_c", task_type: "local_bash", description: "Tail", is_backgrounded: true };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const started = sink.observations.find((o) => o.kind === "task.started");
+  expect(started?.kind === "task.started" && started.task.outputFile).toBe(file);
+});
+
+test("a shell's notification states its log; an agent's does not become one", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "bsh3", tool_use_id: "toolu_d", task_type: "local_bash", description: "Build", is_backgrounded: true };
+      yield { type: "system", subtype: "task_started", task_id: "ag1", tool_use_id: "toolu_e", task_type: "local_agent", description: "Explore" };
+      yield { type: "system", subtype: "task_notification", task_id: "bsh3", tool_use_id: "toolu_d", status: "completed", summary: "done", output_file: "/tmp/claude-501/p/s/tasks/bsh3.output" };
+      yield { type: "system", subtype: "task_notification", task_id: "ag1", tool_use_id: "toolu_e", status: "completed", summary: "found", output_file: "/tmp/claude-501/p/s/tasks/ag1.output" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.flatMap((o) => (o.kind === "task.completed" ? [o.task] : []));
+  expect(closed.find((t) => t.id === "task_toolu_d")?.outputFile).toBe("/tmp/claude-501/p/s/tasks/bsh3.output");
+  expect(closed.find((t) => t.id === "task_toolu_e")?.outputFile).toBeUndefined();
+});
+
 test("task classification is a DENYLIST, so a renamed agent type is unstyled and never invisible", () => {
   expect(taskKindForType("background_shell")).toBe("background");
   /**

@@ -122,8 +122,29 @@ export const Task = z.object({
   /** Terminal text the task returned — a sub-agent's report to its caller. */
   resultText: z.string().optional(),
   failure: z.string().optional(),
+  /**
+   * Where a background task's output is being written, when the provider says.
+   * Claude Code writes every backgrounded shell to a file of its own; the engine
+   * reads it back for the Processes tab (`GET …/tasks/:taskId/output`). A
+   * client never sends this path anywhere — it is only a "has a log" signal.
+   */
+  outputFile: z.string().min(1).max(4096).optional(),
 });
 export type Task = z.infer<typeof Task>;
+
+/** One page of a background task's log (`GET …/tasks/:taskId/output`). */
+export type TaskOutputPage = {
+  text: string;
+  /** Byte offset to pass as `after` next time. */
+  cursor: number;
+  size: number;
+  /** The read began past the start of the file (the tail of a long log). */
+  truncated: boolean;
+  /** More bytes are already there past `cursor`. */
+  more: boolean;
+  /** The file does not exist — never written yet, or the OS cleaned it up. */
+  missing: boolean;
+};
 
 /**
  * A task as the WORKER knows it, before the engine stamps ownership on it.

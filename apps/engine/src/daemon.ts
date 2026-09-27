@@ -127,6 +127,7 @@ import { describeOutcome } from "./worktrees-move";
 import { describeReclaim } from "./worktree-inventory";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
+import { readTaskOutput, resolveTaskOutputFile } from "./task-output";
 
 /**
  * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
@@ -5020,6 +5021,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...(url.searchParams.get("sort") ? { sort: url.searchParams.get("sort")! } : {}),
             ...(url.searchParams.get("desc") === "1" ? { desc: true } : {}),
           }));
+          return;
+        }
+        /**
+         * A BACKGROUND TASK'S LOG, a page at a time — the Processes tab's row.
+         * The path is the one the driver stored on the task, never the
+         * caller's; `after` is a byte cursor, absent for "the tail".
+         */
+        const taskOutput = /^\/tasks\/([A-Za-z0-9_-]+)\/output$/.exec(session.tail);
+        if (taskOutput && request.method === "GET") {
+          const task = store.tasks(session.sessionId).find((one) => one.id === taskOutput[1]);
+          if (!task) throw new HttpError(404, "not_found", "task not found");
+          const file = task.kind === "background" && task.outputFile ? resolveTaskOutputFile(task.outputFile, task.providerTaskId) : undefined;
+          if (!file) throw new HttpError(404, "not_found", "this task has no log");
+          const raw = url.searchParams.get("after");
+          const after = raw === null ? undefined : Number(raw);
+          if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new HttpError(400, "invalid_request", "after must be a byte offset");
+          writeJson(response, 200, await readTaskOutput(file, after));
           return;
         }
         /** The plots gallery reads the index; the transcript reads the bytes. */
