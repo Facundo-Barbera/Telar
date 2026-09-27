@@ -70,7 +70,6 @@ import {
   type FilePatchOptions,
   type StoppedClaim,
 } from "./state";
-import { KernelHost } from "./ds/kernel-host";
 import { bundledPlugins } from "./plugins/bundled";
 import { PluginHost } from "./plugins/host";
 import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type PluginScopedRoute } from "./plugins/routes";
@@ -1202,13 +1201,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   };
   const daemonId = crypto.randomUUID();
   /**
-   * The kernel host is built much later than the plugin host — it needs the
-   * bound port's environment — so data science reads it through this ref rather
-   * than capturing an undefined. Read at CALL time, when a kernel either exists
-   * or honestly does not.
-   */
-  const kernelsRef: { current: KernelHost | undefined } = { current: undefined };
-  /**
    * WHAT ONE SESSION SEES OF A PLUGIN, resolved generically — the same question
    * for every plugin ("which project, has it opted in"), answered from the
    * plugin map. A per-plugin store method would be the hardcoded case the host
@@ -1240,11 +1232,34 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       dataScience: {
         resolve: (sessionId) => store.dataScience(sessionId),
         settings: store,
-        kernels: {
-          list: () => (kernelsRef.current?.list() ?? []).map((info) => ({ sessionId: info.sessionId, state: info.state })),
-          dispose: (sessionId, reason) => kernelsRef.current?.dispose(sessionId, reason),
-          disposeAll: (reason) => kernelsRef.current?.disposeAll(reason),
-        },
+        /**
+         * THE KERNEL HOST, built by the plugin's `init` — and only on a daemon
+         * that runs turns, as it always was. Outputs are journaled by the
+         * store's capability; the host only persists images.
+         */
+        ...(options.embeddedWorker
+          ? {
+              kernelHost: {
+                options: {
+                  engineRoot: store.paths.root,
+                  sessionDir: (sessionId: string) => path.join(store.paths.sessions, sessionId),
+                  events: {
+                    onState: (sessionId, state, reason) => store.recordKernelState(sessionId, state, reason),
+                    persistImage: (sessionId, input) =>
+                      store.putAttachment(sessionId, {
+                        name: `${input.producer}.${input.mediaType === "image/svg+xml" ? "svg" : "png"}`,
+                        mediaType: input.mediaType,
+                        data: input.data,
+                        tags: ["plot"],
+                        producer: input.producer,
+                        ...(input.title ? { title: input.title } : {}),
+                      }).id,
+                  },
+                },
+                attach: (host) => store.attachKernels(host),
+              },
+            }
+          : {}),
         projectOf: (sessionId) => {
           try { return store.getSession(sessionId).projectId; } catch { return undefined; }
         },
@@ -5381,7 +5396,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
     let sessionsRunSocket: import("./sessions-tools/run-socket").SessionsToolSocket | undefined;
     let telarRunSocket: import("./telar-socket").TelarToolSocket | undefined;
-    let kernels: KernelHost | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
       const [{ EngineClient }, { EngineWorker }] = await Promise.all([
@@ -5404,29 +5418,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       const routed = new BrowserRouter(browser, desktopBrowserFromEnv());
       store.attachBrowser(routed);
-      /**
-       * THE KERNEL HOST, beside the browser and for the same reason: a
-       * kernel outlives any turn, so the daemon owns it. Outputs are
-       * journaled by the store's capability; the host only persists images.
-       */
-      kernels = new KernelHost({
-        engineRoot: store.paths.root,
-        sessionDir: (sessionId) => path.join(store.paths.sessions, sessionId),
-        events: {
-          onState: (sessionId, state, reason) => store.recordKernelState(sessionId, state, reason),
-          persistImage: (sessionId, input) =>
-            store.putAttachment(sessionId, {
-              name: `${input.producer}.${input.mediaType === "image/svg+xml" ? "svg" : "png"}`,
-              mediaType: input.mediaType,
-              data: input.data,
-              tags: ["plot"],
-              producer: input.producer,
-              ...(input.title ? { title: input.title } : {}),
-            }).id,
-        },
-      });
-      store.attachKernels(kernels);
-      kernelsRef.current = kernels;
       // The browser reaches sessions over the worker-hosted MCP socket, for
       // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
       // the way it owns the browser: it outlives any turn and is closed once.

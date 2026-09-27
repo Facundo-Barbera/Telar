@@ -21,6 +21,7 @@ import {
 import type { EngineStore } from "../state";
 import { jobCursor, PluginInputError, requiredString, type PluginMachineRoutes, type PluginProjectRoutes } from "./routes";
 import type { DsCapability } from "../ds/capability";
+import { KernelHost, type KernelHostOptions } from "../ds/kernel-host";
 import { clientDsCapability } from "../ds/client-capability";
 import { dsTools } from "../ds/ds-tools";
 import { notebookTools } from "../ds/notebook-tools";
@@ -115,17 +116,18 @@ export const dataScienceToolModule: PluginToolModule = {
  * `store.dataScience(sessionId)` — the SAME capability the `/ds/` arm and the
  * tool wall already use, so migrating the door cannot change what is behind it.
  *
- * `kernels` is the host of the live Python processes. Typed structurally
- * against the four methods this needs, so the plugin does not drag the whole
- * kernel host — or the store — into its own tests.
+ * `kernelHost` is what `init` builds the host of the live Python processes
+ * from — the store's half of it (where sessions live, how a state change and a
+ * plot are recorded) and where to attach it. ABSENT ON A DAEMON THAT RUNS NO
+ * TURNS (no embedded worker), which has never had kernels: every kernel verb
+ * there refuses with "no kernel host", exactly as before.
  */
 export type DataSciencePluginDeps = {
   resolve: (sessionId: string) => DsCapability;
-  kernels: {
-    /** Every live kernel, so `busy` can answer per project. */
-    list(): { sessionId: string; state: string; projectId?: string }[];
-    dispose(sessionId: string, reason: string): Promise<void> | void;
-    disposeAll(reason: string): Promise<void> | void;
+  kernelHost?: {
+    options: KernelHostOptions;
+    /** Hands the built host to the store, whose `dataScience()` runs cells on it. */
+    attach(host: KernelHost): void;
   };
   /** Which project a session belongs to, for per-project `busy` and release. */
   projectOf: (sessionId: string) => string | undefined;
@@ -213,9 +215,10 @@ function dataScienceScopedRoutes(settings: DataSciencePluginDeps["settings"]): {
 
 export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModule<DataScienceSettings> {
   /** Sessions whose kernel belongs to a project, resolved fresh each time. */
+  let kernels: KernelHost | undefined;
+  const live = () => kernels?.list() ?? [];
   const sessionsOf = (projectId: string): string[] =>
-    deps.kernels
-      .list()
+    live()
       .map((kernel) => kernel.sessionId)
       .filter((sessionId) => deps.projectOf(sessionId) === projectId);
   const scoped = dataScienceScopedRoutes(deps.settings);
@@ -235,13 +238,17 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
     machineSettingsSchema: DataScienceMachineSettingsWrite,
 
     /**
-     * The kernel host is the STORE'S and outlives any one registration, so
-     * nothing is acquired here. What `init` registers is the cleanup, so
-     * shutdown gives every kernel back through the host's bounded teardown
-     * rather than a hand-written line in `daemon.ts`.
+     * THE KERNEL HOST IS ACQUIRED HERE, and its cleanup registered at once, so
+     * shutdown gives every kernel back through the host's bounded teardown.
+     * Building it starts the idle reaper and kills what a crashed daemon left
+     * behind — both belong to data science, not to daemon startup.
      */
     init(context: PluginInitContext) {
-      context.onDispose("data science kernels", () => deps.kernels.disposeAll("engine shutting down"));
+      if (!deps.kernelHost) return;
+      const host = new KernelHost(deps.kernelHost.options);
+      kernels = host;
+      context.onDispose("data science kernels", () => host.disposeAll("engine shutting down"));
+      deps.kernelHost.attach(host);
     },
 
     hooks: {
@@ -263,11 +270,11 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
        * exactly rather than approximately.
        */
       busy: (projectId) =>
-        deps.kernels.list().some((kernel) => deps.projectOf(kernel.sessionId) === projectId && kernel.state === "busy"),
+        live().some((kernel) => deps.projectOf(kernel.sessionId) === projectId && kernel.state === "busy"),
 
       /** Every idle kernel this project owns, once `busy` has gone false. */
       releaseProject: async (projectId) => {
-        await Promise.all(sessionsOf(projectId).map((sessionId) => deps.kernels.dispose(sessionId, "data science disabled")));
+        await Promise.all(sessionsOf(projectId).map((sessionId) => kernels?.dispose(sessionId, "data science disabled")));
       },
 
       /**
@@ -276,7 +283,7 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
        * host decides who cares, which is the line that stops `state.ts` naming
        * features one by one.
        */
-      releaseSession: (sessionId, reason) => void deps.kernels.dispose(sessionId, reason),
+      releaseSession: (sessionId, reason) => void kernels?.dispose(sessionId, reason),
     },
 
     /**
