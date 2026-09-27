@@ -13536,7 +13536,17 @@ export class EngineStore {
       return;
     }
     this.writeCohorts(remaining);
-    const members = cohort.members.map((member) => {
+    /**
+     * NEVER THE SAME ENDING TWICE. A member whose (session, run) an earlier
+     * cohort notice already gave this subscriber is left out, and a cohort with
+     * nothing new is not delivered at all — two cohorts on one member used to
+     * close on its one result as two identical notices. Checked before the
+     * `latest turn` reads below, which name a run nobody reported.
+     */
+    const told = this.cohortEndingsDeliveredTo(subscriberId);
+    const fresh = cohort.members.filter((member) => !(member.outcome && member.fetch && told.has(`${member.sessionId} ${member.fetch.runId}`)));
+    if (fresh.length === 0) return;
+    const members = fresh.map((member) => {
       if (member.fetch) return member;
       // A member with no read of its own is given its latest turn, if it has one.
       const latest = this.findSession(member.sessionId) ? this.scanQueue(member.sessionId).turns.at(-1) : undefined;
@@ -13571,6 +13581,16 @@ export class EngineStore {
       if (!(error instanceof EngineStateError && error.code === "conflict")) throw error;
       this.appendEvent(subscriberId, { type: "runtime.warning", message: `cohort ${cohort.id} could not be delivered: ${error.message}` });
     }
+  }
+
+  /** Every "session run" a cohort notice on this subscriber has already named. */
+  private cohortEndingsDeliveredTo(subscriberId: string): Set<string> {
+    const told = new Set<string>();
+    for (const turn of this.scanQueue(subscriberId).turns) {
+      if (!turn.notification?.cohortId) continue;
+      for (const entry of turn.notification.entries ?? []) if (entry.runId) told.add(`${entry.sessionId} ${entry.runId}`);
+    }
+    return told;
   }
 
   /** The subscriber came up for air: deliver the cohorts that closed meanwhile. */

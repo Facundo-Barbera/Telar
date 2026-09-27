@@ -37,7 +37,7 @@ function setup() {
     next.recover();
     return next;
   };
-  return { store, clock, restart };
+  return { store, clock, restart, home, now: () => now };
 }
 
 /** Start a run on a member, as if the host's task had just been claimed. */
@@ -409,4 +409,55 @@ test("a turn failed as interrupted by a worker shutting down does not end the me
   store.failTurn("session_a", proof.runId, proof.claimToken, { code: "interrupted", message: "Telar quit while this turn was running." });
   expect(store.cohortsFor("session_host")[0]!.members[0]!.outcome).toBeUndefined();
   expect(woken(store).filter((turn) => turn.notification?.cohortId)).toHaveLength(0);
+});
+
+/**
+ * Two open cohorts on one member, as `subscribeCohort` could store them before
+ * it became idempotent: written straight to disk, then read by a new engine.
+ */
+function storeOverlapping(home: string, cohorts: Array<{ id: string; members: string[] }>, at: number) {
+  const file = path.join(home, "cohorts.json");
+  const stored = JSON.parse(fs.readFileSync(file, "utf8")) as { cohorts: unknown[] };
+  for (const cohort of cohorts) {
+    stored.cohorts.push({
+      id: cohort.id,
+      subscriberSessionId: "session_host",
+      members: cohort.members.map((sessionId) => ({ sessionId, title: sessionId.replace("session_", "worker ") })),
+      createdAt: at,
+      expiresAt: at + 240 * 60_000,
+    });
+  }
+  fs.writeFileSync(file, JSON.stringify(stored));
+}
+
+test("two cohorts on one member after a restart deliver its one result once", () => {
+  const { store, restart, home, now } = setup();
+  task(store, "session_a", "one");
+  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  storeOverlapping(home, [{ id: "coh_second", members: ["session_a"] }], now());
+  const after = restart();
+  expect(after.cohortsFor("session_host")).toHaveLength(2);
+  const proof = task(after, "session_a", "two");
+
+  after.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
+  after.completeTurn("session_a", proof.runId, proof.claimToken, { text: "Result sent." });
+  expect(woken(after).filter((turn) => turn.notification?.cohortId)).toHaveLength(1);
+  expect(after.cohortsFor("session_host")).toHaveLength(0);
+});
+
+test("a later cohort's notice leaves out a member an earlier one already reported", () => {
+  const { store, restart, home, now } = setup();
+  store.subscribeCohort("session_host", { sessionIds: ["session_c"] });
+  storeOverlapping(home, [{ id: "coh_first", members: ["session_a"] }, { id: "coh_both", members: ["session_a", "session_b"] }], now());
+  const after = restart();
+  const a = task(after, "session_a", "a");
+  const b = task(after, "session_b", "b");
+
+  after.submitAgentTurn("session_host", { runId: "run_result_a", input: "A done.", intent: "result" }, a);
+  expect(woken(after).filter((turn) => turn.notification?.cohortId)).toHaveLength(1);
+  after.submitAgentTurn("session_host", { runId: "run_result_b", input: "B done.", intent: "result" }, b);
+  const notices = woken(after).filter((turn) => turn.notification?.cohortId);
+  expect(notices).toHaveLength(2);
+  expect(notices[1]!.notification!.body).toContain("B done.");
+  expect(notices[1]!.notification!.body).not.toContain("A done.");
 });
