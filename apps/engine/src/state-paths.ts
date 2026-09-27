@@ -132,6 +132,7 @@ export type EngineStatePaths = {
   /** Which sessions want to be woken by which — engine-wide, because a
    *  subscription spans two sessions and belongs to neither's directory. */
   subscriptions: string;
+  cohorts: string;
   /** Who writes generated titles and branch names — see `TextGenPolicy`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   textGen: string;
@@ -272,6 +273,7 @@ export function statePaths(root: string): EngineStatePaths {
     usageLimitSources: path.join(resolved, "usage-limit-sources.json"),
     usageLimitSecrets: path.join(resolved, "usage-limit-secrets.json"),
     subscriptions: path.join(resolved, "subscriptions.json"),
+    cohorts: path.join(resolved, "cohorts.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
     plannedRestart: path.join(resolved, "planned-restart.json"),

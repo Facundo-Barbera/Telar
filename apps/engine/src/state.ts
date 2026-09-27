@@ -97,6 +97,7 @@ import {
   Session as SessionSchema,
   NotificationDetail as NotificationDetailSchema,
   Subscription as SubscriptionSchema,
+  Cohort as CohortSchema,
   Task as TaskSchema,
   Turn as TurnSchema,
   TurnAttachment as TurnAttachmentSchema,
@@ -168,6 +169,8 @@ import {
   type SessionOrigin,
   type SessionSettleEnded,
   type Subscription,
+  type Cohort,
+  type CohortMember,
   type Turn,
   type TurnFailure as TurnFailureShape,
   type TurnFailureCode,
@@ -233,7 +236,7 @@ import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
 import { quotedExcerpt } from "./agent-notice";
 import { RELAY_RULE } from "./attribution";
-import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
+import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import {
   commentOn,
   reactOn,
@@ -293,6 +296,12 @@ import { listTexPackages, TECTONIC_PACKAGES_NOTE, texInstallSteps, texRemoveStep
 import type { LatexCapability, CompileStatus as LatexCompileMemory } from "./latex/capability";
 import { storeLatexCapability } from "./latex/store-capability";
 import type { ResolvedLatex } from "./latex/compile";
+
+/** The first line with anything on it, clamped for a cohort's member line. */
+function firstLineOf(text: string): string {
+  const line = text.split("\n").find((candidate) => candidate.trim().length > 0)?.trim() ?? "";
+  return line.length <= COHORT_LINE_CHARS ? line : `${line.slice(0, COHORT_LINE_CHARS - 1)}…`;
+}
 
 /** The human-facing one-liner for a parked request's notification. */
 /**
@@ -479,6 +488,13 @@ export const PLANNED_RESTART_CONTINUATION =
  * `MAX_QUEUED_TURNS`. Sixty-four is far past any honest orchestration.
  */
 const MAX_SUBSCRIPTIONS_PER_SESSION = 64;
+/** A cohort's bounds — see `Cohort`. Twenty members keeps its one notice inside
+ *  `NotificationDetail.body`; the default expiry covers a builder waiting on CI. */
+const MAX_COHORT_MEMBERS = 20;
+const MAX_COHORTS_PER_SESSION = 16;
+const DEFAULT_COHORT_MINUTES = 240;
+const MAX_COHORT_MINUTES = 7 * 24 * 60;
+const COHORT_LINE_CHARS = 200;
 
 /** How much of a finished turn's answer rides in the wake that announces it.
  *  The whole answer is one `sessions_read` away; the wake is a summons. */
@@ -2312,7 +2328,7 @@ export class EngineStore {
     }
     // `subscriptions` because a subscription is what makes a session read as
     // `waiting` (`withActivityFrom`): subscribing must redraw the row.
-    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox || file === this.paths.subscriptions) {
+    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox || file === this.paths.subscriptions || file === this.paths.cohorts) {
       this.listRevision = this.nextRevision();
     }
   }
@@ -8693,6 +8709,8 @@ export class EngineStore {
     next.updatedAt = this.now();
     this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
     this.appendEvent(sessionId, { type: "session.updated", session: next });
+    // A member settled before it reported ends its cohort's wait (`reviewCohorts`).
+    if (next.settledOverride === "settled" && session.settledOverride !== "settled") this.reviewCohorts();
     return structuredClone(next);
   }
 
@@ -10463,7 +10481,14 @@ export class EngineStore {
     const correction = input.corrects && !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
       ? this.correctionOf(sessionId, input.corrects, sender.sessionId)
       : undefined;
-    const delivery = intent === "task" || intent === "blocker" || waiting || (wouldBeLost && !windowed) || correction === "read" || correction === "queued"
+    /**
+     * A COHORT HOLDS A MEMBER'S RESULT — see `Cohort`. It reaches the
+     * subscriber in the cohort's one notification, not as a wake of its own:
+     * recorded passive, kept out of the mailbox, and named on the member's line.
+     * A second result (a correction, say) replaces the first there.
+     */
+    const cohortHeld = intent === "result" && sender.sessionId !== undefined && this.cohortHolds(sessionId, sender.sessionId);
+    const delivery = !cohortHeld && (intent === "task" || intent === "blocker" || waiting || (wouldBeLost && !windowed) || correction === "read" || correction === "queued")
       ? "wake"
       : "passive";
     /**
@@ -10523,7 +10548,7 @@ export class EngineStore {
       ? this.waitingNotificationTurn(sessionId)
       : undefined;
     const result = this.submitTurn(sessionId, {
-      ...(folds || joins ? { foldedIntoWaitingWake: true } : {}),
+      ...(folds || joins || cohortHeld ? { foldedIntoWaitingWake: true } : {}),
       runId: input.runId,
       /**
        * THE BODY STAYS ON THE TURN, EXACTLY AS SENT. A wake's and a request's
@@ -10546,6 +10571,7 @@ export class EngineStore {
     // A replay of a message already accepted changes nothing, folded or not.
     if (folds && !result.replayed) this.foldIntoWaitingMessage(sessionId, folds, notification);
     if (joins && !result.replayed) this.joinWaitingNotification(sessionId, joins, notification);
+    if (!result.replayed && sender.sessionId) this.recordCohortMessage(sessionId, sender.sessionId, intent, input.runId, input.input);
     // The unread version goes only once its replacement is safely accepted.
     if (correction === "queued" || correction === "held") this.withdrawCorrected(sessionId, input.corrects!, correction);
     return result;
@@ -12980,6 +13006,14 @@ export class EngineStore {
    *  absent — a session may not remove what it did not ask for. */
   unsubscribe(subscriptionId: string, subscriberSessionId?: string): boolean {
     assertId(subscriptionId, "subscription id");
+    if (subscriptionId.startsWith("coh_")) {
+      // A cohort has no wakes queued before it closes, so there is nothing else to withdraw.
+      const cohorts = this.readCohorts();
+      const kept = cohorts.filter((each) => !(each.id === subscriptionId && (subscriberSessionId === undefined || each.subscriberSessionId === subscriberSessionId)));
+      if (kept.length === cohorts.length) return false;
+      this.writeCohorts(kept);
+      return true;
+    }
     const all = this.readSubscriptions();
     const index = all.findIndex(
       (each) => each.id === subscriptionId && (subscriberSessionId === undefined || each.subscriberSessionId === subscriberSessionId),
@@ -13024,6 +13058,14 @@ export class EngineStore {
     if (!this.subscriptionsBySubscriber) {
       const grouped = new Map<string, Subscription[]>();
       for (const each of this.readSubscriptions()) grouped.set(each.subscriberSessionId, [...(grouped.get(each.subscriberSessionId) ?? []), each]);
+      // A cohort's pending members are waited on exactly as a subscription's target is.
+      for (const cohort of this.readCohorts()) {
+        for (const member of cohort.members) {
+          if (member.outcome) continue;
+          const each: Subscription = { id: cohort.id, subscriberSessionId: cohort.subscriberSessionId, targetSessionId: member.sessionId, events: ["turn_completed"], createdAt: cohort.createdAt };
+          grouped.set(each.subscriberSessionId, [...(grouped.get(each.subscriberSessionId) ?? []), each]);
+        }
+      }
       this.subscriptionsBySubscriber = grouped;
     }
     return this.subscriptionsBySubscriber.get(subscriberSessionId) ?? [];
@@ -13034,6 +13076,7 @@ export class EngineStore {
     const all = this.readSubscriptions();
     const kept = all.filter((each) => each.subscriberSessionId !== sessionId && each.targetSessionId !== sessionId);
     if (kept.length !== all.length) this.writeSubscriptions(kept);
+    this.reviewCohorts();
   }
 
   /**
@@ -13056,6 +13099,311 @@ export class EngineStore {
     if (removed.length === 0) return;
     this.writeSubscriptions(all.filter((each) => each.subscriberSessionId !== subscriberSessionId));
     for (const each of removed) this.discardQueuedWakes(each.subscriberSessionId, each.targetSessionId);
+  }
+
+  // ── Cohorts — one wake when several sessions are all done ────────────────
+
+  /**
+   * SUBSCRIBE TO A COHORT. The fan-out's subscription: one notification when
+   * every member is done, rather than one per member. See `Cohort` for what the
+   * subscriber is told and `advanceCohortMember` for what "done" means.
+   *
+   * A MEMBER ALREADY IDLE ON AN ERRAND THIS SUBSCRIBER GAVE IT counts as done at
+   * once — a child fast enough to finish before its coordinator subscribed must
+   * not hang the cohort until it expires. The order that makes this right is
+   * the one the tools teach: send the tasks, then subscribe.
+   */
+  subscribeCohort(
+    subscriberSessionId: string,
+    input: { sessionIds: string[]; timeoutMinutes?: number; completionWake?: Cohort["completionWake"] },
+  ): Cohort {
+    const ids = [...new Set(input.sessionIds)];
+    if (ids.length === 0 || ids.length > MAX_COHORT_MEMBERS) {
+      throw new EngineStateError("invalid_request", `a cohort names between 1 and ${MAX_COHORT_MEMBERS} sessions`);
+    }
+    for (const id of ids) {
+      assertId(id, "cohort member session id");
+      if (id === subscriberSessionId) throw new EngineStateError("invalid_request", "a session cannot be in its own cohort");
+    }
+    const minutes = input.timeoutMinutes ?? DEFAULT_COHORT_MINUTES;
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > MAX_COHORT_MINUTES) {
+      throw new EngineStateError("invalid_request", `timeoutMinutes must be a whole number from 1 to ${MAX_COHORT_MINUTES}`);
+    }
+    const subscriber = this.getSession(subscriberSessionId);
+    if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
+    const all = this.readCohorts();
+    const mine = all.filter((each) => each.subscriberSessionId === subscriberSessionId).length;
+    if (mine >= MAX_COHORTS_PER_SESSION) {
+      throw new EngineStateError("conflict", `this session already has ${mine} cohorts open, the most it may. Unsubscribe from ones you are finished with.`);
+    }
+    const at = this.now();
+    const members = ids.map((id) => {
+      const target = this.getSession(id);
+      if (target.state !== "active") throw new EngineStateError("conflict", `session ${id} is archived and will do nothing worth waiting for`);
+      return this.cohortMemberAtStart(subscriberSessionId, target, at);
+    });
+    const cohort: Cohort = {
+      id: `coh_${crypto.randomUUID().replaceAll("-", "")}`,
+      subscriberSessionId,
+      members,
+      ...(input.completionWake ? { completionWake: input.completionWake } : {}),
+      createdAt: at,
+      expiresAt: at + minutes * 60_000,
+    };
+    this.writeCohorts([...all, cohort]);
+    this.closeDoneCohorts([cohort.id]);
+    return structuredClone(cohort);
+  }
+
+  cohortsFor(subscriberSessionId: string): Cohort[] {
+    this.getSession(subscriberSessionId);
+    return structuredClone(this.readCohorts().filter((each) => each.subscriberSessionId === subscriberSessionId));
+  }
+
+  private readCohorts(): Cohort[] {
+    const stored = this.readDocument(this.paths.cohorts) as { cohorts?: unknown } | undefined;
+    const parsed = CohortSchema.array().safeParse(stored?.cohorts ?? []);
+    return parsed.success ? parsed.data : [];
+  }
+
+  private writeCohorts(cohorts: Cohort[]): void {
+    this.subscriptionsBySubscriber = undefined;
+    this.writeDocument(this.paths.cohorts, { version: STATE_VERSION, cohorts });
+  }
+
+  /** A member as the cohort first sees it: pending, unless it is already done. */
+  private cohortMemberAtStart(subscriberSessionId: string, target: Session, at: number): CohortMember {
+    const base: CohortMember = { sessionId: target.id, ...(target.title ? { title: target.title.slice(0, 200) } : {}) };
+    if (target.settledOverride === "settled") return { ...base, outcome: "settled", at };
+    const turns = this.scanQueue(target.id).turns.filter((turn) => turn.agentDelivery !== "passive");
+    const last = turns.at(-1);
+    if (!last || !["completed", "failed", "stopped"].includes(last.state)) return base;
+    // Idle — but on whose errand? Only one this subscriber gave counts.
+    const errand = turns.filter((turn) => turn.sender?.sessionId === subscriberSessionId).at(-1);
+    if (!errand) return base;
+    const said = this.scanQueue(subscriberSessionId).turns.filter(
+      (turn) => turn.sender?.sessionId === target.id && turn.acceptedAt >= errand.acceptedAt && (turn.agentIntent === "result" || turn.agentIntent === "blocker"),
+    ).at(-1);
+    if (said?.agentIntent === "blocker") return { ...base, blocked: true };
+    if (said) return { ...base, outcome: "result", fetch: { sessionId: subscriberSessionId, runId: said.runId }, firstLine: firstLineOf(said.input), at };
+    const kind: WakeKind = last.state === "completed" ? "turn_completed" : last.state === "failed" ? "turn_failed" : "turn_stopped";
+    return { ...base, ...this.cohortOutcome(target.id, kind, last, { ...(last.resultText ? { resultText: last.resultText } : {}), ...(last.failure ? { failure: last.failure } : {}) }), at };
+  }
+
+  private cohortOutcome(sessionId: string, kind: WakeKind, turn: Turn, context: { resultText?: string; failure?: Turn["failure"] }): Pick<CohortMember, "outcome" | "fetch" | "firstLine"> {
+    const outcome = kind === "turn_completed" ? "completed" : kind === "turn_failed" ? "failed" : "stopped";
+    const text = kind === "turn_failed" ? [context.failure?.code, context.failure?.message].filter(Boolean).join(": ") : context.resultText ?? "";
+    const line = firstLineOf(text);
+    return { outcome, fetch: { sessionId, runId: turn.runId }, ...(line ? { firstLine: line } : {}) };
+  }
+
+  /**
+   * WHAT "DONE" MEANS FOR A MEMBER — a turn of its ending.
+   *
+   * A completed, failed or stopped turn ends a member's wait UNLESS it has an
+   * unanswered blocker: a worker that asks for a decision and ends its turn to
+   * wait for one is not done, it is waiting on the subscriber. Its own `result`
+   * ends the wait too, and is recorded where it lands (`submitAgentTurn`). A
+   * turn the driver opened for background work is not an ending (#891).
+   */
+  private advanceCohortMember(sessionId: string, kind: WakeKind, turn: Turn, context: { resultText?: string; failure?: Turn["failure"] }): void {
+    if (!TERMINAL_WAKE_KINDS.includes(kind)) return;
+    if (turn.origin === "provider" && turn.providerReason?.kind === "background_task") return;
+    this.updateCohortMembers(sessionId, undefined, (member) => (member.outcome || member.blocked ? undefined : { ...member, ...this.cohortOutcome(sessionId, kind, turn, context), at: this.now() }));
+  }
+
+  /** Does an open cohort `subscriberSessionId` holds still take `memberSessionId`'s result? */
+  private cohortHolds(subscriberSessionId: string, memberSessionId: string): boolean {
+    return this.readCohorts().some(
+      (cohort) =>
+        !cohort.ready &&
+        cohort.subscriberSessionId === subscriberSessionId &&
+        cohort.members.some((member) => member.sessionId === memberSessionId && (!member.outcome || member.outcome === "result")),
+    );
+  }
+
+  /**
+   * A MESSAGE BETWEEN A COHORT'S SUBSCRIBER AND ONE OF ITS MEMBERS.
+   *
+   * From a member: a `result` makes it done and names the subscriber's turn
+   * holding it; a `blocker` keeps it pending whatever its turns do, until it is
+   * answered. From the subscriber to a member: that answer — the blocker no
+   * longer holds it.
+   */
+  private recordCohortMessage(recipientSessionId: string, senderSessionId: string, intent: NonNullable<Turn["agentIntent"]>, runId: string, body: string): void {
+    if (intent === "result") {
+      const line = firstLineOf(body);
+      this.updateCohortMembers(senderSessionId, recipientSessionId, (member) =>
+        member.outcome && member.outcome !== "result"
+          ? undefined
+          : { sessionId: member.sessionId, ...(member.title ? { title: member.title } : {}), outcome: "result", fetch: { sessionId: recipientSessionId, runId }, ...(line ? { firstLine: line } : {}), at: this.now() },
+      );
+    } else if (intent === "blocker") {
+      this.updateCohortMembers(senderSessionId, recipientSessionId, (member) => (member.outcome || member.blocked ? undefined : { ...member, blocked: true }));
+    }
+    this.updateCohortMembers(recipientSessionId, senderSessionId, (member) => {
+      if (!member.blocked) return undefined;
+      const { blocked: _answered, ...rest } = member;
+      return rest;
+    });
+  }
+
+  /**
+   * Rewrite every matching member (optionally of one subscriber's cohorts) with
+   * `update`, which returns undefined to leave one alone. The cohorts that are
+   * now complete are delivered.
+   */
+  private updateCohortMembers(memberSessionId: string, subscriberSessionId: string | undefined, update: (member: CohortMember) => CohortMember | undefined): void {
+    const all = this.readCohorts();
+    const touched: string[] = [];
+    for (const cohort of all) {
+      if (cohort.ready || (subscriberSessionId !== undefined && cohort.subscriberSessionId !== subscriberSessionId)) continue;
+      cohort.members = cohort.members.map((member) => {
+        if (member.sessionId !== memberSessionId) return member;
+        const next = update(member);
+        if (!next) return member;
+        touched.push(cohort.id);
+        return next;
+      });
+    }
+    if (touched.length === 0) return;
+    this.writeCohorts(all);
+    this.closeDoneCohorts(touched);
+  }
+
+  /**
+   * A MEMBER PUT AWAY ENDS ITS WAIT, AND A SUBSCRIBER PUT AWAY ENDS THE COHORT.
+   *
+   * Settled, archived or deleted before it reported, a member would otherwise
+   * hold the cohort until it expired — for a session a person or a coordinator
+   * has already decided is finished. So it is DONE, and its line says how. A
+   * subscriber that is gone has nowhere to be woken, and its cohorts go with it.
+   */
+  private reviewCohorts(): void {
+    const all = this.readCohorts();
+    if (all.length === 0) return;
+    const at = this.now();
+    const touched: string[] = [];
+    const kept = all.filter((cohort) => {
+      const subscriber = this.findSession(cohort.subscriberSessionId);
+      if (!subscriber || subscriber.state !== "active") return false;
+      cohort.members = cohort.members.map((member) => {
+        if (member.outcome) return member;
+        const session = this.findSession(member.sessionId);
+        const outcome = !session ? "deleted" : session.state !== "active" ? "archived" : session.settledOverride === "settled" ? "settled" : undefined;
+        if (!outcome) return member;
+        touched.push(cohort.id);
+        return { ...member, outcome, at };
+      });
+      return true;
+    });
+    if (touched.length === 0 && kept.length === all.length) return;
+    this.writeCohorts(kept);
+    this.closeDoneCohorts(touched);
+  }
+
+  private findSession(sessionId: string): Session | undefined {
+    try {
+      return this.getSession(sessionId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Deliver each named cohort whose every member is done. */
+  private closeDoneCohorts(ids: string[]): void {
+    for (const cohort of this.readCohorts()) {
+      if (!ids.includes(cohort.id) || cohort.ready) continue;
+      if (cohort.members.every((member) => member.outcome)) this.closeCohort(cohort, "all");
+    }
+  }
+
+  /**
+   * DELIVER ONE COHORT, AS ONE NOTIFICATION.
+   *
+   * `settled_only`, the default, is honoured as it is for a subscription: a
+   * subscriber in the middle of a turn is not interrupted. The cohort is kept,
+   * marked `ready`, and `flushPendingNotifications` delivers it at that turn's
+   * end — as its own turn, because the mailbox's merge would reduce its lines
+   * to one.
+   */
+  private closeCohort(cohort: Cohort, reason: "all" | "expired"): void {
+    const subscriberId = cohort.subscriberSessionId;
+    const remaining = this.readCohorts().filter((each) => each.id !== cohort.id);
+    const subscriber = this.findSession(subscriberId);
+    if (!subscriber || subscriber.state !== "active") {
+      this.writeCohorts(remaining);
+      return;
+    }
+    if ((cohort.completionWake ?? "settled_only") === "settled_only" && this.hasLiveTurn(subscriberId)) {
+      this.writeCohorts([...remaining, { ...cohort, ready: reason }]);
+      return;
+    }
+    this.writeCohorts(remaining);
+    const members = cohort.members.map((member) => {
+      if (member.fetch) return member;
+      // A member with no read of its own is given its latest turn, if it has one.
+      const latest = this.findSession(member.sessionId) ? this.scanQueue(member.sessionId).turns.at(-1) : undefined;
+      return latest ? { ...member, fetch: { sessionId: member.sessionId, runId: latest.runId } } : member;
+    });
+    const notification: NotificationDetail = {
+      ...cohortNotification({
+        cohortId: cohort.id,
+        members,
+        reason,
+        minutes: Math.round((cohort.expiresAt - cohort.createdAt) / 60_000),
+        // Only when no member has a turn at all — the cohort's own id, which
+        // names what this is even though no run carries it.
+        fallbackFetch: { sessionId: members[0]!.sessionId, runId: cohort.id },
+      }),
+      deliveries: 1,
+    };
+    try {
+      this.submitTurn(subscriberId, {
+        runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
+        input: notificationLabel(notification),
+        origin: "session",
+        wakeReason: {
+          kind: notification.wakeKind!,
+          sessionId: notification.sessionId!,
+          ...(notification.runId ? { runId: notification.runId } : {}),
+        },
+        notification,
+      });
+    } catch (error) {
+      if (!(error instanceof EngineStateError && error.code === "conflict")) throw error;
+      this.appendEvent(subscriberId, { type: "runtime.warning", message: `cohort ${cohort.id} could not be delivered: ${error.message}` });
+    }
+  }
+
+  /** The subscriber came up for air: deliver the cohorts that closed meanwhile. */
+  private deliverReadyCohorts(subscriberId: string): void {
+    const ready = this.readCohorts().filter((cohort) => cohort.subscriberSessionId === subscriberId && cohort.ready);
+    for (const cohort of ready) this.closeCohort({ ...cohort, ready: undefined }, cohort.ready!);
+  }
+
+  /**
+   * EVERY COHORT PAST ITS EXPIRY, delivered with what it has — the tick, as
+   * `sweepReportWindows` is. Also where a member put away without an event this
+   * engine saw is noticed. Returns the cohorts it closed.
+   */
+  sweepCohorts(): string[] {
+    this.reviewCohorts();
+    const now = this.now();
+    const closed: string[] = [];
+    for (const cohort of this.readCohorts()) {
+      if (cohort.ready) {
+        if (!this.hasLiveTurn(cohort.subscriberSessionId)) {
+          this.closeCohort({ ...cohort, ready: undefined }, cohort.ready);
+          closed.push(cohort.id);
+        }
+        continue;
+      }
+      if (now < cohort.expiresAt) continue;
+      this.closeCohort(cohort, "expired");
+      closed.push(cohort.id);
+    }
+    return closed;
   }
 
   /**
@@ -13089,8 +13437,28 @@ export class EngineStore {
     context: { resultText?: string; failure?: Turn["failure"]; request?: EngineRequest },
   ): void {
     if (turn.origin === "session" && turn.wakeReason) return;
+    this.advanceCohortMember(targetSessionId, kind, turn, context);
     const all = this.readSubscriptions();
     const hits = all.filter((each) => each.targetSessionId === targetSessionId && each.events.includes(kind));
+    /**
+     * A COHORT PASSES A PARKED REQUEST THROUGH AT ONCE — the barrier holds
+     * endings, not someone waiting on an answer. As a subscription for this one
+     * wake, unless the subscriber already has a real one that fires on it.
+     */
+    if (kind === "request_opened") {
+      for (const cohort of this.readCohorts()) {
+        if (!cohort.members.some((member) => member.sessionId === targetSessionId && !member.outcome)) continue;
+        if (hits.some((each) => each.subscriberSessionId === cohort.subscriberSessionId)) continue;
+        hits.push({
+          id: cohort.id,
+          subscriberSessionId: cohort.subscriberSessionId,
+          targetSessionId,
+          events: ["request_opened"],
+          ...(cohort.completionWake ? { completionWake: cohort.completionWake } : {}),
+          createdAt: cohort.createdAt,
+        });
+      }
+    }
     if (hits.length === 0) return;
     let target: Session;
     try {
@@ -14052,6 +14420,7 @@ export class EngineStore {
     this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
     this.appendEvent(sessionId, { type: "session.settled", settledBy });
     this.appendEvent(sessionId, { type: "session.updated", session: next });
+    this.reviewCohorts();
     // A shelf that just grew by a session keeping its terminals (#883). After
     // the command that settled it, never inside it.
     if (this.terminals) void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
@@ -14383,6 +14752,7 @@ export class EngineStore {
    * it was waiting for, which is holding with extra steps.
    */
   private flushPendingNotifications(sessionId: string): void {
+    if (!this.hasLiveTurn(sessionId)) this.deliverReadyCohorts(sessionId);
     const pending = this.readPendingNotifications(sessionId);
     if (pending.length === 0) return;
     if (this.hasLiveTurn(sessionId)) return;
@@ -14494,6 +14864,8 @@ export class EngineStore {
     const dropped: Turn[] = [];
     const trimmed: Turn[] = [];
     for (const turn of candidates) {
+      // A cohort's notification is about all its members, not the one that led it.
+      if (targetSessionId !== undefined && turn.notification?.cohortId) continue;
       if (targetSessionId === undefined || !turn.notification?.entries) {
         if (targetSessionId === undefined || turn.wakeReason!.sessionId === targetSessionId) dropped.push(turn);
         continue;
