@@ -14,7 +14,8 @@
  * whose id matches one of those renders the pane that already exists, and
  * everything else gets the generic one. That is the whole compatibility rule.
  */
-import type { PluginStatus } from "@telar/engine-client";
+import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
+import { machineAllows } from "@telar/engine-client";
 
 /** A settings entry a plugin contributed, flattened for the nav. */
 export type PluginSectionEntry = {
@@ -100,4 +101,13 @@ export function enablePatch(pluginId: string, enabled: boolean, settings?: Recor
       [pluginId]: enabled ? { enabled: true, ...(settings ? { settings } : {}) } : null,
     },
   };
+}
+
+/**
+ * A MAC-WIDE SETTINGS WRITE, which must not flip the Mac-wide switch. The
+ * engine replaces the entry whole, so `enabled` carries the current answer
+ * rather than a constant: `true` here re-enabled a plugin this Mac had off.
+ */
+export function machineSettingsPatch(machine: ProjectPlugins | undefined, pluginId: string, settings: Record<string, unknown>) {
+  return { [pluginId]: { enabled: machineAllows(machine, pluginId), settings } };
 }

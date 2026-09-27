@@ -66,6 +66,16 @@ const MACHINE_PANES: Record<
   "data-science": DataScienceMachineSettings,
 };
 
+/** The plugins that get a defaults group: running, on for this Mac, and declaring machine settings. */
+export function machinePanePlugins(plugins: readonly PluginStatus[], machine: ProjectPlugins | undefined): PluginStatus[] {
+  return plugins.filter(
+    (status) =>
+      status.state !== "failed" &&
+      machineAllows(machine, status.meta.id) &&
+      status.meta.settings.some((section) => section.scope === "machine"),
+  );
+}
+
 export function PluginsPage() {
   const [plugins, setPlugins] = useState<PluginStatus[]>();
   const [machine, setMachine] = useState<ProjectPlugins>();
@@ -160,14 +170,12 @@ export function PluginsPage() {
           this file names it — so the day a third plugin has Mac-wide defaults,
           the only edit is the pane itself and its row in `MACHINE_PANES`.
 
-          A FAILED PLUGIN CONTRIBUTES NOTHING. Its fields would all write into a
-          runtime that did not start, and the switch above already says why. */}
-      {plugins
-        .filter((status) => status.state !== "failed" && status.meta.settings.some((section) => section.scope === "machine"))
-        .map((status) => {
-          const Pane = MACHINE_PANES[status.meta.id];
-          return Pane ? <Pane key={status.meta.id} machine={machine} onChange={setMachine} /> : null;
-        })}
+          A FAILED OR SWITCHED-OFF PLUGIN CONTRIBUTES NOTHING. Its defaults
+          would apply to nothing, and the switch above already says why. */}
+      {machinePanePlugins(plugins, machine).map((status) => {
+        const Pane = MACHINE_PANES[status.meta.id];
+        return Pane ? <Pane key={status.meta.id} machine={machine} onChange={setMachine} /> : null;
+      })}
     </>
   );
 }

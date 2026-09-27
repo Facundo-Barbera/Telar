@@ -9,7 +9,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { PluginStatus } from "@telar/engine-client";
-import { BESPOKE_PLUGIN_PANES, enablePatch, hasBespokePane, projectPluginSections } from "./sections";
+import { BESPOKE_PLUGIN_PANES, enablePatch, hasBespokePane, machineSettingsPatch, projectPluginSections } from "./sections";
 
 const status = (id: string, extra: Partial<PluginStatus["meta"]> = {}, rest: Partial<PluginStatus> = {}): PluginStatus => ({
   meta: {
@@ -92,4 +92,14 @@ test("enabling writes the map entry; disabling REMOVES it", () => {
 test("no plugins is an empty nav, not a crash", () => {
   expect(projectPluginSections(undefined)).toEqual([]);
   expect(projectPluginSections([])).toEqual([]);
+});
+
+test("saving a Mac-wide default keeps the Mac-wide switch where it was", () => {
+  const off = { version: 1, entries: { latex: { enabled: false } } };
+  // The bug: every save sent `enabled: true`, re-enabling a plugin this Mac had off.
+  expect(machineSettingsPatch(off, "latex", { engine: "xelatex" })).toEqual({
+    latex: { enabled: false, settings: { engine: "xelatex" } },
+  });
+  // No entry means allowed, as the engine reads it.
+  expect(machineSettingsPatch(undefined, "data-science", {})).toEqual({ "data-science": { enabled: true, settings: {} } });
 });

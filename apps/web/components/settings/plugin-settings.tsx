@@ -16,7 +16,7 @@
  * than a disabled toggle with the reason beside it.
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { CircleAlertIcon, PlugIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
@@ -28,14 +28,32 @@ import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
 
+/**
+ * Why a project cannot use a plugin this Mac has switched off. A plain anchor,
+ * not a client-side link: Settings reads `?section=` on mount only.
+ */
+export function machineOffReason(label: string): ReactNode {
+  return (
+    <>
+      {label} is off for every project on this Mac.{" "}
+      <a href="/settings?section=plugins" className="underline underline-offset-2">
+        Turn it on in Plugins
+      </a>
+      .
+    </>
+  );
+}
+
 export function PluginSettings({
   entry,
   project,
   onChange,
+  machineOff = false,
 }: {
   entry: PluginSectionEntry;
   project: Project;
   onChange: (project: Project) => void;
+  machineOff?: boolean;
 }) {
   const enabled = pluginEnabled(readProjectPlugins(project).plugins, entry.pluginId);
   const [busy, setBusy] = useState(false);
@@ -71,6 +89,7 @@ export function PluginSettings({
             ? "This plugin did not start, so turning it on would do nothing."
             : "Sessions in this project get its tools; turning it off lets running work finish."
         }
+        {...(machineOff && !failed ? { unavailable: { reason: machineOffReason(entry.label) } } : {})}
         control={
           <Switch
             checked={enabled}

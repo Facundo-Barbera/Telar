@@ -11,6 +11,7 @@ import {
   ProjectConversationRows,
   ProjectIdentityRows,
   ProjectModelOptionsRow,
+  ProjectPluginPanes,
   ProjectPluginRows,
   ProjectsPage,
   type ScopedProject,
@@ -214,6 +215,26 @@ test("a project on another Mac has read-only plugin switches, and the row says w
   expect(html).toContain("inert");
 });
 
+test("a plugin off for the whole Mac is inert in every project, and says where to turn it on", () => {
+  const latex = { meta: { id: "latex", name: "LaTeX", settings: [] }, state: "ready" } as never;
+  const machine = { version: 1, entries: { latex: { enabled: false } } };
+  // The project asked for LaTeX; the Mac said no, and the Mac wins.
+  const asked = project({ plugins: { version: 1, entries: { latex: { enabled: true } } } } as Partial<ScopedProject>);
+
+  const rows = renderToStaticMarkup(<ProjectPluginRows project={asked} plugins={[latex]} machine={machine} />);
+  expect(rows).toContain("LaTeX is off for every project on this Mac.");
+  expect(rows).toContain('href="/settings?section=plugins"');
+  expect(rows).toContain("inert");
+
+  // The bespoke pane would offer compiling; the generic one explains instead.
+  const panes = renderToStaticMarkup(<ProjectPluginPanes project={asked} plugins={[latex]} machine={machine} onChange={() => {}} />);
+  expect(panes).toContain("LaTeX is off for every project on this Mac.");
+  expect(panes).toContain("inert");
+
+  // With the Mac allowing it the reason is gone.
+  expect(renderToStaticMarkup(<ProjectPluginRows project={asked} plugins={[latex]} />)).not.toContain("off for every project");
+});
+
 test("with no plugins registered the group says so rather than heading empty air", () => {
   const html = renderToStaticMarkup(<ProjectPluginRows plugins={[]} />);
   expect(html).toContain("No plugins registered");
@@ -361,7 +382,7 @@ test("the standalone per-project page's two halves are groups on this pane (#363
   // MCP servers scoped to the project, and every plugin's own editor — the two
   // things `/projects/:id/settings` held that this pane had no room for.
   expect(source).toContain("<McpSection scope={{ projectId: project.id, projectName: project.name }} />");
-  expect(source).toContain("<ProjectPluginPanes project={project}");
+  expect(source).toMatch(/<ProjectPluginPanes\s+project={project}/);
   // On THIS Mac only: every write goes through this pane's `api`, and there is
   // no `/hosts/:id/…` counterpart to send a foreign project id to.
   expect(source).toContain("{project && !project.hostId && (");
