@@ -2835,6 +2835,30 @@ test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   expect(seen[2]).toMatchObject({ model: undefined, env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
 });
 
+test("a login's per-class auto-compact limit follows the session's window (#587)", async () => {
+  const seen: (Record<string, unknown> | undefined)[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push(input.options.env);
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const autoCompact = { mode: "limits", standard: 150_000, long: 400_000 } as const;
+  // A stale row from before #587 in the login's own env: the setting wins.
+  const env = { DISABLE_AUTO_COMPACT: "1" };
+  await run(driver, { model: "claude-opus-5-5", env, autoCompact }).result;
+  await run(driver, { model: "claude-opus-5-5[1m]", env, autoCompact }).result;
+  await run(driver, { model: "claude-mystery-9", autoCompact }).result;
+  await run(driver, { model: "claude-opus-5-5", autoCompact: { mode: "never" } }).result;
+  // N + 33 000 declared, and a percentage that lands both arms of the CLI's min on N.
+  expect(seen[0]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "183000", CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "92.02454" });
+  expect(seen[0]).not.toHaveProperty("DISABLE_AUTO_COMPACT");
+  expect(seen[1]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "433000" });
+  // A window it cannot name takes the standard limit, the earlier one.
+  expect(seen[2]).toMatchObject({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: "183000" });
+  expect(seen[3]).toMatchObject({ DISABLE_AUTO_COMPACT: "1" });
+});
+
 test("MCP tool schemas are deferred behind tool search unless the environment says otherwise", async () => {
   // 142 tools / ~38k tokens rode every request in the 24 Sep benchmark because
   // Claude Code never switched tool search on by itself.

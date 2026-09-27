@@ -52,6 +52,7 @@ import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER }
 import { claimHasComputerUse } from "./computer-use";
 import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
+import { codexWindowConfig, readCodexWindows, type CodexWindow } from "./codex/windows";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
 import { normalizeOutcome, requireCwd, type DriverRequest, type DriverRun, type DriverResult, type TurnDriver } from "./provider-contract";
 
@@ -84,6 +85,8 @@ export type CodexDriverOptions = {
    *  `resolveCodexBinary`'s header for why it is not imported here. */
   resolveBin?: (binaryPath?: string) => string;
   threadConfig?: CodexThreadConfig;
+  /** The seam for `readCodexWindows`, which spawns `codex debug models`. */
+  readWindows?: (bin: string) => Promise<ReadonlyMap<string, CodexWindow>>;
 };
 
 export const DEFAULT_CODEX_MODEL = "gpt-5.5";
@@ -318,6 +321,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       providerSessionId,
       env: instanceEnv,
       binaryPath,
+      autoCompact,
       mcpServers: userMcpServers,
       browserSocket,
       sessionsSocket,
@@ -339,7 +343,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       // Codex spawns an app-server in a directory; a session with none is a
       // routing mistake and says so before anything starts. See `requireCwd`.
       const cwd = requireCwd(claimedCwd, "Codex");
-      const model = turnModel ?? options.model ?? DEFAULT_CODEX_MODEL;
+      const requestedModel = turnModel ?? options.model ?? DEFAULT_CODEX_MODEL;
       const effort = turnEffort ?? options.effort;
       // Throws `ProviderUnavailableError` when Codex is not installed, BEFORE a
       // subprocess exists — a missing CLI must read as a missing CLI, not as an
@@ -348,6 +352,13 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       // The LOGIN'S OWN BINARY when it pinned one, on the same "most specific
       // wins" rule as `model` and `env` above it.
       const bin = resolveBin(binaryPath);
+      // The window and the login's compaction limit (#587) — see ./codex/windows.
+      // The catalog is only read when one of them needs it.
+      const windows =
+        /\[1m\]$/i.test(requestedModel) || autoCompact?.mode === "limits"
+          ? await (options.readWindows ?? readCodexWindows)(bin)
+          : new Map<string, CodexWindow>();
+      const { model, config: windowConfig } = codexWindowConfig(requestedModel, windows, autoCompact);
       const threadConfig = options.threadConfig ?? defaultThreadConfig(Boolean(onRequest));
       /**
        * THE TURN'S INSTANCE WINS OVER THE DEPLOYMENT'S DEFAULT, the same
@@ -777,11 +788,13 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
          * (`mac` and Codex's native `computer_use`) under two names.
          */
         const disableNativeComputerUse = claimHasComputerUse(userMcpServers);
+        const hasWindowConfig = Object.keys(windowConfig).length > 0;
         const configOverlay =
-          mcpServers || disableNativeComputerUse
+          mcpServers || disableNativeComputerUse || hasWindowConfig
             ? {
                 ...(mcpServers ? { mcp_servers: mcpServers } : {}),
                 ...(disableNativeComputerUse ? { features: { computer_use: false } } : {}),
+                ...windowConfig,
               }
             : undefined;
         /**

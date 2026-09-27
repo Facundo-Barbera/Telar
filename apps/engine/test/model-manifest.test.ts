@@ -6,6 +6,7 @@ import {
   claudeEffortFor,
   claudeFixedWindowOf,
   claudeProfileOf,
+  claudeWindowTokensOf,
   longDefaultOf,
   type ModelManifest,
 } from "../src/model-manifest";
@@ -162,6 +163,14 @@ describe("a fixed window is published, not guessed from the suffix (#914)", () =
     expect(claudeFixedWindowOf("haiku")).toBe(200_000);
     expect(claudeFixedWindowOf("opus[1m]")).toBeUndefined();
     expect(claudeFixedWindowOf("claude-mystery-9")).toBeUndefined();
+  });
+
+  test("claudeWindowTokensOf is the window an id runs: fixed, else [1m] or 200k", () => {
+    expect(claudeWindowTokensOf("claude-opus-4-8")).toBe(1_000_000);
+    expect(claudeWindowTokensOf("opus[1m]")).toBe(1_000_000);
+    expect(claudeWindowTokensOf("opus")).toBe(200_000);
+    expect(claudeWindowTokensOf("haiku")).toBe(200_000);
+    expect(claudeWindowTokensOf("claude-mystery-9")).toBeUndefined();
   });
 });
 

@@ -68,6 +68,18 @@ export function openCodePartDetail(part: Part): ItemDetail | undefined {
   return undefined;
 }
 
+/**
+ * WHAT A RUNNING SERVER WAS STARTED WITH; a change restarts it. The compaction
+ * setting is here for the reason `orientation` is (see `run`): the Never env
+ * var and the limit override are both baked in at spawn. The model joins only
+ * under Limits, because only then is the override that model's — otherwise
+ * switching models mid-session would cost a restart for nothing.
+ */
+export function openCodeServerIdentity(input: DriverRun): string {
+  return JSON.stringify([input.cwd, input.binaryPath, input.providerInstanceId, input.env, input.orientation ?? null,
+    input.autoCompact ?? null, input.autoCompact?.mode === "limits" ? input.model ?? null : null]);
+}
+
 /** Snapshot reconciliation is authoritative; SSE only accelerates refresh.
  * Reconnection never repeats a prompt. Each Telar session owns one server.
  */
@@ -85,7 +97,7 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
        * thing "off" must not mean. Same rule as the Claude driver's
        * fingerprint; a changed identity restarts the server.
        */
-      const identity = JSON.stringify([input.cwd, input.binaryPath, input.providerInstanceId, input.env, input.orientation ?? null]);
+      const identity = openCodeServerIdentity(input);
       let owned = runtimes.get(input.sessionId);
       if (!owned || owned.identity !== identity || owned.runtime.closed) {
         owned?.runtime.close();

@@ -1,6 +1,6 @@
 import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
-import type { Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDefault, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { AutoCompact, Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDefault, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
 import type { PromptsCapability } from "./prompts-tools/tools";
@@ -265,6 +265,12 @@ export type DriverRun = {
    * default name, which is what every login had before this existed.
    */
   binaryPath?: string;
+  /**
+   * WHEN THE LOGIN'S SESSIONS COMPACT (#587): a token limit per window class,
+   * or Never. Each driver resolves the session's window and writes the limit
+   * into its provider's own knob. Absent means the provider decides.
+   */
+  autoCompact?: AutoCompact;
   /**
    * WHICH CONFIGURED LOGIN this turn runs as, by id.
    *

@@ -44,10 +44,11 @@ import {
   qualifyTelarTool,
   TELAR_BROWSER_MCP_SERVER,
   TELAR_MCP_SERVER,
+  claudeCompactionEnv,
   UNKNOWN_PATH,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
-import { claudeEffortFor, claudeFixedWindowOf } from "./model-manifest";
+import { claudeEffortFor, claudeFixedWindowOf, claudeWindowTokensOf } from "./model-manifest";
 import { collectTelarWall, type TelarSocketLease, type TelarWallPart } from "./telar-socket";
 import { runTools } from "./run/tools";
 import { pluginToolModules } from "./plugins/bundled";
@@ -1339,6 +1340,7 @@ export function createClaudeDriver(
       attachments,
       mcpServers: userMcpServers,
       env,
+      autoCompact,
       binaryPath,
       onObservations,
       onRequest,
@@ -1375,6 +1377,9 @@ export function createClaudeDriver(
       const sdkEffort = claudeEffort(claudeEffortFor(model, effort));
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
+      // The login's per-class limit (#587), for the window this model runs.
+      // After the login's own patch, so the setting beats a stale row.
+      const compactionEnv = claudeCompactionEnv(autoCompact, model ? claudeWindowTokensOf(model) : undefined);
       const defaultEnv = { ...SESSION_STATE_ENV, ...claudeToolSearchEnv(process.env) };
 
       let finalText = "";
@@ -2640,7 +2645,7 @@ export function createClaudeDriver(
          * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
          * opposite instructions that `JSON.stringify` rendered identically.
          */
-        env: canonicalEnvPatch(defaultEnv, env, contextEnv),
+        env: canonicalEnvPatch(defaultEnv, env, contextEnv, compactionEnv),
         effort: sdkEffort ?? null,
         fastMode: fastMode ?? null,
         ultracode: ultracode ?? null,
@@ -2712,7 +2717,7 @@ export function createClaudeDriver(
 
       /** The child's environment with the patch's deletions APPLIED, resolved
        *  once so the query options and the fingerprint cannot disagree. */
-      const childEnv = resolveChildEnv(process.env, defaultEnv, env, contextEnv);
+      const childEnv = resolveChildEnv(process.env, defaultEnv, env, contextEnv, compactionEnv);
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };

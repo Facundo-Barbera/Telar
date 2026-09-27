@@ -112,6 +112,7 @@ import {
   type ProviderDriverKind,
   type ProviderInstance,
   type ProviderInstanceEnvVar,
+  type AutoCompact,
   type ProviderProbe,
   type ProviderUpdate,
   type ProviderUpdateRun,
@@ -3058,6 +3059,9 @@ export class EngineClient {
     /** A whole percentage of the model's window; `null` returns this login to
      *  the cockpit's default. */
     contextNoticePercent?: number | null;
+    /** When this login's sessions compact; `null` returns it to the provider's
+     *  default. */
+    autoCompact?: AutoCompact | null;
     configDir?: string | null;
     binaryPath?: string | null;
     enabled?: boolean;
