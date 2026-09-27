@@ -6,8 +6,6 @@ import {
   BotIcon,
   ChevronRightIcon,
   CircleDotIcon,
-  FlaskConicalIcon,
-  SigmaIcon,
   NotebookIcon,
   TableIcon,
   FileCode2Icon,
@@ -25,6 +23,7 @@ import {
   SquareTerminalIcon,
   TerminalIcon,
   XIcon,
+  type LucideIcon,
 } from "lucide-react";
 import type {
   BrowserProvider,
@@ -69,6 +68,8 @@ import { RelatedConversations } from "@/components/session/related-conversations
 import { ReportCadence } from "@/components/session/report-cadence";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
+import { PluginSurface } from "@/components/plugins/surfaces";
+import { isPluginSurface, PLUGIN_SURFACES, pluginSurfaces, viewerAvailable, type PluginSurfaceId } from "@/lib/plugins/registry";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
 import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
 import { useCommandHandlers } from "@/lib/use-command-keys";
@@ -116,8 +117,6 @@ const FileViewSurface = dynamic(() => import("@/components/session/file-view-sur
 const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));
 const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface));
 const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
-const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface));
-const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
 const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
 const TaskLog = dynamic(() => import("@/components/session/task-log").then((mod) => mod.TaskLog));
 /** THE HEAVIEST ARM ON THE LADDER: xterm.js, its WebGL renderer and its image
@@ -231,24 +230,11 @@ const SURFACES = [
    */
   { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues" },
   { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests" },
-  /**
-   * THE DATA-SCIENCE SURFACE, present only on a project that opted in. ONE
-   * tab, because plots, variables and the environment are three views of one
-   * thing — the session's kernel — and three top-level tabs for it crowded a
-   * strip that already holds files, issues and browser pages. Inside it a
-   * browser-style sub-strip (session/data-surface.tsx) does the switching. It
-   * stays in this list so a restored tab id validates; the panel filters it
-   * out of the chooser and the empty state when `dataScience` is off.
+  /*
+   * A PLUGIN'S SURFACES GO HERE — after the forge pair, before the Terminal —
+   * from `lib/plugins/registry.ts` (Data Science's "Data", LaTeX's "LaTeX"),
+   * and only while the project has that plugin on. See `surfacesFor`.
    */
-  { id: "data", label: "Data", icon: FlaskConicalIcon, blurb: "Plots, variables and the Python environment" },
-  /**
-   * THE LATEX SURFACE, the same deal as "data": present only on a project
-   * that opted in, one tab (compile status, structured errors, the log tail —
-   * session/latex-surface.tsx). The PDF itself is a FILE tab, not this
-   * surface: the compile writes it beside its source and "Open PDF" routes
-   * through `panelTabForPath` like any other file.
-   */
-  { id: "latex", label: "LaTeX", icon: SigmaIcon, blurb: "Compile status, errors and the log" },
   /**
    * THE TERMINAL, and it is a real one — a pseudo-terminal in the Electron main
    * process (docs/terminal-host.md), not a log pane with a prompt drawn on it.
@@ -277,13 +263,16 @@ const SURFACES = [
   { id: "terminal", label: "Terminal", icon: SquareTerminalIcon, blurb: "Shells in this session's checkout, and what the project is running" },
 ] as const;
 
-type SurfaceId = (typeof SURFACES)[number]["id"];
+type SurfaceId = (typeof SURFACES)[number]["id"] | PluginSurfaceId;
 
-/** Surfaces that exist only when the project opted into data science. */
-const DS_SURFACES: ReadonlySet<string> = new Set(["data"]);
+type Surface = { id: SurfaceId; label: string; icon: LucideIcon; blurb: string };
 
-/** Surfaces that exist only when the project opted into LaTeX. */
-const LATEX_SURFACES: ReadonlySet<string> = new Set(["latex"]);
+/** Every surface this build knows, whether or not a plugin is on — so a
+ *  restored tab id validates and a tab label resolves. */
+const ALL_SURFACES: readonly Surface[] = [...SURFACES, ...PLUGIN_SURFACES];
+
+/** Stable, so a memo keyed on the enabled set does not change every render. */
+const NO_PLUGINS: readonly string[] = [];
 
 /** The two tabs "data" replaced. A layout saved by the previous build names
  *  them; they restore as the one tab rather than vanishing. */
@@ -353,8 +342,11 @@ export function migratePanelTab(value: string): string {
   return isFilePanelTab(value) ? "editor" : value;
 }
 
-function surfacesFor(dataScience: boolean, latex = false): typeof SURFACES[number][] {
-  return SURFACES.filter((surface) => (dataScience || !DS_SURFACES.has(surface.id)) && (latex || !LATEX_SURFACES.has(surface.id)));
+/** The surfaces a project offers: the core ones, with the enabled plugins'
+ *  slotted in before the Terminal. */
+function surfacesFor(enabledPlugins: readonly string[]): Surface[] {
+  const terminal = SURFACES.findIndex((surface) => surface.id === "terminal");
+  return [...SURFACES.slice(0, terminal), ...pluginSurfaces(enabledPlugins), ...SURFACES.slice(terminal)];
 }
 
 /**
@@ -465,15 +457,15 @@ export function pdfPanelPath(tab: PanelTab): string | undefined {
 }
 
 /** Which tab a path opens as: notebook, table, PDF or plain file — by file
- *  kind. The data-science pair is gated on the project's opt-in; the PDF
- *  viewer is NOT — a document renders wherever it is opened from (the tree,
- *  the agent's display tool, another feature's compiled output). */
-export function panelTabForPath(path: string, dataScience: boolean): PanelTab {
+ *  kind. A plugin's viewer (notebook, table) only while that plugin is on; the
+ *  PDF viewer is core — a document renders wherever it is opened from (the
+ *  tree, the agent's display tool, another feature's compiled output). */
+export function panelTabForPath(path: string, enabledPlugins: readonly string[]): PanelTab {
   const viewer = fileKind(path).viewer;
-  if (dataScience && viewer === "notebook") return notebookPanelTab(path);
-  if (dataScience && viewer === "table") return tablePanelTab(path);
-  if (viewer === "pdf") return pdfPanelTab(path);
-  return filePanelTab(path);
+  if (!viewer || !viewerAvailable(viewer, enabledPlugins)) return filePanelTab(path);
+  if (viewer === "notebook") return notebookPanelTab(path);
+  if (viewer === "table") return tablePanelTab(path);
+  return pdfPanelTab(path);
 }
 
 export function browserPanelTab(tabId: string): PanelTab {
@@ -613,8 +605,8 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => tab === "issues",
   (tab) => tab === "pulls",
   (tab) => tab === "editor",
-  (tab) => tab === "data",
-  (tab) => tab === "latex",
+  /* A PLUGIN'S SURFACE DRAWS ITS OWN CHROME (Data's sub-strip, LaTeX's log). */
+  (tab) => isPluginSurface(tab),
   /* A TERMINAL IS THE STRICTEST CASE ON THIS LIST. The others lose a scroll to a
      line of chrome above them; this one loses ROWS — the fit addon measures the
      box it was given, so every pixel the panel spends above it is a line the
@@ -643,7 +635,7 @@ export function isPanelTab(value: string): value is PanelTab {
   if (value.startsWith(ISSUE_PREFIX) || value.startsWith(PULL_PREFIX)) {
     return forgeNumber(value as PanelTab, value.startsWith(ISSUE_PREFIX) ? ISSUE_PREFIX : PULL_PREFIX) !== undefined;
   }
-  return SURFACES.some((surface) => surface.id === value);
+  return ALL_SURFACES.some((surface) => surface.id === value);
 }
 
 /** A page's label: its title, else its host, else the raw URL. A tab reading
@@ -693,7 +685,7 @@ export function describePanelTab(
   if (pullNumber !== undefined) return { label: `#${pullNumber}`, icon: GitPullRequestIcon, blurb: `Pull request #${pullNumber}` };
   const pageId = browserTabId(tab);
   if (pageId === undefined) {
-    const surface = SURFACES.find((entry) => entry.id === tab)!;
+    const surface = ALL_SURFACES.find((entry) => entry.id === tab)!;
     return { label: surface.label, icon: surface.icon, blurb: surface.blurb };
   }
   // The desktop shell's single browser tab: the native strip names the pages.
@@ -1414,7 +1406,7 @@ export function PanelSurface({
   onTabParams,
   onCloseSelf,
   active,
-  dataScience,
+  enabledPlugins = NO_PLUGINS,
   onOpenImage,
   editor,
   onEditorChange,
@@ -1505,8 +1497,8 @@ export function PanelSurface({
    */
   onCloseSelf?: () => void;
   active?: TurnState;
-  /** The project opted into data science: .ipynb opens as cells, CSV as a grid. */
-  dataScience?: boolean;
+  /** The project's enabled plugin ids: which plugin surfaces and file viewers exist. */
+  enabledPlugins?: readonly string[];
   onOpenImage?: (attachmentId: string) => void;
   /** The Editor's open files. Owned by the cockpit for the same reason the
    *  panel's own tabs are: it persists them, and it is where "open this file"
@@ -1561,7 +1553,7 @@ export function PanelSurface({
         {...(projectId ? { projectId } : {})}
         {...(hostId ? { hostId } : {})}
         {...(active ? { active } : {})}
-        dataScience={dataScience === true}
+        enabledPlugins={enabledPlugins}
         {...(onOpenImage ? { onOpenImage } : {})}
         // THE TREE'S ROW MENU OFFERS THE REFERENCE TOO. It always could — the
         // row builds the same `fileReference` its own drag carries — but this
@@ -1573,20 +1565,19 @@ export function PanelSurface({
         {...(onOpenFileInNewTab ? { onOpenInNewPanelTab: onOpenFileInNewTab } : {})}
       />
     ) : null;
-  if (kind === "data")
+  // A PLUGIN'S SURFACE, whichever it is — see components/plugins/surfaces.tsx.
+  if (isPluginSurface(kind))
     return (
-      <DataSurface
+      <PluginSurface
+        id={kind}
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
         {...(active ? { active } : {})}
-        // The kernel announces every transition on the journal; the pill folds
-        // them rather than asking once and believing the answer all turn (#356).
         events={events}
         {...(onOpenImage ? { onOpenImage } : {})}
+        onOpenFile={(path) => onOpenTab(panelTabForPath(path, enabledPlugins))}
       />
     );
-  if (kind === "latex")
-    return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
   /**
    * KEYED BY THE INSTANCE AND THE CHECKOUT, like the Editor above and for a
    * harder reason: what this holds is not scroll position but LIVE SHELLS. A
@@ -1659,7 +1650,7 @@ export function PanelSurface({
         // Derived from `onOpenTab`, exactly as LatexSurface's is above — a
         // changed file opens through the ONE route into the Editor rather than
         // a second one cut for this menu.
-        onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))}
+        onOpenFile={(path) => onOpenTab(panelTabForPath(path, enabledPlugins))}
         // ...and the row's own path in a second Diff, through the same verb the
         // "+" chooser presses for another instance.
         {...(onOpenNewTab ? { onOpenInNewPanelTab: (path: string) => onOpenNewTab("diff", { filter: path }) } : {})}
@@ -1753,12 +1744,10 @@ function PanelEmptyState({
   browser,
   onOpenBrowser,
   browserStart = { status: "idle" },
-  dataScience = false,
-  latex = false,
+  enabledPlugins = NO_PLUGINS,
 }: {
   onOpen: (tab: PanelTab) => void;
-  dataScience?: boolean;
-  latex?: boolean;
+  enabledPlugins?: readonly string[];
   browser?: BrowserState;
   /** Absent when the engine cannot start a browser here — the affordance
    *  hides rather than offering a launch that would land beside the worker's
@@ -1781,7 +1770,7 @@ function PanelEmptyState({
         <h2 className="mt-3 text-center font-heading text-sm font-medium">Open a surface</h2>
         <p className="mt-1 text-center text-xs leading-relaxed text-muted-foreground">Choose what to keep beside the conversation.</p>
         <div className="mt-4 grid grid-cols-1 gap-1 @[420px]/panel-empty:grid-cols-2">
-          {surfacesFor(dataScience, latex).map((candidate) => (
+          {surfacesFor(enabledPlugins).map((candidate) => (
             <button
               key={candidate.id}
               type="button"
@@ -2059,18 +2048,15 @@ export function RightPanel({
   onClose,
   onTabParams,
   open = true,
-  dataScience = false,
-  latex = false,
+  enabledPlugins = NO_PLUGINS,
   editors,
   onEditorChange,
   hostId,
 }: {
   active?: TurnState;
-  /** The project opted into data science — shows Plots and Variables, and
-   *  opens .ipynb and CSV files in their own surfaces. */
-  dataScience?: boolean;
-  /** The project opted into LaTeX — shows the compile surface. */
-  latex?: boolean;
+  /** The project's enabled plugin ids — which plugin surfaces the chooser
+   *  offers and which file viewers (a notebook, a table) are on. */
+  enabledPlugins?: readonly string[];
   /** Absent until the first message creates the session. The browser and git
    *  surfaces are the two that need it — everything else folds records the
    *  cockpit already holds. */
@@ -2287,7 +2273,7 @@ export function RightPanel({
    * `another` says which of the two a press means, so the row can say so too.
    */
   const openable: { id: PanelTab; label: string; icon: typeof BotIcon; another: boolean }[] = [
-    ...surfacesFor(dataScience, latex)
+    ...surfacesFor(enabledPlugins)
       .filter((surface) => !holdsKind(surface.id) || offersAnother(surface.id))
       .map((surface) => ({
         id: surface.id as PanelTab,
@@ -2347,7 +2333,7 @@ export function RightPanel({
       {...(projectId ? { projectId } : {})}
       {...(branch ? { branch } : {})}
       {...(active ? { active } : {})}
-      dataScience={dataScience}
+      enabledPlugins={enabledPlugins}
       onOpenImage={setLightbox}
       // THIS instance's files, and a change handler bound to it — two Editors
       // must not write into one state.
@@ -2767,7 +2753,7 @@ export function RightPanel({
             {panelSurface(activeTab, true)}
           </Suspense>
         ) : (
-          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} dataScience={dataScience} latex={latex} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
+          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} enabledPlugins={enabledPlugins} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
         )}
         {/* OUTSIDE THE BRANCHES ABOVE, because a kept Terminal renders in one
             of them and the lightbox belongs to neither surface — it is the

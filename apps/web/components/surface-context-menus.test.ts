@@ -211,12 +211,12 @@ describe("the table's column header and its cells", () => {
 describe("the diff surface's file row", () => {
   const dif = () => code("session/diff-surface.tsx");
 
-  test("Open in Editor goes through the panel's ONE route, derived from onOpenTab like LatexSurface's", () => {
+  test("Open in Editor goes through the panel's ONE route, derived from onOpenTab like a plugin surface's", () => {
     expect(dif()).toContain("<ContextMenuItem onClick={() => onOpenFile(file.path)}>Open in Editor</ContextMenuItem>");
     const panel = code("right-panel.tsx");
-    // The same expression LatexSurface is handed, on the same line shape.
-    expect(panel).toContain("onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))}");
-    expect((panel.match(/onOpenFile=\{\(path\) => onOpenTab\(panelTabForPath\(path, dataScience === true\)\)\}/g) ?? []).length).toBe(2);
+    // The same expression every plugin surface (LaTeX's among them) is handed.
+    expect(panel).toContain("onOpenFile={(path) => onOpenTab(panelTabForPath(path, enabledPlugins))}");
+    expect((panel.match(/onOpenFile=\{\(path\) => onOpenTab\(panelTabForPath\(path, enabledPlugins\)\)\}/g) ?? []).length).toBe(2);
   });
 
   test("Insert as reference inserts the SAME string the row's own drag carries", () => {

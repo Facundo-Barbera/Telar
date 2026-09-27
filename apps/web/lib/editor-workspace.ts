@@ -24,6 +24,7 @@
  */
 
 import { fileKind } from "@/lib/file-kinds";
+import { viewerAvailable } from "@/lib/plugins/registry";
 
 /**
  * WHICH SURFACE DRAWS THE FILE. The same four the panel used to spend a
@@ -82,12 +83,11 @@ export function emptyEditor(): EditorState {
  * module can see pinning itself on the first keystroke. Handing its slot to the
  * next click in the tree is the one replacement that could cost something.
  */
-export function editorFileForPath(path: string, dataScience: boolean): { path: string; view: EditorView } {
+export function editorFileForPath(path: string, enabledPlugins: readonly string[]): { path: string; view: EditorView } {
+  // A plugin's viewer (a notebook, a table) only while that plugin is on; the
+  // PDF viewer is core. Otherwise the file is text.
   const viewer = fileKind(path).viewer;
-  if (dataScience && viewer === "notebook") return { path, view: "notebook" };
-  if (dataScience && viewer === "table") return { path, view: "table" };
-  if (viewer === "pdf") return { path, view: "pdf" };
-  return { path, view: "code" };
+  return { path, view: viewer && viewerAvailable(viewer, enabledPlugins) ? viewer : "code" };
 }
 
 /** A notebook is never a preview — see `editorFileForPath`. */

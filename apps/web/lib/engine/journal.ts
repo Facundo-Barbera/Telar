@@ -1,3 +1,4 @@
+import { pluginJournalRow } from "@/lib/plugins/journal";
 import { displayToolName, type EngineEvent, type Item, type RateLimitType, type Session, type Task, type Turn, type TurnAttachment, type TurnFailureCode, type TurnState, type UsageSnapshot } from "@telar/engine-client";
 
 /**
@@ -538,72 +539,17 @@ export function projectJournal(
           });
         }
         break;
-      case "notebook.cell.output": {
-        /**
-         * ONLY THE FIGURES BECOME ROWS. Text and tables are already in the
-         * tool result the model read; a plot is the one output a human wants
-         * to SEE where it was made, and the gallery holds the rest. Outputs
-         * with no turn (a cell run from the panel) stay off the transcript.
-         */
-        const output = event.output as { kind?: string; attachmentId?: string } | null;
-        if (!turn || output?.kind !== "image" || !output.attachmentId) break;
-        turn.items.push({
-          id: `plot_${output.attachmentId}`,
-          runId: event.runId!,
-          sessionId: event.sessionId,
-          status: "completed",
-          startedAt: event.at,
-          completedAt: event.at,
-          detail: { type: "unknown", label: `Drew a figure${event.producer ? ` — ${event.producer}` : ""}` },
-          streamedText: "",
-          openedBy: event.id,
-          plotAttachmentId: output.attachmentId,
-        });
-        break;
-      }
-      case "latex.compile.finished":
-        /**
-         * ONE ROW PER COMPILE — the counts and the first error, never the
-         * log; the LaTeX surface holds the full diagnostics. A compile with
-         * no turn (pressed on the panel) stays off the transcript.
-         */
-        if (turn) {
-          turn.items.push({
-            id: `latex_${event.id}`,
-            runId: event.runId!,
-            sessionId: event.sessionId,
-            status: event.ok ? "completed" : "failed",
-            startedAt: event.at,
-            completedAt: event.at,
-            detail: event.ok
-              ? { type: "unknown", label: `Compiled ${event.path}${event.warnings ? ` — ${event.warnings} warning${event.warnings === 1 ? "" : "s"}` : ""}` }
-              : { type: "error", error: { message: `Compile of ${event.path} failed — ${event.errors} error${event.errors === 1 ? "" : "s"}${event.firstError ? `, first: ${event.firstError}` : ""}` } },
-            streamedText: "",
-            openedBy: event.id,
-          });
-        }
-        break;
-      case "ds.watch.violated":
-        if (turn) {
-          turn.items.push({
-            id: `watch_${event.id}`,
-            runId: event.runId!,
-            sessionId: event.sessionId,
-            status: "failed",
-            startedAt: event.at,
-            completedAt: event.at,
-            detail: { type: "error", error: { message: `Watch "${event.watch}" violated: ${event.assert}${event.detail ? ` (${event.detail})` : ""}` } },
-            streamedText: "",
-            openedBy: event.id,
-          });
-        }
-        break;
-      default:
+      default: {
+        // A PLUGIN'S EVENT draws the row its plugin registered
+        // (lib/plugins/journal.ts) — plots, compiles, watch violations.
+        const pluginRow = turn ? pluginJournalRow(event) : undefined;
+        if (turn && pluginRow) turn.items.push(pluginRow);
         // Every other family (runtime.*, request.*, browser.*, mcp.*) is
         // contract but not yet rendered. Ignoring them here is deliberate;
         // dropping them at PARSE time would not be, which is why
         // safeParseEvent only skips rows it cannot understand at all.
         break;
+      }
     }
   }
 

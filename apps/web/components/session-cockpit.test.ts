@@ -548,7 +548,7 @@ describe("which plugin surfaces the cockpit offers", () => {
   test("reads the map", () => {
     expect(
       cockpitPlugins({ plugins: { version: 1, entries: { "data-science": { enabled: true }, latex: { enabled: false } } } }),
-    ).toEqual({ dataScience: true, latex: false });
+    ).toEqual(["data-science"]);
   });
 
   test("a map that disables Data Science beats stale legacy fields", () => {
@@ -557,23 +557,23 @@ describe("which plugin surfaces the cockpit offers", () => {
         plugins: { version: 1, entries: { latex: { enabled: true } } },
         dataScience: { enabled: true },
       }),
-    ).toEqual({ dataScience: false, latex: true });
+    ).toEqual(["latex"]);
   });
 
   test("an entry the map never grew is off, whatever legacy fields say", () => {
     expect(
       cockpitPlugins({ plugins: { version: 1, entries: {} }, dataScience: { enabled: true }, latex: { enabled: true } }),
-    ).toEqual({ dataScience: false, latex: false });
+    ).toEqual([]);
   });
 
   test("an older engine's record with only legacy blocks is still read", () => {
     // A remote engine from before the map sends these; `readProjectPlugins`
     // folds them, so the switch a person threw there still holds.
-    expect(cockpitPlugins({ dataScience: { enabled: true } })).toEqual({ dataScience: true, latex: false });
+    expect(cockpitPlugins({ dataScience: { enabled: true } })).toEqual(["data-science"]);
   });
 
   test("a project that has not loaded yet offers nothing", () => {
-    expect(cockpitPlugins(undefined)).toEqual({ dataScience: false, latex: false });
+    expect(cockpitPlugins(undefined)).toEqual([]);
   });
 });
 
