@@ -21,8 +21,9 @@ import {
  * shape `lib/`-side logic gets everywhere else here. The KEYBOARD cannot be
  * driven by a static render (and the dialog renders through a portal, so there
  * is no markup to assert on either), so the parts that only exist after a
- * keystroke are pinned against source, exactly as settings-search-nav.test.tsx
- * pins its own.
+ * keystroke are pinned against source. settings-search-nav.test.tsx did the
+ * same until #760 and is now mounted and driven with lib/testing/type-into.ts —
+ * the way out for these pins too.
  */
 const source = readFileSync(new URL("./project-palette.tsx", import.meta.url), "utf8");
 const sidebar = readFileSync(new URL("./app-sidebar.tsx", import.meta.url), "utf8");
