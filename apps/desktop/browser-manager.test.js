@@ -378,8 +378,14 @@ function makeHarness(options = {}) {
    * the `zoom-changed` Electron emits for a wheel zoom.
    */
   const cockpitZoom = { factor: options.cockpitZoom || 1, listeners: [] };
+  // The window's own `moved`, which a drag to another display ends with.
+  const movedListeners = [];
+  const moveWindow = () => { for (const listener of movedListeners) listener(); };
   const window = {
     isDestroyed: () => false,
+    on: (event, listener) => {
+      if (event === "moved") movedListeners.push(listener);
+    },
     webContents: {
       send: (channel, payload) => messages.push({ channel, payload }),
       getZoomFactor: () => cockpitZoom.factor,
@@ -416,6 +422,7 @@ function makeHarness(options = {}) {
     ...(options.onLoginEntryFinished ? { onLoginEntryFinished: options.onLoginEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
     ...(options.timers ? { setTimer: options.timers.set, clearTimer: options.timers.clear } : {}),
+    ...(options.scaleFactor ? { scaleFactor: options.scaleFactor } : {}),
     ...(options.sessions ? { sessionFor } : {}),
     // A fixture folder and an empty in-memory disk: no test reaches the real
     // Downloads folder or writes anything.
@@ -431,7 +438,7 @@ function makeHarness(options = {}) {
     if (scopeKey && !manager.profileOf(scopeKey)) manager.declareProfile(scopeKey, "none");
     return origCreate(scopeKey, ...rest);
   };
-  return { children, clipboard, manager, menus, messages, previewWindows, sessions, setCockpitZoom, views, waits };
+  return { children, clipboard, manager, menus, messages, moveWindow, previewWindows, sessions, setCockpitZoom, views, waits };
 }
 
 /** Fire a real right-click on a tab's page and return the rows Chromium's menu
@@ -2015,6 +2022,38 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     manager.setBounds("s", { x: 0, y: 0, width: 320, height: 200 });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(log).toEqual(["bounds 320x200"]);
+  });
+
+  test("a shown fixed tab renders at the display's real pixel ratio; hidden tabs and agent screenshots stay at CSS pixels", async () => {
+    let ratio = 2;
+    const { manager, moveWindow, views } = makeHarness({ scaleFactor: () => ratio });
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    const debug = views[0].webContents.debugger;
+    const overrides = () => debug.commands.filter((c) => c.method === "Emulation.setDeviceMetricsOverride");
+    // Hidden: nobody sees it, and its capturePage output must not double.
+    await manager.callTool("s", "browser_snapshot", {});
+    expect(overrides().at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await manager.resizeTab(tab, { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(overrides().at(-1).params).toEqual({ width: 1280, height: 800, deviceScaleFactor: 2, mobile: false, scale: 0.5, dontSetVisibleSize: true });
+    expect(tab.viewportOverride).toBe("1280x800@0.5*2 in 640x400");
+    // The agent's screenshot divides the ratio back out: a 1280×800 image.
+    await manager.callTool("s", "browser_take_screenshot", {});
+    expect(debug.commands.filter((c) => c.method === "Page.captureScreenshot").at(-1).params.clip).toEqual({ x: 0, y: 0, width: 1280, height: 800, scale: 0.5 });
+    // Dragged to a 1× display: the ratio is in the key, so it is re-sent.
+    const sent = overrides().length;
+    ratio = 1;
+    moveWindow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(overrides()).toHaveLength(sent + 1);
+    expect(overrides().at(-1).params.deviceScaleFactor).toBe(1);
+    // A move that stays on a display of the same density owes nothing.
+    moveWindow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(overrides()).toHaveLength(sent + 1);
   });
 
   test("a divider drag pushes no state and persists nothing per frame — one push once the rect settles", async () => {

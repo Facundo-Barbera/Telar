@@ -152,7 +152,9 @@ function fitViewport(viewport, bounds) {
  * gate already believed settled.
  */
 function emulationKey(target) {
-  const key = `${target.width}x${target.height}@${target.scale}`;
+  // The display's pixel ratio, when it is not 1: a move to a denser screen re-sends.
+  const ratio = target.deviceScaleFactor && target.deviceScaleFactor !== 1 ? `*${target.deviceScaleFactor}` : "";
+  const key = `${target.width}x${target.height}@${target.scale}${ratio}`;
   return target.view ? `${key} in ${target.view.width}x${target.view.height}` : key;
 }
 
@@ -1052,6 +1054,17 @@ class DesktopBrowserManager {
     this.window?.webContents?.on?.("zoom-changed", () => {
       if (this._disposed) return;
       this.applyVisibility();
+    });
+    /**
+     * THE DISPLAY'S OWN PIXEL RATIO, for a shown fixed tab's emulation (see
+     * `viewportTarget`). Injected for the tests; off Electron it reads 1.
+     */
+    this.displayScaleFactor =
+      dependencies.scaleFactor || (() => this.electron().screen.getDisplayMatching(this.window.getBounds()).scaleFactor);
+    // A window dragged to a display of another density re-sends the emulation;
+    // the ratio is part of its key, so a same-density move is the fast path.
+    this.window?.on?.("moved", () => {
+      if (!this._disposed) this.applyShownGeometry();
     });
   }
 
@@ -2035,6 +2048,17 @@ class DesktopBrowserManager {
   cockpitZoom() {
     const factor = this.window?.webContents?.getZoomFactor?.();
     return Number.isFinite(factor) && factor > 0 ? factor : 1;
+  }
+
+  /** Physical pixels per window pixel on the display the window is on — 2 on
+   *  a Retina screen. Read fresh like the zoom; 1 when it cannot be read. */
+  deviceScaleFactor() {
+    try {
+      const factor = this.displayScaleFactor();
+      return Number.isFinite(factor) && factor > 0 ? factor : 1;
+    } catch {
+      return 1;
+    }
   }
 
   /** A rect the renderer published (CSS px of the cockpit), in the window's
@@ -4054,10 +4078,12 @@ class DesktopBrowserManager {
     // to the view explicitly, undoing any size a hidden period left behind.
     // A HIDDEN tab still gets the full size: it has no view bounds worth the
     // name, and its captures and synthetic input need a real widget (above).
+    // An explicit ratio rather than 0 ("no override"): the same number is in
+    // the key, so a move to another display is a change the pipeline sees.
     await debug.sendCommand("Emulation.setDeviceMetricsOverride", {
       width: target.width,
       height: target.height,
-      deviceScaleFactor: 1,
+      deviceScaleFactor: target.deviceScaleFactor || 1,
       mobile: false,
       ...(target.scale === 1 ? {} : { scale: target.scale }),
       ...(target.view ? { dontSetVisibleSize: true } : {}),
@@ -4123,7 +4149,11 @@ class DesktopBrowserManager {
     // the emulation must not resize the page's widget past it (see
     // `syncViewport`), so the size travels with the target and its key.
     const native = this.windowRect(this.nativeRect(tab));
-    return { emulate: true, width: viewport.width, height: viewport.height, scale, view: { width: native.width, height: native.height } };
+    // THE DISPLAY'S REAL PIXEL RATIO, or a fixed page on a Retina screen is
+    // rendered at 1× and upscaled — blurry. Shown tabs only: nobody looks at
+    // a hidden one, and its `capturePage` screenshots stay CSS-pixel sized.
+    const deviceScaleFactor = this.deviceScaleFactor();
+    return { emulate: true, width: viewport.width, height: viewport.height, scale, deviceScaleFactor, view: { width: native.width, height: native.height } };
   }
 
   /**
@@ -4162,7 +4192,7 @@ class DesktopBrowserManager {
 
   /**
    * THE INTRINSIC SCREENSHOT — the page at its own viewport, whatever the
-   * panel scale. `captureScreenshot` with an explicit CSS clip at scale 1:
+   * panel scale. `captureScreenshot` with an explicit CSS clip at CSS scale:
    * measured, a plain capture (and `capturePage`) under a fit scale returns
    * the intrinsic dimensions with the content shrunk into a corner and the
    * rest blank; the clip renders the real layout. A visible view has a
@@ -4170,11 +4200,15 @@ class DesktopBrowserManager {
    */
   captureIntrinsic(debug, tab, format, fullPage, documentHeight) {
     const viewport = this.effectiveViewport(tab);
+    // CSS PIXELS OUT, whatever ratio the emulation renders at: the image is
+    // `clip × scale × deviceScaleFactor`, so a Retina fixed tab divides its
+    // ratio back out rather than handing an agent a 2× picture.
+    const ratio = this.viewportTarget(tab).deviceScaleFactor || 1;
     return debug.sendCommand("Page.captureScreenshot", {
       format,
       fromSurface: true,
       captureBeyondViewport: true,
-      clip: { x: 0, y: 0, width: viewport.width, height: fullPage && documentHeight ? documentHeight : viewport.height, scale: 1 },
+      clip: { x: 0, y: 0, width: viewport.width, height: fullPage && documentHeight ? documentHeight : viewport.height, scale: 1 / ratio },
     });
   }
 
@@ -4601,6 +4635,8 @@ class DesktopBrowserManager {
     let metrics = null;
     if (fullPage) {
       metrics = await this.measureDocument(debug);
+      // Ratio 1 on purpose, like every hidden tab's emulation: the capture
+      // comes back at CSS pixels.
       await debug.sendCommand("Emulation.setDeviceMetricsOverride", { width: metrics.width, height: metrics.height, deviceScaleFactor: 1, mobile: false });
     }
     try {
