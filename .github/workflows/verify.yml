@@ -328,6 +328,8 @@ jobs:
   #
   #   - `dev-update.test.js` > "the swap helper, run for real against fake
   #     bundles" — runs a generated bash script that calls `ditto`.
+  #   - `desktop-handoff.test.js` > the hand-off swap helper and the signature
+  #     gate — `codesign`, and `ps` naming an executable by its full path.
   #
   # Drop this job and it stops executing rather than start failing, which is
   # the quiet kind of coverage loss.
@@ -407,6 +409,9 @@ jobs:
             echo "ran on macOS — $block"
           }
           prove "the swap helper, run for real against fake bundles" "the ditto swap helper"
+          # #1042: the identity hand-off's swap/rollback and its signature gate.
+          prove "the hand-off swap helper, run for real against fake bundles" "the hand-off swap and rollback"
+          prove "the signature gate, run for real against ad-hoc signed bundles" "the hand-off's codesign requirement"
           # #808's CONTROL, and it is macOS-only for the same reason the bug was.
           # Only a 3.2-era bash aborts on an empty array under `set -u`, and
           # /bin/bash here is Apple's 3.2.57 — on the ubuntu leg it is 5.x, the
