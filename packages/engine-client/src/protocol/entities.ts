@@ -2249,6 +2249,13 @@ export const NotificationDetail = z.object({
   deliveries: z.number().int().positive().optional(),
   /** Set on a cohort's one notification (see `Cohort`). */
   cohortId: Id.optional(),
+  /**
+   * When that cohort was subscribed (`Cohort.createdAt`). What a transcript
+   * folds between: the turns accepted after it and before this notification
+   * are the coordinator reacting while the cohort worked. When merged cohorts
+   * share one turn, the earliest.
+   */
+  cohortOpenedAt: Timestamp.optional(),
 });
 export type NotificationDetail = z.infer<typeof NotificationDetail>;
 

@@ -11,6 +11,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { cohortNotification, mergeNotifications, wakeNotification } from "../src/notification";
 import { EngineStore } from "../src/state";
 
 const homes: string[] = [];
@@ -71,6 +72,8 @@ test("the cohort delivers ONCE, after the last member, with a line per member", 
   expect(delivered).toHaveLength(1);
   const detail = delivered[0]!.notification!;
   expect(detail.cohortId).toBe(cohort.id);
+  // Where a transcript's fold of the host's reactions begins.
+  expect(detail.cohortOpenedAt).toBe(cohort.createdAt);
   expect(detail.body.startsWith("[cohort done · all 3 sessions finished]")).toBe(true);
   expect(detail.body).toContain('1. session_a "worker a" — result: Merged #12; CI green. · sessions_read(sessionId: "session_host", runId: "run_msg_run_a_result")');
   expect(detail.body).toContain('2. session_b "worker b" — FAILED: driver_failed: the CLI died · sessions_read(sessionId: "session_b", runId: "run_b")');
@@ -214,4 +217,21 @@ test("the host reads as waiting while a cohort member is working", () => {
   start(store, "session_a", "run_a");
   store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
   expect(store.getSession("session_host").activity).toBe("waiting");
+});
+
+test("a cohort's close merged under a later wake still names its cohort and when it opened", () => {
+  const close = cohortNotification({
+    cohortId: "coh_one",
+    openedAt: 500,
+    members: [{ sessionId: "session_a", outcome: "completed", at: 900 }],
+    reason: "all",
+    minutes: 240,
+    fallbackFetch: { sessionId: "session_a", runId: "coh_one" },
+  });
+  const later = wakeNotification({ targetSessionId: "session_z", runId: "run_z", wakeKind: "turn_completed", body: "session_z finished" });
+  const merged = mergeNotifications([close, later]);
+  expect(merged.entries).toHaveLength(2);
+  expect(merged).toMatchObject({ cohortId: "coh_one", cohortOpenedAt: 500 });
+  // Nothing to carry: a plain merge gains no cohort.
+  expect(mergeNotifications([later, wakeNotification({ targetSessionId: "session_y", runId: "run_y", wakeKind: "turn_completed", body: "y" })]).cohortId).toBeUndefined();
 });

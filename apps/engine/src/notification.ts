@@ -148,7 +148,18 @@ export function mergeNotifications(cohort: NotificationDetail[]): NotificationDe
   const flat = cohort.flatMap((detail) => detail.entries ?? [asEntry(detail)]);
   const entries = flat.filter((entry, index) => !flat.slice(index + 1).some((later) => sameHappening(later, entry))).slice(-MAX_COHORT_ENTRIES);
   if (entries.length === 1) return newest;
-  return listed(entries, newest);
+  return withCohort(listed(entries, newest), cohort);
+}
+
+/**
+ * A MERGED TURN STILL CLOSES ITS COHORT. The newest leads, so a cohort's close
+ * merged under a later wake would lose the id a transcript folds on. The newest
+ * cohort's id is kept, and the earliest opening so the fold covers them all.
+ */
+function withCohort(merged: NotificationDetail, cohort: NotificationDetail[]): NotificationDetail {
+  const closes = cohort.filter((detail) => detail.cohortId && detail.cohortOpenedAt !== undefined);
+  if (closes.length === 0) return merged;
+  return { ...merged, cohortId: closes.at(-1)!.cohortId!, cohortOpenedAt: Math.min(...closes.map((detail) => detail.cohortOpenedAt!)) };
 }
 
 /** The cohort's notice: the newest happening's fields, and every happening as a line. */
@@ -325,6 +336,8 @@ function memberLine(member: CohortMember): string {
  */
 export function cohortNotification(input: {
   cohortId: string;
+  /** `Cohort.createdAt`, carried so a transcript can fold what came between. */
+  openedAt: number;
   members: CohortMember[];
   reason: "all" | "expired";
   minutes: number;
@@ -363,5 +376,6 @@ export function cohortNotification(input: {
       summary: summaryOf(lines[index]!),
     })),
     cohortId: input.cohortId,
+    cohortOpenedAt: input.openedAt,
   };
 }
