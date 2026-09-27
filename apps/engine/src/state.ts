@@ -231,7 +231,7 @@ import {
 } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification } from "./notification";
+import { heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import {
   commentOn,
   reactOn,
@@ -10506,8 +10506,18 @@ export class EngineStore {
     const folds = !correction && delivery === "wake" && proof && sender.sessionId && FOLDING_INTENTS.has(intent)
       ? this.waitingMessageFrom(sessionId, sender.sessionId, proof.runId, input.runId)
       : undefined;
+    /**
+     * AND A MESSAGE FROM ANYONE JOINS A NOTIFICATION TURN STILL QUEUED on an
+     * idle recipient — the queued-turn race, for peers. A busy one is left
+     * alone: this delivery would steer into its live turn, and a queued turn
+     * behind it would be later, not sooner.
+     */
+    const joins = !folds && !correction && delivery === "wake" && FOLDING_INTENTS.has(intent) && !this.hasLiveTurn(sessionId) &&
+      !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
+      ? this.waitingNotificationTurn(sessionId)
+      : undefined;
     const result = this.submitTurn(sessionId, {
-      ...(folds ? { foldedIntoWaitingWake: true } : {}),
+      ...(folds || joins ? { foldedIntoWaitingWake: true } : {}),
       runId: input.runId,
       /**
        * THE BODY STAYS ON THE TURN, EXACTLY AS SENT. A wake's and a request's
@@ -10518,7 +10528,7 @@ export class EngineStore {
        */
       input: input.input,
       ...(input.attachments ? { attachments: input.attachments } : {}),
-      origin: "session", sender, agentIntent: intent, agentDelivery: folds ? "passive" : delivery,
+      origin: "session", sender, agentIntent: intent, agentDelivery: folds || joins ? "passive" : delivery,
       ...(proof ? { agentSourceRunId: proof.runId } : {}),
       ...(input.corrects ? { corrects: input.corrects } : {}),
       notification,
@@ -10529,6 +10539,7 @@ export class EngineStore {
     });
     // A replay of a message already accepted changes nothing, folded or not.
     if (folds && !result.replayed) this.foldIntoWaitingMessage(sessionId, folds, notification);
+    if (joins && !result.replayed) this.joinWaitingNotification(sessionId, joins, notification);
     // The unread version goes only once its replacement is safely accepted.
     if (correction === "queued" || correction === "held") this.withdrawCorrected(sessionId, input.corrects!, correction);
     return result;
@@ -13280,7 +13291,16 @@ export class EngineStore {
          * it is the worker's now.
          */
         const coalesced = this.coalesceQueuedWake(subscriberId, targetSessionId, notification, wakeReason);
-        if (!coalesced) {
+        /**
+         * AND ONE QUEUED NOTIFICATION TURN PER SESSION. A queued turn is not a
+         * live one, so two children finishing a moment apart on an idle
+         * subscriber used to queue two turns about two runs. The second joins
+         * the first instead — unless this wake was asked to interrupt a live
+         * turn, which a queued turn behind it would quietly take back.
+         */
+        const waiting = coalesced || interrupting ? undefined : this.waitingNotificationTurn(subscriberId);
+        if (waiting) this.joinWaitingNotification(subscriberId, waiting, notification, wakeReason);
+        else if (!coalesced) {
           const delivered: NotificationDetail = { ...notification, deliveries: 1 };
           this.submitTurn(subscriberId, {
             runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
@@ -14054,7 +14074,9 @@ export class EngineStore {
       return true;
     }
     const at = this.now();
-    notification = { ...notification, deliveries };
+    // A turn that carries a cohort keeps it: only this run's lines are replaced.
+    const others = waiting.notification?.entries?.filter((entry) => !(entry.sessionId === targetSessionId && entry.runId === wakeReason.runId));
+    notification = { ...(others?.length ? mergeNotifications([{ ...waiting.notification!, entries: others }, notification]) : notification), deliveries };
     waiting.input = notificationLabel(notification);
     waiting.notification = notification;
     waiting.wakeReason = wakeReason;
@@ -14069,6 +14091,56 @@ export class EngineStore {
     // with `replayed: true` is how a client learns the words changed.
     this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
     return true;
+  }
+
+  /**
+   * THE NOTIFICATION TURN STILL WAITING TO BE READ, if this session has one: a
+   * wake, or a peer's report, result or blocker, queued and not yet claimed. A
+   * `task` is not one — it hands work over and keeps a turn of its own — and a
+   * passive row reached no model to join.
+   */
+  private waitingNotificationTurn(sessionId: string): string | undefined {
+    return this.readQueue(sessionId).turns.find(
+      (turn) =>
+        turn.state === "queued" &&
+        turn.origin === "session" &&
+        turn.notification !== undefined &&
+        turn.agentDelivery !== "passive" &&
+        (turn.wakeReason !== undefined || (turn.agentIntent !== undefined && FOLDING_INTENTS.has(turn.agentIntent))),
+    )?.runId;
+  }
+
+  /**
+   * JOIN A NOTIFICATION TO THE TURN `waitingNotificationTurn` FOUND — the
+   * queued-turn half of the cohort merge.
+   *
+   * NOT A DELIVERY SPENT. `MAX_DELIVERIES` bounds how often ONE errand is
+   * re-announced; a different run joining the list is news the turn has not
+   * carried yet, and capping it would push every third finisher of a fan-out
+   * back into a turn of its own.
+   *
+   * A PEER'S TURN KEEPS ITS BODY AND TAKES NO `wakeReason`, for
+   * `mergeIntoWaitingResult`'s reason: a wake's words are the engine's and
+   * replaceable, a peer's are the only copy.
+   */
+  private joinWaitingNotification(sessionId: string, waitingRunId: string, notification: NotificationDetail, wakeReason?: WakeReason): void {
+    const queue = this.readQueue(sessionId);
+    const waiting = queue.turns.find((candidate) => candidate.runId === waitingRunId);
+    if (!waiting?.notification || waiting.state !== "queued") return;
+    const at = this.now();
+    const merged: NotificationDetail = { ...mergeNotifications([waiting.notification, notification]), deliveries: waiting.notification.deliveries ?? 1 };
+    waiting.notification = merged;
+    if (waiting.wakeReason) {
+      waiting.input = notificationLabel(merged);
+      if (wakeReason) waiting.wakeReason = wakeReason;
+    } else {
+      waiting.agentNotice = merged.body;
+    }
+    waiting.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.rewriteNotificationItem(sessionId, waiting);
+    this.appendEvent(sessionId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
   }
 
   /**
@@ -14312,6 +14384,12 @@ export class EngineStore {
     // CLEARED BEFORE THE SUBMIT, so a submit that throws cannot be retried into
     // a duplicate — and after it, the facts live on the turn, which is durable.
     this.writePendingNotifications(sessionId, []);
+    // A notification turn already queued takes the held mail with it.
+    const waiting = this.waitingNotificationTurn(sessionId);
+    if (waiting) {
+      this.joinWaitingNotification(sessionId, waiting, merged);
+      return;
+    }
     const delivered: NotificationDetail = { ...merged, deliveries: 1 };
     try {
       this.submitTurn(sessionId, {
@@ -14402,14 +14480,30 @@ export class EngineStore {
      * `Turn.origin`). A peer's task or report is somebody asking for work, and
      * it survives here for the same reason a human's queued message does.
      */
-    const dropped = queue.turns.filter(
-      (turn) =>
-        turn.state === "queued" &&
-        turn.origin === "session" &&
-        turn.wakeReason !== undefined &&
-        (targetSessionId === undefined || turn.wakeReason.sessionId === targetSessionId),
-    );
-    if (dropped.length === 0) return 0;
+    const candidates = queue.turns.filter((turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason !== undefined);
+    /**
+     * A TURN OTHER SESSIONS' NEWS JOINED IS KEPT, minus this one's lines — see
+     * `joinWaitingNotification`. Only a turn with nothing else in it goes.
+     */
+    const dropped: Turn[] = [];
+    const trimmed: Turn[] = [];
+    for (const turn of candidates) {
+      if (targetSessionId === undefined || !turn.notification?.entries) {
+        if (targetSessionId === undefined || turn.wakeReason!.sessionId === targetSessionId) dropped.push(turn);
+        continue;
+      }
+      const kept = withoutWakesFrom(turn.notification, targetSessionId, subscriberId);
+      if (!kept) dropped.push(turn);
+      else if (kept !== turn.notification) {
+        turn.notification = { ...kept, deliveries: turn.notification.deliveries ?? 1 };
+        turn.input = notificationLabel(turn.notification);
+        const wake = kept.entries?.filter((entry) => entry.kind !== "peer_message" && entry.wakeKind).at(-1);
+        if (wake) turn.wakeReason = { kind: wake.wakeKind!, sessionId: wake.sessionId!, runId: wake.runId!, ...(wake.requestId ? { requestId: wake.requestId } : {}) };
+        turn.updatedAt = at;
+        trimmed.push(turn);
+      }
+    }
+    if (dropped.length === 0 && trimmed.length === 0) return 0;
     for (const turn of dropped) {
       turn.state = "discarded";
       turn.completedAt = at;
@@ -14417,8 +14511,12 @@ export class EngineStore {
     }
     this.writeQueue(subscriberId, queue);
     this.touchSession(subscriberId, at);
+    for (const turn of trimmed) {
+      this.rewriteNotificationItem(subscriberId, turn);
+      this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(turn), replayed: true }, turn.runId);
+    }
     for (const turn of dropped) this.appendEvent(subscriberId, { type: "turn.discarded" }, turn.runId);
-    return dropped.length;
+    return dropped.length + trimmed.length;
   }
 
   requests(sessionId: string): EngineRequest[] {

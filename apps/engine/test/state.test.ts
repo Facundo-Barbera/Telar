@@ -3439,8 +3439,17 @@ describe("subscriptions", () => {
   test("failed, stopped and parked each wake with their own reason; a policy-resolved request wakes nobody", () => {
     const { store } = pair();
     store.subscribe("session_one", { targetSessionId: "session_two" });
+    // Each wake is READ before the next lands — a still-queued one would take
+    // the next with it (`joinWaitingNotification`), and this is about each notice.
+    const read = () => {
+      const claimed = store.claimTurn("session_one", "worker_one")!;
+      store.markRunning("session_one", claimed.runId, claimed.claim!.token);
+      store.completeTurn("session_one", claimed.runId, claimed.claim!.token, { text: "read" });
+    };
     runTurn(store, "session_two", "run_f", "fail");
+    read();
     runTurn(store, "session_two", "run_s", "stop");
+    read();
     runTurn(store, "session_two", "run_p", "park");
 
     const kinds = wakes(store, "session_one").map((turn) => turn.wakeReason!.kind);
@@ -3524,6 +3533,11 @@ describe("subscriptions", () => {
     const first = store.turns("session_two").find((turn) => turn.runId === "run_many")!.claim!.token;
     store.resolveRequest("session_two", "req_many", { decision: "accept" });
     store.completeTurn("session_two", "run_many", first, { text: "" });
+    // Read, so the next request's wake is a turn of its own rather than a line
+    // joined to this one.
+    const reading = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", reading.runId, reading.claim!.token);
+    store.completeTurn("session_one", reading.runId, reading.claim!.token, { text: "read" });
 
     store.submitTurn("session_two", { runId: "run_huge_req", input: "work" });
     const second = store.claimTurn("session_two", "worker_one")!.claim!.token;
@@ -3626,14 +3640,25 @@ describe("subscriptions", () => {
     store.submitTurn("session_one", { runId: "run_mine", input: "my own message" });
     runTurn(store, "session_two", "run_a");
     runTurn(store, "session_three", "run_b");
-    expect(wakes(store, "session_one")).toHaveLength(2);
+    // Both wakes share one queued turn (`joinWaitingNotification`).
+    const [joined] = wakes(store, "session_one");
+    expect(wakes(store, "session_one")).toHaveLength(1);
+    expect(joined!.notification!.entries?.map((entry) => entry.sessionId)).toEqual(["session_two", "session_three"]);
 
+    // Unsubscribing takes session_two's line OUT of it and leaves the rest.
     expect(store.unsubscribe(two.id, "session_one")).toBe(true);
     const turns = store.turns("session_one");
-    expect(turns.find((turn) => turn.wakeReason?.sessionId === "session_two")!.state).toBe("discarded");
-    expect(turns.find((turn) => turn.wakeReason?.sessionId === "session_three")!.state).toBe("queued");
+    const kept = turns.find((turn) => turn.runId === joined!.runId)!;
+    expect(kept.state).toBe("queued");
+    expect(kept.notification!.entries?.map((entry) => entry.sessionId)).toEqual(["session_three"]);
+    expect(kept.wakeReason).toMatchObject({ sessionId: "session_three", runId: "run_b" });
+    expect(notice(kept)).not.toContain("session_two");
     expect(turns.find((turn) => turn.runId === "run_mine")!.state).toBe("queued");
-    expect(store.readEvents("session_one").filter((event) => event.type === "turn.discarded")).toHaveLength(1);
+    expect(store.readEvents("session_one").filter((event) => event.type === "turn.discarded")).toHaveLength(0);
+
+    // A turn with nothing but the unsubscribed session's news still goes whole.
+    store.unsubscribe(store.subscriptionsFor("session_one")[0]!.id, "session_one");
+    expect(store.turns("session_one").find((turn) => turn.runId === joined!.runId)!.state).toBe("discarded");
   });
 
   test("a wake's own ending wakes nobody, so two sessions subscribed to each other cannot ping-pong", () => {

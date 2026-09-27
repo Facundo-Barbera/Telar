@@ -136,14 +136,25 @@ export function asEntry(detail: NotificationDetail): NotificationEntry {
  *
  * A SINGLETON IS NOT MERGED. One notification stays exactly what it was — no
  * `entries`, no list header — so the common case has no merge machinery in it.
+ *
+ * A MERGED ONE IS FLATTENED, so a cohort joining a queued turn that already
+ * carries a cohort lists every happening rather than nesting a list inside a
+ * line. And the newest fact about one run replaces an older one — the rule
+ * `holdNotification` keeps for the mailbox, kept here for the queue.
  */
 export function mergeNotifications(cohort: NotificationDetail[]): NotificationDetail {
-  const ordered = cohort.slice(-MAX_COHORT_ENTRIES);
-  const newest = ordered[ordered.length - 1]!;
-  if (ordered.length === 1) return newest;
-  const entries = ordered.map(asEntry);
+  const newest = cohort[cohort.length - 1]!;
+  if (cohort.length === 1) return newest;
+  const flat = cohort.flatMap((detail) => detail.entries ?? [asEntry(detail)]);
+  const entries = flat.filter((entry, index) => !flat.slice(index + 1).some((later) => sameHappening(later, entry))).slice(-MAX_COHORT_ENTRIES);
+  if (entries.length === 1) return newest;
+  return listed(entries, newest);
+}
+
+/** The cohort's notice: the newest happening's fields, and every happening as a line. */
+function listed(entries: NotificationEntry[], newest: NotificationDetail): NotificationDetail {
   const body = [
-    `[engine notification · ${ordered.length} things happened while this session was working]`,
+    `[engine notification · ${entries.length} ${entries.length === 1 ? "thing" : "things"} happened while this session was working]`,
     "—",
     ...entries.map((entry, index) => `${index + 1}. ${entry.summary}`),
     "—",
@@ -154,10 +165,38 @@ export function mergeNotifications(cohort: NotificationDetail[]): NotificationDe
   ].join("\n");
   return {
     ...newest,
-    summary: `${newest.summary} (and ${ordered.length - 1} more)`,
+    // A merged newest already says "(and N more)"; the count is re-said, not stacked.
+    summary: entries.length === 1 ? newest.summary : `${newest.summary.replace(/ \(and \d+ more\)$/, "")} (and ${entries.length - 1} more)`,
     body,
     entries,
   };
+}
+
+/**
+ * A COHORT WITHOUT ONE SESSION'S WAKES — what an unsubscribe takes out of a
+ * queued turn that other sessions' news joined. Undefined when nothing is left,
+ * and the detail untouched when none of it was that session's. A peer's
+ * message is not a wake and stays.
+ */
+export function withoutWakesFrom(detail: NotificationDetail, sessionId: string, recipientSessionId: string): NotificationDetail | undefined {
+  const all = detail.entries ?? [asEntry(detail)];
+  const kept = all.filter((entry) => entry.kind === "peer_message" || entry.sessionId !== sessionId);
+  if (kept.length === all.length) return detail;
+  if (kept.length === 0) return undefined;
+  const newest = kept[kept.length - 1]!;
+  const leadIsKept = detail.kind === "peer_message" || detail.sessionId !== sessionId;
+  const lead: NotificationDetail = leadIsKept
+    ? detail
+    : {
+        ...newest,
+        fetch: { sessionId: newest.kind === "peer_message" ? recipientSessionId : newest.sessionId!, runId: newest.runId! },
+        body: "",
+      };
+  return listed(kept, lead);
+}
+
+function sameHappening(a: NotificationEntry, b: NotificationEntry): boolean {
+  return a.kind === b.kind && a.sessionId === b.sessionId && a.runId === b.runId;
 }
 
 /**
@@ -185,7 +224,7 @@ export function mergeRunOutcome(lead: NotificationDetail, ended: NotificationDet
   const entries = [...(lead.entries ?? [asEntry(lead)]), asEntry(ended)].slice(-MAX_COHORT_ENTRIES);
   return {
     ...lead,
-    summary: `${lead.summary} (and ${entries.length - 1} more)`,
+    summary: `${lead.summary.replace(/ \(and \d+ more\)$/, "")} (and ${entries.length - 1} more)`,
     body: [
       lead.body,
       "—",
