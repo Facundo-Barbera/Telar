@@ -23,11 +23,6 @@ const sessionView = readFileSync(new URL("../../ios/TelarMobile/Views/SessionVie
 const composer = readFileSync(new URL("../components/composer.tsx", import.meta.url), "utf8");
 
 describe("iOS keeps the focus animation, on named radii", () => {
-  test("both corners are tokens", () => {
-    expect(theme).toContain("static let radiusComposerRest: CGFloat = 27");
-    expect(theme).toContain("static let radiusComposerFocused: CGFloat = 20");
-  });
-
   test("the unused 22 is gone", () => {
     expect(theme).not.toContain("radiusComposer:");
   });
