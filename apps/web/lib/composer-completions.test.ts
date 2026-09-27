@@ -6,6 +6,8 @@ import {
   compactBlockedReason,
   isCompactDraft,
   isResumeDraft,
+  ORCHESTRATE_PROMPT,
+  ORCHESTRATE_SKILL,
   PROVIDER_COMMAND_GROUP,
   providerCommandCompletions,
   rankCommands,
@@ -163,6 +165,22 @@ describe("/compact, the wheel's button reached from the keyboard", () => {
     // An argument this composer cannot pass on leaves it an ordinary message.
     expect(isCompactDraft("/compact the API work")).toBe(false);
     expect(isCompactDraft("please run /compact")).toBe(false);
+  });
+});
+
+describe("/orchestrate, Telar Orchestrate from the keyboard", () => {
+  test("offered only where the skill it names is installed", () => {
+    expect(availableCommands({ busy: false, fresh: false }).map((command) => command.id)).not.toContain("orchestrate");
+    const row = availableCommands({ busy: false, fresh: false, orchestrate: true }).find((command) => command.id === "orchestrate");
+    expect(row?.label).toBe("/orchestrate");
+    expect(rankCommands(availableCommands({ busy: false, fresh: true, orchestrate: true }), "orch")[0]?.id).toBe("orchestrate");
+  });
+
+  test("it inserts the skill named in prose, which every provider acts on", () => {
+    const row = availableCommands({ busy: false, fresh: false, orchestrate: true }).find((command) => command.id === "orchestrate");
+    expect(row?.action).toEqual({ type: "insert", text: ORCHESTRATE_PROMPT });
+    expect(ORCHESTRATE_PROMPT).toContain(skillReference({ name: ORCHESTRATE_SKILL }).text);
+    expect(ORCHESTRATE_PROMPT.startsWith("/")).toBe(false);
   });
 });
 

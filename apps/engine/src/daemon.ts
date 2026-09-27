@@ -57,6 +57,7 @@ import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, prob
 import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
+import { BUNDLED_SKILLS } from "./orchestrate-skill";
 import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
@@ -1082,8 +1083,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     process.stdout.write(`Telar engine: ${away.length === 1 ? "a project is" : `${away.length} projects are`} unreadable — ${named}\n`);
   }
   /**
-   * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
-   * away. Run once on start and again on every PATCH of the toggle.
+   * THE `telar` SKILL (AND `orchestrate` BESIDE IT), PUT WHERE EACH PROVIDER
+   * READS SKILLS FROM — or taken away. Run once on start and again on every PATCH of the toggle.
    *
    * NOT AWAITED BY THE CALLER ON START, and never fatal: a provider that is not
    * installed has no directory to write into, and an engine that refused to
@@ -1094,7 +1095,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    */
   const skillRoots = options.skillRoots ?? [];
   const syncOrientationSkill = (policy = store.getAgentOrientation()): Promise<unknown> =>
-    skillRoots.length ? syncTelarSkill({ install: policy.skill, roots: skillRoots }).catch(() => []) : Promise.resolve([]);
+    skillRoots.length
+      ? Promise.all(BUNDLED_SKILLS.map((skill) => syncTelarSkill({ install: policy.skill, roots: skillRoots, ...skill }))).catch(() => [])
+      : Promise.resolve([]);
   void syncOrientationSkill();
   /** The per-transcript parse cache behind /v2/usage — beside the rates
    *  snapshot it prices with. See usage.ts. */

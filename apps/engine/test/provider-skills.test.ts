@@ -148,11 +148,20 @@ describe("reading a checkout's skills and commands", () => {
     ]);
   });
 
-  test("a provider with no inventory answers with two empty lists rather than a guess", async () => {
+  test("a provider with no inventory lists its own skills directory and no commands", async () => {
+    const home = fixtureHome();
+    const env = { CLAUDE_CONFIG_DIR: path.join(home, "claude"), CODEX_HOME: path.join(home, "codex"), XDG_CONFIG_HOME: path.join(home, "cfg") };
+    // Nothing installed yet: two empty lists, never the checkout's `.claude`.
     for (const driver of ["codex", "opencode"] as const) {
-      expect(
-        await readProviderSkills({ driver, checkout: fixtureCheckout(), env: { CLAUDE_CONFIG_DIR: fixtureHome() } }),
-      ).toEqual({ skills: [], commands: [] });
+      expect(await readProviderSkills({ driver, checkout: fixtureCheckout(), env })).toEqual({ skills: [], commands: [] });
+    }
+    write(path.join(home, "codex", "skills", "orchestrate", "SKILL.md"), "---\nname: orchestrate\ndescription: Fan out.\n---\n");
+    write(path.join(home, "cfg", "opencode", "skill", "orchestrate", "SKILL.md"), "---\nname: orchestrate\ndescription: Fan out.\n---\n");
+    for (const driver of ["codex", "opencode"] as const) {
+      expect(await readProviderSkills({ driver, checkout: fixtureCheckout(), env })).toEqual({
+        skills: [{ name: "orchestrate", description: "Fan out.", source: "user" }],
+        commands: [],
+      });
     }
   });
 });
@@ -263,7 +272,7 @@ describe("GET /v2/sessions/:id/skills", () => {
     const daemon = await startEngine({ models: stubModels,
       engineRoot,
       providerSkills: {
-        env: { CLAUDE_CONFIG_DIR: home },
+        env: { CLAUDE_CONFIG_DIR: home, CODEX_HOME: path.join(home, "no-codex"), XDG_CONFIG_HOME: path.join(home, "no-xdg") },
         loadProviderCommands: async () => [{ name: "compact", description: "Squeeze the context.", source: "provider" }],
       },
     });
@@ -390,7 +399,7 @@ describe("GET /v2/projects/:id/skills (#500)", () => {
       models: stubModels,
       engineRoot,
       providerSkills: {
-        env: { CLAUDE_CONFIG_DIR: home },
+        env: { CLAUDE_CONFIG_DIR: home, CODEX_HOME: path.join(home, "no-codex"), XDG_CONFIG_HOME: path.join(home, "no-xdg") },
         loadProviderCommands: async () => [{ name: "compact", description: "Squeeze the context.", source: "provider" }],
       },
     });

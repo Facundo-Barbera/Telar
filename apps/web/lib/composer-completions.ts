@@ -203,7 +203,22 @@ export type CommandContext = {
    *  `fresh && onAdopt` gate, so the menu row and the link agree about when
    *  `/resume` means anything. */
   canResume?: boolean;
+  /** The provider can see Telar's bundled `orchestrate` skill — it is in the
+   *  skills list the engine reported for this session. */
+  orchestrate?: boolean;
 };
+
+/** The skill `/orchestrate` hands the list to. Mirrors the engine's
+ *  `ORCHESTRATE_SKILL_NAME`. */
+export const ORCHESTRATE_SKILL = "orchestrate";
+
+/**
+ * What `/orchestrate` puts in the box: the skill NAMED IN PROSE, with the
+ * caret left where the person's list goes. Prose rather than `/orchestrate`
+ * because only Claude's harness parses a slash command; every provider acts on
+ * a sentence naming a skill it has installed.
+ */
+export const ORCHESTRATE_PROMPT = `Use ${skillReference({ name: ORCHESTRATE_SKILL }).text} to coordinate this list:`;
 
 /**
  * THE DRAFT THAT IS THE GESTURE RATHER THAN A MESSAGE.
@@ -351,6 +366,20 @@ export function availableCommands(context: CommandContext): Completion[] {
       detail: "Pick up a Claude Code conversation.",
       glyph: "resume",
       action: { type: "resume" },
+    });
+  }
+
+  /**
+   * `/orchestrate` — Telar Orchestrate. Offered only where the skill it names
+   * is installed, so the row never inserts a reference to nothing.
+   */
+  if (context.orchestrate) {
+    commands.push({
+      id: "orchestrate",
+      label: "/orchestrate",
+      detail: "Split a list of tasks across worker sessions and coordinate them.",
+      glyph: "skill",
+      action: { type: "insert", text: ORCHESTRATE_PROMPT },
     });
   }
 
