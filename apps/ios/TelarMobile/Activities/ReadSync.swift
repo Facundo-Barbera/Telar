@@ -11,8 +11,7 @@ import UserNotifications
 ///     confirmed read on screen (`ReadReceiptCourier`'s `onRead`).
 ///   - THE LAUNCH RECONCILE, one request per Mac naming only the sessions that
 ///     still have alerts, for everything the silent push missed: iOS throttles
-///     it, a force-quit app never gets it, and a relay v1 phone is never sent
-///     one.
+///     it, and a force-quit app never gets it.
 ///
 /// MATCHED BY `threadIdentifier`, NOT BY REQUEST IDENTIFIER. The Mac sets
 /// `apns-collapse-id` = sha256(session id), and iOS uses that as the request

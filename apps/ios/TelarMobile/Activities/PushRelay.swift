@@ -8,10 +8,10 @@ import Foundation
 /// who never opened that screen had an app which had never appeared in iOS's
 /// own Notifications list — and no reason to suspect it.
 ///
-/// And when the Mac answered `configured: false` — it has no push relay, so it
-/// will send nothing — the app folded that into a count of "unavailable" Macs
-/// alongside ones that simply did not reply. Two different problems with two
-/// different fixes, reported as one sentence, on one screen nobody was on.
+/// And when a Mac answered `configured: false` — it has no way to send to this
+/// phone — the app folded that into a count of "unavailable" Macs alongside
+/// ones that simply did not reply. Two different problems, reported as one
+/// sentence.
 ///
 /// Both halves are decisions rather than rendering, so they live here where a
 /// test can hold them: `NotificationPrompt` for when to ask, `PushReadiness`
@@ -39,35 +39,33 @@ enum NotificationPrompt {
 
 /// What the phone knows about whether its Macs can actually push.
 ///
-/// THE TWO STATES ARE KEPT APART, which is the whole point: a Mac with no relay
-/// is a thing to go and FIX, on that Mac, in a named screen; a Mac that did not
-/// answer is a network that will probably come back. Counting them together —
-/// which is what the old `unavailable` tally did — produces a sentence that
-/// points nowhere.
+/// A Mac sends through the push relay with the credential this phone gave it,
+/// so a Mac that answers `configured: false` is one this phone could not give
+/// a credential to. Either this phone cannot register at all — then push is
+/// simply unavailable here, and saying so is the whole answer — or the relay
+/// could not be reached just now, which the next sync retries. A Mac that did
+/// not answer is a network, and a different sentence.
 struct PushReadiness: Equatable {
+    /// This phone cannot register with the push relay (no App Attest: the
+    /// simulator, an unknown build, or an attestation the relay refused).
+    var deviceUnsupported = false
     /// Macs that answered `configured: false`: reachable, registered, and
     /// certain to send nothing.
-    var missingRelay: Set<HostID> = []
+    var notSending: Set<HostID> = []
     /// Macs that did not answer at all.
     var unreachable: Set<HostID> = []
 
-    var isEmpty: Bool { missingRelay.isEmpty && unreachable.isEmpty }
+    var isEmpty: Bool { notSending.isEmpty && unreachable.isEmpty }
 
-    /// The sentence under the toggle in Settings ▸ Notifications.
-    ///
-    /// THE RELAY COMES FIRST when both are true, because it is the one the
-    /// person can act on: a Mac that is away will answer later by itself, and a
-    /// Mac with no relay will not, however long anybody waits.
-    ///
-    /// IT NAMES THE SCREEN ON THE MAC. "Push unavailable — check your setup"
-    /// was the old line, and it is the kind of sentence that leaves somebody
-    /// checking the phone, which is not where the missing thing is.
+    /// The sentence under the toggle in Settings ▸ Notifications. A Mac that
+    /// will not send comes first: a Mac that is away answers later by itself.
+    /// An unsupported phone that a Mac can still reach (a developer's own
+    /// APNs key) says nothing about it, because push works there.
     func statusLine(enabled: Bool, allowed: Bool) -> String {
-        if !missingRelay.isEmpty {
-            let count = missingRelay.count
-            return count == 1
-                ? "No push relay on that Mac, so it will send nothing. Open Settings ▸ Remote access on the Mac to provision one."
-                : "No push relay on \(count) Macs, so they will send nothing. Open Settings ▸ Remote access on each Mac to provision one."
+        if !notSending.isEmpty {
+            return deviceUnsupported
+                ? Self.unsupportedLine
+                :"Notifications couldn't be set up just now; tap Check connection to try again."
         }
         if !unreachable.isEmpty {
             let count = unreachable.count
@@ -80,7 +78,5 @@ struct PushReadiness: Equatable {
         return "Push registration saved"
     }
 
-    /// The banner's own sentence — shorter, because it sits above a
-    /// conversation rather than under the toggle it explains.
-    static let bannerLine = "This Mac has no push relay configured, so it cannot notify you. Open Settings ▸ Remote access on the Mac."
+    static let unsupportedLine = "Notifications can't be set up on this device."
 }

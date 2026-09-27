@@ -7,18 +7,16 @@ import Testing
 /// The owner never got a notification, and no code was broken. This phone never
 /// ASKED for permission — the only path to the system prompt was a toggle in
 /// Settings ▸ Notifications, so the app had never appeared in iOS's own
-/// Notifications list. And when a Mac answered `configured: false`, meaning it
-/// has no push relay and will send nothing, the app folded that into a count of
-/// "unavailable" Macs alongside ones that had simply not replied.
+/// Notifications list. And a Mac that will send nothing was folded into a
+/// count of "unavailable" Macs alongside ones that had simply not replied.
 ///
 /// What must not drift:
 ///
 ///   - pairing asks EXACTLY ONCE per install, and never after an answer;
 ///   - a second Mac does not ask again — the permission is the phone's;
-///   - "no relay" and "did not answer" stay apart, because one is a credential
-///     to go and write on a named screen and the other is a network;
-///   - the sentence a person reads names the screen ON THE MAC, since that is
-///     the one place the missing thing can be put right.
+///   - "will not send" and "did not answer" stay apart;
+///   - a phone that cannot register with the push relay says so in one
+///     sentence, and a phone that merely failed to just now says to retry.
 @Suite struct PushRelayTests {
     private let macA = HostID()
     private let macB = HostID()
@@ -50,34 +48,44 @@ import Testing
 
     // ── SAYING WHY ───────────────────────────────────────────────────────────
 
-    @Test func noRelayNamesTheScreenOnTheMac() {
-        let readiness = PushReadiness(missingRelay: [macA], unreachable: [])
-        let line = readiness.statusLine(enabled: true, allowed: true)
-        // THE FIX IS ON THE MAC, so the sentence has to send them there. A line
-        // that said "push unavailable" would leave somebody checking the phone,
-        // which is the one place the credential cannot be.
-        #expect(line.contains("Settings ▸ Remote access"))
-        #expect(line.contains("relay"))
-        #expect(!readiness.isEmpty)
+    @Test func aPhoneThatCannotRegisterSaysSoInOneSentence() {
+        // No App Attest (the simulator, an unknown build, a refused
+        // attestation): the Mac has nothing to send with, and nothing the
+        // person does will change that.
+        let unsupported = PushReadiness(deviceUnsupported: true, notSending: [macA, macB], unreachable: [])
+        let line = unsupported.statusLine(enabled: true, allowed: true)
+        #expect(line == "Notifications can't be set up on this device.")
+        #expect(line == PushReadiness.unsupportedLine)
+        #expect(!unsupported.isEmpty)
+    }
+
+    @Test func aSupportedPhoneThatFailedJustNowIsToldToRetry() {
+        let failed = PushReadiness(deviceUnsupported: false, notSending: [macA], unreachable: [])
+        let line = failed.statusLine(enabled: true, allowed: true)
+        #expect(line != PushReadiness.unsupportedLine)
+        #expect(line.contains("Check connection"))
+    }
+
+    @Test func anUnsupportedPhoneAMacCanStillReachIsNotAProblem() {
+        // A Mac with its own developer key answers `configured: true`.
+        let direct = PushReadiness(deviceUnsupported: true, notSending: [], unreachable: [])
+        #expect(direct.statusLine(enabled: true, allowed: true) == "Push registration saved")
     }
 
     @Test func aMacThatDidNotAnswerIsADifferentSentence() {
-        let away = PushReadiness(missingRelay: [], unreachable: [macA])
+        let away = PushReadiness(notSending: [], unreachable: [macA])
         let line = away.statusLine(enabled: true, allowed: true)
-        #expect(!line.contains("Remote access"))
         #expect(line.contains("did not answer"))
     }
 
-    @Test func theRelayComesFirstWhenBothAreTrue() {
-        // One of these resolves itself when the Mac wakes up; the other never
-        // does, however long anybody waits. The actionable one is the one to
-        // show.
-        let both = PushReadiness(missingRelay: [macA], unreachable: [macB])
-        #expect(both.statusLine(enabled: true, allowed: true).contains("Settings ▸ Remote access"))
+    @Test func aMacThatWillNotSendComesFirst() {
+        // A Mac that is away answers later by itself; one that will not send does not.
+        let both = PushReadiness(deviceUnsupported: true, notSending: [macA], unreachable: [macB])
+        #expect(both.statusLine(enabled: true, allowed: true) == PushReadiness.unsupportedLine)
     }
 
-    @Test func severalMacsAreCountedRatherThanRepeated() {
-        let two = PushReadiness(missingRelay: [macA, macB], unreachable: [])
+    @Test func severalUnreachableMacsAreCountedRatherThanRepeated() {
+        let two = PushReadiness(notSending: [], unreachable: [macA, macB])
         #expect(two.statusLine(enabled: true, allowed: true).contains("2 Macs"))
     }
 
@@ -89,21 +97,6 @@ import Testing
         // PERMISSION REVOKED IN SYSTEM SETTINGS is its own answer: the app's
         // own toggle being on says nothing about whether iOS will deliver.
         #expect(fine.statusLine(enabled: true, allowed: false) == "Notifications are disabled in system Settings")
-    }
-
-    // ── THE BANNER ───────────────────────────────────────────────────────────
-
-    @Test func theBannerIsShownForTheMacThatCannotPushAndNoOther() {
-        let readiness = PushReadiness(missingRelay: [macA], unreachable: [macB])
-        // A screen about one Mac draws it for ITS Mac only — a banner over one
-        // conversation about a different machine would be a puzzle.
-        #expect(readiness.missingRelay.contains(macA))
-        #expect(!readiness.missingRelay.contains(macB))
-    }
-
-    @Test func theBannerSentenceAlsoNamesTheScreenOnTheMac() {
-        #expect(PushReadiness.bannerLine.contains("Settings ▸ Remote access"))
-        #expect(PushReadiness.bannerLine.contains("relay"))
     }
 
     // ── WHAT THE MAC ANSWERS ─────────────────────────────────────────────────
