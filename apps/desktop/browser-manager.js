@@ -2156,7 +2156,17 @@ class DesktopBrowserManager {
     // ALL THREE READS ARE LOAD-BEARING. Gating on the stage size alone would
     // starve `resizeTab`'s preset path, which changes the emulation target
     // while the stage stands still.
-    place();
+    //
+    // EXCEPT A SHOWN FIXED TAB THAT OWES A SCALE: placed first, it shows a
+    // frame of the new rect at the old scale (clipped or stretched) on every
+    // divider step. With its debugger already bound the emulation is one CDP
+    // round trip, so it goes FIRST and the rect follows it. Everything else
+    // keeps placing first: native fit has no scale, a hidden or previewed tab
+    // no panel rect, and a cold tab's attach would delay its first show.
+    // (`target.view` = shown with real bounds and emulated: fixed mode.)
+    const target = this.viewportTarget(tab);
+    const scaleFirst = Boolean(target.view) && tab.debuggerReady && !this.isBlank(tab) && !this.emulationSettled(tab);
+    if (!scaleFirst) place();
     const placed = tab.lastPlaced;
     tab.lastPlaced = { width: this.bounds.width, height: this.bounds.height };
     if (
@@ -2179,7 +2189,13 @@ class DesktopBrowserManager {
     }
     const debug = await this.ensureDebuggerOnly(tab);
     if (tab.view !== view) return;
-    await this.syncViewport(tab, debug);
+    try {
+      await this.syncViewport(tab, debug);
+    } catch (error) {
+      // A refused emulation must not also strand the view at its old rect.
+      if (scaleFirst) place();
+      throw error;
+    }
     // Zoom and appearance ride the same pipeline (#473): both are page-level
     // facts a new document forgets, and dom-ready runs this.
     this.applyZoom(tab);
@@ -2187,7 +2203,7 @@ class DesktopBrowserManager {
     // The state may have moved while the emulation was in flight; the
     // coalesced follow-up run handles that. This re-assert covers the case
     // where nothing else changed but the view's bounds were written before
-    // the emulation existed.
+    // the emulation existed — and it is the one placement of a scale-first run.
     place();
   }
 

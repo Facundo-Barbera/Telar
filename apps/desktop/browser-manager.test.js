@@ -1988,6 +1988,55 @@ describe("per-tab viewports — intrinsic size independent of the column, presen
     expect(shot.params).toMatchObject({ clip: { x: 0, y: 0, width: 1280, height: 800, scale: 1 }, captureBeyondViewport: true });
   });
 
+  test("a divider step on a shown FIXED tab sends the new scale BEFORE the view takes the new rect", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    await manager.resizeTab(manager.activeTab("s"), { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const view = views[0];
+    const debug = view.webContents.debugger;
+    // One timeline for both writers, so the ORDER is what is asserted.
+    const log = [];
+    const setBounds = view.setBounds.bind(view);
+    view.setBounds = (rect) => { log.push(`bounds ${rect.width}x${rect.height}`); setBounds(rect); };
+    const send = debug.sendCommand.bind(debug);
+    debug.sendCommand = (method, params) => {
+      if (method === "Emulation.setDeviceMetricsOverride") log.push(`scale ${params.scale}`);
+      return send(method, params);
+    };
+    manager.setBounds("s", { x: 0, y: 0, width: 320, height: 200 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(log).toEqual(["scale 0.25", "bounds 320x200"]);
+    // A republish of the same rect is still the fast path: one native write.
+    log.length = 0;
+    manager.setBounds("s", { x: 0, y: 0, width: 320, height: 200 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(log).toEqual(["bounds 320x200"]);
+  });
+
+  test("a shown fixed tab with no debugger yet is placed first — its attach must not delay the first show", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+    tab.viewportMode = "fixed";
+    tab.debuggerReady = false;
+    const view = views[0];
+    const log = [];
+    const setBounds = view.setBounds.bind(view);
+    view.setBounds = (rect) => { log.push("bounds"); setBounds(rect); };
+    const send = view.webContents.debugger.sendCommand.bind(view.webContents.debugger);
+    view.webContents.debugger.sendCommand = (method, params) => {
+      if (method === "Emulation.setDeviceMetricsOverride") log.push("scale");
+      return send(method, params);
+    };
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    expect(log[0]).toBe("bounds");
+    expect(log).toContain("scale");
+  });
+
   test("a resize (agent tool or toolbar) reflows the page, marks earlier snapshots stale, and is remembered per tab", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("s", "https://one.example/");
