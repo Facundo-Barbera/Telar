@@ -1408,7 +1408,7 @@ describe("sessions_read returns the message a notice stands in for", () => {
     expect(JSON.stringify(toolInputSchema(tools.get("sessions_read")!.shape))).toContain("a peer message in full");
     expect(TELAR_SKILL).toContain("A wake or a peer's message is a PING");
     expect(TELAR_SKILL).toContain("sessions_read(sessionId, runId)");
-    expect(tools.get("sessions_subscribe")!.description).toContain("It is a PING");
+    expect(tools.get("sessions_subscribe")!.description).toContain("Be woken ONCE");
   });
 });
 
@@ -1488,16 +1488,16 @@ describe("subscribing and answering", () => {
     const tools = wall(store, { sessionId: host.id });
     const target = store.createSession({ projectId, title: "a worker" });
 
+    // ONE SUBSCRIPTION, NO KNOBS (session-tools audit): one session is a cohort
+    // of one, and the old knobs are accepted, ignored, and named as deprecated.
     const subscribed = await call(tools, "sessions_subscribe", { sessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
     expect(subscribed.isError).toBe(false);
-    expect(subscribed.json).toMatchObject({ subscriberSessionId: host.id, targetSessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
-    // #550: the wake is a NOTIFICATION now, and the note says when it lands —
-    // `settled_only` by default, so it waits rather than interrupting.
-    expect(String(subscribed.json!.note)).toContain("woken with a notification");
-    expect(String(subscribed.json!.note)).toContain("waits for you to finish the turn you are in");
+    expect(subscribed.json).toMatchObject({ subscriberSessionId: host.id, members: [{ sessionId: target.id }] });
+    expect(String(subscribed.json!.deprecated)).toContain("deprecated");
+    expect(String(subscribed.json!.note)).toContain(`ONE notification when ${target.id} is done`);
 
     const listed = await call(tools, "sessions_subscriptions");
-    expect((listed.json!.subscriptions as unknown[]).length).toBe(1);
+    expect((listed.json!.cohorts as unknown[]).length).toBe(1);
 
     // NEITHER SESSION'S RECORD MENTIONS THE OTHER — the wish is on the
     // subscription alone.

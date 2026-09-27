@@ -315,6 +315,18 @@ const OUTCOME_PHRASE: Record<NonNullable<CohortMember["outcome"]>, string> = {
   deleted: "deleted before it reported",
 };
 
+/** What a cohort of one quotes: the start of the member's result or answer. */
+function soloExcerpt(member: CohortMember): string[] {
+  if (!member.excerpt) return [];
+  const cut = member.chars !== undefined && member.chars > member.excerpt.length;
+  return [
+    cut ? `It begins (${(member.chars! - member.excerpt.length).toLocaleString("en-US")} more chars not shown; the read above has them):` : "In full:",
+    "<<<",
+    member.excerpt,
+    ">>>",
+  ];
+}
+
 /** A member's one line: who, how it ended, the first line it said, and the read. */
 function memberLine(member: CohortMember): string {
   const who = `${member.sessionId}${member.title ? ` "${member.title}"` : ""}`;
@@ -354,6 +366,9 @@ export function cohortNotification(input: {
     header,
     "—",
     ...lines.map((line, index) => `${index + 1}. ${line}`),
+    // A COHORT OF ONE IS A SUBSCRIPTION TO ONE SESSION, and quotes what it said
+    // the way a single wake always has — so the common case needs no read.
+    ...(input.members.length === 1 ? soloExcerpt(input.members[0]!) : []),
     "—",
     `One line per session: how it ended and the first line of what it said; the call on a line reads it whole.${
       input.reason === "expired" ? " Nothing more will arrive from this cohort — subscribe again with the pending ones to keep waiting." : ""

@@ -289,3 +289,27 @@ test("a cohort's close merged under a later wake still names its cohort and when
   // Nothing to carry: a plain merge gains no cohort.
   expect(mergeNotifications([later, wakeNotification({ targetSessionId: "session_y", runId: "run_y", wakeKind: "turn_completed", body: "y" })]).cohortId).toBeUndefined();
 });
+
+test("a cohort of ONE quotes what its member said, like the single wake it replaces", () => {
+  const { store } = setup();
+  const a = start(store, "session_a", "run_a");
+  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  const long = `PR #7 is green.\n${"detail ".repeat(400)}`;
+  a.send("result", long);
+  a.complete();
+  const [turn] = woken(store);
+  const body = turn!.notification!.body;
+  expect(body).toContain("PR #7 is green.");
+  expect(body).toContain("<<<");
+  expect(body).toMatch(/more chars not shown/);
+  // Several members stay one line each.
+  const two = setup();
+  const x = start(two.store, "session_a", "run_x");
+  const y = start(two.store, "session_b", "run_y");
+  two.store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  x.send("result", long);
+  y.send("result", "Done.");
+  x.complete();
+  y.complete();
+  expect(woken(two.store)[0]!.notification!.body).not.toContain("<<<");
+});

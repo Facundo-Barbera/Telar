@@ -2125,6 +2125,11 @@ export const CohortMember = z.object({
   fetch: z.object({ sessionId: Id, runId: Id }).optional(),
   /** The first line of its result or answer, clamped. */
   firstLine: z.string().max(400).optional(),
+  /** The start of that result or answer, bounded like any inline notice — what a
+   *  cohort of ONE quotes, so it reads like the single wake it replaces. */
+  excerpt: z.string().max(1_600).optional(),
+  /** How long the whole result or answer is, so the notice can say what was cut. */
+  chars: z.number().int().nonnegative().optional(),
   at: Timestamp.optional(),
 });
 export type CohortMember = z.infer<typeof CohortMember>;
