@@ -321,7 +321,7 @@ struct PushStatus: Decodable {
            url.scheme == "http", ["localhost", "127.0.0.1"].contains(url.host ?? "") { pushType = nil }
         #endif
         do {
-            let activity = try Activity.request(attributes: SessionActivityAttributes(hostId: ref.hostId.uuidString, sessionId: ref.sessionId, hostName: settings?.host(ref.hostId)?.name ?? "Mac"), content: ActivityContent(state: state, staleDate: now.addingTimeInterval(90)), pushType: pushType)
+            let activity = try Activity.request(attributes: SessionActivityAttributes(hostId: ref.hostId.uuidString, sessionId: ref.sessionId, hostName: settings?.host(ref.hostId)?.name ?? "Mac"), content: ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale)), pushType: pushType)
             watch(activity)
             UIApplication.shared.registerForRemoteNotifications()
         } catch { activityError = "Couldn't start a Live Activity: \(error.localizedDescription)" }
@@ -342,11 +342,24 @@ struct PushStatus: Decodable {
             let state = AutomaticCard.initialState(active.filter { $0.hostId == host }.map(\.session), previews: previews, now: now)
             let attributes = SessionActivityAttributes(hostId: host.uuidString, sessionId: AutomaticCard.sessionId, hostName: settings?.host(host)?.name ?? "Mac")
             do {
-                let activity = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: now.addingTimeInterval(300)), pushType: .token)
+                let activity = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale)), pushType: .token)
                 watch(activity)
             } catch { activityError = "Couldn't start a Live Activity: \(error.localizedDescription)" }
         }
+        // Cards already showing follow the inbox straight away rather than
+        // waiting for the Mac's push. A Mac whose work has gone is left to the
+        // Mac's own end push: missing from `working` may only mean unreachable.
+        for activity in Activity<SessionActivityAttributes>.activities where activity.attributes.sessionId == AutomaticCard.sessionId {
+            guard activity.activityState == .active || activity.activityState == .stale,
+                  let host = UUID(uuidString: activity.attributes.hostId), working.contains(host) else { continue }
+            let now = Date()
+            guard let state = AutomaticCard.refreshed(activity.content.state, active.filter { $0.hostId == host }.map(\.session), previews: previews, now: now) else { continue }
+            Task { await activity.update(ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale))) }
+        }
     }
+    /// Seconds until a card with no update reads as stale: the Mac's
+    /// `ACTIVITY_STALE_S`, which its two-minute heartbeat stays well inside.
+    static let activityStale: TimeInterval = 300
     func removeHost(_ host: HostID, api: HTTPEngineAPI?) async {
         if let token, let api {
             #if DEBUG
@@ -375,7 +388,7 @@ struct PushStatus: Decodable {
         for activity in Activity<SessionActivityAttributes>.activities where activity.attributes.hostId == hostId.uuidString && activity.attributes.sessionId == session.id {
             let ended = session.activity == .idle
             let state = SessionActivityAttributes.ContentState(title: previews ? session.title : "Telar session", status: label(session), updatedAt: Date(), startedAt: activity.content.state.startedAt, ended: ended)
-            let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(90))
+            let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(Self.activityStale))
             if ended { await activity.end(content, dismissalPolicy: .after(Date().addingTimeInterval(300))) }
             else { await activity.update(content) }
         }

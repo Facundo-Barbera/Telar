@@ -4,6 +4,9 @@
 <dict>
     <key>NSUserActivityTypes</key><array><string>com.telar.session</string></array>
     <key>NSSupportsLiveActivities</key><true/>
+    <!-- A larger priority-10 budget for Live Activity pushes: a card turning
+         to "Needs you" is sent urgently so it is not left to iOS's schedule. -->
+    <key>NSSupportsLiveActivitiesFrequentUpdates</key><true/>
     <!-- Read sync: a silent push from a Mac (`content-available`, push type
          `background`) names sessions read there, and the app wakes briefly to
          take their alerts down. Without this mode iOS never delivers it. -->
