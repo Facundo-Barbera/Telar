@@ -554,6 +554,15 @@ function cutOffByTelar(turn: Turn): boolean {
 }
 
 /**
+ * ENDED BY A WORKER GOING AWAY, as a quit ends it — `cutOffByTelar` minus
+ * `engine_restart`, which a boot also stamps on backlog that never ran.
+ */
+function endedByShutdown(turn: Turn): boolean {
+  if (turn.state === "stopped") return turn.stopReason === "worker_unavailable";
+  return turn.state === "failed" && turn.failure?.code === "interrupted";
+}
+
+/**
  * THE STATES IN WHICH A RESULT HAS REACHED THE MODEL — issue #919.
  *
  * `queued` is deliberately absent: a result nobody has read is what
@@ -15733,11 +15742,15 @@ export class EngineStore {
    * restart nobody remembers. It is deleted on every path — used, refused,
    * stale or unreadable — so it is read by exactly one boot.
    *
-   * TWO WAYS A TURN IS CUT OFF, because a quit has two endings. If the engine
-   * went away under the worker, the turn was still `running` and `recover()`
-   * just stopped it (`cutOff`). If the worker got to say so first, the turn is
-   * already `failed` with `interrupted` — so that one counts too, when it
-   * failed at or after the shell announced the restart.
+   * THREE WAYS A TURN IS CUT OFF, because a quit has more than one ending. If
+   * the engine went away under the worker, the turn was still `running` and
+   * `recover()` just stopped it (`cutOff`). If the worker got to say so first,
+   * the turn is already `failed` with `interrupted`. And on a clean quit the
+   * daemon retires the embedded worker's registration BEFORE stopping it, so
+   * the turn is `stopped` with `worker_unavailable` and the worker's own
+   * `interrupted` is refused — that is the ending every real update took, and
+   * missing it is why this never fired (#999). The last two count when they
+   * ended at or after the shell announced the restart.
    *
    * ONE CONTINUATION PER SESSION, never a replay. The interrupted prompt is not
    * sent again: whatever it had already done is in the world, and the text
@@ -15776,7 +15789,7 @@ export class EngineStore {
       for (const session of this.allSessions()) {
         if (candidates.has(session.id)) continue;
         const interrupted = this.readQueue(session.id).turns.filter(
-          (turn) => turn.state === "failed" && turn.failure?.code === "interrupted" && turn.kind !== "compact" && (turn.completedAt ?? 0) >= plannedAt,
+          (turn) => endedByShutdown(turn) && turn.kind !== "compact" && (turn.completedAt ?? 0) >= plannedAt,
         );
         if (interrupted.length > 0) candidates.set(session.id, interrupted.map((turn) => turn.runId));
       }

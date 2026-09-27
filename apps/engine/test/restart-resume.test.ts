@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { connectEngine } from "@telar/engine-client/node";
 import { startEngine, type EngineDaemon } from "../src/daemon";
+import type { TurnDriver } from "../src/driver";
 import { EngineStateError, EngineStore } from "../src/state";
 import { stubModels } from "./stub-models";
 
@@ -90,6 +91,49 @@ test("a turn the worker settled as interrupted on the way out is continued too",
   expect(store.recover()).toEqual({ stopped: [] });
   expect(continuations(store, "session_one")).toHaveLength(1);
   expect(continuations(store, "session_one")[0]!.restartOrigin?.interruptedRunId).toBe("run_one");
+});
+
+test("a turn stopped because its worker was retired on the way out is continued too", () => {
+  const { store } = home();
+  store.setSessionDefaults({ resumeAfterRestart: true });
+  runningTurn(store, "session_one", "run_one");
+  // A clean quit retires the embedded registration before the worker can say `interrupted`.
+  store.retireWorkerRegistration("worker_one");
+  expect(store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
+  writeMarker(store, { version: 1, reason: "update", at: NOW - 1_000 });
+
+  expect(store.recover()).toEqual({ stopped: [] });
+  expect(continuations(store, "session_one")).toHaveLength(1);
+  expect(continuations(store, "session_one")[0]!.restartOrigin?.interruptedRunId).toBe("run_one");
+});
+
+test("an update restart that quits the real daemon mid-turn continues the session on the next boot", async () => {
+  // #999 never fired: this is the quit every update took, not a hand-made queue.
+  const { root } = home();
+  let started!: () => void;
+  const running = new Promise<void>((resolve) => { started = resolve; });
+  const workingForever: TurnDriver = {
+    run: async ({ signal }) => {
+      started();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      return { text: "" };
+    },
+  };
+  const first = await startEngine({ models: stubModels, engineRoot: root, embeddedWorker: { createDriver: () => workingForever, pollMs: 25 } });
+  const client = await connectEngine(first.store.paths.root);
+  await client.setSessionDefaults({ resumeAfterRestart: true });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.submitTurn("session_one", { runId: "run_one", input: "Refactor the parser" });
+  await running;
+  // What the shell does before it hands the quit to the updater.
+  writeMarker(first.store, { version: 1, reason: "update", at: Date.now() });
+  await first.close();
+
+  const second = await startEngine({ models: stubModels, engineRoot: root });
+  daemons.push(second);
+  const turns = second.store.turns("session_one");
+  expect(turns.find((turn) => turn.runId === "run_one")?.state).toBe("stopped");
+  expect(turns.filter((turn) => turn.origin === "restart").map((turn) => turn.restartOrigin?.interruptedRunId)).toEqual(["run_one"]);
 });
 
 test("with the setting off nothing is continued, and the marker is still consumed", () => {
