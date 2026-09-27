@@ -48,9 +48,11 @@ beforeEach(() => {
     if (url.includes("/latex/distributions")) return json(ONE_DISTRIBUTION);
     if (url.includes("/api/plugins")) return json({ plugins: [], machine: { entries: {} } });
     if (init?.method === "PATCH" || init?.method === "PUT" || init?.method === "POST") {
+      // Writes go through the plugin map now (`blockPatch`), not the legacy block.
       const body = JSON.parse(String(init.body));
-      written.push(body.latex);
-      return json({ project: { ...PROJECT, latex: body.latex } });
+      const latex = body.plugins?.latex;
+      written.push(latex);
+      return json({ project: { ...PROJECT, plugins: { version: 1, entries: latex ? { latex } : {} } } });
     }
     return json({});
   }) as typeof fetch;
