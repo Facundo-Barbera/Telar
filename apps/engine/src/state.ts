@@ -506,6 +506,8 @@ export const PLANNED_RESTART_CONTINUATION =
  * `MAX_QUEUED_TURNS`. Sixty-four is far past any honest orchestration.
  */
 const MAX_SUBSCRIPTIONS_PER_SESSION = 64;
+/** The longest an ongoing (`once: false`) subscription lives — a cohort's longest timeout. */
+const MAX_WATCH_MS = 7 * 24 * 60 * 60_000;
 /** A cohort's bounds — see `Cohort`. Twenty members keeps its one notice inside
  *  `NotificationDetail.body`; the default expiry covers a builder waiting on CI. */
 const MAX_COHORT_MEMBERS = 20;
@@ -13202,6 +13204,27 @@ export class EngineStore {
    * left fourteen already-queued wakes to run one by one has stopped nothing a
    * person could see.
    */
+  /**
+   * SUBSCRIPTIONS NOTHING WILL EVER FIRE, REMOVED — the tick, as
+   * `sweepCohorts` is. A target settled, archived or deleted has finished, and
+   * an ongoing (`once: false`) watcher is bounded by `MAX_WATCH_MS` from when it
+   * was made. Nothing expired them before: one coordinator was found holding 32
+   * on sessions long since settled. Returns the ids removed.
+   */
+  sweepSubscriptions(): string[] {
+    const all = this.readSubscriptions();
+    const now = this.now();
+    const stale = all.filter((each) => {
+      if (!each.once && now - each.createdAt >= MAX_WATCH_MS) return true;
+      const target = this.findSession(each.targetSessionId);
+      return !target || target.state !== "active" || target.settledOverride === "settled";
+    });
+    if (stale.length === 0) return [];
+    this.writeSubscriptions(all.filter((each) => !stale.includes(each)));
+    for (const each of stale) this.discardQueuedWakes(each.subscriberSessionId, each.targetSessionId);
+    return stale.map((each) => each.id);
+  }
+
   private dropSubscriptionsBy(subscriberSessionId: string): void {
     const all = this.readSubscriptions();
     const removed = all.filter((each) => each.subscriberSessionId === subscriberSessionId);
