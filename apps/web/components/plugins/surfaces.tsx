@@ -12,10 +12,12 @@
 import { Suspense, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import type { EngineEvent, TurnState } from "@telar/engine-client";
+import type { PluginPanelSource } from "@/lib/plugins/panels";
 import type { PluginSurfaceId } from "@/lib/plugins/registry";
 
 const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface));
 const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
+const PluginPanelsSurface = dynamic(() => import("@/components/plugins/plugin-panels-surface").then((mod) => mod.PluginPanelsSurface));
 
 /** What the panel can hand any plugin surface. Each takes what it needs. */
 export type PluginSurfaceProps = {
@@ -27,6 +29,8 @@ export type PluginSurfaceProps = {
   onOpenImage?: (attachmentId: string) => void;
   /** Open a file through the panel's one route into the Editor. */
   onOpenFile: (path: string) => void;
+  /** The enabled installed plugins' panels, for the shared "Plugins" tab. */
+  panels?: readonly PluginPanelSource[];
 };
 
 const SURFACES: Record<PluginSurfaceId, (props: PluginSurfaceProps) => ReactNode> = {
@@ -43,6 +47,9 @@ const SURFACES: Record<PluginSurfaceId, (props: PluginSurfaceProps) => ReactNode
   ),
   latex: ({ sessionId, active, onOpenFile }) => (
     <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={onOpenFile} />
+  ),
+  "plugin-panels": ({ sessionId, active, panels }) => (
+    <PluginPanelsSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} panels={panels ?? []} />
   ),
 };
 

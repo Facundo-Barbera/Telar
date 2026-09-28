@@ -70,6 +70,7 @@ import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PluginSurface } from "@/components/plugins/surfaces";
 import { isPluginSurface, PLUGIN_SURFACES, pluginSurfaces, viewerAvailable, type PluginSurfaceId } from "@/lib/plugins/registry";
+import type { PluginPanelSource } from "@/lib/plugins/panels";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
 import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
 import { useCommandHandlers } from "@/lib/use-command-keys";
@@ -273,6 +274,7 @@ const ALL_SURFACES: readonly Surface[] = [...SURFACES, ...PLUGIN_SURFACES];
 
 /** Stable, so a memo keyed on the enabled set does not change every render. */
 const NO_PLUGINS: readonly string[] = [];
+const NO_PANELS: readonly PluginPanelSource[] = [];
 
 /** The two tabs "data" replaced. A layout saved by the previous build names
  *  them; they restore as the one tab rather than vanishing. */
@@ -344,9 +346,9 @@ export function migratePanelTab(value: string): string {
 
 /** The surfaces a project offers: the core ones, with the enabled plugins'
  *  slotted in before the Terminal. */
-function surfacesFor(enabledPlugins: readonly string[]): Surface[] {
+function surfacesFor(enabledPlugins: readonly string[], pluginPanels: readonly PluginPanelSource[] = NO_PANELS): Surface[] {
   const terminal = SURFACES.findIndex((surface) => surface.id === "terminal");
-  return [...SURFACES.slice(0, terminal), ...pluginSurfaces(enabledPlugins), ...SURFACES.slice(terminal)];
+  return [...SURFACES.slice(0, terminal), ...pluginSurfaces(enabledPlugins, pluginPanels.length > 0), ...SURFACES.slice(terminal)];
 }
 
 /**
@@ -1407,6 +1409,7 @@ export function PanelSurface({
   onCloseSelf,
   active,
   enabledPlugins = NO_PLUGINS,
+  pluginPanels = NO_PANELS,
   onOpenImage,
   editor,
   onEditorChange,
@@ -1499,6 +1502,8 @@ export function PanelSurface({
   active?: TurnState;
   /** The project's enabled plugin ids: which plugin surfaces and file viewers exist. */
   enabledPlugins?: readonly string[];
+  /** The enabled installed plugins' panels, drawn in the shared "Plugins" tab. */
+  pluginPanels?: readonly PluginPanelSource[];
   onOpenImage?: (attachmentId: string) => void;
   /** The Editor's open files. Owned by the cockpit for the same reason the
    *  panel's own tabs are: it persists them, and it is where "open this file"
@@ -1576,6 +1581,7 @@ export function PanelSurface({
         events={events}
         {...(onOpenImage ? { onOpenImage } : {})}
         onOpenFile={(path) => onOpenTab(panelTabForPath(path, enabledPlugins))}
+        panels={pluginPanels}
       />
     );
   /**
@@ -1745,9 +1751,11 @@ function PanelEmptyState({
   onOpenBrowser,
   browserStart = { status: "idle" },
   enabledPlugins = NO_PLUGINS,
+  pluginPanels = NO_PANELS,
 }: {
   onOpen: (tab: PanelTab) => void;
   enabledPlugins?: readonly string[];
+  pluginPanels?: readonly PluginPanelSource[];
   browser?: BrowserState;
   /** Absent when the engine cannot start a browser here — the affordance
    *  hides rather than offering a launch that would land beside the worker's
@@ -1770,7 +1778,7 @@ function PanelEmptyState({
         <h2 className="mt-3 text-center font-heading text-sm font-medium">Open a surface</h2>
         <p className="mt-1 text-center text-xs leading-relaxed text-muted-foreground">Choose what to keep beside the conversation.</p>
         <div className="mt-4 grid grid-cols-1 gap-1 @[420px]/panel-empty:grid-cols-2">
-          {surfacesFor(enabledPlugins).map((candidate) => (
+          {surfacesFor(enabledPlugins, pluginPanels).map((candidate) => (
             <button
               key={candidate.id}
               type="button"
@@ -2049,6 +2057,7 @@ export function RightPanel({
   onTabParams,
   open = true,
   enabledPlugins = NO_PLUGINS,
+  pluginPanels = NO_PANELS,
   editors,
   onEditorChange,
   hostId,
@@ -2057,6 +2066,8 @@ export function RightPanel({
   /** The project's enabled plugin ids — which plugin surfaces the chooser
    *  offers and which file viewers (a notebook, a table) are on. */
   enabledPlugins?: readonly string[];
+  /** The enabled installed plugins' panels — whether the chooser offers "Plugins". */
+  pluginPanels?: readonly PluginPanelSource[];
   /** Absent until the first message creates the session. The browser and git
    *  surfaces are the two that need it — everything else folds records the
    *  cockpit already holds. */
@@ -2273,7 +2284,7 @@ export function RightPanel({
    * `another` says which of the two a press means, so the row can say so too.
    */
   const openable: { id: PanelTab; label: string; icon: typeof BotIcon; another: boolean }[] = [
-    ...surfacesFor(enabledPlugins)
+    ...surfacesFor(enabledPlugins, pluginPanels)
       .filter((surface) => !holdsKind(surface.id) || offersAnother(surface.id))
       .map((surface) => ({
         id: surface.id as PanelTab,
@@ -2334,6 +2345,7 @@ export function RightPanel({
       {...(branch ? { branch } : {})}
       {...(active ? { active } : {})}
       enabledPlugins={enabledPlugins}
+      pluginPanels={pluginPanels}
       onOpenImage={setLightbox}
       // THIS instance's files, and a change handler bound to it — two Editors
       // must not write into one state.
@@ -2753,7 +2765,7 @@ export function RightPanel({
             {panelSurface(activeTab, true)}
           </Suspense>
         ) : (
-          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} enabledPlugins={enabledPlugins} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
+          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} enabledPlugins={enabledPlugins} pluginPanels={pluginPanels} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
         )}
         {/* OUTSIDE THE BRANCHES ABOVE, because a kept Terminal renders in one
             of them and the lightbox belongs to neither surface — it is the
