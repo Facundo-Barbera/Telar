@@ -12,7 +12,6 @@ const ENGINE_ONLY = [
   "TELAR_APNS_TEAM_ID",
 ];
 
-/** The engine's environment minus what only the engine may hold, for any process an agent can drive. */
 export function agentEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out = { ...env };
   for (const name of ENGINE_ONLY) delete out[name];
