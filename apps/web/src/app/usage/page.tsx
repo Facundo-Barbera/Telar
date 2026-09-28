@@ -1,4 +1,4 @@
-import { UsagePage } from "@/components/usage/usage-page";
+import { UsagePage } from "@/features/usage";
 
 export const dynamic = "force-dynamic";
 

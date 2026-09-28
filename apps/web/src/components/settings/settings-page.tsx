@@ -79,7 +79,7 @@ const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.Plu
 const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
 const CleanupSection = dynamic(() => import("./cleanup-section").then((mod) => mod.CleanupSection));
-const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
+const UsageProvidersSection = dynamic(() => import("@/features/usage").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
 
 const api = createEngineApi();

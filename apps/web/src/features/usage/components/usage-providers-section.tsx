@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * USAGE PROVIDERS — the hubs Telar reads pooled quota from.
- *
- * ON THE PROVIDERS PANE, BELOW THE LOGINS, because it answers the same question
- * from the other side. A login is an account this machine runs turns AS; a hub
- * is a service that runs them on accounts this machine never signs in as. Both
- * are "where does my capacity come from", and splitting them across two panes
- * would make that one question two.
- *
- * ADDING A HUB IS NOT ADOPTING A LOGIN. The logins group above deliberately has
- * no credential field — Telar points at folders a CLI already authenticated. A
- * hub is the opposite case: it is a service with an API, its management key is
- * the only way in, and there is no folder to point at. So this one group does
- * take a secret, and it is stored the way the provider registry's sensitive
- * environment values are — a 0600 file of its own, never returned on a read,
- * and a row saved back with the redacted key keeps the stored one.
- */
-
 import { useCallback, useEffect, useState } from "react";
 import { PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
 import type { UsageLimitSource } from "@telar/engine-client";
@@ -35,13 +17,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Row, SettingsGroup } from "@/components/settings/settings-shell";
 
 const api = createEngineApi();
 
-/** The permanent key a stored management key is filed under, derived from the
- *  label the way a login's routing key is — so nobody is asked to make a
- *  permanent decision about a string before the temporary one about a name. */
 function suggestSourceId(label: string, taken: readonly string[]): string {
   const slug = label
     .toLowerCase()
@@ -152,8 +131,6 @@ function AddHubDialog({
               spellCheck={false}
               autoComplete="off"
             />
-            {/* Said at the moment it is typed, which is the one moment it
-                changes what a person does with it. */}
             <span className="mt-1 block text-2xs text-muted-foreground">
               Kept in the engine&apos;s own 0600 file. It is never sent back to this page and never logged.
             </span>
@@ -177,17 +154,10 @@ function AddHubDialog({
 function HubRow({ source, onChange }: { source: UsageLimitSource; onChange: () => void }) {
   const [error, setError] = useState<string | null>(null);
 
-  /**
-   * A save is the whole round trip: PUT, then re-read — the rule the logins
-   * group above follows. The engine normalises what it stores (it canonicalises
-   * the URL and withholds the key), so a row keeping an optimistic copy would
-   * keep showing an edit that was refused.
-   */
   const patch = async (next: { enabled?: boolean }) => {
     setError(null);
     try {
-      // The key is deliberately NOT sent: absent leaves the stored one alone,
-      // which is what makes toggling a hub off and on again non-destructive.
+      // Omitting the key keeps the stored one.
       await api.saveUsageLimitSource({ id: source.id, ...next });
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause.message : "That change was not saved.");
@@ -196,9 +166,6 @@ function HubRow({ source, onChange }: { source: UsageLimitSource; onChange: () =
   };
 
   const remove = async () => {
-    // TODO(confirmations): a `window.confirm`, like the logins group's own
-    // remove. The Confirmations pass owns turning these into a central
-    // "ask before removing" toggle; until then it stays a browser dialog.
     if (!window.confirm(`Remove "${source.label ?? source.url}"? Its management key is forgotten with it.`)) return;
     setError(null);
     try {
@@ -215,8 +182,6 @@ function HubRow({ source, onChange }: { source: UsageLimitSource; onChange: () =
       icon={ServerIcon}
       label={source.label ?? source.url}
       hint={source.url}
-      // A hub with no key stored cannot be read, and the row says so rather
-      // than letting the Usage page be the first place anybody finds out.
       status={source.keyRedacted ? undefined : <Badge variant="outline">No key</Badge>}
       error={error}
       control={
@@ -250,8 +215,6 @@ export function UsageProvidersSection() {
   }, []);
 
   useEffect(() => {
-    // Deferred by a timeout rather than awaited in the effect body, like every
-    // other section here — see providers-section.tsx.
     const task = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(task);
   }, [load]);

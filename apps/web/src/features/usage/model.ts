@@ -1,22 +1,9 @@
 import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport } from "@telar/engine-client";
 
-/**
- * The usage page's fold — everything derivable from a `UsageReport`, derived
- * once here so the page renders figures and never arithmetic. Pure and
- * exported for tests.
- *
- * COST: the provider's own figure when it reports one, else the engine
- * prices tokens from the LiteLLM rate table (usage-pricing.ts) — cache reads
- * at the API's 0.1× rate, cache writes at 1.25× (2× for 1h TTL). A model
- * with no known rate renders as absent (`priced: false`) rather than $0.00
- * — a zero would claim the work was free.
- */
-
 type UsageTotals = {
   tokens: TokenUsage;
   processed: number;
   costUsd: number;
-  /** True when every counted turn carried a provider cost figure. */
   priced: boolean;
   turns: number;
 };
@@ -33,17 +20,11 @@ export type UsageFold = {
   total: UsageTotals;
   providers: ProviderSlice[];
   models: ModelSlice[];
-  /** Every period in the window, EMPTY ONES INCLUDED — a chart that skips
-   *  quiet days draws a lie about the busy ones. Ascending. */
+  /** Every period in the window, empty ones included, ascending. */
   periods: PeriodSlice[];
   sessions: number;
 };
 
-/**
- * Every provider a usage row can name.
- *
- * `telar` WAS A FOURTH until #531 removed the driver.
- */
 const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
 export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 
@@ -65,8 +46,6 @@ function fold(into: UsageTotals, bucket: UsageBucket): void {
   into.turns += bucket.turns;
 }
 
-/** Every period the window contains, in order — days as `YYYY-MM-DD` in the
- *  report's zone, hours as epoch-ms strings, matching the buckets' own keys. */
 export function windowPeriods(report: UsageReport): string[] {
   const out: string[] = [];
   if (report.resolution === "hour") {
@@ -81,8 +60,7 @@ export function windowPeriods(report: UsageReport): string[] {
       return new Intl.DateTimeFormat("en-CA", { timeZone: "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
     }
   };
-  // Stepped in 24h hops from mid-window-day so a DST hour cannot skip or
-  // repeat a date; dedupe guards the repeat case anyway.
+  // 24h hops can repeat a date across DST; the dedupe drops the repeat.
   let previous = "";
   for (let at = report.sinceMs; at < report.untilMs + 86_400_000; at += 86_400_000) {
     const day = format(Math.min(at, report.untilMs));
@@ -112,8 +90,6 @@ export function foldUsage(report: UsageReport): UsageFold {
     fold(model, bucket);
     byModel.set(modelKey, model);
 
-    // A bucket outside the enumerated window (clock skew, zone drift) still
-    // counts in totals; it just has no column to land in.
     const period = byPeriod.get(bucket.period);
     if (period) {
       const driver = period.byDriver[bucket.driver] ?? zeroTotals();
@@ -123,9 +99,7 @@ export function foldUsage(report: UsageReport): UsageFold {
     }
   }
 
-  // Shares are of PROCESSED TOKENS, not cost — cost is absent for a whole
-  // provider (Codex), and a share of a figure missing half its terms would
-  // always read 100% Claude.
+  // Shares are of processed tokens: cost is absent for whole providers.
   const share = (slice: UsageTotals): number => (total.processed > 0 ? slice.processed / total.processed : 0);
 
   return {
@@ -142,13 +116,10 @@ export function foldUsage(report: UsageReport): UsageFold {
   };
 }
 
-// ── Formatting ──────────────────────────────────────────────────────────────
-
 export function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-/** Compact token figure: `12.3K`, `4.56M` — three significant figures. */
 export function formatTokens(value: number): string {
   if (value < 1_000) return String(value);
   const units: [number, string][] = [
@@ -170,7 +141,6 @@ export function formatShare(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-/** "Aug 7" from a day key, "3 PM" from an hour key. */
 export function formatPeriodShort(period: string, resolution: "day" | "hour"): string {
   if (resolution === "hour") {
     const at = Number(period);

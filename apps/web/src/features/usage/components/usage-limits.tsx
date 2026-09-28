@@ -1,50 +1,18 @@
 "use client";
 
-/**
- * LIMITS — how much of the pooled subscription is left, per provider.
- *
- * THE OTHER HALF OF THE USAGE QUESTION. The page below this counts what THIS
- * Mac spent, by scanning transcripts it can see. That is spend; this is
- * capacity, and on a pooled setup no amount of local scanning can report it —
- * a CLIProxyAPI hub holds several subscription logins and routes turns across
- * them, so the windows that actually gate work belong to accounts this machine
- * never signs in as. The hub is asked; the answer is these bars.
- *
- * ONE CARD PER PROVIDER, ONE SEGMENT PER ACCOUNT. Every account is one seat, so
- * every segment is the same width and its FILL is that account's remaining
- * share of its own window. Reading across the bar tells you the thing a pooled
- * setup makes hard to see: not "am I out" but "how many of my accounts are",
- * which is what decides whether the next turn runs.
- *
- * THE TWO CHART TOKENS, ALTERNATING — the same --chart-1/--chart-2 pair the
- * spend chart uses, for the reason set out at the top of usage-page.tsx: they
- * re-tune themselves for whatever canvas a reader's theme puts them on, which
- * fixed hexes validated against one dark grey cannot. Alternating rather than
- * one-per-provider is what keeps adjacent segments apart; the provider is named
- * on the card, so the colour does not have to carry it.
- *
- * HIDDEN WHEN NOTHING IS CONFIGURED. Most people run one Claude login on one
- * Mac and have no hub at all; an empty section explaining a feature they do not
- * use would be the first thing on the page every time. A hub that IS configured
- * and unreachable is the opposite case and always shows — see the source line.
- */
-
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import type { ProviderDriverKind, UsageLimitAccount, UsageLimitSourceSnapshot, UsageLimitWindow } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { DRIVER_LABEL } from "@/lib/usage-report";
+import { DRIVER_LABEL } from "../model";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
 
 const SEGMENT_COLOR = ["var(--chart-1)", "var(--chart-2)"] as const;
 
-/** The window the pooled bar reads, per driver. The rest are in the detail: a
- *  bar that averaged a 5-hour window with a 7-day one would be a number neither
- *  provider reports and nobody can act on. */
 const HEADLINE_WINDOW: Record<string, string> = { claude: "five_hour", codex: "primary" };
 
 function headlineWindow(account: UsageLimitAccount): UsageLimitWindow | undefined {
@@ -52,8 +20,6 @@ function headlineWindow(account: UsageLimitAccount): UsageLimitWindow | undefine
   return account.windows.find((entry) => entry.key === preferred) ?? account.windows[0];
 }
 
-/** A countdown, coarsening as it recedes — `fmtAgo` pointing the other way.
- *  Local rather than shared: nothing else in the cockpit counts forwards yet. */
 export function fmtUntil(at: number, now = Date.now()): string {
   const seconds = Math.round((at - now) / 1000);
   if (seconds <= 0) return "now";
@@ -66,14 +32,11 @@ export function fmtUntil(at: number, now = Date.now()): string {
   return days < 7 ? `in ${days}d ${hours % 24}h` : `in ${days}d`;
 }
 
-/** Remaining, which is what a person wants; the providers both report used. */
 export function remainingPercent(window: UsageLimitWindow | undefined): number | undefined {
   return window ? Math.max(0, Math.min(100, 100 - window.usedPercent)) : undefined;
 }
 
-/** The pooled figure: the mean across seats, over accounts that reported a
- *  headline window at all. An account whose read FAILED is not counted as full
- *  and not counted as empty — it is not counted, and the card says how many. */
+/** Mean remaining across accounts that reported a headline window; failed reads are skipped. */
 export function pooledRemaining(accounts: readonly UsageLimitAccount[]): number | undefined {
   const values = accounts.map((account) => remainingPercent(headlineWindow(account))).filter((value): value is number => value !== undefined);
   return values.length === 0 ? undefined : values.reduce((total, value) => total + value, 0) / values.length;
@@ -106,15 +69,10 @@ function Segment({
       aria-label={label}
       className={cn(
         "group relative h-7 min-w-0 flex-1 overflow-hidden rounded-sm bg-muted transition-opacity",
-        // The unselected ones fade rather than the selected one brightening:
-        // with nothing chosen every segment reads at full strength, which is
-        // the state the card spends most of its life in.
         selected ? "ring-1 ring-ring" : "opacity-90 hover:opacity-100",
       )}
     >
       {remaining === undefined ? (
-        // A failed read is a hatch, not an empty bar: 0% left and "we could not
-        // ask" are opposite instructions and must not look the same.
         <span
           className="absolute inset-0"
           style={{ backgroundImage: "repeating-linear-gradient(45deg, var(--muted-foreground) 0 2px, transparent 2px 6px)", opacity: 0.25 }}
@@ -152,8 +110,6 @@ function AccountDetail({ account }: { account: UsageLimitAccount }) {
   );
 }
 
-/** @internal Exported for the test that pins the bar's semantics — a failed
- *  read must not render as an empty segment. */
 export function ProviderCard({ driver, accounts }: { driver: ProviderDriverKind; accounts: UsageLimitAccount[] }) {
   const [selected, setSelected] = useState<string>();
   const pooled = pooledRemaining(accounts);
@@ -181,8 +137,6 @@ export function ProviderCard({ driver, accounts }: { driver: ProviderDriverKind;
           />
         ))}
       </div>
-      {/* Nothing chosen is the resting state and says what the bar means; a
-          chosen segment replaces that with the account behind it. */}
       {chosen ? (
         <AccountDetail account={chosen} />
       ) : (
@@ -230,13 +184,7 @@ export function UsageLimitsSection() {
     return [...groups.entries()];
   }, [sources]);
 
-  // Nothing configured is not a state worth a heading — see the module note.
-  // A first load that has not answered yet is also nothing, for the same
-  // reason: a section that appears and vanishes is worse than one that arrives.
-  // A failed FIRST read is silence too: it cannot tell "no hubs" from "could
-  // not ask", and announcing an error to somebody who has no hub is the worse
-  // of the two guesses. A failed refresh is a different matter — by then the
-  // sources are known, and the error reads under the heading.
+  // A failed first read stays silent: it can't tell "no hubs" from "couldn't ask".
   if (!sources || sources.length === 0) return null;
 
   const failed = sources.filter((source) => source.error);
@@ -257,9 +205,6 @@ export function UsageLimitsSection() {
           ))}
         </div>
       )}
-      {/* A CONFIGURED HUB THAT IS UNREACHABLE ALWAYS SHOWS. It is the one case
-          where silence would be a lie: the bars simply would not be there, and
-          nothing would say a hub was meant to draw them. */}
       {failed.map((source) => (
         <p key={source.id} className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
           <TriangleAlertIcon className="size-3.5 shrink-0 text-destructive" />
