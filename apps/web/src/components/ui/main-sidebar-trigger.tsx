@@ -9,6 +9,7 @@ export function useMainIsLeftmost(): boolean {
   return isMobile ? !openMobile : !open;
 }
 
+/** Carries no titlebar inset: whichever element sits at x=0 asks `useMainIsLeftmost` itself. */
 export function MainSidebarTrigger({
   className,
   fallback = null,

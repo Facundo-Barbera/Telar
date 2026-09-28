@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { MainSidebarTrigger, useMainIsLeftmost } from "@/features/sessions";
+import { MainSidebarTrigger, useMainIsLeftmost } from "@/components/ui/main-sidebar-trigger";
 import { cn } from "@/lib/utils";
 
 /**
