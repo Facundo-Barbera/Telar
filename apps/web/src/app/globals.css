@@ -1265,7 +1265,7 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   }
 }
 
-/* THE DICTATION GLOW — see components/dictation-glow.tsx.
+/* THE DICTATION GLOW — see features/dictation/components/dictation-glow.tsx.
 
    The angle is a REGISTERED property for the shimmer's reason above: an
    unregistered one would step instead of turning. Opacity is a TRANSITION, not
