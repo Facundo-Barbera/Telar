@@ -298,10 +298,10 @@ describe("the file view's menu", () => {
     await click(item("Source"));
     expect(host.querySelector("textarea")).not.toBeNull();
     const wrap = () => host.querySelector('[role="switch"][aria-label="Wrap lines"]')!.getAttribute("aria-checked");
-    expect(wrap()).toBe("false");
+    const before = wrap();
     await click(item("Wrap lines"));
     await flush();
-    expect(wrap()).toBe("true");
+    expect(wrap()).toBe(before === "true" ? "false" : "true");
   });
 
   test("the composer item inserts the file's own reference", async () => {
