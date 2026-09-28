@@ -189,8 +189,7 @@ function claudeInitialContent(prompt: string, attachments: TurnAttachment[]): st
  * happening IS. The CLI's `isHuman()` gate reads it, so a peer's report can no
  * longer pass for a person's instruction by arriving on the same stream. It is
  * ALSO the half that can fail silently — an older CLI drops an origin kind it
- * does not know (measured: `docs/investigations/delivery-as-harness-input-2026-09-11.md`
- * §1) — and a provenance channel that fails open is not one to stake the whole
+ * does not know — and a provenance channel that fails open is not one to stake the whole
  * claim on.
  *
  * `<system-reminder>` is the content half and the one that cannot be dropped.

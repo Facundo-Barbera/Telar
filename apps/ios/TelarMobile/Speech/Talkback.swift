@@ -3,8 +3,7 @@ import Foundation
 
 /// THE SYNTHESIZER, on device, and as little else as possible.
 ///
-/// `usesApplicationAudioSession = false` is the whole audio design
-/// (`docs/investigations/ios-talkback-2026-09-11.md`, §4): the synthesizer then
+/// `usesApplicationAudioSession = false` is the whole audio design: the synthesizer then
 /// runs its own session, which "will mix and duck other audio, and its active
 /// state will be managed automatically". Ducking, routing and interruptions
 /// become Apple's problem, and the app claims nothing new to the system — no

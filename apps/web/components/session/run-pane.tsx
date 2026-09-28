@@ -195,8 +195,7 @@ export function RunPane({ api, sessionId, runId, terminalId, live, active, visib
      *
      * NOTHING HERE IS REDACTED, and that is stated rather than discovered:
      * redaction covers what the PROCESS writes. A passphrase typed into a
-     * migration's prompt is bytes Telar was never told were a secret —
-     * docs/run-terminal.md §5, unchanged by this surface existing.
+     * migration's prompt is bytes Telar was never told were a secret.
      */
     const send = (data: string) => {
       const { api: current, sessionId: session, runId: run } = latest.current;

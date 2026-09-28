@@ -79,7 +79,7 @@ afterEach(() => {
 const START = Date.parse("2026-04-01T00:00:00Z");
 
 /**
- * TIER 4 IS INSIDE THE SANDBOX TOO — `docs/storage-shape.md`.
+ * TIER 4 IS INSIDE THE SANDBOX TOO.
  *
  * A run must touch nothing under the real home, and that only holds if every
  * variable a writer might follow points somewhere this test owns. Any one of

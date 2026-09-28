@@ -40,9 +40,8 @@
  * path a press on a rail row takes. Calling `startNavigation` from the test and
  * then checking `startNavigation` happened would measure nothing.
  *
- * TWO OF THE FOUR ASSERTIONS BELOW PIN DEFECTS RATHER THAN GUARANTEES — see
- * `docs/investigations/490-instrument-falsification-2026-09-20.md`. They are
- * written to FAIL when the defect is fixed, and the comment on each says what
+ * TWO OF THE FOUR ASSERTIONS BELOW PIN DEFECTS RATHER THAN GUARANTEES. They
+ * are written to FAIL when the defect is fixed, and the comment on each says what
  * to replace it with. A characterisation test that does not say it is one is
  * how a bug becomes a requirement.
  */

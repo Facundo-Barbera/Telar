@@ -54,9 +54,7 @@ export type DriverRun = {
    * words, a peer's notice, the engine's own wake. `framedTurnInput` already
    * says which in PROSE, for the model to read; this is the same fact as a
    * FLAG, for the provider's own provenance channel. The Claude CLI has one
-   * (`origin`) and honours exactly one value on it — see
-   * `docs/investigations/delivery-as-harness-input-2026-09-11.md` §1 — so
-   * without this a real person fails the SDK's own `isHuman` gate.
+   * (`origin`) and honours exactly one value on it, so without this a real person fails the SDK's own `isHuman` gate.
    *
    * ABSENT MEANS "THE DRIVER CLAIMS NOTHING", which is what a test and an older
    * worker produce. Never defaulted to true: a wake stamped as a human decision

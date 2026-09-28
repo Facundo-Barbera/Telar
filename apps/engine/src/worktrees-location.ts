@@ -39,8 +39,7 @@ import { findVolumeMount, isMountPoint, volumeForRoot, volumeSupportOn, type Vol
  * means, and what every install has until somebody chooses otherwise.
  *
  * NOTHING HERE MARKS THE DIRECTORY FOR SPOTLIGHT OR TIME MACHINE, and that is a
- * decision rather than an omission — see `docs/worktrees-indexing.md` (#634).
- * Short version: `.metadata_never_index` only works at a VOLUME root and this
+ * decision rather than an omission: `.metadata_never_index` only works at a VOLUME root and this
  * path is never one, so writing it would ship a no-op that reads like a fix;
  * and a Time Machine exclusion is the owner's call, because a worktree holds
  * uncommitted work and `tmutil`'s default exclusion is inherited by copies.

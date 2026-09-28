@@ -8,7 +8,7 @@ gates:
 guardrails:
   disallowedTools: []
   protectedPaths: []
-# Environment contract v1 (docs/env-contract-v1.md) — committed because this is
+# Environment contract v1 — committed because this is
 # a solo repo; shared repos keep this in the ~/.telar sidecar instead.
 env:
   cost: light

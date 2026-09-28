@@ -39,9 +39,7 @@ export type FeedMessage = {
   /**
    * THE PROVIDER'S OWN PROVENANCE CHANNEL, and the one value on it that works.
    *
-   * `{kind:"human"}` is the one value the CLI was measured to persist
-   * (`docs/investigations/delivery-as-harness-input-2026-09-11.md` §1, the
-   * `neutral.mjs` matrix) — every other kind it did not recognise was dropped.
+   * `{kind:"human"}` is the one value the CLI was measured to persist — every other kind it did not recognise was dropped.
    * Telar sent none at all, so a real person's message failed the SDK's own
    * `isHuman` gate along with every wake and peer report.
    *

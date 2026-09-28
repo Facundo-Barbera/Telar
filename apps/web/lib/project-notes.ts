@@ -3,7 +3,7 @@
 /**
  * THE PROJECT'S NOTEBOOK, on the web side.
  *
- * `docs/design/project-notes.md` is the model. A note belongs to the project, so
+ * A note belongs to the project, so
  * every session on it draws the same strip, and this module is the one place
  * that reads them — the composer's foot, the `@` menu and the editor all go
  * through the hook below.

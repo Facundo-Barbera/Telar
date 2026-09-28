@@ -19,5 +19,5 @@ The plugin runs with `bun`. To use Node instead, change `command` to `["node", "
 
 ## Files
 
-- `plugin.json` is the manifest. Its fields are described in `docs/design/plugins-contract.md` under "External plugins".
+- `plugin.json` is the manifest. Its fields are validated by `ExternalPluginManifest` in `packages/engine-client/src/protocol/plugins.ts`.
 - `server.mjs` handles newline-delimited JSON-RPC on stdio: `initialize`, `tools/call` and `telar/route`. Its counts are kept in `$TELAR_PLUGIN_STATE/counts.json`, and whatever it writes to stderr is its log.

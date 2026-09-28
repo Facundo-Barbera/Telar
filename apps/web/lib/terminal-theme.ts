@@ -27,7 +27,7 @@
  * `~/.zshrc` hardcodes `ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=#666666"`, which is
  * very nearly invisible on a light background. That is correct behaviour: we
  * were asked for his colour and we drew his colour. No correction pass, no
- * injected shell config, no prompt wrapper — see docs/terminal-host.md §1.
+ * injected shell config, no prompt wrapper.
  */
 
 /** The slice of xterm's `ITheme` this builds. Declared structurally rather than
@@ -218,8 +218,7 @@ const PLATFORM_MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
  * This used to return the Appearance font alone, with a comment calling the
  * resulting tofu in `eza --icons` "the owner's choice in Settings ▸ Appearance".
  * That was backwards. Appearance picks the cockpit's font; a terminal is the
- * person's, and `docs/terminal-host.md` §1 says we contribute a font *fallback*,
- * not a font. Nothing here asks anyone to install anything: the chain uses what
+ * person's, so we contribute a font *fallback*, not a font. Nothing here asks anyone to install anything: the chain uses what
  * is already on the machine, ahead of it the one symbols-only face Telar ships
  * (`TERMINAL_SYMBOLS_FONT`, which draws no text and therefore displaces no text
  * face), and behind it the platform's own monospace.

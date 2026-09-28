@@ -31,7 +31,7 @@
  *     against `outline` deliberately made slow, and requires it to say no. A
  *     check only ever seen passing is a check nobody has seen work.
  *
- * Both follow `docs/operations/dispatch-board.md` §3: prefer a COUNT the
+ * Both prefer a COUNT the
  * failure state cannot produce over a string both states emit. The floor on the
  * control (`bigMs > FOLD_FLOOR_MS`) is such a count — a frozen clock cannot
  * produce it, and a loaded runner only makes it larger, so the assertion is
@@ -384,9 +384,7 @@ describe("#516's tools, on the same 300-session fixture", () => {
    *
    * SO THE CHECK IS ON COUNTS AND CONTENT, not on size. Each answer must carry
    * the rows it claims to have counted, at the number the fixture put there —
-   * quantities an empty or wrongly-filtered answer cannot produce, which is the
-   * distinction `docs/operations/dispatch-board.md` §3 draws between a check and
-   * a check-shaped thing.
+   * quantities an empty or wrongly-filtered answer cannot produce.
    *
    * `grep` CARRIES THE SHARPEST ONE: a full page of 20, and every context
    * actually containing the pattern. An answer built from the wrong rows passes

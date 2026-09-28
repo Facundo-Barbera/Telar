@@ -17,7 +17,7 @@ import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
  *
  * `exited` is the only one node-pty observed, and it carries a code. `failed`
  * means no process was ever created: `pty.fork` threw, or the host refused a
- * request that could not have run. See docs/terminal-host.md §3.
+ * request that could not have run.
  *
  * THERE IS NO `unknown` ANY MORE. It meant "Telar stopped vouching for this
  * process" and existed to hold the one-deployment slot; with the terminal

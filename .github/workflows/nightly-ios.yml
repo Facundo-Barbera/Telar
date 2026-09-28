@@ -41,7 +41,7 @@ name: Nightly iOS build
 # jobs for billing and the Mac had gained a release Xcode; that is over.
 # `DEVELOPER_DIR` rather than `xcode-select` outlived the move — every script
 # here honours the variable, and naming the Xcode beats inheriting whatever
-# `xcode-select` points at. See docs/operations/mac-mini-runner-plan-2026-09-11.md.
+# `xcode-select` points at.
 on:
   push:
     tags:

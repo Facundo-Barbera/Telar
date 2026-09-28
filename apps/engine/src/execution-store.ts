@@ -22,7 +22,7 @@ const FILES = new Set(["session.json", "queue.json", "items.json", "requests.jso
  * whole cost and the batch size is the only lever on it.
  *
  * THE COUNT IS THE LEVER; THE AGE IS THE BOUND. A streaming turn peaks at 133
- * deltas/s (docs/investigations/performance-2026-09-11.md), so a 16 ms window
+ * deltas/s, so a 16 ms window
  * would hold two chunks and save almost nothing — the investigation's own
  * suggested window cannot reach the number it asks for. 200 ms holds about
  * twenty-six, which is where the per-event cost lands under 0.010 ms.

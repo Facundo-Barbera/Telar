@@ -124,7 +124,7 @@ test("an unreadable checkouts root stands the whole sweep down — the second re
     { now: () => NOW, remove: () => { removals += 1; } },
   );
   /**
-   * `git worktree prune`'s LESSON, from `docs/store-location.md` §4a: that
+   * `git worktree prune`'s LESSON: that
    * sweep guarded on the PROJECT being available, ran while the checkouts' own
    * drive was out, and deleted every worktree registration on it. A drive that
    * is out and a tree that was never installed are the same observation from

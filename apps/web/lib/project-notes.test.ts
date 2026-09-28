@@ -1,7 +1,7 @@
 /**
  * WHAT `@` OFFERS FROM THE NOTEBOOK.
  *
- * The decision under test is the one §5 of `docs/design/project-notes.md` makes:
+ * The decision under test:
  * notes rank BESIDE paths under the one `@` trigger, and the row a person picks
  * inserts the note's BODY rather than its title — the same text dragging the
  * chip produces, because two spellings of one gesture is how a transcript ends

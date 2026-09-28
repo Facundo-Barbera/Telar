@@ -13,8 +13,8 @@
  *
  * ONE READ PER HOST, SHARED, and the host is part of every operation: a policy
  * belongs to the Mac that answered, so a read, a save, and the announcement that
- * follows all name the same host and none of them is applied to another
- * (docs/investigations/204-host-identity.md). Measured before this: leaving
+ * follows all name the same host and none of them is applied to another.
+ * Measured before this: leaving
  * Settings issued nine `/api/inbox` requests, the slowest 1.78 s.
  *
  * A SAVED VALUE OUTRANKS AN OLDER READ. A read already in flight when a save

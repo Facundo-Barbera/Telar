@@ -7,8 +7,7 @@
  * two Macs can hand out the same one — so the host travels WITH the list. The
  * read is pinned to one host, the answer is stored beside the host it came from,
  * and a listing whose host no longer matches is dropped rather than relabelled.
- * `lib/projects.ts` returns a bare `Project[]`, which is why this exists (see
- * docs/investigations/204-host-identity.md).
+ * `lib/projects.ts` returns a bare `Project[]`, which is why this exists.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

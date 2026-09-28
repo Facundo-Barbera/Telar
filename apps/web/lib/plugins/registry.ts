@@ -11,8 +11,6 @@
  * GATED BY THE ENABLED IDS THE COCKPIT ALREADY HAS (`cockpitPlugins`). A plugin
  * with no entry here contributes nothing and breaks nothing: the proof plugin
  * `hello` is enabled in tests and draws no tab, opener or command.
- *
- * See docs/design/plugins-contract.md, contribution point 3.
  */
 import { FlaskConicalIcon, PuzzleIcon, SigmaIcon, type LucideIcon } from "lucide-react";
 import type { CommandId } from "@/lib/commands";

@@ -262,7 +262,7 @@ export class RunTerminalClient {
    *
    * NOTHING ON THIS PATH IS REDACTED, and that is not an oversight: redaction
    * covers what a PROCESS WRITES (`pty-stream.ts`), and never covered what a
-   * person types. docs/run-terminal.md §5 says so where a user will look.
+   * person types.
    */
   async write(id: string, data: string): Promise<boolean> {
     const answer = (await this.post("/write", { id, data })) as { ok?: boolean };

@@ -276,8 +276,7 @@ export const ratio = (shape: Shape): number => shape.bigMs / Math.max(shape.smal
  *
  * IT IS A PREDICATE RATHER THAN AN INLINE `expect` SO THAT THE TEST CAN RUN IT
  * AGAINST A READER THAT IS KNOWN TO FOLD and show it returning `false`. A check
- * only ever exercised in its passing direction is a check nobody has seen fail,
- * which is the whole of `docs/operations/dispatch-board.md` §3.
+ * only ever exercised in its passing direction is a check nobody has seen fail.
  */
 export const TRACKS_JOURNAL = 3;
 export const isFlat = (shape: Shape): boolean => ratio(shape) < TRACKS_JOURNAL;

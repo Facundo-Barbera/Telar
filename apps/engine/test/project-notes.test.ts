@@ -1,8 +1,7 @@
 /**
  * THE PROJECT NOTEBOOK — the store's rules and the routes that expose them.
  *
- * What is under test is the set of decisions `docs/design/project-notes.md`
- * makes, rather than the getters:
+ * What is under test is the set of decisions, rather than the getters:
  *   · a note belongs to a PROJECT and every session on it sees the same one;
  *   · `author` is provenance — stamped once, never patchable, and absent on the
  *     HTTP route means the HUMAN's;

@@ -6,8 +6,7 @@
  * desktop host's native view.
  *
  * THE PRESET TABLE LIVES ONCE, in `apps/desktop/viewport-presets.js`, which
- * the host requires directly; this file is the cockpit's only import of it,
- * by relative path for the reason in `docs/command-keys-web-port.md`.
+ * the host requires directly; this file is the cockpit's only import of it.
  */
 import {
   orient,

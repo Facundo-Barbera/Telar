@@ -262,8 +262,7 @@ export const READ_BUDGET = 2;
  * deciding the rail's housekeeping went first.
  *
  * THE ATTRIBUTION HAS BEEN DROPPED, NOT THE CLAIM. This cited "#490's audit",
- * which was never produced (`docs/investigations/closure-audit-2026-09-19.md`)
- * — so it pointed at nothing a reader could check. The mechanism does not need
+ * which was never produced — so it pointed at nothing a reader could check. The mechanism does not need
  * it: three reads against a budget of two is arithmetic over `READ_BUDGET`
  * above, and `client.test.ts` exercises it in a fixture.
  *

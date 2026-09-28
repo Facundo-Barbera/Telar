@@ -1,5 +1,5 @@
 /**
- * A PLUGIN'S PROJECT AND MACHINE DOORS — P1b of docs/design/plugins-contract.md.
+ * A PLUGIN'S PROJECT AND MACHINE DOORS.
  *
  *   routing    `/v2/projects/:id/plugins/<id>/<verb>` and `/v2/plugins/<id>/<verb>`
  *              reach the plugin's own table, method and `:params` included

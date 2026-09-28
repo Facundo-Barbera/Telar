@@ -26,8 +26,8 @@
  *
  * ══ THE TWO REFUSALS, AND THEY ARE `git worktree prune`'s LESSON ══
  *
- * `docs/store-location.md` §4a records what happens when a sweep acts on an
- * answer it could not actually read: `prune` guarded on the PROJECT being
+ * This is what happens when a sweep acts on an answer it could not actually
+ * read: `prune` guarded on the PROJECT being
  * available, ran while the checkouts' own drive was out, and deleted every
  * worktree registration on it. The work was still on disk; git's record of
  * whose it was, was not.

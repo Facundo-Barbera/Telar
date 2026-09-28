@@ -14,7 +14,7 @@
  * (#544) DOES need to take its words back, because it rewrites Deepgram's
  * guesses in place, so it reaches `replace` on the registry underneath this
  * file instead. In-process callers get the sharper tool; the page API's shape
- * is what `docs/page-api.md` promises and does not move.
+ * does not move.
  *
  * WHY A PAGE API AND NOT `execCommand`. The composer is not a textarea.
  * `components/composer-editor.tsx` is an imperative `contentEditable` whose
@@ -31,9 +31,8 @@
  * reaches the engine: every one of these is something the person at the
  * keyboard could do with their hands, which is the whole boundary of it.
  *
- * STABLE. `docs/page-api.md` is the contract these three calls and the two
- * attributes (`data-slot="composer-editor"`, `data-composer`) are promised
- * under; changing their shape is changing an external client's build.
+ * STABLE. These three calls and the two attributes
+ * (`data-slot="composer-editor"`, `data-composer`) are a contract; changing their shape is changing an external client's build.
  */
 
 import { activeComposer, type ComposerKind } from "./composer-registry";

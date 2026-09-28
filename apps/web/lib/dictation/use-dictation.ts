@@ -147,7 +147,7 @@ export const canRecord = (): boolean => typeof MediaRecorder !== "undefined" && 
  * which is the whole reason dictation works on this Mac and why a tunnel is the
  * cheap fix. The spec flags it as at risk. Unlikely to move, since much of the
  * web's tooling stands on it, but it is not a permanent guarantee, and the
- * sentence below and `docs/dictation-secure-context.md` both rest on it.
+ * sentence below rests on it.
  */
 export function useMicrophoneUnavailable(): string | undefined {
   return useSyncExternalStore(

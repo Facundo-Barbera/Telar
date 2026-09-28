@@ -39,7 +39,7 @@ const listed = (names: string[]) => names.reduce((sum, name) => sum + name.lengt
 const DEFERRED_HEADER =
   "The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use ToolSearch with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:\n";
 
-/** From docs/investigations/engine-performance-2026-09-24.md. */
+/** Measured on a real Mac. */
 const MAC = { tools: 56, schemaBytes: 135_951, meanNameChars: 25 };
 
 type Captured = { append: string; env: Record<string, string | undefined>; servers: string[]; telar: { name: string; description: string; shape: Record<string, unknown> }[] };

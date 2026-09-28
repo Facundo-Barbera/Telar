@@ -29,7 +29,7 @@
  *   - the three keys a focused shell must not lose (lib/terminal-keys.ts).
  *
  * Everything past that is the user's dotfiles' business. Telar is a terminal
- * emulator, not a shell configurator — docs/terminal-host.md §1.
+ * emulator, not a shell configurator.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PlusIcon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";

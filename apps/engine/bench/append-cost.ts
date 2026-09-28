@@ -4,7 +4,7 @@
  *   bun run --cwd apps/engine bench:append           # the measured shape
  *   bun run --cwd apps/engine bench:append 327 400   # items in the session, deltas to time
  *
- * The shape is measured, not invented (docs/investigations/performance-2026-09-11.md):
+ * The shape is measured, not invented:
  * a streaming turn peaks at 133.5 `content.delta`/s within one run, each about
  * 261 bytes, against a session whose item projection is ~327 items / 753 KB.
  * At that rate one millisecond per delta is 13.3% of a core, so the per-event

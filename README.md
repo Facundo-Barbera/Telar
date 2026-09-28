@@ -141,7 +141,6 @@ rm -rf apps/web/.next
 
 Telar owes its shape to [T3 Code](https://github.com/pingdotgg/t3code), which solved
 the same problem in the open and solved parts of it better —
-`docs/design/t3code-survey/` is a written survey of what to take from it, and
 `EnvironmentId` is threaded through every contract from day one for T3's own reason:
 retrofitting remote environments later means touching every event and every persisted
 reference. Conductor, the Codex desktop app and Cursor Glass are the other reference
@@ -149,10 +148,7 @@ points.
 
 ## Docs
 
-`docs/investigations/` holds dated studies — each one is what was true on the day it
-was written, and is not edited afterwards. `docs/design/` holds surveys and design
-notes. Legacy design docs, outdated and kept only for reference, are archived under
-`.cleanup-archives/docs-legacy-2026-07-17/`.
+`docs/migration/` holds the migration plan. Nothing else lives in `docs/`.
 
 ## Status
 

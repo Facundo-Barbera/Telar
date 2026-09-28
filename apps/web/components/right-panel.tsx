@@ -237,7 +237,7 @@ const SURFACES = [
    */
   /**
    * THE TERMINAL, and it is a real one — a pseudo-terminal in the Electron main
-   * process (docs/terminal-host.md), not a log pane with a prompt drawn on it.
+   * process, not a log pane with a prompt drawn on it.
    * `test -t 1` answers yes in here, which is the whole difference: a pipe
    * cannot run vim, cannot draw a progress bar and cannot run the person's own
    * shell startup.

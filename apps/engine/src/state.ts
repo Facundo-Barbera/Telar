@@ -3541,7 +3541,7 @@ export class EngineStore {
    *
    * ══ WHAT IT CARRIES, AND WHAT IT DELIBERATELY DOES NOT ══
    *
-   * Tier 1 and tier 1′ (see `docs/storage-shape.md`): the database, through
+   * Tier 1 and tier 1′: the database, through
    * `VACUUM INTO` so it is consistent rather than a `cp` of pages from
    * different moments, and every other file and directory at the store root.
    *

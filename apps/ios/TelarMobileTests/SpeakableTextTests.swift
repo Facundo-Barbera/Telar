@@ -5,7 +5,6 @@ import Testing
 /// THE PASS BETWEEN A REPLY AND A VOICE. Every case here is something
 /// `MarkdownContent.renderPlainText()` reads out loud today and should not:
 /// fence bodies, pipe rows, raw TeX, bare URLs.
-/// (`docs/investigations/ios-talkback-2026-09-11.md`, §1.)
 @Suite struct SpeakableTextTests {
     @Test func aFencedCodeBlockIsNeverRead() {
         let spoken = speakableText("""
