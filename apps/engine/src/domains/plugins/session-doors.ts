@@ -23,6 +23,7 @@ export type PluginDoorsHost = {
   requireSession(sessionId: string): Session;
   machinePlugins(): ProjectPlugins;
   resolveDataScience(session: Session): { pythonPath: string } | undefined;
+  dataScienceRefusal(session: Session): string;
   resolveLatex(session: Session): ResolvedLatex | undefined;
   latexToolchain(): Promise<LatexToolchain>;
   sessionDir(sessionId: string): string;
@@ -70,14 +71,7 @@ export class PluginDoors {
   dataScience(sessionId: string): DsCapability {
     const session = this.host.getSession(sessionId);
     const resolved = this.host.resolveDataScience(session);
-    if (!resolved) {
-      throw new EngineStateError(
-        "invalid_request",
-        machineAllows(this.host.machinePlugins(), "data-science")
-          ? "data science is not enabled for this session's project"
-          : "data science is turned off for this Mac",
-      );
-    }
+    if (!resolved) throw new EngineStateError("invalid_request", this.host.dataScienceRefusal(session));
     if (!this.kernels) throw new EngineStateError("invalid_request", "this engine has no kernel host");
     const cwd = workspaceRootOf(session);
     const projectId = session.projectId!;
