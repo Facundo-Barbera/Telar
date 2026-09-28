@@ -35,7 +35,7 @@ import path from "node:path";
 import { EngineStore, EngineStateError } from "../src/state";
 import { assertProjectRoot } from "../src/worker";
 import { createClaudeDriver } from "../src/driver";
-import { createCodexDriver } from "../src/codex-driver";
+import { createCodexDriver } from "../src/drivers/codex";
 import type { DriverRun } from "../src/provider-contract";
 
 const roots: string[] = [];
