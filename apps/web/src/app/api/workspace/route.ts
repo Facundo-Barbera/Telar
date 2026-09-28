@@ -1,4 +1,4 @@
-import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
 import type { WorkspaceConfig } from "@telar/engine-client";
 
 /**
@@ -10,19 +10,11 @@ import type { WorkspaceConfig } from "@telar/engine-client";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).machineWorkspace());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).machineWorkspace());
+});
 
-export async function PUT(request: Request) {
-  try {
-    const body = await requestObject(request);
-    return Response.json(await (await engineClient()).setMachineWorkspace((body.machine ?? {}) as WorkspaceConfig));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  return Response.json(await (await engineClient()).setMachineWorkspace((body.machine ?? {}) as WorkspaceConfig));
+});

@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 import type { WorktreeReclaimItem } from "@telar/engine-client";
 
 /**
@@ -20,11 +20,7 @@ import type { WorktreeReclaimItem } from "@telar/engine-client";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST(request: Request) {
-  try {
-    const body = (await request.json()) as { items?: WorktreeReclaimItem[] };
-    return Response.json(await (await engineClient()).reclaimWorktrees(body.items ?? []));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request) => {
+  const body = (await request.json()) as { items?: WorktreeReclaimItem[] };
+  return Response.json(await (await engineClient()).reclaimWorktrees(body.items ?? []));
+});

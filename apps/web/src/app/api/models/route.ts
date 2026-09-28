@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * A provider's models.
@@ -11,21 +11,17 @@ import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    const url = new URL(request.url);
-    const requested = url.searchParams.get("driver");
-    const driver = requested === "codex" || requested === "opencode" ? requested : "claude";
-    // WHICH LOGIN, for the overlay laid over the provider's answer. The answer
-    // itself is still driver-wide; absent means that driver's built-in slot.
-    const instanceId = url.searchParams.get("instanceId");
-    return Response.json(
-      await (await engineClient()).modelCatalogue(driver, {
-        refresh: url.searchParams.get("refresh") === "1",
-        ...(instanceId ? { instanceId } : {}),
-      }),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  const url = new URL(request.url);
+  const requested = url.searchParams.get("driver");
+  const driver = requested === "codex" || requested === "opencode" ? requested : "claude";
+  // WHICH LOGIN, for the overlay laid over the provider's answer. The answer
+  // itself is still driver-wide; absent means that driver's built-in slot.
+  const instanceId = url.searchParams.get("instanceId");
+  return Response.json(
+    await (await engineClient()).modelCatalogue(driver, {
+      refresh: url.searchParams.get("refresh") === "1",
+      ...(instanceId ? { instanceId } : {}),
+    }),
+  );
+});

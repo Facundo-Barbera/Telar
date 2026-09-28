@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * THE RUN FEED, CARRIED THROUGH (#890) — and it is what two poll loops became.
@@ -21,33 +21,29 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const stream = (await engineClient()).runStream(sessionId);
-    const upstream = await fetch(stream.url, {
-      headers: stream.headers,
-      // THE CLIENT'S OWN DISCONNECT IS THE END OF THIS. A closed panel aborts
-      // the request, and forwarding the signal is what unsubscribes the
-      // engine-side watcher rather than leaving it writing into a dead socket.
-      signal: request.signal,
-    });
-    if (!upstream.ok || !upstream.body) {
-      return Response.json(
-        { error: { code: "engine_unavailable", message: "The engine did not open the run feed." } },
-        { status: upstream.status === 200 ? 503 : upstream.status },
-      );
-    }
-    return new Response(upstream.body, {
-      status: 200,
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache, no-transform",
-        connection: "keep-alive",
-        "x-accel-buffering": "no",
-      },
-    });
-  } catch (error) {
-    return engineErrorResponse(error);
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const stream = (await engineClient()).runStream(sessionId);
+  const upstream = await fetch(stream.url, {
+    headers: stream.headers,
+    // THE CLIENT'S OWN DISCONNECT IS THE END OF THIS. A closed panel aborts
+    // the request, and forwarding the signal is what unsubscribes the
+    // engine-side watcher rather than leaving it writing into a dead socket.
+    signal: request.signal,
+  });
+  if (!upstream.ok || !upstream.body) {
+    return Response.json(
+      { error: { code: "engine_unavailable", message: "The engine did not open the run feed." } },
+      { status: upstream.status === 200 ? 503 : upstream.status },
+    );
   }
-}
+  return new Response(upstream.body, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    },
+  });
+});

@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /** Removing a login forgets how it was configured; it does not touch the
  *  folder it named, and it does not sign anything out. The engine refuses the
@@ -8,11 +8,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ instanceId: string }> };
 
-export async function DELETE(_request: Request, context: Context) {
-  try {
-    const { instanceId } = await context.params;
-    return Response.json(await (await engineClient()).removeProviderInstance(instanceId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const DELETE = engineRoute(async (_request: Request, context: Context) => {
+  const { instanceId } = await context.params;
+  return Response.json(await (await engineClient()).removeProviderInstance(instanceId));
+});

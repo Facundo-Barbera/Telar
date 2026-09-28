@@ -1,22 +1,14 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /** Telar's own Tectonic: version, whether it is here, whether one is downloading. */
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).managedTectonic());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).managedTectonic());
+});
 
 /** Fetch it. Idempotent — a second press joins the install already running. */
-export async function POST() {
-  try {
-    return Response.json(await (await engineClient()).installManagedTectonic());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async () => {
+  return Response.json(await (await engineClient()).installManagedTectonic());
+});

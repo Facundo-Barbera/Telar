@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * A TOKEN FOR ONE DICTATION, PROXIED (#544).
@@ -34,10 +34,6 @@ import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST() {
-  try {
-    return Response.json(await (await engineClient()).dictationToken());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async () => {
+  return Response.json(await (await engineClient()).dictationToken());
+});

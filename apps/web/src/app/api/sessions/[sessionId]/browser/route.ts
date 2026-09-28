@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * What the session's browser is looking at, pixels included.
@@ -13,16 +13,12 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const url = new URL(request.url);
-    const result = await (await engineClient()).browserState(sessionId, {
-      screenshot: url.searchParams.get("screenshot") === "1",
-      start: url.searchParams.get("start") === "1",
-    });
-    return Response.json(result);
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const url = new URL(request.url);
+  const result = await (await engineClient()).browserState(sessionId, {
+    screenshot: url.searchParams.get("screenshot") === "1",
+    start: url.searchParams.get("start") === "1",
+  });
+  return Response.json(result);
+});

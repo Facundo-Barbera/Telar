@@ -70,6 +70,29 @@ export function engineErrorResponse(error: unknown): Response {
   );
 }
 
+/** Wraps a route handler so anything it throws answers as `engineErrorResponse` does. */
+export function engineRoute<A extends unknown[]>(handler: (...args: A) => Promise<Response>): (...args: A) => Promise<Response> {
+  return async (...args) => {
+    try {
+      return await handler(...args);
+    } catch (error) {
+      return engineErrorResponse(error);
+    }
+  };
+}
+
+/** For `throw invalidRequest(…)` inside an `engineRoute`: answers 400 with the message. */
+export function invalidRequest(message: string): EngineClientError {
+  return new EngineClientError("invalid_request", message);
+}
+
+/** File bytes as the cockpit reads them: never cached, never sniffed into something executable. */
+export function bytesResponse({ data, contentType }: { data: Uint8Array; contentType: string }): Response {
+  return new Response(new Uint8Array(data).buffer as ArrayBuffer, {
+    headers: { "content-type": contentType, "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  });
+}
+
 export async function requestObject(request: Request): Promise<Record<string, unknown>> {
   try {
     const value: unknown = await request.json();

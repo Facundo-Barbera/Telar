@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,11 +11,7 @@ type Context = { params: Promise<{ sessionId: string }> };
  * /stop, which ends one run and lets the worker take the next. The cockpit is
  * a human, so `by` is never forwarded from here.
  */
-export async function POST(_request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    return Response.json(await (await engineClient()).pauseSession(sessionId, "human"));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (_request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  return Response.json(await (await engineClient()).pauseSession(sessionId, "human"));
+});

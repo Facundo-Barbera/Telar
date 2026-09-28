@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Publish this session's branch — issue #670.
@@ -26,11 +26,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function POST(_request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    return Response.json(await (await engineClient()).pushSessionBranch(sessionId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (_request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  return Response.json(await (await engineClient()).pushSessionBranch(sessionId));
+});

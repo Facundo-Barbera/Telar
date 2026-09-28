@@ -1,4 +1,4 @@
-import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
 import type { ProjectWorkspaceOverrides } from "@telar/engine-client";
 
 /**
@@ -12,23 +12,15 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string }> };
 
-export async function GET(_request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    return Response.json(await (await engineClient()).projectWorkspace(projectId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (_request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  return Response.json(await (await engineClient()).projectWorkspace(projectId));
+});
 
-export async function PUT(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const body = await requestObject(request);
-    return Response.json(
-      await (await engineClient()).setProjectWorkspace(projectId, (body.overrides ?? {}) as ProjectWorkspaceOverrides),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).setProjectWorkspace(projectId, (body.overrides ?? {}) as ProjectWorkspaceOverrides),
+  );
+});

@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Ignore Telar's own files in a project's repository.
@@ -18,14 +18,10 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string }> };
 
-export async function POST(_request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    return Response.json(await (await engineClient()).projectGitignore(projectId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (_request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  return Response.json(await (await engineClient()).projectGitignore(projectId));
+});
 
 /**
  * And the way back out — the Undo in the toast that reports the write.
@@ -35,11 +31,7 @@ export async function POST(_request: Request, context: Context) {
  * so a write nobody opted into needs a reverse as cheap as the way in. Bodyless
  * for the same reason the POST is: the engine decides what its own block was.
  */
-export async function DELETE(_request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    return Response.json(await (await engineClient()).undoProjectGitignore(projectId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const DELETE = engineRoute(async (_request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  return Response.json(await (await engineClient()).undoProjectGitignore(projectId));
+});

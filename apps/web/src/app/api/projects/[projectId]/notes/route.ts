@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,23 +13,15 @@ type Context = { params: Promise<{ projectId: string }> };
  * `/v2/notes/mcp`. Nothing is cached on this side; a note written elsewhere must
  * not be hidden behind a copy this process is holding.
  */
-export async function GET(_request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    return Response.json(await (await engineClient()).projectNotes(projectId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (_request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  return Response.json(await (await engineClient()).projectNotes(projectId));
+});
 
 /** No `author` is forwarded: an absent one means the human's, which is what a
  *  write from this app always is. Only the engine's tool wall says "session". */
-export async function POST(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const input = (await request.json()) as { title: string; body?: string; pinned?: boolean };
-    return Response.json(await (await engineClient()).createProjectNote(projectId, input));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const input = (await request.json()) as { title: string; body?: string; pinned?: boolean };
+  return Response.json(await (await engineClient()).createProjectNote(projectId, input));
+});

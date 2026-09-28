@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * One failing check's log.
@@ -15,11 +15,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string; jobId: string }> };
 
-export async function GET(_request: Request, context: Context) {
-  try {
-    const { projectId, jobId } = await context.params;
-    return Response.json(await (await engineClient()).projectCheckLog(projectId, jobId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (_request: Request, context: Context) => {
+  const { projectId, jobId } = await context.params;
+  return Response.json(await (await engineClient()).projectCheckLog(projectId, jobId));
+});

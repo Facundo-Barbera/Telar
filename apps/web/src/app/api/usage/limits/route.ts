@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * What the configured hubs currently report — the Limits section's one read.
@@ -10,11 +10,7 @@ import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    const refresh = new URL(request.url).searchParams.get("refresh") === "1";
-    return Response.json(await (await engineClient()).usageLimits(refresh ? { refresh: true } : {}));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  const refresh = new URL(request.url).searchParams.get("refresh") === "1";
+  return Response.json(await (await engineClient()).usageLimits(refresh ? { refresh: true } : {}));
+});

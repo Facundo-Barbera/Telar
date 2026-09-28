@@ -1,4 +1,4 @@
-import { requestObject, requiredString, engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { requestObject, requiredString, engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * ONE PROJECT'S MCP servers.
@@ -21,28 +21,20 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string }> };
 
-export async function GET(_request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    return Response.json(await (await engineClient()).listProjectMcpServers(projectId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (_request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  return Response.json(await (await engineClient()).listProjectMcpServers(projectId));
+});
 
-export async function PUT(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const body = await requestObject(request);
-    const result = await (await engineClient()).saveMcpServer({
-      id: requiredString(body.id, "Server id"),
-      projectId,
-      ...(body.label === undefined ? {} : { label: requiredString(body.label, "Server label") }),
-      ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
-      spec: body.spec as never,
-    });
-    return Response.json(result);
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const body = await requestObject(request);
+  const result = await (await engineClient()).saveMcpServer({
+    id: requiredString(body.id, "Server id"),
+    projectId,
+    ...(body.label === undefined ? {} : { label: requiredString(body.label, "Server label") }),
+    ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+    spec: body.spec as never,
+  });
+  return Response.json(result);
+});

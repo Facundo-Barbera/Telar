@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 import type { ScheduleRule } from "@telar/engine-client";
 
 /**
@@ -20,20 +20,12 @@ import type { ScheduleRule } from "@telar/engine-client";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    const sessionId = new URL(request.url).searchParams.get("sessionId") ?? undefined;
-    return Response.json(await (await engineClient()).schedules(sessionId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  const sessionId = new URL(request.url).searchParams.get("sessionId") ?? undefined;
+  return Response.json(await (await engineClient()).schedules(sessionId));
+});
 
-export async function POST(request: Request) {
-  try {
-    const input = (await request.json()) as { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean };
-    return Response.json(await (await engineClient()).putSchedule(input));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request) => {
+  const input = (await request.json()) as { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean };
+  return Response.json(await (await engineClient()).putSchedule(input));
+});
