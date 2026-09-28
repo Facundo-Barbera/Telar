@@ -13,6 +13,7 @@ providers (claude, codex, opencode) are child processes of the worker
 
 - The engine listens on loopback with a per-boot token written to `<TELAR_HOME>/engine/engine.json`.
 - Desktop main starts the engine, waits on `/v2/health`, then loads the cockpit.
+- Electron main owns the integrated browser's tabs, views and CDP; the cockpit only draws and attaches to them through the preload bridge. Never add a second, renderer-owned browser: agents would drive tabs the person can't see.
 - A turn goes: cockpit → engine `/v2` → queued in the journal → claimed by the worker → driver → provider. The worker streams observations back into the journal, and the cockpit folds them into the transcript.
 
 ## Domains
