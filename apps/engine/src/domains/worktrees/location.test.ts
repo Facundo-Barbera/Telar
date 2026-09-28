@@ -26,7 +26,7 @@ import {
   rootOf,
   worktreesRootBlocker,
   writeWorktreesRoot,
-} from "../src/worktrees-location";
+} from "./location";
 
 let root: string;
 const made: string[] = [];

@@ -4,7 +4,7 @@
  * ══ WHY THIS IS ITS OWN MODULE ══
  *
  * It lived in `state.ts`, and that made the rule it exists to state
- * unenforceable. `state.ts` imports `ExecutionStore` and `worktrees-location`,
+ * unenforceable. `state.ts` imports `ExecutionStore` and `domains/worktrees/location`,
  * so those two could not import it back without a cycle — and both of them own
  * a file at the store root. The result was exactly the shape #665 found: two
  * ways to name a root file, one of them a list and one of them a scattering of

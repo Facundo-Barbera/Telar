@@ -1,88 +1,3 @@
-/**
- * ══ WHAT IS BEING KEPT, AND WHICH OF IT CAN GO — issue #671 ══
- *
- * THE CLASSIFICATION IS THE FEATURE; A LIST IS NOT. That is the whole argument
- * for this module existing rather than the surface calling `git worktree list`
- * and drawing what comes back. Telar can prove whether a checkout is merged,
- * whether it is clean, and whether anything still needs it. A list that showed
- * those as four columns and left the reasoning to the reader would make someone
- * check three things by hand before daring to delete — which nobody does, which
- * is how 7.3 GB accumulates behind sessions that finished weeks ago. The proof
- * is done here, once, so it is not re-derived per row by a human.
- *
- * ── THE LADDER ────────────────────────────────────────────────────────────
- *
- * `classifyCheckout` is a PURE FUNCTION over facts and it is the heart of this
- * file. Everything else gathers what it needs. The rungs are asked in order and
- * the first that holds is the row's answer:
- *
- *   0  unreadable — nobody looked
- *   1  in-use     — a session is working in it right now
- *   2  protected  — the main checkout, or the tree this engine runs from
- *   3  active     — a live, unsettled session's checkout
- *   4  the content proofs: clean, and merged
- *
- * THE ORDER IS THE ORDER OF CERTAINTY, and each rung's read is sound only if
- * the ones above it passed. Asking "is it merged" about a checkout on a drive
- * that is not mounted produces a confident answer about nothing.
- *
- * ── RUNG 0 IS LOAD-BEARING AND IT IS NOT A FOOTNOTE ───────────────────────
- *
- * The checkouts live on an external volume (#642 part 2) and that volume comes
- * and goes. **Absence from a disk nobody can read is evidence of nothing.** A
- * classifier that walked an unmounted root would find no directories, match no
- * session's recorded path, and conclude that every checkout on that drive is an
- * orphan — offering to reclaim, in one press, the entire contents of a disk
- * that is merely in somebody's bag. So readability gates every read below it,
- * and an unreadable row gets no orphan verdict, no size, and no affordance.
- *
- * ── RUNG 1 IS A POLICY, NOT AN ERROR TO CATCH ─────────────────────────────
- *
- * #641 locks every session worktree, and the natural assumption is that the
- * lock is what refuses a removal while a session is working. **It is not.**
- * `removeSessionWorktreeAsync` unlocks unconditionally before removing, and its
- * comment says why — "a lock that outlives its reason is how 'never lose one'
- * becomes 'never remove one'". The lock guards against an OUTSIDER:
- * `gh pr merge --delete-branch` running `git worktree remove` on the tree that
- * holds the merged branch. Against Telar it does nothing.
- *
- * Which means a reclaim aimed at a working session's checkout would not fail
- * with an error worth rendering — it would SUCCEED, and take the directory an
- * agent is writing in. There is nothing to surface and nothing to retry. The
- * refusal has to be asserted here, before the press, from the same predicate
- * `moveWorktrees` refuses wholesale on: `activity !== "idle"`. A refusal a
- * person can predict is a feature; one they discover by trying is, in this
- * case, data loss.
- *
- * ── RUNG 3 IS WHERE THE OLD SURFACE DOES NOT TRANSLATE ────────────────────
- *
- * The surface this rebuilds keyed on "no active loom", and looms are gone
- * (#501). Ownership is session-shaped now, and it did not port one-for-one: a
- * loom had ONE axis (running or not) and a session has two that matter
- * independently — its lifecycle and its shelf. `settled` is the state the old
- * vocabulary had no word for and it is the one doing the accumulating, because
- * `archiveSession` releases a checkout and settling deliberately does not:
- * "settled is a shelf, not an ending, and a settled session's checkout is still
- * the thing it would resume into". That policy is correct and nothing here
- * changes it. What was missing is that its consequence was invisible.
- *
- * ── AND `unknown` IS AN ANSWER ────────────────────────────────────────────
- *
- * A git read that exits non-zero is not a fact about the repository — the
- * lesson #650 and #654 each learnt in a different surface. A killed
- * `merge-base` must not mark a merged branch unmerged (annoying) and a killed
- * `status` must not mark a dirty tree clean (loses work). So an unproven
- * checkout is removable but asks for the typed force, exactly like a dirty one,
- * and it says which of the two it is.
- *
- * ── THIS MODULE REMOVES NOTHING ───────────────────────────────────────────
- *
- * It reads, measures and classifies. Every removal goes through the store, on
- * the per-project worktree queue, by the paths that already exist. Keeping the
- * proof and the deletion in separate files is what makes the proof testable
- * without a fixture that can lose data.
- */
-
 import fs from "node:fs";
 import path from "node:path";
 import type {
@@ -93,16 +8,9 @@ import type {
   WorktreeRow,
   WorktreeVerdict,
 } from "@telar/engine-client";
-import type { AsyncGitRunner } from "./platform/git/runner";
+import type { AsyncGitRunner } from "../../platform/git/runner";
 
-/**
- * EVERYTHING THE LADDER NEEDS, AND NOTHING ELSE.
- *
- * Spelled as its own type rather than taken off `WorktreeRow` so the classifier
- * cannot quietly start reading a field that was gathered for display. If a rung
- * wants a new fact, it has to be added here, which is a decision somebody makes
- * rather than a coupling that happens.
- */
+// Only the facts the classifier may read; a new rung adds its fact here.
 export type CheckoutFacts = {
   /** Rung 0. False when the checkouts' drive or the project's is not there. */
   readable: boolean;
@@ -117,27 +25,17 @@ export type CheckoutFacts = {
   clean?: boolean;
   merged?: boolean;
   /** Whether there is a branch to have proved anything about. A detached
-   *  checkout and one whose branch was deleted (#641) both answer false. */
+   *  checkout and one whose branch was deleted both answer false. */
   hasBranch: boolean;
 };
 
-/**
- * THE LADDER. Pure, total, and the one function in this feature worth reading
- * on its own — every safety property the surface claims is decided here.
- *
- * NOTE WHAT IS NOT A RUNG: git's lock. It appears on the row as evidence and
- * never in this function, because it does not refuse Telar (see the header) and
- * a classifier that treated it as protection would be claiming a guarantee
- * nothing provides.
- */
+// Rungs in order of certainty: unreadable, in-use, protected, active, then clean and merged.
+// Git's lock is not a rung: removeSessionWorktreeAsync unlocks before removing, so it never refuses Telar.
 export function classifyCheckout(facts: CheckoutFacts): WorktreeVerdict {
   if (!facts.readable) return { kind: "locked", reason: "unreadable" };
   if (facts.busy) return { kind: "locked", reason: "in-use" };
   if (facts.protectedTree) return { kind: "locked", reason: "protected" };
-  // A live, unsettled session is somebody's current work whether or not a turn
-  // is in flight this second. Removing its checkout frees no session: nothing
-  // re-cuts a missing worktree, so the record would name a directory that is
-  // not there and every read on it would fail with no explanation.
+  // Nothing re-cuts a missing worktree, so a live session's checkout is never reclaimable.
   if (facts.owner.kind === "session" && facts.owner.lifecycle === "live") return { kind: "locked", reason: "active" };
 
   // Past here the owner is nothing, an archived session whose release never
@@ -184,13 +82,7 @@ export type InventoryProject = {
 };
 
 export type InventoryInput = {
-  /**
-   * THE CHECKOUT ROOTS, PLURAL, because a #642 move can be half-done: changing
-   * where checkouts go affects the next cut and leaves the existing ones where
-   * they are. An inventory of the configured root alone would omit exactly the
-   * gigabytes somebody changed the setting to shed — `measureStorage` walks
-   * both for the same reason.
-   */
+  // Plural because a root move can be half-done; the old root still holds checkouts.
   roots: readonly string[];
   /** Whether the checkouts' own drive is there. False is rung 0 for every row
    *  under these roots, and it suppresses the disk scan entirely. */
@@ -199,12 +91,7 @@ export type InventoryInput = {
   blocker?: string;
   sessions: readonly InventorySession[];
   projects: readonly InventoryProject[];
-  /**
-   * THE CHECKOUT THIS ENGINE IS RUNNING OUT OF, when it is running out of one.
-   * On a packaged install this is absent; on the machine Telar is developed on
-   * it is a worktree of Telar itself, and reclaiming it would delete the tree
-   * the daemon is executing from mid-press.
-   */
+  // The checkout the daemon runs from, when it runs from one.
   engineRoot?: string;
   now?: number;
 };
@@ -219,7 +106,7 @@ export type InventoryDeps = {
 
 /** `git worktree list --porcelain`, kept per path, including the `locked` line
  *  `parseWorktreeList` drops. The lock is evidence for the row; it is never a
- *  verdict (see the header). */
+ *  verdict. */
 type Registration = { path: string; branch?: string; locked: boolean; isMainCheckout: boolean };
 
 function parseRegistrations(stdout: string): Registration[] {
@@ -256,15 +143,7 @@ function parseRegistrations(stdout: string): Registration[] {
   return entries;
 }
 
-/**
- * macOS hands out `/var` and `/tmp` as symlinks into `/private`, so the path a
- * session recorded and the path git reports can name one directory in two
- * spellings. Every join in this module is by path, so they have to agree.
- *
- * `realpathSync` WHERE IT CAN, `resolve` WHERE IT CANNOT. A checkout that is
- * gone has no real path, and falling back rather than throwing is what lets a
- * released-but-still-recorded row be matched at all.
- */
+// macOS /var and /tmp are symlinks into /private; a gone checkout falls back to resolve().
 function canonical(target: string): string {
   try {
     return fs.realpathSync.native(path.resolve(target));
@@ -280,16 +159,7 @@ function readFailure(result: { status: number; timedOut?: true }): GitReadFailur
   return result.status === 0 ? undefined : "failed";
 }
 
-/**
- * IS THE BRANCH ALREADY IN THE DEFAULT BASE? Three answers, never two.
- *
- * `merge-base --is-ancestor` exits 0 for yes and 1 for no, and ANYTHING ELSE IS
- * NOT AN ANSWER — a missing branch, a killed child, a repository that could not
- * be opened. Mapping the third case onto "not merged" would be the safe-looking
- * mistake: it only ever adds a force prompt. Mapping it onto "merged" loses
- * work. Returning `undefined` is what lets the row say "Telar could not tell",
- * which is the only one of the three that is true.
- */
+// Exit 0 is merged, 1 is not, anything else is undefined: never guess merged.
 async function proveMerged(
   git: AsyncGitRunner,
   projectRoot: string,
@@ -321,15 +191,6 @@ async function proveClean(git: AsyncGitRunner, worktreePath: string): Promise<{ 
   return { clean: result.stdout.trim().length === 0 };
 }
 
-/**
- * WHAT A PROJECT'S BRANCHES ARE MEASURED AGAINST — the same `origin/main` the
- * base-ref picker offers, read once per project rather than per row.
- *
- * FALLS BACK TO THE LOCAL DEFAULT, AND THEN TO NOTHING. A repository with no
- * remote still has a main branch worth being merged into; one with neither has
- * no base at all, and every row under it is honestly unproven rather than
- * assumed unmerged.
- */
 async function defaultBaseOf(git: AsyncGitRunner, projectRoot: string): Promise<string | undefined> {
   for (const candidate of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"]) {
     try {
@@ -342,22 +203,8 @@ async function defaultBaseOf(git: AsyncGitRunner, projectRoot: string): Promise<
   return undefined;
 }
 
-/**
- * THE INVENTORY. Three witnesses, unioned by canonical path.
- *
- * WHY THREE, when `git worktree list` sounds like it should be enough: it is
- * the one witness that CANNOT see the class this feature exists for. A
- * directory whose registration was pruned — which is what `removeSessionWorktree`
- * does on every teardown, and what a `git worktree prune` from any other tool
- * does — is invisible to git and to the session records alike. It is just a
- * folder, holding gigabytes, that nothing will ever mention again. Only reading
- * the checkouts root itself finds it, and `planSessionWorktree` puts every cut
- * flat at `<root>/<name>-<8hex>`, so one `readdir` per root is the whole scan.
- *
- * AND THE SCAN IS SKIPPED ENTIRELY WHEN THE ROOTS ARE NOT READABLE, which is
- * rung 0 doing its job before any row exists: an empty `readdir` of a drive
- * that is out would make every recorded checkout an orphan at once.
- */
+// Unions git's list, session records and a readdir of each root: a pruned checkout is only on disk.
+// Unreadable roots are not scanned, or every recorded checkout would look orphaned.
 export async function buildInventory(deps: InventoryDeps, input: InventoryInput): Promise<WorktreeInventory> {
   const at = input.now ?? Date.now();
   const roots = [...new Set(input.roots.map((root) => path.resolve(root)))];
@@ -427,10 +274,7 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
       try {
         children = fs.readdirSync(root, { withFileTypes: true });
       } catch {
-        // An absent root is zero checkouts, not a partial read — the default
-        // root does not exist until the first cut. A root that exists and
-        // cannot be listed is caught by the same call and is rarer than the
-        // case this comment protects.
+        // The default root does not exist until the first cut.
         continue;
       }
       for (const child of children) {
@@ -493,17 +337,7 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
       measuring ||= bytes === undefined;
       partial ||= measured.partial;
 
-      /**
-       * HOW LONG IT HAS BEEN SITTING THERE, which is the other half of "should
-       * this still exist" and the one the size cannot answer: a 40 MB checkout
-       * touched this morning and a 40 MB one last touched in June are the same
-       * row without it.
-       *
-       * THE DIRECTORY'S OWN mtime, NOT THE SESSION'S `updatedAt`. They differ
-       * exactly where it matters — a session whose record was rewritten by a
-       * settle or a title change has a recent timestamp and a checkout nobody
-       * has written to in weeks.
-       */
+      // The directory's mtime, not the session's updatedAt, which a settle or rename bumps.
       try {
         updatedAt = fs.statSync(draft.path).mtimeMs;
       } catch {
@@ -541,14 +375,7 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
     });
   }
 
-  /**
-   * A REGISTERED-BUT-ABSENT MAIN CHECKOUT IS NOT A ROW. `git worktree list`
-   * always names the project root first, and the project root is not a session
-   * checkout — it is somebody's repository, which this surface has no business
-   * listing among things that can be reclaimed. It is dropped rather than shown
-   * `protected`, because a list of reclaimable checkouts that opens with a row
-   * nobody may ever touch teaches people to skim past the first row.
-   */
+  // The project's own checkout is never listed.
   const listed = rows.filter((row) => !(row.registered && row.verdict.kind === "locked" && row.verdict.reason === "protected" && row.owner.kind === "none"));
 
   return {
@@ -561,16 +388,7 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
   };
 }
 
-/**
- * WHAT ONE PRESS OF RECLAIM DID, in a sentence — `describeOutcome`'s discipline
- * and for its reason: one reason per refusal, never a single total, because the
- * reasons send a person to different places.
- *
- * THE TWO ACTS ARE COUNTED SEPARATELY. "Archived 3 sessions and removed 2
- * checkouts" and "gave back 5 checkouts" describe the same press, and only the
- * first says that three conversations were ended. The disk is the consequence;
- * the sessions are the decision.
- */
+// Archived sessions and removed checkouts are counted apart, one reason per refusal.
 export function describeReclaim(results: readonly { ok: boolean; action?: string; refusal?: string; bytes?: number }[]): string {
   const parts: string[] = [];
   const released = results.filter((result) => result.ok && result.action === "released").length;
@@ -612,14 +430,6 @@ function formatBytes(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-/**
- * BIGGEST RECLAIMABLE FIRST, then everything else by size.
- *
- * The row somebody needs is the one they did not know about, and on this
- * surface that is the largest thing nothing needs — `measureStorage`'s
- * reasoning, one level down. Locked rows sort last because no amount of reading
- * them changes what a person can do.
- */
 function rank(row: WorktreeRow): number {
   if (row.verdict.kind === "reclaimable") return 0;
   if (row.verdict.kind === "needs-force") return 1;

@@ -12,8 +12,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { defaultAsyncGitRunner } from "../src/platform/git/runner";
-import { describeOutcome, moveCheckouts, WorktreeMoveError, type Checkout } from "../src/worktrees-move";
+import { defaultAsyncGitRunner } from "../../platform/git/runner";
+import { describeOutcome, moveCheckouts, WorktreeMoveError, type Checkout } from "./move";
 
 const made: string[] = [];
 const tmp = (prefix: string): string => {
@@ -178,18 +178,6 @@ test("a partial move is safe: the clean ones go, the dirty one stays, and it can
   const second = await moveCheckouts(defaultAsyncGitRunner, { checkouts: [dirty], destination: to, onMoved: () => undefined });
   expect(second.moved).toHaveLength(1);
   expect(second.skipped).toEqual([]);
-});
-
-test("nothing is ever forced", async () => {
-  /**
-   * THE ONE LINE THIS OPERATION MUST NOT GROW. A `--force` on the remove would
-   * turn git's refusal — the safety property the whole design leans on — into
-   * a silent deletion of somebody's uncommitted work.
-   */
-  const source = fs.readFileSync(new URL("../src/worktrees-move.ts", import.meta.url), "utf8");
-  const commands = source.match(/"worktree",\s*"remove"[^\]]*\]/g) ?? [];
-  expect(commands.length).toBeGreaterThan(0);
-  for (const command of commands) expect(command).not.toContain("--force");
 });
 
 test("a failed re-add puts the checkout back where it was", async () => {

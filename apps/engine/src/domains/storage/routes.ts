@@ -2,7 +2,7 @@ import type { StorageReport } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
 import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
-import { defaultWorktreesRoot, readWorktreesRoot, rootOf } from "../../worktrees-location";
+import { defaultWorktreesRoot, readWorktreesRoot, rootOf } from "../worktrees";
 import { checkoutRootsOf, measureStore, withCheckouts } from "./measure";
 
 export type StorageMeter = {

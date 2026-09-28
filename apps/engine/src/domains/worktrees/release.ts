@@ -1,27 +1,10 @@
-/**
- * ══ RELEASING A SESSION'S CHECKOUT, AND GETTING IT BACK ══
- *
- * A released session keeps its conversation and its branch and loses only
- * the directory. The next message — or opening its files — re-cuts the
- * checkout at the same path from the same branch. That makes deleting a
- * worktree cheap to undo, which is what lets it happen automatically.
- *
- * WHAT IS NEVER RELEASED, checked here at the moment it would happen:
- *   - a checkout with uncommitted changes (or one git could not prove clean);
- *   - a branch with commits that are on no remote — the branch survives a
- *     release, but "unpushed" is the owner's line and it is kept literally;
- *   - a checkout a process has as its working directory (a run, a terminal);
- *   - a checkout outside Telar's worktrees root — somebody else's.
- * A turn in flight is the caller's check: only the store knows it.
- *
- * THE RE-CUT IS `git worktree add <path> <branch>` — never `-B`, which would
- * reset the branch to the old base and lose every commit the session made.
- */
+// Release drops a session's checkout but keeps its branch; the re-cut is `worktree add <path> <branch>`, never -B.
+// Never released: dirty or unprovable trees, unpushed branches, a process's cwd, anything outside the root.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { lockSessionWorktree, WORKTREE_ADD_TIMEOUT_MS, WorktreeError } from "./domains/worktrees";
-import { type AsyncGitRunner } from "./platform/git/runner";
+import { lockSessionWorktree, WORKTREE_ADD_TIMEOUT_MS, WorktreeError } from "./checkout";
+import { type AsyncGitRunner } from "../../platform/git/runner";
 
 export type ReleaseRefusal = "dirty" | "unpushed" | "process" | "not-telars" | "not-found";
 
@@ -30,11 +13,7 @@ function inside(root: string, target: string): boolean {
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-/**
- * WHICH OF THESE CHECKOUTS HAVE A PROCESS IN THEM, by working directory.
- * `undefined` when the platform cannot say (Windows, no `lsof`) — "could not
- * tell" is not "nothing is running", and the caller decides what that costs.
- */
+// undefined when the platform cannot tell (no lsof), which is not "nothing running".
 export async function checkoutsWithProcesses(
   checkouts: readonly string[],
   deps: { platform?: NodeJS.Platform; lsof?: () => Promise<string | undefined> } = {},
@@ -78,11 +57,7 @@ function readCwds(): Promise<string | undefined> {
   });
 }
 
-/**
- * Whether a checkout may go, and why not. `processes` is the answer of
- * `checkoutsWithProcesses` for this checkout: `true`, `false`, or `undefined`
- * when nobody could tell — which `strict` (the automatic sweep) refuses.
- */
+// `strict` (the automatic sweep) refuses when `processes` is undefined.
 export async function releaseRefusal(
   git: AsyncGitRunner,
   input: {
@@ -119,7 +94,7 @@ export async function reattachSessionWorktreeAsync(
   let added = await git(input.projectRoot, ["worktree", "add", input.path, input.branch], options);
   // A registration left behind by a directory that went some other way makes
   // `add` refuse the path. `--force` for exactly that case — never `prune`,
-  // which would also drop every worktree on a drive that is unplugged (#630).
+  // which would also drop every worktree on a drive that is unplugged.
   if (added.status !== 0 && /missing but (locked|already registered)|is a missing but/i.test(added.stderr)) {
     added = await git(input.projectRoot, ["worktree", "add", "--force", input.path, input.branch], options);
   }

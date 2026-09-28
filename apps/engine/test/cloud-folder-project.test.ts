@@ -6,8 +6,7 @@ import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
 import { probeAvailability, volumeForRoot } from "../src/volumes";
 import { createAsyncGitRunner, defaultGitRunner } from "../src/platform/git/runner";
-import { createSessionWorktreeAsync, isGitWorkTree, prepareSessionWorktree } from "../src/domains/worktrees";
-import { defaultWorktreesRoot } from "../src/worktrees-location";
+import { createSessionWorktreeAsync, defaultWorktreesRoot, isGitWorkTree, prepareSessionWorktree } from "../src/domains/worktrees";
 
 /**
  * A REPOSITORY INSIDE A CLOUD DRIVE'S LOCAL MIRROR, end to end — the reported

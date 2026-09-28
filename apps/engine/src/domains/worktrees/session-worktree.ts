@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ProjectAvailability } from "../../volumes";
-import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "../../worktrees-location";
+import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "./location";
 import { detectCacheDedup, type CacheDedupVerdict } from "../storage";
 import type { GitRunner, AsyncGitRunner } from "../../platform/git/runner";
 import { WORKTREE_ADD_TIMEOUT_MS, WorktreeError, lockSessionWorktree, unlockWorktree, isGitWorkTree } from "./checkout";

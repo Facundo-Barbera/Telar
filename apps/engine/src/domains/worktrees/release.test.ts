@@ -7,10 +7,10 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { checkoutsWithProcesses } from "../src/worktree-release";
-import { until } from "./wait";
-import { worktreeReady } from "./worktree-ready";
+import { EngineStore } from "../../state";
+import { checkoutsWithProcesses } from "./release";
+import { until } from "../../../test/wait";
+import { worktreeReady } from "../../../test/worktree-ready";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
