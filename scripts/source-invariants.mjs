@@ -58,7 +58,7 @@ const SHARED_WAIT_MODULE = "apps/engine/test/wait.ts";
  */
 function waitBudgetFailure(name, source, sharedBudgetMs) {
   const budgets = [...source.matchAll(/(?:ms|timeoutMs|deadlineMs) = ([0-9_]+)/g)].map((m) => Number(m[1].replace(/_/g, "")));
-  const importsShared = /from "\.\/wait"/.test(source);
+  const importsShared = /from "(?:\.\/|(?:\.\.\/)+test\/)wait"/.test(source);
   if (importsShared) budgets.push(sharedBudgetMs);
   const ceilings = [...source.matchAll(/^\}, *([0-9_]+)\);/gm)].map((m) => Number(m[1].replace(/_/g, "")));
   if (budgets.length === 0 || ceilings.length === 0) return null;
@@ -67,7 +67,7 @@ function waitBudgetFailure(name, source, sharedBudgetMs) {
   if (budget < ceiling) return null;
   const whose = budget === sharedBudgetMs && importsShared ? ` (${SHARED_WAIT_MODULE}'s WAIT_BUDGET_MS)` : "";
   return (
-    `apps/engine/test/${name}: a wait budget of ${budget}ms${whose} runs under a per-test ceiling of ${ceiling}ms. ` +
+    `${name}: a wait budget of ${budget}ms${whose} runs under a per-test ceiling of ${ceiling}ms. ` +
     "The test dies before the wait can report, so the real reason is discarded and the run only says it timed out. " +
     "Lower the budget below every ceiling in this file, or raise the ceiling above the budget."
   );
@@ -1159,7 +1159,7 @@ const CHECKS = [
     protects: "#807: no synchronous child wait in the engine suite can outlive its own call site",
     async run() {
       const failures = [];
-      for (const file of (await testFilesUnder("apps/engine/test")).sort()) {
+      for (const file of (await testFilesUnder("apps/engine")).sort()) {
         for (const call of syncSpawnCalls(await read(file))) {
           if (call.bounded && call.forceful) continue;
           const missing = call.bounded ? '`killSignal: "SIGKILL"`' : call.forceful ? "a `timeout`" : "a `timeout` and `killSignal: \"SIGKILL\"`";
@@ -1479,14 +1479,14 @@ const CHECKS = [
     protects: "the wait for a session's checkout (#706): one derived budget, not a copy per suite",
     async run() {
       const failures = [];
-      const files = (await readdir(join(ROOT, "apps/engine/test"))).filter((name) => name.endsWith(".ts"));
-      for (const name of files) {
-        if (name === "worktree-ready.ts") continue;
-        const source = await read(join("apps/engine/test", name));
+      const helpers = (await readdir(join(ROOT, "apps/engine/test"))).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts") && name !== "worktree-ready.ts");
+      const files = [...helpers.map((name) => `apps/engine/test/${name}`), ...(await testFilesUnder("apps/engine"))];
+      for (const file of files) {
+        const source = await read(file);
         if (!/preparation\?\.state/.test(source)) continue;
         if (!/for \([^)]*\)\s*\{[\s\S]{0,200}?preparation\?\.state/.test(source)) continue;
         failures.push(
-          `apps/engine/test/${name}: this file polls \`preparation?.state\` in its own loop instead of using \`worktreeReady\` from ./worktree-ready. That copy carries its own ceiling, and a fixed ceiling against the suite-wide git pool is what #706 is. Import the shared helper; if you truly need a different bound, import WORKTREE_READY_TIMEOUT_MS and say why.`,
+          `${file}: this file polls \`preparation?.state\` in its own loop instead of using \`worktreeReady\` from ./worktree-ready. That copy carries its own ceiling, and a fixed ceiling against the suite-wide git pool is what #706 is. Import the shared helper; if you truly need a different bound, import WORKTREE_READY_TIMEOUT_MS and say why.`,
         );
       }
       return failures;
@@ -1667,9 +1667,8 @@ const CHECKS = [
       const sharedBudgetMs = Number(declared[1].replace(/_/g, ""));
 
       const failures = [];
-      const files = (await readdir(join(ROOT, "apps/engine/test"))).filter((name) => name.endsWith(".test.ts"));
-      for (const name of files) {
-        const failure = waitBudgetFailure(name, await read(join("apps/engine/test", name)), sharedBudgetMs);
+      for (const file of await testFilesUnder("apps/engine")) {
+        const failure = waitBudgetFailure(file, await read(file), sharedBudgetMs);
         if (failure) failures.push(failure);
       }
       return failures;
@@ -1693,6 +1692,7 @@ const CHECKS = [
         { fires: true, why: "the original #706 shape: a local 15s budget under a 10s ceiling", source: localBudget + ceiling(10_000) },
         { fires: true, why: "equal is a coin toss, not a pass", source: localBudget + ceiling(15_000) },
         { fires: true, why: "the budget moved into the shared module and the ceiling did not move with it", source: importsShared + ceiling(10_000) },
+        { fires: true, why: "the same, from a test beside its source under src/", source: 'import { eventually } from "../../test/wait";\n' + ceiling(10_000) },
         { fires: false, why: "the shared budget under the suite ceiling", source: importsShared + ceiling(20_000) },
         { fires: false, why: "a local budget under its ceiling", source: localBudget + ceiling(20_000) },
         { fires: false, why: "no ceiling at all inherits the suite's 20s", source: importsShared },
@@ -2154,7 +2154,7 @@ const CHECKS = [
               `${file}:${hit.line}: ${hit.what} — Warp was retired in #877 and may not come back.\n` +
                 "        The owner asked for it to go completely, with no chance of using it again: the tool, the four " +
                 "`src/warp/` modules, the protocol linkage and the surfaces that rendered it are all gone, and the tool " +
-                "walls are pinned WITHOUT it in `tool-names.test.ts` and `tool-budgets.test.ts`. If a fan-out is genuinely " +
+                "walls are pinned WITHOUT it in `domains/agent-tools/tool-names.test.ts` and `domains/agent-tools/budgets.test.ts`. If a fan-out is genuinely " +
                 "wanted again, that is a decision for the owner and a new name, not a resurrection of this one.\n" +
                 "        If you are reading this because of the LOOM — Telar's warp-and-weft mark — you have hit a bug in " +
                 "this check rather than the rule: a bare `warp` is deliberately allowed, and only the five suffixed " +

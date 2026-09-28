@@ -4,7 +4,7 @@
  *
  * ══ WHY THIS FIXTURE IS A REAL STORE AND #515'S IS A FAKE ══
  *
- * `tool-budgets.test.ts` builds 500 sessions over a FAKE capability and its
+ * `domains/agent-tools/budgets.test.ts` builds 500 sessions over a FAKE capability and its
  * header argues why: what that file asserts is how much a wall SAYS, and a fake
  * answers that question exactly as well as a real engine while cutting 500
  * worktrees does not.
@@ -38,7 +38,7 @@
  * survives a loaded CI runner; a threshold in milliseconds is an assertion
  * about how busy the machine is, which is not a property of `turnOutline`.
  *
- * Shared by `query-acceptance.test.ts` (the guard) and `bench/outline.ts` (the
+ * Shared by `domains/agent-tools/query-acceptance.test.ts` (the guard) and `bench/outline.ts` (the
  * numbers), deliberately: a bench that priced a different fixture from the one
  * the test guards would let the two drift apart, and the PR's table would stop
  * describing the thing CI checks.
