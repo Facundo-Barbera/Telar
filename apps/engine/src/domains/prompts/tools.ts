@@ -29,11 +29,11 @@ const listShape = (prompt: PreparedPrompt) => ({
   preview: prompt.text.length <= PREVIEW_CHARS ? prompt.text : `${prompt.text.slice(0, PREVIEW_CHARS)}…`,
 });
 
-const DRAFT = `Put a prepared prompt in front of the human instead of acting on it yourself — it lands in their composer's stash, one keystroke from being sent, and NOTHING runs until they press it. Two uses: ending a turn by drafting the follow-up you would send next, and writing a prompt as the product when that is what you were asked for. Title it in a few words, give the message verbatim as \`text\`, and say in one line why you are offering it. Saying "you could ask me X next" in your answer instead leaves them to select, copy and paste it; this does not.`;
+const DRAFT = `Offer the human a ready-to-send prompt instead of acting on it; nothing runs until they send it. Use it for the follow-up you would suggest, or when a prompt is the deliverable.`;
 
-const LIST = `The prepared prompts on this project's shelf — yours and the person's own set-aside ones. Titles and a 120-character preview; promptId reads one whole.`;
+const LIST = `The project's prepared prompts, yours and the person's, as titles and previews. promptId reads one whole.`;
 
-const DROP = `Remove a prepared prompt an AGENT wrote; one the person set aside is theirs and this refuses it. Use it when a draft you offered is now wrong — a stale follow-up is worse than no follow-up, because it looks considered.`;
+const DROP = `Remove a prompt an agent drafted, e.g. one that is now wrong; the person's own are refused.`;
 
 export function promptsTools(tool: ToolFactory, capability: PromptsCapability): unknown[] {
   type Reply = { content: unknown[]; isError?: boolean };
@@ -53,14 +53,14 @@ export function promptsTools(tool: ToolFactory, capability: PromptsCapability): 
       "prompt_draft",
       DRAFT,
       {
-        title: z.string().min(1).max(200).describe("A few words naming what it asks for. This is the row the human reads."),
-        text: z.string().min(1).describe("The message itself, verbatim — exactly what would be sent if they press it."),
-        reason: z.string().max(400).optional().describe("One line on why you are offering this. Shown under the title."),
+        title: z.string().min(1).max(200).describe("A few words."),
+        text: z.string().min(1).describe("The exact message."),
+        reason: z.string().max(400).optional().describe("One line: why offer it."),
         forThisSession: z
           .boolean()
           .optional()
           .describe(
-            "Default true: a follow-up belongs in THIS conversation's composer. Pass false for a prompt written as a product, which every composer on the project should see.",
+            "Default true; false shares it with the whole project.",
           ),
       },
       async (args) => {
@@ -87,7 +87,7 @@ export function promptsTools(tool: ToolFactory, capability: PromptsCapability): 
       },
     ),
 
-    tool("prompt_list", LIST, { promptId: z.string().optional().describe("One prepared prompt in full.") }, async (args) => {
+    tool("prompt_list", LIST, { promptId: z.string().optional().describe("Read one whole.") }, async (args) => {
       if (typeof args.promptId === "string") return await withPrompt((found) => json({ ...shape(found), text: found.text }))(args);
       try {
         const prompts = await capability.list();

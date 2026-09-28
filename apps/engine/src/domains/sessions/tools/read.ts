@@ -18,35 +18,35 @@ export function readTools(tool: ToolFactory, capability: SessionsCapability): un
         view: z
           .enum(VIEWS)
           .optional()
-          .describe('Default "summary". "outline" a row per turn, newest first; "answer" one turn\'s conclusion; "steps" what a turn did, with each step\'s byte cost; "step" one of them whole; "events" the raw journal; "grep" a phrase; "diff" what it changed.'),
+          .describe("Default summary (a line per turn)."),
         runId: z
           .string()
           .min(1)
           .optional()
-          .describe("One turn — the id a wake gives you. summary/events: its events, its answer, and a peer message in full. answer: omit for the latest turn that left text. steps, step: required."),
+          .describe("One turn, as a wake names it: its events, answer and a peer message in full. Required for steps and step."),
         after: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("A cursor a previous read returned. events and a runId read: omit for the latest. steps: the `next` a previous page returned."),
+          .describe("Cursor from a previous events or steps read."),
         before: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("outline, grep: the `next` a previous page returned, so appends cannot shift the window."),
+          .describe("outline, grep: the `next` of a previous page."),
         from: z
           .enum(["start", "end"])
           .optional()
-          .describe('events: "start" from the beginning; "end" (default) the latest. Ignored with `after`.'),
+          .describe('events: start or end (default).'),
         limit: z
           .number()
           .int()
           .min(1)
           .max(STEPS_LIMIT_MAX)
           .optional()
-          .describe(`Rows per page. events: default and max ${MAX_EVENTS}, and the byte budget may return fewer. outline, grep: default 20, max 100. steps: default 50, max ${STEPS_LIMIT_MAX}.`),
+          .describe("Rows per page."),
         turns: z
           .number()
           .int()
@@ -57,35 +57,35 @@ export function readTools(tool: ToolFactory, capability: SessionsCapability): un
         verbose: z
           .boolean()
           .optional()
-          .describe("events and a runId read: keep usage rows and policy-resolved requests. Settled turns keep only their last usage row and no policy-resolved requests."),
+          .describe("Keep usage rows and auto-resolved requests."),
         resultAfter: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("A runId read, answer: continue the answer from this character offset."),
+          .describe("Continue an answer from this offset."),
         messageAfter: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("A runId read: the same for a peer message's body."),
+          .describe("Continue a peer message from this offset."),
         step: z
           .union([z.number().int().min(0), z.string().min(1)])
           .optional()
-          .describe('step: the index view "steps" gave, or an item id.'),
+          .describe('Index from steps, or an item id.'),
         maxChars: z
           .number()
           .int()
           .min(1)
           .max(CHARS_MAX)
           .optional()
-          .describe(`step, answer: default ${CHARS_DEFAULT}, which is also the least answer sends; what is cut is marked.`),
+          .describe(`step, answer: default ${CHARS_DEFAULT}.`),
         pattern: z
           .string()
           .min(1)
           .optional()
-          .describe("grep: case-insensitive substring, matched anywhere in an event — not a regular expression."),
+          .describe("grep: case-insensitive substring, not a regex."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
@@ -286,7 +286,7 @@ export function statusTools(tool: ToolFactory, capability: SessionsCapability): 
           .min(1)
           .max(STATUS_TURNS_MAX)
           .optional()
-          .describe(`Default ${STATUS_TURNS_DEFAULT}; live turns are always included.`),
+          .describe(`Default ${STATUS_TURNS_DEFAULT}.`),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");

@@ -168,8 +168,7 @@ describe("sessions_read is bounded", () => {
     const bare = await call(tools, "sessions_read", { sessionId: id });
     expect(bare.json!.view).toBe("summary");
     expect(bare.json!.events).toBeUndefined();
-    expect(tools.get("sessions_read")!.description).toContain("Default view summary");
-    expect(tools.get("sessions_read")!.description).toContain("events is the raw journal");
+    expect(tools.get("sessions_read")!.description).toContain("events is the long raw journal");
 
     const withCursor = await call(tools, "sessions_read", { sessionId: id, after: 0 });
     expect(withCursor.json!.view).toBe("summary");
@@ -452,18 +451,18 @@ describe("sessions_read returns the message a notice stands in for", () => {
   test("the wall tells senders and recipients what actually travels", () => {
     const { store } = engine();
     const tools = wall(store);
-    expect(tools.get("sessions_send")!.description).toContain("handed a NOTICE naming sessions_read, not your text");
+    expect(tools.get("sessions_send")!.description).toContain("notice naming sessions_read, not your text");
     expect(JSON.stringify(toolInputSchema(tools.get("sessions_read")!.shape))).toContain("a peer message in full");
     expect(TELAR_SKILL).toContain("A wake or a peer's message names a session and a run");
     expect(TELAR_SKILL).toContain("sessions_read(sessionId, runId)");
-    expect(tools.get("sessions_subscribe")!.description).toContain("Be woken ONCE");
+    expect(tools.get("sessions_subscribe")!.description).toContain("Be woken once");
   });
 
   test("the descriptions say: never poll, and a tasked worker ends with one result", () => {
     const { store } = engine();
     const tools = wall(store);
     expect(tools.get("sessions_status")!.description).toContain("Never poll it to wait");
-    expect(tools.get("sessions_send")!.description).toContain("End with ONE result");
+    expect(tools.get("sessions_send")!.description).toContain("End with one result");
     expect(tools.get("sessions_send")!.description).toContain("no progress reports");
   });
 });

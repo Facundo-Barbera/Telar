@@ -7,7 +7,7 @@ export type DisplayCapability = {
   open(input: { path: string; title?: string }): Promise<{ path: string }>;
 };
 
-const OPEN = `Show the human one file from this session's checkout in the cockpit's right panel, rendered rather than as source: markdown formatted, PDFs paged, images and video shown, code highlighted. For something you produced FOR them to look at now, not a file you are working on. Path is relative to the checkout root, and it takes the foreground.`;
+const OPEN = `Show the human a file from this checkout in the panel, rendered (markdown, PDF, image, video, code). For something you made for them to look at now.`;
 
 export function displayTools(tool: ToolFactory, capability: DisplayCapability): unknown[] {
   return [
@@ -15,8 +15,8 @@ export function displayTools(tool: ToolFactory, capability: DisplayCapability): 
       "display_open",
       OPEN,
       {
-        path: z.string().min(1).describe("The file to show, relative to the session's checkout root."),
-        title: z.string().max(200).optional().describe("What to call it — shown to the human beside the file."),
+        path: z.string().min(1).describe("Relative to the checkout root."),
+        title: z.string().max(200).optional().describe("Shown beside the file."),
       },
       async (args) => {
         const path = typeof args.path === "string" ? args.path.trim() : "";

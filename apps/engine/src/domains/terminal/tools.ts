@@ -33,7 +33,7 @@ const lineText = (lines: { stream: string; text: string }[]) => lines.map((line)
 const SIGNAL = z
   .enum(["SIGTERM", "SIGINT", "SIGKILL"])
   .optional()
-  .describe("A first signal before the close, e.g. SIGINT for a server that only stops on Ctrl-C. The close follows regardless.");
+  .describe("Sent first, e.g. SIGINT; the close follows regardless.");
 
 const signalOf = (value: unknown): RunStopSignal | undefined => (value === "SIGTERM" || value === "SIGINT" || value === "SIGKILL" ? value : undefined);
 
@@ -126,16 +126,16 @@ function runToolsContext(tool: ToolFactory, capability: RunCapability) {
     }
   };
   const OUTPUT_SHAPE = {
-    after: z.number().int().min(0).optional().describe("A cursor from an earlier call; only newer lines come back."),
-    tail: z.number().int().min(1).max(1000).optional().describe("Only the last N lines. The end is usually where it says what went wrong."),
-    grep: z.string().min(1).max(500).optional().describe("A regular expression; only matching lines come back. The cursor still advances over the rest."),
-    stream: z.enum(["stdout", "stderr"]).optional().describe("One stream only. A terminal has only stdout: the two are merged before Telar sees them."),
+    after: z.number().int().min(0).optional().describe("Cursor from an earlier call."),
+    tail: z.number().int().min(1).max(1000).optional().describe("Only the last N lines."),
+    grep: z.string().min(1).max(500).optional().describe("Regex; only matching lines."),
+    stream: z.enum(["stdout", "stderr"]).optional().describe("One stream only."),
   };
   const WAIT_SHAPE = {
-    pattern: z.string().min(1).max(500).optional().describe("A regular expression over lines printed from now on, e.g. 'Ready in|Listening on'."),
-    ready: z.boolean().optional().describe("Wait for its readiness URL or ready pattern. Refused if it has neither."),
-    exit: z.boolean().optional().describe("Wait for it to end, e.g. a build or a test run."),
-    timeoutMs: z.number().int().min(0).max(60_000).describe("How long to wait, at most 60000. Pick a budget and handle a timeout."),
+    pattern: z.string().min(1).max(500).optional().describe("Regex over new lines, e.g. 'Listening on'."),
+    ready: z.boolean().optional().describe("Wait for its ready URL or pattern."),
+    exit: z.boolean().optional().describe("Wait for it to exit."),
+    timeoutMs: z.number().int().min(0).max(60_000).describe("At most 60000."),
   };
   return { idOf, list, opened, openFromConfig, kill, output, wait, OUTPUT_SHAPE, WAIT_SHAPE };
 }
@@ -153,18 +153,18 @@ function terminalTools(tool: ToolFactory, capability: RunCapability, h: ReturnTy
   return [
     tool(
       "terminal_open",
-      "Open a NEW terminal in this session's panel, where the person sees it, running a command: a dev server, a watcher, a long build. Pass command (with cwd, name, ready) or a saved configId. Returns its terminalId. Use this, never a background shell or '&', for anything that keeps running.",
+      "Open a terminal in the panel running a command (dev server, watcher, long build) or a saved configId. Use this, never '&' or a background shell, for anything long-running.",
       {
-        command: z.string().min(1).max(4000).optional().describe("The shell command, e.g. 'bun run dev'."),
-        cwd: z.string().max(1024).optional().describe("Directory relative to this session's worktree. Default: its root."),
-        name: z.string().min(1).max(120).optional().describe("The tab's title. Default: the start of the command."),
+        command: z.string().min(1).max(4000).optional().describe("e.g. 'bun run dev'."),
+        cwd: z.string().max(1024).optional().describe("Relative to the worktree."),
+        name: z.string().min(1).max(120).optional().describe("Tab title."),
         ready: z
           .string()
           .min(1)
           .max(500)
           .optional()
-          .describe("An http(s) URL that answers once it is up, or a regular expression its output prints when it is, e.g. 'Listening on'."),
-        configId: z.string().min(1).optional().describe("Open a saved run configuration instead of a command (see run_configs)."),
+          .describe("A URL that answers, or a regex printed, once it is up."),
+        configId: z.string().min(1).optional().describe("A saved run configuration."),
       },
       async (args) => {
         const configId = idOf(args.configId);
@@ -190,29 +190,29 @@ function terminalTools(tool: ToolFactory, capability: RunCapability, h: ReturnTy
 
     tool(
       "terminal_list",
-      "This session's terminals, newest first: open ones and recently ended, each with its terminalId, status, where it runs and who closed it. One the person closed stays closed unless they ask you to reopen it.",
+      "This session's terminals, newest first, with status and who closed each. Don't reopen one the person closed unless they ask.",
       {},
       async () => await list(),
     ),
 
     tool(
       "terminal_output",
-      "What a terminal printed, including after it ended. A bounded window; dropped lines are counted. Pass the cursor from an earlier call to read only what is new. tail, grep and stream narrow the answer without moving the cursor.",
-      { terminalId: z.string().min(1).describe("Which terminal (see terminal_list)."), ...OUTPUT_SHAPE },
+      "What a terminal printed, even after it ended. Pass the last cursor to read only new lines; tail, grep and stream narrow without moving it.",
+      { terminalId: z.string().min(1).describe("From terminal_open or terminal_list."), ...OUTPUT_SHAPE },
       async (args) => await output(idOf(args.terminalId), args),
     ),
 
     tool(
       "terminal_wait",
-      "Wait until a terminal prints a pattern, becomes ready, or ends. This is how you wait for a server: never sleep. Give pattern, ready or exit, and timeoutMs. The answer says which fired or that it timed out, with the lines printed meanwhile and a cursor.",
-      { terminalId: z.string().min(1).describe("Which terminal (see terminal_list)."), ...WAIT_SHAPE },
+      "Wait until a terminal prints a pattern, is ready, or exits; never sleep instead. Says which fired or that it timed out.",
+      { terminalId: z.string().min(1).describe("From terminal_open or terminal_list."), ...WAIT_SHAPE },
       async (args) => await wait(idOf(args.terminalId), args),
     ),
 
     tool(
       "terminal_kill",
-      "Close a terminal, which ends everything running in it (the whole process group). It is recorded as closed by you. This is the only way to stop one: never pkill, killall or kill.",
-      { terminalId: z.string().min(1).describe("Which terminal (see terminal_list)."), signal: SIGNAL },
+      "Close a terminal and everything running in it. The only way to stop one: never pkill, killall or kill.",
+      { terminalId: z.string().min(1).describe("From terminal_open or terminal_list."), signal: SIGNAL },
       async (args) => await kill(idOf(args.terminalId), args.signal),
     ),
   ];
@@ -231,7 +231,7 @@ function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
   return [
     tool(
       "run_configs",
-      "The project's saved run configurations: name, icon, command, working directory and which environment variables are set. Secret values are never returned. A project usually already has the recipe you want; open one with terminal_open({configId}).",
+      "The project's saved run configurations (secrets hidden). Open one with terminal_open({configId}).",
       {},
       async () => {
         try {
@@ -246,22 +246,22 @@ function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
 
     tool(
       "run_save_config",
-      "Save a run configuration on the PROJECT, shown in its Run menu, or edit one by passing its configId. You can set up an empty Run menu yourself. The cwd is relative to the worktree it is opened from. Give a readinessUrl only if the command really serves it.",
+      "Create or edit (configId) a run configuration in the project's Run menu; an empty menu is yours to fill.",
       {
-        configId: z.string().min(1).optional().describe("Edit this configuration instead of creating one."),
-        delete: z.boolean().optional().describe("Forget configId. A terminal already opened from it keeps running."),
-        name: z.string().min(1).max(120).optional().describe("What a human picks in the Run menu, e.g. 'web dev'."),
-        icon: RunIcon.optional().describe("The glyph the Run menu draws before the name. Default: 'play'."),
-        command: z.string().min(1).optional().describe("The shell command, e.g. 'bun run dev'."),
+        configId: z.string().min(1).optional().describe("Edit this one."),
+        delete: z.boolean().optional().describe("Forget configId; its open terminals keep running."),
+        name: z.string().min(1).max(120).optional().describe("Menu label, e.g. 'web dev'."),
+        icon: RunIcon.optional().describe("Default 'play'."),
+        command: z.string().min(1).optional().describe("e.g. 'bun run dev'."),
         shell: RunShell.optional().describe(
-          "Which program evaluates the command, spelled out: it is spawned with args followed by the command, e.g. {program:'/bin/bash', args:['-lc']}. Leave it out unless the recipe genuinely needs a particular shell — an absent one is resolved against whatever platform the run launches on, which is what keeps a recipe openable on another machine.",
+          "Only if it needs a specific shell, e.g. {program:'/bin/bash', args:['-lc']}.",
         ),
-        cwd: z.string().optional().describe("Directory relative to the worktree root, e.g. 'apps/web'. Default: the root."),
+        cwd: z.string().optional().describe("Relative to the worktree root."),
         env: z
           .array(z.object({ key: z.string().min(1), value: z.string(), secret: z.boolean().optional() }))
           .optional()
-          .describe("Environment variables. Mark a value secret to keep it out of every read and out of captured output."),
-        readinessUrl: z.string().url().optional().describe("A URL that answers once the service is up, e.g. 'http://localhost:3000'."),
+          .describe("Mark secret values secret."),
+        readinessUrl: z.string().url().optional().describe("Only if the command serves it."),
       },
       async (args) => {
         if (args.delete === true) return await forget(args.configId);

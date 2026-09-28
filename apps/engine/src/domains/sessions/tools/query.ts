@@ -47,7 +47,7 @@ export type SessionsQueryCapability = {
 };
 
 export const FIND_LIMIT_DEFAULT = 10;
-export const FIND_LIMIT_MAX = 50;
+const FIND_LIMIT_MAX = 50;
 const OUTLINE_PAGE_DEFAULT = 20;
 const OUTLINE_PAGE_MAX = 100;
 export const CHARS_DEFAULT = 8_000;

@@ -180,7 +180,6 @@ describe("driving a session", () => {
     expect(note).not.toContain("changed nothing in its checkout");
     expect(note).toContain("do not report this session as having changed nothing");
     expect(note).toContain("read it again");
-    expect(tools.get("sessions_read")!.description).toContain("an empty diff may be unread, not unchanged");
   });
 
   test("a session that does not exist refuses identically on every verb", async () => {

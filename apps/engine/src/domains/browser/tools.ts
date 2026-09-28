@@ -61,7 +61,7 @@ const targeted = {
 };
 
 const tabId = {
-  tabId: z.number().int().nonnegative().optional(),
+  tabId: z.number().int().nonnegative().optional().describe("Default: your tab"),
 };
 
 const point = {
@@ -93,7 +93,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_navigate",
     description:
-      "Navigate to an http or https URL, in the tab you are working in or the tabId you name. Does not change what the human is looking at. file:// URLs work only inside this session's checkout. To put a file IN FRONT of the human rather than browse it yourself, use display_open.",
+      "Navigate to an http or https URL. Does not change what the human is looking at. file:// URLs work only inside this session's checkout. To put a file IN FRONT of the human rather than browse it yourself, use display_open.",
     input: z.object({
       url: z.union([z.literal("back"), z.url()]).describe("\"back\" goes back in history"),
       ...tabId,
@@ -102,7 +102,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_snapshot",
     description:
-      "Read the accessibility snapshot of the tab you are working in, or the tabId you name. Use its exact target refs for interactions. The answer is capped at 16 KB: on a large page pass target (a ref from the last snapshot) to read one region, or depth to stop at a level. screenshot: true captures an image instead.",
+      "Read the accessibility snapshot of your tab. Use its exact target refs for interactions. The answer is capped at 16 KB: on a large page pass target (a ref from the last snapshot) to read one region, or depth to stop at a level. screenshot: true captures an image instead.",
     input: z.object({
       target: z.string().optional(),
       depth: z.number().int().nonnegative().optional(),
@@ -117,7 +117,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_click",
     description:
-      "Click by target from browser_snapshot, or at x,y in a screenshot's CSS pixels where the snapshot has no ref (a canvas-drawn page). In your tab or the tabId you name.",
+      "Click by target from browser_snapshot, or at x,y in a screenshot's CSS pixels where the snapshot has no ref (a canvas-drawn page).",
     input: z
       .object({
         ...point,
@@ -130,7 +130,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_type",
     description:
-      "Type text into an editable element by target or, with no target, into whatever has focus (say a cell you just clicked by x,y). Or pass only key to press a key or chord (Enter, Control+A, Meta+V, Shift+Tab). In your tab or the tabId you name.",
+      "Type text into an editable element by target or, with no target, into whatever has focus (say a cell you just clicked by x,y). Or pass only key to press a key or chord (Enter, Control+A, Meta+V, Shift+Tab).",
     input: z
       .object({
         target: z.string().min(1).optional(),
@@ -147,7 +147,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_fill_form",
-    description: "Fill several fields, in the tab you are working in or the tabId you name.",
+    description: "Fill several fields.",
     input: z.object({
       ...tabId,
       fields: z.array(
@@ -162,25 +162,25 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_select_option",
-    description: "Select values in a dropdown, in the tab you are working in or the tabId you name.",
+    description: "Select values in a dropdown.",
     input: z.object({ ...targeted, ...tabId, values: z.array(z.string()) }),
   },
   {
     name: "browser_hover",
     description:
-      "Move Telar's visible agent cursor over a target, or to x,y in screenshot CSS pixels where there is no ref. In your tab or the tabId you name.",
+      "Move Telar's visible agent cursor over a target, or to x,y in screenshot CSS pixels where there is no ref.",
     input: z.object({ ...point, ...tabId }).refine(targetOrPoint, ONE_OF_TARGET_OR_POINT),
   },
   {
     name: "browser_drag",
     description:
-      "Drag with the left button from x,y to toX,toY in screenshot CSS pixels — to select cells or move a shape on a canvas-drawn page. In your tab or the tabId you name.",
+      "Drag with the left button from x,y to toX,toY in screenshot CSS pixels — to select cells or move a shape on a canvas-drawn page.",
     input: z.object({ x: z.number(), y: z.number(), toX: z.number(), toY: z.number(), ...tabId }),
   },
   {
     name: "browser_resize",
     description:
-      "Set the size the page lays out for in your tab or the tabId you name. width and/or height test a breakpoint (one alone keeps the other); or a preset: phones, tablets, desktop (default 1280×800), foldables. orientation turns it. mode \"fit\" follows the human's panel, \"fixed\" stops. Snapshot again after.",
+      "Set the size your tab lays out for. width and/or height test a breakpoint (one alone keeps the other); or a preset: phones, tablets, desktop (default 1280×800), foldables. orientation turns it. mode \"fit\" follows the human's panel, \"fixed\" stops. Snapshot again after.",
     input: z
       .object({
         width: z.number().int().min(200).max(5000).optional(),
@@ -198,7 +198,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_logs",
     description:
-      "Read the console or the network requests of the tab you are working in, or the tabId you name. The answer is capped at 6 KB and the newest lines are the ones kept: narrow with level (console) or filter (network) to see further back. The console also lists downloads and their paths.",
+      "Read the console or the network requests of your tab. The answer is capped at 6 KB and the newest lines are the ones kept: narrow with level (console) or filter (network) to see further back. The console also lists downloads and their paths.",
     input: z.object({
       kind: z.enum(["console", "network"]),
       level: z.enum(["error", "warning", "info", "debug"]).default("info").describe("console: the lowest level shown"),
@@ -229,13 +229,13 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_paste",
     description:
-      "Paste text into what has focus as a real paste does, never touching the clipboard. Tab-separated rows fill many spreadsheet cells at once. In your tab or the tabId you name.",
+      "Paste text into what has focus as a real paste does, never touching the clipboard. Tab-separated rows fill many spreadsheet cells at once.",
     input: z.object({ text: z.string().min(1), ...tabId }),
   },
   {
     name: "browser_copy",
     description:
-      "Read what a copy would take — the page's copy text, else the selection — never touching the clipboard; reads cells selected on a canvas-drawn page. In your tab or the tabId you name.",
+      "Read what a copy would take — the page's copy text, else the selection — never touching the clipboard; reads cells selected on a canvas-drawn page.",
     input: z.object({ ...tabId }),
   },
 ];

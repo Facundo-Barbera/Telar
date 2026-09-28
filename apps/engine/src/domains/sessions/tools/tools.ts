@@ -15,14 +15,14 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
     ...wakeTools(tool, capability),
     tool(
       "sessions_schedule",
-      "Run a prompt in THIS session on a clock — every N minutes, or at a fixed local time on chosen weekdays. A missed run is re-aimed rather than fired late, and nothing fires while Telar is closed.",
+      "Run a prompt in this session every N minutes, or at a local time on chosen weekdays. Nothing fires while Telar is closed.",
       {
-        prompt: z.string().min(1).describe("What to send to this session when the schedule comes due."),
-        everyMinutes: z.number().int().min(1).optional().describe("Run every N minutes. Use this OR hour/minute, not both."),
-        hour: z.number().int().min(0).max(23).optional().describe("Local hour for a fixed-time schedule."),
-        minute: z.number().int().min(0).max(59).optional().describe("Local minute for a fixed-time schedule."),
-        weekdays: z.array(z.number().int().min(0).max(6)).optional().describe("0 is Sunday. Omit for every day."),
-        zone: z.string().optional().describe("IANA zone name, e.g. Europe/Madrid. Defaults to this machine's."),
+        prompt: z.string().min(1).describe("What to send when it is due."),
+        everyMinutes: z.number().int().min(1).optional().describe("Or hour/minute, not both."),
+        hour: z.number().int().min(0).max(23).optional().describe("Local hour."),
+        minute: z.number().int().min(0).max(59).optional().describe("Local minute."),
+        weekdays: z.array(z.number().int().min(0).max(6)).optional().describe("0 is Sunday; omit for every day."),
+        zone: z.string().optional().describe("IANA zone; default this machine's."),
       },
       async (args) => {
         if (!capability.self) return err(NO_SESSION_TO_SCHEDULE);

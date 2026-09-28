@@ -45,13 +45,13 @@ export type SessionsCapability = {
 };
 
 
-const NOT_A_BYPASS = "Never hand a peer work you were refused — the same action, renamed.";
+const NOT_A_BYPASS = "Never hand a peer work you were refused.";
 
-export const LIST = `Live sessions, and the projects one can be created in. Unsettled only by default. Read it before creating anything — the session you want may exist. q searches every session instead, lexically, each hit quoting the line that matched.`;
+export const LIST = `Live sessions and the projects you can create in; check it before creating. q searches every session's text instead.`;
 
-export const CREATE = `Start a NEW session on a project, filed under you. Pass task to assign its first work in the same call; without it nothing starts until sessions_send with intent task. ${NOT_A_BYPASS}`;
+export const CREATE = `Start a new session on a project, filed under you. task assigns its first work now; without it nothing starts. ${NOT_A_BYPASS}`;
 
-export const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text; a result or blocker also quotes its first ~1,500 chars — lead with the point. Tasked? End with ONE result (then a one-line answer) or a blocker; no progress reports. ${NOT_A_BYPASS}`;
+export const SEND = `Message another session. It gets a notice naming sessions_read, not your text; a result or blocker quotes your first ~1,500 chars, so lead with the point. Tasked? End with one result or a blocker, no progress reports. ${NOT_A_BYPASS}`;
 
 export const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
@@ -59,19 +59,19 @@ export const NO_SELF =
 export const NO_SESSION_TO_SCHEDULE =
   "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
-export const SUBSCRIBE = `Be woken ONCE when the session(s) you tasked are done: each sent its result, a turn failed or was stopped, or it was settled. sessionIds: one id or many, the same call; blockers still arrive at once. Send the tasks, subscribe, end your turn. cancel: an id, to stop one and withdraw its queued wakes. No arguments lists what you hold.`;
+export const SUBSCRIBE = `Be woken once when the sessions you tasked are done (result sent, failed, stopped or settled); blockers still arrive at once. Send the tasks, subscribe once, end your turn. cancel stops one; no arguments lists yours.`;
 
-export const REQUESTS = `What a session is WAITING on — its open requests, with the id sessions_resolve_request takes. A request is a question to a HUMAN by default; answering it is you taking responsibility.`;
+export const REQUESTS = `A session's open requests, with the ids sessions_resolve_request takes. They are meant for a human; answering one makes it yours.`;
 
-export const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. Recorded as answered BY A SESSION. Only answer what you actually know; a secret pick is refused. ${NOT_A_BYPASS}`;
+export const RESOLVE_REQUEST = `Answer a session's open request for the user, recorded as answered by a session. Only answer what you know; secret picks are refused. ${NOT_A_BYPASS}`;
 
-export const READ = `What a session has done. Default view summary: a line per turn; runId answers ONE turn. Cheaper first: outline (its turns), answer (one conclusion), steps then step (what a turn did), grep (a phrase). events is the raw journal, which is long. diff: what it changed; an empty diff may be unread, not unchanged. READ-ONLY, NOT AN ACCEPTANCE.`;
+export const READ = `What a session has done. Prefer the cheap views: outline, answer, steps then step, grep. events is the long raw journal; diff is what it changed. Read-only, never an acceptance.`;
 
-export const STATUS = `Working, waiting (on a person, a session or a tool), background, scheduled or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing. Never poll it to wait: sessions_subscribe and end your turn.`;
+export const STATUS = `Whether a session is working, waiting, scheduled or idle, and how recent turns ended. Never poll it to wait: subscribe and end your turn.`;
 
-export const STOP = `Stop a session's work now: the running turn ends where it stands and the queue is settled. Nothing is undone — what it wrote stays written and a command it ran may have finished. Then idle, not paused.`;
+export const STOP = `Stop a session's work now: the running turn ends and its queue is cleared. Nothing is undone.`;
 
-export const SETTLE = `Shelve a session out of the active list, or settled: false to bring it back. Settling closes all its terminals, the person's own shells too, and stops its background tasks; the answer counts them. Nothing is deleted and a new message lifts it back. Housekeeping, not acceptance.`;
+export const SETTLE = `Shelve a session (settled: false brings it back). Closes its terminals, the person's shells too, and stops background tasks; deletes nothing. Housekeeping, not acceptance.`;
 
 export function endedNote(ended: SessionSettleEnded | undefined): string {
   if (!ended) return "";

@@ -9,7 +9,7 @@ export const WAIT = z
   .min(1)
   .max(DELEGATION_WAIT_MAX_SECONDS)
   .optional()
-  .describe(`Seconds to wait for its result, at most ${DELEGATION_WAIT_MAX_SECONDS}. A timeout cancels nothing: you are subscribed instead. Omit for several tasks at once.`);
+  .describe(`Seconds to wait for its result (max ${DELEGATION_WAIT_MAX_SECONDS}). On timeout you are subscribed; nothing is cancelled. Not for several tasks.`);
 
 export type Delegation =
   | { done: true; member: CohortMember }
