@@ -1,15 +1,5 @@
 "use strict";
 
-// The shared command registry, from the shell's side of the wall.
-//
-// WHAT THIS PINS THAT THE WEB TESTS CANNOT: `menuCommands` is what `main.js`
-// turns into an Electron menu template, and #367's whole claim is that a chord
-// changed in the cockpit reaches those accelerators. The renderer never sees
-// that function.
-//
-// Plain CommonJS with no Electron import, deliberately — the module under test
-// has neither, which is what lets the real main process require it.
-
 const { describe, expect, test } = require("bun:test");
 const {
   COMMANDS,
@@ -26,8 +16,6 @@ const {
 
 describe("the registry", () => {
   test("ships no two commands on one chord", () => {
-    // A collision here is a command that never fires out of the box, with
-    // nothing to tell anybody why.
     expect(keymapConflicts(defaultKeymap())).toEqual({});
   });
 
@@ -36,34 +24,22 @@ describe("the registry", () => {
       expect(typeof command.id).toBe("string");
       expect(command.label.length).toBeGreaterThan(0);
       expect(command.group.length).toBeGreaterThan(0);
-      // "" is the other legal answer: a command that SHIPS UNBOUND, which the
-      // command palette (#402) made ordinary — a row you reach by typing its
-      // name does not need one of the letters a person has left.
+
       expect(command.defaultChord === "" || command.defaultChord.startsWith("CommandOrControl+")).toBe(true);
-      // Every default must survive the normaliser unchanged, or the map the menu
-      // is built from would differ from the table a reader is looking at.
+
       expect(normalizeChord(command.defaultChord)).toBe(command.defaultChord);
     }
   });
 
   test("every command names its own glyph, as a lucide NAME and never a component", () => {
-    // #479: the palette used to draw one glyph per GROUP, so a list of
-    // twenty-odd verbs was scannable by section and not by row. The name lives
-    // HERE because the table is the one list both halves read — but it stays a
-    // string, since this file is required inside Electron's main process and a
-    // React import would break the menu it builds.
     for (const command of COMMANDS) {
       expect(typeof command.icon).toBe("string");
-      // kebab-case, which is the spelling lucide's own registry uses and what
-      // the web's map is keyed by.
+
       expect(command.icon).toMatch(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/);
     }
   });
 
   test("an unbound command reaches no menu with an accelerator of nothing", () => {
-    // Electron rejects an empty accelerator, and main.js spreads it
-    // conditionally — but a command that ships unbound should not be reaching a
-    // menu at all yet, which is the cheaper guarantee.
     const unbound = COMMANDS.filter((command) => command.defaultChord === "");
     expect(unbound.length).toBeGreaterThan(0);
     for (const command of unbound) expect(command.menu).toBeUndefined();
@@ -79,27 +55,20 @@ describe("the registry", () => {
 
 describe("the menu is built from the stored map, not the defaults", () => {
   test("A STORED CHORD BECOMES THE ELECTRON ACCELERATOR", () => {
-    // This is the blocker the old settings copy named: the accelerators used to
-    // be frozen into the table, so nothing a person stored could reach them.
     const keymap = mergeKeymap({ "new-conversation": "CommandOrControl+Alt+9" });
     const item = menuCommands(keymap, "file").find((command) => command.id === "new-conversation");
     expect(item.accelerator).toBe("CommandOrControl+Alt+9");
     expect(item.label).toBe("New Conversation");
-    // Everything it did not touch still wears the registry's own answer.
+
     expect(menuCommands(keymap, "file").find((command) => command.id === "settings").accelerator).toBe("CommandOrControl+,");
   });
 
   test("a stored chord is normalised on the way to the menu", () => {
-    // Electron accepts "Shift+CommandOrControl+D"; the conflict check does not,
-    // so one spelling reaches both.
     const keymap = mergeKeymap({ "open-diff": "shift+cmd+d" });
     expect(menuCommands(keymap, "panel").find((command) => command.id === "open-diff").accelerator).toBe("CommandOrControl+Shift+D");
   });
 
   test("an unbound command keeps its row and loses only its accelerator", () => {
-    // Clearing a binding should cost the key, not the command — the row is still
-    // how you reach it with the mouse. (main.js spreads the accelerator
-    // conditionally, because Electron rejects an empty one.)
     const keymap = mergeKeymap({ "open-diff": "" });
     const item = menuCommands(keymap, "panel").find((command) => command.id === "open-diff");
     expect(item).toBeDefined();
@@ -111,12 +80,11 @@ describe("the menu is built from the stored map, not the defaults", () => {
     const panel = menuCommands(defaultKeymap(), "panel");
     expect(file.filter((command) => command.jump)).toHaveLength(9);
     expect(panel.map((command) => command.id)).toContain("open-latex");
-    // A File menu that also opened a LaTeX tab would be a File menu in name.
+
     expect(file.map((command) => command.id)).not.toContain("open-latex");
   });
 
   test("Developer Tools is a View menu row on ⌥⌘I, and reaches no other menu", () => {
-    // #423: the chord every browser uses, for the browser panel's active tab.
     const item = menuCommands(defaultKeymap(), "view").find((command) => command.id === "toggle-devtools");
     expect(item).toMatchObject({ label: "Developer Tools", accelerator: "CommandOrControl+Alt+I" });
     for (const menu of ["file", "panel"]) {
@@ -125,8 +93,6 @@ describe("the menu is built from the stored map, not the defaults", () => {
   });
 
   test("Reveal in Finder is a File menu row with ⌘O on it", () => {
-    // #384: the Open menu's last row, reachable from the application menu and
-    // from the keyboard. A folder on disk is what a File menu is for.
     const item = menuCommands(defaultKeymap(), "file").find((command) => command.id === "reveal-in-finder");
     expect(item).toMatchObject({ label: "Reveal in Finder", accelerator: "CommandOrControl+O" });
   });
@@ -142,8 +108,6 @@ describe("the store round trip", () => {
   });
 
   test("a corrupt record reads as the defaults rather than throwing", () => {
-    // What `readKeybindingOverrides` leans on: a half-written file is a first
-    // run, never a shell that will not start.
     expect(mergeKeymap(null)).toEqual(defaultKeymap());
     expect(mergeKeymap("nonsense")).toEqual(defaultKeymap());
     expect(mergeKeymap({ settings: 42 })).toEqual(defaultKeymap());
@@ -164,44 +128,25 @@ describe("matching a keydown", () => {
 });
 
 describe("a surface claiming chords (#656)", () => {
-  // THE RESOLVER BOTH HALVES SHARE. `buildApplicationMenu` strips exactly these
-  // accelerators and the cockpit's dispatcher passes over exactly these ids, so
-  // this is the one place the rule can be wrong — and the one place a test can
-  // pin it without a window.
-
   test("claiming ⌘1..⌘9 takes the nine jumps, and nothing else, off the table", () => {
-    // The bug: the New Conversation palette numbers its rows ⌘1..⌘9, and the
-    // File menu's Jump to rows carried those chords natively — so macOS matched
-    // the key equivalent and the palette's handler never ran.
     const claimed = claimedCommandIds(defaultKeymap(), ["CommandOrControl+1", "CommandOrControl+2", "CommandOrControl+3"]);
     expect(claimed).toEqual(["jump-1", "jump-2", "jump-3"]);
-    // Nothing a claim did not name: ⌘N still opens a conversation over an open
-    // palette, which is the difference between scoping a chord and going modal.
+
     expect(claimed).not.toContain("new-conversation");
   });
 
   test("a rebind hands the chord back rather than leaving the palette suppressed", () => {
-    // THE REQUIREMENT THAT SHAPES THE WHOLE DESIGN. A claim names CHORDS, and
-    // which commands that suppresses is computed against the live keymap — so
-    // move the nine jumps to ⌥1..⌥9 and ⌘1 is claimed by nobody: the jumps keep
-    // working, and the palette still gets its key. A claim that named `jump-N`
-    // would have gone on suppressing a chord nobody uses.
     const moved = mergeKeymap(Object.fromEntries(Array.from({ length: 9 }, (_, index) => [`jump-${index + 1}`, `Alt+${index + 1}`])));
     expect(claimedCommandIds(moved, ["CommandOrControl+1"])).toEqual([]);
     expect(claimedCommandIds(moved, ["Alt+1"])).toEqual(["jump-1"]);
   });
 
   test("it follows the chord onto whatever command moved there", () => {
-    // Scope is about the KEY, not about the rail: bind Toggle Rail to ⌘1 and the
-    // palette's claim must stand that down too, or the numbered rows are still
-    // lying on a cockpit somebody has rearranged.
     const moved = mergeKeymap({ "jump-1": "Alt+1", "toggle-rail": "CommandOrControl+1" });
     expect(claimedCommandIds(moved, ["CommandOrControl+1"])).toEqual(["toggle-rail"]);
   });
 
   test("an unbound command is never claimed, whatever the claim says", () => {
-    // "" is how a keymap spells "deliberately unbound"; a claim over it would
-    // suppress every unbound command in the registry at once.
     expect(claimedCommandIds(mergeKeymap({ "jump-1": "" }), ["", "CommandOrControl+1"])).toEqual([]);
   });
 
@@ -211,8 +156,6 @@ describe("a surface claiming chords (#656)", () => {
   });
 
   test("a chord is matched however it was spelled", () => {
-    // The claim crosses IPC from the renderer, and a surface writing "Cmd+1"
-    // means the chord the menu spells "CommandOrControl+1".
     expect(claimedCommandIds(defaultKeymap(), ["cmd+1"])).toEqual(["jump-1"]);
     expect(claimedCommandIds(defaultKeymap(), ["Ctrl+Digit1"])).toEqual(["jump-1"]);
   });

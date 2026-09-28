@@ -1,6 +1,3 @@
-// The PRODUCTION discovery and launch path — no mock of the module under
-// test. `exists` and `run` are injected so the suite neither depends on which
-// editors this machine has nor actually launches one.
 const { describe, expect, test } = require("bun:test");
 const { discoverOpeners, openWith, openersWithIcons, openerIconDataUrl, bundleIconFile, bundleIcon, searchRoots, FINDER_BUNDLE, KNOWN_EDITORS } = require("./workspace-openers");
 
@@ -24,8 +21,6 @@ describe("discovering installed openers", () => {
   });
 
   test("an app we carry no mark for reports NO icon key rather than an empty one", () => {
-    // The renderer's fallback is keyed on absence. A `icon: ""` or `icon: null`
-    // would be a second way to say the same thing, and the two drift.
     const found = discoverOpeners({ roots, exists: (candidate) => candidate === "/Applications/TextMate.app" });
     expect(found).toEqual([{ id: "textmate", label: "TextMate", path: "/Applications/TextMate.app" }]);
     expect("icon" in found[0]).toBe(false);
@@ -55,10 +50,7 @@ describe("discovering installed openers", () => {
   });
 });
 
-// The REAL icons (#398). `getFileIcon` is injected — the suite neither needs an
-// Electron app object nor cares which editors this machine has.
 describe("reading each app's own icon", () => {
-  /** A NativeImage stand-in: the only shape the module uses is `toPNG()`. */
   const image = (bytes) => ({ toPNG: () => Buffer.from(bytes) });
   const stub = (answer = (bundlePath) => image([bundlePath.length])) => {
     const asked = [];
@@ -86,8 +78,7 @@ describe("reading each app's own icon", () => {
     const { getFileIcon } = stub();
     const answer = await openersWithIcons({ openers, getFileIcon, cache: new Map(), exists: () => false });
     expect(answer.openers[0]).toMatchObject({ id: "zed", label: "Zed", icon: "zed", path: "/Applications/Zed.app" });
-    // An app we carry no vector mark for still reports no `icon` key — the
-    // bitmap is a second answer to the same question, not a replacement for it.
+
     expect("icon" in answer.openers[1]).toBe(false);
     expect(answer.openers[1].iconDataUrl).toStartWith("data:image/png;base64,");
   });
@@ -174,7 +165,7 @@ describe("launching", () => {
     const nasty = '/Users/x/we;rm -rf ~/"quoted" $(whoami)';
     const { calls, run } = capture();
     await openWith({ target: nasty, appPath: "/Applications/Cursor.app", run });
-    // Exactly three argv entries, the last one the path verbatim.
+
     expect(calls[0].args).toHaveLength(3);
     expect(calls[0].args[2]).toBe(nasty);
   });
@@ -193,8 +184,6 @@ describe("launching", () => {
   });
 });
 
-// The bundle's OWN .icns, not `app.getFileIcon` (which answers a generic glyph
-// for every .app on macOS — the blank grey squares of the first #398 build).
 describe("reading the bundle's own icon file", () => {
   const run = (answers) => (_bin, args, _opts, cb) => {
     const plist = args[args.length - 1];

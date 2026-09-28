@@ -7,19 +7,6 @@ const {
   summarizeProcessMetrics,
 } = require("./process-metrics");
 
-/**
- * The per-process-type surface (#488) and, more importantly, the reason it does
- * not break the kill path it sits beside (#487).
- *
- * `percentCPUUsage` is documented as an average since the last call to
- * `app.getAppMetrics()` — the baseline belongs to the API, not to the caller —
- * so a page polling every two seconds would have shortened the watchdog's
- * thirty-second window without either side saying anything. The tests that
- * matter most here are the ones that pin that window open.
- */
-
-/** A `ProcessMetric` with cumulative CPU seconds, which is what real rates are
- *  computed from. */
 function metric(pid, type, cpuSeconds, { creationTime = 1_000, memoryKb = 100_000, percent, name } = {}) {
   return {
     pid,
@@ -34,7 +21,6 @@ function metric(pid, type, cpuSeconds, { creationTime = 1_000, memoryKb = 100_00
   };
 }
 
-/** A reader over a scripted series of polls, with a clock the test drives. */
 function readerOver(series, { minIntervalMs = 1_000, liveProcessIds = [] } = {}) {
   let clock = 0;
   let index = 0;
@@ -57,15 +43,14 @@ describe("folding one poll for somebody looking at it", () => {
       windowMs: 2_000,
     });
     expect(summary.types.map((entry) => [entry.label, entry.count, entry.cpuPercent])).toEqual([
-      // Busiest type first: the row a person came to read is the top one.
+
       ["Renderer", 2, 98],
       ["GPU", 1, 8],
       ["Main", 1, 4],
     ]);
     expect(summary.totals).toEqual({ cpuPercent: 110, memoryKb: 400_000, processes: 4 });
     expect(summary.windowMs).toBe(2_000);
-    // Chromium calls every renderer a "Tab", including the service-worker ones
-    // that have no tab at all — which is the exact confusion #487 lived in.
+
     expect(labelForType("Tab")).toBe("Renderer");
   });
 
@@ -79,11 +64,10 @@ describe("folding one poll for somebody looking at it", () => {
     });
     const renderers = summary.types.find((entry) => entry.type === "Tab");
     expect(renderers.pagelessCount).toBe(1);
-    // The busiest process IS the page-less one, which is the whole signal.
+
     expect(summary.busiest[0]).toMatchObject({ pid: 7, label: "Renderer", cpuPercent: 96, hostsPage: false });
     expect(summary.busiest.find((entry) => entry.pid === 2)).toMatchObject({ hostsPage: true });
-    // "Has no page" about the network service would read as an accusation; it
-    // is not false, it is meaningless, so the field is absent.
+
     const utility = summary.busiest.find((entry) => entry.pid === 4);
     expect(utility.name).toBe("Network Service");
     expect("hostsPage" in utility).toBe(false);
@@ -92,8 +76,7 @@ describe("folding one poll for somebody looking at it", () => {
 
   test("the busiest list is capped and ordered, and ties do not shuffle", () => {
     const metrics = Array.from({ length: BUSIEST_LIMIT + 4 }, (_, index) => metric(index + 1, "Tab", 0));
-    // Every process idle: the tie-break is the pid, so two consecutive reads of
-    // an idle app do not reorder in front of somebody trying to read it.
+
     const summary = summarizeProcessMetrics({ metrics, rates: new Map(), readAt: 1, windowMs: 1_000 });
     expect(summary.busiest).toHaveLength(BUSIEST_LIMIT);
     expect(summary.busiest.map((entry) => entry.pid)).toEqual([1, 2, 3, 4, 5, 6]);
@@ -101,22 +84,6 @@ describe("folding one poll for somebody looking at it", () => {
 });
 
 describe("the answer has to survive the trip out of the main process", () => {
-  /**
-   * THIS IS THE TEST THAT WAS MISSING, and its absence cost a CI cycle to find.
-   *
-   * Every row of `busiest` carried a FUNCTION where `memoryKb` belonged — the
-   * fold built its rows with the shorthand `{ memoryKb }` while the local
-   * holding the value was called `memory`, so the shorthand resolved to the
-   * module-level helper of that name. Structured clone refuses a function, so
-   * `ipcMain.handle` threw "An object could not be cloned", and the entire
-   * surface was dead inside the shell while every assertion here passed: they
-   * read `types[].memoryKb`, which is summed rather than shorthanded, and never
-   * once read the field on a busiest row.
-   *
-   * A fold whose only consumers are across an IPC boundary and an HTTP one has
-   * "serialises" as part of its contract, not as an implementation detail. So
-   * it is asserted the way the boundary asserts it.
-   */
   test("the summary is structured-cloneable, because both its consumers are across a boundary", () => {
     const summary = summarizeProcessMetrics({
       metrics: [metric(1, "Browser", 0), metric(2, "Tab", 0), metric(3, "Utility", 0, { name: "Network Service" })],
@@ -125,12 +92,10 @@ describe("the answer has to survive the trip out of the main process", () => {
       readAt: 5_000,
       windowMs: 2_000,
     });
-    // Throws TypeError on a function, a symbol or anything else the clone
-    // algorithm refuses — which is exactly what the IPC reply does.
+
     const cloned = structuredClone(summary);
     expect(cloned).toEqual(summary);
-    // And specifically the field that was wrong, named rather than left to the
-    // deep-equal: a number, on every row, not just on the type totals.
+
     for (const row of summary.busiest) expect(typeof row.memoryKb).toBe("number");
     for (const entry of summary.types) expect(typeof entry.memoryKb).toBe("number");
   });
@@ -160,9 +125,7 @@ describe("rates come from cumulative CPU seconds", () => {
       after: [metric(1, "Tab", 1, { creationTime: 9_000, percent: 7 })],
       elapsedMs: 1_000,
     });
-    // Subtracting 900 from 1 would have reported a violently negative rate; the
-    // key includes creationTime, so the new process has no baseline and falls
-    // back to what it reported about itself.
+
     expect(rates.get("1:9000")).toBe(7);
   });
 
@@ -175,9 +138,6 @@ describe("rates come from cumulative CPU seconds", () => {
 
 describe("one sampler, so the page cannot shorten the watchdog's window (#487)", () => {
   test("the watchdog still averages over thirty seconds while a page polls every two", () => {
-    // A renderer burning one core the whole time, and a second that spikes for
-    // exactly one two-second gap. Cumulative seconds advance by wall time for
-    // the first; the second does one second of work and then stops.
     const series = [];
     for (let poll = 0; poll <= 20; poll += 1) {
       const spike = poll === 10 ? 1 : 0;
@@ -188,18 +148,15 @@ describe("one sampler, so the page cannot shorten the watchdog's window (#487)",
     }
     const { reader, advance } = readerOver(series, { minIntervalMs: 1_000 });
 
-    // The page polls every two seconds for a minute.
     for (let tick = 0; tick < 15; tick += 1) {
       reader.summary();
       advance(2_000);
     }
     const watchdogView = reader.metricsForWatchdog({ minWindowMs: 25_000 });
     const byPid = new Map(watchdogView.map((entry) => [entry.pid, entry.cpu.percentCPUUsage]));
-    // Sustained: one core, over the whole thirty-second window.
+
     expect(Math.round(byPid.get(1))).toBe(100);
-    // The spike did one CPU-second inside that window, which over ~28s is a
-    // few percent — nowhere near the 80% the watchdog kills at. Read over the
-    // two-second gap it happened in, it would have been 50% or more.
+
     expect(byPid.get(2)).toBeLessThan(10);
   });
 
@@ -207,9 +164,7 @@ describe("one sampler, so the page cannot shorten the watchdog's window (#487)",
     const { reader, advance } = readerOver([[metric(1, "Tab", 0, { percent: 99 })], [metric(1, "Tab", 30, { percent: 99 })]]);
     reader.summary();
     advance(3_000);
-    // Three seconds in, no baseline is twenty-five seconds old. Electron's own
-    // API answers 0 on its first call for the same reason; a cold sampler must
-    // not hand the kill path a number it cannot stand behind.
+
     expect(reader.metricsForWatchdog({ minWindowMs: 25_000 }).map((entry) => entry.cpu.percentCPUUsage)).toEqual([0]);
   });
 
@@ -246,8 +201,7 @@ describe("the sampler itself", () => {
     const { reader } = readerOver([[metric(1, "Tab", 0, { percent: 96 })]]);
     const first = reader.summary();
     expect(first.windowMs).toBe(0);
-    // No baseline means no rate — NOT 0%, which would read as "this app is
-    // doing nothing" at the exact moment somebody opened the page to find out.
+
     expect(first.totals.cpuPercent).toBe(0);
     expect(first.types[0]).toMatchObject({ label: "Renderer", count: 1 });
   });
@@ -275,9 +229,7 @@ describe("the sampler itself", () => {
     const summary = reader.summary();
     expect(summary.totals.processes).toBe(1);
     expect(Math.round(summary.totals.cpuPercent)).toBe(100);
-    // AND NOT "every renderer has no page", which is what defaulting the
-    // unreadable list to an empty one would have claimed — the loudest thing
-    // this surface can say, asserted from a reading that failed.
+
     expect(summary.types[0].pagelessCount).toBe(0);
     expect("hostsPage" in summary.busiest[0]).toBe(false);
   });

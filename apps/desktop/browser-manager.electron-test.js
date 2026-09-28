@@ -1,24 +1,3 @@
-/**
- * THE BACKGROUND-BROWSER REGRESSION, in a real Electron.
- *
- * The desktop host used to be drivable only while the cockpit's browser
- * panel was mounted: until `setBounds` arrived, every view sat hidden at the
- * 1×1 default, synthetic clicks fell outside the visual viewport and were
- * dropped, and `Page.captureScreenshot` hung. An agent browsing while the
- * panel is closed — or from a web client that has no panel — is the intended
- * case, so this proves it against a real `WebContentsView`, not a fake:
- *
- *   1. hidden, unmounted view: a fixture button click increments, a note
- *      saved to localStorage survives navigate-away / back / reload;
- *   2. a screenshot of that hidden view is a non-empty PNG with the emulated
- *      1280×800 dimensions;
- *   3. mounting real bounds clears the emulation: the page measures the
- *      panel's width and the screenshot follows — and a second scope, a
- *      panel put away, and a tab re-woken from hibernation all get it back.
- *
- * Run: `bun run test:desktop:browser` (spawns Electron with its own temp
- * userData and a hidden window; nothing is shown and no focus is taken).
- */
 const { app, BrowserWindow, ipcMain } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -63,7 +42,6 @@ async function evaluate(manager, tab, expression) {
   return result.result?.value;
 }
 async function settle(manager, tab) {
-  // Navigation completion: wait until the debugger can see the document.
   for (let i = 0; i < 50; i += 1) {
     if (!tab.loading && (await evaluate(manager, tab, "document.readyState")) === "complete") return;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -89,22 +67,20 @@ async function main() {
   const port = await listen(server);
   const base = `http://127.0.0.1:${port}`;
   const note = (line) => {
-
     console.log(`REGRESSION ${line}`);
   };
 
   const window = new BrowserWindow({ show: false, width: 1000, height: 700 });
   const manager = new DesktopBrowserManager(window);
-  // The same wiring main.js has: a tab preload heard a human's hands.
+
   ipcMain.on("telar:browser:human-input", (event) => {
     try { manager.noteHumanInputFromWebContents(event.sender); } catch {}
   });
-  // Per-project profiles fail closed: a scope must declare one before a tab.
+
   manager.declareProfile("regression", "none");
   manager.declareProfile("other", "none");
   const scope = "regression";
   try {
-    // ── 1. hidden + unmounted (bounds still the 1×1 default) ────────────
     await manager.callTool(scope, "browser_tabs", { action: "new", url: `${base}/` });
     const tab = manager.activeTab(scope);
     await settle(manager, tab);
@@ -144,7 +120,6 @@ async function main() {
     note(`after navigate/back/reload: ${persisted}`);
     assert(persisted === "Saved note: telar-browser-acceptance", "note did not survive navigation + reload");
 
-    // ── 2. screenshot of the hidden view ────────────────────────────────
     const started = Date.now();
     const shot = await manager.callTool(scope, "browser_take_screenshot", {});
     const elapsed = Date.now() - started;
@@ -154,9 +129,6 @@ async function main() {
     assert(hiddenSize.width >= 1280 && hiddenSize.height >= 800, "hidden screenshot is not the emulated viewport");
     assert(hiddenSize.bytes > 2_000, "hidden screenshot is suspiciously small (blank?)");
 
-    // ── 3. mount real bounds. Fit is the default, so opt this tab into a
-    //    FIXED size first: then the page KEEPS its intrinsic viewport and
-    //    the panel only scales the presentation to fit. ──
     await manager.resizeTab(tab, { preset: "default" });
     manager.setBounds(scope, { x: 0, y: 0, width: 640, height: 480 });
     await manager.setVisible(scope, true);
@@ -166,20 +138,15 @@ async function main() {
     assert(mounted[0] === 1280 && mounted[1] === 800, "mounting the panel reflowed the page — the intrinsic viewport was lost");
     assert(manager.state(scope).presentation.scale === 0.5, "the presentation did not scale to fit the panel");
     assert(!window.isVisible(), "mounting bounds must not show the window");
-    // The window is never shown, so the visible capture path has no
-    // compositor frame here; the shown-inactive case is proven by
-    // browser-persistence.electron-test.js. This run only checks it bounds.
+
     const shownShot = await manager.callTool(scope, "browser_take_screenshot", {});
     note(`mounted (never-shown window) screenshot: ${shownShot.isError ? textOf(shownShot).slice(0, 60) : `${pngSize(shownShot.content[0].data).width}px`}`);
 
-    // Resize the panel while mounted: still no reflow; the scale follows.
     manager.setBounds(scope, { x: 0, y: 0, width: 900, height: 500 });
     await new Promise((resolve) => setTimeout(resolve, 200));
     note(`panel 900×500 → innerWidth = ${await evaluate(manager, tab, "innerWidth")}, scale ${manager.state(scope).presentation.scale}`);
     assert((await evaluate(manager, tab, "innerWidth")) === 1280, "a panel resize reflowed the page");
 
-    // A SECOND scope while the first is mounted: its tab is not the shown
-    // one, so it must still get the emulated viewport and a working click.
     await manager.callTool("other", "browser_tabs", { action: "new", url: `${base}/` });
     const otherTab = manager.activeTab("other");
     await settle(manager, otherTab);
@@ -191,7 +158,7 @@ async function main() {
     const otherShot = pngSize((await manager.callTool("other", "browser_take_screenshot", {})).content[0].data);
     note(`inactive scope screenshot ${otherShot.width}×${otherShot.height}`);
     assert(otherShot.width >= 1280, "inactive-scope screenshot is not the emulated viewport");
-    // Full-page on the hidden path is honoured, not downgraded.
+
     const tall = pngSize((await manager.callTool("other", "browser_take_screenshot", { fullPage: true })).content[0].data);
     note(`inactive scope fullPage screenshot ${tall.width}×${tall.height}`);
     assert(tall.height > 2000, `fullPage capture (${tall.height}px) is not the document's height`);
@@ -201,9 +168,6 @@ async function main() {
     const afterTall = pngSize((await manager.callTool("other", "browser_take_screenshot", {})).content[0].data);
     assert(afterTall.height === 800, `viewport capture after fullPage is ${afterTall.height}px tall`);
 
-    // Hide after mount (panel closed): `setVisible(false)` is what the
-    // cockpit sends when the browser tab is put away (hideVisibleScope is
-    // the renderer-reload path and reclaims the view on purpose).
     await manager.setVisible(scope, false);
     assert(tab.view, "putting the panel away must not tear the view down");
     await until(manager, tab, "innerWidth", 1280);
@@ -212,20 +176,15 @@ async function main() {
     await manager.callTool(scope, "browser_click", { target: ref(hiddenAgain, 'button "Increment counter"') });
     assert((await evaluate(manager, tab, "document.getElementById('count').textContent")) === "1", "click after hide dropped");
 
-    // Re-wake: a hibernated tab gets a NEW WebContents; the override must be
-    // re-applied to it, not assumed from the old one.
     manager.hibernateTab(tab);
     assert(!tab.view, "tab did not hibernate");
-    // The snapshot is what wakes it (a new WebContents); only then is there
-    // a debugger to ask anything of.
+
     const wakeSnap = textOf(await manager.callTool(scope, "browser_snapshot", {}));
     assert(tab.view, "snapshot did not wake the tab");
     await settle(manager, tab);
     note(`re-woken innerWidth = ${await evaluate(manager, tab, "innerWidth")}`);
     assert((await evaluate(manager, tab, "innerWidth")) === 1280, "re-woken tab lost the emulated viewport");
-    // The wake RELOADED the page under that snapshot (did-navigate after the
-    // read started), so a click decided from it is refused as stale — by
-    // design. Look once more at the settled page, then act.
+
     const staleAfterWake = await manager.callTool(scope, "browser_click", { target: ref(wakeSnap, 'button "Increment counter"') });
     note(`click from the wake snapshot: ${staleAfterWake.isError ? textOf(staleAfterWake).slice(0, 70) : "allowed"}`);
     assert(staleAfterWake.isError, "a click decided from a snapshot the wake reload invalidated was allowed");
@@ -234,9 +193,6 @@ async function main() {
     assert((await evaluate(manager, tab, "document.getElementById('count').textContent")) === "1", "click after re-wake dropped");
     assert((await evaluate(manager, tab, "document.getElementById('saved').textContent")) === "Saved note: telar-browser-acceptance", "note lost across re-wake");
 
-    // ── 4. SHARED BROWSER: synthetic vs human input, in a real WebContents ──
-    // (a) The agent's own click raises pointerdown in the page; the tab
-    //     preload reports it; it must NOT read as a human interrupting.
     manager.releaseScope("other", true);
     await manager.callTool(scope, "browser_navigate", { url: `${base}/` });
     await settle(manager, tab);
@@ -247,28 +203,25 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 300));
     note(`after agent click: controller before=${before} after=${manager.state(scope).tabs[0].controller}`);
     assert(manager.state(scope).tabs[0].controller !== "human", "the agent's synthetic click was taken for a human");
-    // A second agent click right after is still fresh (no generation bump).
+
     const again = await manager.callTool(scope, "browser_click", { target: ref(snapNow, 'button "Increment counter"') });
     assert(!again.isError, `second agent click refused: ${textOf(again)}`);
 
-    // (b) A HUMAN's hands: dispatched through the webContents' own input path
-    //     (not CDP, not a tool call) while no agent call is in flight.
     await new Promise((resolve) => setTimeout(resolve, 600));
     tab.view.webContents.sendInputEvent({ type: "mouseDown", x: 20, y: 20, button: "left", clickCount: 1 });
     tab.view.webContents.sendInputEvent({ type: "mouseUp", x: 20, y: 20, button: "left", clickCount: 1 });
     for (let i = 0; i < 20 && manager.state(scope).tabs[0].controller !== "human"; i += 1) await new Promise((r) => setTimeout(r, 50));
     note(`after native human click: controller=${manager.state(scope).tabs[0].controller}`);
     assert(manager.state(scope).tabs[0].controller === "human", "a native human click was not attributed to the human");
-    // The agent's next click, decided from the old snapshot, is STALE.
+
     const stale = await manager.callTool(scope, "browser_click", { target: ref(snapNow, 'button "Increment counter"') });
     note(`agent click after human input: ${textOf(stale).slice(0, 90)}`);
     assert(stale.isError && /changed since you last looked|interacting with tab/.test(textOf(stale)), "stale action was not refused");
-    // Look again, then it goes.
+
     snapNow = textOf(await manager.callTool(scope, "browser_snapshot", {}));
     const resumed = await manager.callTool(scope, "browser_click", { target: ref(snapNow, 'button "Increment counter"') });
     assert(!resumed.isError, `click after re-observe refused: ${textOf(resumed)}`);
 
-    // (c) A human cuts in DURING slow typing: the type stops between chars.
     snapNow = textOf(await manager.callTool(scope, "browser_snapshot", {}));
     const noteRef = ref(snapNow, 'textbox "Note"');
     const typing = manager.callTool(scope, "browser_type", { target: noteRef, text: "abcdefghijklmnopqrstuvwxyz0123456789", slowly: true });

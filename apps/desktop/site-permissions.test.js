@@ -1,12 +1,3 @@
-/**
- * WHAT THE BROWSER ANSWERS A SITE, AND WHAT IT REMEMBERS ABOUT IT.
- *
- * Every port is a stub here — `systemPreferences`, the source list, the timers,
- * the filesystem — which is the point of the shape site-permissions.js has: the
- * decisions are the interesting part and none of them needs Electron to be
- * exercised. The invariants below are the ones that would otherwise only be
- * discovered on a signed build in front of a real camera.
- */
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -35,12 +26,10 @@ function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "telar-site-permissions-"));
 }
 
-/** A store with a predictable clock. */
 function store(dir, at = 1_000) {
   return new SitePermissionStore(dir, { now: () => at });
 }
 
-/** A prompt registry that answers whatever the test says, with no real timer. */
 function prompts(answers = []) {
   const asked = [];
   const timers = new Map();
@@ -57,7 +46,7 @@ function prompts(answers = []) {
     },
     clearTimer: (id) => timers.delete(id),
   });
-  // Answer as the question arrives, so a handler awaiting `open` resolves.
+
   const deliver = registry.deliver;
   registry.deliver = (record) => {
     deliver(record);
@@ -67,7 +56,6 @@ function prompts(answers = []) {
   return { registry, asked, timers, fire: () => [...timers.values()].forEach((timer) => timer.fn()) };
 }
 
-/** macOS consent, faked. */
 function consent({ camera = true, microphone = true, status = "denied" } = {}) {
   const calls = [];
   return {
@@ -82,7 +70,6 @@ function consent({ camera = true, microphone = true, status = "denied" } = {}) {
   };
 }
 
-/** A WebContents, as much of one as the handlers ever touch. */
 function page(id = 1, url = `${SITE}/room/7`) {
   const listeners = new Map();
   return {
@@ -94,7 +81,6 @@ function page(id = 1, url = `${SITE}/room/7`) {
   };
 }
 
-/** Drive `request` and return what the site was told. */
 function askSite(handlers, permission, details, webContents = page()) {
   return new Promise((resolve) => {
     void handlers.request(webContents, permission, resolve, details);
@@ -105,8 +91,7 @@ describe("the vocabulary a decision is made in", () => {
   test("an origin is an http(s) origin or nothing a decision can be scoped to", () => {
     expect(originOf("https://example.com/a/b?c=1")).toBe("https://example.com");
     expect(originOf("http://localhost:3000/x")).toBe("http://localhost:3000");
-    // A file page's origin is `null` in the spec: every local file would share
-    // one bucket. An extension page is the credential UI, never a site.
+
     expect(originOf("file:///Users/me/page.html")).toBeNull();
     expect(originOf("chrome-extension://abc/popup.html")).toBeNull();
     expect(originOf("")).toBeNull();
@@ -117,7 +102,7 @@ describe("the vocabulary a decision is made in", () => {
     expect(kindsFor("media", { mediaTypes: ["video"] })).toEqual(["camera"]);
     expect(kindsFor("media", { mediaTypes: ["audio"] })).toEqual(["microphone"]);
     expect(kindsFor("media", { mediaTypes: ["video", "audio"] })).toEqual(["camera", "microphone"]);
-    // Chromium not telling us which device means both, and the prompt says so.
+
     expect(kindsFor("media", {})).toEqual(["camera", "microphone"]);
   });
 
@@ -135,8 +120,7 @@ describe("the vocabulary a decision is made in", () => {
     expect(describeKinds(["camera"])).toBe("camera");
     expect(describeKinds(["camera", "microphone"])).toBe("camera and microphone");
     expect(describeKinds(["camera", "microphone", "geolocation"])).toBe("camera, microphone and location");
-    // The refusal names the pane, because "check your privacy settings" is not
-    // an instruction anyone can follow.
+
     expect(systemSettingsSentence("camera", "denied")).toContain("System Settings ▸ Privacy & Security ▸ Camera");
     expect(systemSettingsSentence("microphone", "restricted")).toContain("Screen Time");
   });
@@ -148,7 +132,7 @@ describe("the remembered answers", () => {
     const keeper = store(dir, 4_242);
     keeper.remember(PARTITION, SITE, "camera", "allow");
     expect(keeper.get(PARTITION, SITE, "camera")).toBe("allow");
-    // Another jar signed into another account has not agreed to anything.
+
     expect(keeper.get(OTHER, SITE, "camera")).toBeNull();
     expect(keeper.get(PARTITION, "https://other.example", "camera")).toBeNull();
     expect(keeper.get(PARTITION, SITE, "microphone")).toBeNull();
@@ -160,8 +144,7 @@ describe("the remembered answers", () => {
     const dir = tmp();
     store(dir).remember(PARTITION, SITE, "microphone", "block");
     expect(new SitePermissionStore(dir).get(PARTITION, SITE, "microphone")).toBe("block");
-    // Junk at every level is dropped at the smallest granularity that keeps
-    // the rest: one bad kind costs the kind, not the file.
+
     fs.writeFileSync(
       path.join(dir, FILE_NAME),
       JSON.stringify({
@@ -177,7 +160,7 @@ describe("the remembered answers", () => {
     const reread = new SitePermissionStore(dir);
     expect(reread.listOrigin(PARTITION, SITE)).toEqual([{ kind: "camera", decision: "allow", at: 1 }]);
     expect(reread.list(PARTITION)).toHaveLength(1);
-    // Unreadable entirely: every site asks again, which is a new install.
+
     fs.writeFileSync(path.join(dir, FILE_NAME), "{not json");
     expect(new SitePermissionStore(dir).all()).toEqual([]);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -192,7 +175,7 @@ describe("the remembered answers", () => {
     expect(keeper.forget(PARTITION, SITE, "camera")).toBe(true);
     expect(keeper.listOrigin(PARTITION, SITE).map((entry) => entry.kind)).toEqual(["microphone"]);
     expect(keeper.forget(PARTITION, SITE)).toBe(true);
-    // An origin nobody holds anything for leaves no skeleton behind.
+
     expect(keeper.list(PARTITION).map((entry) => entry.origin)).toEqual(["https://maps.example"]);
     expect(keeper.forget(PARTITION, SITE)).toBe(false);
     expect(keeper.forget(PARTITION, "https://maps.example", "geolocation")).toBe(true);
@@ -311,7 +294,7 @@ describe("what the site is told", () => {
     expect(await askSite(bundle.handlers, "media", { requestingUrl: `${SITE}/room`, mediaTypes: ["video"] })).toBe(true);
     expect(bundle.asked.asked[0]).toMatchObject({ origin: SITE, kinds: ["camera"], scopeKey: "s1", tabId: "t1", partition: PARTITION });
     expect(bundle.keeper.get(PARTITION, SITE, "camera")).toBe("allow");
-    // Remembered: the second request never reaches the human.
+
     expect(await askSite(bundle.handlers, "media", { requestingUrl: `${SITE}/room`, mediaTypes: ["video"] })).toBe(true);
     expect(bundle.asked.asked).toHaveLength(1);
   });
@@ -329,10 +312,9 @@ describe("what the site is told", () => {
     const tab = page(11);
     expect(await askSite(bundle.handlers, "media", { requestingUrl: `${SITE}/room`, mediaTypes: ["audio"] }, tab)).toBe(true);
     expect(bundle.keeper.get(PARTITION, SITE, "microphone")).toBeNull();
-    // Still live for this page: the check handler answers true without asking.
+
     expect(bundle.handlers.check(tab, "media", SITE, { mediaTypes: ["audio"] })).toBe(true);
-    // The page navigates somewhere else — the grant was given to the site that
-    // was in front of the person, not to the tab.
+
     tab.emit("did-navigate", null, "https://elsewhere.example/");
     expect(bundle.handlers.check(tab, "media", SITE, { mediaTypes: ["audio"] })).toBe(false);
     expect(await askSite(bundle.handlers, "media", { requestingUrl: `${SITE}/room`, mediaTypes: ["audio"] }, tab)).toBe(true);
@@ -344,7 +326,7 @@ describe("what the site is told", () => {
     keeper.remember(PARTITION, SITE, "microphone", "block");
     const bundle = handlers({ store: keeper });
     expect(await askSite(bundle.handlers, "media", { requestingUrl: `${SITE}/room`, mediaTypes: ["video", "audio"] })).toBe(false);
-    // And it did not ask: the person already refused half of it.
+
     expect(bundle.asked.asked).toEqual([]);
   });
 
@@ -371,17 +353,10 @@ describe("what the site is told", () => {
     expect(bundle.asked.asked).toEqual([]);
   });
 
-  /**
-   * #614 — every site's Copy button. The permission string is Chromium's own
-   * (`clipboard-sanitized-write`, measured on Electron 43 in
-   * clipboard-write.electron-test.js); it used to fall into the unknown bucket
-   * and be refused, so `writeText` rejected and most sites swallowed it.
-   */
   test("a Copy button is granted without a prompt, and nothing is written down", async () => {
     const bundle = handlers();
     expect(await askSite(bundle.handlers, "clipboard-sanitized-write", { requestingUrl: `${SITE}/docs` })).toBe(true);
-    // The check handler is what navigator.permissions.query reports — "denied"
-    // there is what told a page not to bother offering the button at all.
+
     expect(bundle.handlers.check(page(), "clipboard-sanitized-write", SITE, {})).toBe(true);
     expect(bundle.asked.asked).toEqual([]);
     expect(bundle.keeper.list(PARTITION)).toEqual([]);
@@ -392,7 +367,7 @@ describe("what the site is told", () => {
     expect(await askSite(bundle.handlers, "clipboard-read", { requestingUrl: `${SITE}/docs` })).toBe(false);
     expect(bundle.asked.asked[0]).toMatchObject({ origin: SITE, kinds: ["clipboard-read"] });
     expect(bundle.keeper.get(PARTITION, SITE, "clipboard-read")).toBe("block");
-    // And a refused READ does not follow the write into the auto-granted set.
+
     expect(bundle.handlers.check(page(), "clipboard-read", SITE, {})).toBe(false);
     expect(bundle.handlers.check(page(), "clipboard-sanitized-write", SITE, {})).toBe(true);
   });
@@ -444,8 +419,7 @@ describe("macOS is the second gate, and it is asked in the right order", () => {
     const it = bundle({ answers: [{ decision: "allow" }], consent: { camera: false, status: "denied" } });
     expect(await askSite(it.handlers, "media", { requestingUrl: `${SITE}/`, mediaTypes: ["video"] })).toBe(false);
     expect(it.denials[0].reason).toContain("System Settings ▸ Privacy & Security ▸ Camera");
-    // The site decision still stands: the human said yes and macOS is what has
-    // to change. Turning it on in System Settings is enough, with no re-ask.
+
     expect(it.keeper.get(PARTITION, SITE, "camera")).toBe("allow");
   });
 
@@ -467,8 +441,7 @@ describe("macOS is the second gate, and it is asked in the right order", () => {
     const port = systemMediaConsent({ platform: "linux" });
     expect(await port.ask("camera")).toBe(true);
     expect(port.status("camera")).toBe("granted");
-    // On darwin with no systemPreferences (a non-Electron process) the call is
-    // a no-op rather than a hang.
+
     const bare = systemMediaConsent({ platform: "darwin", electron: {} });
     expect(await bare.ask("camera")).toBe(true);
   });
@@ -500,11 +473,11 @@ describe("the speculative check never prompts", () => {
     expect(handlers.check(page(), "media", SITE, { mediaTypes: ["video"] })).toBe(false);
     keeper.remember(PARTITION, SITE, "camera", "allow");
     expect(handlers.check(page(), "media", SITE, { mediaTypes: ["video"] })).toBe(true);
-    // Both asked for, one held: not a grant.
+
     expect(handlers.check(page(), "media", SITE, { mediaTypes: ["video", "audio"] })).toBe(false);
     keeper.remember(PARTITION, SITE, "microphone", "block");
     expect(handlers.check(page(), "media", SITE, { mediaTypes: ["audio"] })).toBe(false);
-    // Nothing was asked of the human by any of that.
+
     expect(asked.asked).toEqual([]);
   });
 });
@@ -547,7 +520,7 @@ describe("screen share", () => {
     const answer = await share(it.handlers);
     expect(answer.video).toBe(it.listed[1]);
     expect(it.keeper.get(PARTITION, SITE, "display-capture")).toBe("allow");
-    // The sources reach the renderer as data, never as Electron handles.
+
     expect(it.asked.asked[0].sources).toEqual([
       { id: "screen:0:0", name: "Entire screen", kind: "screen", thumbnail: "data:image/png;base64,screen:0:0" },
       { id: "window:42:0", name: "Telar", kind: "window", thumbnail: "data:image/png;base64,window:42:0" },
@@ -585,8 +558,6 @@ describe("screen share", () => {
     expect(await share(blocked.handlers)).toEqual({});
     expect(blocked.keeper.get(PARTITION, SITE, "display-capture")).toBe("block");
 
-    // Cancel arrives as an allow with no source chosen (or a source that went
-    // away while the picker was open): nothing shared, nothing remembered.
     const cancelled = bundle({ answers: [{ decision: "allow" }] });
     expect(await share(cancelled.handlers)).toEqual({});
     expect(cancelled.keeper.get(PARTITION, SITE, "display-capture")).toBeNull();

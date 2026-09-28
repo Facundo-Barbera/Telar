@@ -1,22 +1,9 @@
-// THE UPDATER'S DEADLINES, PINNED (issue #317).
-//
-// Every case here is a minute or more of wall-clock in life — a download that
-// goes quiet for sixty seconds, a check that never answers for two minutes, a
-// laptop asleep for three hours — which is exactly why update-watchdog.js takes
-// its clock and its timers as arguments. The fake clock below turns the whole
-// bug into microseconds.
-
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const watchdog = require("./update-watchdog");
 
-/**
- * A clock the test advances by hand, and the timer pair that runs off it.
- * `tick` fires everything due at or before the new time, in order, the way a
- * real event loop would.
- */
 function fakeClock(start = 1_000_000) {
   let time = start;
   let nextId = 1;
@@ -32,7 +19,7 @@ function fakeClock(start = 1_000_000) {
       timers.delete(id);
     },
     pending: () => timers.size,
-    /** Advance without running anything — a suspended machine, not a fast one. */
+
     sleep(ms) {
       time += ms;
     },
@@ -66,13 +53,9 @@ describe("a download that goes quiet", () => {
     clock.tick(1);
     expect(stalls).toHaveLength(1);
     expect(stalls[0].version).toBe("0.1.0-nightly.20260912.1");
-    // The percentage the transfer died at is the one figure that makes the
-    // sentence in the pane worth reading.
+
     expect(stalls[0].percent).toBe(7.6);
 
-    // THE TRANSFER IS FORGOTTEN BEFORE THE HANDLER RUNS, so a stall can never
-    // be reported twice for the same download, and a manual check arriving a
-    // moment later sees a clean slate rather than a corpse.
     expect(watch.inFlight()).toBeNull();
     expect(watch.plan()).toBe("check");
     stalls[0].token.cancel();
@@ -88,8 +71,6 @@ describe("a download that goes quiet", () => {
     const watch = watchOn(clock, (download) => stalls.push(download));
     watch.begin({ version: "1.0.0" });
 
-    // Fifty-nine seconds of silence, then a single chunk — over and over. This
-    // is a bad hotel wifi, not a wedge, and it must be allowed to finish.
     for (let round = 0; round < 10; round++) {
       clock.tick(59_000);
       expect(stalls).toEqual([]);
@@ -112,9 +93,6 @@ describe("a download that goes quiet", () => {
     clock.tick(600_000);
     expect(stalls).toEqual([]);
 
-    // Idempotent: `update-downloaded` and the downloadUpdate promise both
-    // settle the same transfer, and the second must be a no-op rather than a
-    // second story about it.
     expect(watch.settle()).toBeNull();
     expect(watch.progress(50)).toBeNull();
   });
@@ -127,8 +105,6 @@ describe("what a manual Check for updates should do", () => {
   });
 
   test("a download that is moving is REPORTED, not restarted", () => {
-    // Pressing the button at 80% must not throw 80% away. The download is the
-    // answer to the question the button asks.
     const clock = fakeClock();
     const watch = watchOn(clock, () => {});
     watch.begin({ version: "1.0.0" });
@@ -139,9 +115,6 @@ describe("what a manual Check for updates should do", () => {
   });
 
   test("a machine that slept through the deadline finds a corpse, and buries it", () => {
-    // THE CASE THE WATCHDOG ALONE CANNOT COVER. macOS suspends timers on sleep:
-    // the lid closes at 20 s into a download, the socket dies, and three hours
-    // later the timer has still not fired. The press is the wake-up.
     const clock = fakeClock();
     const stalls = [];
     const watch = watchOn(clock, (download) => stalls.push(download));
@@ -166,8 +139,7 @@ describe("a wait that never ends", () => {
     expect(await watchdog.settleWithin(Promise.resolve({ isUpdateAvailable: true }), 1000, timers)).toEqual({
       value: { isUpdateAvailable: true },
     });
-    // electron-updater reports check failures through its `error` event too, so
-    // a rejection here must not also become an unhandled rejection.
+
     const outcome = await watchdog.settleWithin(Promise.reject(new Error("ENOTFOUND")), 1000, timers);
     expect(outcome.error.message).toBe("ENOTFOUND");
   });
@@ -185,8 +157,6 @@ describe("a wait that never ends", () => {
 
 describe("electron-updater's cached check promise", () => {
   test("is dropped when it is the thing that is stuck, and left alone otherwise", () => {
-    // The wedge in one line: checkForUpdates() returns the in-flight promise,
-    // and a promise that never settles is inherited by every later press.
     const updater = { checkForUpdatesPromise: new Promise(() => {}) };
     expect(watchdog.clearCachedCheckPromise(updater)).toBe(true);
     expect(updater.checkForUpdatesPromise).toBeNull();
@@ -212,7 +182,7 @@ describe("the part-file a cancelled download leaves behind", () => {
       "temp-Telar-0.1.0-arm64-mac.zip.blockmap",
     ]);
     expect(fs.readdirSync(dir).sort()).toEqual(["Telar-0.0.9-arm64-mac.zip", "update-info.json"]);
-    // Idempotent — the watchdog and a manual check can both reach for it.
+
     expect(watchdog.removeStaleTempFiles(dir)).toEqual([]);
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -232,16 +202,9 @@ describe("the part-file a cancelled download leaves behind", () => {
   });
 
   test("the directory is read off the updater, never composed from the app's name", () => {
-    // THE TRAP THIS PINS. electron-updater takes the directory from
-    // `updaterCacheDirName` in the packaged app-update.yml — electron-builder
-    // writes it from package.json `name` — so it is "telar-desktop-updater"
-    // while `app.getName()` is "Telar". A path built from the app's name exists
-    // on nobody's machine, and would have cleaned nothing, silently.
     const updater = { downloadedUpdateHelper: { cacheDirForPendingUpdate: "/Users/x/Library/Caches/telar-desktop-updater/pending" } };
     expect(watchdog.pendingUpdateDir(updater)).toBe("/Users/x/Library/Caches/telar-desktop-updater/pending");
 
-    // No download has started in this session, so there is no directory of ours
-    // to clean — and nothing is guessed at in its place.
     expect(watchdog.pendingUpdateDir({})).toBeNull();
     expect(watchdog.pendingUpdateDir(undefined)).toBeNull();
     expect(watchdog.removeStaleTempFiles(null)).toEqual([]);
@@ -250,8 +213,6 @@ describe("the part-file a cancelled download leaves behind", () => {
 
 describe("telling our own cancellation from a real failure", () => {
   test("a cancellation is recognised however electron-updater phrases it", () => {
-    // It reports both through the same `error` event; re-broadcasting ours
-    // would replace "Download stalled at 8%…" with "cancelled".
     expect(watchdog.isCancellationError(Object.assign(new Error("boom"), { name: "CancellationError" }))).toBe(true);
     expect(watchdog.isCancellationError(new Error("Request cancelled"))).toBe(true);
     expect(watchdog.isCancellationError(new Error("cancelled"))).toBe(true);

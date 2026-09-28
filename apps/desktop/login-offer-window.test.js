@@ -1,9 +1,3 @@
-// The REAL window wiring (login-offer-window.js) under a mocked Electron:
-// the same wireLoginOffer main.js calls, with the module's own installed IPC
-// handlers invoked directly — so sender/top-frame rejection, navigation
-// refusal, window lockdown and the grant round-trip are asserted through the
-// production code path, not through the pure helper alone. Vault metadata is
-// fake; the grant root is a temp directory read back with the ENGINE's store.
 const { describe, expect, test, mock } = require("bun:test");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -64,8 +58,6 @@ const fakeIpcMain = {
   },
 };
 
-// Installed BEFORE the module under test resolves "electron". No other unit
-// test resolves electron, so the mock leaks nowhere.
 mock.module("electron", () => ({ BrowserWindow: FakeBrowserWindow, ipcMain: fakeIpcMain }));
 const { wireLoginOffer } = require("./login-offer-window");
 const { captureEntry } = require("./login-offer");
@@ -107,11 +99,11 @@ describe("the wired offer window", () => {
     expect(path.basename(win.loadedFile)).toBe("login-offer.html");
     expect(win.options.webPreferences).toMatchObject({ contextIsolation: true, nodeIntegration: false, sandbox: true });
     expect(path.basename(win.options.webPreferences.preload)).toBe("login-offer-preload.js");
-    // The installed will-navigate listener refuses every navigation…
+
     let prevented = false;
     win.webContents.listeners.get("will-navigate")({ preventDefault: () => (prevented = true) });
     expect(prevented).toBe(true);
-    // …and the installed open handler denies every popup.
+
     expect(win.webContents.windowOpenHandler({ url: "https://example.com" })).toEqual({ action: "deny" });
     win.close();
   });
@@ -120,8 +112,8 @@ describe("the wired offer window", () => {
     const { offer, window, invoke } = harness();
     offer.entryFinished(capture());
     const win = window();
-    const foreign = { sender: new FakeWebContents(), senderFrame: {} }; // another renderer
-    const subframe = { sender: win.webContents, senderFrame: {} }; // right window, not its top frame
+    const foreign = { sender: new FakeWebContents(), senderFrame: {} };
+    const subframe = { sender: win.webContents, senderFrame: {} };
     for (const channel of ["telar:login-offer:state", "telar:login-offer:confirm", "telar:login-offer:dismiss"]) {
       expect(fakeIpcMain.handlers.has(channel)).toBe(true);
       for (const event of [foreign, subframe]) {
@@ -176,8 +168,8 @@ describe("the wired offer window", () => {
     await invoke("telar:login-offer:dismiss", trusted(win));
     expect(win.destroyed).toBe(true);
     const count = FakeBrowserWindow.instances.length;
-    offer.entryFinished(capture({ tabUid: "tab_9" })); // same identity+address
-    expect(FakeBrowserWindow.instances.length).toBe(count); // stayed quiet
+    offer.entryFinished(capture({ tabUid: "tab_9" }));
+    expect(FakeBrowserWindow.instances.length).toBe(count);
     expect(offer.explicitOffer(capture())).toEqual({ ok: true });
     expect(FakeBrowserWindow.instances.length).toBe(count + 1);
     window().close();
@@ -186,7 +178,7 @@ describe("the wired offer window", () => {
   test("the person closing the window counts as a dismissal", () => {
     const { offer, window } = harness();
     offer.entryFinished(capture());
-    window().close(); // the person, not the flow
+    window().close();
     const count = FakeBrowserWindow.instances.length;
     offer.entryFinished(capture({ tabUid: "tab_9" }));
     expect(FakeBrowserWindow.instances.length).toBe(count);
@@ -197,7 +189,7 @@ describe("the wired offer window", () => {
     offer.entryFinished(capture());
     const win = window();
     offer.entryFinished(capture({ origin: "https://other.example.net/x", tabUid: "tab_2" }));
-    expect(window()).toBe(win); // no second window
+    expect(window()).toBe(win);
     expect(win.webContents.sent).toContainEqual({ channel: "telar:login-offer:refresh", payload: undefined });
     expect((await invoke("telar:login-offer:state", trusted(win))).origin).toBe("https://other.example.net");
     win.close();

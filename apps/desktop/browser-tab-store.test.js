@@ -10,15 +10,6 @@ const { ProfileRegistry } = require("./browser-profiles");
 const PROJECT = "project_0123456789abcdef0123456789abcdef";
 const OTHER = "project_fedcba9876543210fedcba9876543210";
 
-/**
- * An ephemeral registry with predictable ids — the resolution the manager would
- * do at restore, without a shell or a file.
- *
- * THE COUNTER STARTS BELOW ZERO because opening a registry mints its "Default"
- * profile (browser-profiles.js `ensureDefault`), and that one takes the first id.
- * Starting at -1 leaves `bp_…0001` for the first profile a test creates, so P1/P2
- * below keep meaning "the first and second profiles this test made".
- */
 function registry(existingPartitions = []) {
   let next = -1;
   const onDisk = new Set(existingPartitions);
@@ -136,8 +127,6 @@ describe("what a restore accepts", () => {
   });
 
   test("a v1 inventory restores through the profile ladder, onto the cookie jar its project already had", () => {
-    // The jar is ON DISK, which is the whole migration signal: the ladder adopts
-    // that exact partition rather than landing the scope in the default.
     const store = registry([`persist:telar-project-${PROJECT.slice("project_".length)}`]);
     const scopes = parseInventory(
       {
@@ -151,9 +140,9 @@ describe("what a restore accepts", () => {
     );
     expect(scopes).toHaveLength(1);
     expect(scopes[0].projectKey).toBe(PROJECT);
-    // The partition is EXACTLY the pre-profile one: nothing was copied.
+
     expect(scopes[0].profile.partition).toBe(`persist:telar-project-${PROJECT.slice("project_".length)}`);
-    // And the ladder recorded the metadata move for the caches that follow it.
+
     expect(store.migrations).toEqual([{ from: PROJECT, to: scopes[0].profile.id }]);
   });
 
@@ -241,8 +230,7 @@ describe("the on-disk store", () => {
     const store = createTabStore(dir, { writeDelayMs: 5 });
     expect(store.load()).toBeNull();
     store.save({ version: INVENTORY_VERSION, savedAt: 1, scopes: { s: { profileKey: PROJECT, activeTabId: "a", tabs: [{ id: "a", url: "https://a.example/" }] } } });
-    // A tab closed before the debounce fires is gone from the write — the
-    // latest document wins; the earlier one is never written.
+
     store.save({ version: INVENTORY_VERSION, savedAt: 2, scopes: {} });
     await store.flush();
     expect(store.load()).toEqual({ version: INVENTORY_VERSION, savedAt: 2, scopes: {} });
@@ -280,19 +268,19 @@ describe("the on-disk store", () => {
       ...fs,
       promises: {
         ...fs.promises,
-        // The async write stalls mid-writeFile; meanwhile the quit path lands.
+
         writeFile: async (...args) => { await gate; return fs.promises.writeFile(...args); },
       },
     };
     const store = createTabStore(dir, { fsImpl: slowFs, writeDelayMs: 0 });
     store.save({ version: INVENTORY_VERSION, savedAt: 1, scopes: { s: { profileKey: PROJECT, activeTabId: "closed", tabs: [{ id: "closed", url: "https://closed.example/" }] } } });
     const stalled = store.flush();
-    // The tab was closed and the app quit: the newest state is written sync.
+
     store.flushSync({ version: INVENTORY_VERSION, savedAt: 2, scopes: {} });
     expect(store.load().savedAt).toBe(2);
     release();
     await stalled;
-    // The stale write finished after the flush — and did not replace it.
+
     expect(store.load()).toEqual({ version: INVENTORY_VERSION, savedAt: 2, scopes: {} });
     expect(fs.readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
     expect(store.lastError).toBeNull();

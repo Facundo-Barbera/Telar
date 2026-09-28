@@ -1,28 +1,3 @@
-/**
- * A PAGE DRAWN ON A CANVAS IS STILL DRIVABLE — in a real Electron.
- *
- * A spreadsheet drawn on a `<canvas>` has no accessibility refs for its
- * cells, so every ref-addressed tool is useless there. The agent acts by the
- * CSS pixels of its screenshot instead, types into whatever has focus, sends
- * chords, and pastes/copies through the page's own clipboard events.
- *
- * Measured here, through the manager's real tool surface (`callTool`):
- *   · a FIXED 1280×800 viewport shown at scale 0.5 in a 640×400 stage: a
- *     click, hover and drag by screenshot coordinates land at exactly those
- *     CSS pixels (the native point is css × scale — a mismatch lands at half
- *     or double);
- *   · a point outside the screenshot's viewport is refused;
- *   · FIT: the same holds with no scaling;
- *   · a click by coordinates focuses a textarea, and `browser_type` with no
- *     target types into it without clearing it, replacing a selection like a
- *     real insert; a chord reaches the page with its modifiers;
- *   · `browser_paste` hands the focused editable a real `paste` event, and
- *     `browser_copy` answers what the page's own `copy` handler wrote;
- *   · with nothing editable focused, typing without a target is refused.
- *
- * Run: `bun run test:desktop:canvas-control` from apps/desktop
- * (own temp userData, window shown inactive, no focus).
- */
 const { app, BrowserWindow } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -33,8 +8,6 @@ const { removeUserData } = require("./electron-test-teardown");
 
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "telar-canvas-control-")));
 
-// Canvas under everything; the sink (a canvas spreadsheet's invisible input
-// surface) and a plain textarea sit at known CSS positions above it.
 const FIXTURE = `<!doctype html><html><head><meta charset="utf-8"><title>Canvas control</title>
 <style>
   body { margin:0; overflow:hidden; }
@@ -68,7 +41,6 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function listen(server) { return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port))); }
 function textOf(result) { return (result.content || []).filter((block) => block.type === "text").map((block) => block.text).join("\n"); }
 async function evaluate(manager, tab, expression) {
-  // Read without ensureDebugger: verification must not repair geometry.
   return tab.view.webContents.executeJavaScript(expression);
 }
 async function settle(manager, tab) {
@@ -112,8 +84,7 @@ async function main() {
     assert(!result.isError, `${name} errored: ${textOf(result)}`);
     return result;
   };
-  // The screenshot IS the observation coordinates are read from, and it
-  // passes the stale-view gate for the mutations that follow.
+
   const observe = () => ok("browser_take_screenshot", {});
   try {
     manager.declareProfile(scope, "none");
@@ -123,7 +94,6 @@ async function main() {
     const tab = manager.activeTab(scope);
     await settle(manager, tab);
 
-    // ── 1. FIXED 1280×800 shown at 0.5 in a 640×400 stage ──
     await ok("browser_resize", { preset: "default" });
     await tab.geometry.queue;
     const inner = await evaluate(manager, tab, "[innerWidth, innerHeight]");
@@ -151,7 +121,6 @@ async function main() {
     const outside = await call("browser_click", { x: 1400, y: 10 });
     assert(outside.isError && textOf(outside).includes("outside"), `a click outside the viewport was not refused: ${textOf(outside)}`);
 
-    // ── 2. FIT: native, no scaling ──
     await ok("browser_resize", { mode: "fit" });
     await tab.geometry.queue;
     const fitInner = await evaluate(manager, tab, "[innerWidth, innerHeight]");
@@ -162,7 +131,6 @@ async function main() {
     const fitClick = await untilHit(manager, tab, "__hits.click", [100, 50]);
     assert(same(fitClick, [100, 50]), `fit click at (100,50) landed at ${fitClick}`);
 
-    // ── 3. click a field by coordinates, then type with NO target ──
     await observe();
     await ok("browser_click", { x: 400, y: 150 });
     const focused = await untilHit(manager, tab, "document.activeElement.id", "notes");
@@ -174,9 +142,6 @@ async function main() {
     const appended = await untilHit(manager, tab, "document.getElementById('notes').value", "hello world");
     assert(appended === "hello world", `typing again cleared the field: ${JSON.stringify(appended)}`);
 
-    // A chord reaches the page with its modifier. Whether Meta+A then
-    // selects all is the platform's key binding, not deterministic under a
-    // background window, so the selection is made by the page instead.
     await ok("browser_press_key", { key: "Meta+A" });
     const keys = await evaluate(manager, tab, "__hits.keys");
     const chord = keys.find((k) => k.key.toLowerCase() === "a");
@@ -186,14 +151,12 @@ async function main() {
     const replaced = await untilHit(manager, tab, "document.getElementById('notes').value", "x");
     assert(replaced === "x", `typing over a selection gave ${JSON.stringify(replaced)}`);
 
-    // Paste where the page does NOT handle the event: inserted at the focus.
     await ok("browser_click", { x: 400, y: 150 });
     const inserted = await ok("browser_paste", { text: "zz" });
     assert(textOf(inserted).startsWith("Inserted 2 characters"), `unhandled paste answer: ${textOf(inserted)}`);
     const withPaste = await untilHit(manager, tab, "document.getElementById('notes').value.includes('zz')", true);
     assert(withPaste === true, "unhandled paste did not insert at the focused textarea");
 
-    // ── 4. the canvas spreadsheet's sink: paste and copy through its events ──
     await observe();
     await ok("browser_click", { x: 80, y: 320 });
     const sinkFocused = await untilHit(manager, tab, "document.activeElement.id", "sink");
@@ -205,7 +168,6 @@ async function main() {
     const copied = await ok("browser_copy", {});
     assert(textOf(copied) === "a\tb\nc\td", `copy answered ${JSON.stringify(textOf(copied))}`);
 
-    // ── 5. nothing editable focused: typing without a target is refused ──
     await evaluate(manager, tab, "document.activeElement && document.activeElement.blur()");
     const body = await untilHit(manager, tab, "document.activeElement === document.body", true);
     assert(body === true, "blur did not return focus to the body");
