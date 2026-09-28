@@ -16,7 +16,7 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
  *
  * `provider` IS THE SETTING, and `off` is the default. It decides whether there
  * is a mic button at all, and where there is one, which socket it opens and
- * what it encodes. See `apps/engine/src/dictation/provider.ts`.
+ * what it encodes. See `apps/engine/src/domains/dictation/provider.ts`.
  *
  * `language` IS THE SECOND ONE, and `multi` is ITS default (#560) — Nova-3
  * code-switching rather than the `en` Deepgram falls back to when nobody says.

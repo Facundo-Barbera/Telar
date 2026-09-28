@@ -110,8 +110,7 @@ import {
   ProjectNotesError,
   type NotesCapability,
 } from "./domains/notes";
-import { DICTATION_OFF, DictationError } from "./dictation/token";
-import { dictationProvider } from "./dictation/provider";
+import { DICTATION_OFF, DictationError, dictationProvider } from "./domains/dictation";
 import * as notebook from "./domains/notes";
 import * as shelf from "./prompts";
 import { PreparedPromptsError } from "./prompts";
