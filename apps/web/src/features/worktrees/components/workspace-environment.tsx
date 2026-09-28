@@ -182,7 +182,6 @@ function StripRule() {
 }
 
 function WhereThisLands({
-  projectId,
   projectName,
   git,
   onRetry,
@@ -191,7 +190,6 @@ function WhereThisLands({
   pendingBase,
   onBase,
 }: {
-  projectId: string;
   projectName?: string;
   git?: GitOverview;
   onRetry?: () => void | Promise<void>;
@@ -236,7 +234,7 @@ function WhereThisLands({
         }
       >
         {willBeWorktree ? <GitBranchIcon className="size-3.5 shrink-0" /> : <FolderGitIcon className="size-3.5 shrink-0" />}
-        <span className="min-w-0 truncate font-medium text-foreground">{projectName ?? projectId}</span>
+        <span className="min-w-0 truncate font-medium text-foreground">{projectName ?? "Project"}</span>
         <span className="hidden min-w-0 truncate font-mono text-muted-foreground @xl/composer:inline">
           {willBeWorktree ? base : "checkout"}
         </span>
@@ -385,7 +383,6 @@ function BranchPopover({
 }
 
 export function EnvironmentStrip({
-  projectId,
   projectName,
   session,
   git,
@@ -424,7 +421,6 @@ export function EnvironmentStrip({
         <div className="flex min-h-8 w-full items-center gap-1 px-2 text-2xs text-muted-foreground">
         {choosing && onEnvMode ? (
           <WhereThisLands
-            projectId={projectId}
             {...(projectName ? { projectName } : {})}
             {...(git ? { git } : {})}
             {...(onRetry ? { onRetry } : {})}
@@ -437,7 +433,7 @@ export function EnvironmentStrip({
           <>
             <span className="flex min-w-0 shrink-0 items-center gap-1.5 px-1 font-medium text-foreground">
               <FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="max-w-40 truncate">{projectName ?? projectId}</span>
+              <span className="max-w-40 truncate">{projectName ?? "Project"}</span>
             </span>
 
             <StripRule />
