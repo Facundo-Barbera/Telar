@@ -3,7 +3,7 @@
 /**
  * APPEARANCE BEYOND LIGHT/DARK — accent, typefaces, window translucency.
  *
- * The colour scheme keeps its own store (components/theme-provider.tsx): it
+ * The colour scheme keeps its own store (features/appearance): it
  * predates this file, its key is in the wild, and folding it in would buy one
  * fewer file at the cost of a migration. Everything ELSE the reader can retint
  * lives here, as one JSON value under one key.

@@ -850,7 +850,7 @@ code, pre, kbd, samp {
    dark half sets nothing, takes the fallback, and computes byte-for-byte what
    it computed before this rule existed. Light is the exception and says so in
    one place. `.dark` is the class the theme provider toggles on <html>
-   (theme-provider.tsx), which is the same element both attributes are written
+   (features/appearance), which is the same element both attributes are written
    on, so `:not(.dark)` is the light half of exactly this scene. */
 html:not(.dark):is([data-telar-shell][data-translucent], [data-backdrop]) {
   --wash-transparency: min(calc(var(--translucency, 45%) * 1.4), 85%);

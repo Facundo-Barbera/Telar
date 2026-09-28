@@ -1,7 +1,7 @@
 // Must stay in step with the `[data-accent=x]` and `.dark[data-accent=x]` rules
 // in app/globals.css; the stylesheet cannot be read for a scheme it is not wearing.
 
-import type { Accent } from "./appearance";
+import type { Accent } from "@/lib/appearance";
 
 export const LIGHT_PRIMARY_FOREGROUND = "oklch(1 0 0)";
 

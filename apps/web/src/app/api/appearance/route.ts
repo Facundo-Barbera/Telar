@@ -24,7 +24,7 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
  * choke on; a GET is re-parsed on the client (`EngineClient.appearance`).
  *
  * WHO READS IT. A remote browser window wears it automatically until its
- * person customises (components/host-look-follower.tsx). Every OTHER client —
+ * person customises (features/appearance). Every OTHER client —
  * the iOS app, another desktop — is offered the same `GET` and decides for
  * itself what to do with it; nothing is pushed onto a device that did not ask.
  *
