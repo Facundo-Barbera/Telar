@@ -1,24 +1,5 @@
-import { spawn } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { defaultInstanceIdForDriver, workspacePath, type SessionWorkspace, type TextGenPolicy } from "@telar/engine-client";
-import { requireCli } from "./cli";
-
-type TextGenEffort = "low" | "medium" | "high";
-
-type TextGenDriverInput = {
-  driver: "claude" | "codex";
-  binaryPath?: string;
-  env?: Record<string, string>;
-  cwd: string;
-  model?: string;
-  effort?: TextGenEffort;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-};
-
-const DEFAULT_TIMEOUT_MS = 120_000;
+import { defaultInstanceIdForDriver, type ProviderDriverKind, type TextGenPolicy } from "@telar/engine-client";
+import { runStructured, type TextGenDriverInput, type TextGenEffort } from "./textgen-run";
 
 export function textGenDisabledByEnv(): boolean {
   return (process.env.TELAR_TEXTGEN ?? "").trim().toLowerCase() === "off";
@@ -79,128 +60,6 @@ export function titleIsSeed(title: string, firstMessage: string): boolean {
   return seed.length > 0 && current === seed;
 }
 
-async function runStructured(input: TextGenDriverInput, prompt: string, schema: object): Promise<Record<string, unknown> | undefined> {
-  try {
-    return input.driver === "claude" ? await runClaude(input, prompt, schema) : await runCodex(input, prompt, schema);
-  } catch {
-    return undefined;
-  }
-}
-
-async function runClaude(input: TextGenDriverInput, prompt: string, schema: object): Promise<Record<string, unknown> | undefined> {
-  const executable = requireCli("claude", input.binaryPath ? { binaryPath: input.binaryPath } : {});
-  const args = [
-    "-p",
-    "--no-session-persistence",
-    "--output-format",
-    "json",
-    "--json-schema",
-    JSON.stringify(schema),
-    "--tools",
-    "",
-    "--strict-mcp-config",
-    "--setting-sources",
-    "",
-    "--max-turns",
-    "1",
-    "--system-prompt",
-    "Answer with the requested JSON only.",
-    ...(input.model ? ["--model", input.model] : []),
-  ];
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "telar-textgen-"));
-  try {
-    const stdout = await runToCompletion(executable, args, { ...input, cwd: scratch }, prompt);
-    if (stdout === undefined) return undefined;
-    const envelope = parseJson(stdout);
-    const structured = envelope?.["structured_output"];
-    return typeof structured === "object" && structured !== null ? (structured as Record<string, unknown>) : undefined;
-  } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
-  }
-}
-
-async function runCodex(input: TextGenDriverInput, prompt: string, schema: object): Promise<Record<string, unknown> | undefined> {
-  const executable = requireCli("codex", input.binaryPath ? { binaryPath: input.binaryPath } : {});
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "telar-textgen-"));
-  const schemaPath = path.join(scratch, "schema.json");
-  const outputPath = path.join(scratch, "answer.json");
-  try {
-    fs.writeFileSync(schemaPath, JSON.stringify(schema));
-    const args = [
-      "exec",
-      "--ephemeral",
-      "--skip-git-repo-check",
-      "-s",
-      "read-only",
-      ...(input.model ? ["--model", input.model] : []),
-      "--config",
-      `model_reasoning_effort="${input.effort ?? "low"}"`,
-      "--output-schema",
-      schemaPath,
-      "--output-last-message",
-      outputPath,
-      "-",
-    ];
-    const stdout = await runToCompletion(executable, args, input, prompt);
-    if (stdout === undefined) return undefined;
-    const answer = parseJson(fs.readFileSync(outputPath, "utf8"));
-    return answer ?? undefined;
-  } catch {
-    return undefined;
-  } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
-  }
-}
-
-function runToCompletion(executable: string, args: string[], input: TextGenDriverInput, prompt: string): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    if (input.signal?.aborted) {
-      resolve(undefined);
-      return;
-    }
-    const child = spawn(executable, args, {
-      cwd: input.cwd,
-      env: { ...process.env, ...input.env },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    child.stderr.resume();
-    let out = "";
-    let settled = false;
-    const finish = (value: string | undefined) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      input.signal?.removeEventListener("abort", onAbort);
-      resolve(value);
-    };
-    const deadline = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(undefined);
-    }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const onAbort = () => {
-      child.kill("SIGKILL");
-      finish(undefined);
-    };
-    input.signal?.addEventListener("abort", onAbort, { once: true });
-    child.on("error", () => finish(undefined));
-    child.stdout.on("data", (chunk: Buffer) => {
-      out += chunk.toString("utf8");
-    });
-    child.on("close", (code) => finish(code === 0 ? out : undefined));
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
-}
-
-function parseJson(text: string): Record<string, unknown> | undefined {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export async function generateSessionTitle(input: TextGenDriverInput & { message: string }): Promise<string | undefined> {
   const result = await runStructured(input, buildTitlePrompt(input.message), oneStringSchema("title"));
   return sanitizeTitle(result?.["title"]);
@@ -210,49 +69,53 @@ type TextGenInstance = { enabled: boolean; binaryPath?: string; env: { name: str
 
 type TextGenStore = {
   settings: { textGen(): TextGenPolicy };
-  providers: { resolve(instanceId: string, driver: "claude" | "codex"): TextGenInstance };
+  providers: { resolve(instanceId: string, driver: ProviderDriverKind): TextGenInstance };
+  catalogues?: { cachedRows(driver: ProviderDriverKind): readonly { id: string }[] | undefined };
 };
 
-type StructuredPolicyStore = TextGenStore & { paths?: { root?: string } };
+const CHEAP_MODEL_HINTS = ["haiku", "luna", "flash", "mini", "nano"];
 
-function instanceInput(instance: TextGenInstance): Pick<TextGenDriverInput, "binaryPath" | "env"> {
+export function cheapModel(ids: readonly string[]): string | undefined {
+  const plain = ids.filter((id) => !id.includes("["));
+  for (const hint of CHEAP_MODEL_HINTS) {
+    const found = plain.find((id) => new RegExp(`(^|[-/_.])${hint}([-_.]|$)`).test(id));
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function driverInput(store: TextGenStore, policy: TextGenPolicy, model?: string): TextGenDriverInput | undefined {
+  const instance = store.providers.resolve(defaultInstanceIdForDriver(policy.driver), policy.driver);
+  if (!instance.enabled) return undefined;
   const env: Record<string, string> = {};
   for (const variable of instance.env) if (variable.value) env[variable.name] = variable.value;
-  return { ...(instance.binaryPath ? { binaryPath: instance.binaryPath } : {}), env };
+  const configured = model ?? policy.model;
+  const usable = configured && (policy.driver !== "opencode" || configured.includes("/")) ? configured : undefined;
+  const chosen = usable ?? cheapModel(store.catalogues?.cachedRows(policy.driver)?.map((row) => row.id) ?? []);
+  return { driver: policy.driver, env, ...(instance.binaryPath ? { binaryPath: instance.binaryPath } : {}), ...(chosen ? { model: chosen } : {}) };
 }
 
 export async function runStructuredForPolicy(
-  store: StructuredPolicyStore,
+  store: TextGenStore,
   input: { prompt: string; schema: object; model?: string; effort?: TextGenEffort; signal?: AbortSignal },
 ): Promise<Record<string, unknown> | undefined> {
   if (textGenDisabledByEnv()) return undefined;
-  let policy: TextGenPolicy;
-  let instance: TextGenInstance;
+  let driver: TextGenDriverInput | undefined;
   try {
-    policy = store.settings.textGen();
-    if (policy.driver === "opencode") return undefined;
-    instance = store.providers.resolve(defaultInstanceIdForDriver(policy.driver), policy.driver);
+    driver = driverInput(store, store.settings.textGen(), input.model);
   } catch {
     return undefined;
   }
-  if (!instance.enabled) return undefined;
-  const model = input.model ?? policy.model;
+  if (!driver) return undefined;
   return runStructured(
-    {
-      driver: policy.driver,
-      ...instanceInput(instance),
-      cwd: store.paths?.root ?? os.tmpdir(),
-      ...(model ? { model } : {}),
-      ...(input.effort ? { effort: input.effort } : {}),
-      ...(input.signal ? { signal: input.signal } : {}),
-    },
+    { ...driver, ...(input.effort ? { effort: input.effort } : {}), ...(input.signal ? { signal: input.signal } : {}) },
     input.prompt,
     input.schema,
   );
 }
 
 export type RetitleStore = TextGenStore & {
-  records: { get(sessionId: string): { title: string; state: string; workspace: SessionWorkspace } };
+  records: { get(sessionId: string): { title: string; state: string } };
   lifecycle: {
     updateSession(sessionId: string, patch: { title: string }): unknown;
     refreshWorktreeBranchFromTitle(sessionId: string): string | undefined | Promise<string | undefined>;
@@ -266,7 +129,7 @@ export async function maybeRetitleSession(
   generate: typeof generateSessionTitle = generateSessionTitle,
 ): Promise<void> {
   const policy = effectiveTextGenPolicy(store.settings.textGen());
-  if (!policy.titles || policy.driver === "opencode") return;
+  if (!policy.titles) return;
   if (!firstMessage.trim()) return;
   let session: ReturnType<RetitleStore["records"]["get"]>;
   try {
@@ -275,17 +138,9 @@ export async function maybeRetitleSession(
     return;
   }
   if (session.state !== "active" || !titleIsSeed(session.title, firstMessage)) return;
-  const cwd = workspacePath(session.workspace);
-  if (cwd === undefined) return;
-  const instance = store.providers.resolve(defaultInstanceIdForDriver(policy.driver), policy.driver);
-  if (!instance.enabled) return;
-  const title = await generate({
-    driver: policy.driver,
-    ...instanceInput(instance),
-    cwd,
-    ...(policy.model ? { model: policy.model } : {}),
-    message: firstMessage,
-  });
+  const driver = driverInput(store, policy);
+  if (!driver) return;
+  const title = await generate({ ...driver, message: firstMessage });
   if (title === undefined) return;
   try {
     const current = store.records.get(sessionId);

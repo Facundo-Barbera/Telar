@@ -57,7 +57,7 @@ describe("a test cannot spawn a provider", () => {
     expect(asked).toHaveLength(0);
 
     // And the generator itself, called directly, refuses rather than spawning.
-    expect(await generateSessionTitle({ driver: "claude", cwd: tmp("telar-np-cwd-"), message: "fix the thing" })).toBeUndefined();
+    expect(await generateSessionTitle({ driver: "claude", message: "fix the thing" })).toBeUndefined();
   });
 
   test("not for a model list", async () => {
