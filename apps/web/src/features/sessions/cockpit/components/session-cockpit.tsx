@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClockIcon, TriangleAlertIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/ui/alert";
-import { WorkspaceInspector } from "../../components/workspace-inspector";
+import { WorkspaceInspector } from "@/features/sessions/components/workspace-inspector";
 import {
   type ClaudeConversation,
   type RequestDecision,
@@ -35,64 +35,37 @@ import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/
 import { usePluginPanels, pluginCommands } from "@/features/plugins";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "../session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./read-receipt";
-import { questionFields } from "@/features/composer";
-import { normaliseContextNoticePercent } from "@/features/composer";
+import { questionFields } from "@/features/composer/question-drawer";
+import { normaliseContextNoticePercent } from "@/features/composer/context-notice";
 import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice, useProviderInstance } from "@/features/providers";
 import { processToReveal, stillWorking } from "../background-presence";
 import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./cohort-fold";
 import { groupNotificationTurns, TranscriptWorkspace } from "@/features/transcript";
-import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, isRestorablePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "@/features/panel";
-import { desktopBrowserBridge } from "@/features/browser";
+import { agentBrowserActivity, browserPanelTab, describeBrowserStart, editorInstanceKey, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "@/features/panel";
+import { desktopBrowserBridge } from "@/features/browser/desktop-browser-bridge";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/platform/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "../session-links";
 import { SessionSchedules } from "@/features/schedules";
 import {
-  activePanelTab,
-  addPanelTab,
   canvasPanelKey,
-  closePanelTab,
-  collapsePanelTabs,
-  emptyPanelTabs,
-  findPanelTab,
-  movePanelTab,
-  nextPanelTabId,
-  openNewPanelTab,
   openPanelTab,
-  readPanelTabs,
   revealPanelTab,
-  setPanelTabParams,
   writePanelTabs,
   clearPanelTabs,
-  type PanelTabParams,
-  type PanelTabState,
 } from "@/features/panel";
-import { closeTerminalTab, createRunApi, foldTerminalParams, freshTerminals, revealTerminal, type RunView } from "@/features/terminal";
-import {
-  editorFileForPath,
-  emptyEditor,
-  openInEditor,
-  readEditor,
-  writeEditor,
-  clearEditor,
-  type EditorState,
-  type OpenIntent,
-} from "@/features/files";
-import { forgeParams, openForge, readForgeOpen } from "@/features/github";
+import { freshTerminals, revealTerminal, type RunView } from "@/features/terminal";
+import { writeEditor, clearEditor } from "@/features/files";
 import { Button } from "@/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
-import { useSidebar } from "@/ui/sidebar";
 import { useCommandHandlers } from "@/features/commands";
 import { appendToDraft, cockpitPlugins, pinToggleOverride, transcriptRows } from "../model";
 import { SessionMasthead, SessionProblem, SoloTools, usePanelPresence } from "./masthead";
 import { EmptyTranscript, SessionTurn, TurnFrame } from "./session-turn";
 import { useSessionSync } from "../hooks/use-session-sync";
+import { useCockpitPanel } from "../hooks/use-cockpit-panel";
 
 const api = createEngineApi();
-/** Below this the session rail, the conversation and the panel cannot all
- *  hold their minimum widths at once. Chosen as rail (16rem) + conversation
- *  floor (24rem) + panel floor (20rem), rounded up. */
-const NARROW_WINDOW = 1280;
 
 export function SessionCockpit({
   projectId,
@@ -197,10 +170,6 @@ export function SessionCockpit({
   const [readingBack, setReadingBack] = useState(false);
   const onAtBottomChange = useCallback((atBottom: boolean) => setReadingBack(!atBottom), []);
   const [sending, setSending] = useState(false);
-  const [panel, setPanel] = useState<PanelTabState<PanelTab>>(() => emptyPanelTabs<PanelTab>());
-  const panelNow = useRef(panel);
-  const [editors, setEditors] = useState<Record<string, EditorState>>(() => ({}));
-  const panelPresence = usePanelPresence(!solo && panel.open);
   const [projectName, setProjectName] = useState<string | undefined>(serverProjectName);
   const [projectResolved, setProjectResolved] = useState(false);
   const nameKey = JSON.stringify([hostId, projectId]);
@@ -217,41 +186,11 @@ export function SessionCockpit({
 
   const panelKey = sessionId ?? (projectId === undefined ? "main" : canvasPanelKey(projectId));
 
-  useEffect(() => {
-    // Deferred to a task rather than called in the effect body: a synchronous
-    // setState there is a cascading render, and it is the same rule the git
-    // readout in workspace-environment.tsx follows.
-    const task = window.setTimeout(() => {
-      const stored = readEditor(panelKey);
-      const restored = readPanelTabs<PanelTab>(panelKey, isRestorablePanelTab);
-      const browsers = desktopBrowserBridge() ? collapsePanelTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
-      const next = collapsePanelTabs(browsers, (tab) => tab === "terminal", "terminal", foldTerminalParams);
-      const loaded: Record<string, EditorState> = { editor: stored };
-      for (const entry of next.tabs) {
-        if (entry.kind === "editor" && !(entry.id in loaded)) loaded[entry.id] = readEditor(editorInstanceKey(panelKey, entry.id));
-      }
-      setEditors(loaded);
-      panelNow.current = next;
-      setPanel(next);
-    }, 0);
-    return () => window.clearTimeout(task);
-  }, [panelKey]);
-
-  const updatePanel = useCallback(
-    (next: (current: PanelTabState<PanelTab>) => PanelTabState<PanelTab>) => {
-      setPanel((current) => {
-        const updated = next(current);
-        // A reducer that decided nothing changed is not a write: the params
-        // sync below runs on every Editor keystroke-ish change and most of
-        // them leave the strip exactly as it was.
-        if (updated === current) return current;
-        panelNow.current = updated;
-        writePanelTabs(panelKey, updated, Date.now());
-        return updated;
-      });
-    },
-    [panelKey, setPanel],
-  );
+  const {
+    panel, editors, updatePanel, updateEditor, makeRoomForPanel, showPanelTab, openFileInNewPanelTab, showNewPanelTab,
+    stepPanelTab, openPanel, togglePanel, showSessionBrowser, tabHandlers,
+  } = useCockpitPanel({ panelKey, enabledPlugins, hostId, sessionId });
+  const panelPresence = usePanelPresence(!solo && panel.open);
   /** Folded once here rather than in both the panel and the pinned summary, so
    *  the two cannot disagree about which tabs are open. */
   const browser = useMemo(() => latestBrowserState(events), [events]);
@@ -281,119 +220,12 @@ export function SessionCockpit({
     };
   }, [sessionId, projectId, hostId, transcriptLanded]);
 
-  const { open: railOpen, setOpen: setRailOpen } = useSidebar();
-  const makeRoomForPanel = useCallback(() => {
-    if (!railOpen) return;
-    if (window.innerWidth >= NARROW_WINDOW) return;
-    setRailOpen(false);
-  }, [railOpen, setRailOpen]);
-
-  /** One Editor instance's files, persisted on every change exactly as the
-   *  panel's tabs are — same key, so a session's arrangement is one thing. */
-  const updateEditor = useCallback(
-    (id: string, next: (current: EditorState) => EditorState) => {
-      setEditors((current) => {
-        const updated = next(current[id] ?? emptyEditor());
-        writeEditor(editorInstanceKey(panelKey, id), updated, Date.now());
-        return { ...current, [id]: updated };
-      });
-    },
-    [panelKey, setEditors],
-  );
-
-  const editorTargetId = useCallback((state: PanelTabState<PanelTab>) => {
-    const active = activePanelTab(state);
-    if (active?.kind === "editor") return active.id;
-    return state.tabs.find((entry) => entry.kind === "editor")?.id ?? nextPanelTabId(state, "editor");
-  }, []);
-
-  useEffect(() => {
-    updatePanel((current) => {
-      let next = current;
-      for (const entry of current.tabs) {
-        if (entry.kind !== "editor" || !(entry.id in editors)) continue;
-        const path = editors[entry.id]?.activePath;
-        next = setPanelTabParams(next, entry.id, path ? { path } : {});
-      }
-      return next;
-    });
-  }, [editors, updatePanel]);
-
-  const showPanelTab = useCallback(
-    (tab: PanelTab, intent: OpenIntent = "pin") => {
-      makeRoomForPanel();
-      const path = filePanelTabPath(tab);
-      if (path !== undefined) {
-        // Resolved from the committed strip, and handed to both updates, so the
-        // file and the tab that comes forward cannot name different Editors.
-        const target = editorTargetId(panelNow.current);
-        updateEditor(target, (current) => openInEditor(current, editorFileForPath(path, enabledPlugins), intent));
-        updatePanel((current) => openPanelTab(current, "editor"));
-        return;
-      }
-      const issue = issuePanelNumber(tab);
-      const pull = issue === undefined ? pullPanelNumber(tab) : undefined;
-      if (issue !== undefined || pull !== undefined) {
-        const kind = issue !== undefined ? "issues" : "pulls";
-        const number = (issue ?? pull)!;
-        updatePanel((current) => {
-          const opened = openPanelTab(current, kind);
-          const target = activePanelTab(opened);
-          if (!target) return opened;
-          return setPanelTabParams(opened, target.id, forgeParams(openForge(readForgeOpen(target.params), number)));
-        });
-        return;
-      }
-      updatePanel((current) => openPanelTab(current, tab));
-    },
-    [makeRoomForPanel, updatePanel, updateEditor, editorTargetId, enabledPlugins],
-  );
-
-  const openFileInNewPanelTab = useCallback(
-    (path: string) => {
-      makeRoomForPanel();
-      // Minted from the committed strip so the files can be seeded under the
-      // same id the tab is about to take.
-      const id = nextPanelTabId(panelNow.current, "editor");
-      updateEditor(id, (current) => openInEditor(current, editorFileForPath(path, enabledPlugins), "pin"));
-      updatePanel((current) => addPanelTab(current, { id, kind: "editor", params: { path } }));
-    },
-    [makeRoomForPanel, updatePanel, updateEditor, enabledPlugins],
-  );
-
-  const showNewPanelTab = useCallback(
-    (tab: PanelTab, params?: PanelTabParams) => {
-      makeRoomForPanel();
-      updatePanel((current) => openNewPanelTab(current, tab, params));
-    },
-    [makeRoomForPanel, updatePanel],
-  );
-
-  const stepPanelTab = useCallback(
-    (delta: number) => {
-      const current = panelNow.current;
-      if (current.tabs.length === 0) return;
-      const count = current.tabs.length;
-      const at = Math.max(current.tabs.findIndex((entry) => entry.id === current.activeTab), 0);
-      const next = current.tabs[(at + delta + count) % count];
-      if (next) updatePanel((state) => ({ ...state, activeTab: next.id, open: true }));
-    },
-    [updatePanel],
-  );
-
   useCommandHandlers(
     {
       ...(solo
         ? {}
         : {
-            "toggle-panel": () => {
-              if (panelNow.current.open) {
-                updatePanel((current) => ({ ...current, open: false }));
-                return;
-              }
-              makeRoomForPanel();
-              updatePanel((current) => ({ ...current, open: true }));
-            },
+            "toggle-panel": togglePanel,
             "panel-next-tab": () => stepPanelTab(1),
             "panel-previous-tab": () => stepPanelTab(-1),
             "open-diff": () => showPanelTab("diff"),
@@ -407,11 +239,6 @@ export function SessionCockpit({
     },
     [solo, enabledPlugins, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
   );
-
-  const showSessionBrowser = useCallback(() => {
-    makeRoomForPanel();
-    updatePanel((current) => addPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} }));
-  }, [makeRoomForPanel, updatePanel]);
 
   // Appended rather than spliced: the caret lives inside ComposerEditor, out of reach here.
   const insertIntoComposer = useCallback((text: string) => {
@@ -1291,13 +1118,7 @@ export function SessionCockpit({
                   />
                 )}
                 {(session?.projectId ?? projectId) !== undefined && <WorkspaceInspector projectId={(session?.projectId ?? projectId)!} />}
-                <RailToggle
-                  open={panel.open}
-                  onToggle={() => {
-                    makeRoomForPanel();
-                    updatePanel((current) => ({ ...current, open: true }));
-                  }}
-                />
+                <RailToggle open={panel.open} onToggle={openPanel} />
               </>
             }
           />
@@ -1490,36 +1311,12 @@ export function SessionCockpit({
           events={events}
           tabs={panel.tabs}
           {...(panel.activeTab ? { tab: panel.activeTab } : {})}
-          onTabChange={(id) => updatePanel((current) => ({ ...current, activeTab: id }))}
+          {...tabHandlers}
           onOpenTab={showPanelTab}
           onOpenNewTab={showNewPanelTab}
           onOpenFileInNewTab={openFileInNewPanelTab}
           onInsertReference={insertIntoComposer}
           onAttach={attachFromPanel}
-          onCloseTab={(id) => {
-            // Outside the reducer on purpose: a reducer runs twice under
-            // StrictMode, and killing a process is not something to do twice.
-            const closing = findPanelTab(panel, id);
-            if (closing?.kind === "terminal") {
-              // The tab stays until the person has answered — "no" keeps it,
-              // and everything in it, running.
-              const runApi = createRunApi(hostFetcher(hostId));
-              void closeTerminalTab(closing.params, {
-                ...(sessionId ? { stopRun: (terminalId: string) => runApi.stop(sessionId, terminalId) } : {}),
-              }).then((closed) => {
-                if (closed) updatePanel((current) => closePanelTab(current, id));
-              });
-              return;
-            }
-            const releasing = sessionId ? browserScopeToRelease(sessionId, closing) : undefined;
-            if (releasing) void desktopBrowserBridge()?.releaseScope?.(releasing, true, { closedByPerson: true }).catch(() => undefined);
-            updatePanel((current) => closePanelTab(current, id));
-          }}
-          onTabParams={(id, params) => updatePanel((current) => setPanelTabParams(current, id, params))}
-          // Persisted through the same `updatePanel` every other tab gesture
-          // writes, so a reordered strip comes back reordered.
-          onMoveTab={(id, toIndex) => updatePanel((current) => movePanelTab(current, id, toIndex))}
-          onClose={() => updatePanel((current) => ({ ...current, open: false }))}
           editors={editors}
           onEditorChange={updateEditor}
           hostId={hostId}
