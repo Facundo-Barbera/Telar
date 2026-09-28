@@ -9,7 +9,7 @@
  * refused there, and the wall says so in words.
  */
 import { z } from "zod";
-import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, json, ok, type ToolFactory } from "../domains/agent-tools";
 import type { DsCapability, NotebookCellSummary } from "./capability";
 import { describeOutputs } from "./outputs";
 

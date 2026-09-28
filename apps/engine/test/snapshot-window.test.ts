@@ -14,7 +14,7 @@ import { Database } from "bun:sqlite";
 import { EngineStore } from "../src/state";
 import { ExecutionStore } from "../src/platform/db/execution-store";
 import { ITEM_ROWS_FOR_RUNS_SQL } from "../src/platform/db/tables";
-import { sessionSnapshot } from "../src/session-bootstrap";
+import { sessionSnapshot } from "../src/domains/sessions";
 import { arrayElementRanges, parseSpan } from "../src/platform/db/document-window";
 import { toLegacyHome } from "./store-internals";
 

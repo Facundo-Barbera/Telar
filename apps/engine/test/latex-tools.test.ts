@@ -3,7 +3,7 @@ import { assertTelarToolNames } from "@telar/engine-client";
 import type { LatexCapability } from "../src/latex/capability";
 import { latexTools } from "../src/latex/latex-tools";
 import { TECTONIC_PACKAGES_NOTE } from "../src/latex/packages";
-import type { ToolFactory } from "../src/tool-kit";
+import type { ToolFactory } from "../src/domains/agent-tools";
 
 type Registered = { name: string; description: string; run: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }> };
 

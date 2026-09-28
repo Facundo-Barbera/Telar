@@ -1,5 +1,5 @@
 import { EngineClientError, type WorkerClaim, type WorkerTurnFailure } from "@telar/engine-client";
-import { collectTelarWall, telarWall, type TelarCapabilities, type TelarSocketLease, type TelarToolSocket } from "../telar-socket";
+import { collectTelarWall, type TelarCapabilities, type TelarSocketLease, type TelarToolSocket, telarWall } from "../domains/agent-tools";
 import type { BrowserSocketLease, BrowserToolSocket } from "../domains/browser";
 import { RateLimitedError } from "../drivers/claude";
 import { ProviderUnavailableError, type DriverResult, type DriverRun, type DriverSessionHooks, type ProviderTurnBinding } from "../drivers";

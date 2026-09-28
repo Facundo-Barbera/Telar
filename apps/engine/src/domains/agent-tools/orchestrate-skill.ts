@@ -1,24 +1,5 @@
-/**
- * TELAR ORCHESTRATE — the coordinator's workflow, as a skill.
- *
- * A person hands one session a list ("these six issues") and wants it turned
- * into parallel work: one worker session per task, briefed, dispatched as a
- * cohort, verified and integrated, with the person's decisions routed back to
- * them rather than made for them. This file is that workflow written down once.
- *
- * INSTALLED BESIDE THE `telar` SKILL, by the same sync and behind the same
- * toggle — it is Telar-authored words in the agent's context, and "off" means
- * none of them. The composer's `/orchestrate` verb names it in prose, which is
- * what makes it work on every driver rather than only on the one whose harness
- * parses slash commands.
- *
- * NOTHING HERE NAMES A REPOSITORY OR A PERSON. Standing rules that differ per
- * project — who may merge, release gates, load caps — belong in that project's
- * notebook, and the skill says to read them there.
- */
-import { ORIENTATION_VERSION, TELAR_SKILL, TELAR_SKILL_NAME } from "./orientation";
+import { ORIENTATION_VERSION, TELAR_SKILL, TELAR_SKILL_NAME } from "../sessions";
 
-/** The directory name, and the `$orchestrate` a person types. */
 export const ORCHESTRATE_SKILL_NAME = "orchestrate";
 
 export const ORCHESTRATE_SKILL = `---
@@ -117,7 +98,6 @@ Releases, deploys and anything else irreversible or outward-facing wait for the
 person's explicit OK, whatever this list says.
 `;
 
-/** Every skill Telar writes into each provider's skills directory. */
 export const BUNDLED_SKILLS: readonly { name: string; text: string }[] = [
   { name: TELAR_SKILL_NAME, text: TELAR_SKILL },
   { name: ORCHESTRATE_SKILL_NAME, text: ORCHESTRATE_SKILL },

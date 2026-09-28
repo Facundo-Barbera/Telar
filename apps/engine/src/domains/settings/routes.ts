@@ -1,6 +1,6 @@
 import { EngineStateError } from "../../platform/kernel/errors";
 import { ok, type Route } from "../../platform/http/route";
-import { TELAR_ORIENTATION } from "../../orientation";
+import { TELAR_ORIENTATION } from "../sessions";
 import type { EngineStore } from "../../state";
 
 type AgentOrientation = ReturnType<EngineStore["getAgentOrientation"]>;

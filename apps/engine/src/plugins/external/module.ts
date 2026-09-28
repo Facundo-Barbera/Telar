@@ -17,7 +17,7 @@
  */
 import { z } from "zod";
 import { PLUGIN_API_VERSION, type ExternalPluginManifest, type PluginMeta } from "@telar/engine-client";
-import { err, json, type ToolFactory } from "../../tool-kit";
+import { err, json, type ToolFactory } from "../../domains/agent-tools";
 import type { PluginEngineModule, PluginInitContext } from "../contract";
 import type { PluginMachineRoutes, PluginProjectRoutes, PluginRouteRequest } from "../routes";
 import type { PluginToolModule } from "../tool-module";

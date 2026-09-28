@@ -30,9 +30,8 @@ import { describe, expect, test } from "bun:test";
 import type { EngineEvent, EngineRequest, ProjectNote, Session, Subscription, Turn } from "@telar/engine-client";
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
 import { notesTools, type NotesCapability } from "../src/domains/notes";
-import { displayTools } from "../src/display/tools";
-import { TELAR_SKILL } from "../src/orientation";
-import { MAX_ANSWER_CHARS } from "../src/tool-kit";
+import { displayTools, MAX_ANSWER_CHARS } from "../src/domains/agent-tools";
+import { TELAR_SKILL } from "../src/domains/sessions";
 import { GREP_CONTEXT_CHARS, WHY_CHARS } from "../src/domains/turns";
 
 /** The widest `find` the route will serve — the fixture answers at it, so the

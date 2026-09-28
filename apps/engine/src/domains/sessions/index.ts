@@ -9,3 +9,6 @@ export { sessionsCapability, storeReads, storeSessionsPort, windowedReads } from
 export { indexRow, rowIsShelved, SessionIndex } from "./session-index";
 export { SessionActivity } from "./activity";
 export { createSessionModules } from "./modules";
+export { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./bootstrap";
+export { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
+export { ORIENTATION_VERSION, syncTelarSkill, TELAR_ORIENTATION, TELAR_SKILL, TELAR_SKILL_NAME, writeOrientationInstructions } from "./orientation";

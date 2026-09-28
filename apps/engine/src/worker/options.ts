@@ -1,5 +1,5 @@
 import type { EngineClient, ProviderDriverKind } from "@telar/engine-client";
-import type { TelarToolSocket } from "../telar-socket";
+import type { TelarToolSocket } from "../domains/agent-tools";
 import type { BrowserToolSocket, LoginGrantStore, SecretsProvider } from "../domains/browser";
 import type { TurnDriver } from "../drivers";
 

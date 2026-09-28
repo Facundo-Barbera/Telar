@@ -22,7 +22,7 @@
  * `driver.ts` about Codex having no in-process `telar` server at all today.
  */
 import type { PluginMeta } from "@telar/engine-client";
-import type { ToolFactory } from "../tool-kit";
+import type { ToolFactory } from "../domains/agent-tools";
 
 /**
  * The one wire. Every plugin verb is a POST at

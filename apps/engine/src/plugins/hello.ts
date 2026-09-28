@@ -26,7 +26,7 @@
 import { z } from "zod";
 import type { PluginMeta } from "@telar/engine-client";
 import { PLUGIN_API_VERSION } from "@telar/engine-client";
-import { err, json, ok, type ToolFactory } from "../tool-kit";
+import { err, json, ok, type ToolFactory } from "../domains/agent-tools";
 import type { PluginEngineModule, PluginInitContext } from "./contract";
 import type { PluginToolModule } from "./tool-module";
 import type { PluginWorkLog } from "./work-log";

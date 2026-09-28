@@ -49,10 +49,9 @@ import { runCliUpdate, type CliUpdateRun } from "./domains/providers";
 import { computerUseRoutes, createComputerUseGate, type ComputerUseGate } from "./domains/computer-use";
 import { bearerIsValid } from "./platform/http/auth";
 import { createProviderProber, readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
-import { BUNDLED_SKILLS } from "./orchestrate-skill";
-import { syncTelarSkill } from "./orientation";
+import { BUNDLED_SKILLS, type SocketTool } from "./domains/agent-tools";
+import { sessionBootstrap, type SessionBootstrapWindow, sessionsCapability, sessionSnapshot, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
 import { browserRoutes, createLoginGrantStore } from "./domains/browser";
-import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
 import {
   acquireDaemonLock,
   EngineStateError,
@@ -90,7 +89,6 @@ import {
   writeTheme,
 } from "./domains/appearance";
 import { warmUsageScanCache } from "./usage";
-import type { SocketTool } from "./mcp-socket";
 import {
   collectSessionsWallTools,
   ensureSessionsSocketSecret,
@@ -107,7 +105,6 @@ import {
   storeNoteRead,
   storeNotesPort,
 } from "./domains/notes";
-import { sessionsCapability, storeReads, storeSessionsPort } from "./domains/sessions";
 import * as notebook from "./domains/notes";
 import * as shelf from "./domains/prompts";
 import { PreparedPromptsError } from "./domains/prompts";
@@ -117,7 +114,7 @@ import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { readWorktreesRoot } from "./worktrees-location";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
-import { readTaskOutput, resolveTaskOutputFile } from "./task-output";
+import { readTaskOutput, resolveTaskOutputFile } from "./drivers/claude";
 import { filesRoutes } from "./domains/files";
 import { settingsRoutes } from "./domains/settings";
 import { dictationRoutes } from "./domains/dictation";
@@ -4213,7 +4210,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
     let browser: import("./domains/browser").BrowserRuntime | undefined;
     let browserSocket: import("./domains/browser").BrowserToolSocket | undefined;
-    let telarRunSocket: import("./telar-socket").TelarToolSocket | undefined;
+    let telarRunSocket: import("./domains/agent-tools").TelarToolSocket | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
       const [{ EngineClient }, { EngineWorker }] = await Promise.all([
@@ -4244,7 +4241,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // browser's, per-session tokens, no persisted secret. Distinct from the
       // daemon's outward `/v2/sessions/mcp` door below, which is for clients
       // outside any turn.
-      telarRunSocket = new (await import("./telar-socket")).TelarToolSocket();
+      telarRunSocket = new (await import("./domains/agent-tools")).TelarToolSocket();
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
       const { WorkerReconnectController } = await import("./worker-supervisor");

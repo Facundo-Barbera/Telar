@@ -44,7 +44,7 @@ import os from "node:os";
 import path from "node:path";
 import { sessionQueryTools } from "./../src/sessions-tools/query";
 import { startEngine, type EngineDaemon } from "./../src/daemon";
-import { collectTools, type SocketTool } from "./../src/mcp-socket";
+import { collectTools, type SocketTool } from "../src/domains/agent-tools";
 import { stubModels } from "./stub-models";
 import {
   ANSWER_CHARS,

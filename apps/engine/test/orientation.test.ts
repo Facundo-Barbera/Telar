@@ -32,13 +32,12 @@ import {
   syncTelarSkill,
   telarSkillDigest,
   writeOrientationInstructions,
-} from "../src/orientation";
-import { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "../src/orchestrate-skill";
+} from "../src/domains/sessions/orientation";
+import { BUNDLED_SKILLS, displayTools, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME, type ToolFactory } from "../src/domains/agent-tools";
 import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/domains/providers";
 import { openCodeBriefings, openCodeConfigContent } from "../src/drivers/opencode";
 import { sessionsTools } from "../src/sessions-tools/tools";
 import { notesTools } from "../src/domains/notes";
-import { displayTools } from "../src/display/tools";
 import { runTools } from "../src/run/tools";
 import { BROWSER_BRIEFING } from "../src/domains/browser";
 import { RUN_BRIEFING } from "../src/run/briefing";
@@ -47,7 +46,6 @@ import { EngineStore } from "../src/state";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { EngineClient } from "@telar/engine-client";
 import type { DriverRun } from "../src/drivers";
-import type { ToolFactory } from "../src/tool-kit";
 
 let home: string;
 const daemons: EngineDaemon[] = [];

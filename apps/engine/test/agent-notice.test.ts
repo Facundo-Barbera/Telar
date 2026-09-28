@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import type { NotificationDetail } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
-import { agentNotice, INLINE_CHARS, inlineExcerpt, reportBack } from "../src/agent-notice";
+import { agentNotice, INLINE_CHARS, inlineExcerpt, reportBack } from "../src/domains/turns/agent-notice";
 import { frameAgentMessage, framedSteerText, framedTurnInput, frameWakeMessage, RELAY_RULE } from "../src/domains/turns/attribution";
 import { claudeNotificationContent } from "../src/drivers/claude";
 import { codexNotificationInstruction } from "../src/drivers/codex";

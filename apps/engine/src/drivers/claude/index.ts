@@ -31,3 +31,4 @@ export { describeImport, readClaudeTranscriptFile, type ImportedRow, type Transc
 export { itemDetailForToolCall, requestKindForTool, setPluginReadTools, titleForToolCall } from "./mapping";
 export { claudeNotificationContent } from "./sdk";
 export { RateLimitedError } from "./limits";
+export { readTaskOutput, resolveTaskOutputFile, taskOutputFileFrom } from "./task-output";
