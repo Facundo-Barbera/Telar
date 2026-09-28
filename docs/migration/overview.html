@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telar: simplification pass</title>
+<style>
+  :root {
+    --bg: #15171a; --panel: #1c1f23; --line: #2a2e34; --fg: #e6e8eb; --muted: #9aa1ab;
+    --accent: #7aa2f7; --good: #8bd49c; --warn: #e5c07b; --bad: #e06c75; --radius: 10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f6f7f9; --panel: #fff; --line: #e3e6ea; --fg: #1d2026; --muted: #5f6772; --accent: #3b6fe0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 17px; margin: 44px 0 12px; }
+  h3 { font-size: 14px; margin: 0 0 8px; }
+  p.sub { color: var(--muted); margin: 0 0 28px; }
+  .grid { display: grid; gap: 12px; }
+  .g4 { grid-template-columns: repeat(4, 1fr); }
+  .g2 { grid-template-columns: repeat(2, 1fr); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+  .kpi .v { font-size: 24px; font-weight: 600; }
+  .kpi .l { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .low { color: var(--good); } .med { color: var(--warn); } .high { color: var(--bad); }
+  .bar { position: relative; height: 22px; background: var(--line); border-radius: 6px; overflow: hidden; margin: 4px 0 2px; }
+  .bar > .after { position: absolute; inset: 0 auto 0 0; background: var(--accent); opacity: .85; }
+  .bar > .lbl { position: absolute; inset: 0 8px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #fff; mix-blend-mode: difference; }
+  .area { margin-bottom: 14px; }
+  .area .name { display: flex; justify-content: space-between; font-size: 13px; }
+  .area .name span:last-child { color: var(--muted); }
+  ul { margin: 6px 0 0; padding-left: 18px; } li { margin: 3px 0; }
+  .muted { color: var(--muted); }
+  .tree { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow-x: auto; }
+  .phase { display: grid; grid-template-columns: 28px 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .phase .num { width: 28px; height: 28px; border-radius: 99px; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 600; font-size: 13px; }
+  .note { border-left: 0; background: color-mix(in srgb, var(--warn) 12%, transparent); padding: 10px 14px; border-radius: var(--radius); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Telar: pasada de simplificación</h1>
+  <p class="sub">Auditoría de solo lectura sobre <code>origin/main</code>, 27 sep 2026. Las líneas eliminadas son estimaciones de los auditores; lo marcado como <em>inferido</em> no está verificado.</p>
+  <p class="note" id="live">● En vivo. Última actualización: T3 Code, registro de herramientas, execution-store/daemon, tests que leen fuente y el panel derecho. <b>Pendiente:</b> diseño final de <code>EngineStore</code> y diseño final de la web.</p>
+
+  <div class="grid g4">
+    <div class="card kpi"><div class="v">~290k</div><div class="l">líneas de código fuente hoy</div></div>
+    <div class="card kpi"><div class="v">~235k</div><div class="l">después (estimado, −19%)</div></div>
+    <div class="card kpi"><div class="v">57% / 36%</div><div class="l">de comentarios en engine / web</div></div>
+    <div class="card kpi"><div class="v">17.651</div><div class="l">líneas en <code>state.ts</code>, que pasa a ~15 módulos</div></div>
+  </div>
+
+  <h2>Antes y después por área</h2>
+  <div class="card">
+    <div class="area"><div class="name"><span>apps/web</span><span>118k → ~90k</span></div>
+      <div class="bar"><div class="after" style="width:76%"></div><div class="lbl"><span>después</span><span>−28k</span></div></div></div>
+    <div class="area"><div class="name"><span>apps/engine</span><span>86k → ~70k</span></div>
+      <div class="bar"><div class="after" style="width:81%"></div><div class="lbl"><span>después</span><span>−16k</span></div></div></div>
+    <div class="area"><div class="name"><span>apps/ios</span><span>28k → ~27.5k</span></div>
+      <div class="bar"><div class="after" style="width:98%"></div><div class="lbl"><span>después</span><span>−0.4k</span></div></div></div>
+    <div class="area"><div class="name"><span>apps/desktop</span><span>26.5k → ~26.4k</span></div>
+      <div class="bar"><div class="after" style="width:99.6%"></div><div class="lbl"><span>después</span><span>−0.1k</span></div></div></div>
+    <div class="area"><div class="name"><span>packages/engine-client</span><span>15.8k → ~13k</span></div>
+      <div class="bar"><div class="after" style="width:83%"></div><div class="lbl"><span>después</span><span>−2.8k</span></div></div></div>
+    <p class="muted" style="margin:10px 0 0;font-size:12px">La mayor parte de la reducción viene de recortar comentarios que cuentan la historia de issues. Los invariantes no obvios se quedan. Desktop, iOS, relay y dependencias ya están limpios.</p>
+  </div>
+
+  <h2>Lo que encontramos</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Engine</h3>
+      <ul>
+        <li><code>EngineStore</code> es una sola clase de 15,4k líneas con 462 métodos. Tiene unas 16 costuras claras: settings, proyectos, git, turnos, cohortes, sweeps, requests, recovery, journal…</li>
+        <li><code>startEngine</code> en <code>daemon.ts</code> es una función de 4,8k líneas con una cadena de <code>if</code> por ruta.</li>
+        <li>El 57% de los caracteres son comentarios. Peores: <code>entities.ts</code> 80%, <code>driver.ts</code> 65%, <code>state.ts</code> 56% (8k líneas de comentario).</li>
+        <li>Restos: <code>report_window</code> no hace nada pero sigue en 10 sitios. Además: argumentos ignorados de subscribe, alias <code>run_*</code>, dos matchers de ETag y un sweeper que cada 30 s devuelve <code>[]</code>.</li>
+        <li>Unas 7 migraciones al abrir el store que se pueden retirar tras confirmar que ya corrieron.</li>
+        <li>Unas 1,25k líneas de git/GitHub en <code>state.ts</code> solo reenvían a <code>git.ts</code> (inferido).</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Web</h3>
+      <ul>
+        <li><code>SessionCockpit</code>: una función de 3,1k líneas con 54 <code>useState</code> y 24 efectos. <code>SidebarBody</code> (1,6k), <code>Composer</code> (1,7k) y <code>DesktopBrowserSurface</code> (1,8k) son del mismo estilo.</li>
+        <li>El 36% son comentarios; <code>globals.css</code> tiene 61%.</li>
+        <li>Código muerto: 6 archivos, unas 185 exports sin uso y la parte <code>SidebarMenu*</code> de shadcn (330 líneas).</li>
+        <li><code>test-fixtures/</code>: 3,4k líneas de arneses manuales que ningún CI usa.</li>
+        <li>135 de 154 rutas <code>/api</code> solo reenvían al engine, y <code>client.ts</code> refleja la API del engine ruta por ruta (inferido).</li>
+        <li>Unos 16 pollers con <code>setInterval</code> escritos a mano y 5 variantes de "estado vacío".</li>
+        <li>33 tests leen el código fuente en vez de probar comportamiento, así que romperán con cada refactor.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>iOS · Desktop · Relay · Repo</h3>
+      <ul>
+        <li>iOS: <code>InboxView</code> (372 líneas) no se usa en ningún lado.</li>
+        <li>Desktop: cuatro stores de preferencias JSON copiados, que se pueden unificar (unas 60 líneas). El IPC <code>adoptScope</code> no tiene uso desde la web; hay que confirmarlo antes de quitarlo.</li>
+        <li>El hand-off de bundle id es de hoy. Se retira cuando no queden Macs con el id viejo.</li>
+        <li>El relay v1 ya se retiró por completo. Dependencias: ninguna sin uso y un solo lockfile.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3 class="high">Hay que atender primero</h3>
+      <ul>
+        <li><b>Web en main:</b> 3 tests fallan según el orden de ejecución (<code>session-cockpit.project-default</code>). Solos pasan, así que se filtra estado compartido entre archivos.</li>
+        <li><b>Un test tarda 23 s de 65:</b> <code>tail-cadence</code> espera tiempo real. Con fake timers baja a casi nada.</li>
+        <li><b>Comentarios obsoletos</b> que citan cosas que ya no existen: el Agent integrado (#908), el cadence y el report window.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Plan por fases</h2>
+  <div class="card">
+    <div class="phase"><div class="num">1</div><div><b>Limpieza sin riesgo.</b> PRs independientes y en paralelo.
+      <ul>
+        <li>Web: código muerto, <code>test-fixtures/</code>, restos de cadence, shadcn sin usar y tokens CSS muertos.</li>
+        <li>Engine: <code>report_window</code>, argumentos de subscribe, alias <code>run_*</code> y ETag.</li>
+        <li>iOS: <code>InboxView</code>.</li>
+        <li>Tests: arreglar los 3 que dependen del orden y pasar el lento a fake timers.</li>
+      </ul>
+      <span class="tag">≈ −6k líneas</span> <span class="tag low">riesgo bajo</span></div></div>
+    <div class="phase"><div class="num">2</div><div><b>Compatibilidad vieja.</b>
+      <ul>
+        <li>Mover los clientes a <code>/plugins/&lt;id&gt;</code>, luego borrar los alias <code>/ds</code>, <code>/latex</code> y <code>/data-science</code>, y los campos PATCH legacy.</li>
+        <li>Migraciones de localStorage y de pestañas.</li>
+        <li>Tablas de redirección.</li>
+        <li>Migraciones del store, una vez confirmado que corrieron.</li>
+      </ul>
+      <span class="tag">≈ −1,5k</span> <span class="tag med">riesgo medio</span></div></div>
+    <div class="phase"><div class="num">3</div><div><b>Rediseño de sesiones como sub-agentes.</b>
+      <ul>
+        <li>De 21 herramientas a 10.</li>
+        <li>Fuera cohortes e intenciones.</li>
+        <li>El resultado automático es el último mensaje.</li>
+      </ul>
+      Reduce código y además arregla los despertares.
+      <span class="tag">≈ −2k (inferido)</span> <span class="tag med">riesgo medio</span></div></div>
+    <div class="phase"><div class="num">4</div><div><b>Tests que leen código fuente.</b> Decidir cuáles de los 33 se quedan y reescribir el resto como tests de comportamiento. Es un requisito para partir archivos.
+      <span class="tag med">riesgo medio</span></div></div>
+    <div class="phase"><div class="num">5</div><div><b>Partir los gigantes y recortar sus comentarios en el mismo PR.</b>
+      <ul>
+        <li><code>state.ts</code> → <code>store/*</code></li>
+        <li><code>daemon.ts</code> → <code>routes/*</code></li>
+        <li><code>session-cockpit.tsx</code> → componentes + hooks</li>
+        <li>Luego <code>app-sidebar</code>, <code>right-panel</code>, <code>composer</code> y <code>browser-live</code>.</li>
+      </ul>
+      <span class="tag">≈ −30k en comentarios, 0 neto en código</span> <span class="tag med">riesgo medio</span></div></div>
+    <div class="phase"><div class="num">6</div><div><b>Opcional, con diseño aparte:</b> un solo proxy <code>/api/[...path]</code> → <code>/v2</code> en lugar de 135 rutas a mano más el espejo de <code>client.ts</code>.
+      <span class="tag">≈ −3,5k (inferido)</span> <span class="tag high">riesgo alto</span></div></div>
+  </div>
+
+  <h2>Cómo se ve el repo al terminar</h2>
+  <div class="grid g2">
+    <div class="card"><h3>Engine</h3><div class="tree">apps/engine/src/
+├─ daemon.ts          <span class="muted">~600 · arranque y wiring</span>
+├─ routes/            <span class="muted">sessions, projects, plugins,
+│                      github, storage, settings…</span>
+├─ store/
+│  ├─ index.ts        <span class="muted">EngineStore: compone los módulos</span>
+│  ├─ settings.ts     projects.ts   worktrees.ts
+│  ├─ turns.ts        sessions-read.ts
+│  ├─ delivery.ts     <span class="muted">sub-agentes y avisos</span>
+│  ├─ sweeps.ts       requests.ts   recovery.ts
+│  └─ journal.ts      migrations.ts
+├─ sessions-tools/    <span class="muted">10 herramientas</span>
+├─ plugins/           <span class="muted">host, bundled, external</span>
+└─ …                  <span class="muted">ningún archivo &gt; ~1,5k</span></div></div>
+    <div class="card"><h3>Web</h3><div class="tree">apps/web/
+├─ components/
+│  ├─ session/
+│  │  ├─ cockpit.tsx      <span class="muted">~800 · compone</span>
+│  │  ├─ masthead.tsx     turn-body.tsx
+│  │  └─ hooks/           <span class="muted">use-session-sync,
+│  │                       use-panel-tabs, use-browser-bridge…</span>
+│  ├─ sidebar/            <span class="muted">body, project-list, polling</span>
+│  ├─ right-panel/        <span class="muted">shell + surfaces del registro</span>
+│  └─ ui/                 <span class="muted">sin partes muertas de shadcn</span>
+├─ lib/
+│  ├─ use-poll.ts         <span class="muted">reemplaza ~16 pollers</span>
+│  └─ plugins/            <span class="muted">registro de UI</span>
+└─ app/api/               <span class="muted">sin alias; fase 6: un solo proxy</span></div></div>
+  </div>
+
+  <h2>Política de comentarios: qué hace T3 Code</h2>
+  <div class="card">
+    <table>
+      <tr><th>Área</th><th class="n">% de caracteres en comentarios</th><th class="n">Exports con JSDoc</th><th class="n">Tamaño de archivo: mediana / p90 / máx</th></tr>
+      <tr><td>T3 server</td><td class="n">10,4%</td><td class="n">24%</td><td class="n">173 / 745 / 5.608</td></tr>
+      <tr><td>T3 web</td><td class="n">8,9%</td><td class="n">27%</td><td class="n">99 / 520 / 10.414</td></tr>
+      <tr><td>Telar engine</td><td class="n high">48,7%</td><td class="n">63%</td><td class="n">203 / 594 / 17.659</td></tr>
+      <tr><td>Telar web</td><td class="n high">44,7%</td><td class="n">57%</td><td class="n">96 / 413 / 4.474</td></tr>
+      <tr><td>Telar engine-client</td><td class="n high">66,2%</td><td class="n">–</td><td class="n">–</td></tr>
+    </table>
+    <ul>
+      <li>T3 <b>no</b> prohíbe comentarios. Su política es una sola frase en <code>AGENTS.md</code>: <em>"Comments describe how a thing is used… not to annotate every line of behavior"</em>. Con eso se mantiene en ~9%.</li>
+      <li>El problema de Telar no es el tipo de comentario, sino el volumen (5×) y el género: historia de issues, ensayos y MAYÚSCULAS.</li>
+      <li>T3 tiene archivos gigantes peores que los nuestros (<code>ChatView</code> ocupa 8,9k líneas en una sola función). Escribir pocos comentarios no evita los mega-archivos; hace falta una regla de tamaño aparte.</li>
+    </ul>
+    <h3 style="margin-top:14px">Propuesta: "por defecto ninguno", no una prohibición total</h3>
+    <div class="tree" style="background:var(--bg);padding:12px;border-radius:8px">## Comments
+Default to none. Names, types and tests carry the implementation.
+Allowed, and only these:
+- 1–3 lines above an export when its signature doesn't say how to call it correctly.
+- At the site: a non-obvious invariant or external quirk, ≤3 lines, the rule not the story.
+- A link to an issue/doc when the reasoning spans modules.
+Never: history ("previously", "#490"), restating code, banners, essays,
+CAPITALIZED emphasis, comments in package.json, comments in tests beyond one line.
+When you change code, move or delete its comment in the same edit.
+
+## Size
+No new file over 800 lines or function over 150. Touching a file over the
+limit means extracting the part you changed.</div>
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Se haría cumplir así:</p>
+    <ul style="font-size:12px;margin-top:4px" class="muted">
+      <li>un <code>AGENTS.md</code> en la raíz, que hoy no existe;</li>
+      <li>un umbral por paquete en CI que solo puede bajar, y que rechaza bloques de más de 6 líneas y frases de historia;</li>
+      <li>oxlint y knip en engine, desktop y engine-client, que hoy solo corren en web;</li>
+      <li>un PR de limpieza de comentarios por paquete.</li>
+    </ul>
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Otras cosas de T3 que valen la pena:</p>
+    <ul style="font-size:12px;margin-top:4px" class="muted">
+      <li>interfaz e implementación por dominio, cableadas en un solo archivo de composición, sin Effect-TS;</li>
+      <li>un "decider" puro separado de los efectos;</li>
+      <li>tests por feature que esperan eventos, no tiempo.</li>
+    </ul>
+    <p class="muted" style="font-size:12px;margin:4px 0 0">Lo que no conviene copiar: su event-sourcing completo, Effect-TS entero y su UI.</p>
+  </div>
+
+  <h2>Bugs reales encontrados en el camino</h2>
+  <div class="card">
+    <table>
+      <tr><th>Bug</th><th>Causa</th><th>Arreglo</th></tr>
+      <tr><td class="high">Claude no recibe las herramientas <code>prompts_*</code></td><td rowspan="3">La lista de herramientas está copiada en 3 sitios (<code>driver.ts</code> ×2 y <code>worker.ts</code>) y las copias se desincronizaron.</td><td rowspan="3">Una sola definición, <code>telarWall()</code>, con transportes finos encima.</td></tr>
+      <tr><td class="high">Codex/OpenCode no reciben <code>display_*</code></td></tr>
+      <tr><td class="med">Codex/OpenCode ven las herramientas de sesiones dos veces (<code>telar</code> y <code>telar-sessions</code>) <span class="muted">(inferido)</span></td></tr>
+      <tr><td class="med">3 sweepers no se detienen en <code>close()</code> <span class="muted">(inferido)</span></td><td>Solo se les hace <code>unref()</code>.</td><td>Detenerlos en <code>close()</code>, o que desaparezcan en el split.</td></tr>
+      <tr><td class="med">3 tests de web fallan según el orden de ejecución</td><td>Estado compartido entre archivos.</td><td>Aislar el estado de módulo.</td></tr>
+    </table>
+  </div>
+
+  <h2>Descomposición del engine <span class="tag">en progreso</span></h2>
+  <div class="grid g2">
+    <div class="card"><h3>driver.ts (4,9k)</h3>
+      <ul>
+        <li><code>run()</code> es un closure de ~3.400 líneas. Se parte en: contenido del prompt, forma del SDK, clasificación de herramientas y presentación de tool-calls (compartida: pasa a <code>tool-presentation.ts</code>). Dentro de <code>run()</code>: frames, batching, gate, runtime, pump y pump inactivo.</li>
+        <li><code>pumpFrame</code> es una <b>copia inline</b> del pump del turno (~400 líneas). Se unifican en un solo <code>FrameTranslator</code>.</li>
+        <li>Código muerto en producción: <code>telarSocket</code>/<code>telarLeases</code> en el driver y <code>mainBriefing</code>.</li>
+      </ul></div>
+    <div class="card"><h3>worker.ts (2,3k)</h3>
+      <ul>
+        <li><code>execute</code> tiene 818 líneas. Se parte en <code>ClaimLoop</code>, <code>TurnSettler</code>, <code>ToolLeases</code>, <code>ClientCapabilities</code> (~300 líneas) y <code>ApprovalBridge</code>.</li>
+        <li>El servidor MCP por socket está escrito <b>4 veces</b>, más las rutas inline del daemon. Queda un solo <code>McpHttpSocket</code>.</li>
+        <li>El contexto de la llamada se pierde en los sockets, así que el runId idempotente de <code>sessions_send</code> nunca se aplica.</li>
+      </ul></div>
+    <div class="card"><h3>daemon.ts (5,7k)</h3>
+      <ul>
+        <li><code>startEngine</code> tiene <b>183 rutas en 19 grupos</b>, más los sweepers, el plugin host, el health y los sockets. Todo junto en una sola función.</li>
+        <li>Validación: 74 lecturas de body con checks a mano y solo 15 con <code>safeParse</code>. Casi no hay schemas zod de request que reutilizar; hay que escribirlos.</li>
+        <li>Hay que cuidar: rutas que dependen del orden (<code>/live</code>, <code>/find</code>, <code>/activity</code> van antes de <code>sessionPath</code>), 2 streams SSE, 6 rutas binarias y un abort al cerrar el cliente.</li>
+        <li>El resultado: <code>routes/*.ts</code> por grupo, con un contexto explícito (<code>store</code>, <code>pluginHost</code>, <code>workers</code>…), y <code>startEngine</code> queda solo como wiring.</li>
+      </ul></div>
+    <div class="card"><h3>execution-store.ts (3,4k)</h3>
+      <ul>
+        <li>Diez partes claras: schema, housekeeping, retención, documentos, journal, índice, FTS, transacciones, legacy…</li>
+        <li><b>Mantenimiento duplicado:</b> el <code>sweepJournal</code> async y el set síncrono <code>compact/slim/prune/fold</code> hacen lo mismo; el síncrono solo lo usan <code>reclaim</code> y los tests.</li>
+        <li><b>Dos backends, JSON y SQLite:</b> la app usa SQLite, pero 46 archivos de tests corren sobre JSON. Quitar JSON elimina 250–400 líneas de <code>state.ts</code> y ~22 ramas <code>if (executionStore)</code>.</li>
+      </ul></div>
+    <div class="card" style="grid-column:1/-1"><h3>EngineStore (15,4k líneas, 462 métodos)</h3>
+      <p class="muted" style="margin:0">Pendiente: el diseño final de módulos, el grafo de dependencias y la secuencia de PRs. Se agregará aquí cuando llegue.</p></div>
+  </div>
+
+  <h2>Descomposición de la web <span class="tag">en progreso</span></h2>
+  <div class="grid g2">
+    <div class="card"><h3>right-panel.tsx (2,8k)</h3>
+      <ul>
+        <li><code>RightPanel</code> tiene 21 hooks y <b>ningún</b> efecto de sincronización. Solo hay que separarlo: shell (~350), <code>panel-tabs.ts</code>, <code>panel-surface.tsx</code>, <code>agents-surface.tsx</code>, <code>panel-tab-strip.tsx</code> y <code>surface-chooser.tsx</code>.</li>
+        <li><code>PanelSurface</code> no tiene hooks: es una cadena de <code>if</code> por tipo. Se mueve tal cual.</li>
+      </ul></div>
+    <div class="card"><h3>Los dos clientes del engine</h3>
+      <ul>
+        <li>No son copias: son dos saltos de la misma llamada (<code>/api/*</code> → rutas de Next → <code>EngineClient</code> → <code>/v2/*</code>). Comparten 157 métodos.</li>
+        <li>Unificarlos implica un <code>Transport</code> en el paquete, un catch-all <code>/api/engine/[...path]</code> y la web usando <code>new EngineClient(webTransport)</code>. Luego se borran las rutas a mano una por una.</li>
+      </ul></div>
+    <div class="card"><h3>Primitivas compartidas</h3>
+      <ul>
+        <li><code>usePoll(fn, ms|null, {immediate, pauseHidden, refetchOnFocus})</code> reemplaza <b>19</b> pollers. Ninguno usa hoy AbortController.</li>
+        <li><code>useListNav(count, {wrap, onPick})</code> sirve para 8 listas con teclado: paletas, menús del composer y búsqueda de settings.</li>
+        <li>Un solo estado vacío: <code>PanelEmpty</code> (35 usos) con <code>action</code> y <code>size</code>. El <code>EmptyState</code> tiene 0 usos y se borra.</li>
+      </ul></div>
+    <div class="card"><h3>Tests que leen código fuente: 52 archivos</h3>
+      <table>
+        <tr><td>Se quedan</td><td class="n">14 archivos · ~70 tests</td><td class="muted">Paridad de tokens web↔iOS, contratos TS↔Swift, escaneos de colores e imports</td></tr>
+        <tr><td>Reescribir</td><td class="n">32 · ~290</td><td class="muted">Fijan JSX, clases u orden de código</td></tr>
+        <tr><td>Borrar</td><td class="n">6 · ~20</td><td class="muted">Clases exactas y props que ya no existen</td></tr>
+      </table>
+      <p class="muted" style="font-size:12px;margin:8px 0 0">Esto va antes de partir componentes, porque si no cada split rompe decenas de tests.</p></div>
+    <div class="card" style="grid-column:1/-1"><h3>SessionCockpit (3,1k, 54 useState, 24 efectos) y el resto</h3>
+      <p class="muted" style="margin:0">Pendiente: el diseño por hooks, el estado derivado o duplicado y los efectos estado→estado. Se agregará aquí.</p></div>
+  </div>
+
+  <h2>Decisiones para ti</h2>
+  <div class="card">
+    <ol style="margin:0;padding-left:18px">
+      <li><b>Comentarios:</b> ¿"por defecto ninguno", con el texto de arriba y el umbral en CI, o prohibición total?</li>
+      <li><b>Tests que leen fuente (52):</b> ¿te parece la clasificación 14 se quedan / 32 reescribir / 6 borrar?</li>
+      <li><b>Journal JSON:</b> ¿lo quitamos y dejamos solo SQLite, conservando la importación de homes viejos?</li>
+      <li><b>Fase 6</b> (un solo proxy en vez de 135 rutas): ¿entra en esta pasada o queda para después?</li>
+      <li><b>Orden:</b> ¿metemos la fase 3 (rediseño de sesiones) aquí, con mis recomendaciones?</li>
+    </ol>
+  </div>
+  <p class="note" style="margin-top:20px">Nada de esto se ha tocado todavía: todo es auditoría. Cada fase va en PRs pequeños con CI en verde, y nada sale en un nightly sin tu OK.</p>
+</main>
+</body>
+</html>
