@@ -40,6 +40,7 @@ mock.module("@/features/sessions/rail/app-sidebar", () => {
 });
 
 const { AppShell } = await import("./app-shell");
+const { markNavigation } = await import("@/lib/perf-marks");
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
@@ -51,6 +52,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  // The shell opens a navigation for its own route; closing it keeps the per-process ring clean for later files.
+  markNavigation("idle", pathname);
   if (root) await act(async () => root!.unmount());
   host?.remove();
   root = undefined;
