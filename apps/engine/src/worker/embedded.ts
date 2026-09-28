@@ -39,7 +39,7 @@ export async function startEmbeddedWorker(config: EmbeddedWorkerConfig, { store,
   // The engine owns the browser and both sockets: they outlive any turn and close exactly once.
   const browser = new BrowserRuntime({ profileRoot: store.paths.browserProfiles });
   const routed = new BrowserRouter(browser, desktopBrowserFromEnv());
-  store.attachBrowser(routed);
+  store.browser.attach(routed);
   const browserSocket = createBrowserToolSocket(routed);
   const telarSocket = new TelarToolSocket();
   const createDriver = config.createDriver ?? (() => createDefaultDrivers());

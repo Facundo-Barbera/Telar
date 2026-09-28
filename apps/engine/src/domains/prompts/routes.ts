@@ -11,7 +11,7 @@ const PROMPT = /^\/v2\/projects\/([^/]+)\/prompts\/([^/]+)$/;
 export function promptsRoutes(store: EngineStore): Route[] {
   // Every route checks the registration first, before an id can become a filename.
   const project = (id: string): string => {
-    store.getProject(id);
+    store.projectRegistry.get(id);
     return id;
   };
   return [

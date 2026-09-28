@@ -27,7 +27,7 @@ export function createWorkerRegistry(store: EngineStore, { now, leaseMs, onRetir
   // The one door out: dropping a registration and ending the claims it held are one event. Idempotent.
   const retire = (workerId: string): void => {
     workers.delete(workerId);
-    store.retireWorkerRegistration(workerId);
+    store.recovery.retireWorkerRegistration(workerId);
     onRetired?.(workerId);
   };
   // The backstop for a worker that died without saying so.
@@ -59,10 +59,10 @@ export function createWorkerRegistry(store: EngineStore, { now, leaseMs, onRetir
       return {
         workerId,
         heartbeatAt: worker.heartbeatAt,
-        cancel: store.cancellationsForWorker(workerId),
-        resolved: store.resolutionsForWorker(workerId),
-        steer: store.steerForWorker(workerId),
-        stopTask: store.taskStopsForWorker(workerId, acknowledgedTaskStops),
+        cancel: store.recovery.cancellationsForWorker(workerId),
+        resolved: store.requestGate.resolutionsForWorker(workerId),
+        steer: store.worker.steerForWorker(workerId),
+        stopTask: store.sessionTasks.stopsForWorker(workerId, acknowledgedTaskStops),
       };
     },
     claimTurn: async (workerId, seq) => {
@@ -82,7 +82,7 @@ export function createWorkerRegistry(store: EngineStore, { now, leaseMs, onRetir
         if (seq < worker.claimSeq) throw new HttpError(409, "conflict", "claim sequence superseded");
         if (seq !== worker.claimSeq + 1) throw new HttpError(400, "invalid_request", "claim sequence out of order");
         // The claim is synchronous under the state lock; attaching OAuth bearers is a network call.
-        const claimed = store.claimNextTurn(workerId);
+        const claimed = store.claims.claimNextTurn(workerId);
         const authorized = claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined;
         if (active(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
         worker.claimSeq = seq;

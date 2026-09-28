@@ -77,7 +77,7 @@ export class SessionTasks {
   }
 
   /** Drops the stops `workerId` acknowledged and returns the ones it still owes. */
-  stopsForWorker(workerId: string, acknowledged: string[]): Array<Omit<TaskStopDelivery, "workerId">> {
+  stopsForWorker(workerId: string, acknowledged: string[] = []): Array<Omit<TaskStopDelivery, "workerId">> {
     return this.kernel.command("taskStopsForWorker", () => {
       const pending = this.readStops();
       const ack = new Set(acknowledged);

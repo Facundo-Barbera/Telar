@@ -11,7 +11,7 @@ const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 /** `/run/stream` feeds this session's terminals only; every other `/run…` tail is `runMount`'s, or the engine's 404. */
 export function runRoutes(store: EngineStore, runMount: RunMount, openStreams: Set<OpenStream>): Route[] {
   const context = (sessionId: string) => () => {
-    const record = store.getSession(sessionId);
+    const record = store.records.get(sessionId);
     if (!record.projectId) throw new RunError("invalid_request", "runs need a project");
     const worktreePath = workspacePath(record.workspace);
     if (worktreePath === undefined) throw new RunError("invalid_request", "runs need a working directory");
@@ -27,7 +27,7 @@ export function runRoutes(store: EngineStore, runMount: RunMount, openStreams: S
     path: sessionRoute("/run/stream"),
     auth: "engine",
     handle({ params: [sessionId], request, response }) {
-      const record = store.getSession(sessionId!);
+      const record = store.records.get(sessionId!);
       if (!record.projectId) throw new HttpError(400, "invalid_request", "runs need a project");
       holdEventStream(request, response, openStreams, (send) => runMount.watch(record.id, send));
       return undefined;

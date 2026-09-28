@@ -35,20 +35,20 @@ export function reportBootHousekeeping(store: EngineStore, now: () => number, sa
     // Asked first: a checkouts root on a drive that is out makes every tree look gone, and reaping on that reading is wrong.
     const checkouts = readWorktreesRoot(store.paths.root);
     const reaped = reapReport(
-      reapNodeModules(store.paths.root, { rootReadable: checkouts.kind === "configured" || checkouts.kind === "default", candidates: store.reapableWorktrees() }),
+      reapNodeModules(store.paths.root, { rootReadable: checkouts.kind === "configured" || checkouts.kind === "default", candidates: store.worktrees.reapable() }),
     );
     if (reaped) say(reaped);
   } catch {
     /* never the reason an engine fails to start; the next start tries again */
   }
   // Not a sweep: the backfill for the lock the cut applies, silent because it runs on every start.
-  store.lockLiveWorktrees();
+  store.worktrees.lockLive();
   const retiredAgent = retireAgentReport(retireAgentStore(store.paths.root, now));
   if (retiredAgent) say(retiredAgent);
   // Once on the way up, so a drive already unplugged is known before the first listing.
   const away = store
-    .listProjects()
-    .map((project) => ({ project, availability: store.projectAvailability(project) }))
+    .projectRegistry.list()
+    .map((project) => ({ project, availability: store.projectProbes.availability(project) }))
     .filter((entry) => entry.availability !== "available");
   if (away.length > 0) {
     const named = away.map((entry) => `${entry.project.name} (${entry.availability})`).join(", ");

@@ -13,7 +13,7 @@ async function mcpOAuthStatuses(store: EngineStore, servers: McpServer[]): Promi
     servers.flatMap((server) => {
       if (server.spec.transport === "stdio") return [];
       const spec = server.spec;
-      const record = store.getMcpOAuthRecord(server.id, server.projectId);
+      const record = store.mcpOAuth.get(server.id, server.projectId);
       const token = record?.tokens.accessToken || undefined;
       return [
         Promise.all([
@@ -41,11 +41,11 @@ function settingsUrl(projectId: string | undefined, params: Record<string, strin
 
 /** Single use: a replayed or expired state finds nothing, and the two are indistinguishable on purpose. */
 async function complete(store: EngineStore, now: () => number, state: string, code: string): Promise<string> {
-  const pending = store.takePendingMcpOAuth(state);
+  const pending = store.mcpOAuth.takePending(state);
   if (!pending) return settingsUrl(undefined, { mcpOAuthError: "this sign-in link has expired or was already used" });
   try {
     const tokens = await completeConnect({ ctx: pending.ctx, code, returnedState: state });
-    store.putMcpOAuthRecord({
+    store.mcpOAuth.put({
       serverId: pending.serverId,
       ...(pending.projectId === undefined ? {} : { projectId: pending.projectId }),
       resource: pending.ctx.resource,
@@ -69,7 +69,7 @@ export function mcpOAuthRoutes(store: EngineStore, now: () => number): Route[] {
       auth: "engine",
       async handle({ query }) {
         const projectId = query.get("projectId")?.trim() || undefined;
-        const servers = projectId ? resolveMcpServers(store.listMcpServers(), projectId) : store.listMcpServers({ projectId: null });
+        const servers = projectId ? resolveMcpServers(store.mcpServers.list(), projectId) : store.mcpServers.list({ projectId: null });
         return ok({ statuses: await mcpOAuthStatuses(store, servers) });
       },
     },
@@ -82,7 +82,7 @@ export function mcpOAuthRoutes(store: EngineStore, now: () => number): Route[] {
         const redirectOrigin = text(body.redirectOrigin);
         const projectId = text(body.projectId);
         if (!serverId || !redirectOrigin) return fail(400, "invalid_request", "serverId and redirectOrigin are required");
-        const server = store.listMcpServers().find((candidate) => candidate.id === serverId && candidate.projectId === projectId);
+        const server = store.mcpServers.list().find((candidate) => candidate.id === serverId && candidate.projectId === projectId);
         if (!server) return fail(404, "not_found", `no MCP server "${serverId}" in this scope`);
         if (server.spec.transport === "stdio") return fail(400, "invalid_request", `"${serverId}" runs as a local command, so there is nothing to sign in to`);
         try {
@@ -92,10 +92,10 @@ export function mcpOAuthRoutes(store: EngineStore, now: () => number): Route[] {
             serverUrl: server.spec.url,
             ...(server.spec.oauth ? { overrides: server.spec.oauth } : {}),
             redirectOrigin,
-            store: store.mcpOAuthClientStore(),
+            store: store.mcpOAuth.clientStore(),
             clientName: `Telar — ${server.label}`,
           });
-          store.putPendingMcpOAuth({ serverId, ...(projectId === undefined ? {} : { projectId }), ctx, createdAt: now() });
+          store.mcpOAuth.putPending({ serverId, ...(projectId === undefined ? {} : { projectId }), ctx, createdAt: now() });
           return ok({ authorizationUrl: ctx.authorizationUrl });
         } catch (error) {
           const message = error instanceof Error ? error.message : "could not start the sign-in";
@@ -126,7 +126,7 @@ export function mcpOAuthRoutes(store: EngineStore, now: () => number): Route[] {
       handle({ body }) {
         const serverId = text(body.serverId);
         if (!serverId) return fail(400, "invalid_request", "serverId is required");
-        return ok({ removed: store.deleteMcpOAuthRecord(serverId, text(body.projectId)) });
+        return ok({ removed: store.mcpOAuth.delete(serverId, text(body.projectId)) });
       },
     },
   ];

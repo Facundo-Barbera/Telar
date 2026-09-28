@@ -11,7 +11,7 @@ export function usageRoutes(store: EngineStore): Route[] {
   // In memory only, stale-while-revalidate, one read in flight: a quota figure is true for minutes.
   const limits: { snapshot?: UsageLimits; inFlight?: Promise<UsageLimits> } = {};
   const refreshLimits = (): Promise<UsageLimits> =>
-    (limits.inFlight ??= Promise.all(store.resolveUsageLimitSources().map((source) => readUsageLimitSource(source)))
+    (limits.inFlight ??= Promise.all(store.usageSources.resolve().map((source) => readUsageLimitSource(source)))
       .then((sources) => (limits.snapshot = { sources, readAt: Date.now() }))
       .finally(() => (limits.inFlight = undefined)));
   const sourcePath = /^\/v2\/usage\/sources\/([A-Za-z][A-Za-z0-9_-]*)$/;
@@ -31,14 +31,14 @@ export function usageRoutes(store: EngineStore): Route[] {
       },
     },
     // Management keys are write-only: this list is the redacting read.
-    { method: "GET", path: "/v2/usage/sources", auth: "engine", handle: () => ok({ sources: store.listUsageLimitSources() }) },
+    { method: "GET", path: "/v2/usage/sources", auth: "engine", handle: () => ok({ sources: store.usageSources.list() }) },
     {
       method: "DELETE",
       path: sourcePath,
       auth: "engine",
       handle({ params }) {
         limits.snapshot = undefined;
-        return ok({ removed: store.removeUsageLimitSource(params[0]!) });
+        return ok({ removed: store.usageSources.remove(params[0]!) });
       },
     },
     {
@@ -49,7 +49,7 @@ export function usageRoutes(store: EngineStore): Route[] {
       handle({ params, body }) {
         limits.snapshot = undefined;
         return ok({
-          source: store.saveUsageLimitSource({
+          source: store.usageSources.save({
             id: params[0]!,
             ...(body.kind === undefined ? {} : { kind: body.kind }),
             ...(body.label === undefined ? {} : { label: body.label as string | null }),

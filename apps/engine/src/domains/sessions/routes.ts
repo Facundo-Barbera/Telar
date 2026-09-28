@@ -40,7 +40,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
         if (!all && Number.isSafeInteger(since) && since === store.sessionsRevision()) {
           return { status: 200, body: { revision: since, unchanged: true, daemonId }, headers: { etag } };
         }
-        return { status: 200, body: { ...store.liveSessionRows({ all }), projects: store.listProjects(), daemonId }, headers: { etag } };
+        return { status: 200, body: { ...store.liveSessionRows({ all }), projects: store.projectRegistry.list(), daemonId }, headers: { etag } };
       },
     },
     sessionsStreamRoute(store, openStreams),
@@ -54,7 +54,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
         if (!q || !q.trim()) throw new HttpError(400, "invalid_request", "q is required");
         const settled = query.get("settled");
         return ok(
-          store.findSessions({
+          store.queries.findSessions({
             q,
             ...(query.get("projectId") ? { projectId: query.get("projectId")! } : {}),
             ...(settled === null ? {} : { settled: settled === "1" || settled === "true" }),
@@ -100,7 +100,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
         const decision = stringValue(body.decision, "decision")!;
         if (!(DECISIONS as readonly string[]).includes(decision)) throw new HttpError(400, "invalid_request", "decision is invalid");
         return ok({
-          request: store.resolveRequest(sessionId!, requestId!, {
+          request: store.requestGate.resolve(sessionId!, requestId!, {
             decision: decision as (typeof DECISIONS)[number],
             reason: stringValue(body.reason, "reason", true),
             ...(body.answers && typeof body.answers === "object" ? { answers: body.answers as Record<string, unknown> } : {}),
@@ -113,7 +113,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
       method: "DELETE",
       path: /^\/v2\/subscriptions\/([A-Za-z0-9_-]+)$/,
       auth: "engine",
-      handle: ({ params, body }) => ok({ removed: store.unsubscribe(params[0]!, stringValue(body.subscriberSessionId, "subscriber session id", true)) }),
+      handle: ({ params, body }) => ok({ removed: store.subscriptions.unsubscribe(params[0]!, stringValue(body.subscriberSessionId, "subscriber session id", true)) }),
     },
   ];
 }

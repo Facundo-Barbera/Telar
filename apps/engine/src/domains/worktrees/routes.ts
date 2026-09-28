@@ -47,7 +47,7 @@ export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void
         if (!destination) throw new HttpError(409, "conflict", worktreesRootBlocker(state) ?? "Telar does not know where session checkouts belong.");
         let outcome;
         try {
-          outcome = await store.moveWorktrees(destination);
+          outcome = await store.worktrees.move(destination);
         } catch (cause) {
           throw new HttpError(409, "conflict", cause instanceof Error ? cause.message : "the checkouts could not be moved");
         }
@@ -56,7 +56,7 @@ export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void
       },
     },
     // Never cached: every verdict here is acted on, and each can change by the second.
-    { method: "GET", path: "/v2/worktrees", auth: "engine", handle: async () => ok({ inventory: await store.worktreeInventory() }) },
+    { method: "GET", path: "/v2/worktrees", auth: "engine", handle: async () => ok({ inventory: await store.worktrees.inventory() }) },
     {
       method: "POST",
       path: "/v2/worktrees/reclaim",
@@ -69,7 +69,7 @@ export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void
           if (typeof item.path !== "string" || !item.path.trim()) throw new HttpError(400, "invalid_request", "each item needs the checkout's path");
           return { path: item.path, ...(typeof item.confirm === "string" ? { confirm: item.confirm } : {}), ...settledChoice(item.settled) };
         });
-        const results = await store.reclaimWorktrees(items);
+        const results = await store.worktrees.reclaim(items);
         checkoutsChanged();
         return ok({ reclaim: { results, summary: describeReclaim(results) } });
       },
@@ -79,10 +79,10 @@ export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void
       path: /^\/v2\/sessions\/([^/]+)\/worktree\/(release|restore)$/,
       auth: "engine",
       async handle({ params: [sessionId, verb] }) {
-        if (verb === "restore") return ok({ session: store.restoreSessionWorktree(sessionId!) });
-        const released = await store.releaseSessionWorktree(sessionId!, "manual");
+        if (verb === "restore") return ok({ session: store.worktrees.restore(sessionId!) });
+        const released = await store.worktrees.release(sessionId!, "manual");
         if (!released.ok) throw new HttpError(409, "conflict", `the checkout was not released: ${released.refusal}${released.detail ? ` (${released.detail})` : ""}`);
-        return ok({ session: store.getSession(sessionId!) });
+        return ok({ session: store.records.get(sessionId!) });
       },
     },
   ];

@@ -33,7 +33,7 @@ function validMachineEntries(input: Record<string, unknown>, host: PluginHost): 
 export function pluginRoutes(store: EngineStore, host: PluginHost, folders: PluginFolders): Route[] {
   const { installed } = folders;
   return [
-    { method: "GET", path: "/v2/plugins", auth: "engine", handle: () => ok({ plugins: host.statuses(), machine: store.machinePlugins() }) },
+    { method: "GET", path: "/v2/plugins", auth: "engine", handle: () => ok({ plugins: host.statuses(), machine: store.toolchains.machine() }) },
     {
       method: "PATCH",
       path: "/v2/plugins",
@@ -41,10 +41,10 @@ export function pluginRoutes(store: EngineStore, host: PluginHost, folders: Plug
       // Turning a plugin off drains it everywhere: running work finishes, nothing is killed.
       handle({ body }) {
         const entries = validMachineEntries(body, host);
-        const machine = store.updateMachinePlugins(entries as Parameters<EngineStore["updateMachinePlugins"]>[0]);
+        const machine = store.toolchains.updateMachine(entries as Parameters<EngineStore["updateMachinePlugins"]>[0]);
         for (const [id, value] of Object.entries(entries)) {
           const off = value === null || (value as { enabled?: boolean }).enabled === false;
-          for (const project of store.listProjects()) {
+          for (const project of store.projectRegistry.list()) {
             if (off) void host.drainProject(id, project.id);
             else host.cancelDrain(id, project.id);
           }

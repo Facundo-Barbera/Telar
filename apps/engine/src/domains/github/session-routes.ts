@@ -13,7 +13,7 @@ export function sessionGitHubRoutes(store: EngineStore): Route[] {
       auth: "engine",
       async handle({ params: [sessionId], body }) {
         return ok(
-          await store.openSessionPullRequest(sessionId!, {
+          await store.sessionPulls.open(sessionId!, {
             title: stringValue(body.title, "pull request title")!,
             ...(typeof body.body === "string" ? { body: body.body } : {}),
             ...(typeof body.base === "string" && body.base.trim() ? { base: body.base } : {}),
@@ -21,7 +21,7 @@ export function sessionGitHubRoutes(store: EngineStore): Route[] {
         );
       },
     },
-    { method: "GET", path: sessionRoute("/github/pull/anchor"), auth: "engine", handle: async ({ params: [sessionId] }) => ok(await store.sessionPullAnchor(sessionId!)) },
+    { method: "GET", path: sessionRoute("/github/pull/anchor"), auth: "engine", handle: async ({ params: [sessionId] }) => ok(await store.sessionPulls.anchor(sessionId!)) },
     {
       method: "POST",
       path: sessionRoute("/github/pull/comments"),
@@ -29,7 +29,7 @@ export function sessionGitHubRoutes(store: EngineStore): Route[] {
       async handle({ params: [sessionId], body }) {
         const input = GitHubLineCommentInput.safeParse(body);
         if (!input.success) throw new HttpError(400, "invalid_request", "a comment needs a 40-character commit, a path, a line, a side and a body");
-        return ok(await store.sessionPullLineComment(sessionId!, input.data));
+        return ok(await store.sessionPulls.lineComment(sessionId!, input.data));
       },
     },
   ];

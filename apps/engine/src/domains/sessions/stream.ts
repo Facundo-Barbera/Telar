@@ -61,7 +61,7 @@ export function sessionsStreamRoute(store: EngineStore, openStreams: Set<OpenStr
     auth: "engine",
     handle({ request, response }) {
       holdEventStream(request, response, openStreams, (send) =>
-        store.watch((event: { sessionId: string; id: number; type: string }) => send({ sessionId: event.sessionId, id: event.id, type: event.type })),
+        store.kernel.watch((event: { sessionId: string; id: number; type: string }) => send({ sessionId: event.sessionId, id: event.id, type: event.type })),
       );
       return undefined;
     },

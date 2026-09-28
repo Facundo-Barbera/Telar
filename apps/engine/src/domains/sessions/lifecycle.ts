@@ -14,7 +14,7 @@ export function sessionLifecycleRoutes(store: EngineStore, dismiss: (sessionId: 
       auth: "engine",
       // Every field is validated in the store; `null` is forwarded because it is how JSON says "clear it".
       async handle({ params: [sessionId], body }) {
-        const updated = store.updateSession(sessionId!, {
+        const updated = store.lifecycle.updateSession(sessionId!, {
           ...(body.title === undefined ? {} : { title: stringValue(body.title, "session title")! }),
           ...(body.runtimeMode === undefined ? {} : { runtimeMode: body.runtimeMode as RuntimeMode }),
           ...(typeof body.detached === "boolean" ? { detached: body.detached } : {}),
@@ -26,7 +26,7 @@ export function sessionLifecycleRoutes(store: EngineStore, dismiss: (sessionId: 
         if (body.settledOverride !== "settled") return ok({ session: updated });
         // An explicit settle ends what the session left running, and says what it ended.
         const ended = await store.endSessionLeftovers(sessionId!);
-        return ok({ session: store.getSession(sessionId!), ended });
+        return ok({ session: store.records.get(sessionId!), ended });
       },
     },
     {
@@ -34,13 +34,13 @@ export function sessionLifecycleRoutes(store: EngineStore, dismiss: (sessionId: 
       path: sessionRoute("/read"),
       auth: "engine",
       handle({ params: [sessionId], body }) {
-        const answer = ok({ session: store.markSessionRead(sessionId!, stringValue(body.runId, "run id")!) });
+        const answer = ok({ session: store.records.markRead(sessionId!, stringValue(body.runId, "run id")!) });
         dismiss(sessionId!);
         return answer;
       },
     },
-    { method: "POST", path: sessionRoute("/archive"), auth: "engine", handle: ({ params }) => ok({ session: store.archiveSession(params[0]!) }) },
-    { method: "DELETE", path: sessionRoute(""), auth: "engine", handle: ({ params }) => ok({ deleted: store.deleteSession(params[0]!) }) },
+    { method: "POST", path: sessionRoute("/archive"), auth: "engine", handle: ({ params }) => ok({ session: store.lifecycle.archiveSession(params[0]!) }) },
+    { method: "DELETE", path: sessionRoute(""), auth: "engine", handle: ({ params }) => ok({ deleted: store.lifecycle.deleteSession(params[0]!) }) },
     {
       method: "POST",
       path: sessionRoute("/subscriptions"),
@@ -50,7 +50,7 @@ export function sessionLifecycleRoutes(store: EngineStore, dismiss: (sessionId: 
         return {
           status: 201,
           body: {
-            subscription: store.subscribe(sessionId!, {
+            subscription: store.subscriptions.subscribe(sessionId!, {
               targetSessionId: stringValue(body.targetSessionId, "target session id")!,
               ...(events && events.length > 0 ? { events } : {}),
               ...(body.once === true ? { once: true } : {}),
@@ -60,14 +60,14 @@ export function sessionLifecycleRoutes(store: EngineStore, dismiss: (sessionId: 
         };
       },
     },
-    { method: "GET", path: sessionRoute("/subscriptions"), auth: "engine", handle: ({ params }) => ok({ subscriptions: store.subscriptionsFor(params[0]!) }) },
+    { method: "GET", path: sessionRoute("/subscriptions"), auth: "engine", handle: ({ params }) => ok({ subscriptions: store.subscriptions.subscriptionsFor(params[0]!) }) },
     {
       method: "POST",
       path: sessionRoute("/cohorts"),
       auth: "engine",
       handle({ params: [sessionId], body }) {
         const sessionIds = Array.isArray(body.sessionIds) ? body.sessionIds.filter((each): each is string => typeof each === "string") : [];
-        const cohort = store.subscribeCohort(sessionId!, {
+        const cohort = store.subscriptions.subscribeCohort(sessionId!, {
           sessionIds,
           ...(typeof body.timeoutMinutes === "number" ? { timeoutMinutes: body.timeoutMinutes } : {}),
           ...completionWake(body.completionWake),
@@ -75,14 +75,14 @@ export function sessionLifecycleRoutes(store: EngineStore, dismiss: (sessionId: 
         return { status: 201, body: { cohort } };
       },
     },
-    { method: "GET", path: sessionRoute("/cohorts"), auth: "engine", handle: ({ params }) => ok({ cohorts: store.cohortsFor(params[0]!) }) },
-    { method: "GET", path: sessionRoute("/held-reports"), auth: "engine", handle: ({ params }) => ok({ held: store.pendingNotifications(params[0]!).length }) },
+    { method: "GET", path: sessionRoute("/cohorts"), auth: "engine", handle: ({ params }) => ok({ cohorts: store.subscriptions.cohortsFor(params[0]!) }) },
+    { method: "GET", path: sessionRoute("/held-reports"), auth: "engine", handle: ({ params }) => ok({ held: store.wakes.pendingNotifications(params[0]!).length }) },
     // A background task outlives its turn, so this names no run.
-    { method: "POST", path: sessionRoute("/stop-background"), auth: "engine", handle: ({ params }) => ok({ stopped: store.stopBackgroundTasks(params[0]!) }) },
-    { method: "GET", path: sessionRoute("/terminals"), auth: "engine", handle: async ({ params }) => ok({ open: await store.sessionTerminalCount(params[0]!) }) },
-    { method: "POST", path: sessionRoute("/terminals/close"), auth: "engine", handle: async ({ params }) => ok({ closed: await store.closeSessionTerminals(params[0]!) }) },
+    { method: "POST", path: sessionRoute("/stop-background"), auth: "engine", handle: ({ params }) => ok({ stopped: store.worker.stopBackgroundTasks(params[0]!) }) },
+    { method: "GET", path: sessionRoute("/terminals"), auth: "engine", handle: async ({ params }) => ok({ open: await store.sessionTerminals.countNow(params[0]!) }) },
+    { method: "POST", path: sessionRoute("/terminals/close"), auth: "engine", handle: async ({ params }) => ok({ closed: await store.sessionTerminals.closeForPerson(params[0]!) }) },
     // Pause stops the run and holds the session until resume; only the worker's `by: "session"` is not a person.
     { method: "POST", path: sessionRoute("/pause"), auth: "engine", handle: ({ params, body }) => ok(store.pauseSession(params[0]!, body.by === "session" ? "session" : "human")) },
-    { method: "POST", path: sessionRoute("/resume"), auth: "engine", handle: ({ params }) => ok(store.resumeSession(params[0]!)) },
+    { method: "POST", path: sessionRoute("/resume"), auth: "engine", handle: ({ params }) => ok(store.worker.resumeSession(params[0]!)) },
   ];
 }

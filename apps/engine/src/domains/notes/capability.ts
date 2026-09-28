@@ -28,17 +28,17 @@ export type NotesOptions = {
 export function storeNotesPort(store: EngineStore): NotesPort {
   const { paths } = store;
   return {
-    listProjects: async () => ({ projects: store.listProjects() }),
+    listProjects: async () => ({ projects: store.projectRegistry.list() }),
     projectNotes: async (projectId) => {
-      store.getProject(projectId);
+      store.projectRegistry.get(projectId);
       return { notes: readNotes(paths, projectId) };
     },
     createProjectNote: async (projectId, input) => {
-      store.getProject(projectId);
+      store.projectRegistry.get(projectId);
       return { note: createNote(paths, projectId, input) };
     },
     updateProjectNote: async (projectId, noteId, patch) => {
-      store.getProject(projectId);
+      store.projectRegistry.get(projectId);
       return { note: updateNote(paths, projectId, noteId, patch) };
     },
     deleteProjectNote: async (projectId, noteId) => ({ deleted: deleteNote(paths, projectId, noteId) }),

@@ -9,9 +9,9 @@ export function sessionGitRoutes(store: EngineStore): Route[] {
       method: "POST",
       path: sessionRoute("/git/commit"),
       auth: "engine",
-      handle: async ({ params: [sessionId], body }) => ok(await store.commitSessionWork(sessionId!, stringValue(body.message, "commit message")!)),
+      handle: async ({ params: [sessionId], body }) => ok(await store.sessionGit.commit(sessionId!, stringValue(body.message, "commit message")!)),
     },
     // No body is read: the branch, checkout and remote come off the session record.
-    { method: "POST", path: sessionRoute("/git/push"), auth: "engine", body: "raw", handle: async ({ params: [sessionId] }) => ok(await store.pushSessionBranch(sessionId!)) },
+    { method: "POST", path: sessionRoute("/git/push"), auth: "engine", body: "raw", handle: async ({ params: [sessionId] }) => ok(await store.sessionGit.push(sessionId!)) },
   ];
 }

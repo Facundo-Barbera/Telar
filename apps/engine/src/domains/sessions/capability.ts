@@ -76,9 +76,9 @@ export function windowedReads(client: Pick<EngineClient, "session">): SessionsRe
 export function storeReads(store: EngineStore): SessionsReads {
   return {
     cursor: async (id) => store.eventCursor(id),
-    status: async (id) => ({ session: store.getSession(id), turns: store.turns(id), pendingNotifications: store.pendingNotifications(id) }),
-    requests: async (id) => store.requests(id),
-    putSchedule: async (input) => store.putSchedule({ ...input, rule: input.rule as never }),
+    status: async (id) => ({ session: store.records.get(id), turns: store.turns(id), pendingNotifications: store.wakes.pendingNotifications(id) }),
+    requests: async (id) => store.requestGate.list(id),
+    putSchedule: async (input) => store.schedules.put({ ...input, rule: input.rule as never }),
   };
 }
 
@@ -89,26 +89,26 @@ export function storeSessionsPort(store: EngineStore): SessionsPort {
     createSession: async (input) => ({ session: await store.createSessionAsync(input) }),
     submitAgentTurn: async (id, { proof, ...input }) => store.submitAgentTurnAsync(id, input, proof),
     events: async (id, after, limit) => ({ events: store.readEvents(id, after, limit) }),
-    stopSession: async (id, by) => store.stopSession(id, by),
+    stopSession: async (id, by) => store.turnLifecycle.stopSession(id, by),
     settleSession: async (id, settled) => {
-      const session = store.updateSession(id, { settledOverride: settled ? "settled" : "active" });
+      const session = store.lifecycle.updateSession(id, { settledOverride: settled ? "settled" : "active" });
       if (!settled) return { session };
       const ended = await store.endSessionLeftovers(id);
-      return { session: store.getSession(id), ended };
+      return { session: store.records.get(id), ended };
     },
-    sessionDiff: async (id) => ({ diff: await store.sessionDiffAsync(id) }),
-    subscribe: async (subscriber, input) => ({ subscription: store.subscribe(subscriber, input) }),
-    unsubscribe: async (id, { subscriberSessionId }) => ({ removed: store.unsubscribe(id, subscriberSessionId) }),
-    subscriptions: async (subscriber) => ({ subscriptions: store.subscriptionsFor(subscriber) }),
-    subscribeCohort: async (subscriber, input) => ({ cohort: store.subscribeCohort(subscriber, input) }),
-    cohorts: async (subscriber) => ({ cohorts: store.cohortsFor(subscriber) }),
-    resolveRequest: async (id, requestId, input) => ({ request: store.resolveRequest(id, requestId, input) }),
-    findSessions: async (query) => store.findSessions(query),
-    sessionOutline: async (id, window) => store.turnOutline(id, window),
-    turnAnswer: async (id, options) => store.turnAnswer(id, options),
-    runItems: async (id, runId) => ({ items: store.runItems(id, runId) }),
-    runItem: async (id, runId, step, { maxChars }) => store.runItem(id, runId, step, maxChars),
-    grepSession: async (id, pattern, window) => store.grepSession(id, pattern, window),
+    sessionDiff: async (id) => ({ diff: await store.workspaceReads.sessionDiff(id) }),
+    subscribe: async (subscriber, input) => ({ subscription: store.subscriptions.subscribe(subscriber, input) }),
+    unsubscribe: async (id, { subscriberSessionId }) => ({ removed: store.subscriptions.unsubscribe(id, subscriberSessionId) }),
+    subscriptions: async (subscriber) => ({ subscriptions: store.subscriptions.subscriptionsFor(subscriber) }),
+    subscribeCohort: async (subscriber, input) => ({ cohort: store.subscriptions.subscribeCohort(subscriber, input) }),
+    cohorts: async (subscriber) => ({ cohorts: store.subscriptions.cohortsFor(subscriber) }),
+    resolveRequest: async (id, requestId, input) => ({ request: store.requestGate.resolve(id, requestId, input) }),
+    findSessions: async (query) => store.queries.findSessions(query),
+    sessionOutline: async (id, window) => store.queries.turnOutline(id, window),
+    turnAnswer: async (id, options) => store.queries.turnAnswer(id, options),
+    runItems: async (id, runId) => ({ items: store.queries.runItems(id, runId) }),
+    runItem: async (id, runId, step, { maxChars }) => store.queries.runItem(id, runId, step, maxChars),
+    grepSession: async (id, pattern, window) => store.queries.grepSession(id, pattern, window),
   };
 }
 

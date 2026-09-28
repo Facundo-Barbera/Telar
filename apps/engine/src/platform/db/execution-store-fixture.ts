@@ -15,7 +15,7 @@ export function cleanup(): void {
 export function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-sqlite-")); homes.push(home);
   const store = new EngineStore(home, Date.now); stores.push(store);
-  store.registerProject({ id: "project_one", name: "one", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   return { home, store };
 }

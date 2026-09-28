@@ -27,25 +27,25 @@ export function setup() {
   fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
   const store = new EngineStore(home, Date.now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
-  for (const id of ["session_host", "session_a", "session_b"]) store.createSession({ id, projectId: "project_one", title: id });
+  store.projectRegistry.register({ id: "project_one", name: "test", root: "/tmp" });
+  for (const id of ["session_host", "session_a", "session_b"]) store.lifecycle.createSession({ id, projectId: "project_one", title: id });
   return { store };
 }
 
 /** Run one whole turn on `sessionId`, ending it the named way. */
 export function runTurn(store: EngineStore, sessionId: string, runId: string, end: "complete" | "fail" = "complete"): void {
-  store.submitTurn(sessionId, { runId, input: "work" });
-  const token = store.claimTurn(sessionId, "worker_child")!.claim!.token;
-  store.markRunning(sessionId, runId, token);
-  if (end === "complete") store.completeTurn(sessionId, runId, token, { text: "done" });
-  else store.failTurn(sessionId, runId, token, { code: "driver_failed", message: "the CLI died" });
+  store.intake.submitTurn(sessionId, { runId, input: "work" });
+  const token = store.claims.claimTurn(sessionId, "worker_child")!.claim!.token;
+  store.turnLifecycle.markRunning(sessionId, runId, token);
+  if (end === "complete") store.turnLifecycle.completeTurn(sessionId, runId, token, { text: "done" });
+  else store.turnLifecycle.failTurn(sessionId, runId, token, { code: "driver_failed", message: "the CLI died" });
 }
 
 /** Make the host busy, and hand back the claim so a test can settle it. */
 export function busy(store: EngineStore, runId = "run_host"): { runId: string; token: string } {
-  store.submitTurn("session_host", { runId, input: "a long think" });
-  const token = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", runId, token);
+  store.intake.submitTurn("session_host", { runId, input: "a long think" });
+  const token = store.claims.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", runId, token);
   return { runId, token };
 }
 
@@ -54,15 +54,15 @@ export const notifications = (store: EngineStore) => store.turns("session_host")
 /** A worker's run that sends its coordinator a result and then ends. */
 export function reports(store: EngineStore, opts: { runId?: string; intent?: "result" | "report"; sent?: string } = {}) {
   const runId = opts.runId ?? "run_src";
-  store.submitTurn("session_a", { runId, input: "work" });
-  const token = store.claimTurn("session_a", "worker_child")!.claim!.token;
-  store.markRunning("session_a", runId, token);
-  const sent = store.submitAgentTurn(
+  store.intake.submitTurn("session_a", { runId, input: "work" });
+  const token = store.claims.claimTurn("session_a", "worker_child")!.claim!.token;
+  store.turnLifecycle.markRunning("session_a", runId, token);
+  const sent = store.intake.submitAgentTurn(
     "session_host",
     { runId: `run_sent_${runId}`, input: opts.sent ?? "Three commits landed: the parser, its tests, the changelog.", intent: opts.intent ?? "result" },
     { sessionId: "session_a", runId, claimToken: token },
   );
-  return { runId, token, sent: sent.turn, end: () => store.completeTurn("session_a", runId, token, { text: "done" }) };
+  return { runId, token, sent: sent.turn, end: () => store.turnLifecycle.completeTurn("session_a", runId, token, { text: "done" }) };
 }
 
 /** The passive row recorded for a completion that woke nobody, if one was. */

@@ -13,19 +13,19 @@ export function createExecutionPort(store: EngineStore, registration: Registrati
   assertWorker: (workerId: string) => unknown): ExecutionPort {
   return {
     ...registration,
-    markTurnRunning: async (sessionId, runId, token) => ({ turn: store.markRunning(sessionId, runId, token) }),
-    reportObservations: async (sessionId, runId, token, observations) => store.ingestObservations(sessionId, runId, token, observations),
-    openRequest: async (sessionId, runId, token, input) => store.openRequest(sessionId, runId, token, input),
-    completeTurn: async (sessionId, runId, token, result) => ({ turn: store.completeTurn(sessionId, runId, token, result) }),
-    failTurn: async (sessionId, runId, token, failure) => ({ turn: store.failTurn(sessionId, runId, token, failure) }),
-    ackSteer: async (sessionId, runId, token) => ({ turn: store.ackSteer(sessionId, runId, token) }),
+    markTurnRunning: async (sessionId, runId, token) => ({ turn: store.turnLifecycle.markRunning(sessionId, runId, token) }),
+    reportObservations: async (sessionId, runId, token, observations) => store.ingest.ingestObservations(sessionId, runId, token, observations),
+    openRequest: async (sessionId, runId, token, input) => store.requestGate.open(sessionId, runId, token, input),
+    completeTurn: async (sessionId, runId, token, result) => ({ turn: store.turnLifecycle.completeTurn(sessionId, runId, token, result) }),
+    failTurn: async (sessionId, runId, token, failure) => ({ turn: store.turnLifecycle.failTurn(sessionId, runId, token, failure) }),
+    ackSteer: async (sessionId, runId, token) => ({ turn: store.turnLifecycle.ackSteer(sessionId, runId, token) }),
     openProviderTurn: async (sessionId, input) => {
       assertWorker(input.workerId);
-      return { turn: store.openProviderTurn(sessionId, input) };
+      return { turn: store.claims.openProviderTurn(sessionId, input) };
     },
     reportSessionTasks: async (sessionId, workerId, observations) => {
       assertWorker(workerId);
-      return store.reportSessionTasks(sessionId, workerId, observations);
+      return store.ingest.reportSessionTasks(sessionId, workerId, observations);
     },
   };
 }

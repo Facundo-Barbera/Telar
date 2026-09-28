@@ -70,7 +70,7 @@ export function projectRoutes(store: EngineStore, plugins: ProjectPlugins): Rout
       method: "GET",
       path: "/v2/projects",
       auth: "engine",
-      handle: ({ query }) => ok({ projects: store.listProjects({ includeRemoved: query.get("includeRemoved") === "1" }) }),
+      handle: ({ query }) => ok({ projects: store.projectRegistry.list({ includeRemoved: query.get("includeRemoved") === "1" }) }),
     },
     // Re-probes every project's disk; the poll in `projectMetadata` is the floor, this only makes it sooner.
     { method: "POST", path: "/v2/projects/reprobe", auth: "engine", body: "raw", handle: () => ok(store.reprobeProjects()) },
@@ -81,7 +81,7 @@ export function projectRoutes(store: EngineStore, plugins: ProjectPlugins): Rout
       handle: async ({ body }) => ({
         status: 201,
         body: {
-          project: await store.cloneProject({
+          project: await store.sessionGit.cloneProject({
             url: stringValue(body.url, "repository url")!,
             parent: stringValue(body.parent, "parent folder")!,
             ...(body.name === undefined ? {} : { name: stringValue(body.name, "project name")! }),
@@ -96,7 +96,7 @@ export function projectRoutes(store: EngineStore, plugins: ProjectPlugins): Rout
       handle: ({ body }) => ({
         status: 201,
         body: {
-          project: store.registerProject({
+          project: store.projectRegistry.register({
             id: stringValue(body.id, "project id", true),
             name: stringValue(body.name, "project name")!,
             root: stringValue(body.root, "project root")!,
@@ -111,7 +111,7 @@ export function projectRoutes(store: EngineStore, plugins: ProjectPlugins): Rout
       // A plugin the write turned off drains: new work is refused, running work finishes.
       handle({ body, params }) {
         const patch = readPatch(body, plugins);
-        const project = store.updateProject(params[0]!, patch);
+        const project = store.projectRegistry.update(params[0]!, patch);
         if (patch.plugins) {
           const { plugins: after } = readProjectPlugins(project);
           for (const pluginId of Object.keys(patch.plugins)) {
@@ -123,27 +123,27 @@ export function projectRoutes(store: EngineStore, plugins: ProjectPlugins): Rout
       },
     },
     // Unregisters only: the checkout, worktrees and journals stay, and restoring gives back the same id.
-    { method: "DELETE", path: /^\/v2\/projects\/([^/]+)$/, auth: "engine", body: "raw", handle: ({ params }) => ok(store.unregisterProject(params[0]!)) },
+    { method: "DELETE", path: /^\/v2\/projects\/([^/]+)$/, auth: "engine", body: "raw", handle: ({ params }) => ok(store.projectRegistry.unregister(params[0]!)) },
     {
       method: "POST",
       path: /^\/v2\/projects\/([^/]+)\/restore$/,
       auth: "engine",
       body: "raw",
-      handle: ({ params }) => ok({ project: store.restoreProject(params[0]!) }),
+      handle: ({ params }) => ok({ project: store.projectRegistry.restore(params[0]!) }),
     },
     {
       method: "POST",
       path: /^\/v2\/projects\/([^/]+)\/gitignore$/,
       auth: "engine",
       body: "raw",
-      handle: ({ params }) => ok({ gitignore: store.projectGitignore(params[0]!) }),
+      handle: ({ params }) => ok({ gitignore: store.sessionGit.gitignore(params[0]!) }),
     },
     {
       method: "DELETE",
       path: /^\/v2\/projects\/([^/]+)\/gitignore$/,
       auth: "engine",
       body: "raw",
-      handle: ({ params }) => ok({ gitignore: store.undoProjectGitignore(params[0]!) }),
+      handle: ({ params }) => ok({ gitignore: store.sessionGit.undoGitignore(params[0]!) }),
     },
   ];
 }
