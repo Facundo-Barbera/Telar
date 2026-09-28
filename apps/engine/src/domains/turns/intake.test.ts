@@ -379,3 +379,10 @@ describe("an agent's message is attributed, never the person's", () => {
     expect(wake?.wakeReason).toMatchObject({ kind: "turn_completed", runId: "run_direct" });
   });
 });
+
+test("a per-turn selection may be an effort alone", () => {
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "hi", model: { effort: "low" } });
+  expect(turn.model).toEqual({ instanceId: session.providerInstanceId, effort: "low" });
+});

@@ -31,6 +31,9 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../../state";
 import { toLegacyHome } from "../../../test/store-internals";
+import { useTempStores } from "../../../test/temp-store";
+
+const { readyStore } = useTempStores();
 
 const roots: string[] = [];
 const stores: EngineStore[] = [];
@@ -305,4 +308,30 @@ test("deleting a session takes its rows and the marker that points at them", () 
    */
   store.createSession({ id: "session_one", projectId: "project_one" });
   expect(store.items("session_one")).toEqual([]);
+});
+
+test("the cached item projection is per session and never outlives a write", () => {
+  // The cache is what makes the read above cheap; a stale one would serve a
+  // closed item as still open, or one session's rows to another.
+  const { store } = readyStore();
+  store.createSession({ id: "session_two", projectId: "project_one" });
+  const open = (sessionId: string, runId: string, itemId: string): string => {
+    store.submitTurn(sessionId, { runId, input: "Hello" });
+    const token = store.claimTurn(sessionId, `worker_${sessionId}`)!.claim!.token;
+    store.markRunning(sessionId, runId, token);
+    store.ingestObservations(sessionId, runId, token, [
+      { kind: "item.started", item: { id: itemId, detail: { type: "assistant_message", text: "" } } },
+    ]);
+    return token;
+  };
+  const oneToken = open("session_one", "run_one", "i_one");
+  const twoToken = open("session_two", "run_two", "i_two");
+
+  // Interleaved, so a cache keyed by anything but the session would cross them.
+  store.ingestObservations("session_one", "run_one", oneToken, [{ kind: "content.delta", itemId: "i_one", stream: "assistant_text", text: "a" }]);
+  store.ingestObservations("session_two", "run_two", twoToken, [{ kind: "content.delta", itemId: "i_two", stream: "assistant_text", text: "b" }]);
+  store.ingestObservations("session_one", "run_one", oneToken, [{ kind: "item.completed", itemId: "i_one", status: "completed", detail: { type: "assistant_message", text: "a" } }]);
+
+  expect(store.items("session_one").map((item) => [item.id, item.status])).toEqual([["i_one", "completed"]]);
+  expect(store.items("session_two").map((item) => [item.id, item.status])).toEqual([["i_two", "inProgress"]]);
 });
