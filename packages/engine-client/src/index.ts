@@ -556,10 +556,10 @@ export class EngineClient implements EngineTransport {
     return this.request("GET", "/v2/health");
   }
 
-  async projectIcon(projectId: string): Promise<{ data: Uint8Array; contentType: string }> {
+  async projectIcon(projectId: string, options: { format?: "png" } = {}): Promise<{ data: Uint8Array; contentType: string }> {
     let response: Response;
     try {
-      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/projects/${encodeURIComponent(projectId)}/icon`, {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/projects/${encodeURIComponent(projectId)}/icon${options.format ? `?format=${options.format}` : ""}`, {
         method: "GET",
         headers: { authorization: `Bearer ${this.discovery.token}` },
       });

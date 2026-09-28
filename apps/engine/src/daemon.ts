@@ -126,6 +126,7 @@ import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 import { readTaskOutput, resolveTaskOutputFile } from "./task-output";
 import { filesRoutes } from "./domains/files";
+import { createIconPng } from "./domains/projects";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
 import { createHostsStore, hostsRoutes } from "./domains/hosts";
 import { mcpOAuthRoutes } from "./domains/agent-tools";
@@ -1210,6 +1211,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    */
   const pluginsDir = options.pluginsDir ?? externalPluginsDir(root);
   const remoteDir = options.remoteDir ?? remoteDirFor(root);
+  const iconPng = createIconPng(path.join(store.paths.root, "icon-png"));
   const domainRoutes = [...filesRoutes(), ...remoteRoutes(createRemoteStore(remoteDir)), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)())];
   const external = loadInstalledPlugins(pluginsDir);
   const externalModule = (loaded: LoadedExternalPlugin) =>
@@ -3038,33 +3040,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { note });
         return;
       }
-      /**
-       * The project's icon, as bytes. The ONE binary GET this daemon serves:
-       * `Project.icon` on the list is the cache key, this is the image behind
-       * it. Immutable because the key changes whenever the file does — the
-       * `?v=` a client appends is never read here, it exists to bust the
-       * browser cache.
-       */
+      // `?v=` only busts caches; `?format=png` is for clients that cannot decode SVG.
       const projectIcon = /^\/v2\/projects\/([^/]+)\/icon$/.exec(url.pathname);
       if (request.method === "GET" && projectIcon) {
         const icon = await store.projectIconFileAsync(decodeURIComponent(projectIcon[1]));
-        // REVALIDATED AT THE READ, not trusted from the record. The file can
-        // change or go between the resolve and the read — a `git checkout`
-        // mid-request is enough — and this is where the bytes leave the
-        // machine, so confinement, the size bound and the content type are all
-        // re-established against what is being sent. A file that no longer
-        // qualifies is the same answer as "this project has no icon", which
-        // the avatar already falls back on; a 500 would make an ordinary race
-        // look like a broken engine.
         const served = await readProjectIconBytes(icon);
-        if (!served) throw new HttpError(404, "not_found", "this project has no icon");
+        const png = served && url.searchParams.get("format") === "png";
+        const bytes = png ? await iconPng(served) : served?.bytes;
+        if (!served || !bytes) throw new HttpError(404, "not_found", "this project has no icon");
         response.writeHead(200, {
-          "content-type": served.contentType,
-          "content-length": served.bytes.byteLength,
+          "content-type": png ? "image/png" : served.contentType,
+          "content-length": bytes.byteLength,
           "cache-control": "public, max-age=31536000, immutable",
-          etag: `"${served.etag}"`,
+          etag: `"${served.etag}${png ? "-png" : ""}"`,
         });
-        response.end(served.bytes);
+        response.end(bytes);
         return;
       }
       /**
