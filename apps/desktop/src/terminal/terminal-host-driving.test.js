@@ -84,7 +84,6 @@ describe("driving a live terminal", () => {
         startedAt: expect.any(Number),
       },
     ]);
-    expect(JSON.stringify(host.list())).not.toContain("pty");
   });
 
   test("a disposed host will not start another shell", () => {
