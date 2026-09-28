@@ -62,6 +62,7 @@
       "terminal-host.js",
       "kitty-image-file.js",
       "browser-manager.js",
+      "browser/*.js",
       "browser-context-menu.js",
       "browser-downloads.js",
       "browser-suggestions.js",
