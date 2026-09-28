@@ -1,4 +1,4 @@
-import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * One structured completion from the text-generation harness — the title job's
@@ -20,24 +20,20 @@ import { requestObject, engineClient, engineErrorResponse } from "@/platform/eng
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST(request: Request) {
-  try {
-    const body = await requestObject(request);
-    return Response.json(
-      await (await engineClient()).completeStructured(
-        {
-          prompt: body.prompt as string,
-          schema: body.schema as Record<string, unknown>,
-          ...("model" in body ? { model: body.model as string } : {}),
-          ...("effort" in body ? { effort: body.effort as "low" | "medium" | "high" } : {}),
-        },
-        // The browser's abort travels the whole way down: this request's
-        // signal fires when the tab hangs up, the engine call aborts, and the
-        // daemon kills the harness child.
-        { signal: request.signal },
-      ),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).completeStructured(
+      {
+        prompt: body.prompt as string,
+        schema: body.schema as Record<string, unknown>,
+        ...("model" in body ? { model: body.model as string } : {}),
+        ...("effort" in body ? { effort: body.effort as "low" | "medium" | "high" } : {}),
+      },
+      // The browser's abort travels the whole way down: this request's
+      // signal fires when the tab hangs up, the engine call aborts, and the
+      // daemon kills the harness child.
+      { signal: request.signal },
+    ),
+  );
+});

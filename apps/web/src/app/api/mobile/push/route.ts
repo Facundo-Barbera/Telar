@@ -1,6 +1,5 @@
 import { readDeviceCookie, identifyCaller, readRemote } from "@/features/remote/server";
-import { engineErrorResponse } from "@/platform/engine/server";
-import { engineCall } from "@/platform/engine/server";
+import { engineCall, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,21 +13,17 @@ function caller(request: Request) {
 const devicePath = (deviceId: string) => `/v2/push/devices/${encodeURIComponent(deviceId)}`;
 
 async function relay(method: string, path: string, body?: unknown): Promise<Response> {
-  try {
-    const answer = await engineCall(method, path, body);
-    return Response.json(answer.body, { status: answer.status });
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
+  const answer = await engineCall(method, path, body);
+  return Response.json(answer.body, { status: answer.status });
 }
 
-export function GET(request: Request) {
+export const GET = engineRoute(async (request: Request) => {
   const device = caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
   return relay("GET", devicePath(device.id));
-}
+});
 
-export async function PUT(request: Request) {
+export const PUT = engineRoute(async (request: Request) => {
   const device = caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
   if (device.role !== "full") return Response.json({ error: { message: "Full access is required." } }, { status: 403 });
@@ -53,4 +48,4 @@ export async function PUT(request: Request) {
     return Response.json({ error: { message: "Invalid push registration." } }, { status: 400 });
   }
   return relay("PUT", devicePath(device.id), registration);
-}
+});

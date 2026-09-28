@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * A safe copy of the store — issue #665.
@@ -15,11 +15,7 @@ import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST(request: Request) {
-  try {
-    const { destination } = (await request.json()) as { destination?: string };
-    return Response.json(await (await engineClient()).copyStore(String(destination ?? "")));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request) => {
+  const { destination } = (await request.json()) as { destination?: string };
+  return Response.json(await (await engineClient()).copyStore(String(destination ?? "")));
+});

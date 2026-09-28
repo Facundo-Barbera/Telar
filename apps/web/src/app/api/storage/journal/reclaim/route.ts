@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Compact the turn journal and give its freed pages back — issue #646.
@@ -15,10 +15,6 @@ import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST() {
-  try {
-    return Response.json(await (await engineClient()).reclaimJournal());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async () => {
+  return Response.json(await (await engineClient()).reclaimJournal());
+});

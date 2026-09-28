@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute, invalidRequest } from "@/platform/engine/server";
 
 /**
  * A project's files, for the Files tree.
@@ -13,17 +13,13 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const target = new URL(request.url).searchParams.get("path");
-    const engine = await engineClient();
-    if (target) return Response.json(await engine.projectFile(projectId, target));
-    return Response.json(await engine.projectFiles(projectId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const target = new URL(request.url).searchParams.get("path");
+  const engine = await engineClient();
+  if (target) return Response.json(await engine.projectFile(projectId, target));
+  return Response.json(await engine.projectFiles(projectId));
+});
 
 /**
  * Save an edited file.
@@ -33,18 +29,14 @@ export async function GET(request: Request, context: Context) {
  * `written: false`; this hop adds nothing but the parameter check, because a
  * precondition enforced here would not protect an in-process caller.
  */
-export async function PUT(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const target = new URL(request.url).searchParams.get("path");
-    if (!target) return Response.json({ error: { code: "invalid_request", message: "a file path is required" } }, { status: 400 });
-    const body = (await request.json()) as { text?: unknown; expectedSha256?: unknown };
-    if (typeof body.text !== "string" || typeof body.expectedSha256 !== "string") {
-      return Response.json({ error: { code: "invalid_request", message: "text and expectedSha256 are required" } }, { status: 400 });
-    }
-    const engine = await engineClient();
-    return Response.json(await engine.writeProjectFile(projectId, target, body.text, body.expectedSha256));
-  } catch (error) {
-    return engineErrorResponse(error);
+export const PUT = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const target = new URL(request.url).searchParams.get("path");
+  if (!target) throw invalidRequest("a file path is required");
+  const body = (await request.json()) as { text?: unknown; expectedSha256?: unknown };
+  if (typeof body.text !== "string" || typeof body.expectedSha256 !== "string") {
+    throw invalidRequest("text and expectedSha256 are required");
   }
-}
+  const engine = await engineClient();
+  return Response.json(await engine.writeProjectFile(projectId, target, body.text, body.expectedSha256));
+});

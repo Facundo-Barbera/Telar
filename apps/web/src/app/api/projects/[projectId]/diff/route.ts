@@ -1,6 +1,6 @@
 import { parseFilePatchQuery } from "@telar/engine-client";
 
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * A project's uncommitted work.
@@ -19,17 +19,13 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const url = new URL(request.url);
-    const engine = await engineClient();
-    const target = url.searchParams.get("path");
-    if (target) {
-      return Response.json(await engine.projectFilePatch(projectId, target, parseFilePatchQuery(url.searchParams)));
-    }
-    return Response.json(await engine.projectDiff(projectId));
-  } catch (error) {
-    return engineErrorResponse(error);
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const url = new URL(request.url);
+  const engine = await engineClient();
+  const target = url.searchParams.get("path");
+  if (target) {
+    return Response.json(await engine.projectFilePatch(projectId, target, parseFilePatchQuery(url.searchParams)));
   }
-}
+  return Response.json(await engine.projectDiff(projectId));
+});

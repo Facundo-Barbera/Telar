@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,10 +16,6 @@ export const runtime = "nodejs";
  * is two scalars per row and has nothing to stitch, so there is no field here
  * that can be silently dropped on the way through.
  */
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).projectActivity());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).projectActivity());
+});

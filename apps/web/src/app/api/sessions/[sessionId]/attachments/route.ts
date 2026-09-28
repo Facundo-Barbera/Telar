@@ -1,5 +1,4 @@
-import { EngineClientError } from "@telar/engine-client";
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute, invalidRequest } from "@/platform/engine/server";
 
 /**
  * Upload one file for a session, BEFORE the message that refers to it.
@@ -20,36 +19,28 @@ const MAX_BYTES = 20 * 1024 * 1024;
 type Context = { params: Promise<{ sessionId: string }> };
 
 /** The index, optionally filtered by tag — `?tag=plot` is the gallery's read. */
-export async function GET(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const tag = new URL(request.url).searchParams.get("tag") ?? undefined;
-    return Response.json(await (await engineClient()).attachments(sessionId, tag ? { tag } : {}));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const tag = new URL(request.url).searchParams.get("tag") ?? undefined;
+  return Response.json(await (await engineClient()).attachments(sessionId, tag ? { tag } : {}));
+});
 
-export async function POST(request: Request, context: Context) {
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const data = new Uint8Array(await request.arrayBuffer());
+  if (data.byteLength === 0) throw invalidRequest("The attachment is empty.");
+  if (data.byteLength > MAX_BYTES) throw invalidRequest("That file is larger than the engine accepts.");
+  const header = request.headers.get("x-telar-attachment-name");
+  let name = "attachment";
   try {
-    const { sessionId } = await context.params;
-    const data = new Uint8Array(await request.arrayBuffer());
-    if (data.byteLength === 0) throw new EngineClientError("invalid_request", "The attachment is empty.");
-    if (data.byteLength > MAX_BYTES) throw new EngineClientError("invalid_request", "That file is larger than the engine accepts.");
-    const header = request.headers.get("x-telar-attachment-name");
-    let name = "attachment";
-    try {
-      if (header) name = decodeURIComponent(header);
-    } catch {
-      name = header ?? "attachment";
-    }
-    const result = await (await engineClient()).uploadAttachment(sessionId, {
-      name,
-      mediaType: (request.headers.get("content-type") ?? "application/octet-stream").split(";")[0]!.trim(),
-      data,
-    });
-    return Response.json(result, { status: 201 });
-  } catch (error) {
-    return engineErrorResponse(error);
+    if (header) name = decodeURIComponent(header);
+  } catch {
+    name = header ?? "attachment";
   }
-}
+  const result = await (await engineClient()).uploadAttachment(sessionId, {
+    name,
+    mediaType: (request.headers.get("content-type") ?? "application/octet-stream").split(";")[0]!.trim(),
+    data,
+  });
+  return Response.json(result, { status: 201 });
+});

@@ -1,5 +1,5 @@
 import { parsePublishedAppearance } from "@telar/engine-client";
-import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { requestObject, engineClient, engineRoute, invalidRequest } from "@/platform/engine/server";
 
 /**
  * The host cockpit's resolved look, published to the engine and read back by
@@ -38,30 +38,18 @@ import { requestObject, engineClient, engineErrorResponse } from "@/platform/eng
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).appearance());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).appearance());
+});
 
-export async function PUT(request: Request) {
-  try {
-    const blob = parsePublishedAppearance(await requestObject(request));
-    if (!blob) {
-      return Response.json({ error: { code: "invalid_request", message: "That is not a publishable appearance." } }, { status: 400 });
-    }
-    return Response.json(await (await engineClient()).setAppearance(blob));
-  } catch (error) {
-    return engineErrorResponse(error);
+export const PUT = engineRoute(async (request: Request) => {
+  const blob = parsePublishedAppearance(await requestObject(request));
+  if (!blob) {
+    throw invalidRequest("That is not a publishable appearance.");
   }
-}
+  return Response.json(await (await engineClient()).setAppearance(blob));
+});
 
-export async function DELETE() {
-  try {
-    return Response.json(await (await engineClient()).clearAppearance());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const DELETE = engineRoute(async () => {
+  return Response.json(await (await engineClient()).clearAppearance());
+});

@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse, requestObject } from "@/platform/engine/server";
+import { engineClient, requestObject, engineRoute } from "@/platform/engine/server";
 
 /**
  * ADOPT A CLAUDE CODE CONVERSATION INTO THIS SESSION — `/resume`, #616.
@@ -11,16 +11,12 @@ import { engineClient, engineErrorResponse, requestObject } from "@/platform/eng
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST(request: Request, { params }: { params: Promise<{ sessionId: string }> }) {
-  try {
-    const { sessionId } = await params;
-    const input = await requestObject(request);
-    return Response.json(
-      await (await engineClient()).adoptClaudeConversation(sessionId, {
-        sourceSessionId: String(input.sourceSessionId ?? ""),
-      }),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, { params }: { params: Promise<{ sessionId: string }> }) => {
+  const { sessionId } = await params;
+  const input = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).adoptClaudeConversation(sessionId, {
+      sourceSessionId: String(input.sourceSessionId ?? ""),
+    }),
+  );
+});

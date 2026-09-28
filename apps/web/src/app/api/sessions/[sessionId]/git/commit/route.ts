@@ -1,4 +1,4 @@
-import { requestObject, requiredString, engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { requestObject, requiredString, engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Snapshot the session's work as one commit.
@@ -17,12 +17,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function POST(request: Request, context: Context) {
-  try {
-    const [{ sessionId }, body] = await Promise.all([context.params, requestObject(request)]);
-    const result = await (await engineClient()).commitSessionWork(sessionId, requiredString(body.message, "Commit message"));
-    return Response.json(result);
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const [{ sessionId }, body] = await Promise.all([context.params, requestObject(request)]);
+  const result = await (await engineClient()).commitSessionWork(sessionId, requiredString(body.message, "Commit message"));
+  return Response.json(result);
+});

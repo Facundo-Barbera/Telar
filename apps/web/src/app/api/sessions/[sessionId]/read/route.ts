@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse, requestObject, requiredString } from "@/platform/engine/server";
+import { engineClient, requestObject, requiredString, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,13 +15,9 @@ type Context = { params: Promise<{ sessionId: string }> };
  * duplicate receipt is a no-op — see `EngineStore.markSessionRead`, and
  * `components/session/read-receipt.tsx` for when the cockpit sends one.
  */
-export async function POST(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const input = await requestObject(request);
-    const answer = await (await engineClient()).markSessionRead(sessionId, requiredString(input.runId, "run id"));
-    return Response.json(answer);
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const input = await requestObject(request);
+  const answer = await (await engineClient()).markSessionRead(sessionId, requiredString(input.runId, "run id"));
+  return Response.json(answer);
+});

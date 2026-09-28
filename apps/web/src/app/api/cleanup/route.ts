@@ -1,5 +1,5 @@
 import type { CleanupPolicy } from "@telar/engine-client";
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * The automatic cleanup's switches and its last result — Settings → Storage.
@@ -8,19 +8,11 @@ import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).cleanup());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).cleanup());
+});
 
-export async function PUT(request: Request) {
-  try {
-    const patch = (await request.json()) as Partial<CleanupPolicy>;
-    return Response.json(await (await engineClient()).setCleanupPolicy(patch));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request) => {
+  const patch = (await request.json()) as Partial<CleanupPolicy>;
+  return Response.json(await (await engineClient()).setCleanupPolicy(patch));
+});

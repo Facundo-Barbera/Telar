@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 import { ProviderDriverKind } from "@telar/engine-client";
 
 /**
@@ -14,13 +14,9 @@ import { ProviderDriverKind } from "@telar/engine-client";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request, context: { params: Promise<{ projectId: string }> }) {
-  try {
-    const { projectId } = await context.params;
-    const asked = ProviderDriverKind.safeParse(new URL(request.url).searchParams.get("driver"));
-    const engine = await engineClient();
-    return Response.json(await engine.projectSkills(projectId, asked.success ? asked.data : undefined));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: { params: Promise<{ projectId: string }> }) => {
+  const { projectId } = await context.params;
+  const asked = ProviderDriverKind.safeParse(new URL(request.url).searchParams.get("driver"));
+  const engine = await engineClient();
+  return Response.json(await engine.projectSkills(projectId, asked.success ? asked.data : undefined));
+});

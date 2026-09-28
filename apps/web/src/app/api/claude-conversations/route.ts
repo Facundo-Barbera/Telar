@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * The person's own Claude Code conversations, as `/resume`'s picker lists them
@@ -16,11 +16,7 @@ import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    const instanceId = new URL(request.url).searchParams.get("instanceId")?.trim();
-    return Response.json(await (await engineClient()).claudeConversations(instanceId ? { instanceId } : {}));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  const instanceId = new URL(request.url).searchParams.get("instanceId")?.trim();
+  return Response.json(await (await engineClient()).claudeConversations(instanceId ? { instanceId } : {}));
+});

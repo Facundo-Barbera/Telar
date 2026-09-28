@@ -1,4 +1,4 @@
-import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
 import type { EnvMode, RuntimeMode } from "@telar/engine-client";
 
 /**
@@ -15,26 +15,18 @@ import type { EnvMode, RuntimeMode } from "@telar/engine-client";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).sessionDefaults());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).sessionDefaults());
+});
 
-export async function PATCH(request: Request) {
-  try {
-    const body = await requestObject(request);
-    return Response.json(
-      await (await engineClient()).setSessionDefaults({
-        ...("envMode" in body ? { envMode: body.envMode as EnvMode } : {}),
-        ...("resumeAfterRestart" in body ? { resumeAfterRestart: body.resumeAfterRestart as boolean } : {}),
-        ...("runtimeMode" in body ? { runtimeMode: body.runtimeMode as RuntimeMode | null } : {}),
-        ...("resumeAfterRateLimit" in body ? { resumeAfterRateLimit: body.resumeAfterRateLimit as boolean } : {}),
-      }),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PATCH = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).setSessionDefaults({
+      ...("envMode" in body ? { envMode: body.envMode as EnvMode } : {}),
+      ...("resumeAfterRestart" in body ? { resumeAfterRestart: body.resumeAfterRestart as boolean } : {}),
+      ...("runtimeMode" in body ? { runtimeMode: body.runtimeMode as RuntimeMode | null } : {}),
+      ...("resumeAfterRateLimit" in body ? { resumeAfterRateLimit: body.resumeAfterRateLimit as boolean } : {}),
+    }),
+  );
+});
