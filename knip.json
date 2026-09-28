@@ -42,18 +42,14 @@
     },
     "apps/desktop": {
       "entry": [
-        "main.js",
-        "*preload*.js",
-        "*.electron-test.js",
-        "desktop-e2e*.js",
+        "src/preload/*.js",
+        "src/**/*.electron-test.js",
+        "test/electron/desktop-e2e*.js",
         "after-pack.js",
         "render-opener-icons.mjs"
       ],
       "project": [
         "**/*.{js,mjs,cjs}"
-      ],
-      "ignore": [
-        "test-fixtures/**"
       ],
       "ignoreDependencies": [
         "electron-builder",
@@ -107,7 +103,7 @@
     "packages/engine-client/src/protocol/plugins.ts": [
       "duplicates"
     ],
-    "apps/desktop/{desktop-handoff-core,desktop-handoff,dev-update-core,dev-update,tailscale,update-watchdog,store-location,store-migrate}.js": ["exports"],
-    "apps/desktop/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": ["exports"]
+    "apps/desktop/src/{handoff/desktop-handoff-core,handoff/desktop-handoff,dev/dev-update-core,dev/dev-update,main/tailscale,main/update-watchdog,store/store-location,store/store-migrate}.js": ["exports"],
+    "apps/desktop/src/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": ["exports"]
   }
 }

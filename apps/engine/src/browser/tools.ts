@@ -16,7 +16,7 @@
  * engine does not define is a tool an agent cannot reach.
  */
 import { z } from "zod";
-import { VIEWPORT_PRESET_KEYS } from "../../../desktop/viewport-presets.js";
+import { VIEWPORT_PRESET_KEYS } from "../../../desktop/src/browser/viewport-presets.js";
 
 // ── what a browser tool call returns ───────────────────────────────────────
 

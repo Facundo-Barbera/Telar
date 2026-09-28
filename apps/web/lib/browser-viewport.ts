@@ -14,7 +14,7 @@ import {
   type ViewportPresetEntryKey,
   type ViewportPresetGroup,
   type ViewportPresetKey,
-} from "../../desktop/viewport-presets.js";
+} from "../../desktop/src/browser/viewport-presets.js";
 
 export { orient, orientationOf, viewportPreset, VIEWPORT_PRESET_GROUPS, VIEWPORT_PRESETS };
 export type { ViewportOrientation, ViewportPreset, ViewportPresetEntryKey, ViewportPresetGroup, ViewportPresetKey };

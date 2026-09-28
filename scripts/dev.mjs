@@ -32,7 +32,7 @@ import { httpsBaseUrl, probeServe, readStatus, serveTarget, startServe, stopServ
 // twin had to be duplicated: a dev script may depend on the desktop app, which
 // is always in the repo; the packaged shell must never depend on `scripts/`,
 // which cannot be required from an asar.
-import { gateWillRequireAuth, tailscaleServeRequested } from "../apps/desktop/remote-file.js";
+import { gateWillRequireAuth, tailscaleServeRequested } from "../apps/desktop/src/main/remote-file.js";
 
 const repoDir = path.resolve(import.meta.dirname, "..");
 const defaultTelarHome = path.join(os.homedir(), ".telar-dogfood");

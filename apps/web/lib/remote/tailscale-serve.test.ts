@@ -60,7 +60,7 @@ describe("the shell and the pane name the same failures", () => {
     // `fileURLToPath`, not `.pathname` — a repo under "Application Support"
     // percent-encodes its space, and the decoded path is the one fs takes.
     const here = path.dirname(fileURLToPath(import.meta.url));
-    const source = fs.readFileSync(path.join(here, "..", "..", "..", "desktop", "tailscale.js"), "utf8");
+    const source = fs.readFileSync(path.join(here, "..", "..", "..", "desktop", "src", "main", "tailscale.js"), "utf8");
     const returned = [...source.matchAll(/return "([a-z-]+)"/g)].map((match) => match[1]!);
     const classified = returned.filter((label) => label !== "none");
     expect(classified.length).toBeGreaterThan(0);

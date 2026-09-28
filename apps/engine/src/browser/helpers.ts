@@ -8,7 +8,7 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { orient, viewportPreset } from "../../../desktop/viewport-presets.js";
+import { orient, viewportPreset } from "../../../desktop/src/browser/viewport-presets.js";
 import { BROWSER_DEFAULT_VIEWPORT, BROWSER_TOOL_NAMES, type BrowserToolResult } from "./tools";
 
 /** One tab as Playwright MCP reports it. `index` IS the handle — the MCP tab
