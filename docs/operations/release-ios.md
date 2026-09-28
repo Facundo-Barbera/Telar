@@ -143,7 +143,7 @@ cd apps/desktop && bun test testflight-external.test.js
 
 ## Pull request gate
 
-`verify.yml`'s `ios` job runs on a Mac only when `ios-paths.sh` matches a changed path: `apps/ios/**`, `verify.yml` or `ios-paths.sh`. Changes to `nightly-ios.yml` and `ios-export-probe.yml` do not trigger it. The job:
+`verify.yml`'s `ios` job runs on a Mac only when `ios-paths.sh` matches a changed path: `apps/ios/**` or `ios-paths.sh`. Changes to `verify.yml`, `nightly-ios.yml` and `ios-export-probe.yml` do not trigger it; to prove an edit to the job itself, touch a file under `apps/ios`. The job:
 
 1. Archives Release unsigned and asserts that both the app and the extension are Mach-O binaries.
 2. Reports the Swift expressions over the 500 ms type-check floor. This step never fails on slow expressions.
