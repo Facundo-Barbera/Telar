@@ -80,7 +80,7 @@ import Testing
     }
 
     @Test func theFingerprintIsTheMacsFormulaAndNamesWhichTokenWasRefused() {
-        // Same formula as tokenFingerprint in apps/web/lib/mobile/push.ts.
+        // Same formula as tokenFingerprint in apps/web/src/lib/mobile/push.ts.
         #expect(StartTokenPolicy.fingerprint(String(repeating: "b", count: 64)) == "a0fab1377f49a759")
         var old = ActivityReport(card: false, lastStart: .init(at: 1_800_000_000 - 5, status: 410, reason: "Unregistered", relay: false, token: "1111111111111111"))
         #expect(LiveActivityDiagnosis.line(old, currentToken: "2222222222222222", now: now).hasPrefix("Apple refused an older start token"))

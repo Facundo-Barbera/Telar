@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The web's `apps/web/lib/streaming-reveal.test.ts`, vector for vector. The
+/// The web's `apps/web/src/lib/streaming-reveal.test.ts`, vector for vector. The
 /// pacer is a PORT, so the tests are the parity check: if one client's pacing
 /// drifts from the other's, one of these fails.
 

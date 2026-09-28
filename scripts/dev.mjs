@@ -109,7 +109,7 @@ async function stop(exitCode) {
  * requireAuth as the GATE will apply it — for the posture line only.
  *
  * A MISSING FILE IS A FRESH STORE, WHICH REQUIRES PAIRING. Mirrors `FRESH` in
- * apps/web/lib/remote/store.ts; without this the warning line would announce an
+ * apps/web/src/lib/remote/store.ts; without this the warning line would announce an
  * unguarded cockpit on the one install that is guarded by default. An unknown
  * version mirrors `RESET` and reads as OFF, so the line warns about a file the
  * gate has given up on rather than repeating the file's own claim (#627).

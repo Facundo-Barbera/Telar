@@ -63,7 +63,7 @@ describe("the lights sit on the app header's centreline", () => {
   test("reserving width for the lights also means sitting on their centreline", () => {
     const fs = require("node:fs");
     const path = require("node:path");
-    const web = path.join(__dirname, "..", "..", "..", "web", "components");
+    const web = path.join(__dirname, "..", "..", "..", "web", "src", "components");
     const files = [];
     for (const dir of [web, path.join(web, "common"), path.join(web, "settings")]) {
       for (const name of fs.readdirSync(dir)) {
@@ -105,5 +105,5 @@ function cssVarIn(selector, name) {
 }
 
 function globalsCss() {
-  return require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "..", "..", "web", "app", "globals.css"), "utf8");
+  return require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "..", "..", "web", "src", "app", "globals.css"), "utf8");
 }

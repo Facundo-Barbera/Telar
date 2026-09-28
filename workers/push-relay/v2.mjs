@@ -30,7 +30,7 @@
 import { verifyAssertion, verifyAttestation } from './appattest.mjs';
 import { DAY, DEAD_TOKEN, appleReason, b64url, readText, reply, unb64 } from './shared.mjs';
 
-// Delete the legacy ids on `until`, together with MOBILE_TOPICS in apps/web/lib/mobile/push.ts.
+// Delete the legacy ids on `until`, together with MOBILE_TOPICS in apps/web/src/lib/mobile/push.ts.
 const LEGACY_BUNDLE_IDS = { until: '2026-11-01', ids: ['com.telar.mobile', 'com.telar.mobile.dev'] };
 /** Bundles a phone may register as. Debug builds are `.dev` and use APNs sandbox. */
 const BUNDLES = new Set(['io.github.novarix.telar', 'io.github.novarix.telar.dev', ...LEGACY_BUNDLE_IDS.ids]);
@@ -52,7 +52,7 @@ const HANDLE_MINUTE = 120, HANDLE_DAY = 5000;
  * BACKGROUND PUSHES STOP WHERE THE LAST 1,000 OF A HANDLE'S DAY BEGIN. A silent
  * read-sync only tidies the lock screen; an alert is the thing the budget is
  * for. The Mac already sends at most one background push a minute per phone
- * (`READ_SYNC_INTERVAL_S` in apps/web/lib/mobile/read-sync.ts), so this ceiling
+ * (`READ_SYNC_INTERVAL_S` in apps/web/src/lib/mobile/read-sync.ts), so this ceiling
  * is only reached by a handle already deep in its day — and what is left then
  * is kept for alerts and Live Activities. `HANDLE_BACKGROUND_CEILING` in the
  * environment overrides it, for tests.

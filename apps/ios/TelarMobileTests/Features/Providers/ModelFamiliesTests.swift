@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The fold's pinned cases, ported from apps/web/lib/model-families.test.ts.
+/// The fold's pinned cases, ported from apps/web/src/lib/model-families.test.ts.
 @Suite struct ModelFamiliesTests {
     private func model(_ id: String, label: String, resolves: String? = nil,
                        isDefault: Bool = false, efforts: [String] = [], fastMode: Bool = false) -> ProviderModel {

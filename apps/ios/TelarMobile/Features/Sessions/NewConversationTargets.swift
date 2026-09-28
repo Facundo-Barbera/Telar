@@ -1,7 +1,7 @@
 import Foundation
 
 /// ONE DESTINATION: a project, and the Mac it is registered on. The Mac's
-/// `NewConversationTarget` (apps/web/components/new-conversation-dialog.tsx),
+/// `NewConversationTarget` (apps/web/src/components/new-conversation-dialog.tsx),
 /// with the host NOT optional — the phone has no "this Mac", so every project
 /// it can reach belongs to some paired one and naming it is never redundant.
 struct NewConversationTarget: Identifiable, Hashable {

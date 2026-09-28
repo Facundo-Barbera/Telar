@@ -9,7 +9,7 @@
  * asserted from both ends against the SAME literal:
  *
  *   - here, that `unifiedDiff` emits exactly that text;
- *   - in `apps/web/components/session/diff-code-view.test.tsx`, that the parser
+ *   - in `apps/web/src/components/session/diff-code-view.test.tsx`, that the parser
  *     makes `type="change"` of it rather than a rename.
  *
  * Either half alone is worthless. Without the parse, this pins a format nobody

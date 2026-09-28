@@ -7,7 +7,7 @@ import Testing
 /// the format the agent on the other end was trained on.
 @Suite struct ComposerReferenceTests {
     @Test func aFileIsItsPathInBackticks() {
-        #expect(ComposerReference.file("apps/web/lib/auth.ts") == "`apps/web/lib/auth.ts`")
+        #expect(ComposerReference.file("apps/web/src/lib/auth.ts") == "`apps/web/src/lib/auth.ts`")
         #expect(ComposerReference.file("README.md") == "`README.md`")
     }
 
