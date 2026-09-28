@@ -560,29 +560,25 @@ export function projectJournal(
     for (const task of turn.tasks) task.items.sort(byOpen);
     turn.tasks.sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
   }
-  return [...byRun.values()];
+  return inStartOrder([...byRun.values()]);
+}
+
+// A turn that never started but is over (a passive arrival) sits where it was accepted.
+const startKey = (turn: JournalTurn) => turn.startedAt ?? (isActiveTurn(turn.state) ? Infinity : (turn.acceptedAt ?? Infinity));
+
+/** Turns in the order they started, the waiting ones last. Stable, so ties keep sequence order. */
+function inStartOrder(turns: JournalTurn[]): JournalTurn[] {
+  return turns.sort((left, right) => {
+    const a = startKey(left);
+    const b = startKey(right);
+    return a === b ? 0 : a < b ? -1 : 1;
+  });
 }
 
 /**
- * A PASSIVE ARRIVAL IS DRAWN INSIDE THE TURN IT ARRIVED DURING.
- *
- * A peer's report, or a `result` nobody is waiting on, reaching a BUSY session
- * is not a turn: the engine writes its row, holds it for the next idle moment
- * and completes it at once. It is still a turn with its own sequence, though,
- * and drawn as one it landed AFTER the running turn — below the working line
- * while the turn ran, and after everything the turn went on to do once it ended.
- * A coordinator with five workers ended every long turn with a column of them.
- *
- * So each one moves into the turn that was running when it was accepted, at
- * its time among that turn's rows, the way a steered notice already sits.
- *
- * ONE THAT ARRIVED WHILE THE SESSION WAS IDLE moves into the NEXT turn — the
- * one that handed it over (the engine gives held mail to whatever turn starts
- * next) — at its head. The same goes for a result held for a cohort and a
- * completion recorded rather than woken on: none of them is a turn the model
- * took, and drawn as rows of their own they read as a coordinator woken once
- * per worker. Only one with no turn after it yet stays a row of its own. A copy
- * of the host is returned, never the projector's cached fold.
+ * Moves each passive arrival into the turn running when it was accepted, or,
+ * if the session was idle, to the head of the next turn. Expects turns in start
+ * order; returns copies of hosts, never the projector's cached folds.
  */
 export function hostPassiveArrivals(turns: readonly JournalTurn[]): JournalTurn[] {
   const guestsOf = new Map<string, JournalTurn[]>();
@@ -908,8 +904,6 @@ export function createJournalProjector(): JournalProjector {
    * advance would quietly disagree with the fold about exactly that.
    */
   let live = new Set<string>();
-  /** The output order, which is the fold's own: every turn in `turns`, then each
-   *  run a `turn.accepted` introduced, in event order. */
   let order: string[] = [];
 
   return (turns, items, events, tasks = []) => {
@@ -1040,6 +1034,6 @@ export function createJournalProjector(): JournalProjector {
       projected.push(folded);
     }
     folds = next;
-    return projected;
+    return inStartOrder(projected);
   };
 }
