@@ -20,7 +20,7 @@ import {
 import { splitImages } from "@/features/prompts";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/platform/engine";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, taskRoster } from "@/platform/engine";
-import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
+import { isCompactDraft, readDraft, writeDraft } from "@/features/composer";
 import { installNavigationMarks, markNavigation } from "@/platform/perf-marks";
 import { projectSettingsHref } from "@/features/projects";
 import { actionableRequests } from "../failed-turn-recovery";
@@ -37,7 +37,7 @@ import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "../s
 import { ReadReceiptMarker, useReadReceipt } from "./read-receipt";
 import { questionFields } from "@/features/composer/question-drawer";
 import { normaliseContextNoticePercent } from "@/features/composer/context-notice";
-import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice, useProviderInstance } from "@/features/providers";
+import { choiceNamesAnything, choiceOf, sessionModelSelection, type ModelChoice, useProviderInstance } from "@/features/providers";
 import { processToReveal, stillWorking } from "../background-presence";
 import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./cohort-fold";
@@ -50,13 +50,14 @@ import { canvasPanelKey } from "@/features/panel";
 import { Button } from "@/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
 import { useCommandHandlers } from "@/features/commands";
-import { appendToDraft, cockpitPlugins, pinToggleOverride, transcriptRows } from "../model";
+import { appendToDraft, pinToggleOverride, transcriptRows } from "../model";
 import { SessionMasthead, SessionProblem, SoloTools, usePanelPresence } from "./masthead";
 import { EmptyTranscript, SessionTurn, TurnFrame } from "./session-turn";
 import { useSessionSync } from "../hooks/use-session-sync";
 import { useCockpitPanel } from "../hooks/use-cockpit-panel";
 import { useJournalReactions } from "../hooks/use-journal-reactions";
 import { useSessionBrowser } from "../hooks/use-session-browser";
+import { useCockpitProject } from "../hooks/use-cockpit-project";
 import { handOffCanvas } from "../canvas-handoff";
 
 const api = createEngineApi();
@@ -84,15 +85,20 @@ export function SessionCockpit({
   const sessionId = routeSessionId ?? (onCanvas ? undefined : createdSessionId);
   /** No session yet: the composer is the whole screen and nothing is polled. */
   const fresh = !sessionId;
+  const {
+    session, setSession, clearTranscript, turns, items, tasks, requests, events, page, loadOlder, loadingOlder,
+    error, setError, stale, loading, syncKey, transcriptLanded, hydrate,
+  } = useSessionSync({ hostId, sessionId, initiallyLoading: Boolean(routeSessionId) });
+  const { projectName, projectResolved, defaults: projectDefaults, enabledPlugins } = useCockpitProject({
+    hostId, projectId, serverProjectName, transcriptLanded,
+  });
   const [draftDriver, setDraftDriver] = useState<ProviderDriverKind>("claude");
   const [draftEnvMode, setDraftEnvMode] = useState<"local" | "worktree">("local");
   const [envModeTouched, setEnvModeTouched] = useState(false);
   const { defaults: sessionDefaults, loading: sessionDefaultsLoading } = useSessionDefaults();
   const [seededEnvMode, setSeededEnvMode] = useState<"local" | "worktree">();
-  /** The project's own answer, once its record arrives. Absent means it follows the Mac. */
-  const [projectEnvMode, setProjectEnvMode] = useState<{ projectId: string; envMode?: "local" | "worktree" }>();
-  const projectAnswered = projectId === undefined || projectEnvMode?.projectId === projectId;
-  const envModeSeed = (projectId !== undefined ? projectEnvMode?.envMode : undefined) ?? sessionDefaults.envMode;
+  const projectAnswered = projectId === undefined || projectDefaults?.projectId === projectId;
+  const envModeSeed = (projectId !== undefined ? projectDefaults?.envMode : undefined) ?? sessionDefaults.envMode;
   // A render-phase adjustment, not an effect — this app's lint enforces that
   // for "adjust state when a value changes", and the value here is the
   // engine's answer arriving.
@@ -124,15 +130,14 @@ export function SessionCockpit({
   if (!sessionDefaultsLoading && !runtimeModeTouched && draftRuntimeMode !== runtimeModeSeed) setDraftRuntimeMode(runtimeModeSeed);
   const [draftModel, setDraftModel] = useState<ModelChoice>({});
   const [modelTouched, setModelTouched] = useState(false);
-  const [projectModel, setProjectModel] = useState<{ projectId: string; seed: ReturnType<typeof projectDraftModel> }>();
   const [seededModelFor, setSeededModelFor] = useState<string>();
   // Render-phase, like the envMode seed above. Keyed by project, so a canvas
   // that moves to another project starts from that project's default.
-  if (!sessionId && !modelTouched && projectModel && projectModel.projectId === projectId && seededModelFor !== projectId) {
+  if (!sessionId && !modelTouched && projectDefaults && projectDefaults.projectId === projectId && seededModelFor !== projectId) {
     setSeededModelFor(projectId);
-    if (projectModel.seed) {
-      setDraftDriver(projectModel.seed.driver);
-      setDraftModel(projectModel.seed.choice);
+    if (projectDefaults.model) {
+      setDraftDriver(projectDefaults.model.driver);
+      setDraftModel(projectDefaults.model.choice);
     }
   }
   /** every human pick of a model knob goes through here, so the seed can never
@@ -148,10 +153,6 @@ export function SessionCockpit({
     setDraftDriver(next);
     setDraftModel({});
   }, [setDraftModel]);
-  const {
-    session, setSession, clearTranscript, turns, items, tasks, requests, events, page, loadOlder, loadingOlder,
-    error, setError, stale, loading, syncKey, transcriptLanded, hydrate,
-  } = useSessionSync({ hostId, sessionId, initiallyLoading: Boolean(routeSessionId) });
   const [draft, setDraft] = useState("");
   /** Files picked but not yet sent. Held as `File`s rather than uploaded on
    *  pick — see the upload loop in `submit` for why. */
@@ -164,17 +165,6 @@ export function SessionCockpit({
   const [readingBack, setReadingBack] = useState(false);
   const onAtBottomChange = useCallback((atBottom: boolean) => setReadingBack(!atBottom), []);
   const [sending, setSending] = useState(false);
-  const [projectName, setProjectName] = useState<string | undefined>(serverProjectName);
-  const [projectResolved, setProjectResolved] = useState(false);
-  const nameKey = JSON.stringify([hostId, projectId]);
-  const [nameSubject, setNameSubject] = useState(nameKey);
-  if (nameSubject !== nameKey) {
-    setNameSubject(nameKey);
-    setProjectName(undefined);
-    setProjectResolved(false);
-  }
-  /** The project's enabled plugin ids, read with its name. None until known. */
-  const [enabledPlugins, setEnabledPlugins] = useState<readonly string[]>([]);
   const pluginPanels = usePluginPanels(hostId, enabledPlugins);
   const [projectTranscript] = useState(createJournalProjector);
 
@@ -345,48 +335,6 @@ export function SessionCockpit({
     const task = window.setTimeout(() => writeDraft(sessionId, projectId, draft), 400);
     return () => window.clearTimeout(task);
   }, [draft, sessionId, projectId]);
-
-  // The session record carries a project ID, not its name. One list call
-  // resolves it; a failure leaves the breadcrumb on the id, which is worse to
-  // read but never wrong.
-  useEffect(() => {
-    if (!transcriptLanded) return;
-    let cancelled = false;
-    const local = hostId === LOCAL_HOST_ID;
-    let answered = false;
-    const task = window.setTimeout(() => {
-      if (cancelled || answered || !local) return;
-      const remembered = projectId === undefined ? undefined : rememberedProjectName(projectId);
-      if (remembered) setProjectName(remembered);
-    }, 0);
-    void createEngineApi(hostFetcher(hostId)).projects().then(
-      (result) => {
-        if (cancelled) return;
-        answered = true;
-        const found = result.projects.find((project) => project.id === projectId);
-        setProjectName(found?.name);
-        // answered, whether or not it held the project — which is the difference
-        // between "the name has not arrived" and "this project is not on this
-        // Mac", and only the second is worth saying out loud.
-        setProjectResolved(true);
-        // Where a new conversation's composer starts; see `draftModel`.
-        if (projectId !== undefined) {
-          setProjectModel({ projectId, seed: projectDraftModel(found?.defaultModel) });
-          setProjectEnvMode({ projectId, ...(found?.envMode ? { envMode: found.envMode } : {}) });
-        }
-        // Replaced only when the set changed, so everything keyed on it keeps
-        // its identity across a refetch that found the same plugins.
-        const plugins = cockpitPlugins(found);
-        setEnabledPlugins((current) => (current.join(",") === plugins.join(",") ? current : plugins));
-        if (local) writeFrontDoorNote(result.projects, projectId);
-      },
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-      window.clearTimeout(task);
-    };
-  }, [projectId, hostId, transcriptLanded]);
 
   const transcript = useMemo(
     // A peer's passive report is drawn inside the turn it arrived during — see
