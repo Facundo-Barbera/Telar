@@ -4865,21 +4865,7 @@ export class EngineStore {
       // sweep is a call rather than a second implementation of "settled".
       onRetentionSweep: () => { this.sweepRetention(); },
     });
-    // `ingestObservations` is NOT here: it wraps itself, because a batch of
-    // nothing but deltas writes no document at all and must not open a
-    // transaction. See the method.
-    const commands = ["createSession", "updateSession", "markSessionRead", "submitTurn", "submitAgentTurn",
-      "claimTurn", "claimNextTurn", "markRunning", "openRequest", "resolveRequest", "completeTurn", "failTurn",
-      "stopSession", "stopTurn", "pauseSession", "resumeSession", "stopBackgroundTasks", "taskStopsForWorker", "openProviderTurn",
-      "reportSessionTasks", "ackSteer", "promoteTurn", "releaseHeldTurn", "discardAmbiguousTurn", "recover", "retireWorkerRegistration",
-      "subscribe", "unsubscribe"] as const;
-    for (const name of commands) {
-      const operation = Reflect.get(this, name) as (...args: unknown[]) => unknown;
-      Object.defineProperty(this, name, { value: (...args: unknown[]) =>
-        this.executeCommand(name, () => Reflect.apply(operation, this, args)) });
-    }
-    // AFTER the commands are wrapped, so the backfill's own writes go through
-    // one transaction rather than one per row.
+    // The backfill's writes go through one transaction rather than one per row.
     this.sessionIndexBackfill = this.backfillSessionRows();
     this.turnSummaryBackfill = this.backfillTurnSummaries();
     // Before anything can claim a turn — see the method.
@@ -7940,263 +7926,265 @@ export class EngineStore {
      */
     origin?: SessionOrigin;
   }): Session {
-    if (input.id !== undefined) assertId(input.id, "session id");
-    // Both reads are about a project, so both are skipped when there is none —
-    // never replaced by a guess at which project was meant.
-    const project = input.projectId === undefined ? undefined : this.getProject(input.projectId);
-    if (input.projectId !== undefined) this.assertProjectAvailable(input.projectId);
-    if (project === undefined && input.envMode === "worktree") {
-      throw new EngineStateError("invalid_request", "a worktree is cut from a project, and this session has none");
-    }
-    const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
-    const metadata = sessionMetadataFile(this.paths, id);
-    const existing = this.readDocument(metadata);
-    if (existing !== undefined) {
-      const session = parseSession(existing);
-      if (session.projectId === input.projectId) return structuredClone(session);
-      throw new EngineStateError("conflict", "session id is already owned by another project");
-    }
-    const at = this.now();
-    // Detached is the DEFAULT POSTURE, not a mode a caller opts into: the
-    // engine never requires a client to be connected. `detached` only decides
-    // what happens when a request opens with nobody home, and the two defaults
-    // come from the contract rather than being re-picked here.
-    const detached = input.detached ?? true;
-    /**
-     * THE CEILING, RESOLVED BEFORE ANYTHING IS WRITTEN — issue #541 G1.
-     *
-     * THIS HONOURS THE COMMENT ABOVE RATHER THAN REPLACING IT. `detached` still
-     * picks the POSTURE and is still not a mode a caller opts into; the ceiling
-     * is a separate fact that can only narrow what that posture chose. Deriving
-     * permissions from `detached` alone was what tied two unrelated concerns
-     * together — "is anybody watching" and "what may this do" — and the fix is
-     * to add the second rather than to overload the first.
-     *
-     * REFUSED, NOT IGNORED. See `ceilingFrom`: the failure mode of a silently
-     * dropped ceiling is the widest session the engine can make.
-     */
-    const ceiling = input.ceilingFrom === undefined ? undefined : this.getSession(input.ceilingFrom).runtimeMode;
-    /**
-     * AN OMITTED `envMode` ASKS THE STANDING PREFERENCE, not a constant. That
-     * is what makes the setting a real default rather than a pre-ticked box:
-     * the composer, the MCP toolkit and any API caller that stays quiet all get
-     * the same answer, and one that says `worktree` outright still gets exactly
-     * that.
-     *
-     * THE PROJECT IS ASKED BEFORE THE MACHINE, and that order is the whole of
-     * what a per-project answer means. It is the same ladder every setting in
-     * this engine uses — the most specific thing that has an opinion wins — and
-     * absence at each rung is a real answer rather than a missing one: a project
-     * with no `envMode` is not saying "local", it is saying "whatever this Mac
-     * says", which is why a stored `"local"` and no stored value at all are
-     * different states and the record keeps them apart.
-     *
-     * THE PREFERENCE YIELDS ON AN UNVERSIONED PROJECT — and so does the
-     * project's own answer, for the same reason. `createSessionWorktree` refuses
-     * a directory that is not a git repo: correct for a caller who ASKED for a
-     * worktree, and wrong for one who asked for nothing and would otherwise be
-     * unable to open a session in that project at all. A project that pinned
-     * `worktree` is still expressing a PREFERENCE rather than an instruction —
-     * nobody typed it for this session — so it falls back like the machine's.
-     * A stated `worktree` on the call still throws.
-     */
-    /**
-     * A PROJECT-LESS SESSION IS `local`, and the ladder is not consulted.
-     *
-     * `EnvMode` says where work LANDS, and its two answers are "the project's
-     * own checkout" and "a checkout of this session's own". Neither is true
-     * here, and the workspace below says so properly (`mode: "none"`); this
-     * field takes the one value that claims nothing extra. Asking the standing
-     * preference would let a machine-wide `worktree` turn into a refusal for a
-     * session that never had a repository to cut from.
-     */
-    /**
-     * THE LADDER NEVER ASKS GIT ABOUT A DISK THAT IS NOT THERE — issue #534.
-     *
-     * `assertProjectAvailable` above has already refused an unavailable project,
-     * so by here the answer is `"available"` and this is the value the cut below
-     * is handed rather than a second probe: one reading, one refusal, no chance
-     * of the ladder and the guard disagreeing about a cable between two lines.
-     *
-     * AND THAT IS ALSO WHY THERE IS NO SILENT DOWNGRADE LEFT HERE. The fallback
-     * to `local` exists for an UNVERSIONED project — a real directory with no
-     * `.git` — and it was reachable by an unplugged one too, because
-     * `isGitWorkTree` answers "not a repository" for a path it cannot read. That
-     * turned a cable into a session quietly pointed at a dead path in a mode
-     * nobody asked for. An unreadable project now never reaches this line.
-     */
-    const availability = project === undefined ? undefined : this.projectAvailability(project);
-    const preferred = project === undefined ? "local" : (project.envMode ?? this.getSessionDefaults().envMode);
-    const envMode =
-      project === undefined ? "local" : (input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local"));
-    if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
-      throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
-    }
-    const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
-    const driver = chosen?.driver ?? input.driver ?? "claude";
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
-      throw new EngineStateError("invalid_request", "unknown provider driver");
-    }
-    if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
-    /**
-     * THE WORKTREE IS PLANNED HERE AND CUT IN THE BACKGROUND — issue #496.
-     *
-     * It used to be cut right here, synchronously, "BEFORE the session document
-     * is written" so that no session could exist without its workspace. That
-     * ordering was right and its cost was the whole daemon: `git worktree add`
-     * on a large checkout is seconds of a blocked event loop, and for those
-     * seconds every cockpit's poll and every agent's stream stopped.
-     *
-     * WHAT SPLITS, AND WHERE THE LINE IS. Everything whose answer is a REFUSAL
-     * stays on this call — a directory that is not a repository, a base ref that
-     * does not resolve, a branch name the engine will not create. Those are bad
-     * requests and the caller is still here to be told. What moves is the one
-     * expensive step, `worktree add` itself, and its failures land on the row
-     * (`SessionPreparation`) because by then there is nobody left to answer.
-     *
-     * THE ROW IS COMPLETE FROM THE FIRST INSTANT even so: the path and the
-     * branch are decided by `planSessionWorktree` without touching git, so the
-     * rail's most stable identifier is never the field that flickers. What is
-     * missing for those seconds is the directory, and the row says so.
-     */
-    const cut =
-      envMode === "worktree" && !input.draft && project !== undefined
-        ? (() => {
-            const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
-            // The repository probe inside this is the same one the
-            // omitted-`envMode` ladder above makes, and it has to be made
-            // again: that one only runs when nobody stated a mode, and a
-            // STATED `worktree` on an unversioned project must still refuse
-            // rather than open a session with nowhere to work.
-            return prepareSessionWorktree(this.git, {
-              engineRoot: this.paths.root,
-              projectRoot: project.root,
-              projectName: project.name,
-              sessionId: id,
-              ...(availability !== undefined ? { availability } : {}),
-              ...(branchSlug !== undefined ? { branchSlug } : {}),
-              ...(input.baseRef !== undefined ? { baseRef: input.baseRef } : {}),
-              ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
-            });
-          })()
-        : undefined;
-    const workspace: Session["workspace"] =
-      cut !== undefined
-        ? // `baseRef` is stored NOW rather than when the cut lands: it is the
-          // commit the checkout will start from, so a reader asking "what has
-          // this session done" has its anchor from the first instant.
-          { mode: "worktree" as const, path: cut.plan.path, branch: cut.plan.branch, baseRef: cut.baseSha }
-        : project === undefined
-          ? // NO PROJECT MEANS NO DIRECTORY — see `SessionWorkspace`'s `none`
-            // variant. There is nothing to resolve a base against either: a
-            // base is a commit, and there is no repository here.
-            { mode: "none" as const }
-          : (() => {
-            /**
-             * A LOCAL SESSION GETS A BASE TOO, which it never used to.
-             *
-             * Without it "what has this session done to the repository" was only
-             * answerable for worktree sessions: `git status` forgets a change the
-             * instant the agent commits it, so a session that committed its work
-             * reviewed as having done nothing. Resolved at creation and stored,
-             * because HEAD moves — reading it later would answer a different
-             * question every time.
-             *
-             * An unversioned directory is a supported configuration (`envMode:
-             * "local"` exists for exactly that), so a failure here leaves the
-             * base absent rather than refusing the session.
-             */
-            const head = this.git(project.root, ["rev-parse", "HEAD"]);
-            const baseRef = head.status === 0 ? head.stdout.trim() : "";
-            return { mode: "local" as const, path: project.root, ...(baseRef ? { baseRef } : {}) };
-          })();
-    const session: Session = {
-      id,
-      // Written only when there IS one. An explicit `undefined` would be a
-      // second spelling of absent on a field whose absence is the statement.
-      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
-      environmentId: "local",
-      title: input.title?.trim() || "New session",
-      state: "active",
-      // Only ever written when it is TRUE. An explicit `"human"` on every
-      // session document would be a second spelling of absent, and the two
-      // would drift the first time a reader forgot one of them.
-      ...(input.origin === "session" ? { origin: "session" as const } : {}),
-      ...(input.startedFrom
-        ? { startedFrom: { sessionId: input.startedFrom.sessionId, ...(input.startedFrom.runId ? { runId: input.startedFrom.runId } : {}) } }
-        : {}),
-      createdAt: at,
-      updatedAt: at,
-      // The instance is the ROUTING key and the driver is descriptive, so the
-      // two are derived together here rather than picked independently — a
-      // session routed to Claude while claiming to be a Codex session is the
-      // one inconsistency this split exists to make impossible.
-      providerInstanceId: chosen?.id ?? defaultInstanceIdForDriver(driver),
-      driver,
+    return this.executeCommand("createSession", () => {
+      if (input.id !== undefined) assertId(input.id, "session id");
+      // Both reads are about a project, so both are skipped when there is none —
+      // never replaced by a guess at which project was meant.
+      const project = input.projectId === undefined ? undefined : this.getProject(input.projectId);
+      if (input.projectId !== undefined) this.assertProjectAvailable(input.projectId);
+      if (project === undefined && input.envMode === "worktree") {
+        throw new EngineStateError("invalid_request", "a worktree is cut from a project, and this session has none");
+      }
+      const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
+      const metadata = sessionMetadataFile(this.paths, id);
+      const existing = this.readDocument(metadata);
+      if (existing !== undefined) {
+        const session = parseSession(existing);
+        if (session.projectId === input.projectId) return structuredClone(session);
+        throw new EngineStateError("conflict", "session id is already owned by another project");
+      }
+      const at = this.now();
+      // Detached is the DEFAULT POSTURE, not a mode a caller opts into: the
+      // engine never requires a client to be connected. `detached` only decides
+      // what happens when a request opens with nobody home, and the two defaults
+      // come from the contract rather than being re-picked here.
+      const detached = input.detached ?? true;
       /**
-       * THE PROJECT'S DEFAULT MODEL, when it names one this session can run.
+       * THE CEILING, RESOLVED BEFORE ANYTHING IS WRITTEN — issue #541 G1.
        *
-       * GUARDED ON THE INSTANCE rather than applied blind: a selection is a
-       * MODEL ON A LOGIN, so a Claude default carried onto a session the caller
-       * routed to Codex would name a model that login has never heard of. The
-       * project's answer therefore applies when this session lands on the login
-       * it was stored against, and is silently not applied otherwise — which is
-       * the honest outcome, because the reader's sentence was "conversations in
-       * this project open on THIS", and this is not that conversation.
+       * THIS HONOURS THE COMMENT ABOVE RATHER THAN REPLACING IT. `detached` still
+       * picks the POSTURE and is still not a mode a caller opts into; the ceiling
+       * is a separate fact that can only narrow what that posture chose. Deriving
+       * permissions from `detached` alone was what tied two unrelated concerns
+       * together — "is anybody watching" and "what may this do" — and the fix is
+       * to add the second rather than to overload the first.
        *
-       * ITS OPTIONS COME WITH IT, less any the model no longer offers — see
-       * `supportedOptions`.
+       * REFUSED, NOT IGNORED. See `ceilingFrom`: the failure mode of a silently
+       * dropped ceiling is the widest session the engine can make.
        */
-      ...(() => {
-        if (!project?.defaultModel || project.defaultModel.instanceId !== (chosen?.id ?? defaultInstanceIdForDriver(driver))) return {};
-        const model = this.supportedOptions(driver, project.defaultModel);
-        return model ? { model } : {};
-      })(),
-      workspace,
-      // The directory is not there yet; `prepareWorktree` below clears this or
-      // flips it to `failed`. Absent means ready, which is every other session.
-      ...(cut !== undefined ? { preparation: { state: "preparing" as const, at } } : {}),
-      envMode,
-      ...(input.draft ? { draft: {
-        ...(input.baseRef ? { baseRef: input.baseRef } : {}),
-        ...(input.branchName ? { branchName: input.branchName } : {}),
-        ...(input.branchSlug ? { branchSlug: input.branchSlug } : {}),
-      } } : {}),
+      const ceiling = input.ceilingFrom === undefined ? undefined : this.getSession(input.ceilingFrom).runtimeMode;
       /**
-       * THE POSTURE'S DEFAULT, CAPPED BY THE CREATOR'S OWN MODE — #541 G1.
+       * AN OMITTED `envMode` ASKS THE STANDING PREFERENCE, not a constant. That
+       * is what makes the setting a real default rather than a pre-ticked box:
+       * the composer, the MCP toolkit and any API caller that stays quiet all get
+       * the same answer, and one that says `worktree` outright still gets exactly
+       * that.
        *
-       * `sessions_create` parks for a person, so the gate was never bypassed.
-       * What the approval SAID was the problem: a person approved "create a
-       * session" and got "a session that will not ask again", because every
-       * session an agent made landed in `auto` — file changes and commands
-       * auto-accepted — regardless of what its creator was allowed to do.
+       * THE PROJECT IS ASKED BEFORE THE MACHINE, and that order is the whole of
+       * what a per-project answer means. It is the same ladder every setting in
+       * this engine uses — the most specific thing that has an opinion wins — and
+       * absence at each rung is a real answer rather than a missing one: a project
+       * with no `envMode` is not saying "local", it is saying "whatever this Mac
+       * says", which is why a stored `"local"` and no stored value at all are
+       * different states and the record keeps them apart.
        *
-       * WITH NO CEILING THIS IS EXACTLY THE LINE IT WAS. A human's own click
-       * has no creator to inherit from.
+       * THE PREFERENCE YIELDS ON AN UNVERSIONED PROJECT — and so does the
+       * project's own answer, for the same reason. `createSessionWorktree` refuses
+       * a directory that is not a git repo: correct for a caller who ASKED for a
+       * worktree, and wrong for one who asked for nothing and would otherwise be
+       * unable to open a session in that project at all. A project that pinned
+       * `worktree` is still expressing a PREFERENCE rather than an instruction —
+       * nobody typed it for this session — so it falls back like the machine's.
+       * A stated `worktree` on the call still throws.
        */
-      runtimeMode: (() => {
-        // The standing default replaces the detached posture only: an attended
-        // session is one somebody is watching, and it keeps asking.
-        const posture = detached ? (this.getSessionDefaults().runtimeMode ?? DEFAULT_DETACHED_RUNTIME_MODE) : DEFAULT_ATTENDED_RUNTIME_MODE;
-        return ceiling === undefined ? posture : narrowerRuntimeMode(posture, ceiling);
-      })(),
-      interactionMode: "default",
-      detached,
-      // Derived on every read (`withActivity`) and stripped before every write
-      // (`storedSession`); named here only because the wire shape requires it,
-      // and a session with no queue yet is genuinely idle.
-      activity: "idle",
-    };
-    this.writeDocument(metadata, storedSession(session));
-    // Through `writeQueue` like every other queue write: an id reused after a
-    // delete must not find the old session's cached queue waiting for it.
-    this.writeQueue(id, emptyQueue(id));
-    this.appendEvent(id, { type: "session.created", session });
-    // AFTER the document, never before: the flip this schedules writes the same
-    // record, and a cut that finished first would be overwritten by the row that
-    // said it had not started.
-    if (cut !== undefined && project !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
-    return structuredClone(session);
+      /**
+       * A PROJECT-LESS SESSION IS `local`, and the ladder is not consulted.
+       *
+       * `EnvMode` says where work LANDS, and its two answers are "the project's
+       * own checkout" and "a checkout of this session's own". Neither is true
+       * here, and the workspace below says so properly (`mode: "none"`); this
+       * field takes the one value that claims nothing extra. Asking the standing
+       * preference would let a machine-wide `worktree` turn into a refusal for a
+       * session that never had a repository to cut from.
+       */
+      /**
+       * THE LADDER NEVER ASKS GIT ABOUT A DISK THAT IS NOT THERE — issue #534.
+       *
+       * `assertProjectAvailable` above has already refused an unavailable project,
+       * so by here the answer is `"available"` and this is the value the cut below
+       * is handed rather than a second probe: one reading, one refusal, no chance
+       * of the ladder and the guard disagreeing about a cable between two lines.
+       *
+       * AND THAT IS ALSO WHY THERE IS NO SILENT DOWNGRADE LEFT HERE. The fallback
+       * to `local` exists for an UNVERSIONED project — a real directory with no
+       * `.git` — and it was reachable by an unplugged one too, because
+       * `isGitWorkTree` answers "not a repository" for a path it cannot read. That
+       * turned a cable into a session quietly pointed at a dead path in a mode
+       * nobody asked for. An unreadable project now never reaches this line.
+       */
+      const availability = project === undefined ? undefined : this.projectAvailability(project);
+      const preferred = project === undefined ? "local" : (project.envMode ?? this.getSessionDefaults().envMode);
+      const envMode =
+        project === undefined ? "local" : (input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local"));
+      if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
+        throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
+      }
+      const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
+      const driver = chosen?.driver ?? input.driver ?? "claude";
+      if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
+        throw new EngineStateError("invalid_request", "unknown provider driver");
+      }
+      if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
+      /**
+       * THE WORKTREE IS PLANNED HERE AND CUT IN THE BACKGROUND — issue #496.
+       *
+       * It used to be cut right here, synchronously, "BEFORE the session document
+       * is written" so that no session could exist without its workspace. That
+       * ordering was right and its cost was the whole daemon: `git worktree add`
+       * on a large checkout is seconds of a blocked event loop, and for those
+       * seconds every cockpit's poll and every agent's stream stopped.
+       *
+       * WHAT SPLITS, AND WHERE THE LINE IS. Everything whose answer is a REFUSAL
+       * stays on this call — a directory that is not a repository, a base ref that
+       * does not resolve, a branch name the engine will not create. Those are bad
+       * requests and the caller is still here to be told. What moves is the one
+       * expensive step, `worktree add` itself, and its failures land on the row
+       * (`SessionPreparation`) because by then there is nobody left to answer.
+       *
+       * THE ROW IS COMPLETE FROM THE FIRST INSTANT even so: the path and the
+       * branch are decided by `planSessionWorktree` without touching git, so the
+       * rail's most stable identifier is never the field that flickers. What is
+       * missing for those seconds is the directory, and the row says so.
+       */
+      const cut =
+        envMode === "worktree" && !input.draft && project !== undefined
+          ? (() => {
+              const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
+              // The repository probe inside this is the same one the
+              // omitted-`envMode` ladder above makes, and it has to be made
+              // again: that one only runs when nobody stated a mode, and a
+              // STATED `worktree` on an unversioned project must still refuse
+              // rather than open a session with nowhere to work.
+              return prepareSessionWorktree(this.git, {
+                engineRoot: this.paths.root,
+                projectRoot: project.root,
+                projectName: project.name,
+                sessionId: id,
+                ...(availability !== undefined ? { availability } : {}),
+                ...(branchSlug !== undefined ? { branchSlug } : {}),
+                ...(input.baseRef !== undefined ? { baseRef: input.baseRef } : {}),
+                ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
+              });
+            })()
+          : undefined;
+      const workspace: Session["workspace"] =
+        cut !== undefined
+          ? // `baseRef` is stored NOW rather than when the cut lands: it is the
+            // commit the checkout will start from, so a reader asking "what has
+            // this session done" has its anchor from the first instant.
+            { mode: "worktree" as const, path: cut.plan.path, branch: cut.plan.branch, baseRef: cut.baseSha }
+          : project === undefined
+            ? // NO PROJECT MEANS NO DIRECTORY — see `SessionWorkspace`'s `none`
+              // variant. There is nothing to resolve a base against either: a
+              // base is a commit, and there is no repository here.
+              { mode: "none" as const }
+            : (() => {
+              /**
+               * A LOCAL SESSION GETS A BASE TOO, which it never used to.
+               *
+               * Without it "what has this session done to the repository" was only
+               * answerable for worktree sessions: `git status` forgets a change the
+               * instant the agent commits it, so a session that committed its work
+               * reviewed as having done nothing. Resolved at creation and stored,
+               * because HEAD moves — reading it later would answer a different
+               * question every time.
+               *
+               * An unversioned directory is a supported configuration (`envMode:
+               * "local"` exists for exactly that), so a failure here leaves the
+               * base absent rather than refusing the session.
+               */
+              const head = this.git(project.root, ["rev-parse", "HEAD"]);
+              const baseRef = head.status === 0 ? head.stdout.trim() : "";
+              return { mode: "local" as const, path: project.root, ...(baseRef ? { baseRef } : {}) };
+            })();
+      const session: Session = {
+        id,
+        // Written only when there IS one. An explicit `undefined` would be a
+        // second spelling of absent on a field whose absence is the statement.
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+        environmentId: "local",
+        title: input.title?.trim() || "New session",
+        state: "active",
+        // Only ever written when it is TRUE. An explicit `"human"` on every
+        // session document would be a second spelling of absent, and the two
+        // would drift the first time a reader forgot one of them.
+        ...(input.origin === "session" ? { origin: "session" as const } : {}),
+        ...(input.startedFrom
+          ? { startedFrom: { sessionId: input.startedFrom.sessionId, ...(input.startedFrom.runId ? { runId: input.startedFrom.runId } : {}) } }
+          : {}),
+        createdAt: at,
+        updatedAt: at,
+        // The instance is the ROUTING key and the driver is descriptive, so the
+        // two are derived together here rather than picked independently — a
+        // session routed to Claude while claiming to be a Codex session is the
+        // one inconsistency this split exists to make impossible.
+        providerInstanceId: chosen?.id ?? defaultInstanceIdForDriver(driver),
+        driver,
+        /**
+         * THE PROJECT'S DEFAULT MODEL, when it names one this session can run.
+         *
+         * GUARDED ON THE INSTANCE rather than applied blind: a selection is a
+         * MODEL ON A LOGIN, so a Claude default carried onto a session the caller
+         * routed to Codex would name a model that login has never heard of. The
+         * project's answer therefore applies when this session lands on the login
+         * it was stored against, and is silently not applied otherwise — which is
+         * the honest outcome, because the reader's sentence was "conversations in
+         * this project open on THIS", and this is not that conversation.
+         *
+         * ITS OPTIONS COME WITH IT, less any the model no longer offers — see
+         * `supportedOptions`.
+         */
+        ...(() => {
+          if (!project?.defaultModel || project.defaultModel.instanceId !== (chosen?.id ?? defaultInstanceIdForDriver(driver))) return {};
+          const model = this.supportedOptions(driver, project.defaultModel);
+          return model ? { model } : {};
+        })(),
+        workspace,
+        // The directory is not there yet; `prepareWorktree` below clears this or
+        // flips it to `failed`. Absent means ready, which is every other session.
+        ...(cut !== undefined ? { preparation: { state: "preparing" as const, at } } : {}),
+        envMode,
+        ...(input.draft ? { draft: {
+          ...(input.baseRef ? { baseRef: input.baseRef } : {}),
+          ...(input.branchName ? { branchName: input.branchName } : {}),
+          ...(input.branchSlug ? { branchSlug: input.branchSlug } : {}),
+        } } : {}),
+        /**
+         * THE POSTURE'S DEFAULT, CAPPED BY THE CREATOR'S OWN MODE — #541 G1.
+         *
+         * `sessions_create` parks for a person, so the gate was never bypassed.
+         * What the approval SAID was the problem: a person approved "create a
+         * session" and got "a session that will not ask again", because every
+         * session an agent made landed in `auto` — file changes and commands
+         * auto-accepted — regardless of what its creator was allowed to do.
+         *
+         * WITH NO CEILING THIS IS EXACTLY THE LINE IT WAS. A human's own click
+         * has no creator to inherit from.
+         */
+        runtimeMode: (() => {
+          // The standing default replaces the detached posture only: an attended
+          // session is one somebody is watching, and it keeps asking.
+          const posture = detached ? (this.getSessionDefaults().runtimeMode ?? DEFAULT_DETACHED_RUNTIME_MODE) : DEFAULT_ATTENDED_RUNTIME_MODE;
+          return ceiling === undefined ? posture : narrowerRuntimeMode(posture, ceiling);
+        })(),
+        interactionMode: "default",
+        detached,
+        // Derived on every read (`withActivity`) and stripped before every write
+        // (`storedSession`); named here only because the wire shape requires it,
+        // and a session with no queue yet is genuinely idle.
+        activity: "idle",
+      };
+      this.writeDocument(metadata, storedSession(session));
+      // Through `writeQueue` like every other queue write: an id reused after a
+      // delete must not find the old session's cached queue waiting for it.
+      this.writeQueue(id, emptyQueue(id));
+      this.appendEvent(id, { type: "session.created", session });
+      // AFTER the document, never before: the flip this schedules writes the same
+      // record, and a cut that finished first would be overwritten by the row that
+      // said it had not started.
+      if (cut !== undefined && project !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
+      return structuredClone(session);
+    });
   }
 
   /**
@@ -8540,143 +8528,145 @@ export class EngineStore {
       resumeAfterRateLimit?: boolean | null;
     },
   ): Session {
-    const session = this.getSession(sessionId);
-    if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
+    return this.executeCommand("updateSession", () => {
+      const session = this.getSession(sessionId);
+      if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
 
-    const next: Session = { ...session };
-    if (patch.title !== undefined) {
-      const title = String(patch.title).trim();
-      if (!title) throw new EngineStateError("invalid_request", "session title cannot be empty");
-      next.title = title.slice(0, 200);
-    }
-    if (patch.runtimeMode !== undefined) {
-      if (!RUNTIME_MODES.has(patch.runtimeMode)) throw new EngineStateError("invalid_request", "unknown runtime mode");
-      next.runtimeMode = patch.runtimeMode;
-    }
-    if (patch.detached !== undefined) {
-      if (typeof patch.detached !== "boolean") throw new EngineStateError("invalid_request", "detached must be a boolean");
-      next.detached = patch.detached;
-    }
-    /**
-     * THE MODEL IS CHANGEABLE MID-SESSION; the PROVIDER is not.
-     *
-     * A turn is routed by `providerInstanceId`, and the provider owns the
-     * resume cursor that makes a session continuous — so swapping providers
-     * mid-conversation would strand the history. Swapping models within the
-     * session's own provider does not: the next claimed turn simply runs on the
-     * new one. Validated against the session's instance for exactly that
-     * reason.
-     */
-    if (patch.model !== undefined) {
+      const next: Session = { ...session };
+      if (patch.title !== undefined) {
+        const title = String(patch.title).trim();
+        if (!title) throw new EngineStateError("invalid_request", "session title cannot be empty");
+        next.title = title.slice(0, 200);
+      }
+      if (patch.runtimeMode !== undefined) {
+        if (!RUNTIME_MODES.has(patch.runtimeMode)) throw new EngineStateError("invalid_request", "unknown runtime mode");
+        next.runtimeMode = patch.runtimeMode;
+      }
+      if (patch.detached !== undefined) {
+        if (typeof patch.detached !== "boolean") throw new EngineStateError("invalid_request", "detached must be a boolean");
+        next.detached = patch.detached;
+      }
       /**
-       * `null` CLEARS IT, AND WITHOUT THIS THERE WAS NO WAY TO.
+       * THE MODEL IS CHANGEABLE MID-SESSION; the PROVIDER is not.
        *
-       * A client wanting "back to the provider's own defaults" has to send
-       * something, and `undefined` is not a thing you can send: `JSON.stringify`
-       * drops the key, so the engine saw no patch at all and left the old
-       * selection in place. The cockpit's "Provider default" row did exactly
-       * that — the pill said one thing, the session record said another, and
-       * the next reload snapped it back.
+       * A turn is routed by `providerInstanceId`, and the provider owns the
+       * resume cursor that makes a session continuous — so swapping providers
+       * mid-conversation would strand the history. Swapping models within the
+       * session's own provider does not: the next claimed turn simply runs on the
+       * new one. Validated against the session's instance for exactly that
+       * reason.
        */
-      if (patch.model === null) {
-        delete next.model;
-      } else {
-        const parsed = ModelSelection.safeParse(patch.model);
-        if (!parsed.success) throw new EngineStateError("invalid_request", "model selection is malformed");
-        if (parsed.data.instanceId !== session.providerInstanceId) {
-          throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
-        }
-        next.model = parsed.data;
-      }
-    }
-    /**
-     * SETTLING IS A DECISION ABOUT THE LIST, so it is stamped when it is made.
-     * `settledAt` is what lets a client tell "I shelved this a minute ago" from
-     * "I shelved this last week", which is the difference between a decision
-     * that still stands and one the world has moved past.
-     */
-    if (patch.settledOverride !== undefined) {
-      if (patch.settledOverride === null) {
-        delete next.settledOverride;
-        delete next.settledAt;
-        releaseDelegationSettle(next);
-      } else if (patch.settledOverride === "settled" || patch.settledOverride === "active") {
+      if (patch.model !== undefined) {
         /**
-         * A DECISION IN EITHER DIRECTION IS NOW THE PERSON'S — issue #378.
+         * `null` CLEARS IT, AND WITHOUT THIS THERE WAS NO WAY TO.
          *
-         * `settledBy` describes an engine settle, and both of these replace it:
-         * "active" contradicts it outright, and "settled" relabels the same
-         * shelf as somebody's own choice. Leaving the stamp would have the row
-         * explaining a decision nobody made.
-         *
-         * "settled" DOES NOT RECORD THE ERRAND, and the asymmetry is the point:
-         * `releaseDelegationSettle` exists to stop the engine re-shelving a row
-         * a person pulled back, and a person who settled it is not asking for
-         * that protection.
+         * A client wanting "back to the provider's own defaults" has to send
+         * something, and `undefined` is not a thing you can send: `JSON.stringify`
+         * drops the key, so the engine saw no patch at all and left the old
+         * selection in place. The cockpit's "Provider default" row did exactly
+         * that — the pill said one thing, the session record said another, and
+         * the next reload snapped it back.
          */
-        if (patch.settledOverride === "settled") delete next.settledBy;
-        else releaseDelegationSettle(next);
-        next.settledOverride = patch.settledOverride;
-        next.settledAt = this.now();
-      } else {
-        throw new EngineStateError("invalid_request", "settledOverride must be 'settled', 'active' or null");
+        if (patch.model === null) {
+          delete next.model;
+        } else {
+          const parsed = ModelSelection.safeParse(patch.model);
+          if (!parsed.success) throw new EngineStateError("invalid_request", "model selection is malformed");
+          if (parsed.data.instanceId !== session.providerInstanceId) {
+            throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
+          }
+          next.model = parsed.data;
+        }
       }
-    }
-    if (patch.resumeAfterRateLimit !== undefined) {
-      if (patch.resumeAfterRateLimit === null) delete next.resumeAfterRateLimit;
-      else if (typeof patch.resumeAfterRateLimit === "boolean") next.resumeAfterRateLimit = patch.resumeAfterRateLimit;
-      else throw new EngineStateError("invalid_request", "resumeAfterRateLimit must be a boolean or null");
-    }
-    /**
-     * EITHER WAY, THE RECORDED WAKE GOES — issues #490, #586.
-     *
-     * `wokeAt` belongs to the snooze that produced it. Cancelling clears the
-     * snooze, so there is nothing left for a wake to be about; setting a new one
-     * starts a new sleep, and a stale wake sitting on the record would mean
-     * `dueSnoozeWakes` never asks about this session again — the NEXT wake would
-     * be the one that goes unannounced, which is precisely the defect.
-     */
-    if (patch.snoozedUntil !== undefined) {
-      delete next.wokeAt;
-      if (patch.snoozedUntil === null) {
-        delete next.snoozedUntil;
-        delete next.snoozedAt;
-      } else {
-        if (!Number.isFinite(patch.snoozedUntil)) throw new EngineStateError("invalid_request", "snoozedUntil must be a timestamp");
-        next.snoozedUntil = Math.floor(patch.snoozedUntil);
-        // BOTH STAMPS, ALWAYS. A wake time with no "set at" cannot answer "has
-        // anything happened since?", which is the whole of the early-wake rule.
-        next.snoozedAt = this.now();
+      /**
+       * SETTLING IS A DECISION ABOUT THE LIST, so it is stamped when it is made.
+       * `settledAt` is what lets a client tell "I shelved this a minute ago" from
+       * "I shelved this last week", which is the difference between a decision
+       * that still stands and one the world has moved past.
+       */
+      if (patch.settledOverride !== undefined) {
+        if (patch.settledOverride === null) {
+          delete next.settledOverride;
+          delete next.settledAt;
+          releaseDelegationSettle(next);
+        } else if (patch.settledOverride === "settled" || patch.settledOverride === "active") {
+          /**
+           * A DECISION IN EITHER DIRECTION IS NOW THE PERSON'S — issue #378.
+           *
+           * `settledBy` describes an engine settle, and both of these replace it:
+           * "active" contradicts it outright, and "settled" relabels the same
+           * shelf as somebody's own choice. Leaving the stamp would have the row
+           * explaining a decision nobody made.
+           *
+           * "settled" DOES NOT RECORD THE ERRAND, and the asymmetry is the point:
+           * `releaseDelegationSettle` exists to stop the engine re-shelving a row
+           * a person pulled back, and a person who settled it is not asking for
+           * that protection.
+           */
+          if (patch.settledOverride === "settled") delete next.settledBy;
+          else releaseDelegationSettle(next);
+          next.settledOverride = patch.settledOverride;
+          next.settledAt = this.now();
+        } else {
+          throw new EngineStateError("invalid_request", "settledOverride must be 'settled', 'active' or null");
+        }
       }
-    }
-    // Nothing changed: no write, no event. A client polling a "save" button
-    // should not fill the journal with rows that say nothing happened.
-    if (
-      next.title === session.title &&
-      next.runtimeMode === session.runtimeMode &&
-      next.detached === session.detached &&
-      next.settledOverride === session.settledOverride &&
-      next.snoozedUntil === session.snoozedUntil &&
-      // Or a cancel on an already-woken row would clear the recorded wake in
-      // `next` and then be dropped here as "nothing changed", leaving the stale
-      // stamp on disk with no event to say it went.
-      next.wokeAt === session.wokeAt &&
-      next.resumeAfterRateLimit === session.resumeAfterRateLimit &&
-      // COMPARED WHOLE, not field by field. The hand-written version listed
-      // `model` and `effort`, so when the selection grew a context window and a
-      // fast-mode switch, a patch that changed only those looked like a no-op
-      // and was silently dropped — the write never happened and the event never
-      // fired. Serialising cannot fall behind the shape it is comparing.
-      JSON.stringify(next.model ?? null) === JSON.stringify(session.model ?? null)
-    ) {
-      return structuredClone(session);
-    }
-    next.updatedAt = this.now();
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
-    this.appendEvent(sessionId, { type: "session.updated", session: next });
-    // A member settled before it reported ends its cohort's wait (`reviewCohorts`).
-    if (next.settledOverride === "settled" && session.settledOverride !== "settled") this.reviewCohorts();
-    return structuredClone(next);
+      if (patch.resumeAfterRateLimit !== undefined) {
+        if (patch.resumeAfterRateLimit === null) delete next.resumeAfterRateLimit;
+        else if (typeof patch.resumeAfterRateLimit === "boolean") next.resumeAfterRateLimit = patch.resumeAfterRateLimit;
+        else throw new EngineStateError("invalid_request", "resumeAfterRateLimit must be a boolean or null");
+      }
+      /**
+       * EITHER WAY, THE RECORDED WAKE GOES — issues #490, #586.
+       *
+       * `wokeAt` belongs to the snooze that produced it. Cancelling clears the
+       * snooze, so there is nothing left for a wake to be about; setting a new one
+       * starts a new sleep, and a stale wake sitting on the record would mean
+       * `dueSnoozeWakes` never asks about this session again — the NEXT wake would
+       * be the one that goes unannounced, which is precisely the defect.
+       */
+      if (patch.snoozedUntil !== undefined) {
+        delete next.wokeAt;
+        if (patch.snoozedUntil === null) {
+          delete next.snoozedUntil;
+          delete next.snoozedAt;
+        } else {
+          if (!Number.isFinite(patch.snoozedUntil)) throw new EngineStateError("invalid_request", "snoozedUntil must be a timestamp");
+          next.snoozedUntil = Math.floor(patch.snoozedUntil);
+          // BOTH STAMPS, ALWAYS. A wake time with no "set at" cannot answer "has
+          // anything happened since?", which is the whole of the early-wake rule.
+          next.snoozedAt = this.now();
+        }
+      }
+      // Nothing changed: no write, no event. A client polling a "save" button
+      // should not fill the journal with rows that say nothing happened.
+      if (
+        next.title === session.title &&
+        next.runtimeMode === session.runtimeMode &&
+        next.detached === session.detached &&
+        next.settledOverride === session.settledOverride &&
+        next.snoozedUntil === session.snoozedUntil &&
+        // Or a cancel on an already-woken row would clear the recorded wake in
+        // `next` and then be dropped here as "nothing changed", leaving the stale
+        // stamp on disk with no event to say it went.
+        next.wokeAt === session.wokeAt &&
+        next.resumeAfterRateLimit === session.resumeAfterRateLimit &&
+        // COMPARED WHOLE, not field by field. The hand-written version listed
+        // `model` and `effort`, so when the selection grew a context window and a
+        // fast-mode switch, a patch that changed only those looked like a no-op
+        // and was silently dropped — the write never happened and the event never
+        // fired. Serialising cannot fall behind the shape it is comparing.
+        JSON.stringify(next.model ?? null) === JSON.stringify(session.model ?? null)
+      ) {
+        return structuredClone(session);
+      }
+      next.updatedAt = this.now();
+      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
+      this.appendEvent(sessionId, { type: "session.updated", session: next });
+      // A member settled before it reported ends its cohort's wait (`reviewCohorts`).
+      if (next.settledOverride === "settled" && session.settledOverride !== "settled") this.reviewCohorts();
+      return structuredClone(next);
+    });
   }
 
   /**
@@ -8742,26 +8732,28 @@ export class EngineStore {
    * refused rather than quietly accepted.
    */
   markSessionRead(sessionId: string, runId: string): Session {
-    assertId(runId, "run id");
-    const session = this.getSession(sessionId);
-    const turn = this.readQueue(sessionId).turns.find((entry) => entry.runId === runId);
-    if (!turn || !isResultTurn(turn)) {
-      throw new EngineStateError("invalid_request", "read receipt must name a completed, failed or stopped turn in this session");
-    }
-    if (turn.sequence <= (session.lastReadTurnSequence ?? 0)) return session;
-    session.lastReadTurnSequence = turn.sequence;
-    session.readAt = this.now();
-    /**
-     * `updatedAt` IS DELIBERATELY NOT TOUCHED. It dates the session's work,
-     * and the inactivity clock is measured from it — so stamping it here would
-     * mean opening a settled session pushed it back into the list, and reading
-     * a row would restart the very clock that is supposed to shelve it. Being
-     * read is a fact about the reader, not about the session; `readAt` is
-     * where the inactivity rule picks it up instead.
-     */
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-    this.appendEvent(sessionId, { type: "session.updated", session });
-    return structuredClone(session);
+    return this.executeCommand("markSessionRead", () => {
+      assertId(runId, "run id");
+      const session = this.getSession(sessionId);
+      const turn = this.readQueue(sessionId).turns.find((entry) => entry.runId === runId);
+      if (!turn || !isResultTurn(turn)) {
+        throw new EngineStateError("invalid_request", "read receipt must name a completed, failed or stopped turn in this session");
+      }
+      if (turn.sequence <= (session.lastReadTurnSequence ?? 0)) return session;
+      session.lastReadTurnSequence = turn.sequence;
+      session.readAt = this.now();
+      /**
+       * `updatedAt` IS DELIBERATELY NOT TOUCHED. It dates the session's work,
+       * and the inactivity clock is measured from it — so stamping it here would
+       * mean opening a settled session pushed it back into the list, and reading
+       * a row would restart the very clock that is supposed to shelve it. Being
+       * read is a fact about the reader, not about the session; `readAt` is
+       * where the inactivity rule picks it up instead.
+       */
+      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+      this.appendEvent(sessionId, { type: "session.updated", session });
+      return structuredClone(session);
+    });
   }
 
   getSession(sessionId: string): Session {
@@ -9826,297 +9818,299 @@ export class EngineStore {
       restartOrigin?: NonNullable<Turn["restartOrigin"]>;
     },
   ): { turn: Turn; replayed: boolean } {
-    assertId(input.runId, "run id");
-    // A BLANK MESSAGE WITH SOMETHING ATTACHED is judged below, once the
-    // attachments are resolved and their types known — see `turnHasContent`.
-    const blankWithFiles =
-      typeof input.input === "string" && input.input.trim() === "" && input.kind !== "compact" && (input.attachments?.length ?? 0) > 0;
-    if (!blankWithFiles) assertText(input.input);
-    /**
-     * EXACTLY ONE COMPANION, AND NOW THERE ARE THREE OF THEM — issue #543.
-     *
-     * A `session`-origin turn carries a wake reason or a sender; a `schedule`
-     * one carries `scheduleOrigin`. WIDENED RATHER THAN BORROWED: a schedule is
-     * not a session, so passing a fake `sender` to satisfy the old shape would
-     * put every scheduled turn into the "who sent this" surfaces as a peer
-     * message — a lie told to an invariant rather than a change to it.
-     */
-    const companions =
-      Number(input.wakeReason !== undefined) +
-      Number(input.sender !== undefined) +
-      Number(input.scheduleOrigin !== undefined) +
-      Number(input.restartOrigin !== undefined);
-    const wants = input.origin === "session" || input.origin === "schedule" || input.origin === "restart" ? 1 : 0;
-    if (companions !== wants) {
-      throw new EngineStateError("invalid_request", "a session- or schedule-origin turn carries exactly one companion, and only such a turn does");
-    }
-    if (input.origin === "schedule" && input.scheduleOrigin === undefined) {
-      throw new EngineStateError("invalid_request", "a schedule-origin turn names the schedule that started it");
-    }
-    if (input.origin === "restart" && input.restartOrigin === undefined) {
-      throw new EngineStateError("invalid_request", "a restart-origin turn names the restart that started it");
-    }
-    const kind = input.kind === "compact" ? "compact" : undefined;
-    const session = this.getSession(sessionId);
-    // A MESSAGE TO A RELEASED SESSION BRINGS ITS CHECKOUT BACK; the turn waits
-    // on `preparing` like it does for a first cut. Checked on the read already
-    // made, so an ordinary message costs no extra parse of the queue.
-    if (session.workspace.mode === "worktree" && session.workspace.released) this.restoreSessionWorktree(sessionId);
-    if (kind === "compact" && !PROVIDER_CAPABILITIES[session.driver].compaction)
-      throw new EngineStateError("conflict", "this provider does not support manual compaction");
-    const queue = this.readQueue(sessionId);
-    const known = queue.turns.find((turn) => turn.runId === input.runId);
-    if (known) {
-      if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
-      return { turn: structuredClone(known), replayed: true };
-    }
-    /**
-     * A HUMAN STOP LATCHES OUT PEERS. The latch was written for a runaway
-     * orchestrator: a person presses Stop, a coordinator two rooms away has not
-     * noticed, and its next `sessions_send` restarts exactly the work that was
-     * just ended. Nobody decided that, which is why it refuses — wake included.
-     * Only a human message on the session itself clears it, below.
-     */
-    if (input.origin === "session" && session.agentMessagesBlocked) {
-      throw new EngineStateError("conflict", "this session was stopped by its user; agent messages cannot restart it. Wait for a new human message.");
-    }
-    /**
-     * NO NEW WORK ON A PUT-AWAY PROJECT — and this is the line that makes that
-     * true for the turns nobody typed. A peer's subscription firing an hour
-     * from now arrives here as an `origin: "session"` wake, and without this it
-     * would start a provider on a project the person removed. `fireSubscriptions`
-     * already treats a `conflict` as "the subscriber cannot take this" and
-     * writes the reason to that session's own journal, so the wake is dropped
-     * visibly rather than lost.
-     */
-    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
-    /**
-     * A MESSAGE WHILE A TURN RUNS IS A STEER, not a queued follow-up. This
-     * went through three shapes: a conflict (the human waited), then a queue
-     * with a "Send now" button (the human chose), and now what T3 Code does
-     * and what every running CLI does when you type at it — the words go
-     * into the live turn the moment they arrive, and the same turn continues.
-     * The steer is attempted at the bottom of this method; the cases where it
-     * cannot happen (nothing running, the provider compacting, a claim not yet
-     * marked running) leave the turn `queued`, where the worker picks it up as
-     * the next turn. So `queued` is the fallback, never the plan.
-     *
-     * Only ONE turn executes at a time and that has not changed: `claimTurn`
-     * refuses while any turn is claimed or running, and picks the OLDEST queued
-     * one. The cap below counts everything waiting — queued or mid-steer — so
-     * a runaway client cannot grow the queue file without bound.
-     */
-    const passive = input.origin === "session" && input.agentDelivery === "passive";
-    const queued = queue.turns.filter((turn) => turn.state === "queued" || turn.state === "steering").length;
-    if (!passive && queued >= MAX_QUEUED_TURNS) {
-      throw new EngineStateError("conflict", "session already has the maximum number of queued turns");
-    }
-    /**
-     * AN AMBIGUOUS TURN NO LONGER REFUSES THE HUMAN'S NEXT MESSAGE, and the
-     * refusal that used to live here was the whole of the reported bug.
-     *
-     * It read "session has an ambiguous turn that must be resolved first" and
-     * it was on the wrong verb. Measured before the change: a session that lost
-     * a turn to a restart accepted NO new message, so the only way forward was
-     * the recovery card's "Retry", which resubmits the ORIGINAL prompt — and
-     * the thing a person actually wanted, "carry on from what you have", was
-     * the one thing the engine would not take. Meanwhile the same ambiguity did
-     * not stop `claimTurn` from dispatching work queued BEFORE the crash, so
-     * un-reviewed pre-crash messages resumed the provider conversation with
-     * nobody's decision behind them. Exactly backwards.
-     *
-     * The invariant the refusal was reaching for is real, and it now lives on
-     * `claimTurn` where it belongs: nothing EXECUTES in this session until a
-     * human has decided about the ambiguous turn. Accepting a message costs
-     * nothing and settles nothing; running one is the act that can duplicate a
-     * side effect.
-     */
+    return this.executeCommand("submitTurn", () => {
+      assertId(input.runId, "run id");
+      // A BLANK MESSAGE WITH SOMETHING ATTACHED is judged below, once the
+      // attachments are resolved and their types known — see `turnHasContent`.
+      const blankWithFiles =
+        typeof input.input === "string" && input.input.trim() === "" && input.kind !== "compact" && (input.attachments?.length ?? 0) > 0;
+      if (!blankWithFiles) assertText(input.input);
+      /**
+       * EXACTLY ONE COMPANION, AND NOW THERE ARE THREE OF THEM — issue #543.
+       *
+       * A `session`-origin turn carries a wake reason or a sender; a `schedule`
+       * one carries `scheduleOrigin`. WIDENED RATHER THAN BORROWED: a schedule is
+       * not a session, so passing a fake `sender` to satisfy the old shape would
+       * put every scheduled turn into the "who sent this" surfaces as a peer
+       * message — a lie told to an invariant rather than a change to it.
+       */
+      const companions =
+        Number(input.wakeReason !== undefined) +
+        Number(input.sender !== undefined) +
+        Number(input.scheduleOrigin !== undefined) +
+        Number(input.restartOrigin !== undefined);
+      const wants = input.origin === "session" || input.origin === "schedule" || input.origin === "restart" ? 1 : 0;
+      if (companions !== wants) {
+        throw new EngineStateError("invalid_request", "a session- or schedule-origin turn carries exactly one companion, and only such a turn does");
+      }
+      if (input.origin === "schedule" && input.scheduleOrigin === undefined) {
+        throw new EngineStateError("invalid_request", "a schedule-origin turn names the schedule that started it");
+      }
+      if (input.origin === "restart" && input.restartOrigin === undefined) {
+        throw new EngineStateError("invalid_request", "a restart-origin turn names the restart that started it");
+      }
+      const kind = input.kind === "compact" ? "compact" : undefined;
+      const session = this.getSession(sessionId);
+      // A MESSAGE TO A RELEASED SESSION BRINGS ITS CHECKOUT BACK; the turn waits
+      // on `preparing` like it does for a first cut. Checked on the read already
+      // made, so an ordinary message costs no extra parse of the queue.
+      if (session.workspace.mode === "worktree" && session.workspace.released) this.restoreSessionWorktree(sessionId);
+      if (kind === "compact" && !PROVIDER_CAPABILITIES[session.driver].compaction)
+        throw new EngineStateError("conflict", "this provider does not support manual compaction");
+      const queue = this.readQueue(sessionId);
+      const known = queue.turns.find((turn) => turn.runId === input.runId);
+      if (known) {
+        if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
+        return { turn: structuredClone(known), replayed: true };
+      }
+      /**
+       * A HUMAN STOP LATCHES OUT PEERS. The latch was written for a runaway
+       * orchestrator: a person presses Stop, a coordinator two rooms away has not
+       * noticed, and its next `sessions_send` restarts exactly the work that was
+       * just ended. Nobody decided that, which is why it refuses — wake included.
+       * Only a human message on the session itself clears it, below.
+       */
+      if (input.origin === "session" && session.agentMessagesBlocked) {
+        throw new EngineStateError("conflict", "this session was stopped by its user; agent messages cannot restart it. Wait for a new human message.");
+      }
+      /**
+       * NO NEW WORK ON A PUT-AWAY PROJECT — and this is the line that makes that
+       * true for the turns nobody typed. A peer's subscription firing an hour
+       * from now arrives here as an `origin: "session"` wake, and without this it
+       * would start a provider on a project the person removed. `fireSubscriptions`
+       * already treats a `conflict` as "the subscriber cannot take this" and
+       * writes the reason to that session's own journal, so the wake is dropped
+       * visibly rather than lost.
+       */
+      if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
+      /**
+       * A MESSAGE WHILE A TURN RUNS IS A STEER, not a queued follow-up. This
+       * went through three shapes: a conflict (the human waited), then a queue
+       * with a "Send now" button (the human chose), and now what T3 Code does
+       * and what every running CLI does when you type at it — the words go
+       * into the live turn the moment they arrive, and the same turn continues.
+       * The steer is attempted at the bottom of this method; the cases where it
+       * cannot happen (nothing running, the provider compacting, a claim not yet
+       * marked running) leave the turn `queued`, where the worker picks it up as
+       * the next turn. So `queued` is the fallback, never the plan.
+       *
+       * Only ONE turn executes at a time and that has not changed: `claimTurn`
+       * refuses while any turn is claimed or running, and picks the OLDEST queued
+       * one. The cap below counts everything waiting — queued or mid-steer — so
+       * a runaway client cannot grow the queue file without bound.
+       */
+      const passive = input.origin === "session" && input.agentDelivery === "passive";
+      const queued = queue.turns.filter((turn) => turn.state === "queued" || turn.state === "steering").length;
+      if (!passive && queued >= MAX_QUEUED_TURNS) {
+        throw new EngineStateError("conflict", "session already has the maximum number of queued turns");
+      }
+      /**
+       * AN AMBIGUOUS TURN NO LONGER REFUSES THE HUMAN'S NEXT MESSAGE, and the
+       * refusal that used to live here was the whole of the reported bug.
+       *
+       * It read "session has an ambiguous turn that must be resolved first" and
+       * it was on the wrong verb. Measured before the change: a session that lost
+       * a turn to a restart accepted NO new message, so the only way forward was
+       * the recovery card's "Retry", which resubmits the ORIGINAL prompt — and
+       * the thing a person actually wanted, "carry on from what you have", was
+       * the one thing the engine would not take. Meanwhile the same ambiguity did
+       * not stop `claimTurn` from dispatching work queued BEFORE the crash, so
+       * un-reviewed pre-crash messages resumed the provider conversation with
+       * nobody's decision behind them. Exactly backwards.
+       *
+       * The invariant the refusal was reaching for is real, and it now lives on
+       * `claimTurn` where it belongs: nothing EXECUTES in this session until a
+       * human has decided about the ambiguous turn. Accepting a message costs
+       * nothing and settles nothing; running one is the act that can duplicate a
+       * side effect.
+       */
 
-    /**
-     * ONE COMPACTION AT A TIME. The gesture is idempotent in meaning — "squeeze
-     * the context" — so a second press while the first is queued or running
-     * has nothing to add, and letting it through is how one session ended up
-     * with three "/compact" turns in a row.
-     */
-    if (kind === "compact" && queue.turns.some((turn) => turn.kind === "compact" && ACTIVE_TURN_STATES.has(turn.state))) {
-      throw new EngineStateError("conflict", "a compaction is already queued or running on this session");
-    }
-    const at = this.now();
-    const turn: Turn = {
-      runId: input.runId,
-      sessionId,
-      sequence: queue.nextSequence++,
-      input: input.input,
-      ...(kind ? { kind } : {}),
-      ...(input.origin === "session" && input.wakeReason ? { origin: "session" as const, wakeReason: input.wakeReason } : {}),
-      ...(input.origin === "session" && input.sender
-        ? { origin: "session" as const, sender: input.sender.sessionId ? { sessionId: input.sender.sessionId } : {} }
-        : {}),
-      // A CLOCK STARTED THIS ONE (#543), named so a transcript can say why it
-      // ran rather than drawing it as something a person typed.
-      ...(input.origin === "schedule" && input.scheduleOrigin ? { origin: "schedule" as const, scheduleOrigin: input.scheduleOrigin } : {}),
-      ...(input.origin === "restart" && input.restartOrigin ? { origin: "restart" as const, restartOrigin: input.restartOrigin } : {}),
-      ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
-      ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
-      ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
-      ...(input.corrects ? { corrects: input.corrects } : {}),
-      ...(input.agentNotice ? { agentNotice: input.agentNotice } : {}),
-      ...(input.notification ? { notification: input.notification } : {}),
-      ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
-      ...(passive ? { completedAt: at, resultText: "" } : {}),
-      state: passive ? "completed" : "queued",
-      acceptedAt: at,
-      updatedAt: at,
-      ...(() => {
-        const ids = input.attachments ?? [];
-        if (ids.length === 0) return {};
-        if (ids.length > MAX_TURN_ATTACHMENTS) throw new EngineStateError("invalid_request", "too many attachments on one turn");
-        const index = this.readAttachments(sessionId);
-        const attachments = ids.map((id) => {
-          const found = index.get(id);
-          // Loud rather than silent: a message that says "look at this" and
-          // arrives with nothing attached is worse than one that fails to send.
-          if (!found) throw new EngineStateError("not_found", "attachment does not exist on this session");
-          return found;
-        });
-        return { attachments };
-      })(),
       /**
-       * PER-TURN MODEL, STAMPED WITH THE SESSION'S INSTANCE.
-       *
-       * The client sends only `model`/`effort` — `TurnModelSelection` has no
-       * instance field — and the instance comes from the session here. That is
-       * what makes "the provider cannot change mid-conversation" true by
-       * construction: there is no wire shape that could ask for it.
+       * ONE COMPACTION AT A TIME. The gesture is idempotent in meaning — "squeeze
+       * the context" — so a second press while the first is queued or running
+       * has nothing to add, and letting it through is how one session ended up
+       * with three "/compact" turns in a row.
        */
-      ...(input.model
-        ? {
-            model: {
-              instanceId: session.providerInstanceId,
-              // EITHER MAY BE ABSENT. "The provider's default model, at maximum
-              // effort" is an ordinary thing to ask for, and spreading rather
-              // than assigning is what keeps it from being stored as an
-              // explicit `undefined` the engine would then hand to a driver.
-              ...(input.model.model ? { model: input.model.model } : {}),
-              ...(input.model.effort ? { effort: input.model.effort } : {}),
-              ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
-              ...(input.model.serviceTier ? { serviceTier: input.model.serviceTier } : {}),
-              ...(input.model.ultracode === undefined ? {} : { ultracode: input.model.ultracode }),
-            },
-          }
-        : {}),
-    };
-    if (!turnHasContent(turn.input, (turn.attachments ?? []).map((attachment) => attachment.mediaType))) {
-      throw new EngineStateError("invalid_request", "a message needs text or an image");
-    }
-    /** Scheduled after the document is written, never before — see `createSession`. */
-    let cut: { projectRoot: string; plan: WorktreePlan; baseSha: string } | undefined;
-    if (session.draft) {
-      if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
-      if (kind === "compact") throw new EngineStateError("conflict", "a browser draft has no conversation to compact");
-      if (session.envMode === "worktree") {
-        if (!session.projectId) throw new EngineStateError("conflict", "a worktree draft requires a project");
-        const project = this.getProject(session.projectId);
-        // Planned and refused here, cut in the background — `createSession`'s
-        // split, for `createSession`'s reason. The turn this promotion belongs
-        // to waits in the queue until the checkout lands; `claimTurn` is what
-        // holds it, and the row says why.
-        const planned = prepareSessionWorktree(this.git, {
-          engineRoot: this.paths.root, projectRoot: project.root, projectName: project.name, sessionId,
-          // The send that promotes a draft already went through
-          // `assertProjectAvailable`, so this is that reading rather than a
-          // second one — see the ladder in `createSession`.
-          availability: this.projectAvailability(project),
-          branchSlug: session.draft.branchSlug ?? derivedBranchFor(input.input, sessionId),
-          ...(session.draft.baseRef ? { baseRef: session.draft.baseRef } : {}),
-          ...(session.draft.branchName ? { branchName: session.draft.branchName } : {}),
-        });
-        session.workspace = { mode: "worktree", path: planned.plan.path, branch: planned.plan.branch, baseRef: planned.baseSha };
-        session.preparation = { state: "preparing", at };
-        cut = { projectRoot: project.root, ...planned };
+      if (kind === "compact" && queue.turns.some((turn) => turn.kind === "compact" && ACTIVE_TURN_STATES.has(turn.state))) {
+        throw new EngineStateError("conflict", "a compaction is already queued or running on this session");
       }
-      if (session.title === "Browser draft") {
-        const images = (turn.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
-        session.title = seedSessionTitle(input.input, images.map((attachment) => attachment.name)) || session.title;
+      const at = this.now();
+      const turn: Turn = {
+        runId: input.runId,
+        sessionId,
+        sequence: queue.nextSequence++,
+        input: input.input,
+        ...(kind ? { kind } : {}),
+        ...(input.origin === "session" && input.wakeReason ? { origin: "session" as const, wakeReason: input.wakeReason } : {}),
+        ...(input.origin === "session" && input.sender
+          ? { origin: "session" as const, sender: input.sender.sessionId ? { sessionId: input.sender.sessionId } : {} }
+          : {}),
+        // A CLOCK STARTED THIS ONE (#543), named so a transcript can say why it
+        // ran rather than drawing it as something a person typed.
+        ...(input.origin === "schedule" && input.scheduleOrigin ? { origin: "schedule" as const, scheduleOrigin: input.scheduleOrigin } : {}),
+        ...(input.origin === "restart" && input.restartOrigin ? { origin: "restart" as const, restartOrigin: input.restartOrigin } : {}),
+        ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
+        ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
+        ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
+        ...(input.corrects ? { corrects: input.corrects } : {}),
+        ...(input.agentNotice ? { agentNotice: input.agentNotice } : {}),
+        ...(input.notification ? { notification: input.notification } : {}),
+        ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
+        ...(passive ? { completedAt: at, resultText: "" } : {}),
+        state: passive ? "completed" : "queued",
+        acceptedAt: at,
+        updatedAt: at,
+        ...(() => {
+          const ids = input.attachments ?? [];
+          if (ids.length === 0) return {};
+          if (ids.length > MAX_TURN_ATTACHMENTS) throw new EngineStateError("invalid_request", "too many attachments on one turn");
+          const index = this.readAttachments(sessionId);
+          const attachments = ids.map((id) => {
+            const found = index.get(id);
+            // Loud rather than silent: a message that says "look at this" and
+            // arrives with nothing attached is worse than one that fails to send.
+            if (!found) throw new EngineStateError("not_found", "attachment does not exist on this session");
+            return found;
+          });
+          return { attachments };
+        })(),
+        /**
+         * PER-TURN MODEL, STAMPED WITH THE SESSION'S INSTANCE.
+         *
+         * The client sends only `model`/`effort` — `TurnModelSelection` has no
+         * instance field — and the instance comes from the session here. That is
+         * what makes "the provider cannot change mid-conversation" true by
+         * construction: there is no wire shape that could ask for it.
+         */
+        ...(input.model
+          ? {
+              model: {
+                instanceId: session.providerInstanceId,
+                // EITHER MAY BE ABSENT. "The provider's default model, at maximum
+                // effort" is an ordinary thing to ask for, and spreading rather
+                // than assigning is what keeps it from being stored as an
+                // explicit `undefined` the engine would then hand to a driver.
+                ...(input.model.model ? { model: input.model.model } : {}),
+                ...(input.model.effort ? { effort: input.model.effort } : {}),
+                ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
+                ...(input.model.serviceTier ? { serviceTier: input.model.serviceTier } : {}),
+                ...(input.model.ultracode === undefined ? {} : { ultracode: input.model.ultracode }),
+              },
+            }
+          : {}),
+      };
+      if (!turnHasContent(turn.input, (turn.attachments ?? []).map((attachment) => attachment.mediaType))) {
+        throw new EngineStateError("invalid_request", "a message needs text or an image");
       }
-      delete session.draft;
-      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-      if (cut) this.prepareWorktree(sessionId, cut.projectRoot, cut.plan, cut.baseSha);
-    }
-    /**
-     * PAUSED MEANS PAUSED. Every message that arrives while a human has the
-     * session paused — theirs, an agent's, a wake — is accepted and HELD, in
-     * order, behind whatever was already waiting. It is not steered into a
-     * running turn (there is none the pause allows) and it is not dispatched
-     * ahead of the backlog: a fresh message that jumped the queue would be
-     * the pause silently releasing itself. Resume, or release it by hand.
-     */
-    if (session.paused && !passive) turn.held = { at, reason: "session_paused" };
-    if (input.origin !== "session" && input.origin !== "restart" && kind !== "compact" && session.agentMessagesBlocked) {
-      delete session.agentMessagesBlocked;
-      delete session.agentMessagesBlockedAt;
-      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-    }
-    queue.turns.push(turn);
-    this.writeQueue(sessionId, queue);
-    this.touchSession(sessionId, at);
-    // Queueing a message is a human saying they are not done with this after
-    // all, so any shelf or snooze it was under is lifted.
-    if (!passive) this.wakeSessionForNewWork(sessionId);
-    // v1 emitted only `{ sequence }` here, which is why the client had to fetch
-    // a snapshot to learn the prompt. The whole turn rides the event now.
-    this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
-    if (passive) {
-      // Delivery completed, not a model turn: never claim, steer, or notify
-      // subscribers about a routine report. The payload remains inspectable.
-      // The ROW is still written — a passive report reaches no model but it
-      // does reach the transcript, and it is a notification there too.
+      /** Scheduled after the document is written, never before — see `createSession`. */
+      let cut: { projectRoot: string; plan: WorktreePlan; baseSha: string } | undefined;
+      if (session.draft) {
+        if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
+        if (kind === "compact") throw new EngineStateError("conflict", "a browser draft has no conversation to compact");
+        if (session.envMode === "worktree") {
+          if (!session.projectId) throw new EngineStateError("conflict", "a worktree draft requires a project");
+          const project = this.getProject(session.projectId);
+          // Planned and refused here, cut in the background — `createSession`'s
+          // split, for `createSession`'s reason. The turn this promotion belongs
+          // to waits in the queue until the checkout lands; `claimTurn` is what
+          // holds it, and the row says why.
+          const planned = prepareSessionWorktree(this.git, {
+            engineRoot: this.paths.root, projectRoot: project.root, projectName: project.name, sessionId,
+            // The send that promotes a draft already went through
+            // `assertProjectAvailable`, so this is that reading rather than a
+            // second one — see the ladder in `createSession`.
+            availability: this.projectAvailability(project),
+            branchSlug: session.draft.branchSlug ?? derivedBranchFor(input.input, sessionId),
+            ...(session.draft.baseRef ? { baseRef: session.draft.baseRef } : {}),
+            ...(session.draft.branchName ? { branchName: session.draft.branchName } : {}),
+          });
+          session.workspace = { mode: "worktree", path: planned.plan.path, branch: planned.plan.branch, baseRef: planned.baseSha };
+          session.preparation = { state: "preparing", at };
+          cut = { projectRoot: project.root, ...planned };
+        }
+        if (session.title === "Browser draft") {
+          const images = (turn.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
+          session.title = seedSessionTitle(input.input, images.map((attachment) => attachment.name)) || session.title;
+        }
+        delete session.draft;
+        this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+        if (cut) this.prepareWorktree(sessionId, cut.projectRoot, cut.plan, cut.baseSha);
+      }
+      /**
+       * PAUSED MEANS PAUSED. Every message that arrives while a human has the
+       * session paused — theirs, an agent's, a wake — is accepted and HELD, in
+       * order, behind whatever was already waiting. It is not steered into a
+       * running turn (there is none the pause allows) and it is not dispatched
+       * ahead of the backlog: a fresh message that jumped the queue would be
+       * the pause silently releasing itself. Resume, or release it by hand.
+       */
+      if (session.paused && !passive) turn.held = { at, reason: "session_paused" };
+      if (input.origin !== "session" && input.origin !== "restart" && kind !== "compact" && session.agentMessagesBlocked) {
+        delete session.agentMessagesBlocked;
+        delete session.agentMessagesBlockedAt;
+        this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+      }
+      queue.turns.push(turn);
+      this.writeQueue(sessionId, queue);
+      this.touchSession(sessionId, at);
+      // Queueing a message is a human saying they are not done with this after
+      // all, so any shelf or snooze it was under is lifted.
+      if (!passive) this.wakeSessionForNewWork(sessionId);
+      // v1 emitted only `{ sequence }` here, which is why the client had to fetch
+      // a snapshot to learn the prompt. The whole turn rides the event now.
+      this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
+      if (passive) {
+        // Delivery completed, not a model turn: never claim, steer, or notify
+        // subscribers about a routine report. The payload remains inspectable.
+        // The ROW is still written — a passive report reaches no model but it
+        // does reach the transcript, and it is a notification there too.
+        if (turn.notification) this.writeNotificationItem(sessionId, turn);
+        /**
+         * AND IT GOES IN THE MAILBOX, SO IT IS NOT LOST — issue #631 part 2.
+         *
+         * Passive is now only chosen when the recipient is BUSY or put away (see
+         * `submitAgentTurn`), and a busy session's next idle moment is exactly
+         * when held mail is meant to arrive. Holding it here puts a peer message
+         * on the same path a `settled_only` wake has taken since #550: merged
+         * with whatever else piled up, delivered as ONE turn by
+         * `flushPendingNotifications` on the next `completeTurn`, `failTurn`,
+         * `stopTurn` or `stopSession`.
+         *
+         * A SHELVED SESSION HOLDS IT INDEFINITELY, on purpose. The flush is
+         * guarded on a live turn, not on a shelf, so the mail simply waits — and
+         * `pendingNotifications` reports it to `sessions_status` meanwhile, which
+         * is the poll a coordinator that cares already has.
+         *
+         * A PASSIVE WAKE IS NOT MAIL (#919). The one passive wake there is, is
+         * the completion of a run whose `result` this session already has in
+         * front of its model — `fireSubscriptions` writes it for the record.
+         * Mailing it would deliver, at the next idle, the very turn the rule
+         * exists to prevent.
+         */
+        if (turn.notification && !turn.wakeReason && !input.foldedIntoWaitingWake) this.holdNotification(sessionId, turn.notification);
+        this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
+        return { turn: structuredClone(turn), replayed: false };
+      }
+      // A compaction is a gesture on the session, not words for the running
+      // model; it always waits its turn.
+      /**
+       * ONLY A PERSON, A TASK OR A BLOCKER INTERRUPTS A RUNNING TURN. Everything
+       * else a peer or a subscription sends waits for the turn to end: a result
+       * or a finished run mid-reasoning is the interruption the audit measured,
+       * and it is news that keeps.
+       */
+      const interrupts = turn.origin !== "session" || turn.agentIntent === "task" || turn.agentIntent === "blocker";
+      if (kind !== "compact" && interrupts && !session.paused && PROVIDER_CAPABILITIES[session.driver].liveSteering) {
+        const steered = this.steerIfRunning(sessionId, turn.runId);
+        // A STEERED NOTIFICATION'S ROW IS THE DRIVER'S, not this one's. The turn
+        // is being folded into a RUNNING one, so its row belongs on that turn's
+        // timeline in the order the provider actually received it — which only
+        // the seam that hands it over knows. See `onSteered` in the drivers.
+        if (steered) return { turn: steered, replayed: false };
+      }
       if (turn.notification) this.writeNotificationItem(sessionId, turn);
-      /**
-       * AND IT GOES IN THE MAILBOX, SO IT IS NOT LOST — issue #631 part 2.
-       *
-       * Passive is now only chosen when the recipient is BUSY or put away (see
-       * `submitAgentTurn`), and a busy session's next idle moment is exactly
-       * when held mail is meant to arrive. Holding it here puts a peer message
-       * on the same path a `settled_only` wake has taken since #550: merged
-       * with whatever else piled up, delivered as ONE turn by
-       * `flushPendingNotifications` on the next `completeTurn`, `failTurn`,
-       * `stopTurn` or `stopSession`.
-       *
-       * A SHELVED SESSION HOLDS IT INDEFINITELY, on purpose. The flush is
-       * guarded on a live turn, not on a shelf, so the mail simply waits — and
-       * `pendingNotifications` reports it to `sessions_status` meanwhile, which
-       * is the poll a coordinator that cares already has.
-       *
-       * A PASSIVE WAKE IS NOT MAIL (#919). The one passive wake there is, is
-       * the completion of a run whose `result` this session already has in
-       * front of its model — `fireSubscriptions` writes it for the record.
-       * Mailing it would deliver, at the next idle, the very turn the rule
-       * exists to prevent.
-       */
-      if (turn.notification && !turn.wakeReason && !input.foldedIntoWaitingWake) this.holdNotification(sessionId, turn.notification);
-      this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
       return { turn: structuredClone(turn), replayed: false };
-    }
-    // A compaction is a gesture on the session, not words for the running
-    // model; it always waits its turn.
-    /**
-     * ONLY A PERSON, A TASK OR A BLOCKER INTERRUPTS A RUNNING TURN. Everything
-     * else a peer or a subscription sends waits for the turn to end: a result
-     * or a finished run mid-reasoning is the interruption the audit measured,
-     * and it is news that keeps.
-     */
-    const interrupts = turn.origin !== "session" || turn.agentIntent === "task" || turn.agentIntent === "blocker";
-    if (kind !== "compact" && interrupts && !session.paused && PROVIDER_CAPABILITIES[session.driver].liveSteering) {
-      const steered = this.steerIfRunning(sessionId, turn.runId);
-      // A STEERED NOTIFICATION'S ROW IS THE DRIVER'S, not this one's. The turn
-      // is being folded into a RUNNING one, so its row belongs on that turn's
-      // timeline in the order the provider actually received it — which only
-      // the seam that hands it over knows. See `onSteered` in the drivers.
-      if (steered) return { turn: steered, replayed: false };
-    }
-    if (turn.notification) this.writeNotificationItem(sessionId, turn);
-    return { turn: structuredClone(turn), replayed: false };
+    });
   }
 
   /**
@@ -10177,10 +10171,12 @@ export class EngineStore {
    * of the change.
    */
   pauseSession(sessionId: string, _by: "human" | "session" = "human"): { session: Session; stopped?: Turn; held: number; already: boolean } {
-    const session = this.getSession(sessionId);
-    if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
-    const { live } = this.stopSession(sessionId);
-    return { session: this.withActivity(structuredClone(this.getSession(sessionId))), ...(live ? { stopped: live } : {}), held: 0, already: false };
+    return this.executeCommand("pauseSession", () => {
+      const session = this.getSession(sessionId);
+      if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
+      const { live } = this.stopSession(sessionId);
+      return { session: this.withActivity(structuredClone(this.getSession(sessionId))), ...(live ? { stopped: live } : {}), held: 0, already: false };
+    });
   }
 
   /**
@@ -10209,26 +10205,28 @@ export class EngineStore {
    * inventing one is not this fix.
    */
   resumeSession(sessionId: string): { session: Session; released: number; already: boolean } {
-    const session = this.getSession(sessionId);
-    if (!session.paused) return { session: this.withActivity(structuredClone(session)), released: 0, already: true };
-    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
-    const at = this.now();
-    const queue = this.readQueue(sessionId);
-    const released: Turn[] = [];
-    for (const turn of queue.turns) {
-      if (turn.state !== "queued" || turn.held?.reason !== "session_paused") continue;
-      delete turn.held;
-      turn.updatedAt = at;
-      released.push(turn);
-    }
-    if (released.length > 0) this.writeQueue(sessionId, queue);
-    delete session.paused;
-    session.updatedAt = at;
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-    for (const turn of released) this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
-    this.appendEvent(sessionId, { type: "session.resumed", released: released.length });
-    this.appendEvent(sessionId, { type: "session.updated", session });
-    return { session: this.withActivity(structuredClone(session)), released: released.length, already: false };
+    return this.executeCommand("resumeSession", () => {
+      const session = this.getSession(sessionId);
+      if (!session.paused) return { session: this.withActivity(structuredClone(session)), released: 0, already: true };
+      if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
+      const at = this.now();
+      const queue = this.readQueue(sessionId);
+      const released: Turn[] = [];
+      for (const turn of queue.turns) {
+        if (turn.state !== "queued" || turn.held?.reason !== "session_paused") continue;
+        delete turn.held;
+        turn.updatedAt = at;
+        released.push(turn);
+      }
+      if (released.length > 0) this.writeQueue(sessionId, queue);
+      delete session.paused;
+      session.updatedAt = at;
+      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+      for (const turn of released) this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
+      this.appendEvent(sessionId, { type: "session.resumed", released: released.length });
+      this.appendEvent(sessionId, { type: "session.updated", session });
+      return { session: this.withActivity(structuredClone(session)), released: released.length, already: false };
+    });
   }
 
   /**
@@ -10251,144 +10249,146 @@ export class EngineStore {
     input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string; corrects?: string },
     proof?: SenderProof,
   ): { turn: Turn; replayed: boolean } {
-    let sender: { sessionId?: string } = {};
-    if (proof) {
-      assertId(proof.sessionId, "sender session id");
-      const claimed = this.requireSenderClaim(proof);
-      sender = { sessionId: claimed.sessionId };
-    }
-    const intent = input.intent ?? "report";
-    /**
-     * IS ANYONE AWAITING THIS SENDER'S END? That question decides the DELIVERY
-     * of a `result` — awaited, it wakes; unawaited, it is passive activity.
-     *
-     * IT DOES NOT SPEND THE SUBSCRIPTION (#240). A worker used to send a
-     * result MID-TASK and keep going; consuming the one-shot here meant the
-     * `turn_completed` that actually ended the errand had no subscription left
-     * to fire on, and the coordinator waited for an end that never came — twice
-     * in one day before this was found. Only a TERMINAL event removes a `once`
-     * now, in `fireSubscriptions`, which is the one place that knows a turn
-     * ended. Since #919 that completion is recorded rather than delivered once
-     * the result is in front of the model — see `messageDeliveredTo` — and the
-     * contract asks for a result to be a run's LAST word.
-     */
-    const waiting = intent === "result" && sender.sessionId
-      ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
-      : undefined;
-    /**
-     * A REPORT NEVER OPENS A TURN — the session-tools audit, replacing #631
-     * part 2 and the report window (#723, #784).
-     *
-     * `report` and an unawaited `result` used to wake an IDLE recipient, so a
-     * coordinator finishing its reply was woken again to read a progress note
-     * and answer "noted". Now they are always mail: held, and handed over with
-     * the recipient's next turn, whatever starts it — a real wake, or the
-     * person's next message (`takeHeldMail`). Nothing is lost: the row is in the
-     * transcript at once and `sessions_status` lists what is held. A worker
-     * that needs the coordinator NOW sends a `blocker`.
-     */
-    /**
-     * A CORRECTION — issue #784, step 3. See `Turn.corrects` for the rule and
-     * `correctionOf` for how the earlier message's state is read. A retry of
-     * this same call (its run id already accepted) changes nothing.
-     */
-    const correction = input.corrects && !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
-      ? this.correctionOf(sessionId, input.corrects, sender.sessionId)
-      : undefined;
-    /**
-     * A COHORT HOLDS A MEMBER'S RESULT — see `Cohort`. It reaches the
-     * subscriber in the cohort's one notification, not as a wake of its own:
-     * recorded passive, kept out of the mailbox, and named on the member's line.
-     * A second result (a correction, say) replaces the first there.
-     */
-    const cohortHeld = intent === "result" && sender.sessionId !== undefined && this.cohortHolds(sessionId, sender.sessionId);
-    const delivery = !cohortHeld && (intent === "task" || intent === "blocker" || waiting || correction === "read" || correction === "queued")
-      ? "wake"
-      : "passive";
-    /**
-     * THE NOTICE IS MINTED HERE, ONCE, AND STORED — see `agent-notice.ts`.
-     *
-     * Here rather than in a driver or a client because this is the only place
-     * that knows all of it at once: the recipient (so the fetch call can name
-     * the session whose turn holds the body), the run id being created, the
-     * proven sender, and the intent the delivery was decided from. And STORED
-     * rather than derived on read because a turn's presentation must not depend
-     * on which reader computed it — the provider prompt, the desktop row, the
-     * phone and a later `sessions_read` all quote this same string.
-     *
-     * MINTED FOR EVERY INTENT, including the passive ones that never reach a
-     * model: the transcript row collapses to this line whatever the delivery
-     * was, and a report whose row had to invent its own summary would be the
-     * per-reader drift this field exists to prevent.
-     */
-    const scope = intent === "task" ? input.scope : undefined;
-    /**
-     * THE NOTICE AND THE NOTIFICATION ARE ONE STRING NOW (#550).
-     *
-     * `agentNotice` used to be minted here and the row, the prompt and a later
-     * `sessions_read` all quoted it. The notification carries the same text on
-     * `body` — so it is minted ONCE, in `notification.ts`, and `agentNotice` is
-     * DERIVED from it rather than computed a second time from the same inputs.
-     * Two mints of one sentence is two sentences waiting to disagree, and the
-     * contract's whole claim about this field is that they cannot.
-     */
-    const notification = peerNotification({
-      recipientSessionId: sessionId, runId: input.runId, body: input.input, intent,
-      ...(input.corrects ? { corrects: input.corrects } : {}),
-      ...(sender.sessionId ? { sender } : {}),
-      ...(scope ? { scope } : {}),
-    });
-    /**
-     * TWO MESSAGES FROM ONE RUN, ONE DELIVERY. A worker that sends a report and
-     * then a result in the same run, to a recipient that has not started on the
-     * first yet, used to queue two wakes and cost two turns for one errand. The
-     * second is folded into the first's notification (both bodies stay whole on
-     * their own turns, and the merged notice names both fetch calls); the
-     * second turn is written as history. Only while the first is still
-     * `queued` — once claimed it is in front of a model, and the second is news.
-     */
-    // Not for a correction: it replaces an earlier message rather than joining it.
-    const folds = !correction && delivery === "wake" && proof && sender.sessionId && FOLDING_INTENTS.has(intent)
-      ? this.waitingMessageFrom(sessionId, sender.sessionId, proof.runId, input.runId)
-      : undefined;
-    /**
-     * AND A MESSAGE FROM ANYONE JOINS A NOTIFICATION TURN STILL QUEUED on an
-     * idle recipient — the queued-turn race, for peers. A busy one is left
-     * alone: this delivery would steer into its live turn, and a queued turn
-     * behind it would be later, not sooner.
-     */
-    const joins = !folds && !correction && delivery === "wake" && FOLDING_INTENTS.has(intent) && !this.hasLiveTurn(sessionId) &&
-      !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
-      ? this.waitingNotificationTurn(sessionId)
-      : undefined;
-    const result = this.submitTurn(sessionId, {
-      ...(folds || joins || cohortHeld ? { foldedIntoWaitingWake: true } : {}),
-      runId: input.runId,
+    return this.executeCommand("submitAgentTurn", () => {
+      let sender: { sessionId?: string } = {};
+      if (proof) {
+        assertId(proof.sessionId, "sender session id");
+        const claimed = this.requireSenderClaim(proof);
+        sender = { sessionId: claimed.sessionId };
+      }
+      const intent = input.intent ?? "report";
       /**
-       * THE BODY STAYS ON THE TURN, EXACTLY AS SENT. A wake's and a request's
-       * prose is the engine's and moves onto the notification, but this is the
-       * only copy of what the peer actually wrote: `sessions_read` hands it back
-       * whole and the transcript expands to it. What CHANGED is that nothing
-       * draws it as the person's words or hands it to a model as one.
+       * IS ANYONE AWAITING THIS SENDER'S END? That question decides the DELIVERY
+       * of a `result` — awaited, it wakes; unawaited, it is passive activity.
+       *
+       * IT DOES NOT SPEND THE SUBSCRIPTION (#240). A worker used to send a
+       * result MID-TASK and keep going; consuming the one-shot here meant the
+       * `turn_completed` that actually ended the errand had no subscription left
+       * to fire on, and the coordinator waited for an end that never came — twice
+       * in one day before this was found. Only a TERMINAL event removes a `once`
+       * now, in `fireSubscriptions`, which is the one place that knows a turn
+       * ended. Since #919 that completion is recorded rather than delivered once
+       * the result is in front of the model — see `messageDeliveredTo` — and the
+       * contract asks for a result to be a run's LAST word.
        */
-      input: input.input,
-      ...(input.attachments ? { attachments: input.attachments } : {}),
-      origin: "session", sender, agentIntent: intent, agentDelivery: folds || joins ? "passive" : delivery,
-      ...(proof ? { agentSourceRunId: proof.runId } : {}),
-      ...(input.corrects ? { corrects: input.corrects } : {}),
-      notification,
-      agentNotice: notification.body,
-      // Only a TASK carries a scope. A report that named one would read as an
-      // assignment in every surface that folds these turns.
-      ...(scope ? { assignmentScope: scope } : {}),
+      const waiting = intent === "result" && sender.sessionId
+        ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
+        : undefined;
+      /**
+       * A REPORT NEVER OPENS A TURN — the session-tools audit, replacing #631
+       * part 2 and the report window (#723, #784).
+       *
+       * `report` and an unawaited `result` used to wake an IDLE recipient, so a
+       * coordinator finishing its reply was woken again to read a progress note
+       * and answer "noted". Now they are always mail: held, and handed over with
+       * the recipient's next turn, whatever starts it — a real wake, or the
+       * person's next message (`takeHeldMail`). Nothing is lost: the row is in the
+       * transcript at once and `sessions_status` lists what is held. A worker
+       * that needs the coordinator NOW sends a `blocker`.
+       */
+      /**
+       * A CORRECTION — issue #784, step 3. See `Turn.corrects` for the rule and
+       * `correctionOf` for how the earlier message's state is read. A retry of
+       * this same call (its run id already accepted) changes nothing.
+       */
+      const correction = input.corrects && !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
+        ? this.correctionOf(sessionId, input.corrects, sender.sessionId)
+        : undefined;
+      /**
+       * A COHORT HOLDS A MEMBER'S RESULT — see `Cohort`. It reaches the
+       * subscriber in the cohort's one notification, not as a wake of its own:
+       * recorded passive, kept out of the mailbox, and named on the member's line.
+       * A second result (a correction, say) replaces the first there.
+       */
+      const cohortHeld = intent === "result" && sender.sessionId !== undefined && this.cohortHolds(sessionId, sender.sessionId);
+      const delivery = !cohortHeld && (intent === "task" || intent === "blocker" || waiting || correction === "read" || correction === "queued")
+        ? "wake"
+        : "passive";
+      /**
+       * THE NOTICE IS MINTED HERE, ONCE, AND STORED — see `agent-notice.ts`.
+       *
+       * Here rather than in a driver or a client because this is the only place
+       * that knows all of it at once: the recipient (so the fetch call can name
+       * the session whose turn holds the body), the run id being created, the
+       * proven sender, and the intent the delivery was decided from. And STORED
+       * rather than derived on read because a turn's presentation must not depend
+       * on which reader computed it — the provider prompt, the desktop row, the
+       * phone and a later `sessions_read` all quote this same string.
+       *
+       * MINTED FOR EVERY INTENT, including the passive ones that never reach a
+       * model: the transcript row collapses to this line whatever the delivery
+       * was, and a report whose row had to invent its own summary would be the
+       * per-reader drift this field exists to prevent.
+       */
+      const scope = intent === "task" ? input.scope : undefined;
+      /**
+       * THE NOTICE AND THE NOTIFICATION ARE ONE STRING NOW (#550).
+       *
+       * `agentNotice` used to be minted here and the row, the prompt and a later
+       * `sessions_read` all quoted it. The notification carries the same text on
+       * `body` — so it is minted ONCE, in `notification.ts`, and `agentNotice` is
+       * DERIVED from it rather than computed a second time from the same inputs.
+       * Two mints of one sentence is two sentences waiting to disagree, and the
+       * contract's whole claim about this field is that they cannot.
+       */
+      const notification = peerNotification({
+        recipientSessionId: sessionId, runId: input.runId, body: input.input, intent,
+        ...(input.corrects ? { corrects: input.corrects } : {}),
+        ...(sender.sessionId ? { sender } : {}),
+        ...(scope ? { scope } : {}),
+      });
+      /**
+       * TWO MESSAGES FROM ONE RUN, ONE DELIVERY. A worker that sends a report and
+       * then a result in the same run, to a recipient that has not started on the
+       * first yet, used to queue two wakes and cost two turns for one errand. The
+       * second is folded into the first's notification (both bodies stay whole on
+       * their own turns, and the merged notice names both fetch calls); the
+       * second turn is written as history. Only while the first is still
+       * `queued` — once claimed it is in front of a model, and the second is news.
+       */
+      // Not for a correction: it replaces an earlier message rather than joining it.
+      const folds = !correction && delivery === "wake" && proof && sender.sessionId && FOLDING_INTENTS.has(intent)
+        ? this.waitingMessageFrom(sessionId, sender.sessionId, proof.runId, input.runId)
+        : undefined;
+      /**
+       * AND A MESSAGE FROM ANYONE JOINS A NOTIFICATION TURN STILL QUEUED on an
+       * idle recipient — the queued-turn race, for peers. A busy one is left
+       * alone: this delivery would steer into its live turn, and a queued turn
+       * behind it would be later, not sooner.
+       */
+      const joins = !folds && !correction && delivery === "wake" && FOLDING_INTENTS.has(intent) && !this.hasLiveTurn(sessionId) &&
+        !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
+        ? this.waitingNotificationTurn(sessionId)
+        : undefined;
+      const result = this.submitTurn(sessionId, {
+        ...(folds || joins || cohortHeld ? { foldedIntoWaitingWake: true } : {}),
+        runId: input.runId,
+        /**
+         * THE BODY STAYS ON THE TURN, EXACTLY AS SENT. A wake's and a request's
+         * prose is the engine's and moves onto the notification, but this is the
+         * only copy of what the peer actually wrote: `sessions_read` hands it back
+         * whole and the transcript expands to it. What CHANGED is that nothing
+         * draws it as the person's words or hands it to a model as one.
+         */
+        input: input.input,
+        ...(input.attachments ? { attachments: input.attachments } : {}),
+        origin: "session", sender, agentIntent: intent, agentDelivery: folds || joins ? "passive" : delivery,
+        ...(proof ? { agentSourceRunId: proof.runId } : {}),
+        ...(input.corrects ? { corrects: input.corrects } : {}),
+        notification,
+        agentNotice: notification.body,
+        // Only a TASK carries a scope. A report that named one would read as an
+        // assignment in every surface that folds these turns.
+        ...(scope ? { assignmentScope: scope } : {}),
+      });
+      // A replay of a message already accepted changes nothing, folded or not.
+      if (folds && !result.replayed) this.foldIntoWaitingMessage(sessionId, folds, notification);
+      if (joins && !result.replayed) this.joinWaitingNotification(sessionId, joins, notification);
+      if (!result.replayed && sender.sessionId) this.recordCohortMessage(sessionId, sender.sessionId, intent, input.runId, input.input);
+      // The unread version goes only once its replacement is safely accepted.
+      if (correction === "queued" || correction === "held") this.withdrawCorrected(sessionId, input.corrects!, correction);
+      return result;
     });
-    // A replay of a message already accepted changes nothing, folded or not.
-    if (folds && !result.replayed) this.foldIntoWaitingMessage(sessionId, folds, notification);
-    if (joins && !result.replayed) this.joinWaitingNotification(sessionId, joins, notification);
-    if (!result.replayed && sender.sessionId) this.recordCohortMessage(sessionId, sender.sessionId, intent, input.runId, input.input);
-    // The unread version goes only once its replacement is safely accepted.
-    if (correction === "queued" || correction === "held") this.withdrawCorrected(sessionId, input.corrects!, correction);
-    return result;
   }
 
   /**
@@ -10497,72 +10497,74 @@ export class EngineStore {
   }
 
   claimTurn(sessionId: string, workerId: string): Turn | undefined {
-    assertId(workerId, "worker id");
-    // A PAUSED SESSION DISPATCHES NOTHING — checked on the record, not
-    // inferred from held flags, so a message that slipped into `queued`
-    // unheld by any path still cannot run. See `pauseSession`.
-    if (this.getSession(sessionId).paused) return undefined;
-    /**
-     * NEITHER DOES ONE WHOSE CHECKOUT IS NOT THERE — #496.
-     *
-     * The cut runs in the background now, so an agent that creates a session
-     * and sends to it in the same breath can have a turn queued before the
-     * directory exists. Dispatching it would spawn a provider process with its
-     * cwd set to a path nothing has made yet.
-     *
-     * BOTH STATES REFUSE THE CLAIM, AND THEY MEAN DIFFERENT THINGS — #813.
-     *
-     * `preparing` is a wait: the cut is running and the turn keeps its place.
-     * `failed` is not, and treating it as one is the defect this issue is
-     * about. A failed session has no checkout and is not going to grow one, so
-     * its turn waited forever while the row carried git's reason — for 45
-     * minutes, with every surface an agent could read still saying `running`.
-     *
-     * THE ACTING SPLIT IS IN `claimNextTurn`, not here, and deliberately: this
-     * method may not write a queue it was not given, and the scan is already
-     * the one place that fails a turn nothing can claim (see the Claude-model
-     * branch beside it). This stays a refusal for both, as the backstop for a
-     * direct caller that never went through the scan.
-     */
-    if (this.getSession(sessionId).preparation) return undefined;
-    const queue = this.readQueue(sessionId);
-    if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) return undefined;
-    /**
-     * AN UNDECIDED AMBIGUOUS TURN HOLDS THIS SESSION'S DISPATCH.
-     *
-     * This is where the recovery gate belongs — `submitTurn` used to carry it,
-     * which refused the human and let the machine through. A backlog written
-     * BEFORE the crash was claimed and run against the resumed provider
-     * conversation while the ambiguity was still undecided: measured, a
-     * `steering` follow-up requeued by `recover()` was handed the lost run's
-     * `resumeCursor` and dispatched with no human anywhere near it.
-     *
-     * Held rather than dropped. The messages keep their place and their order,
-     * and they run the moment the human resolves the ambiguous turn — which is
-     * also the moment somebody has decided whether the work they assumed had
-     * happened actually did. A queued turn is not lost by waiting; a turn that
-     * runs against a conversation nobody vouched for cannot be un-run.
-     */
-    if (queue.turns.some((turn) => turn.state === "ambiguous")) return undefined;
-    /**
-     * A HELD MESSAGE IS SKIPPED, NOT WAITED ON. It was written before the turn
-     * this session lost, so it waits for a human to re-read it — but it must
-     * not stand in front of a message written AFTER, which is the whole
-     * substance of continuing a recovered conversation. Order is preserved
-     * among the turns that may actually run.
-     */
-    const turn = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
-    if (!turn) return undefined;
-    const at = this.now();
-    turn.state = "claimed";
-    // The watermark rides the claim: everything submitted from here on was
-    // written against a session the person had reason to think was live.
-    turn.claim = { workerId, token: crypto.randomUUID(), at, sequence: queue.nextSequence };
-    turn.updatedAt = at;
-    this.writeQueue(sessionId, queue);
-    this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, { type: "turn.claimed", workerId }, turn.runId);
-    return structuredClone(turn);
+    return this.executeCommand("claimTurn", () => {
+      assertId(workerId, "worker id");
+      // A PAUSED SESSION DISPATCHES NOTHING — checked on the record, not
+      // inferred from held flags, so a message that slipped into `queued`
+      // unheld by any path still cannot run. See `pauseSession`.
+      if (this.getSession(sessionId).paused) return undefined;
+      /**
+       * NEITHER DOES ONE WHOSE CHECKOUT IS NOT THERE — #496.
+       *
+       * The cut runs in the background now, so an agent that creates a session
+       * and sends to it in the same breath can have a turn queued before the
+       * directory exists. Dispatching it would spawn a provider process with its
+       * cwd set to a path nothing has made yet.
+       *
+       * BOTH STATES REFUSE THE CLAIM, AND THEY MEAN DIFFERENT THINGS — #813.
+       *
+       * `preparing` is a wait: the cut is running and the turn keeps its place.
+       * `failed` is not, and treating it as one is the defect this issue is
+       * about. A failed session has no checkout and is not going to grow one, so
+       * its turn waited forever while the row carried git's reason — for 45
+       * minutes, with every surface an agent could read still saying `running`.
+       *
+       * THE ACTING SPLIT IS IN `claimNextTurn`, not here, and deliberately: this
+       * method may not write a queue it was not given, and the scan is already
+       * the one place that fails a turn nothing can claim (see the Claude-model
+       * branch beside it). This stays a refusal for both, as the backstop for a
+       * direct caller that never went through the scan.
+       */
+      if (this.getSession(sessionId).preparation) return undefined;
+      const queue = this.readQueue(sessionId);
+      if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) return undefined;
+      /**
+       * AN UNDECIDED AMBIGUOUS TURN HOLDS THIS SESSION'S DISPATCH.
+       *
+       * This is where the recovery gate belongs — `submitTurn` used to carry it,
+       * which refused the human and let the machine through. A backlog written
+       * BEFORE the crash was claimed and run against the resumed provider
+       * conversation while the ambiguity was still undecided: measured, a
+       * `steering` follow-up requeued by `recover()` was handed the lost run's
+       * `resumeCursor` and dispatched with no human anywhere near it.
+       *
+       * Held rather than dropped. The messages keep their place and their order,
+       * and they run the moment the human resolves the ambiguous turn — which is
+       * also the moment somebody has decided whether the work they assumed had
+       * happened actually did. A queued turn is not lost by waiting; a turn that
+       * runs against a conversation nobody vouched for cannot be un-run.
+       */
+      if (queue.turns.some((turn) => turn.state === "ambiguous")) return undefined;
+      /**
+       * A HELD MESSAGE IS SKIPPED, NOT WAITED ON. It was written before the turn
+       * this session lost, so it waits for a human to re-read it — but it must
+       * not stand in front of a message written AFTER, which is the whole
+       * substance of continuing a recovered conversation. Order is preserved
+       * among the turns that may actually run.
+       */
+      const turn = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
+      if (!turn) return undefined;
+      const at = this.now();
+      turn.state = "claimed";
+      // The watermark rides the claim: everything submitted from here on was
+      // written against a session the person had reason to think was live.
+      turn.claim = { workerId, token: crypto.randomUUID(), at, sequence: queue.nextSequence };
+      turn.updatedAt = at;
+      this.writeQueue(sessionId, queue);
+      this.touchSession(sessionId, at);
+      this.appendEvent(sessionId, { type: "turn.claimed", workerId }, turn.runId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -10580,38 +10582,40 @@ export class EngineStore {
    * own stream, not a second one.
    */
   openProviderTurn(sessionId: string, input: { workerId: string; input: string; reason: NonNullable<Turn["providerReason"]> }): Turn {
-    assertId(input.workerId, "worker id");
-    // The CLI woke itself on a background task, but the human paused the
-    // session: no turn opens. The driver parks the frames; a `conflict` is
-    // what it already reads as "not now".
-    if (this.getSession(sessionId).paused) throw new EngineStateError("conflict", "session is paused");
-    const queue = this.readQueue(sessionId);
-    if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) {
-      throw new EngineStateError("conflict", "session already has a live turn");
-    }
-    const at = this.now();
-    const turn: Turn = {
-      runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
-      sessionId,
-      sequence: queue.nextSequence++,
-      input: input.input.slice(0, MAX_TEXT_LENGTH),
-      origin: "provider",
-      providerReason: input.reason,
-      state: "running",
-      acceptedAt: at,
-      startedAt: at,
-      updatedAt: at,
-      claim: { workerId: input.workerId, token: crypto.randomUUID(), at },
-    };
-    queue.turns.push(turn);
-    this.writeQueue(sessionId, queue);
-    this.touchSession(sessionId, at);
-    // The same three events a human turn produces, in one breath: tailing
-    // clients fold a provider turn with the code they already have.
-    this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
-    this.appendEvent(sessionId, { type: "turn.claimed", workerId: input.workerId }, turn.runId);
-    this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
-    return structuredClone(turn);
+    return this.executeCommand("openProviderTurn", () => {
+      assertId(input.workerId, "worker id");
+      // The CLI woke itself on a background task, but the human paused the
+      // session: no turn opens. The driver parks the frames; a `conflict` is
+      // what it already reads as "not now".
+      if (this.getSession(sessionId).paused) throw new EngineStateError("conflict", "session is paused");
+      const queue = this.readQueue(sessionId);
+      if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) {
+        throw new EngineStateError("conflict", "session already has a live turn");
+      }
+      const at = this.now();
+      const turn: Turn = {
+        runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
+        sessionId,
+        sequence: queue.nextSequence++,
+        input: input.input.slice(0, MAX_TEXT_LENGTH),
+        origin: "provider",
+        providerReason: input.reason,
+        state: "running",
+        acceptedAt: at,
+        startedAt: at,
+        updatedAt: at,
+        claim: { workerId: input.workerId, token: crypto.randomUUID(), at },
+      };
+      queue.turns.push(turn);
+      this.writeQueue(sessionId, queue);
+      this.touchSession(sessionId, at);
+      // The same three events a human turn produces, in one breath: tailing
+      // clients fold a provider turn with the code they already have.
+      this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
+      this.appendEvent(sessionId, { type: "turn.claimed", workerId: input.workerId }, turn.runId);
+      this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -10819,41 +10823,43 @@ export class EngineStore {
    * inside a turn is the only thing that opens a row.
    */
   reportSessionTasks(sessionId: string, workerId: string, observations: unknown[]): { accepted: number } {
-    assertId(workerId, "worker id");
-    this.requireSession(sessionId);
-    const parsed = TurnObservationSchema.array().safeParse(observations);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
-    const tasks = this.readTasks(sessionId);
-    const projection = { items: this.readItems(sessionId), tasks, itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
-    let accepted = 0;
-    for (const observation of parsed.data) {
-      /**
-       * THE ONE OBSERVATION THAT NEEDS NO ROW TO LAND ON. A task report folds
-       * onto a stored row and is dropped when there is none; a runtime warning
-       * is about the PROCESS, and the case that produces it between turns
-       * (#465: the CLI died with background shells inside it) is precisely the
-       * one where those rows are about to stop meaning anything. Journalled at
-       * the session level — there is no live run out here to stamp it with.
-       */
-      if (observation.kind === "runtime.warning") {
-        this.appendEvent(sessionId, { type: "runtime.warning", message: observation.message });
+    return this.executeCommand("reportSessionTasks", () => {
+      assertId(workerId, "worker id");
+      this.requireSession(sessionId);
+      const parsed = TurnObservationSchema.array().safeParse(observations);
+      if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
+      const tasks = this.readTasks(sessionId);
+      const projection = { items: this.readItems(sessionId), tasks, itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
+      let accepted = 0;
+      for (const observation of parsed.data) {
+        /**
+         * THE ONE OBSERVATION THAT NEEDS NO ROW TO LAND ON. A task report folds
+         * onto a stored row and is dropped when there is none; a runtime warning
+         * is about the PROCESS, and the case that produces it between turns
+         * (#465: the CLI died with background shells inside it) is precisely the
+         * one where those rows are about to stop meaning anything. Journalled at
+         * the session level — there is no live run out here to stamp it with.
+         */
+        if (observation.kind === "runtime.warning") {
+          this.appendEvent(sessionId, { type: "runtime.warning", message: observation.message });
+          accepted += 1;
+          continue;
+        }
+        if (observation.kind !== "task.started" && observation.kind !== "task.progress" && observation.kind !== "task.completed") continue;
+        const seed = observation.task;
+        const known =
+          tasks.get(seed.id) ?? (seed.providerTaskId ? [...tasks.values()].find((task) => task.providerTaskId === seed.providerTaskId) : undefined);
+        if (!known) continue;
+        // `journalObservation` takes the owning turn only for its runId.
+        this.journalObservation(sessionId, { runId: known.runId } as Turn, observation, projection);
         accepted += 1;
-        continue;
       }
-      if (observation.kind !== "task.started" && observation.kind !== "task.progress" && observation.kind !== "task.completed") continue;
-      const seed = observation.task;
-      const known =
-        tasks.get(seed.id) ?? (seed.providerTaskId ? [...tasks.values()].find((task) => task.providerTaskId === seed.providerTaskId) : undefined);
-      if (!known) continue;
-      // `journalObservation` takes the owning turn only for its runId.
-      this.journalObservation(sessionId, { runId: known.runId } as Turn, observation, projection);
-      accepted += 1;
-    }
-    if (projection.tasksTouched) {
-      this.writeTasks(sessionId, projection.tasks);
-      this.touchSession(sessionId, this.now());
-    }
-    return { accepted };
+      if (projection.tasksTouched) {
+        this.writeTasks(sessionId, projection.tasks);
+        this.touchSession(sessionId, this.now());
+      }
+      return { accepted };
+    });
   }
 
   /** Claims exactly one queued turn. The daemon has one state lock, so two workers cannot claim it twice. */
@@ -11134,284 +11140,286 @@ export class EngineStore {
   }
 
   claimNextTurn(workerId: string): WorkerClaim | undefined {
-    assertId(workerId, "worker id");
-    /**
-     * ONLY THE SESSIONS THAT COULD BE CLAIMED, and only their queues.
-     *
-     * This walked every session on disk and read each one's metadata purely to
-     * sort by `createdAt` — a cost that grew with the number of conversations
-     * ever created and was paid on every claim. The candidates are now drawn
-     * from the live index, and the ONE session that wins is the only one whose
-     * metadata is read.
-     *
-     * ORDERED BY WHEN THE MESSAGE WAS ACCEPTED rather than by when its session
-     * was created. That is what "oldest first, so a backlog runs in the order
-     * it was typed" always meant; sorting by session age merely approximated it
-     * and let an old session's brand-new message jump ahead of a new session's
-     * older one.
-     */
-    const candidates: Array<{ sessionId: string; acceptedAt: number }> = [];
-    for (const sessionId of [...this.liveQueueSessionIds()]) {
+    return this.executeCommand("claimNextTurn", () => {
+      assertId(workerId, "worker id");
       /**
-       * THE RATE-LIMIT SWEEP RUNS FIRST, so a turn whose limit has just lifted
-       * is `queued` by the time this scan looks for claimable work — otherwise
-       * it would wait a whole extra poll for no reason.
+       * ONLY THE SESSIONS THAT COULD BE CLAIMED, and only their queues.
        *
-       * HERE RATHER THAN ON A TIMER OF ITS OWN because this is already the
-       * engine's only periodic pass over live queues, and a second scheduler
-       * would be a second thing to start, stop and get wrong at shutdown.
-       * `liveQueueSessionIds()` is copied above because this may write, and
-       * writing maintains the very index being iterated.
-       */
-      this.sweepRateLimited(sessionId);
-      /**
-       * AND THE LIVENESS SWEEP, for the same reason and in the same place
-       * (#813). It is the only pass that visits every live queue on a clock,
-       * and a turn that has gone quiet is exactly what nothing else here would
-       * ever notice — a running turn is `continue`d a few lines below, so
-       * BEFORE that skip rather than after it.
-       */
-      this.sweepStalledTurns(sessionId);
-      // A SCAN, so the shared copy: the one session that wins is claimed
-      // through `claimTurn`, which reads a queue of its own to write.
-      const queue = this.scanQueue(sessionId);
-      // One turn per session at a time — the engine's own invariant, checked
-      // here so a busy session costs nothing further.
-      if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) continue;
-      // Held for a human decision — `claimTurn` is authoritative about this and
-      // would refuse anyway; skipping here keeps a held session from being the
-      // candidate that wins the sort and then claims nothing, which would stall
-      // every OTHER session's queued work behind it for a poll interval.
-      if (queue.turns.some((candidate) => candidate.state === "ambiguous")) continue;
-      // `!held` matches `claimTurn`'s own choice — a session whose only queued
-      // work is held has nothing to offer, and listing it as a candidate would
-      // win the sort and then claim nothing.
-      const next = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
-      if (!next) continue;
-      // `claimTurn` refuses a paused session; skipping it here keeps it from
-      // winning the sort and stalling every other session for a poll.
-      const session = this.getSession(sessionId);
-      if (session.paused) continue;
-      /**
-       * A CUT STILL RUNNING IS A WAIT; A CUT THAT FAILED IS NOT — #813.
+       * This walked every session on disk and read each one's metadata purely to
+       * sort by `createdAt` — a cost that grew with the number of conversations
+       * ever created and was paid on every claim. The candidates are now drawn
+       * from the live index, and the ONE session that wins is the only one whose
+       * metadata is read.
        *
-       * `preparing` keeps #496's behaviour exactly: the turn holds its place
-       * in order while the checkout is made, because a message is not lost by
-       * waiting and a turn dispatched into a directory nothing has made yet
-       * is. It is seconds, and it ends.
-       *
-       * `failed` never ends. The session has no checkout and nothing is going
-       * to give it one, so the turn sat `queued` — and `sessions_status` read
-       * `running: true` over the top of it, which is how #813's coordinator
-       * spent 45 minutes believing work was in flight. It fails here, the same
-       * way and in the same place as a Claude turn whose window cannot be
-       * resolved, carrying git's own sentence about what went wrong.
+       * ORDERED BY WHEN THE MESSAGE WAS ACCEPTED rather than by when its session
+       * was created. That is what "oldest first, so a backlog runs in the order
+       * it was typed" always meant; sorting by session age merely approximated it
+       * and let an old session's brand-new message jump ahead of a new session's
+       * older one.
        */
-      if (session.preparation?.state === "preparing") continue;
-      // Released with a turn queued: the restore `submitTurn` started is on its
-      // way, and a turn must never run in a directory that is not there.
-      if (session.workspace.mode === "worktree" && session.workspace.released) continue;
-      if (session.preparation?.state === "failed") {
-        // Writes, so it takes a queue of its own rather than editing the copy
-        // every other reader is sharing — see the `selection === "failed"`
-        // branch below, which is the same shape for the same reason.
-        const own = this.readQueue(sessionId);
-        const failing = own.turns.find((candidate) => candidate.runId === next.runId);
-        if (failing) {
-          this.failQueuedTurn(
-            sessionId,
-            own,
-            failing,
-            // GIT'S OWN WORDS FIRST. `preparation.error` is what the cut said
-            // and it is the only part of this a person can act on; the rest
-            // says what the engine did and did not do with it.
-            `This session's checkout could not be created, so nothing can run in it. Git said: ${
-              session.preparation.error ?? "no reason was recorded"
-            }. Nothing was sent to a provider. Fix the checkout — or make a new session — and send again.`,
-            "workspace_unavailable",
-          );
-        }
-        continue;
-      }
-      /**
-       * A CLAUDE TURN WITH NO MODEL IS NOT CLAIMABLE UNTIL ITS WINDOW IS KNOWN.
-       * Decided here, before a candidate exists, so no lease is taken and
-       * nothing is awaited inside one. Every other session keeps moving.
-       */
-      const selection = this.claudeSelectionState(session.driver, next.model ?? session.model);
-      if (selection === "pending") {
-        // One probe in flight for the whole engine, never one per tick.
-        void this.prepareClaudeCatalogue();
-        continue;
-      }
-      if (selection === "failed") {
-        // The one branch of this scan that WRITES, so it takes a queue of its
-        // own rather than editing the copy every other reader is sharing.
-        const own = this.readQueue(sessionId);
-        const failing = own.turns.find((candidate) => candidate.runId === next.runId);
-        if (failing) {
-          this.failQueuedTurn(
-            sessionId,
-            own,
-            failing,
-            "Telar could not resolve a long-context Claude model, so it cannot tell which context window this session would run. Nothing was sent to the provider. Pick a model for this session from the composer's model picker, or send again to retry.",
-          );
-        }
-        continue;
-      }
-      candidates.push({ sessionId, acceptedAt: next.acceptedAt });
-    }
-    candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
-    for (const candidate of candidates) {
-      /**
-       * A SESSION ON THE DRIVER THAT NO LONGER EXISTS IS REFUSED, ONCE (#531).
-       *
-       * The owner confirmed no `telar`-driver session exists on any store, so
-       * there is no migration and this is not one — it is the refusal that
-       * makes that confirmation safe to have acted on. Checked BEFORE the claim
-       * so nothing is marked running, and the turn is left queued rather than
-       * failed: if such a session somehow exists, the person still has their
-       * conversation and a later Telar can decide what to do with it.
-       *
-       * ONE LOG LINE, and not per scan — `warnedLegacyDriver` is what keeps a
-       * refused session from writing a line every time a worker polls.
-       */
-      const candidateSession = this.getSession(candidate.sessionId);
-      if ((candidateSession.driver as string) === "telar") {
-        if (!this.warnedLegacyDriver.has(candidate.sessionId)) {
-          this.warnedLegacyDriver.add(candidate.sessionId);
-          console.error(`[telar] session ${candidate.sessionId} runs on the removed "telar" driver and will not be claimed (#531).`);
-        }
-        continue;
-      }
-      const turn = this.claimTurn(candidate.sessionId, workerId);
-      if (!turn) continue;
-      const session = this.getSession(candidate.sessionId);
-      const resumeCursor = this.resumeCursorFor(session);
-      /**
-       * THE TURN'S OWN CHOICE BEATS THE SESSION'S, and that ordering is the
-       * whole of "per-turn model".
-       *
-       * It matters most where it is least visible: queue three messages, change
-       * the pill between them, and each one has to run on what was chosen when
-       * it was written — not on whatever the session happens to say by the time
-       * a worker gets to it. The session default is what a turn falls back to,
-       * not what overrides it.
-       */
-      // Normalised HERE TOO, because a record saved before the window became a
-      // control is read here without ever passing through a patch — and the
-      // claim is the one place that decides what actually runs.
-      const model = this.claimModelSelection(session.driver, turn.model ?? session.model, session.providerInstanceId ?? defaultInstanceIdForDriver(session.driver));
-      /**
-       * THIS PROJECT'S SERVERS OVER THE GLOBAL ONES, then filtered to the
-       * enabled ones. Both halves happen HERE rather than in the worker so each
-       * rule lives in exactly one place: a worker trusted to skip the disabled
-       * ones, or to work out which scope wins, would be a second copy of a
-       * decision that has to be identical every time.
-       */
-      const registered = resolveMcpServers(this.listMcpServers(), session.projectId);
-      /**
-       * TELAR'S OWN COMPUTER USE (cua-driver). A claim asks the daemon's gate,
-       * but the answer comes from the LAST PROBE, never one run here: only a
-       * measured `granted` resolves. Removing the driver applies to the next
-       * turn; a newly installed one is not injected until it is measured (the
-       * settings pane, or Test access). Goes to every provider Telar drives — Codex included
-       * since #521, where withholding it turned out to leave those sessions
-       * with no desktop at all rather than with their own — see
-       * `withComputerUse`.
-       * Absent installs inject nothing, silently, and the unfiltered
-       * `registered` list means a user's own entry (even a DISABLED one) is a
-       * decision this must not overrule.
-       */
-      const mcpServers = withComputerUse(
-        registered.filter((server) => server.enabled),
-        registered,
-        session.driver,
-        this.computerUse?.(),
-      );
-      /**
-       * Resolved at CLAIM TIME like everything else here, and never omitted:
-       * a session whose instance was deleted still has to run, so this falls
-       * back to the driver's built-in slot rather than handing the worker
-       * nothing.
-       */
-      const providerInstance = this.resolveProviderInstance(session.providerInstanceId, session.driver);
-      return {
-        sessionId: session.id,
-        // Emitted only when the session HAS one — see `WorkerClaim.projectRoot`.
-        // A `none` workspace sends nothing rather than a path nobody chose.
-        ...(workspacePath(session.workspace) ? { projectRoot: workspacePath(session.workspace)! } : {}),
-        ...(session.projectId ? { projectId: session.projectId } : {}),
+      const candidates: Array<{ sessionId: string; acceptedAt: number }> = [];
+      for (const sessionId of [...this.liveQueueSessionIds()]) {
         /**
-         * WHAT MAKES `projectRoot` ABOVE A WORKTREE — issue #641, and resolved
-         * here for the reason everything else on this claim is: the worker holds
-         * no store handle, and "is that path a worktree, and whose" is a store
-         * question. Both facts or neither: a branch with no repository root
-         * still cannot tell the worker that the PROJECT is fine.
+         * THE RATE-LIMIT SWEEP RUNS FIRST, so a turn whose limit has just lifted
+         * is `queued` by the time this scan looks for claimable work — otherwise
+         * it would wait a whole extra poll for no reason.
+         *
+         * HERE RATHER THAN ON A TIMER OF ITS OWN because this is already the
+         * engine's only periodic pass over live queues, and a second scheduler
+         * would be a second thing to start, stop and get wrong at shutdown.
+         * `liveQueueSessionIds()` is copied above because this may write, and
+         * writing maintains the very index being iterated.
          */
-        ...(() => {
-          if (session.workspace.mode !== "worktree" || !session.projectId) return {};
-          try {
-            const project = this.getProject(session.projectId);
-            return { worktree: { branch: session.workspace.branch, repoRoot: project.root } };
-          } catch {
-            // A session whose project record went. Nothing to say about it that
-            // would be true, so it says nothing and the worker keeps the
-            // path-only wording.
-            return {};
+        this.sweepRateLimited(sessionId);
+        /**
+         * AND THE LIVENESS SWEEP, for the same reason and in the same place
+         * (#813). It is the only pass that visits every live queue on a clock,
+         * and a turn that has gone quiet is exactly what nothing else here would
+         * ever notice — a running turn is `continue`d a few lines below, so
+         * BEFORE that skip rather than after it.
+         */
+        this.sweepStalledTurns(sessionId);
+        // A SCAN, so the shared copy: the one session that wins is claimed
+        // through `claimTurn`, which reads a queue of its own to write.
+        const queue = this.scanQueue(sessionId);
+        // One turn per session at a time — the engine's own invariant, checked
+        // here so a busy session costs nothing further.
+        if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) continue;
+        // Held for a human decision — `claimTurn` is authoritative about this and
+        // would refuse anyway; skipping here keeps a held session from being the
+        // candidate that wins the sort and then claims nothing, which would stall
+        // every OTHER session's queued work behind it for a poll interval.
+        if (queue.turns.some((candidate) => candidate.state === "ambiguous")) continue;
+        // `!held` matches `claimTurn`'s own choice — a session whose only queued
+        // work is held has nothing to offer, and listing it as a candidate would
+        // win the sort and then claim nothing.
+        const next = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
+        if (!next) continue;
+        // `claimTurn` refuses a paused session; skipping it here keeps it from
+        // winning the sort and stalling every other session for a poll.
+        const session = this.getSession(sessionId);
+        if (session.paused) continue;
+        /**
+         * A CUT STILL RUNNING IS A WAIT; A CUT THAT FAILED IS NOT — #813.
+         *
+         * `preparing` keeps #496's behaviour exactly: the turn holds its place
+         * in order while the checkout is made, because a message is not lost by
+         * waiting and a turn dispatched into a directory nothing has made yet
+         * is. It is seconds, and it ends.
+         *
+         * `failed` never ends. The session has no checkout and nothing is going
+         * to give it one, so the turn sat `queued` — and `sessions_status` read
+         * `running: true` over the top of it, which is how #813's coordinator
+         * spent 45 minutes believing work was in flight. It fails here, the same
+         * way and in the same place as a Claude turn whose window cannot be
+         * resolved, carrying git's own sentence about what went wrong.
+         */
+        if (session.preparation?.state === "preparing") continue;
+        // Released with a turn queued: the restore `submitTurn` started is on its
+        // way, and a turn must never run in a directory that is not there.
+        if (session.workspace.mode === "worktree" && session.workspace.released) continue;
+        if (session.preparation?.state === "failed") {
+          // Writes, so it takes a queue of its own rather than editing the copy
+          // every other reader is sharing — see the `selection === "failed"`
+          // branch below, which is the same shape for the same reason.
+          const own = this.readQueue(sessionId);
+          const failing = own.turns.find((candidate) => candidate.runId === next.runId);
+          if (failing) {
+            this.failQueuedTurn(
+              sessionId,
+              own,
+              failing,
+              // GIT'S OWN WORDS FIRST. `preparation.error` is what the cut said
+              // and it is the only part of this a person can act on; the rest
+              // says what the engine did and did not do with it.
+              `This session's checkout could not be created, so nothing can run in it. Git said: ${
+                session.preparation.error ?? "no reason was recorded"
+              }. Nothing was sent to a provider. Fix the checkout — or make a new session — and send again.`,
+              "workspace_unavailable",
+            );
           }
-        })(),
-        driver: session.driver,
-        providerInstanceId: session.providerInstanceId,
-        providerInstance,
-        // Resolved HERE, at claim time, so a model changed mid-session applies
-        // to the next turn the worker picks up rather than to the one it is
-        // already running.
-        ...(model ? { model } : {}),
-        // Filtered to the enabled ones in the engine, so "disabled" is decided
-        // in exactly one place rather than trusted to every worker.
-        ...(mcpServers.length > 0 ? { mcpServers } : {}),
+          continue;
+        }
         /**
-         * Every plugin this turn gets, as ids — the list the worker builds its
-         * walls and briefings from. Data Science and LaTeX are in it only when
-         * they RESOLVE for this session (an interpreter or TeX binary that
-         * exists, with the worktree rule), not merely when switched on: a
-         * worktree missing its `.venv` gets no kernel tools rather than tools
-         * that fail.
+         * A CLAUDE TURN WITH NO MODEL IS NOT CLAIMABLE UNTIL ITS WINDOW IS KNOWN.
+         * Decided here, before a candidate exists, so no lease is taken and
+         * nothing is awaited inside one. Every other session keeps moving.
          */
-        ...(() => {
-          const resolves: Record<string, () => unknown> = {
-            "data-science": () => this.resolveDataScience(session),
-            latex: () => this.resolveLatex(session),
-          };
-          const ids = this.enabledPluginIds(session).filter((id) => (id in resolves ? resolves[id]!() !== undefined : true));
-          return ids.length > 0 ? { plugins: ids } : {};
-        })(),
-        ...(resumeCursor ? { resumeCursor } : {}),
-        // The session's LIVE task rows, so a provider process built cold
-        // files a still-running shell's report on the row that exists rather
-        // than minting a second one. Settled rows have nothing to report on.
-        ...(() => {
-          const live = [...this.readTasks(session.id).values()].filter(isLiveTask).map(taskSeedOf);
-          return live.length > 0 ? { tasks: live } : {};
-        })(),
+        const selection = this.claudeSelectionState(session.driver, next.model ?? session.model);
+        if (selection === "pending") {
+          // One probe in flight for the whole engine, never one per tick.
+          void this.prepareClaudeCatalogue();
+          continue;
+        }
+        if (selection === "failed") {
+          // The one branch of this scan that WRITES, so it takes a queue of its
+          // own rather than editing the copy every other reader is sharing.
+          const own = this.readQueue(sessionId);
+          const failing = own.turns.find((candidate) => candidate.runId === next.runId);
+          if (failing) {
+            this.failQueuedTurn(
+              sessionId,
+              own,
+              failing,
+              "Telar could not resolve a long-context Claude model, so it cannot tell which context window this session would run. Nothing was sent to the provider. Pick a model for this session from the composer's model picker, or send again to retry.",
+            );
+          }
+          continue;
+        }
+        candidates.push({ sessionId, acceptedAt: next.acceptedAt });
+      }
+      candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
+      for (const candidate of candidates) {
         /**
-         * THE ORIENTATION PARAGRAPH, RESOLVED HERE. The decision ("is this
-         * machine's preamble on") and the words are both the engine's, and the
-         * claim carries the OUTCOME — the same rule `mcpServers` follows, for
-         * the same reason: a worker trusted to apply a flag would be a second
-         * place the rule lives. Absent means off, and the drivers inject
+         * A SESSION ON THE DRIVER THAT NO LONGER EXISTS IS REFUSED, ONCE (#531).
+         *
+         * The owner confirmed no `telar`-driver session exists on any store, so
+         * there is no migration and this is not one — it is the refusal that
+         * makes that confirmation safe to have acted on. Checked BEFORE the claim
+         * so nothing is marked running, and the turn is left queued rather than
+         * failed: if such a session somehow exists, the person still has their
+         * conversation and a later Telar can decide what to do with it.
+         *
+         * ONE LOG LINE, and not per scan — `warnedLegacyDriver` is what keeps a
+         * refused session from writing a line every time a worker polls.
+         */
+        const candidateSession = this.getSession(candidate.sessionId);
+        if ((candidateSession.driver as string) === "telar") {
+          if (!this.warnedLegacyDriver.has(candidate.sessionId)) {
+            this.warnedLegacyDriver.add(candidate.sessionId);
+            console.error(`[telar] session ${candidate.sessionId} runs on the removed "telar" driver and will not be claimed (#531).`);
+          }
+          continue;
+        }
+        const turn = this.claimTurn(candidate.sessionId, workerId);
+        if (!turn) continue;
+        const session = this.getSession(candidate.sessionId);
+        const resumeCursor = this.resumeCursorFor(session);
+        /**
+         * THE TURN'S OWN CHOICE BEATS THE SESSION'S, and that ordering is the
+         * whole of "per-turn model".
+         *
+         * It matters most where it is least visible: queue three messages, change
+         * the pill between them, and each one has to run on what was chosen when
+         * it was written — not on whatever the session happens to say by the time
+         * a worker gets to it. The session default is what a turn falls back to,
+         * not what overrides it.
+         */
+        // Normalised HERE TOO, because a record saved before the window became a
+        // control is read here without ever passing through a patch — and the
+        // claim is the one place that decides what actually runs.
+        const model = this.claimModelSelection(session.driver, turn.model ?? session.model, session.providerInstanceId ?? defaultInstanceIdForDriver(session.driver));
+        /**
+         * THIS PROJECT'S SERVERS OVER THE GLOBAL ONES, then filtered to the
+         * enabled ones. Both halves happen HERE rather than in the worker so each
+         * rule lives in exactly one place: a worker trusted to skip the disabled
+         * ones, or to work out which scope wins, would be a second copy of a
+         * decision that has to be identical every time.
+         */
+        const registered = resolveMcpServers(this.listMcpServers(), session.projectId);
+        /**
+         * TELAR'S OWN COMPUTER USE (cua-driver). A claim asks the daemon's gate,
+         * but the answer comes from the LAST PROBE, never one run here: only a
+         * measured `granted` resolves. Removing the driver applies to the next
+         * turn; a newly installed one is not injected until it is measured (the
+         * settings pane, or Test access). Goes to every provider Telar drives — Codex included
+         * since #521, where withholding it turned out to leave those sessions
+         * with no desktop at all rather than with their own — see
+         * `withComputerUse`.
+         * Absent installs inject nothing, silently, and the unfiltered
+         * `registered` list means a user's own entry (even a DISABLED one) is a
+         * decision this must not overrule.
+         */
+        const mcpServers = withComputerUse(
+          registered.filter((server) => server.enabled),
+          registered,
+          session.driver,
+          this.computerUse?.(),
+        );
+        /**
+         * Resolved at CLAIM TIME like everything else here, and never omitted:
+         * a session whose instance was deleted still has to run, so this falls
+         * back to the driver's built-in slot rather than handing the worker
          * nothing.
          */
-        ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
-        ...(() => {
-          const notes = [...this.takeNextTurnNotes(session.id), ...this.takeHeldMail(session.id)];
-          return notes.length > 0 ? { notes } : {};
-        })(),
-        turn,
-      };
-    }
-    return undefined;
+        const providerInstance = this.resolveProviderInstance(session.providerInstanceId, session.driver);
+        return {
+          sessionId: session.id,
+          // Emitted only when the session HAS one — see `WorkerClaim.projectRoot`.
+          // A `none` workspace sends nothing rather than a path nobody chose.
+          ...(workspacePath(session.workspace) ? { projectRoot: workspacePath(session.workspace)! } : {}),
+          ...(session.projectId ? { projectId: session.projectId } : {}),
+          /**
+           * WHAT MAKES `projectRoot` ABOVE A WORKTREE — issue #641, and resolved
+           * here for the reason everything else on this claim is: the worker holds
+           * no store handle, and "is that path a worktree, and whose" is a store
+           * question. Both facts or neither: a branch with no repository root
+           * still cannot tell the worker that the PROJECT is fine.
+           */
+          ...(() => {
+            if (session.workspace.mode !== "worktree" || !session.projectId) return {};
+            try {
+              const project = this.getProject(session.projectId);
+              return { worktree: { branch: session.workspace.branch, repoRoot: project.root } };
+            } catch {
+              // A session whose project record went. Nothing to say about it that
+              // would be true, so it says nothing and the worker keeps the
+              // path-only wording.
+              return {};
+            }
+          })(),
+          driver: session.driver,
+          providerInstanceId: session.providerInstanceId,
+          providerInstance,
+          // Resolved HERE, at claim time, so a model changed mid-session applies
+          // to the next turn the worker picks up rather than to the one it is
+          // already running.
+          ...(model ? { model } : {}),
+          // Filtered to the enabled ones in the engine, so "disabled" is decided
+          // in exactly one place rather than trusted to every worker.
+          ...(mcpServers.length > 0 ? { mcpServers } : {}),
+          /**
+           * Every plugin this turn gets, as ids — the list the worker builds its
+           * walls and briefings from. Data Science and LaTeX are in it only when
+           * they RESOLVE for this session (an interpreter or TeX binary that
+           * exists, with the worktree rule), not merely when switched on: a
+           * worktree missing its `.venv` gets no kernel tools rather than tools
+           * that fail.
+           */
+          ...(() => {
+            const resolves: Record<string, () => unknown> = {
+              "data-science": () => this.resolveDataScience(session),
+              latex: () => this.resolveLatex(session),
+            };
+            const ids = this.enabledPluginIds(session).filter((id) => (id in resolves ? resolves[id]!() !== undefined : true));
+            return ids.length > 0 ? { plugins: ids } : {};
+          })(),
+          ...(resumeCursor ? { resumeCursor } : {}),
+          // The session's LIVE task rows, so a provider process built cold
+          // files a still-running shell's report on the row that exists rather
+          // than minting a second one. Settled rows have nothing to report on.
+          ...(() => {
+            const live = [...this.readTasks(session.id).values()].filter(isLiveTask).map(taskSeedOf);
+            return live.length > 0 ? { tasks: live } : {};
+          })(),
+          /**
+           * THE ORIENTATION PARAGRAPH, RESOLVED HERE. The decision ("is this
+           * machine's preamble on") and the words are both the engine's, and the
+           * claim carries the OUTCOME — the same rule `mcpServers` follows, for
+           * the same reason: a worker trusted to apply a flag would be a second
+           * place the rule lives. Absent means off, and the drivers inject
+           * nothing.
+           */
+          ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
+          ...(() => {
+            const notes = [...this.takeNextTurnNotes(session.id), ...this.takeHeldMail(session.id)];
+            return notes.length > 0 ? { notes } : {};
+          })(),
+          turn,
+        };
+      }
+      return undefined;
+    });
   }
 
   /**
@@ -11551,31 +11559,33 @@ export class EngineStore {
   }
 
   markRunning(sessionId: string, runId: string, claimToken: string): Turn {
-    const queue = this.readQueue(sessionId);
-    const turn = queue.turns.find((candidate) => candidate.runId === runId);
-    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-    if (turn.state !== "claimed" || turn.claim?.token !== claimToken) {
-      throw new EngineStateError("conflict", "turn is not claimed by this worker");
-    }
-    const at = this.now();
-    turn.state = "running";
-    turn.startedAt = at;
-    turn.updatedAt = at;
-    // A pause needs no check of its own: `pauseSession` holds every queued
-    // turn AND stops the live one under this same lock, so a pause before this
-    // call has already made the guard above refuse, and one after it sweeps an
-    // ordinary running turn. Held turns are refused by `promoteInQueue`.
-    const promoted = this.promoteClaimWindow(sessionId, queue, turn, at);
-    this.writeQueue(sessionId, queue);
-    this.touchSession(sessionId, at);
-    // WHERE THE REPOSITORY STANDS AS THIS TURN BEGINS (#741). Dispatched, never
-    // awaited — see `anchorTurn` for why this one line may not be a git call.
-    this.anchorTurn(sessionId, turn.runId, "before");
-    this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
-    // AFTER `turn.started`, so a client reading the journal in order never sees
-    // a message steered into a turn it has not yet been told began.
-    for (const late of promoted) this.appendEvent(sessionId, { type: "turn.steering", intoRunId: turn.runId }, late.runId);
-    return structuredClone(turn);
+    return this.executeCommand("markRunning", () => {
+      const queue = this.readQueue(sessionId);
+      const turn = queue.turns.find((candidate) => candidate.runId === runId);
+      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+      if (turn.state !== "claimed" || turn.claim?.token !== claimToken) {
+        throw new EngineStateError("conflict", "turn is not claimed by this worker");
+      }
+      const at = this.now();
+      turn.state = "running";
+      turn.startedAt = at;
+      turn.updatedAt = at;
+      // A pause needs no check of its own: `pauseSession` holds every queued
+      // turn AND stops the live one under this same lock, so a pause before this
+      // call has already made the guard above refuse, and one after it sweeps an
+      // ordinary running turn. Held turns are refused by `promoteInQueue`.
+      const promoted = this.promoteClaimWindow(sessionId, queue, turn, at);
+      this.writeQueue(sessionId, queue);
+      this.touchSession(sessionId, at);
+      // WHERE THE REPOSITORY STANDS AS THIS TURN BEGINS (#741). Dispatched, never
+      // awaited — see `anchorTurn` for why this one line may not be a git call.
+      this.anchorTurn(sessionId, turn.runId, "before");
+      this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
+      // AFTER `turn.started`, so a client reading the journal in order never sees
+      // a message steered into a turn it has not yet been told began.
+      for (const late of promoted) this.appendEvent(sessionId, { type: "turn.steering", intoRunId: turn.runId }, late.runId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -11690,56 +11700,58 @@ export class EngineStore {
     claimToken: string,
     input: { text: string; providerSessionId?: string; usage?: UsageSnapshot },
   ): Turn {
-    if (typeof input.text !== "string" || input.text.length > MAX_TEXT_LENGTH) {
-      throw new EngineStateError("invalid_request", "final text exceeds the allowed size");
-    }
-    const queue = this.readQueue(sessionId);
-    const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
-    const at = this.now();
-    turn.state = "completed";
-    turn.completedAt = at;
-    turn.updatedAt = at;
-    turn.resultText = input.text;
-    if (input.usage !== undefined) turn.usage = input.usage;
-    if (input.providerSessionId !== undefined) {
-      if (typeof input.providerSessionId !== "string" || !input.providerSessionId.trim() || input.providerSessionId.length > 4_000) {
-        throw new EngineStateError("invalid_request", "provider session id is invalid");
+    return this.executeCommand("completeTurn", () => {
+      if (typeof input.text !== "string" || input.text.length > MAX_TEXT_LENGTH) {
+        throw new EngineStateError("invalid_request", "final text exceeds the allowed size");
       }
-      turn.providerSessionId = input.providerSessionId;
-    }
-    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
-    this.writeQueue(sessionId, queue);
-    // ...and where it stands now it has ended (#741). The pair is what makes
-    // `before..after` a range git can be asked about.
-    this.anchorTurn(sessionId, turn.runId, "after");
-    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn ended before this agent reported back");
-    this.touchSession(sessionId, at, input.providerSessionId);
-    this.appendEvent(
-      sessionId,
-      {
-        type: "turn.completed",
-        resultText: input.text,
-        ...(input.usage ? { usage: input.usage } : {}),
-        ...(input.providerSessionId ? { providerSessionId: input.providerSessionId } : {}),
-      },
-      turn.runId,
-    );
-    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
-    this.fireSubscriptions(sessionId, "turn_completed", turn, { resultText: input.text });
-    /**
-     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
-     *
-     * The turn that just ended was the reason a wake was held; ending it is the
-     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
-     * flush sees a settled queue, and it is a no-op when the box is empty or a
-     * follow-up turn is already live.
-     */
-    this.flushPendingNotifications(sessionId);
-    // AFTER THE WAKE, NOT BEFORE. A coordinator's turn completing is what makes
-    // its wake "consumed", and this session may be that coordinator — see
-    // `evaluateDelegationSettling`.
-    this.evaluateDelegationSettling(sessionId);
-    return structuredClone(turn);
+      const queue = this.readQueue(sessionId);
+      const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
+      const at = this.now();
+      turn.state = "completed";
+      turn.completedAt = at;
+      turn.updatedAt = at;
+      turn.resultText = input.text;
+      if (input.usage !== undefined) turn.usage = input.usage;
+      if (input.providerSessionId !== undefined) {
+        if (typeof input.providerSessionId !== "string" || !input.providerSessionId.trim() || input.providerSessionId.length > 4_000) {
+          throw new EngineStateError("invalid_request", "provider session id is invalid");
+        }
+        turn.providerSessionId = input.providerSessionId;
+      }
+      const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
+      this.writeQueue(sessionId, queue);
+      // ...and where it stands now it has ended (#741). The pair is what makes
+      // `before..after` a range git can be asked about.
+      this.anchorTurn(sessionId, turn.runId, "after");
+      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn ended before this agent reported back");
+      this.touchSession(sessionId, at, input.providerSessionId);
+      this.appendEvent(
+        sessionId,
+        {
+          type: "turn.completed",
+          resultText: input.text,
+          ...(input.usage ? { usage: input.usage } : {}),
+          ...(input.providerSessionId ? { providerSessionId: input.providerSessionId } : {}),
+        },
+        turn.runId,
+      );
+      for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+      this.fireSubscriptions(sessionId, "turn_completed", turn, { resultText: input.text });
+      /**
+       * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+       *
+       * The turn that just ended was the reason a wake was held; ending it is the
+       * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+       * flush sees a settled queue, and it is a no-op when the box is empty or a
+       * follow-up turn is already live.
+       */
+      this.flushPendingNotifications(sessionId);
+      // AFTER THE WAKE, NOT BEFORE. A coordinator's turn completing is what makes
+      // its wake "consumed", and this session may be that coordinator — see
+      // `evaluateDelegationSettling`.
+      this.evaluateDelegationSettling(sessionId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -11795,88 +11807,90 @@ export class EngineStore {
     claimToken: string,
     failure: { code: TurnFailure["code"]; message: string; resumeAt?: number; limitType?: TurnFailure["limitType"] },
   ): Turn {
-    if (!TURN_FAILURE_CODES.has(failure.code) || typeof failure.message !== "string" || !failure.message.trim()) {
-      throw new EngineStateError("invalid_request", "turn failure is invalid");
-    }
-    /**
-     * `rate_limited` WITHOUT A RESUME TIME IS REFUSED, rather than stored as a
-     * wait nobody can schedule. The whole of the code's meaning is "come back
-     * at this instant"; a row saying "waiting for the limit to reset" with no
-     * instant would sit failed for ever while claiming to be temporary, and the
-     * sweep's own predicate would skip it silently. The driver only throws with
-     * a reset time, so reaching this is a contract violation, not a user error.
-     */
-    const resumeAt =
-      typeof failure.resumeAt === "number" && Number.isFinite(failure.resumeAt) && failure.resumeAt >= 0
-        ? Math.trunc(failure.resumeAt)
-        : undefined;
-    if (failure.code === "rate_limited" && resumeAt === undefined) {
-      throw new EngineStateError("invalid_request", "a rate-limited failure must say when the limit resets");
-    }
-    const queue = this.readQueue(sessionId);
-    const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
-    const at = this.now();
-    turn.state = "failed";
-    turn.completedAt = at;
-    turn.updatedAt = at;
-    turn.failure = {
-      code: failure.code,
-      message: failure.message.slice(0, 4_000),
-      // Only on the code that means them: a `driver_failed` carrying a reset
-      // time would be a row inviting a resume that nothing will ever perform.
-      ...(failure.code === "rate_limited" && resumeAt !== undefined ? { resumeAt } : {}),
-      ...(failure.code === "rate_limited" && failure.limitType ? { limitType: failure.limitType } : {}),
-    };
-    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
-    // Where the repository stands now this turn has ended (#741). A FAILED turn
-    // is anchored like a completed one: it may well have committed before it
-    // failed, and "what did this turn do" is asked of a failure more often than
-    // of a success.
-    this.anchorTurn(sessionId, turn.runId, "after");
-    /**
-     * A SHUTDOWN'S UNDELIVERED MESSAGES ARE HELD, like any other pre-crash
-     * backlog — and they were the one route around that rule.
-     *
-     * `recover()` marks the hold when it finds an AMBIGUOUS turn, which is what
-     * a lost run becomes when nobody settled it. But a clean quit now settles
-     * its run here, as `interrupted`, so the next boot sees a terminal turn,
-     * marks nothing, and claims the requeued steer immediately. Measured: a
-     * message typed while the lost turn was running was dispatched on the next
-     * launch with nobody having re-read it — exactly the thing the hold exists
-     * to prevent, reached by the path that was supposed to be the safe one.
-     *
-     * ONLY FOR `interrupted`. An ordinary failure happens with the person
-     * there, watching, and the session left idle: their in-flight message
-     * running next is what they are expecting. A shutdown means they walked
-     * away, and what they come back to should wait for them.
-     */
-    if (failure.code === "interrupted") {
-      for (const reverted of requeued) reverted.held = { at, reason: "engine_restart" };
-    }
-    this.writeQueue(sessionId, queue);
-    // A failed turn means the provider process died — background shells died
-    // with it, whichever turn started them.
-    this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
-    this.closeOpenItems(sessionId, turn.runId, at);
-    this.closeOpenRequests(sessionId, turn.runId, at);
-    this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
-    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
-    this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
-    /**
-     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
-     *
-     * The turn that just ended was the reason a wake was held; ending it is the
-     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
-     * flush sees a settled queue, and it is a no-op when the box is empty or a
-     * follow-up turn is already live.
-     */
-    this.flushPendingNotifications(sessionId);
-    // A FAILED TURN STILL ENDS ONE. It never makes this session settleable —
-    // clause 1 refuses a failed assignment — but the session may be the
-    // COORDINATOR whose delegate is now waiting on nothing.
-    this.evaluateDelegationSettling(sessionId);
-    return structuredClone(turn);
+    return this.executeCommand("failTurn", () => {
+      if (!TURN_FAILURE_CODES.has(failure.code) || typeof failure.message !== "string" || !failure.message.trim()) {
+        throw new EngineStateError("invalid_request", "turn failure is invalid");
+      }
+      /**
+       * `rate_limited` WITHOUT A RESUME TIME IS REFUSED, rather than stored as a
+       * wait nobody can schedule. The whole of the code's meaning is "come back
+       * at this instant"; a row saying "waiting for the limit to reset" with no
+       * instant would sit failed for ever while claiming to be temporary, and the
+       * sweep's own predicate would skip it silently. The driver only throws with
+       * a reset time, so reaching this is a contract violation, not a user error.
+       */
+      const resumeAt =
+        typeof failure.resumeAt === "number" && Number.isFinite(failure.resumeAt) && failure.resumeAt >= 0
+          ? Math.trunc(failure.resumeAt)
+          : undefined;
+      if (failure.code === "rate_limited" && resumeAt === undefined) {
+        throw new EngineStateError("invalid_request", "a rate-limited failure must say when the limit resets");
+      }
+      const queue = this.readQueue(sessionId);
+      const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
+      const at = this.now();
+      turn.state = "failed";
+      turn.completedAt = at;
+      turn.updatedAt = at;
+      turn.failure = {
+        code: failure.code,
+        message: failure.message.slice(0, 4_000),
+        // Only on the code that means them: a `driver_failed` carrying a reset
+        // time would be a row inviting a resume that nothing will ever perform.
+        ...(failure.code === "rate_limited" && resumeAt !== undefined ? { resumeAt } : {}),
+        ...(failure.code === "rate_limited" && failure.limitType ? { limitType: failure.limitType } : {}),
+      };
+      const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
+      // Where the repository stands now this turn has ended (#741). A FAILED turn
+      // is anchored like a completed one: it may well have committed before it
+      // failed, and "what did this turn do" is asked of a failure more often than
+      // of a success.
+      this.anchorTurn(sessionId, turn.runId, "after");
+      /**
+       * A SHUTDOWN'S UNDELIVERED MESSAGES ARE HELD, like any other pre-crash
+       * backlog — and they were the one route around that rule.
+       *
+       * `recover()` marks the hold when it finds an AMBIGUOUS turn, which is what
+       * a lost run becomes when nobody settled it. But a clean quit now settles
+       * its run here, as `interrupted`, so the next boot sees a terminal turn,
+       * marks nothing, and claims the requeued steer immediately. Measured: a
+       * message typed while the lost turn was running was dispatched on the next
+       * launch with nobody having re-read it — exactly the thing the hold exists
+       * to prevent, reached by the path that was supposed to be the safe one.
+       *
+       * ONLY FOR `interrupted`. An ordinary failure happens with the person
+       * there, watching, and the session left idle: their in-flight message
+       * running next is what they are expecting. A shutdown means they walked
+       * away, and what they come back to should wait for them.
+       */
+      if (failure.code === "interrupted") {
+        for (const reverted of requeued) reverted.held = { at, reason: "engine_restart" };
+      }
+      this.writeQueue(sessionId, queue);
+      // A failed turn means the provider process died — background shells died
+      // with it, whichever turn started them.
+      this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
+      this.closeOpenItems(sessionId, turn.runId, at);
+      this.closeOpenRequests(sessionId, turn.runId, at);
+      this.touchSession(sessionId, at);
+      this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
+      for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+      this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
+      /**
+       * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+       *
+       * The turn that just ended was the reason a wake was held; ending it is the
+       * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+       * flush sees a settled queue, and it is a no-op when the box is empty or a
+       * follow-up turn is already live.
+       */
+      this.flushPendingNotifications(sessionId);
+      // A FAILED TURN STILL ENDS ONE. It never makes this session settleable —
+      // clause 1 refuses a failed assignment — but the session may be the
+      // COORDINATOR whose delegate is now waiting on nothing.
+      this.evaluateDelegationSettling(sessionId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -11887,71 +11901,73 @@ export class EngineStore {
    * Detached project services are owned outside this session task store.
    */
   stopSession(sessionId: string, by: "user" | "agent" = "user"): { stopped: Turn[]; live?: Turn } {
-    const session = this.getSession(sessionId);
-    const queue = this.readQueue(sessionId);
-    const at = this.now();
-    const live = queue.turns.find((turn) => turn.state === "claimed" || turn.state === "running");
-    const stopped = queue.turns.filter((turn) =>
-      turn.state === "queued" || turn.state === "claimed" || turn.state === "running" ||
-      turn.state === "steering" || turn.state === "ambiguous",
-    );
-    for (const turn of stopped) {
-      turn.state = "stopped";
-      turn.stopReason = by;
-      turn.completedAt = at;
-      turn.updatedAt = at;
-      delete turn.steer;
-      delete turn.held;
-    }
-    if (stopped.length > 0) this.writeQueue(sessionId, queue);
-    // A peer must not undo a human Stop by immediately sending another turn.
-    // A fresh human message clears this gate; no discarded work is replayed.
-    if (by === "user") {
-      session.agentMessagesBlocked = true;
-      session.agentMessagesBlockedAt = at;
-      session.updatedAt = at;
-      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-    }
-    // Clear a legacy latch only after its backlog has been terminalized.
-    if (session.paused) {
-      delete session.paused;
-      session.updatedAt = at;
-      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-    }
-    for (const turn of stopped) {
-      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
-      this.closeOpenItems(sessionId, turn.runId, at);
-      this.closeOpenRequests(sessionId, turn.runId, at);
-    }
-    // Also runs when no foreground turn exists: a background task outlives
-    // its turn, but belongs to the session the user just stopped.
-    const backgroundStopped = this.stopBackgroundTasks(sessionId);
-    if (stopped.length > 0 || backgroundStopped > 0) this.touchSession(sessionId, at);
-    for (const turn of stopped) this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
-    /**
-     * AND THE WORKER IS TOLD, rather than left to find out on a poll. See the
-     * `onTurnsStopped` option: the claim stays ON the turn here (that is how a
-     * heartbeat still delivers it to an out-of-process worker), so this is a
-     * shortcut and never the only path.
-     */
-    this.announceStoppedClaims(
-      stopped.flatMap((turn) =>
-        turn.claim ? [{ sessionId, runId: turn.runId, claimToken: turn.claim.token, workerId: turn.claim.workerId }] : [],
-      ),
-    );
-    // One wake for the live turn, not one per cancelled backlog message.
-    if (live) this.fireSubscriptions(sessionId, "turn_stopped", live, {});
-    /**
-     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
-     *
-     * The turn that just ended was the reason a wake was held; ending it is the
-     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
-     * flush sees a settled queue, and it is a no-op when the box is empty or a
-     * follow-up turn is already live.
-     */
-    this.flushPendingNotifications(sessionId);
-    this.evaluateDelegationSettling(sessionId);
-    return { stopped: stopped.map((turn) => structuredClone(turn)), ...(live ? { live: structuredClone(live) } : {}) };
+    return this.executeCommand("stopSession", () => {
+      const session = this.getSession(sessionId);
+      const queue = this.readQueue(sessionId);
+      const at = this.now();
+      const live = queue.turns.find((turn) => turn.state === "claimed" || turn.state === "running");
+      const stopped = queue.turns.filter((turn) =>
+        turn.state === "queued" || turn.state === "claimed" || turn.state === "running" ||
+        turn.state === "steering" || turn.state === "ambiguous",
+      );
+      for (const turn of stopped) {
+        turn.state = "stopped";
+        turn.stopReason = by;
+        turn.completedAt = at;
+        turn.updatedAt = at;
+        delete turn.steer;
+        delete turn.held;
+      }
+      if (stopped.length > 0) this.writeQueue(sessionId, queue);
+      // A peer must not undo a human Stop by immediately sending another turn.
+      // A fresh human message clears this gate; no discarded work is replayed.
+      if (by === "user") {
+        session.agentMessagesBlocked = true;
+        session.agentMessagesBlockedAt = at;
+        session.updatedAt = at;
+        this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+      }
+      // Clear a legacy latch only after its backlog has been terminalized.
+      if (session.paused) {
+        delete session.paused;
+        session.updatedAt = at;
+        this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+      }
+      for (const turn of stopped) {
+        this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+        this.closeOpenItems(sessionId, turn.runId, at);
+        this.closeOpenRequests(sessionId, turn.runId, at);
+      }
+      // Also runs when no foreground turn exists: a background task outlives
+      // its turn, but belongs to the session the user just stopped.
+      const backgroundStopped = this.stopBackgroundTasks(sessionId);
+      if (stopped.length > 0 || backgroundStopped > 0) this.touchSession(sessionId, at);
+      for (const turn of stopped) this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
+      /**
+       * AND THE WORKER IS TOLD, rather than left to find out on a poll. See the
+       * `onTurnsStopped` option: the claim stays ON the turn here (that is how a
+       * heartbeat still delivers it to an out-of-process worker), so this is a
+       * shortcut and never the only path.
+       */
+      this.announceStoppedClaims(
+        stopped.flatMap((turn) =>
+          turn.claim ? [{ sessionId, runId: turn.runId, claimToken: turn.claim.token, workerId: turn.claim.workerId }] : [],
+        ),
+      );
+      // One wake for the live turn, not one per cancelled backlog message.
+      if (live) this.fireSubscriptions(sessionId, "turn_stopped", live, {});
+      /**
+       * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+       *
+       * The turn that just ended was the reason a wake was held; ending it is the
+       * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+       * flush sees a settled queue, and it is a no-op when the box is empty or a
+       * follow-up turn is already live.
+       */
+      this.flushPendingNotifications(sessionId);
+      this.evaluateDelegationSettling(sessionId);
+      return { stopped: stopped.map((turn) => structuredClone(turn)), ...(live ? { live: structuredClone(live) } : {}) };
+    });
   }
 
   /**
@@ -11962,56 +11978,58 @@ export class EngineStore {
    * stopped until a human resumes" see `pauseSession`.
    */
   stopTurn(sessionId: string, requestedRunId?: string): { turn?: Turn; stopped: boolean } {
-    const queue = this.readQueue(sessionId);
-    const turn = requestedRunId
-      ? queue.turns.find((candidate) => candidate.runId === requestedRunId)
-      : queue.turns.find((candidate) => candidate.state === "queued" || candidate.state === "claimed" || candidate.state === "running");
-    if (!turn || turn.state === "stopped" || turn.state === "ambiguous" || (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running")) {
-      // NOTHING RUNNING, but Stop was pressed: the only thing left to stop is
-      // lingering background work. Settle it — this is also the retroactive
-      // cure for tasks orphaned before the sweeps below existed, which
-      // otherwise report "monitoring" forever with a Stop that no-ops.
-      const swept = this.stopBackgroundTasks(sessionId);
-      return { ...(turn ? { turn: structuredClone(turn) } : {}), stopped: swept > 0 };
-    }
-    const at = this.now();
-    turn.state = "stopped";
-    turn.completedAt = at;
-    turn.updatedAt = at;
-    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
-    this.writeQueue(sessionId, queue);
-    // Where the repository stands now this turn has ended (#741). A STOPPED
-    // turn is the case the anchor is worth most for: the work ended where it
-    // stood, and the range is the only account of it that is not the agent's.
-    this.anchorTurn(sessionId, turn.runId, "after");
-    // STOPPING A TURN SPARES BACKGROUND WORK. Since the session runtime
-    // landed (#126) a turn Stop is the provider's own `interrupt()`, declared
-    // with `perTaskStopAffordance` so the live process — and every background
-    // shell inside it — survives the interrupt. So only the turn's own agents
-    // are closed here, whether or not it was live; a background task keeps
-    // running and is stopped through its own path (`stopBackgroundTasks`). The
-    // pre-runtime code closed background tasks here because the stop killed the
-    // process; that assumption no longer holds.
-    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
-    this.closeOpenItems(sessionId, turn.runId, at);
-    this.closeOpenRequests(sessionId, turn.runId, at);
-    this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
-    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
-    this.fireSubscriptions(sessionId, "turn_stopped", turn, {});
-    /**
-     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
-     *
-     * The turn that just ended was the reason a wake was held; ending it is the
-     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
-     * flush sees a settled queue, and it is a no-op when the box is empty or a
-     * follow-up turn is already live.
-     */
-    this.flushPendingNotifications(sessionId);
-    // A stopped assignment IS finished (clause 1 takes it), so a Stop is one of
-    // the moments a delegate can become settleable.
-    this.evaluateDelegationSettling(sessionId);
-    return { turn: structuredClone(turn), stopped: true };
+    return this.executeCommand("stopTurn", () => {
+      const queue = this.readQueue(sessionId);
+      const turn = requestedRunId
+        ? queue.turns.find((candidate) => candidate.runId === requestedRunId)
+        : queue.turns.find((candidate) => candidate.state === "queued" || candidate.state === "claimed" || candidate.state === "running");
+      if (!turn || turn.state === "stopped" || turn.state === "ambiguous" || (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running")) {
+        // NOTHING RUNNING, but Stop was pressed: the only thing left to stop is
+        // lingering background work. Settle it — this is also the retroactive
+        // cure for tasks orphaned before the sweeps below existed, which
+        // otherwise report "monitoring" forever with a Stop that no-ops.
+        const swept = this.stopBackgroundTasks(sessionId);
+        return { ...(turn ? { turn: structuredClone(turn) } : {}), stopped: swept > 0 };
+      }
+      const at = this.now();
+      turn.state = "stopped";
+      turn.completedAt = at;
+      turn.updatedAt = at;
+      const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
+      this.writeQueue(sessionId, queue);
+      // Where the repository stands now this turn has ended (#741). A STOPPED
+      // turn is the case the anchor is worth most for: the work ended where it
+      // stood, and the range is the only account of it that is not the agent's.
+      this.anchorTurn(sessionId, turn.runId, "after");
+      // STOPPING A TURN SPARES BACKGROUND WORK. Since the session runtime
+      // landed (#126) a turn Stop is the provider's own `interrupt()`, declared
+      // with `perTaskStopAffordance` so the live process — and every background
+      // shell inside it — survives the interrupt. So only the turn's own agents
+      // are closed here, whether or not it was live; a background task keeps
+      // running and is stopped through its own path (`stopBackgroundTasks`). The
+      // pre-runtime code closed background tasks here because the stop killed the
+      // process; that assumption no longer holds.
+      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+      this.closeOpenItems(sessionId, turn.runId, at);
+      this.closeOpenRequests(sessionId, turn.runId, at);
+      this.touchSession(sessionId, at);
+      this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
+      for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+      this.fireSubscriptions(sessionId, "turn_stopped", turn, {});
+      /**
+       * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+       *
+       * The turn that just ended was the reason a wake was held; ending it is the
+       * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+       * flush sees a settled queue, and it is a no-op when the box is empty or a
+       * follow-up turn is already live.
+       */
+      this.flushPendingNotifications(sessionId);
+      // A stopped assignment IS finished (clause 1 takes it), so a Stop is one of
+      // the moments a delegate can become settleable.
+      this.evaluateDelegationSettling(sessionId);
+      return { turn: structuredClone(turn), stopped: true };
+    });
   }
 
   /**
@@ -12065,21 +12083,23 @@ export class EngineStore {
   }
 
   promoteTurn(sessionId: string, runId: string): Turn {
-    assertId(runId, "run id");
-    const queue = this.readQueue(sessionId);
-    const turn = queue.turns.find((candidate) => candidate.runId === runId);
-    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-    // Checked here as well as inside, to keep the refusals in the order this
-    // route has always reported them: what you asked for, then what is live.
-    if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
-    const running = queue.turns.find((candidate) => candidate.state === "running" && candidate.claim);
-    if (!running) throw new EngineStateError("conflict", "no turn is running to send this into");
-    const at = this.now();
-    this.promoteInQueue(sessionId, queue, turn, running, at);
-    this.writeQueue(sessionId, queue);
-    this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, { type: "turn.steering", intoRunId: running.runId }, turn.runId);
-    return structuredClone(turn);
+    return this.executeCommand("promoteTurn", () => {
+      assertId(runId, "run id");
+      const queue = this.readQueue(sessionId);
+      const turn = queue.turns.find((candidate) => candidate.runId === runId);
+      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+      // Checked here as well as inside, to keep the refusals in the order this
+      // route has always reported them: what you asked for, then what is live.
+      if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
+      const running = queue.turns.find((candidate) => candidate.state === "running" && candidate.claim);
+      if (!running) throw new EngineStateError("conflict", "no turn is running to send this into");
+      const at = this.now();
+      this.promoteInQueue(sessionId, queue, turn, running, at);
+      this.writeQueue(sessionId, queue);
+      this.touchSession(sessionId, at);
+      this.appendEvent(sessionId, { type: "turn.steering", intoRunId: running.runId }, turn.runId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -12089,27 +12109,29 @@ export class EngineStore {
    * either way and the record must not lie about that.
    */
   ackSteer(sessionId: string, steerRunId: string, claimToken: string): Turn {
-    assertId(steerRunId, "run id");
-    const queue = this.readQueue(sessionId);
-    const turn = queue.turns.find((candidate) => candidate.runId === steerRunId);
-    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-    if (turn.state === "steered") return structuredClone(turn);
-    if (turn.state !== "steering" || !turn.steer) {
-      throw new EngineStateError("conflict", "turn is not being steered");
-    }
-    const running = queue.turns.find((candidate) => candidate.runId === turn.steer!.intoRunId);
-    if (!running || running.state !== "running" || running.claim?.token !== claimToken) {
-      throw new EngineStateError("conflict", "the running turn is not held by this claim");
-    }
-    const at = this.now();
-    turn.state = "steered";
-    turn.steer.deliveredAt = at;
-    turn.completedAt = at;
-    turn.updatedAt = at;
-    this.writeQueue(sessionId, queue);
-    this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, { type: "turn.steered", intoRunId: turn.steer.intoRunId }, turn.runId);
-    return structuredClone(turn);
+    return this.executeCommand("ackSteer", () => {
+      assertId(steerRunId, "run id");
+      const queue = this.readQueue(sessionId);
+      const turn = queue.turns.find((candidate) => candidate.runId === steerRunId);
+      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+      if (turn.state === "steered") return structuredClone(turn);
+      if (turn.state !== "steering" || !turn.steer) {
+        throw new EngineStateError("conflict", "turn is not being steered");
+      }
+      const running = queue.turns.find((candidate) => candidate.runId === turn.steer!.intoRunId);
+      if (!running || running.state !== "running" || running.claim?.token !== claimToken) {
+        throw new EngineStateError("conflict", "the running turn is not held by this claim");
+      }
+      const at = this.now();
+      turn.state = "steered";
+      turn.steer.deliveredAt = at;
+      turn.completedAt = at;
+      turn.updatedAt = at;
+      this.writeQueue(sessionId, queue);
+      this.touchSession(sessionId, at);
+      this.appendEvent(sessionId, { type: "turn.steered", intoRunId: turn.steer.intoRunId }, turn.runId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -12141,43 +12163,45 @@ export class EngineStore {
    * the queue.
    */
   releaseHeldTurn(sessionId: string, runId: string): Turn {
-    assertId(runId, "run id");
-    const session = this.getSession(sessionId);
-    /**
-     * RELEASING IS STARTING WORK, so it answers to the same gate as submitting.
-     * Without this a message held since before the project was put away could
-     * be released into it — resuming a provider on a project the person removed
-     * from Telar, which is exactly what `assertProjectAvailable` exists to stop
-     * at the other two doors (a new session, a new turn).
-     */
-    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
-    const queue = this.readQueue(sessionId);
-    const turn = queue.turns.find((candidate) => candidate.runId === runId);
-    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-    /**
-     * THE STATE IS CHECKED FIRST AND UNCONDITIONALLY.
-     *
-     * It used to live inside the `!turn.held` branch, so a turn that had since
-     * been stopped or run but still carried a stale `held` flag skipped the
-     * check entirely and was cheerfully "released" — reporting success about a
-     * terminal turn, and clearing a flag on it as if that meant something.
-     */
-    if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be released");
-    // Already runnable: nothing to do, and saying so is kinder than a conflict
-    // for a button pressed twice.
-    if (!turn.held) return structuredClone(turn);
-    // Releasing ONE message does not un-pause the session — `claimTurn` would
-    // still refuse it. The honest answer is to say so: resume is the verb.
-    if (turn.held.reason === "session_paused" && session.paused) {
-      throw new EngineStateError("conflict", "the session is paused; resume it to run this message");
-    }
-    const at = this.now();
-    delete turn.held;
-    turn.updatedAt = at;
-    this.writeQueue(sessionId, queue);
-    this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
-    return structuredClone(turn);
+    return this.executeCommand("releaseHeldTurn", () => {
+      assertId(runId, "run id");
+      const session = this.getSession(sessionId);
+      /**
+       * RELEASING IS STARTING WORK, so it answers to the same gate as submitting.
+       * Without this a message held since before the project was put away could
+       * be released into it — resuming a provider on a project the person removed
+       * from Telar, which is exactly what `assertProjectAvailable` exists to stop
+       * at the other two doors (a new session, a new turn).
+       */
+      if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
+      const queue = this.readQueue(sessionId);
+      const turn = queue.turns.find((candidate) => candidate.runId === runId);
+      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+      /**
+       * THE STATE IS CHECKED FIRST AND UNCONDITIONALLY.
+       *
+       * It used to live inside the `!turn.held` branch, so a turn that had since
+       * been stopped or run but still carried a stale `held` flag skipped the
+       * check entirely and was cheerfully "released" — reporting success about a
+       * terminal turn, and clearing a flag on it as if that meant something.
+       */
+      if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be released");
+      // Already runnable: nothing to do, and saying so is kinder than a conflict
+      // for a button pressed twice.
+      if (!turn.held) return structuredClone(turn);
+      // Releasing ONE message does not un-pause the session — `claimTurn` would
+      // still refuse it. The honest answer is to say so: resume is the verb.
+      if (turn.held.reason === "session_paused" && session.paused) {
+        throw new EngineStateError("conflict", "the session is paused; resume it to run this message");
+      }
+      const at = this.now();
+      delete turn.held;
+      turn.updatedAt = at;
+      this.writeQueue(sessionId, queue);
+      this.touchSession(sessionId, at);
+      this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -12192,25 +12216,27 @@ export class EngineStore {
    * exactly what "Continue" performs — released every one of them at once.
    */
   discardAmbiguousTurn(sessionId: string, runId: string): Turn {
-    assertId(runId, "run id");
-    const queue = this.readQueue(sessionId);
-    const turn = queue.turns.find((candidate) => candidate.runId === runId);
-    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-    if (turn.state !== "ambiguous") {
-      throw new EngineStateError("conflict", "only an ambiguous turn can be discarded");
-    }
-    const at = this.now();
-    turn.state = "discarded";
-    turn.completedAt = at;
-    turn.updatedAt = at;
-    // The stale worker claim must not remain usable after human resolution.
-    delete turn.claim;
-    this.writeQueue(sessionId, queue);
-    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was discarded before this agent reported back");
-    this.closeOpenRequests(sessionId, turn.runId, at);
-    this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
-    return structuredClone(turn);
+    return this.executeCommand("discardAmbiguousTurn", () => {
+      assertId(runId, "run id");
+      const queue = this.readQueue(sessionId);
+      const turn = queue.turns.find((candidate) => candidate.runId === runId);
+      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+      if (turn.state !== "ambiguous") {
+        throw new EngineStateError("conflict", "only an ambiguous turn can be discarded");
+      }
+      const at = this.now();
+      turn.state = "discarded";
+      turn.completedAt = at;
+      turn.updatedAt = at;
+      // The stale worker claim must not remain usable after human resolution.
+      delete turn.claim;
+      this.writeQueue(sessionId, queue);
+      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was discarded before this agent reported back");
+      this.closeOpenRequests(sessionId, turn.runId, at);
+      this.touchSession(sessionId, at);
+      this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
+      return structuredClone(turn);
+    });
   }
 
   /**
@@ -12761,51 +12787,53 @@ export class EngineStore {
     subscriberSessionId: string,
     input: { targetSessionId: string; events?: WakeKind[]; once?: boolean; completionWake?: Subscription["completionWake"] },
   ): Subscription {
-    assertId(input.targetSessionId, "target session id");
-    if (subscriberSessionId === input.targetSessionId) {
-      throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
-    }
-    const subscriber = this.getSession(subscriberSessionId);
-    if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
-    const target = this.getSession(input.targetSessionId);
-    if (target.state !== "active") throw new EngineStateError("conflict", "an archived session will do nothing worth waking for");
-    const events = input.events && input.events.length > 0 ? [...new Set(input.events)] : [...ALL_WAKE_KINDS];
-    const all = this.readSubscriptions();
-    const existing = all.find((each) => each.subscriberSessionId === subscriberSessionId && each.targetSessionId === input.targetSessionId);
-    if (existing) {
-      existing.events = [...new Set([...existing.events, ...events])];
-      if (input.once !== undefined) {
-        if (input.once) existing.once = true;
-        else delete existing.once;
+    return this.executeCommand("subscribe", () => {
+      assertId(input.targetSessionId, "target session id");
+      if (subscriberSessionId === input.targetSessionId) {
+        throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
       }
-      // Re-subscribing MERGES, so naming a policy changes it and omitting one
-      // leaves whatever was chosen before — the same rule `events` follows.
-      if (input.completionWake !== undefined) existing.completionWake = input.completionWake;
+      const subscriber = this.getSession(subscriberSessionId);
+      if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
+      const target = this.getSession(input.targetSessionId);
+      if (target.state !== "active") throw new EngineStateError("conflict", "an archived session will do nothing worth waking for");
+      const events = input.events && input.events.length > 0 ? [...new Set(input.events)] : [...ALL_WAKE_KINDS];
+      const all = this.readSubscriptions();
+      const existing = all.find((each) => each.subscriberSessionId === subscriberSessionId && each.targetSessionId === input.targetSessionId);
+      if (existing) {
+        existing.events = [...new Set([...existing.events, ...events])];
+        if (input.once !== undefined) {
+          if (input.once) existing.once = true;
+          else delete existing.once;
+        }
+        // Re-subscribing MERGES, so naming a policy changes it and omitting one
+        // leaves whatever was chosen before — the same rule `events` follows.
+        if (input.completionWake !== undefined) existing.completionWake = input.completionWake;
+        this.writeSubscriptions(all);
+        return structuredClone(existing);
+      }
+      const mine = all.filter((each) => each.subscriberSessionId === subscriberSessionId).length;
+      if (mine >= MAX_SUBSCRIPTIONS_PER_SESSION) {
+        throw new EngineStateError(
+          "conflict",
+          `this session is already subscribed to ${mine} sessions, the most it may be. Unsubscribe from ones you are finished with — sessions_subscriptions lists them.`,
+        );
+      }
+      const subscription: Subscription = {
+        id: `sub_${crypto.randomUUID().replaceAll("-", "")}`,
+        subscriberSessionId,
+        targetSessionId: input.targetSessionId,
+        events,
+        ...(input.once ? { once: true } : {}),
+        // ABSENT MEANS `settled_only`. Stored only when explicitly asked for, so
+        // the default stays a reading of the contract rather than a value written
+        // into every subscription ever made.
+        ...(input.completionWake ? { completionWake: input.completionWake } : {}),
+        createdAt: this.now(),
+      };
+      all.push(subscription);
       this.writeSubscriptions(all);
-      return structuredClone(existing);
-    }
-    const mine = all.filter((each) => each.subscriberSessionId === subscriberSessionId).length;
-    if (mine >= MAX_SUBSCRIPTIONS_PER_SESSION) {
-      throw new EngineStateError(
-        "conflict",
-        `this session is already subscribed to ${mine} sessions, the most it may be. Unsubscribe from ones you are finished with — sessions_subscriptions lists them.`,
-      );
-    }
-    const subscription: Subscription = {
-      id: `sub_${crypto.randomUUID().replaceAll("-", "")}`,
-      subscriberSessionId,
-      targetSessionId: input.targetSessionId,
-      events,
-      ...(input.once ? { once: true } : {}),
-      // ABSENT MEANS `settled_only`. Stored only when explicitly asked for, so
-      // the default stays a reading of the contract rather than a value written
-      // into every subscription ever made.
-      ...(input.completionWake ? { completionWake: input.completionWake } : {}),
-      createdAt: this.now(),
-    };
-    all.push(subscription);
-    this.writeSubscriptions(all);
-    return structuredClone(subscription);
+      return structuredClone(subscription);
+    });
   }
 
   /** Sessions already refused for running on the removed `telar` driver, so the
@@ -12815,27 +12843,29 @@ export class EngineStore {
   /** With `subscriberSessionId`, another session's subscription reads as
    *  absent — a session may not remove what it did not ask for. */
   unsubscribe(subscriptionId: string, subscriberSessionId?: string): boolean {
-    assertId(subscriptionId, "subscription id");
-    if (subscriptionId.startsWith("coh_")) {
-      // A cohort has no wakes queued before it closes, so there is nothing else to withdraw.
-      const cohorts = this.readCohorts();
-      const kept = cohorts.filter((each) => !(each.id === subscriptionId && (subscriberSessionId === undefined || each.subscriberSessionId === subscriberSessionId)));
-      if (kept.length === cohorts.length) return false;
-      this.writeCohorts(kept);
+    return this.executeCommand("unsubscribe", () => {
+      assertId(subscriptionId, "subscription id");
+      if (subscriptionId.startsWith("coh_")) {
+        // A cohort has no wakes queued before it closes, so there is nothing else to withdraw.
+        const cohorts = this.readCohorts();
+        const kept = cohorts.filter((each) => !(each.id === subscriptionId && (subscriberSessionId === undefined || each.subscriberSessionId === subscriberSessionId)));
+        if (kept.length === cohorts.length) return false;
+        this.writeCohorts(kept);
+        return true;
+      }
+      const all = this.readSubscriptions();
+      const index = all.findIndex(
+        (each) => each.id === subscriptionId && (subscriberSessionId === undefined || each.subscriberSessionId === subscriberSessionId),
+      );
+      if (index < 0) return false;
+      const [removed] = all.splice(index, 1);
+      this.writeSubscriptions(all);
+      // "Stop waking me" includes the wakes already waiting: an unsubscribe that
+      // left fourteen queued wakes to run one by one stopped nothing a person
+      // could see. Only QUEUED ones go; a running wake is the worker's.
+      this.discardQueuedWakes(removed!.subscriberSessionId, removed!.targetSessionId);
       return true;
-    }
-    const all = this.readSubscriptions();
-    const index = all.findIndex(
-      (each) => each.id === subscriptionId && (subscriberSessionId === undefined || each.subscriberSessionId === subscriberSessionId),
-    );
-    if (index < 0) return false;
-    const [removed] = all.splice(index, 1);
-    this.writeSubscriptions(all);
-    // "Stop waking me" includes the wakes already waiting: an unsubscribe that
-    // left fourteen queued wakes to run one by one stopped nothing a person
-    // could see. Only QUEUED ones go; a running wake is the worker's.
-    this.discardQueuedWakes(removed!.subscriberSessionId, removed!.targetSessionId);
-    return true;
+    });
   }
 
   /** What this session has asked to be woken by. */
@@ -14755,102 +14785,104 @@ export class EngineStore {
       default?: RequestDefault;
     },
   ): RequestOpenResult {
-    assertId(input.requestId, "request id");
-    if (input.deadlineMs !== undefined && (!Number.isSafeInteger(input.deadlineMs) || input.deadlineMs <= 0)) {
-      throw new EngineStateError("invalid_request", "a request deadline is a positive whole number of milliseconds");
-    }
-    if (input.default !== undefined && !defaultAllowed(input.kind)) {
-      throw new EngineStateError("invalid_request", `a ${input.kind} request may not carry a default — a deadline may not release a secret`);
-    }
-    /**
-     * A DEFAULT WITH NO DEADLINE IS AN ANSWER NOTHING WILL EVER TAKE. Refused
-     * rather than stored, on the same argument as the refusals above: it reads
-     * as a safety net and is not one, and the caller is still here to be told.
-     * The other direction is NOT an error — a deadline with no default is the
-     * issue's own "requests with no default wait", and a caller may legitimately
-     * state one so a client can show how long this has been sitting.
-     */
-    if (input.default !== undefined && input.deadlineMs === undefined) {
-      throw new EngineStateError("invalid_request", "a request default needs a deadline for anything to take it");
-    }
-    const turn = this.requireRunningClaim(sessionId, runId, claimToken);
-    const session = this.getSession(sessionId);
-    const requests = this.readRequests(sessionId);
-
-    const known = requests.get(input.requestId);
-    if (known) {
-      return known.state === "resolved"
-        ? { state: "resolved", requestId: known.id, decision: known.decision!, resolvedBy: known.resolvedBy! }
-        : { state: "open", requestId: known.id, notified: known.notified ?? false };
-    }
-
-    const at = this.now();
-    const automatic = autoResolution(session.runtimeMode, input.kind);
-    const request: EngineRequest = {
-      id: input.requestId,
-      runId: turn.runId,
-      sessionId,
-      state: automatic ? "resolved" : "open",
-      detail: input.detail,
-      openedAt: at,
-      ...(input.itemId ? { itemId: input.itemId } : {}),
-      ...(input.providerRefs ? { providerRefs: input.providerRefs } : {}),
-      ...(automatic ? { decision: automatic, resolvedBy: "policy" as const, resolvedAt: at } : {}),
+    return this.executeCommand("openRequest", () => {
+      assertId(input.requestId, "request id");
+      if (input.deadlineMs !== undefined && (!Number.isSafeInteger(input.deadlineMs) || input.deadlineMs <= 0)) {
+        throw new EngineStateError("invalid_request", "a request deadline is a positive whole number of milliseconds");
+      }
+      if (input.default !== undefined && !defaultAllowed(input.kind)) {
+        throw new EngineStateError("invalid_request", `a ${input.kind} request may not carry a default — a deadline may not release a secret`);
+      }
       /**
-       * ONLY ON A REQUEST THAT ACTUALLY PARKED. One the mode resolved on the
-       * spot was never waiting on anybody, so a clock on it would be a field
-       * that measured nothing and a row the sweeper had to skip for ever.
+       * A DEFAULT WITH NO DEADLINE IS AN ANSWER NOTHING WILL EVER TAKE. Refused
+       * rather than stored, on the same argument as the refusals above: it reads
+       * as a safety net and is not one, and the caller is still here to be told.
+       * The other direction is NOT an error — a deadline with no default is the
+       * issue's own "requests with no default wait", and a caller may legitimately
+       * state one so a client can show how long this has been sitting.
        */
-      ...(!automatic && input.deadlineMs !== undefined ? { deadlineMs: input.deadlineMs } : {}),
-      ...(!automatic && input.default !== undefined ? { default: input.default } : {}),
-    };
+      if (input.default !== undefined && input.deadlineMs === undefined) {
+        throw new EngineStateError("invalid_request", "a request default needs a deadline for anything to take it");
+      }
+      const turn = this.requireRunningClaim(sessionId, runId, claimToken);
+      const session = this.getSession(sessionId);
+      const requests = this.readRequests(sessionId);
 
-    if (!automatic) {
-      // Parked. Tell someone, and record whether anyone was actually reached —
-      // "stuck and nobody was told" has to be a detectable state.
-      const notify = () => this.notifier?.({ sessionId, runId: turn.runId, requestId: request.id,
-        kind: input.kind, title: requestTitle(input.detail) }) ?? false;
-      request.notified = false;
-      this.afterCommit.push(() => {
-        // Best-effort notification is outside the execution transaction. A
-        // crash here leaves an explicitly unnotified, durable open request.
-        try {
-          const latest = this.readRequests(sessionId);
-          const pending = latest.get(request.id);
-          if (pending?.state !== "open") return;
-          pending.notified = notify();
-          this.writeRequests(sessionId, latest);
-        } catch { /* retain the unnotified request for the next reader */ }
-      });
-    }
+      const known = requests.get(input.requestId);
+      if (known) {
+        return known.state === "resolved"
+          ? { state: "resolved", requestId: known.id, decision: known.decision!, resolvedBy: known.resolvedBy! }
+          : { state: "open", requestId: known.id, notified: known.notified ?? false };
+      }
 
-    /**
-     * VALIDATE ON WRITE, TRUST ON READ — the other half of #545.
-     *
-     * This is the only place a request row is created, so this is the one
-     * schema walk the row ever needs: `readRequests` used to re-run it over
-     * every element of the whole history on every read, ten times a second.
-     * ONCE PER ROW rather than once per row per read, and it still covers the
-     * one field that is not built from a typed constant here — `detail`, which
-     * an in-process caller hands over without passing a route's own parse.
-     */
-    const written = RequestSchema.safeParse(request);
-    if (!written.success) throw new EngineStateError("invalid_request", "invalid request");
-    requests.set(request.id, request);
-    this.writeRequests(sessionId, requests);
-    this.appendEvent(sessionId, { type: "request.opened", request }, turn.runId);
-
-    if (automatic) {
-      this.appendEvent(
+      const at = this.now();
+      const automatic = autoResolution(session.runtimeMode, input.kind);
+      const request: EngineRequest = {
+        id: input.requestId,
+        runId: turn.runId,
         sessionId,
-        { type: "request.resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" },
-        turn.runId,
-      );
-      return { state: "resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" };
-    }
-    this.touchSession(sessionId, at);
-    this.fireSubscriptions(sessionId, "request_opened", turn, { request });
-    return { state: "open", requestId: request.id, notified: request.notified ?? false };
+        state: automatic ? "resolved" : "open",
+        detail: input.detail,
+        openedAt: at,
+        ...(input.itemId ? { itemId: input.itemId } : {}),
+        ...(input.providerRefs ? { providerRefs: input.providerRefs } : {}),
+        ...(automatic ? { decision: automatic, resolvedBy: "policy" as const, resolvedAt: at } : {}),
+        /**
+         * ONLY ON A REQUEST THAT ACTUALLY PARKED. One the mode resolved on the
+         * spot was never waiting on anybody, so a clock on it would be a field
+         * that measured nothing and a row the sweeper had to skip for ever.
+         */
+        ...(!automatic && input.deadlineMs !== undefined ? { deadlineMs: input.deadlineMs } : {}),
+        ...(!automatic && input.default !== undefined ? { default: input.default } : {}),
+      };
+
+      if (!automatic) {
+        // Parked. Tell someone, and record whether anyone was actually reached —
+        // "stuck and nobody was told" has to be a detectable state.
+        const notify = () => this.notifier?.({ sessionId, runId: turn.runId, requestId: request.id,
+          kind: input.kind, title: requestTitle(input.detail) }) ?? false;
+        request.notified = false;
+        this.afterCommit.push(() => {
+          // Best-effort notification is outside the execution transaction. A
+          // crash here leaves an explicitly unnotified, durable open request.
+          try {
+            const latest = this.readRequests(sessionId);
+            const pending = latest.get(request.id);
+            if (pending?.state !== "open") return;
+            pending.notified = notify();
+            this.writeRequests(sessionId, latest);
+          } catch { /* retain the unnotified request for the next reader */ }
+        });
+      }
+
+      /**
+       * VALIDATE ON WRITE, TRUST ON READ — the other half of #545.
+       *
+       * This is the only place a request row is created, so this is the one
+       * schema walk the row ever needs: `readRequests` used to re-run it over
+       * every element of the whole history on every read, ten times a second.
+       * ONCE PER ROW rather than once per row per read, and it still covers the
+       * one field that is not built from a typed constant here — `detail`, which
+       * an in-process caller hands over without passing a route's own parse.
+       */
+      const written = RequestSchema.safeParse(request);
+      if (!written.success) throw new EngineStateError("invalid_request", "invalid request");
+      requests.set(request.id, request);
+      this.writeRequests(sessionId, requests);
+      this.appendEvent(sessionId, { type: "request.opened", request }, turn.runId);
+
+      if (automatic) {
+        this.appendEvent(
+          sessionId,
+          { type: "request.resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" },
+          turn.runId,
+        );
+        return { state: "resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" };
+      }
+      this.touchSession(sessionId, at);
+      this.fireSubscriptions(sessionId, "request_opened", turn, { request });
+      return { state: "open", requestId: request.id, notified: request.notified ?? false };
+    });
   }
 
   /** A human (or a cancellation) answering a parked request. */
@@ -14859,35 +14891,37 @@ export class EngineStore {
     requestId: string,
     input: { decision: RequestDecision; resolvedBy?: RequestResolver; reason?: string; answers?: Record<string, unknown> },
   ): EngineRequest {
-    assertId(requestId, "request id");
-    const requests = this.readRequests(sessionId);
-    const request = requests.get(requestId);
-    if (!request) throw new EngineStateError("not_found", "request does not exist");
-    if (request.state === "resolved") {
-      throw new EngineStateError("conflict", "request has already been resolved");
-    }
-    const at = this.now();
-    request.state = "resolved";
-    request.decision = input.decision;
-    request.resolvedBy = input.resolvedBy ?? "human";
-    request.resolvedAt = at;
-    if (input.reason !== undefined) request.reason = input.reason;
-    if (input.answers !== undefined) request.answers = input.answers;
-    requests.set(request.id, request);
-    this.writeRequests(sessionId, requests);
-    this.touchSession(sessionId, at);
-    this.appendEvent(
-      sessionId,
-      {
-        type: "request.resolved",
-        requestId: request.id,
-        decision: request.decision,
-        resolvedBy: request.resolvedBy,
-        ...(request.reason ? { reason: request.reason } : {}),
-      },
-      request.runId,
-    );
-    return structuredClone(request);
+    return this.executeCommand("resolveRequest", () => {
+      assertId(requestId, "request id");
+      const requests = this.readRequests(sessionId);
+      const request = requests.get(requestId);
+      if (!request) throw new EngineStateError("not_found", "request does not exist");
+      if (request.state === "resolved") {
+        throw new EngineStateError("conflict", "request has already been resolved");
+      }
+      const at = this.now();
+      request.state = "resolved";
+      request.decision = input.decision;
+      request.resolvedBy = input.resolvedBy ?? "human";
+      request.resolvedAt = at;
+      if (input.reason !== undefined) request.reason = input.reason;
+      if (input.answers !== undefined) request.answers = input.answers;
+      requests.set(request.id, request);
+      this.writeRequests(sessionId, requests);
+      this.touchSession(sessionId, at);
+      this.appendEvent(
+        sessionId,
+        {
+          type: "request.resolved",
+          requestId: request.id,
+          decision: request.decision,
+          resolvedBy: request.resolvedBy,
+          ...(request.reason ? { reason: request.reason } : {}),
+        },
+        request.runId,
+      );
+      return structuredClone(request);
+    });
   }
 
   /**
@@ -15127,236 +15161,238 @@ export class EngineStore {
    * summoned by it.
    */
   recover(): { stopped: string[] } {
-    const stopped: string[] = [];
-    /** The turns this boot cut off mid-flight, per session — what a planned
-     *  restart may continue. Backlog that was merely queued is not here. */
-    const cutOff = new Map<string, string[]>();
-    for (const session of this.allSessions()) {
-      const queue = this.readQueue(session.id);
-      /**
-       * FIRST, THE TASKS THAT WERE ALREADY STRANDED.
-       *
-       * `closeOrphanedTasks` runs at each terminal turn transition from here
-       * on, but a session whose turn ended before that existed still holds an
-       * `agent` at `running` — one dogfood session had one weeks old. Nothing
-       * revisits a terminal turn, so without this those never close, and a
-       * session's activity (which now reads task state) would report `working`
-       * for the rest of its life.
-       *
-       * Keyed on the TURN being terminal rather than on a timestamp: an agent
-       * whose turn is still queued or running is not stranded, it is waiting.
-       */
-      /**
-       * EVERY TERMINAL TURN AT ONCE, because this is a boot and there are
-       * hundreds of them. Collected first, then swept in three reads per
-       * session rather than three per turn — see `closeOpenItemsForRuns` for
-       * the measurement that made this the difference between a 21 s engine
-       * start and a fast one.
-       */
-      const settledRuns = new Set<string>();
-      for (const turn of queue.turns) {
-        if (turn.state === "queued" || turn.state === "claimed" || turn.state === "running") continue;
-        settledRuns.add(turn.runId);
-      }
-      {
-        const sweptAt = this.now();
-        this.closeLiveTasks(session.id, sweptAt, "the turn ended before this agent reported back", { runIds: settledRuns, includeBackground: false });
-        // Same retroactive cure for items: a stopped turn from before this
-        // sweep existed still holds the tool row it was inside.
-        this.closeOpenItemsForRuns(session.id, settledRuns, sweptAt);
-        // And for requests: a question parked on a turn that already ended
-        // kept a persisted session `blocked` with nothing left to answer it.
-        //
-        // AN AMBIGUOUS TURN'S REQUEST IS RETIRED TOO, and it used to be the one
-        // exception. The reasoning for keeping it — "its decision is still
-        // pending" — confused two different decisions. The TURN's fate is
-        // pending and stays so; the REQUEST is a question a worker asked and
-        // then died waiting on, and no answer can ever reach it. Measured:
-        // across every subsequent boot it stayed `open`, holding the session
-        // `blocked` — sidebar "Waiting on you", composer in answer mode — over
-        // a tool call nothing was going to run. The web client already worked
-        // around this client-side (`actionableRequests`); the engine should not
-        // have needed the workaround.
-        //
-        // The row stays in the transcript, resolved, as part of the record of
-        // what the lost turn was doing when it died.
-        this.closeOpenRequestsForRuns(session.id, settledRuns, sweptAt);
-      }
-      let changed = false;
-      /** Housekeeping, kept apart from `changed`: retiring a dead claim must
-       *  rewrite the queue but must NOT touch the session — nothing happened
-       *  to it, and a bumped `updatedAt` would reorder somebody's sidebar. */
-      let claimsRetired = false;
-      const recoveryEvents: Array<{ type: "turn.stopped"; runId: string }> = [];
-      const at = this.now();
-      const recoveredProviderSessionId = latestProviderSessionId(queue);
-      // `queue.json` is written before `session.json` when a turn completes.
-      // If the process dies in that tiny interval, the terminal turn remains
-      // the durable source of truth. Repair metadata on startup before any
-      // new claim can decide whether to resume a provider conversation.
-      let metadataChanged = false;
-      if (!session.resumeCursor && recoveredProviderSessionId) {
-        session.resumeCursor = recoveredProviderSessionId;
-        session.updatedAt = at;
-        metadataChanged = true;
-      }
-      /**
-       * STOP IS STOP, AND A RESTART IS A STOP. Whatever was in flight when the
-       * process went away is over: the live turn, the claim that never
-       * started, the steer that may or may not have arrived, and the backlog
-       * that was waiting behind all of it. Every one of them lands `stopped`,
-       * which is terminal, visible, and asks nobody for a decision.
-       *
-       * WHAT THIS REPLACES. A running turn used to become `ambiguous` and a
-       * backlog `held`, so the next boot met the person with a recovery card
-       * and a row of Resume buttons before they could say anything — and
-       * resolving one released a pre-crash backlog nobody had re-read. The
-       * person's answer to all of it is the same: the next message continues
-       * the conversation from the provider cursor, which `resumeCursor` above
-       * has already recovered. Nothing is replayed and nothing is resumed.
-       *
-       * THE TEXT AND THE ITEMS SURVIVE — only `state` moves. A stopped turn
-       * keeps its prompt, its attachments, its tool rows and its answer, so
-       * the transcript still says exactly what happened; `stopReason` says why
-       * it ended, and it never claims the work was undone or finished.
-       *
-       * AND NOTHING IS DELIVERED FROM HERE. No subscription fires (see the
-       * caller's note): a boot that woke every subscriber would start fresh
-       * agent turns for work the user just said should not restart.
-       */
-      for (const turn of queue.turns) {
-        if (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running" && turn.state !== "steering") continue;
-        const wasLive = turn.state === "running";
-        if ((wasLive || turn.state === "claimed") && turn.kind !== "compact") {
-          cutOff.set(session.id, [...(cutOff.get(session.id) ?? []), turn.runId]);
+    return this.executeCommand("recover", () => {
+      const stopped: string[] = [];
+      /** The turns this boot cut off mid-flight, per session — what a planned
+       *  restart may continue. Backlog that was merely queued is not here. */
+      const cutOff = new Map<string, string[]>();
+      for (const session of this.allSessions()) {
+        const queue = this.readQueue(session.id);
+        /**
+         * FIRST, THE TASKS THAT WERE ALREADY STRANDED.
+         *
+         * `closeOrphanedTasks` runs at each terminal turn transition from here
+         * on, but a session whose turn ended before that existed still holds an
+         * `agent` at `running` — one dogfood session had one weeks old. Nothing
+         * revisits a terminal turn, so without this those never close, and a
+         * session's activity (which now reads task state) would report `working`
+         * for the rest of its life.
+         *
+         * Keyed on the TURN being terminal rather than on a timestamp: an agent
+         * whose turn is still queued or running is not stranded, it is waiting.
+         */
+        /**
+         * EVERY TERMINAL TURN AT ONCE, because this is a boot and there are
+         * hundreds of them. Collected first, then swept in three reads per
+         * session rather than three per turn — see `closeOpenItemsForRuns` for
+         * the measurement that made this the difference between a 21 s engine
+         * start and a fast one.
+         */
+        const settledRuns = new Set<string>();
+        for (const turn of queue.turns) {
+          if (turn.state === "queued" || turn.state === "claimed" || turn.state === "running") continue;
+          settledRuns.add(turn.runId);
         }
-        turn.state = "stopped";
-        turn.stopReason = "engine_restart";
-        turn.completedAt = at;
-        turn.updatedAt = at;
-        delete turn.steer;
-        delete turn.claim;
-        // A hold was a question waiting to be asked. There is no question now,
-        // so the flag goes with it rather than lingering on a terminal row.
-        delete turn.held;
-        stopped.push(turn.runId);
-        recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
-        if (wasLive) {
-          // The process that was running these did not survive the restart.
-          this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
-          this.closeOpenItems(session.id, turn.runId, at);
-          // A question the lost worker parked can never be answered; leaving
-          // it open held the session `blocked` over a tool call nothing would
-          // run.
-          this.closeOpenRequests(session.id, turn.runId, at);
+        {
+          const sweptAt = this.now();
+          this.closeLiveTasks(session.id, sweptAt, "the turn ended before this agent reported back", { runIds: settledRuns, includeBackground: false });
+          // Same retroactive cure for items: a stopped turn from before this
+          // sweep existed still holds the tool row it was inside.
+          this.closeOpenItemsForRuns(session.id, settledRuns, sweptAt);
+          // And for requests: a question parked on a turn that already ended
+          // kept a persisted session `blocked` with nothing left to answer it.
+          //
+          // AN AMBIGUOUS TURN'S REQUEST IS RETIRED TOO, and it used to be the one
+          // exception. The reasoning for keeping it — "its decision is still
+          // pending" — confused two different decisions. The TURN's fate is
+          // pending and stays so; the REQUEST is a question a worker asked and
+          // then died waiting on, and no answer can ever reach it. Measured:
+          // across every subsequent boot it stayed `open`, holding the session
+          // `blocked` — sidebar "Waiting on you", composer in answer mode — over
+          // a tool call nothing was going to run. The web client already worked
+          // around this client-side (`actionableRequests`); the engine should not
+          // have needed the workaround.
+          //
+          // The row stays in the transcript, resolved, as part of the record of
+          // what the lost turn was doing when it died.
+          this.closeOpenRequestsForRuns(session.id, settledRuns, sweptAt);
         }
-        changed = true;
-      }
-      /**
-       * AN OLD `ambiguous` TURN IS SETTLED THE SAME WAY. Nothing produces the
-       * state any more, but journals on disk still hold it, and a person whose
-       * session has one would otherwise be stuck at a recovery card that no
-       * longer exists anywhere in the app. Same treatment, same honesty: the
-       * turn ended, what it had done is above, whether it finished anything
-       * elsewhere is unknown.
-       */
-      for (const turn of queue.turns) {
-        if (turn.state !== "ambiguous") continue;
-        turn.state = "stopped";
-        turn.stopReason = "engine_restart";
-        turn.completedAt ??= at;
-        turn.updatedAt = at;
-        delete turn.held;
-        stopped.push(turn.runId);
-        recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
-        changed = true;
-      }
-      /**
-       * AND A STOPPED TURN LETS GO OF ITS CLAIM.
-       *
-       * `stopSession` leaves the claim ON a turn it stops, deliberately: that
-       * is how the worker holding it learns over its heartbeat that the work
-       * ended. But the claim names a worker registration, and no registration
-       * survives a restart — so after this boot the token identifies nobody,
-       * can be delivered to nobody, and has nothing left to say.
-       *
-       * IT IS NOT INERT WHILE IT SITS THERE. `queueConcernsAWorker` counts a
-       * stopped turn that still carries a claim, which is what puts a session
-       * in `liveQueueSessionIds` — so every Stop anybody had ever pressed left
-       * a session in the set the heartbeat walks, permanently and across every
-       * restart. Measured on the machine that prompted this: 155 such turns
-       * held 45 of 129 sessions in an index that existed to describe the 2
-       * that were running.
-       *
-       * The turn itself is untouched. Its state, its text, its items and its
-       * `stopReason` all stay exactly as they were; only a token nobody can
-       * use goes.
-       */
-      for (const turn of queue.turns) {
-        if (turn.state !== "stopped" || !turn.claim) continue;
-        delete turn.claim;
-        claimsRetired = true;
-      }
-      /**
-       * AND THE PAUSE LATCH COMES OFF. It is the same trap from the session's
-       * side: a session paused by the old Stop button would open with a banner
-       * and a Resume for a backlog this sweep has just settled. Pause is not a
-       * behaviour any more (see `pauseSession`), so the flag is cleared rather
-       * than left to mean something no code implements.
-       */
-      if (session.paused) {
-        delete session.paused;
-        session.updatedAt = at;
-        metadataChanged = true;
-      }
-      /**
-       * BACKGROUND WORK DIES WITH ITS PROCESS — the same position `failTurn`
-       * and a live stop already take: outliving its TURN is the definition of
-       * background, outliving its PROCESS is impossible. And EVERY session's
-       * process is gone: since #126 the CLI lives in the worker for the whole
-       * session, turn or no turn, and the worker restarted with the engine.
-       * The earlier shape swept only under a `running` turn and "left an
-       * idle-with-monitoring session alone — no process of ours died", which
-       * was false: measured, session_9b43ceec… reported `monitoring` for five
-       * days over a shell whose process ended at a restart. Unfiltered by
-       * runId for the same reason `failTurn`'s is: the dead CLI hosted every
-       * shell of the session, whichever turn started them.
-       */
-      const swept = this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
-      if (changed || claimsRetired) {
-        this.writeQueue(session.id, queue);
-      }
-      if (changed || metadataChanged || swept.length > 0) {
-        if (!metadataChanged) this.touchSession(session.id, at);
-        else this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(session));
-      }
-      if (changed) {
-        for (const event of recoveryEvents) {
-          this.appendEvent(session.id, { type: event.type, reason: "engine_restart" }, event.runId);
+        let changed = false;
+        /** Housekeeping, kept apart from `changed`: retiring a dead claim must
+         *  rewrite the queue but must NOT touch the session — nothing happened
+         *  to it, and a bumped `updatedAt` would reorder somebody's sidebar. */
+        let claimsRetired = false;
+        const recoveryEvents: Array<{ type: "turn.stopped"; runId: string }> = [];
+        const at = this.now();
+        const recoveredProviderSessionId = latestProviderSessionId(queue);
+        // `queue.json` is written before `session.json` when a turn completes.
+        // If the process dies in that tiny interval, the terminal turn remains
+        // the durable source of truth. Repair metadata on startup before any
+        // new claim can decide whether to resume a provider conversation.
+        let metadataChanged = false;
+        if (!session.resumeCursor && recoveredProviderSessionId) {
+          session.resumeCursor = recoveredProviderSessionId;
+          session.updatedAt = at;
+          metadataChanged = true;
+        }
+        /**
+         * STOP IS STOP, AND A RESTART IS A STOP. Whatever was in flight when the
+         * process went away is over: the live turn, the claim that never
+         * started, the steer that may or may not have arrived, and the backlog
+         * that was waiting behind all of it. Every one of them lands `stopped`,
+         * which is terminal, visible, and asks nobody for a decision.
+         *
+         * WHAT THIS REPLACES. A running turn used to become `ambiguous` and a
+         * backlog `held`, so the next boot met the person with a recovery card
+         * and a row of Resume buttons before they could say anything — and
+         * resolving one released a pre-crash backlog nobody had re-read. The
+         * person's answer to all of it is the same: the next message continues
+         * the conversation from the provider cursor, which `resumeCursor` above
+         * has already recovered. Nothing is replayed and nothing is resumed.
+         *
+         * THE TEXT AND THE ITEMS SURVIVE — only `state` moves. A stopped turn
+         * keeps its prompt, its attachments, its tool rows and its answer, so
+         * the transcript still says exactly what happened; `stopReason` says why
+         * it ended, and it never claims the work was undone or finished.
+         *
+         * AND NOTHING IS DELIVERED FROM HERE. No subscription fires (see the
+         * caller's note): a boot that woke every subscriber would start fresh
+         * agent turns for work the user just said should not restart.
+         */
+        for (const turn of queue.turns) {
+          if (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running" && turn.state !== "steering") continue;
+          const wasLive = turn.state === "running";
+          if ((wasLive || turn.state === "claimed") && turn.kind !== "compact") {
+            cutOff.set(session.id, [...(cutOff.get(session.id) ?? []), turn.runId]);
+          }
+          turn.state = "stopped";
+          turn.stopReason = "engine_restart";
+          turn.completedAt = at;
+          turn.updatedAt = at;
+          delete turn.steer;
+          delete turn.claim;
+          // A hold was a question waiting to be asked. There is no question now,
+          // so the flag goes with it rather than lingering on a terminal row.
+          delete turn.held;
+          stopped.push(turn.runId);
+          recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
+          if (wasLive) {
+            // The process that was running these did not survive the restart.
+            this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
+            this.closeOpenItems(session.id, turn.runId, at);
+            // A question the lost worker parked can never be answered; leaving
+            // it open held the session `blocked` over a tool call nothing would
+            // run.
+            this.closeOpenRequests(session.id, turn.runId, at);
+          }
+          changed = true;
+        }
+        /**
+         * AN OLD `ambiguous` TURN IS SETTLED THE SAME WAY. Nothing produces the
+         * state any more, but journals on disk still hold it, and a person whose
+         * session has one would otherwise be stuck at a recovery card that no
+         * longer exists anywhere in the app. Same treatment, same honesty: the
+         * turn ended, what it had done is above, whether it finished anything
+         * elsewhere is unknown.
+         */
+        for (const turn of queue.turns) {
+          if (turn.state !== "ambiguous") continue;
+          turn.state = "stopped";
+          turn.stopReason = "engine_restart";
+          turn.completedAt ??= at;
+          turn.updatedAt = at;
+          delete turn.held;
+          stopped.push(turn.runId);
+          recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
+          changed = true;
+        }
+        /**
+         * AND A STOPPED TURN LETS GO OF ITS CLAIM.
+         *
+         * `stopSession` leaves the claim ON a turn it stops, deliberately: that
+         * is how the worker holding it learns over its heartbeat that the work
+         * ended. But the claim names a worker registration, and no registration
+         * survives a restart — so after this boot the token identifies nobody,
+         * can be delivered to nobody, and has nothing left to say.
+         *
+         * IT IS NOT INERT WHILE IT SITS THERE. `queueConcernsAWorker` counts a
+         * stopped turn that still carries a claim, which is what puts a session
+         * in `liveQueueSessionIds` — so every Stop anybody had ever pressed left
+         * a session in the set the heartbeat walks, permanently and across every
+         * restart. Measured on the machine that prompted this: 155 such turns
+         * held 45 of 129 sessions in an index that existed to describe the 2
+         * that were running.
+         *
+         * The turn itself is untouched. Its state, its text, its items and its
+         * `stopReason` all stay exactly as they were; only a token nobody can
+         * use goes.
+         */
+        for (const turn of queue.turns) {
+          if (turn.state !== "stopped" || !turn.claim) continue;
+          delete turn.claim;
+          claimsRetired = true;
+        }
+        /**
+         * AND THE PAUSE LATCH COMES OFF. It is the same trap from the session's
+         * side: a session paused by the old Stop button would open with a banner
+         * and a Resume for a backlog this sweep has just settled. Pause is not a
+         * behaviour any more (see `pauseSession`), so the flag is cleared rather
+         * than left to mean something no code implements.
+         */
+        if (session.paused) {
+          delete session.paused;
+          session.updatedAt = at;
+          metadataChanged = true;
+        }
+        /**
+         * BACKGROUND WORK DIES WITH ITS PROCESS — the same position `failTurn`
+         * and a live stop already take: outliving its TURN is the definition of
+         * background, outliving its PROCESS is impossible. And EVERY session's
+         * process is gone: since #126 the CLI lives in the worker for the whole
+         * session, turn or no turn, and the worker restarted with the engine.
+         * The earlier shape swept only under a `running` turn and "left an
+         * idle-with-monitoring session alone — no process of ours died", which
+         * was false: measured, session_9b43ceec… reported `monitoring` for five
+         * days over a shell whose process ended at a restart. Unfiltered by
+         * runId for the same reason `failTurn`'s is: the dead CLI hosted every
+         * shell of the session, whichever turn started them.
+         */
+        const swept = this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
+        if (changed || claimsRetired) {
+          this.writeQueue(session.id, queue);
+        }
+        if (changed || metadataChanged || swept.length > 0) {
+          if (!metadataChanged) this.touchSession(session.id, at);
+          else this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(session));
+        }
+        if (changed) {
+          for (const event of recoveryEvents) {
+            this.appendEvent(session.id, { type: event.type, reason: "engine_restart" }, event.runId);
+          }
         }
       }
-    }
-    /**
-     * AND THE REQUESTS WRITTEN BEFORE THE WINDOW EXISTED ARE BROUGHT INSIDE IT.
-     *
-     * Last, after the sweeps above have resolved whatever the lost process left
-     * open, so a request retired a moment ago is counted with the rest rather
-     * than surviving this boot to be trimmed by the next one. Silent once the
-     * store has been swept — see `pruneResolvedRequestHistory`.
-     */
-    const pruned = this.pruneResolvedRequestHistory();
-    if (pruned.dropped > 0) {
-      const freed = pruned.bytes >= 1e6 ? `${(pruned.bytes / 1e6).toFixed(1)} MB` : `${Math.round(pruned.bytes / 1e3)} KB`;
-      console.log(`[engine] trimmed ${pruned.dropped} resolved requests out of ${pruned.sessions} session${pruned.sessions === 1 ? "" : "s"} (${freed}); the journal still holds them, except policy-resolved pairs of settled turns.`);
-    }
-    // LAST, once every queue is terminal: nothing above may see the turn this
-    // opens, and nothing claims before the caller publishes discovery.
-    try {
-      this.resumeAfterPlannedRestart(cutOff);
-    } catch (error) {
-      console.warn("[engine] could not continue sessions after the restart:", error);
-    }
-    return { stopped };
+      /**
+       * AND THE REQUESTS WRITTEN BEFORE THE WINDOW EXISTED ARE BROUGHT INSIDE IT.
+       *
+       * Last, after the sweeps above have resolved whatever the lost process left
+       * open, so a request retired a moment ago is counted with the rest rather
+       * than surviving this boot to be trimmed by the next one. Silent once the
+       * store has been swept — see `pruneResolvedRequestHistory`.
+       */
+      const pruned = this.pruneResolvedRequestHistory();
+      if (pruned.dropped > 0) {
+        const freed = pruned.bytes >= 1e6 ? `${(pruned.bytes / 1e6).toFixed(1)} MB` : `${Math.round(pruned.bytes / 1e3)} KB`;
+        console.log(`[engine] trimmed ${pruned.dropped} resolved requests out of ${pruned.sessions} session${pruned.sessions === 1 ? "" : "s"} (${freed}); the journal still holds them, except policy-resolved pairs of settled turns.`);
+      }
+      // LAST, once every queue is terminal: nothing above may see the turn this
+      // opens, and nothing claims before the caller publishes discovery.
+      try {
+        this.resumeAfterPlannedRestart(cutOff);
+      } catch (error) {
+        console.warn("[engine] could not continue sessions after the restart:", error);
+      }
+      return { stopped };
+    });
   }
 
   /**
@@ -15475,49 +15511,51 @@ export class EngineStore {
    * and nothing asserts the work was undone.
    */
   retireWorkerRegistration(workerId: string): { stopped: string[] } {
-    assertId(workerId, "worker id");
-    const stopped: string[] = [];
-    for (const session of this.allSessions()) {
-      const queue = this.readQueue(session.id);
-      // Only sessions this worker actually held work in.
-      const mine = queue.turns.filter((turn) => turn.claim?.workerId === workerId && (turn.state === "claimed" || turn.state === "running"));
-      if (mine.length === 0) continue;
-      const at = this.now();
-      const live = new Set(mine.map((turn) => turn.runId));
-      // A steer aimed at one of those turns was never delivered by a worker
-      // that is gone. It ends where it stands rather than going back to the
-      // queue — requeueing is what made a lost worker restart the work.
-      const orphanedSteers = queue.turns.filter((turn) => turn.state === "steering" && turn.steer && live.has(turn.steer.intoRunId));
-      // PER SESSION, NOT THE ACCUMULATOR. Journalling from the cross-session
-      // list would write this session's events again onto the next one — the
-      // same trap `recover()`'s hold sweep documented, one loop lower down.
-      const settled: string[] = [];
-      for (const turn of [...mine, ...orphanedSteers]) {
-        const wasRunning = turn.state === "running";
-        turn.state = "stopped";
-        turn.stopReason = "worker_unavailable";
-        turn.completedAt = at;
-        turn.updatedAt = at;
-        delete turn.steer;
-        delete turn.claim;
-        settled.push(turn.runId);
-        if (wasRunning) {
-          // The worker was what ran these agents, rows and questions; no
-          // answer can reach a request it died waiting on.
-          this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
-          this.closeOpenItems(session.id, turn.runId, at);
-          this.closeOpenRequests(session.id, turn.runId, at);
+    return this.executeCommand("retireWorkerRegistration", () => {
+      assertId(workerId, "worker id");
+      const stopped: string[] = [];
+      for (const session of this.allSessions()) {
+        const queue = this.readQueue(session.id);
+        // Only sessions this worker actually held work in.
+        const mine = queue.turns.filter((turn) => turn.claim?.workerId === workerId && (turn.state === "claimed" || turn.state === "running"));
+        if (mine.length === 0) continue;
+        const at = this.now();
+        const live = new Set(mine.map((turn) => turn.runId));
+        // A steer aimed at one of those turns was never delivered by a worker
+        // that is gone. It ends where it stands rather than going back to the
+        // queue — requeueing is what made a lost worker restart the work.
+        const orphanedSteers = queue.turns.filter((turn) => turn.state === "steering" && turn.steer && live.has(turn.steer.intoRunId));
+        // PER SESSION, NOT THE ACCUMULATOR. Journalling from the cross-session
+        // list would write this session's events again onto the next one — the
+        // same trap `recover()`'s hold sweep documented, one loop lower down.
+        const settled: string[] = [];
+        for (const turn of [...mine, ...orphanedSteers]) {
+          const wasRunning = turn.state === "running";
+          turn.state = "stopped";
+          turn.stopReason = "worker_unavailable";
+          turn.completedAt = at;
+          turn.updatedAt = at;
+          delete turn.steer;
+          delete turn.claim;
+          settled.push(turn.runId);
+          if (wasRunning) {
+            // The worker was what ran these agents, rows and questions; no
+            // answer can reach a request it died waiting on.
+            this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
+            this.closeOpenItems(session.id, turn.runId, at);
+            this.closeOpenRequests(session.id, turn.runId, at);
+          }
         }
+        this.writeQueue(session.id, queue);
+        this.touchSession(session.id, at);
+        for (const runId of settled) this.appendEvent(session.id, { type: "turn.stopped", reason: "worker_unavailable" }, runId);
+        stopped.push(...settled);
       }
-      this.writeQueue(session.id, queue);
-      this.touchSession(session.id, at);
-      for (const runId of settled) this.appendEvent(session.id, { type: "turn.stopped", reason: "worker_unavailable" }, runId);
-      stopped.push(...settled);
-    }
-    const deliveries = this.readTaskStopDeliveries();
-    const remaining = deliveries.filter((delivery) => delivery.workerId !== workerId);
-    if (remaining.length !== deliveries.length) this.writeDocument(this.paths.taskStops, remaining);
-    return { stopped };
+      const deliveries = this.readTaskStopDeliveries();
+      const remaining = deliveries.filter((delivery) => delivery.workerId !== workerId);
+      if (remaining.length !== deliveries.length) this.writeDocument(this.paths.taskStops, remaining);
+      return { stopped };
+    });
   }
 
   cancellationsForWorker(workerId: string): Array<{ sessionId: string; runId: string; claimToken: string }> {
@@ -16463,25 +16501,27 @@ export class EngineStore {
    * kill for the worker holding the runtime. Returns how many it stopped.
    */
   stopBackgroundTasks(sessionId: string, reason = "stopped from the cockpit"): number {
-    const at = this.now();
-    const closed = this.closeLiveTasks(sessionId, at, reason, {
-      includeBackground: true,
-      onlyBackground: true,
-      state: "stopped",
+    return this.executeCommand("stopBackgroundTasks", () => {
+      const at = this.now();
+      const closed = this.closeLiveTasks(sessionId, at, reason, {
+        includeBackground: true,
+        onlyBackground: true,
+        state: "stopped",
+      });
+      if (closed.length === 0) return 0;
+      const deliveries = this.readTaskStopDeliveries();
+      const turns = this.readQueue(sessionId).turns;
+      const driver = this.getSession(sessionId).driver;
+      for (const task of closed) {
+        if (!task.providerTaskId) continue;
+        const workerId = turns.find((turn) => turn.runId === task.runId)?.claim?.workerId;
+        if (workerId) deliveries.push({ deliveryId: `stop_${crypto.randomUUID().replaceAll("-", "")}`, sessionId,
+          providerTaskId: task.providerTaskId, workerId, driver });
+      }
+      this.writeDocument(this.paths.taskStops, deliveries);
+      this.touchSession(sessionId, at);
+      return closed.length;
     });
-    if (closed.length === 0) return 0;
-    const deliveries = this.readTaskStopDeliveries();
-    const turns = this.readQueue(sessionId).turns;
-    const driver = this.getSession(sessionId).driver;
-    for (const task of closed) {
-      if (!task.providerTaskId) continue;
-      const workerId = turns.find((turn) => turn.runId === task.runId)?.claim?.workerId;
-      if (workerId) deliveries.push({ deliveryId: `stop_${crypto.randomUUID().replaceAll("-", "")}`, sessionId,
-        providerTaskId: task.providerTaskId, workerId, driver });
-    }
-    this.writeDocument(this.paths.taskStops, deliveries);
-    this.touchSession(sessionId, at);
-    return closed.length;
   }
 
   private readTaskStopDeliveries(): Array<{ deliveryId: string; sessionId: string; providerTaskId: string; workerId: string; driver: ProviderDriverKind }> {
@@ -16493,11 +16533,13 @@ export class EngineStore {
   }
 
   taskStopsForWorker(workerId: string, acknowledged: string[] = []): WorkerStatus["stopTask"] {
-    const pending = this.readTaskStopDeliveries();
-    const ack = new Set(acknowledged);
-    const remaining = pending.filter((delivery) => delivery.workerId !== workerId || !ack.has(delivery.deliveryId));
-    if (remaining.length !== pending.length) this.writeDocument(this.paths.taskStops, remaining);
-    return remaining.filter((delivery) => delivery.workerId === workerId).map(({ workerId: _owner, ...delivery }) => delivery);
+    return this.executeCommand("taskStopsForWorker", () => {
+      const pending = this.readTaskStopDeliveries();
+      const ack = new Set(acknowledged);
+      const remaining = pending.filter((delivery) => delivery.workerId !== workerId || !ack.has(delivery.deliveryId));
+      if (remaining.length !== pending.length) this.writeDocument(this.paths.taskStops, remaining);
+      return remaining.filter((delivery) => delivery.workerId === workerId).map(({ workerId: _owner, ...delivery }) => delivery);
+    });
   }
 
   /**
