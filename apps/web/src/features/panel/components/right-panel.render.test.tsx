@@ -17,7 +17,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { RightPanel, type PanelTabItem } from "./right-panel";
+import { RightPanel } from "./right-panel";
+import type { PanelTabItem } from "../model";
 
 const tab = (id: string, kind: string, params: Record<string, string> = {}): PanelTabItem =>
   ({ id, kind, params }) as PanelTabItem;

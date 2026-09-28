@@ -2,7 +2,8 @@
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import { installTestDom, mount, flush, stubFetch } from "@/lib/testing/dom";
-import { RightPanel, type PanelTabItem } from "./right-panel";
+import { RightPanel } from "./right-panel";
+import type { PanelTabItem } from "../model";
 
 installTestDom();
 

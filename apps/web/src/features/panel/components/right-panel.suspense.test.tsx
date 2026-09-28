@@ -42,7 +42,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { Fragment, Suspense, act, lazy, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { RightPanel, type PanelTabItem } from "./right-panel";
+import { RightPanel } from "./right-panel";
+import type { PanelTabItem } from "../model";
 
 GlobalRegistrator.register({ url: "http://localhost/projects/project_a/sessions/session_a" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

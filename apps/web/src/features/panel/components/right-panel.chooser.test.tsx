@@ -26,7 +26,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { RightPanel, type PanelTabItem } from "./right-panel";
+import { RightPanel } from "./right-panel";
+import type { PanelTabItem } from "../model";
 import { nativeViewOverlayHidden } from "@/lib/native-view-overlay";
 
 GlobalRegistrator.register({ url: "http://localhost/" });

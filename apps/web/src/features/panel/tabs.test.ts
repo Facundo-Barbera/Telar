@@ -1,20 +1,10 @@
-/**
- * The panel's tab state.
- *
- * What matters is that the panel can be EMPTY — it opens with nothing selected
- * — that closing a tab picks a neighbour rather than jumping focus across the
- * strip, and that a surface you can want two of gives you two (#322) while one
- * that is a fold over the session record stays a singleton.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   activePanelTab,
   addPanelTab,
-  closeOtherPanelTabs,
   closePanelTab,
-  collapseBrowserTabs,
-  collapseTerminalTabs,
+  collapsePanelTabs,
   emptyPanelTabs,
   movePanelTab,
   nextPanelTabId,
@@ -27,7 +17,7 @@ import {
   type PanelTabInstance,
   type PanelTabState,
 } from "./tabs";
-import { browserPanelTab, browserTabId, browserTabLabel, describePanelTab, describePanelTabInstance, isPanelTab, LIVE_BROWSER_TAB, panelTabSuffix, type PanelTab } from "./components/right-panel";
+import { browserPanelTab, browserTabId, browserTabLabel, describePanelTab, describePanelTabInstance, isPanelTab, LIVE_BROWSER_TAB, panelTabSuffix, type PanelTab } from "./model";
 import { foldTerminalParams, readWorkspace, terminalIds, TERMINAL_ID_PARAM } from "@/lib/terminal-workspace";
 
 /** The strip as kinds, which is what every assertion below is actually about —
@@ -35,7 +25,7 @@ import { foldTerminalParams, readWorkspace, terminalIds, TERMINAL_ID_PARAM } fro
 const kinds = <Kind extends string>(state: PanelTabState<Kind>) => state.tabs.map((tab) => tab.kind);
 const ids = <Kind extends string>(state: PanelTabState<Kind>) => state.tabs.map((tab) => tab.id);
 
-describe("collapseBrowserTabs (desktop upgrade path)", () => {
+describe("collapsePanelTabs, for browser pages (desktop upgrade path)", () => {
   const isBrowser = (kind: PanelTab) => browserTabId(kind) !== undefined;
   const instance = (kind: PanelTab): PanelTabInstance<PanelTab> => ({ id: kind, kind, params: {} });
   test("replaces every per-page browser tab with ONE, preserving order and active", () => {
@@ -44,16 +34,16 @@ describe("collapseBrowserTabs (desktop upgrade path)", () => {
       activeTab: browserPanelTab("p2"),
       open: true,
     };
-    const collapsed = collapseBrowserTabs(state, isBrowser, LIVE_BROWSER_TAB);
+    const collapsed = collapsePanelTabs(state, isBrowser, LIVE_BROWSER_TAB);
     expect(kinds(collapsed)).toEqual(["issues", LIVE_BROWSER_TAB, "diff"]);
     expect(collapsed.activeTab).toBe(LIVE_BROWSER_TAB); // active was a browser page
     expect(collapsed.open).toBe(true);
   });
   test("leaves a state with no browser tabs untouched, and keeps a non-browser active tab", () => {
     const state: PanelTabState<PanelTab> = { tabs: [instance("issues"), instance("diff")], activeTab: "diff", open: true };
-    expect(collapseBrowserTabs(state, isBrowser, LIVE_BROWSER_TAB)).toBe(state);
+    expect(collapsePanelTabs(state, isBrowser, LIVE_BROWSER_TAB)).toBe(state);
     const withBrowser: PanelTabState<PanelTab> = { tabs: [instance(browserPanelTab("p1")), instance("editor")], activeTab: "editor", open: true };
-    expect(collapseBrowserTabs(withBrowser, isBrowser, LIVE_BROWSER_TAB).activeTab).toBe("editor");
+    expect(collapsePanelTabs(withBrowser, isBrowser, LIVE_BROWSER_TAB).activeTab).toBe("editor");
   });
   test("the collapsed tab describes as a single Browser surface", () => {
     expect(describePanelTab(LIVE_BROWSER_TAB).label).toBe("Browser");
@@ -68,7 +58,7 @@ describe("collapseBrowserTabs (desktop upgrade path)", () => {
  * it. Folding them must keep every one of those ids, or the upgrade orphans
  * somebody's running shells.
  */
-describe("collapseTerminalTabs (the inner-strip upgrade path)", () => {
+describe("collapsePanelTabs, for terminals (the inner-strip upgrade path)", () => {
   const isTerminal = (kind: PanelTab) => kind === "terminal";
   const terminal = (id: string, pty?: string): PanelTabInstance<PanelTab> => ({
     id,
@@ -89,7 +79,7 @@ describe("collapseTerminalTabs (the inner-strip upgrade path)", () => {
       activeTab: "terminal#2",
       open: true,
     };
-    const collapsed = collapseTerminalTabs(state, isTerminal, "terminal", foldTerminalParams);
+    const collapsed = collapsePanelTabs(state, isTerminal, "terminal", foldTerminalParams);
 
     // ONE Terminal, at the position of the first, and the other tabs keep both
     // their order and their own ids.
@@ -108,24 +98,24 @@ describe("collapseTerminalTabs (the inner-strip upgrade path)", () => {
 
   test("a state with no terminal tabs is left exactly as it was", () => {
     const state: PanelTabState<PanelTab> = { tabs: [instance("issues"), instance("diff")], activeTab: "diff", open: true };
-    expect(collapseTerminalTabs(state, isTerminal, "terminal", foldTerminalParams)).toBe(state);
+    expect(collapsePanelTabs(state, isTerminal, "terminal", foldTerminalParams)).toBe(state);
   });
 
   test("a non-terminal active tab keeps the selection", () => {
     const state: PanelTabState<PanelTab> = { tabs: [terminal("terminal", "term_1"), instance("editor")], activeTab: "editor", open: true };
-    expect(collapseTerminalTabs(state, isTerminal, "terminal", foldTerminalParams).activeTab).toBe("editor");
+    expect(collapsePanelTabs(state, isTerminal, "terminal", foldTerminalParams).activeTab).toBe("editor");
   });
 
   test("a session already migrated is handed back its own state, not a copy", () => {
     // This runs on every restore, not only the one after the upgrade — a new
     // object each time would write the panel back to storage for no reason.
-    const once = collapseTerminalTabs(
+    const once = collapsePanelTabs(
       { tabs: [terminal("terminal", "term_1")], activeTab: "terminal", open: true },
       isTerminal,
       "terminal",
       foldTerminalParams,
     );
-    expect(collapseTerminalTabs(once, isTerminal, "terminal", foldTerminalParams)).toBe(once);
+    expect(collapsePanelTabs(once, isTerminal, "terminal", foldTerminalParams)).toBe(once);
   });
 });
 
@@ -276,20 +266,6 @@ describe("closePanelTab", () => {
   test("closing a tab that is not open changes nothing", () => {
     const before = state(["agents"], "agents");
     expect(closePanelTab(before, "usage")).toBe(before);
-  });
-});
-
-describe("closeOtherPanelTabs", () => {
-  test("keeps only the named instance, and focuses it", () => {
-    const kept = closeOtherPanelTabs(state(["agents", "changes", "usage"], "agents"), "changes");
-    expect(kinds(kept)).toEqual(["changes"]);
-    expect(kept.activeTab).toBe("changes");
-    expect(kept.open).toBe(true);
-  });
-
-  test("is a no-op for a tab that is not open", () => {
-    const before = state(["agents"], "agents");
-    expect(closeOtherPanelTabs(before, "usage")).toBe(before);
   });
 });
 

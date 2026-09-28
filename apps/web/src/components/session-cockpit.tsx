@@ -85,8 +85,7 @@ import {
   addPanelTab,
   canvasPanelKey,
   closePanelTab,
-  collapseBrowserTabs,
-  collapseTerminalTabs,
+  collapsePanelTabs,
   emptyPanelTabs,
   findPanelTab,
   movePanelTab,
@@ -2039,7 +2038,7 @@ export function SessionCockpit({
       // On desktop the native strip owns the pages: collapse any per-page
       // browser tabs persisted before this change into one "Browser" tab, so
       // an upgraded session does not still show the old per-page outer tabs.
-      const browsers = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      const browsers = desktopBrowserBridge() ? collapsePanelTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
       /**
        * THE SHELLS SOMEBODY LEFT RUNNING SURVIVE THE UPGRADE. A shell used to
        * be its own outer tab, so a session saved before the Terminal grew an
@@ -2053,7 +2052,7 @@ export function SessionCockpit({
        * to answer for them, and a strip that still showed three Terminals in a
        * browser tab would be wrong about this build either way.
        */
-      const next = collapseTerminalTabs(browsers, (tab) => tab === "terminal", "terminal", foldTerminalParams);
+      const next = collapsePanelTabs(browsers, (tab) => tab === "terminal", "terminal", foldTerminalParams);
       /**
        * THE FIRST EDITOR IS LOADED WHETHER OR NOT ITS TAB IS OPEN — closing the
        * Editor has never thrown away the files in it, and reopening must still
