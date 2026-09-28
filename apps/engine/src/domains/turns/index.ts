@@ -9,3 +9,4 @@ export { FOLDING_INTENTS, MAX_TEXT_LENGTH, TurnIntake, type TurnSubmission } fro
 export { type StoppedClaim, TurnLifecycle } from "./lifecycle";
 export { TurnIngest } from "./ingest";
 export { isLiveTask, TurnClaims } from "./claims";
+export { TurnRecovery } from "./recovery";
