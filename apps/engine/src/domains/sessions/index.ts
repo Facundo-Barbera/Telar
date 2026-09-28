@@ -5,3 +5,4 @@ export { SessionRequests } from "./requests";
 export { SessionTasks } from "./tasks";
 export { awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, type SessionQueue } from "./queue";
 export { isPeerMail, SessionMailbox } from "./mailbox";
+export { sessionsCapability, storeReads, storeSessionsPort, windowedReads } from "./capability";

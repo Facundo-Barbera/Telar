@@ -97,15 +97,17 @@ import {
   handleSessionsSocketMessage,
   sessionsSocketConnectCard,
 } from "./sessions-tools/socket";
-import type { SessionsCapability, SessionsQueryCapability } from "./sessions-tools/tools";
 import {
   collectNotesWallTools,
   ensureNotesSocketSecret,
   handleNotesSocketMessage,
   notesSocketConnectCard,
+  notesCapability,
   ProjectNotesError,
-  type NotesCapability,
+  storeNoteRead,
+  storeNotesPort,
 } from "./domains/notes";
+import { sessionsCapability, storeReads, storeSessionsPort } from "./domains/sessions";
 import * as notebook from "./domains/notes";
 import * as shelf from "./domains/prompts";
 import { PreparedPromptsError } from "./domains/prompts";
@@ -1376,104 +1378,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   let sessionsSecretCache: string | undefined;
   const sessionsSecret = () => (sessionsSecretCache ??= ensureSessionsSocketSecret(store.paths));
   let sessionsToolsCache: SocketTool[] | undefined;
-  /**
-   * THE IN-PROCESS SESSIONS CAPABILITY, for the outward MCP socket. It has no
-   * `self`: a chat client is not a session and has nowhere to be woken, so the
-   * subscription tools refuse in words.
-   */
-  const buildSessionsCapability = (): SessionsCapability => {
-    /**
-     * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS. There
-     * is no validation here and
-     * there must not be: `createSession` owns the env-mode rule and the
-     * driver check; `submitTurn` owns the backlog cap; `readEvents` owns the
-     * cursor check. A check written at this seam would protect the socket
-     * and nothing else.
-     *
-     * `origin: "session"` IS DECLARED BY THIS CODE, never by a caller: no tool
-     * shape on the wall carries it — provenance a list can show, nothing more.
-     */
-    return {
-      /**
-       * THE SHELF IS THE STORE'S RULE, ASKED FOR RATHER THAN RE-IMPLEMENTED
-       * (#515). This used to be `store.liveSessions()` — every session the
-       * store calls live, settled included, 334 rows and 142 KB in one tool
-       * answer. `liveSessionRows` is the same fold the rail's own route serves,
-       * with the clients' `isShelved` deciding, so the toolkit's default list
-       * and the person's sidebar agree by construction rather than by two
-       * copies of one rule. `settled: true` is `?all=1`, the old answer.
-       */
-      list: async (options) => store.liveSessionRows({ all: options?.settled === true }),
-      /**
-       * NO PRIVILEGE CEILING (#541 G1) on this build: the socket's caller is the
-       * person's own chat client, and a person's click has no creator to inherit
-       * from. A SESSION's build (`worker.ts`) names itself as `ceilingFrom`.
-       */
-      create: async (input) => store.createSessionAsync({ ...input, origin: "session" }),
-      /**
-       * An agent's words, with no session to attribute them to: the caller is
-       * the user's own chat client, outside any turn. Never the person's.
-       */
-      send: async (sessionId, input) => store.submitAgentTurnAsync(sessionId, input),
-      read: async (sessionId, after, options) => store.readEvents(sessionId, after, options?.limit),
-      // The last event id, so the wall can serve "what happened lately" from
-      // one page rather than by walking a journal to reach its end (#515).
-      cursor: async (sessionId) => store.eventCursor(sessionId),
-      status: async (sessionId) => ({
-        session: store.getSession(sessionId),
-        turns: store.turns(sessionId),
-        // The held mail, so the cap's "stays pending and pollable" has a poll.
-        pendingNotifications: store.pendingNotifications(sessionId),
-      }),
-      // STOP IS STOP, whoever presses it. An agent stopping a peer ends the
-      // same work a person's Stop ends, and leaves the session idle rather
-      // than latched — see `stopSession`.
-      stop: async (sessionId) => store.stopSession(sessionId, "agent"),
-      settle: async (sessionId, settled) => {
-        const session = store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
-        if (!settled) return session;
-        // #883: an explicit settle ends what the session left running.
-        const ended = await store.endSessionLeftovers(sessionId);
-        return { ...store.getSession(sessionId), ended };
-      },
-      // The bounds are the store's, like every member here — see #723.
-      // #543. Present only in-process; a worker reaching the wall over HTTP has
-      // no route for it yet and the tool reports that rather than throwing.
-      putSchedule: async (input) => store.putSchedule({ ...input, rule: input.rule as never }),
-      diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
-      subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
-      unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
-      subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
-      subscribeCohort: async (subscriber, input) => store.subscribeCohort(subscriber, input),
-      cohorts: async (subscriber) => store.cohortsFor(subscriber),
-      requests: async (sessionId) => store.requests(sessionId),
-      resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
-      /**
-       * #516's SIX READS, AND THEY ARE THE ROUTES' OWN METHODS.
-       *
-       * Nearly free in this deployment, which is the point of doing it twice:
-       * every one of them is the same `store.*` call the query route above
-       * serves, so the in-process wall and the HTTP one cannot answer
-       * differently. The clamps are the WALL's (`sessions-tools/query.ts`) and
-       * the route's, in that order, and they are the same numbers — see the
-       * query-route block for why they are stated twice rather than shared.
-       */
-      query: buildQueryCapability(),
-    };
-  };
-
-  /** The query port for the in-process sessions wall — every read is the
-   *  query routes' own `store.*` method, so the two cannot answer differently. */
-  function buildQueryCapability(): SessionsQueryCapability {
-    return {
-      find: async (query) => store.findSessions(query),
-      outline: async (sessionId, window) => store.turnOutline(sessionId, window),
-      answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
-      steps: async (sessionId, runId) => ({ items: store.runItems(sessionId, runId) }),
-      step: async (sessionId, runId, step, maxChars) => store.runItem(sessionId, runId, step, maxChars),
-      grep: async (sessionId, pattern, window) => store.grepSession(sessionId, pattern, window),
-    };
-  }
+  // No identity: a chat client is not a session, so it has no `self`, no ceiling and no claim proof.
+  const buildSessionsCapability = () => sessionsCapability(storeSessionsPort(store), undefined, storeReads(store));
   const sessionsSocketTools = (): SocketTool[] => (sessionsToolsCache ??= collectSessionsWallTools(buildSessionsCapability()));
 
   /**
@@ -1483,37 +1389,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   let notesSecretCache: string | undefined;
   const notesSecret = () => (notesSecretCache ??= ensureNotesSocketSecret(store.paths));
   let notesToolsCache: SocketTool[] | undefined;
-  const buildNotesCapability = (): NotesCapability => {
-    /**
-     * NO `self`: a chat client on this socket is not in a session and has no
-     * project to default to, so `notes_list` asks it for one by name — exactly
-     * as the sessions socket's absent `self` makes the subscription tools
-     * refuse. Every member lands on `notes.ts`, the same functions the HTTP
-     * routes below call, so there is one implementation of every rule.
-     *
-     * `getProject` IS THE GATE ON EVERY WRITE, here as on the routes: an id
-     * nobody registered must not be able to mint a notebook file.
-     */
-    return {
-      projects: async () => store.listProjects().map((project) => ({ id: project.id, name: project.name })),
-      list: async (projectId) => {
-        store.getProject(projectId);
-        return notebook.readNotes(store.paths, projectId);
-      },
-      read: async (noteId) => notebook.findNote(store.paths, noteId),
-      create: async (projectId, input) => {
-        store.getProject(projectId);
-        // THE WALL DECLARES `author: "session"`, never a caller: no tool shape
-        // carries it.
-        return notebook.createNote(store.paths, projectId, { ...input, author: "session" });
-      },
-      update: async (projectId, noteId, patch) => {
-        store.getProject(projectId);
-        return notebook.updateNote(store.paths, projectId, noteId, patch);
-      },
-      remove: async (projectId, noteId) => notebook.deleteNote(store.paths, projectId, noteId),
-    };
-  };
+  const buildNotesCapability = () => notesCapability(storeNotesPort(store), { read: storeNoteRead(store), updateFailureAsNull: false });
   const notesSocketTools = (): SocketTool[] => (notesToolsCache ??= collectNotesWallTools(buildNotesCapability()));
 
 
