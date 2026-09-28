@@ -1,8 +1,3 @@
-// THE WIRED HALF OF THE DEV SELF-UPDATE (DEV-005) — see dev-update-core.js for
-// the decisions. This file owns the window, the IPC surface, the ONE build at
-// a time, and the handoff to the detached swap helper. Nothing here runs
-// unless the user opens the window and confirms; there is no watcher and no
-// timer — an agent editing the checkout changes NOTHING until the user asks.
 "use strict";
 const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
@@ -12,9 +7,7 @@ const core = require("./dev-update-core");
 
 const packaged = require("./package.json");
 let updateWindow = null;
-/** Serialization: the single in-flight build, or null. A second Start while
- *  this is set is refused rather than queued — queueing rebuilds of a moving
- *  checkout answers a question nobody asked. */
+
 let inFlight = null;
 
 function devHome() {
@@ -35,7 +28,6 @@ function appendLog(line) {
   try {
     fs.appendFileSync(logFilePath(), line.endsWith("\n") ? line : `${line}\n`);
   } catch {
-    /* the log is best-effort; the window still gets the line */
   }
 }
 
@@ -56,8 +48,6 @@ function repoConfig() {
   return core.configuredRepo({ packagedRepo: packaged.telarDevRepo, devHome: devHome() });
 }
 
-/** Everything the window needs to render: where updates would come from, what
- *  is running now, and whether a build is already going. */
 function currentState() {
   const config = repoConfig();
   const source = config.ok ? core.readSourceInfo(config.repo) : { ok: false, error: config.error };
@@ -65,7 +55,6 @@ function currentState() {
   try {
     running = JSON.parse(fs.readFileSync(path.join(process.resourcesPath, "standalone", "build-info.json"), "utf8"));
   } catch {
-    /* unpackaged checkout run — the window says so via swappable below */
   }
   const swap = config.ok
     ? core.planSwap({ execPath: process.execPath, stagedApp: stagedAppPath(config.repo) })
@@ -84,12 +73,6 @@ function stagedAppPath(repo) {
   return path.join(repo, "apps", "desktop", "release", "dev", "mac-arm64", "Telar Dev.app");
 }
 
-/**
- * Build → validate → confirm handoff → spawn the swap helper → quit. Every
- * early return leaves the running app exactly as it was; the helper is the
- * only thing that ever touches the installed bundle, and it restores
- * last-good on its own failures.
- */
 async function startUpdate() {
   if (inFlight) return { ok: false, error: "An update is already building." };
   const config = repoConfig();
@@ -100,7 +83,6 @@ async function startUpdate() {
   const swap = core.planSwap({ execPath: process.execPath, stagedApp: stagedAppPath(repo) });
   if (!swap.ok) return { ok: false, error: swap.error };
 
-  // The deliberate moment: relaunching interrupts anything the app is doing.
   const choice = await dialog.showMessageBox(updateWindow, {
     type: "warning",
     buttons: ["Build && Update", "Cancel"],
@@ -163,7 +145,7 @@ async function startUpdate() {
     { env, detached: true, stdio: "ignore" },
   );
   helper.unref();
-  // A short beat so the renderer paints the installing status before quit.
+
   setTimeout(() => app.quit(), 400);
   return { ok: true };
 }
@@ -192,8 +174,6 @@ function openWindow() {
 ipcMain.handle("telar:dev-update:state", () => currentState());
 ipcMain.handle("telar:dev-update:start", () => startUpdate());
 
-// Quit while a build is running: the build is OURS to stop — nothing else.
-// The partially written staging dir is rebuilt from scratch next time.
 app.on("before-quit", () => {
   if (inFlight) inFlight.kill("SIGTERM");
 });

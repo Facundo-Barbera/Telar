@@ -1,17 +1,3 @@
-// THE DECIDABLE HALF OF THE DEV SELF-UPDATE (DEV-005).
-//
-// "Update from local checkout" for a --dev packaged Telar Dev: rebuild from the
-// configured repo's CURRENT branch (uncommitted edits included), validate the
-// candidate, then swap the running bundle for it. This file holds everything
-// that can be unit-tested without Electron: env hygiene, git identity, swap
-// planning and refusals, candidate validation, and the detached helper that
-// performs the swap after the app has exited. dev-update.js wires it to the
-// running app.
-//
-// The builder IS scripts/package-desktop.sh --dev — it already smokes the
-// packaged server, verifies the bundle identity and the LSUIElement helper.
-// Nothing here re-invents validation; a candidate is only swappable because
-// that script exited 0 and validateCandidate re-checked the artefact.
 "use strict";
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -20,14 +6,6 @@ const path = require("node:path");
 
 const DEV_BUNDLE_ID = "io.github.novarix.telar.dev";
 
-/**
- * The env a build child may see. A Telar-descended process carries variables
- * that redirect children into the LIVE app — ELECTRON_RUN_AS_NODE turns the
- * next Electron binary into bare node (the silent-open failure), TELAR_HOME /
- * TELAR_DESKTOP_URL / the browser-control pair point at the running engine and
- * its credentials. Strip the whole families rather than a list that goes
- * stale; keep everything else so PATH, HOME and the toolchain still work.
- */
 function cleanBuildEnv(env) {
   const cleaned = {};
   for (const [key, value] of Object.entries(env)) {
@@ -40,7 +18,6 @@ function cleanBuildEnv(env) {
   return cleaned;
 }
 
-/** A GUI app's PATH has no bun; find one and hand back the dir to prepend. */
 function resolveBunDir(env = process.env, exists = fs.existsSync) {
   const home = env.HOME || os.homedir();
   const candidates = [
@@ -53,14 +30,11 @@ function resolveBunDir(env = process.env, exists = fs.existsSync) {
   return null;
 }
 
-/** Default git runner; injectable so identity logic is testable without a repo. */
 function runGit(repo, args) {
   const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
   return { status: result.status ?? 1, stdout: result.stdout || "", stderr: result.stderr || "" };
 }
 
-/** What the update window shows BEFORE the user commits to anything: which
- *  branch, which SHA, and whether uncommitted edits ride along. */
 function readSourceInfo(repo, run = runGit) {
   const head = run(repo, ["rev-parse", "--short", "HEAD"]);
   if (head.status !== 0) {
@@ -77,12 +51,6 @@ function readSourceInfo(repo, run = runGit) {
   };
 }
 
-/**
- * Which checkout to build from. The --dev package bakes the repo that built it
- * into its metadata (telarDevRepo); a file in the Dev home overrides it, for
- * the day the checkout moves without wanting a rebuild first:
- *   ~/Library/Application Support/Telar Dev/dev-update.json  { "repo": "..." }
- */
 function configuredRepo({ packagedRepo, devHome, fsImpl = fs }) {
   let repo = typeof packagedRepo === "string" && packagedRepo.trim() ? packagedRepo.trim() : null;
   const overridePath = devHome ? path.join(devHome, "dev-update.json") : null;
@@ -101,20 +69,12 @@ function configuredRepo({ packagedRepo, devHome, fsImpl = fs }) {
   return { ok: true, repo, overridden: overridePath ? fsImpl.existsSync(overridePath) : false };
 }
 
-/** The .app bundle a mach-o path executes from, or null when there is none
- *  (an unpackaged checkout run has nothing swappable). */
 function runningBundlePath(execPath) {
   const marker = ".app/Contents/MacOS/";
   const index = execPath.lastIndexOf(marker);
   return index === -1 ? null : execPath.slice(0, index + ".app".length);
 }
 
-/**
- * Refusals BEFORE any build starts. The one that matters most: if the running
- * bundle IS the staging output, the rebuild would overwrite the running app —
- * the exact thing this design exists to prevent. Update only a copy that
- * lives elsewhere (normally /Applications/Telar Dev.app).
- */
 function planSwap({ execPath, stagedApp }) {
   const target = runningBundlePath(execPath);
   if (!target) {
@@ -127,12 +87,6 @@ function planSwap({ execPath, stagedApp }) {
   return { ok: true, target, stagedApp };
 }
 
-/**
- * The candidate re-checked off disk, not trusted from the builder's exit code:
- * identity, executable, the LSUIElement helper (the duplicate-Dock regression),
- * and a "dev"-channel stamp. Binary plists store their strings verbatim, so a
- * buffer scan is enough to pin the bundle id without spawning plutil.
- */
 function validateCandidate(stagedApp, fsImpl = fs) {
   const problems = [];
   const mainBin = path.join(stagedApp, "Contents", "MacOS", "Telar Dev");
@@ -156,22 +110,6 @@ function validateCandidate(stagedApp, fsImpl = fs) {
   return problems.length === 0 ? { ok: true, info } : { ok: false, error: `candidate failed validation: ${problems.join("; ")}` };
 }
 
-/**
- * THE SWAP HELPER. A bash script written to the updates dir and spawned
- * detached, because the app cannot replace its own bundle while running from
- * it. Order is chosen so every failure leaves a working app at TARGET:
- *
- *   1. copy the staged candidate BESIDE the target (while the app still runs —
- *      the slow part happens before anything is touched);
- *   2. wait for the app process to exit;
- *   3. one rename sets the current app aside as last-good, one rename installs
- *      the candidate — both cheap, both reversible;
- *   4. relaunch whatever ends up at TARGET, with this helper's already-clean
- *      environment (no ELECTRON_RUN_AS_NODE to inherit).
- *
- * The launcher command is a parameter so tests can swap real `open` for a
- * recording stub.
- */
 function helperScript() {
   return `#!/bin/bash
 # Telar Dev self-update swap helper — generated by dev-update-core.js.

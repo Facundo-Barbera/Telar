@@ -9,8 +9,7 @@ const { randomUUID } = require("node:crypto");
 const desktopDir = __dirname;
 const webDir = path.resolve(desktopDir, "../web");
 const electronPath = process.env.TELAR_ELECTRON_BINARY || require("electron");
-// Use the same Playwright build as Telar's browser MCP. It tracks the Chromium
-// version bundled by current Electron more closely than the stable test peer.
+
 const playwrightMcpDir = fs.realpathSync(path.join(webDir, "node_modules", "@playwright", "mcp"));
 const { chromium } = require(path.resolve(playwrightMcpDir, "../..", "playwright"));
 
@@ -213,9 +212,6 @@ async function main() {
     assert(pointerEvents.some((event) => event.phase === "move"), "The agent cursor never emitted a move event.");
     assert(pointerEvents.some((event) => event.phase === "click"), "The agent cursor never emitted a click event.");
 
-    // A renderer reload is the production path that originally left a native
-    // WebContentsView visible and then called setVisible without a scope. The
-    // tab should hibernate during reload and wake under the same session only.
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => window.telarDesktop?.isDesktop === true, null, { timeout: 15_000 });
     const resumed = await page.evaluate(() => window.telarDesktop.browser.callTool("e2e", "browser_snapshot", {}));
