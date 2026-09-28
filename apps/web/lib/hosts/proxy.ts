@@ -62,30 +62,8 @@ const UPSTREAM_TIMEOUT_MS = 60_000;
 const LIST_READ_TIMEOUT_MS = 10_000;
 const LIST_READS = new Set(["sessions/live", "health", "inbox", "projects"]);
 
-/**
- * A STREAM HAS NO DEADLINE, and this is the one read here that does not (#531).
- *
- * Every bound above exists because silence means a Mac has hung. On an SSE feed
- * silence is the NORMAL state: an idle session emits nothing for hours. A
- * minute's timeout here would sever a healthy stream every minute, on a
- * schedule — a remote screen would reconnect for ever and look, from the
- * reader's side, like a feed that keeps dropping.
- *
- * `Infinity` RATHER THAN A BIGGER NUMBER, because there is no honest number:
- * the connection ends when the client goes away or the engine does, and both of
- * those close the socket. `AbortSignal.timeout` is simply not armed for it.
- */
-/** Routes that are STREAMS and must never be given a finite upstream timeout:
- *  silence is their normal state, so a bound would sever a healthy connection
- *  on a schedule. `sessions/stream` joined on #586. */
-const STREAMS = new Set(["sessions/stream"]);
-
-/**
- * AND ONE STREAM WHOSE ROUTE CARRIES A SESSION ID IN THE MIDDLE OF IT (#890):
- * `sessions/<id>/run/stream`, which no fixed string can match. A run's feed is
- * idle for as long as nothing is launched — which is most of the time — so the
- * exemption matters here for exactly the reason it matters above.
- */
+/** A run's feed is idle for as long as nothing is launched, so a finite
+ *  upstream timeout would sever a healthy connection on a schedule. */
 function isRunStream(path: readonly string[]): boolean {
   return path.length === 4 && path[0] === "sessions" && path[2] === "run" && path[3] === "stream";
 }
@@ -93,7 +71,7 @@ function isRunStream(path: readonly string[]): boolean {
 export function upstreamTimeout(request: Pick<Request, "method">, path: readonly string[]): number {
   if (request.method.toUpperCase() !== "GET") return UPSTREAM_TIMEOUT_MS;
   const route = path.join("/");
-  if (STREAMS.has(route) || isRunStream(path)) return Number.POSITIVE_INFINITY;
+  if (isRunStream(path)) return Number.POSITIVE_INFINITY;
   return LIST_READS.has(route) ? LIST_READ_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
 }
 
