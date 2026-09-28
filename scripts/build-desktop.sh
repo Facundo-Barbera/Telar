@@ -177,7 +177,7 @@ NODE_OPTIONS= bash apps/desktop/scripts/build-app.sh
 # apps/web/package.json into the bundle — and it is bumped in the SHELL's
 # package.json, which a packaged Next server cannot read out of app.asar. So the
 # flag that picked the channel writes it down here, and /api/about reports it
-# (apps/web/src/lib/build-identity.ts). Empty for an unchannelled build, which reads
+# (apps/engine/src/domains/updates/identity.ts). Empty for an unchannelled build, which reads
 # as "stable" — a build somebody cut.
 STANDALONE="$SNAP/apps/web/.next-desktop/standalone"
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

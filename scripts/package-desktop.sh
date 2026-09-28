@@ -104,8 +104,8 @@ if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]; 
 fi
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "$STANDALONE"
-# `channel` is what the web tier's build identity reads (apps/web/src/lib/
-# build-identity.ts); "local" for a plain working-tree build, "dev" for --dev so
+# `channel` is what the web tier's build identity reads (apps/engine/src/domains/
+# updates/identity.ts); "local" for a plain working-tree build, "dev" for --dev so
 # a paired client can tell the two apart the way the title bar does.
 CHANNEL="local"; [ "$DEV" -eq 1 ] && CHANNEL="dev"
 printf '{\n  "shortSha": "%s",\n  "sha": "%s",\n  "ref": "working-tree",\n  "channel": "%s",\n  "dirty": %s,\n  "builtAt": "%s"\n}\n' \
