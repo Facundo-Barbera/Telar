@@ -32,7 +32,6 @@ import {
   type WakeKind,
   type ComputerUseGrant,
   type EngineDiscovery,
-  type EngineErrorCode,
   type EngineHealth,
   type ModelSelection,
   type RuntimeMode,
@@ -50,7 +49,7 @@ import {
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./domains/providers";
 import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, type ComputerUseGate } from "./domains/computer-use";
-import { bearerIsValid } from "./http-auth";
+import { bearerIsValid } from "./platform/http/auth";
 import { createProviderProber, readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS } from "./orchestrate-skill";
 import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
@@ -130,7 +129,8 @@ import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote"
 import { createHostsStore, hostsRoutes } from "./domains/hosts";
 import { mcpOAuthRoutes } from "./domains/agent-tools";
 import { aboutRoutes } from "./domains/updates";
-import { matchRoute } from "./platform/http/route";
+import { body, errorFor as httpErrorFor, HttpError, matchesETag, writeError, writeJson } from "./platform/http/http";
+import { router } from "./platform/http/router";
 
 /**
  * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
@@ -351,69 +351,15 @@ export type EngineDaemon = {
   close(): Promise<void>;
 };
 
-class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: EngineErrorCode,
-    message: string,
-    /**
-     * ANSWER, THEN HANG UP. Set by a refusal that did NOT read the request
-     * body — the oversize guard, which is the whole point of refusing early.
-     * Keep-alive assumes the socket is clean between messages; one still
-     * carrying megabytes the server never drained is not, and the client's
-     * NEXT request on it waits for a reply that can never arrive. So the
-     * refusal that skipped the body also ends the connection that held it.
-     */
-    readonly endConnection = false,
-  ) {
-    super(message);
-    this.name = "HttpError";
-  }
-}
-
-function errorFor(error: unknown): HttpError {
-  if (error instanceof HttpError) return error;
-  if (error instanceof EngineStateError) {
-    return new HttpError(error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400, error.code, error.message);
-  }
-  // The notebook's own refusals, carried out whole: they are sentences written
-  // for a person, and a 500 would replace each one with "internal error".
-  // A plugin route's refusal about the request — the same 400 the hand-written
-  // routes it replaced answered with.
-  if (error instanceof PluginInputError) return new HttpError(400, "invalid_request", error.message);
-  if (error instanceof ProjectNotesError) {
+function domainError(error: unknown): HttpError | undefined {
+  if (error instanceof PluginInputError || error instanceof WorktreeError) return new HttpError(400, "invalid_request", error.message);
+  if (error instanceof ProjectNotesError || error instanceof PreparedPromptsError) {
     return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
   }
-  // The prompt shelf's, for the same reason and in the same shape.
-  if (error instanceof PreparedPromptsError) {
-    return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
-  }
-  /**
-   * AND THE CUT'S REFUSALS, for the identical reason — issue #695.
-   *
-   * `prepareSessionWorktree` raises every reason a worktree cannot be cut ON THE
-   * REQUEST rather than on the row, on the stated grounds that the caller is
-   * still there to be told (worktree.ts's header, the #496 seam). Falling through
-   * to the 500 below spent that argument for nothing: "worktree sessions need a
-   * git repository; /Volumes/X/thing is not one" reached the client as "engine
-   * encountered an internal error", which is not a reason and not even true.
-   *
-   * `invalid_request`, NEVER `internal_error`: each of these is the caller having
-   * asked for something this engine will not do — an unversioned directory, a
-   * branch inside `telar/`, a ref that does not resolve — so the status is a 400
-   * and the sentence is the engine's own, whole. The drive-away arm never arrives
-   * here: `assertProjectAvailable` refuses it first as a `conflict`.
-   */
-  if (error instanceof WorktreeError) {
-    return new HttpError(400, "invalid_request", error.message);
-  }
-  return new HttpError(500, "internal_error", "engine encountered an internal error");
+  return undefined;
 }
 
-function writeJson(response: http.ServerResponse, status: number, body: unknown, headers: http.OutgoingHttpHeaders = {}): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers });
-  response.end(JSON.stringify(body));
-}
+const errorFor = (error: unknown): HttpError => httpErrorFor(error, domainError);
 
 /**
  * THE LIVE LIST'S ETAG — the revision cursor (#462) spelled the way HTTP spells
@@ -456,40 +402,6 @@ function liveSessionsETag(revision: number, all: boolean): string {
  */
 function sessionEventsETag(cursor: number, after: number, limit: number): string {
   return `W/"events-${cursor}-${after}-${limit}"`;
-}
-
-// Weak comparison, as RFC 9110 requires of `If-None-Match`: a list, `W/` ignored, `*` matches anything.
-function matchesETag(header: string | string[] | undefined, tag: string): boolean {
-  if (header === undefined) return false;
-  const bare = (value: string): string => value.trim().replace(/^W\//, "");
-  const wanted = bare(tag);
-  for (const entry of (Array.isArray(header) ? header : [header]).flatMap((value) => value.split(","))) {
-    const candidate = bare(entry);
-    if (candidate === "*" || candidate === wanted) return true;
-  }
-  return false;
-}
-
-async function body(request: http.IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > 1_000_000) throw new HttpError(400, "invalid_request", "request body is too large");
-    chunks.push(buffer);
-  }
-  if (total === 0) return {};
-  try {
-    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
-      throw new HttpError(400, "invalid_request", "request body must be an object");
-    }
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(400, "invalid_request", "request body is invalid JSON");
-  }
 }
 
 /**
@@ -1770,9 +1682,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   }, activeWorker);
 
-  const server = http.createServer(async (request, response) => {
+  const authorize = (_auth: "engine", request: http.IncomingMessage): void => {
+    if (!bearerIsValid(request.headers.authorization, token)) {
+      throw new HttpError(401, "engine_unauthorized", "engine authentication failed");
+    }
+  };
+  const legacyRoutes = async (request: http.IncomingMessage, response: http.ServerResponse, url: URL): Promise<void> => {
     try {
-      const url = new URL(request.url ?? "/", "http://127.0.0.1");
       /**
        * THE SESSIONS SOCKET — an OUTWARD MCP socket, before the bearer check,
        * because its auth is DELIBERATELY NOT the management token: it answers
@@ -1847,17 +1763,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 405, { error: { code: "invalid_request", message: "the notes socket is POST-only — it keeps no stream open" } });
         return;
       }
-      if (!bearerIsValid(request.headers.authorization, token)) {
-        throw new HttpError(401, "engine_unauthorized", "engine authentication failed");
-      }
+      authorize("engine", request);
       if (request.method === "GET" && url.pathname === "/v2/health") {
         writeJson(response, 200, health());
-        return;
-      }
-      const domainRoute = matchRoute(domainRoutes, request.method ?? "GET", url.pathname);
-      if (domainRoute) {
-        const answer = await domainRoute.route.handle({ body: request.method === "GET" ? {} : await body(request), params: domainRoute.params, query: url.searchParams });
-        if (answer.bytes) response.writeHead(answer.status, answer.headers).end(answer.bytes); else writeJson(response, answer.status, answer.body);
         return;
       }
       if (request.method === "GET" && url.pathname === "/v2/models") {
@@ -5176,15 +5084,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       throw new HttpError(404, "not_found", "engine endpoint does not exist");
     } catch (error) {
-      const normalized = errorFor(error);
-      writeJson(
-        response,
-        normalized.status,
-        { error: { code: normalized.code, message: normalized.message } },
-        normalized.endConnection ? { connection: "close" } : {},
-      );
+      writeError(response, errorFor(error));
     }
-  });
+  };
+  const server = http.createServer(router(domainRoutes, { authorize, errorFor, fallback: legacyRoutes }));
 
   try {
     await new Promise<void>((resolve, reject) => {

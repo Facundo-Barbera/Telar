@@ -15,7 +15,7 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import { TELAR_MCP_SERVER } from "@telar/engine-client";
-import { bearerIsValid } from "./http-auth";
+import { bearerIsValid } from "./platform/http/auth";
 import { collectTools, handleSocketMessage, readSocketBody, type SocketTool } from "./mcp-socket";
 import type { ToolFactory } from "./tool-kit";
 import { displayTools } from "./display/tools";
