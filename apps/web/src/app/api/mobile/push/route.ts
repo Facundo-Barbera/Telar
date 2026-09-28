@@ -1,5 +1,5 @@
 import { identifyCaller } from "@/features/remote/server";
-import { engineCall, engineRoute } from "@/platform/engine/server";
+import { engineCall, engineForward, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,15 +10,10 @@ const caller = async (request: Request) => (await identifyCaller(request)).devic
 
 const devicePath = (deviceId: string) => `/v2/push/devices/${encodeURIComponent(deviceId)}`;
 
-async function relay(method: string, path: string, body?: unknown): Promise<Response> {
-  const answer = await engineCall(method, path, body);
-  return Response.json(answer.body, { status: answer.status });
-}
-
 export const GET = engineRoute(async (request: Request) => {
   const device = await caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
-  return relay("GET", devicePath(device.id));
+  return engineForward(request, devicePath(device.id));
 });
 
 export const PUT = engineRoute(async (request: Request) => {
@@ -45,5 +40,6 @@ export const PUT = engineRoute(async (request: Request) => {
   } catch {
     return Response.json({ error: { message: "Invalid push registration." } }, { status: 400 });
   }
-  return relay("PUT", devicePath(device.id), registration);
+  const answer = await engineCall("PUT", devicePath(device.id), registration);
+  return Response.json(answer.body, { status: answer.status });
 });

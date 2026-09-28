@@ -61,7 +61,6 @@ function patchDeviceRequest(deviceId: string, body: Record<string, unknown>) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
-    { params: Promise.resolve({ deviceId }) },
   );
 }
 
@@ -284,9 +283,7 @@ describe("pairing routes", () => {
       deviceToken: string;
       deviceId: string;
     };
-    const gone = await deviceDelete(new Request("http://x/api/remote/devices/" + paired.deviceId, { method: "DELETE" }), {
-      params: Promise.resolve({ deviceId: paired.deviceId }),
-    });
+    const gone = await deviceDelete(new Request("http://x/api/remote/devices/" + paired.deviceId, { method: "DELETE" }));
     expect(gone.status).toBe(200);
     expect(gateFor(paired.deviceToken)).toEqual({ allow: false, code: "cockpit_unauthorized" });
   });
