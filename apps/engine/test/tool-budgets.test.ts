@@ -31,7 +31,7 @@ import type { EngineEvent, EngineRequest, ProjectNote, Session, Subscription, Tu
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
 import { notesTools, type NotesCapability } from "../src/domains/notes";
 import { displayTools } from "../src/display/tools";
-import { TELAR_SKILL } from "../src/orientation";
+import { TELAR_SKILL } from "../src/domains/sessions";
 import { MAX_ANSWER_CHARS } from "../src/tool-kit";
 import { GREP_CONTEXT_CHARS, WHY_CHARS } from "../src/domains/turns";
 

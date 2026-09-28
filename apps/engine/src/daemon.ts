@@ -50,9 +50,8 @@ import { computerUseRoutes, createComputerUseGate, type ComputerUseGate } from "
 import { bearerIsValid } from "./platform/http/auth";
 import { createProviderProber, readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS } from "./orchestrate-skill";
-import { syncTelarSkill } from "./orientation";
+import { sessionBootstrap, type SessionBootstrapWindow, sessionsCapability, sessionSnapshot, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
 import { browserRoutes, createLoginGrantStore } from "./domains/browser";
-import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
 import {
   acquireDaemonLock,
   EngineStateError,
@@ -107,7 +106,6 @@ import {
   storeNoteRead,
   storeNotesPort,
 } from "./domains/notes";
-import { sessionsCapability, storeReads, storeSessionsPort } from "./domains/sessions";
 import * as notebook from "./domains/notes";
 import * as shelf from "./domains/prompts";
 import { PreparedPromptsError } from "./domains/prompts";

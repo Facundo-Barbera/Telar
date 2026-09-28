@@ -16,7 +16,7 @@
  * project — who may merge, release gates, load caps — belong in that project's
  * notebook, and the skill says to read them there.
  */
-import { ORIENTATION_VERSION, TELAR_SKILL, TELAR_SKILL_NAME } from "./orientation";
+import { ORIENTATION_VERSION, TELAR_SKILL, TELAR_SKILL_NAME } from "./domains/sessions";
 
 /** The directory name, and the `$orchestrate` a person types. */
 export const ORCHESTRATE_SKILL_NAME = "orchestrate";
