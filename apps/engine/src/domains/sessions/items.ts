@@ -89,6 +89,22 @@ export class SessionItems {
     this.remember(sessionId, new Map(items));
   }
 
+  /** Settles the in-progress items of runs that ended, as `failed`. */
+  closeOpen(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
+    if (runIds.size === 0) return 0;
+    const items = this.read(sessionId);
+    const closed = new Set<string>();
+    for (const item of items.values()) {
+      if (!runIds.has(item.runId) || item.status !== "inProgress") continue;
+      const settled: Item = { ...item, status: "failed", completedAt: at };
+      items.set(item.id, settled);
+      this.kernel.appendEvent(sessionId, { type: "item.completed", item: settled }, item.runId);
+      closed.add(item.id);
+    }
+    if (closed.size > 0) this.write(sessionId, items, closed);
+    return closed.size;
+  }
+
   private remember(sessionId: string, items: Map<string, Item>): void {
     if (!this.cache.has(sessionId) && this.cache.size >= ITEMS_CACHE_LIMIT) {
       const oldest = this.cache.keys().next();

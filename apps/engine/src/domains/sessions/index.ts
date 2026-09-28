@@ -2,3 +2,4 @@ export { newestFirst, parseSession, releaseDelegationSettle, sessionDir, session
 export { isResultTurn, latestProviderSessionId, SessionRecords } from "./records";
 export { OpenPrefixes, SessionItems } from "./items";
 export { SessionRequests } from "./requests";
+export { SessionTasks } from "./tasks";

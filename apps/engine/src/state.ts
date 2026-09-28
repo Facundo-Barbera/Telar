@@ -94,7 +94,6 @@ import {
   NotificationDetail as NotificationDetailSchema,
   Subscription as SubscriptionSchema,
   Cohort as CohortSchema,
-  Task as TaskSchema,
   Turn as TurnSchema,
   TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
@@ -197,7 +196,7 @@ import {
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
 import { assertId, EngineStateError, ID, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
-import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
+import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "./domains/turns";
 import { TELAR_ORIENTATION } from "./orientation";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
@@ -566,9 +565,6 @@ const ACTIVE_TURN_STATES = new Set<Turn["state"]>(["queued", "claimed", "running
  */
 const SNAPSHOT_SETTLED_REQUESTS = 50;
 
-
-
-
 function boundedRequests(all: EngineRequest[], chosen?: Set<string>): EngineRequest[] {
   const carried = chosen === undefined ? all : all.filter((request) => chosen.has(request.runId) || request.state === "open");
   const settled = carried.filter((request) => request.state !== "open");
@@ -832,7 +828,6 @@ function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-
 /**
  * Stricter than `assertId` by one character: an instance id must START with a
  * letter. It is a URL path segment, a settings anchor and — for the built-in
@@ -1041,7 +1036,6 @@ const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSIO
  *  Spelled once so the three arrangements cannot fall back to different things. */
 const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" });
 
-
 /**
  * THE SESSION'S DIRECTORY, OR A REFUSAL — every store call that needs a real
  * folder on disk (#526).
@@ -1212,7 +1206,6 @@ function assertStateVersion(value: unknown, document: string): void {
   throw new EngineStateError("invalid_request", `invalid ${document}`);
 }
 
-
 /**
  * A PROJECT'S DATA SCIENCE / LATEX ENTRY, in the flat `{enabled, ...settings}`
  * shape their resolvers read. Read from the plugin map only — the legacy
@@ -1243,10 +1236,6 @@ function parseRegistry(value: unknown): ProjectRegistry {
   for (const project of projects.data) assertAbsolutePath(project.root, "project root");
   return { version: STATE_VERSION, projects: projects.data };
 }
-
-
-
-
 
 /**
  * The most recently FINISHED turn, whatever it finished as.
@@ -1298,7 +1287,6 @@ function lastEndedTurn(turns: readonly Turn[]): Turn | undefined {
   }
   return latest;
 }
-
 
 /**
  * The newest turn that left an answer — the one a read receipt may name.
@@ -1435,8 +1423,6 @@ function awaitsRateLimitSweep(turn: Turn): boolean {
   );
 }
 
-
-
 function sessionQueueFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "queue.json");
 }
@@ -1445,11 +1431,6 @@ function sessionQueueFile(paths: EngineStatePaths, sessionId: string): string {
 function sessionQueueIndexFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "queue.index.json");
 }
-
-
-
-
-
 
 /**
  * THE NOTIFICATION MAILBOX — what arrived while this session was working.
@@ -1461,10 +1442,6 @@ function sessionQueueIndexFile(paths: EngineStatePaths, sessionId: string): stri
  */
 function notificationsFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "notifications.json");
-}
-
-function tasksFile(paths: EngineStatePaths, sessionId: string): string {
-  return path.join(sessionDir(paths, sessionId), "tasks.json");
 }
 
 /** The id → metadata index for a session's uploaded files. */
@@ -1622,6 +1599,7 @@ export class EngineStore {
   private readonly sessionItems: SessionItems;
   private readonly prefixes: OpenPrefixes;
   private readonly sessionRequests: SessionRequests;
+  private readonly sessionTasks: SessionTasks;
 
   private registerCacheHooks(): void {
     this.kernel.onWrite((file, write, written) => {
@@ -4332,6 +4310,7 @@ export class EngineStore {
     this.records = new SessionRecords(this.kernel, { withActivity: (session) => this.withActivity(session), readQueue: (sessionId) => this.readQueue(sessionId) });
     this.sessionItems = new SessionItems(this.kernel);
     this.sessionRequests = new SessionRequests(this.kernel, () => this.records.ids());
+    this.sessionTasks = new SessionTasks(this.kernel);
     this.prefixes = new OpenPrefixes(this.kernel, (sessionId) => this.readEvents(sessionId));
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
@@ -5290,13 +5269,13 @@ export class EngineStore {
   private sessionHasWorkInFlight(sessionId: string): boolean {
     const unsettled: ReadonlySet<Turn["state"]> = new Set<Turn["state"]>(["queued", "claimed", "running", "steering", "ambiguous"]);
     if (this.turns(sessionId).some((turn) => unsettled.has(turn.state))) return true;
-    return [...this.readTasks(sessionId).values()].some(isLiveTask);
+    return [...this.sessionTasks.read(sessionId).values()].some(isLiveTask);
   }
 
   /** Background work still moving: `livenessOf`'s "monitoring" half, asked of
    *  the tasks directly by callers that must not trust a stale index row. */
   private hasLiveBackgroundWork(sessionId: string): boolean {
-    return [...this.readTasks(sessionId).values()].some((task) => countsAsActivity(task) && isBackgroundWork(task));
+    return [...this.sessionTasks.read(sessionId).values()].some((task) => countsAsActivity(task) && isBackgroundWork(task));
   }
 
   /**
@@ -7985,7 +7964,6 @@ export class EngineStore {
     return next;
   }
 
-
   getSession(sessionId: string): Session {
     return this.records.get(sessionId);
   }
@@ -7993,7 +7971,6 @@ export class EngineStore {
   markSessionRead(sessionId: string, runId: string): Session {
     return this.records.markRead(sessionId, runId);
   }
-
 
   /**
    * What this session is doing, read from the queue and the open requests.
@@ -8095,7 +8072,7 @@ export class EngineStore {
      * notification policy all need the same answer, and three independent folds
      * over task state is three answers that disagree under load.
      */
-    const tasks = [...this.readTasks(session.id).values()];
+    const tasks = [...this.sessionTasks.read(session.id).values()];
     const live = livenessOf(tasks);
     if (live) {
       // Dated by the OLDEST live task, matching the blocked path above: the
@@ -8186,12 +8163,10 @@ export class EngineStore {
     }
     const open = turns.filter((turn) => turn.state === "running" || turn.state === "claimed" || turn.state === "steering" || (turn.state === "queued" && !turn.held));
     if (open.length > 0) return Math.min(...open.map((turn) => turn.startedAt ?? turn.acceptedAt));
-    const tasks = [...this.readTasks(sessionId).values()].filter(countsAsActivity);
+    const tasks = [...this.sessionTasks.read(sessionId).values()].filter(countsAsActivity);
     if (tasks.length > 0) return Math.min(...tasks.map((task) => task.startedAt));
     return undefined;
   }
-
-
 
   /**
    * THE LIVE LIST'S OWN PASS, WHICH READS EACH QUEUE ONCE — issue #464.
@@ -8815,7 +8790,7 @@ export class EngineStore {
     return structuredClone({
       turns: plan.turns,
       items: this.sessionItems.forRuns(sessionId, chosen),
-      tasks: [...this.readTasks(sessionId).values()].filter((task) => chosen.has(task.runId)),
+      tasks: [...this.sessionTasks.read(sessionId).values()].filter((task) => chosen.has(task.runId)),
       requests: boundedRequests([...this.sessionRequests.read(sessionId).values()], chosen),
       page: plan.page,
     });
@@ -8847,7 +8822,6 @@ export class EngineStore {
     return { turns: parsed.data.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
   }
 
-
   /**
    * The requests a snapshot carries when the caller asked for no window.
    *
@@ -8867,7 +8841,7 @@ export class EngineStore {
 
   tasks(sessionId: string): Task[] {
     this.records.require(sessionId);
-    return structuredClone([...this.readTasks(sessionId).values()]);
+    return structuredClone([...this.sessionTasks.read(sessionId).values()]);
   }
 
   /**
@@ -9715,7 +9689,7 @@ export class EngineStore {
       this.records.require(sessionId);
       const parsed = TurnObservationSchema.array().safeParse(observations);
       if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
-      const tasks = this.readTasks(sessionId);
+      const tasks = this.sessionTasks.read(sessionId);
       const projection = { items: this.sessionItems.read(sessionId), tasks, itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
       let accepted = 0;
       for (const observation of parsed.data) {
@@ -9734,7 +9708,7 @@ export class EngineStore {
         accepted += 1;
       }
       if (projection.tasksTouched) {
-        this.writeTasks(sessionId, projection.tasks);
+        this.sessionTasks.write(sessionId, projection.tasks);
         this.records.touch(sessionId, this.now());
       }
       return { accepted };
@@ -10157,7 +10131,7 @@ export class EngineStore {
           // files a still-running shell's report on the row that exists rather
           // than minting a second one. Settled rows have nothing to report on.
           ...(() => {
-            const live = [...this.readTasks(session.id).values()].filter(isLiveTask).map(taskSeedOf);
+            const live = [...this.sessionTasks.read(session.id).values()].filter(isLiveTask).map(taskSeedOf);
             return live.length > 0 ? { tasks: live } : {};
           })(),
           ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
@@ -10416,7 +10390,7 @@ export class EngineStore {
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
-    const projection = { items: this.sessionItems.read(sessionId), tasks: this.readTasks(sessionId), itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
+    const projection = { items: this.sessionItems.read(sessionId), tasks: this.sessionTasks.read(sessionId), itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
     for (const observation of parsed.data) {
       this.journalObservation(sessionId, turn, observation, projection);
     }
@@ -10435,7 +10409,7 @@ export class EngineStore {
     // Most batches carry no task at all — a rewrite per batch would be a file
     // write per streamed provider message for nothing. Same rule for the
     // queue: only a `provider.session` observation ever mutates the turn.
-    if (projection.tasksTouched) this.writeTasks(sessionId, projection.tasks);
+    if (projection.tasksTouched) this.sessionTasks.write(sessionId, projection.tasks);
     if (projection.turnTouched) this.writeQueue(sessionId, queue);
     return { accepted: parsed.data.length };
   }
@@ -10469,7 +10443,7 @@ export class EngineStore {
       // ...and where it stands now it has ended (#741). The pair is what makes
       // `before..after` a range git can be asked about.
       this.anchorTurn(sessionId, turn.runId, "after");
-      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn ended before this agent reported back");
+      this.sessionTasks.closeOrphaned(sessionId, turn.runId, at, "the turn ended before this agent reported back");
       this.records.touch(sessionId, at, input.providerSessionId);
       this.appendEvent(
         sessionId,
@@ -10578,8 +10552,8 @@ export class EngineStore {
       this.writeQueue(sessionId, queue);
       // A failed turn means the provider process died — background shells died
       // with it, whichever turn started them.
-      this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
-      this.closeOpenItems(sessionId, turn.runId, at);
+      this.sessionTasks.closeLive(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
+      this.sessionItems.closeOpen(sessionId, new Set([turn.runId]), at);
       this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
       this.records.touch(sessionId, at);
       this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
@@ -10635,8 +10609,8 @@ export class EngineStore {
         this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
       }
       for (const turn of stopped) {
-        this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
-        this.closeOpenItems(sessionId, turn.runId, at);
+        this.sessionTasks.closeOrphaned(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+        this.sessionItems.closeOpen(sessionId, new Set([turn.runId]), at);
         this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
       }
       // Also runs when no foreground turn exists: a background task outlives
@@ -10684,8 +10658,8 @@ export class EngineStore {
       // turn is the case the anchor is worth most for: the work ended where it
       // stood, and the range is the only account of it that is not the agent's.
       this.anchorTurn(sessionId, turn.runId, "after");
-      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
-      this.closeOpenItems(sessionId, turn.runId, at);
+      this.sessionTasks.closeOrphaned(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+      this.sessionItems.closeOpen(sessionId, new Set([turn.runId]), at);
       this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
       this.records.touch(sessionId, at);
       this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
@@ -10883,7 +10857,7 @@ export class EngineStore {
       // The stale worker claim must not remain usable after human resolution.
       delete turn.claim;
       this.writeQueue(sessionId, queue);
-      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was discarded before this agent reported back");
+      this.sessionTasks.closeOrphaned(sessionId, turn.runId, at, "the turn was discarded before this agent reported back");
       this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
       this.records.touch(sessionId, at);
       this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
@@ -13674,9 +13648,6 @@ export class EngineStore {
     return this.prefixes.get(sessionId, itemId, through);
   }
 
-
-
-
   /**
    * BOOT: SETTLE WHAT THE LAST PROCESS LEFT IN FLIGHT.
    *
@@ -13706,10 +13677,10 @@ export class EngineStore {
         }
         {
           const sweptAt = this.now();
-          this.closeLiveTasks(session.id, sweptAt, "the turn ended before this agent reported back", { runIds: settledRuns, includeBackground: false });
+          this.sessionTasks.closeLive(session.id, sweptAt, "the turn ended before this agent reported back", { runIds: settledRuns, includeBackground: false });
           // Same retroactive cure for items: a stopped turn from before this
           // sweep existed still holds the tool row it was inside.
-          this.closeOpenItemsForRuns(session.id, settledRuns, sweptAt);
+          this.sessionItems.closeOpen(session.id, settledRuns, sweptAt);
           this.sessionRequests.closeOpen(session.id, settledRuns, sweptAt);
         }
         let changed = false;
@@ -13745,8 +13716,8 @@ export class EngineStore {
           recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
           if (wasLive) {
             // The process that was running these did not survive the restart.
-            this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
-            this.closeOpenItems(session.id, turn.runId, at);
+            this.sessionTasks.closeOrphaned(session.id, turn.runId, at, "the engine restarted while this agent was running");
+            this.sessionItems.closeOpen(session.id, new Set([turn.runId]), at);
             // A question the lost worker parked can never be answered; leaving
             // it open held the session `blocked` over a tool call nothing would
             // run.
@@ -13775,7 +13746,7 @@ export class EngineStore {
           session.updatedAt = at;
           metadataChanged = true;
         }
-        const swept = this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
+        const swept = this.sessionTasks.closeLive(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
         if (changed || claimsRetired) {
           this.writeQueue(session.id, queue);
         }
@@ -13951,8 +13922,8 @@ export class EngineStore {
           if (wasRunning) {
             // The worker was what ran these agents, rows and questions; no
             // answer can reach a request it died waiting on.
-            this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
-            this.closeOpenItems(session.id, turn.runId, at);
+            this.sessionTasks.closeOrphaned(session.id, turn.runId, at, "the worker running this agent disappeared");
+            this.sessionItems.closeOpen(session.id, new Set([turn.runId]), at);
             this.sessionRequests.closeOpen(session.id, new Set([turn.runId]), at);
           }
         }
@@ -13961,7 +13932,7 @@ export class EngineStore {
         for (const runId of settled) this.appendEvent(session.id, { type: "turn.stopped", reason: "worker_unavailable" }, runId);
         stopped.push(...settled);
       }
-      const deliveries = this.readTaskStopDeliveries();
+      const deliveries = this.sessionTasks.readStops();
       const remaining = deliveries.filter((delivery) => delivery.workerId !== workerId);
       if (remaining.length !== deliveries.length) this.writeDocument(this.paths.taskStops, remaining);
       return { stopped };
@@ -13978,8 +13949,6 @@ export class EngineStore {
       ),
     );
   }
-
-
 
   /**
    * THE SESSIONS A WORKER COULD POSSIBLY HAVE BUSINESS WITH — the index that
@@ -14215,7 +14184,6 @@ export class EngineStore {
     }
   }
 
-
   /**
    * ONCE PER COMMAND, AND ONLY IF IT COMMITS.
    *
@@ -14343,147 +14311,6 @@ export class EngineStore {
     return turn;
   }
 
-
-
-
-
-  /**
-   * Tasks are a projection for the same reason items are — and they matter
-   * MORE after a restart, not less. A background task outlives the turn that
-   * started it, so a client reopening a cold session has no live stream to
-   * learn about it from; `tasks.json` is the only thing that can still say the
-   * session is working.
-   */
-  private readTasks(sessionId: string): Map<string, Task> {
-    const stored = this.readDocument(tasksFile(this.paths, sessionId));
-    if (stored === undefined) return new Map();
-    const parsed = TaskSchema.array().safeParse((stored as { tasks?: unknown }).tasks);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid task projection");
-    return new Map(parsed.data.map((task) => [task.id, task]));
-  }
-
-  private writeTasks(sessionId: string, tasks: Map<string, Task>): void {
-    this.writeDocument(tasksFile(this.paths, sessionId), { version: STATE_VERSION, tasks: [...tasks.values()] });
-  }
-
-  /**
-   * A TURN THAT ENDED TAKES ITS SUB-AGENTS WITH IT.
-   *
-   * The driver already does this on its own happy path, and its comment says
-   * exactly why: "a sub-agent stuck at `running` makes a finished detached
-   * session claim it is still busy — forever, with no live stream to correct it
-   * and nothing for a human to stop." What it could not cover is every OTHER
-   * way a turn ends. A turn adjudicated by a human after recovery has no driver
-   * attached; neither has one stopped from the cockpit, or one the engine
-   * declared ambiguous when a worker vanished.
-   *
-   * FOUND BY AUDIT, IN REAL DATA: one dogfood session had an `agent` task
-   * sitting at `running` weeks after its turn was discarded — the roster showed
-   * a live sub-agent that no process anywhere was running.
-   *
-   * A BACKGROUND TASK IS LEFT ALONE. Outliving its turn is the definition of
-   * background, and the contract says so on `TaskKind`.
-   *
-   * Idempotent, so calling it on a path the driver already swept is a no-op
-   * rather than a second event.
-   */
-  private closeOrphanedTasks(sessionId: string, runId: string, at: number, failure: string): void {
-    this.closeLiveTasks(sessionId, at, failure, { runId, includeBackground: false });
-  }
-
-
-  /**
-   * THE SAME SWEEP FOR MANY RUNS, IN ONE READ — what `recover()` needs.
-   *
-   * The per-turn closers below are right for a live transition, where one turn
-   * has just ended. At boot there are hundreds of them: measured on a real
-   * store, 114 sessions held 1471 terminal turns, and reading each session's
-   * items (577 KB average), requests and tasks once PER TURN made
-   * `readDocument` 15.7 s of a 21 s engine start — which is the whole cold
-   * launch, because the desktop shell does not show its window until the engine
-   * answers `/v2/health` (apps/desktop/main.js:1895).
-   *
-   * Identical outcome: the per-turn versions only ever match rows whose `runId`
-   * is that turn's, so matching against the SET of terminal run ids closes
-   * exactly the same rows and appends the same events.
-   */
-  private closeOpenItemsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
-    if (runIds.size === 0) return 0;
-    const items = this.sessionItems.read(sessionId);
-    // WHICH rows were settled, not how many — #658. The count is the caller's
-    // answer; the set is the write.
-    const closed = new Set<string>();
-    for (const item of items.values()) {
-      if (!runIds.has(item.runId) || item.status !== "inProgress") continue;
-      const settled: Item = { ...item, status: "failed", completedAt: at };
-      items.set(item.id, settled);
-      this.appendEvent(sessionId, { type: "item.completed", item: settled }, item.runId);
-      closed.add(item.id);
-    }
-    if (closed.size > 0) this.sessionItems.write(sessionId, items, closed);
-    return closed.size;
-  }
-
-
-  private closeOpenItems(sessionId: string, runId: string, at: number): number {
-    const items = this.sessionItems.read(sessionId);
-    const closed = new Set<string>();
-    for (const item of items.values()) {
-      if (item.runId !== runId || item.status !== "inProgress") continue;
-      const settled: Item = { ...item, status: "failed", completedAt: at };
-      items.set(item.id, settled);
-      this.appendEvent(sessionId, { type: "item.completed", item: settled }, runId);
-      closed.add(item.id);
-    }
-    if (closed.size > 0) this.sessionItems.write(sessionId, items, closed);
-    return closed.size;
-  }
-
-  /**
-   * A BACKGROUND TASK CANNOT OUTLIVE THE PROVIDER PROCESS. Outliving its TURN
-   * is the definition of background — but when the process that hosts it dies
-   * (a stop, a failure, a vanished worker), there is nothing left running,
-   * and a task left at `running` makes the session claim "monitoring" forever
-   * with nothing for a human to stop. Found in real data: a stopped turn's
-   * background shell sat live for two days, and the Stop button no-opped
-   * because no turn was running.
-   *
-   * Returns how many tasks it closed, so a stop with no stoppable turn can
-   * still report that it did something.
-   */
-  private closeLiveTasks(
-    sessionId: string,
-    at: number,
-    failure: string,
-    options: { runId?: string; runIds?: ReadonlySet<string>; includeBackground: boolean; onlyBackground?: boolean; state?: "failed" | "stopped" },
-  ): Task[] {
-    const tasks = this.readTasks(sessionId);
-    const closedTasks: Task[] = [];
-    for (const [id, task] of tasks) {
-      if (options.runId !== undefined && task.runId !== options.runId) continue;
-      // MANY RUNS, ONE READ. `recover()` sweeps every terminal turn of a
-      // session; asking per turn re-read this whole document once per turn.
-      if (options.runIds !== undefined && !options.runIds.has(task.runId)) continue;
-      // `isBackgroundWork`, not `kind`: an agent launched detached outlives
-      // its turn exactly as a shell does, and was being swept here as failed
-      // while it was still reporting.
-      if (!options.includeBackground && isBackgroundWork(task)) continue;
-      if (options.onlyBackground && !isBackgroundWork(task)) continue;
-      if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
-      // `failed` RATHER THAN `stopped` by default, matching the driver's own
-      // choice for the same situation: two spellings for one cause would
-      // render as two different colours in the roster depending on which
-      // path got there. A human-initiated sweep passes `stopped` — there the
-      // cause IS a stop.
-      const closed: Task = { ...task, state: options.state ?? "failed", failure, updatedAt: at, completedAt: at };
-      tasks.set(id, closed);
-      this.appendEvent(sessionId, { type: "task.completed", task: closed }, task.runId);
-      closedTasks.push(closed);
-    }
-    if (closedTasks.length > 0) this.writeTasks(sessionId, tasks);
-    return closedTasks;
-  }
-
   /**
    * STOP THE SESSION'S LINGERING BACKGROUND TASKS — the "N tasks still
    * working" chip's Stop. Distinct from `stopTurn`: a background task outlives
@@ -14495,13 +14322,13 @@ export class EngineStore {
   stopBackgroundTasks(sessionId: string, reason = "stopped from the cockpit"): number {
     return this.kernel.command("stopBackgroundTasks", () => {
       const at = this.now();
-      const closed = this.closeLiveTasks(sessionId, at, reason, {
+      const closed = this.sessionTasks.closeLive(sessionId, at, reason, {
         includeBackground: true,
         onlyBackground: true,
         state: "stopped",
       });
       if (closed.length === 0) return 0;
-      const deliveries = this.readTaskStopDeliveries();
+      const deliveries = this.sessionTasks.readStops();
       const turns = this.readQueue(sessionId).turns;
       const driver = this.records.get(sessionId).driver;
       for (const task of closed) {
@@ -14510,37 +14337,15 @@ export class EngineStore {
         if (workerId) deliveries.push({ deliveryId: `stop_${crypto.randomUUID().replaceAll("-", "")}`, sessionId,
           providerTaskId: task.providerTaskId, workerId, driver });
       }
-      this.writeDocument(this.paths.taskStops, deliveries);
+      this.sessionTasks.writeStops(deliveries);
       this.records.touch(sessionId, at);
       return closed.length;
     });
   }
 
-  private readTaskStopDeliveries(): Array<{ deliveryId: string; sessionId: string; providerTaskId: string; workerId: string; driver: ProviderDriverKind }> {
-    const value = this.readDocument(this.paths.taskStops) ?? [];
-    if (!Array.isArray(value) || value.some((row) => !row || typeof row.deliveryId !== "string" || typeof row.sessionId !== "string" ||
-      typeof row.providerTaskId !== "string" || typeof row.workerId !== "string" || !["claude", "codex", "opencode"].includes(row.driver)))
-      throw new EngineStateError("invalid_request", "invalid task-stop delivery store");
-    return value;
-  }
-
   taskStopsForWorker(workerId: string, acknowledged: string[] = []): WorkerStatus["stopTask"] {
-    return this.kernel.command("taskStopsForWorker", () => {
-      const pending = this.readTaskStopDeliveries();
-      const ack = new Set(acknowledged);
-      const remaining = pending.filter((delivery) => delivery.workerId !== workerId || !ack.has(delivery.deliveryId));
-      if (remaining.length !== pending.length) this.writeDocument(this.paths.taskStops, remaining);
-      return remaining.filter((delivery) => delivery.workerId === workerId).map(({ workerId: _owner, ...delivery }) => delivery);
-    });
+    return this.sessionTasks.stopsForWorker(workerId, acknowledged);
   }
-
-
-
-
-
-
-
-
 
   /** One observation → at most one journal record, plus its projection edit. */
   private journalObservation(
