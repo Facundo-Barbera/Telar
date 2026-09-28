@@ -1,8 +1,3 @@
-/**
- * Maps the registry's lucide icon names to components. The registry can't import
- * React (Electron's main process loads it). An explicit map keeps the bundle
- * tree-shaken, unlike lucide's dynamic index.
- */
 
 import {
   AArrowDownIcon,
@@ -46,7 +41,7 @@ import {
   TextSearchIcon,
   type LucideIcon,
 } from "lucide-react";
-import { COMMANDS, type CommandGroup, type CommandId } from "@/lib/commands";
+import { COMMANDS, type CommandGroup, type CommandId } from "./commands";
 
 export const COMMAND_ICONS: Record<string, LucideIcon> = {
   "a-arrow-down": AArrowDownIcon,
@@ -89,7 +84,6 @@ export const COMMAND_ICONS: Record<string, LucideIcon> = {
   "text-search": TextSearchIcon,
 };
 
-/** Fallback for a command whose `icon` names something this map lacks. */
 export const GROUP_ICONS: Record<CommandGroup, LucideIcon> = {
   Conversation: MessageSquareIcon,
   Rail: PanelLeftIcon,
@@ -97,12 +91,10 @@ export const GROUP_ICONS: Record<CommandGroup, LucideIcon> = {
   Application: SettingsIcon,
 };
 
-/** A lucide name as a glyph, or undefined when the map has never heard of it. */
 export function iconByName(name: string | undefined): LucideIcon | undefined {
   return name ? COMMAND_ICONS[name] : undefined;
 }
 
-/** The command's own glyph, else its group's. */
 export function commandIcon(id: CommandId): LucideIcon {
   const command = COMMANDS.find((entry) => entry.id === id);
   return iconByName(command?.icon) ?? GROUP_ICONS[command?.group ?? "Application"];

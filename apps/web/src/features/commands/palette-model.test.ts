@@ -15,7 +15,7 @@ import {
   recentSessions,
   type PaletteSessionLike,
   type QuickSettingsState,
-} from "./command-palette";
+} from "./palette-model";
 import { COMMAND_ICONS, GROUP_ICONS, commandIcon, iconByName } from "./command-icons";
 import { COMMANDS, defaultKeymap, mergeKeymap, type CommandId } from "./commands";
 
@@ -39,10 +39,8 @@ const sessions: PaletteSessionLike[] = [
   session("s4", "Pair the mini", 3, { projectName: "Telar", hostId: "host_mini", hostName: "mini" }),
 ];
 
-/** Everything runs; what the live palette asks is pinned separately below. */
 const anything = () => true;
 
-/** A desktop cockpit on the defaults, so every row exists. */
 const state = (over: Partial<QuickSettingsState> = {}): QuickSettingsState => ({
   scheme: "dark",
   look: "",
@@ -56,7 +54,6 @@ const state = (over: Partial<QuickSettingsState> = {}): QuickSettingsState => ({
 
 describe("the Actions section is the registry, filtered", () => {
   test("a command nothing can run is not a row", () => {
-    // Also keeps a command shipped ahead of its surface (`search-project-contents`) out.
     const runnable = (id: CommandId) => id === "settings";
     expect(paletteActions(COMMANDS, defaultKeymap(), runnable).map((action) => action.id)).toEqual(["settings"]);
   });
@@ -186,7 +183,6 @@ describe("a glyph per command, not one per group", () => {
   });
 
   test("distinct commands get distinct glyphs, which is the point of the field", () => {
-    // The nine jumps share one glyph, so they are left out.
     const icons = COMMANDS.filter((command) => !command.jump).map((command) => command.icon);
     expect(new Set(icons).size).toBe(icons.length);
   });

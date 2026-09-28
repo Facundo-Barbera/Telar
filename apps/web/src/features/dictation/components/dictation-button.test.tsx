@@ -6,8 +6,7 @@ import { useState } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Composer } from "@/features/composer";
-import { resolveWebCommandKeyAction } from "@/lib/command-keys";
-import { keymapSnapshot, restoreDefaultKeymap, runCommand, setChord } from "@/lib/commands";
+import { resolveWebCommandKeyAction, keymapSnapshot, restoreDefaultKeymap, runCommand, setChord } from "@/features/commands";
 import { installPageApi } from "@/lib/page-api";
 
 GlobalRegistrator.register({ url: "http://localhost/" });

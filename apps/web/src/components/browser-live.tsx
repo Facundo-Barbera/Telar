@@ -71,8 +71,7 @@ import { axesOf, describeViewport, fitViewport, groupedViewportPresets, keepRati
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
 import { useFrozenOverlay } from "@/features/browser";
-import { useCommandHandlers } from "@/lib/use-command-keys";
-import { claimChords } from "@/lib/commands";
+import { useCommandHandlers, claimChords } from "@/features/commands";
 import { makeScopeGuard } from "@/lib/scope-guard";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";

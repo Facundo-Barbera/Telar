@@ -41,11 +41,10 @@ import {
   writePreferredOpener,
   type WorkspaceOpenerEntry,
 } from "@/lib/workspace-opener-preference";
-import { useCommandHandlers } from "@/lib/use-command-keys";
+import { useCommandHandlers, KeyHint } from "@/features/commands";
 import { OpenerIcon } from "@/components/session/opener-icon";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupSeparator } from "@/components/ui/button-group";
-import { KeyHint } from "@/components/ui/key-hint";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export function OpenWorkspaceButton({

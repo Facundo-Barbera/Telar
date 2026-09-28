@@ -2,9 +2,8 @@ import { useRef, type Dispatch, type ReactNode, type SetStateAction } from "reac
 import { FolderPlusIcon, MessageSquarePlusIcon, XIcon } from "lucide-react";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import { Button } from "@/components/ui/button";
-import { KeyHint } from "@/components/ui/key-hint";
+import { KeyHint, type CommandId } from "@/features/commands";
 import type { SidebarSession } from "@/lib/session-list";
-import type { CommandId } from "@/lib/commands";
 
 export function RailSearch({
   query,

@@ -7,7 +7,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { claimChords, claimedCommandIds, defaultKeymap, normalizeChord, resolveCommandForEvent } from "@/lib/commands";
+import { claimChords, claimedCommandIds, defaultKeymap, normalizeChord, resolveCommandForEvent } from "@/features/commands";
 import { ptyBytesForKey, TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
 
 describe("ptyBytesForKey", () => {

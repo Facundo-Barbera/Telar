@@ -5,7 +5,7 @@
 import { useCallback, useId, useRef, useState } from "react";
 import { turnHasContent, type ProjectAvailability } from "@telar/engine-client";
 import { choiceOf } from "@/lib/models";
-import { useCommandHandlers } from "@/lib/use-command-keys";
+import { useCommandHandlers } from "@/features/commands";
 import { useComposerDictation } from "@/features/dictation";
 import { cn } from "@/lib/utils";
 import { compactBlockedReason, isResumeDraft, type Completion } from "../completions";

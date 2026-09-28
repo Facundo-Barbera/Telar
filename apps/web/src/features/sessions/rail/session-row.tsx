@@ -30,7 +30,7 @@ import { canSettle, canSnooze, settleClosesText, settledTerminalsHint, snoozePre
 import type { RailJumpSlot } from "@/lib/session-groups";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { KeyHintOverlay } from "@/components/ui/key-hint";
+import { KeyHintOverlay } from "@/features/commands";
 import { useSidebar } from "@/components/ui/sidebar";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";

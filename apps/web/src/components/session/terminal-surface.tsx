@@ -39,7 +39,7 @@ import { ImageAddon, type IImageAddonOptions } from "@xterm/addon-image";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
-import { claimChords } from "@/lib/commands";
+import { claimChords } from "@/features/commands";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi } from "@/lib/run/api";

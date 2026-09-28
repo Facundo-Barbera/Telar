@@ -27,7 +27,7 @@ const { SessionCockpit } = await import("./session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
 const { clearTranscriptCache } = await import("@/lib/transcript-cache");
 const { readDraft, writeDraft } = await import("@/features/composer");
-const { runCommand } = await import("@/lib/commands");
+const { runCommand } = await import("@/features/commands");
 
 const STARTED = 1_700_000_000_000;
 

@@ -1,7 +1,7 @@
 import { ChevronRightIcon } from "lucide-react";
 import type { SidebarMode } from "@telar/engine-client";
 import { RailModeSwitch } from "@/components/session/flat-session-list";
-import { KeyHint } from "@/components/ui/key-hint";
+import { KeyHint } from "@/features/commands";
 import { SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarTrigger } from "@/components/ui/sidebar";
 import { CAPTION } from "@/lib/idiom";
 import { sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";

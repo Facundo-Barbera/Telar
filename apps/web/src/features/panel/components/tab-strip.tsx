@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { Maximize2Icon, Minimize2Icon, PanelRightCloseIcon, XIcon } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { KeyHint } from "@/components/ui/key-hint";
+import { KeyHint } from "@/features/commands";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { cn } from "@/lib/utils";

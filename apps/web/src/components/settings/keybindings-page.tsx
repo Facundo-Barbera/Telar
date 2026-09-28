@@ -53,9 +53,9 @@ import {
   type CommandGroup,
   type CommandId,
   type Keymap,
-} from "@/lib/commands";
+  useKeymap,
+} from "@/features/commands";
 import { keyCaps, useKeyCapPlatform, type KeyCapPlatform } from "@/lib/key-caps";
-import { useKeymap } from "@/lib/use-command-keys";
 import { Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 
 /** THE FORMATTER MOVED TO `lib/key-caps.ts` (#401). This pane was the only

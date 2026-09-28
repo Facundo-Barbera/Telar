@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activeComposer } from "@/features/composer";
-import { useCommandHandlers } from "@/lib/use-command-keys";
+import { useCommandHandlers } from "@/features/commands";
 import type { DictationBox } from "../interim";
 import { registerDictation, toggleActiveDictation } from "../registry";
 import { useDictationSettings } from "../settings";
