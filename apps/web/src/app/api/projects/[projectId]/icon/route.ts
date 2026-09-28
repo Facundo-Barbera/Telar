@@ -1,22 +1,16 @@
 import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 
-/**
- * The project's icon, proxied from the engine as bytes.
- *
- * Cached IMMUTABLY: `Project.icon` is a content-derived key the client appends
- * as `?v=`, so a changed file gets a changed URL and this response never needs
- * revalidating. The query parameter itself is not read — it exists purely to
- * make the browser cache honest.
- */
+/** Immutable: `?v=` is the content-derived `Project.icon`; `?format=png` is for clients that cannot decode SVG. */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string }> };
 
-export async function GET(_request: Request, context: Context) {
+export async function GET(request: Request, context: Context) {
   try {
     const { projectId } = await context.params;
-    const icon = await (await engineClient()).projectIcon(projectId);
+    const png = new URL(request.url).searchParams.get("format") === "png";
+    const icon = await (await engineClient()).projectIcon(projectId, png ? { format: "png" } : {});
     return new Response(new Uint8Array(icon.data), {
       status: 200,
       headers: {
