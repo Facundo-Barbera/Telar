@@ -1,0 +1,88 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/*.{mjs,ts}"
+      ],
+      "project": [
+        "scripts/**/*.{mjs,ts}"
+      ]
+    },
+    "apps/engine": {
+      "entry": [
+        "src/*-main.ts",
+        "src/main.ts",
+        "bench/*.ts",
+        "scripts/*.{ts,mjs}"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "bench/**/*.ts",
+        "scripts/**/*.{ts,mjs}",
+        "test/**/*.ts"
+      ]
+    },
+    "apps/web": {
+      "project": [
+        "**/*.{ts,tsx,mjs}"
+      ],
+      "entry": [
+        "scripts/*.mjs",
+        "public/**/*.mjs"
+      ]
+    },
+    "apps/desktop": {
+      "entry": [
+        "main.js",
+        "*preload*.js",
+        "*.electron-test.js",
+        "desktop-e2e*.js",
+        "after-pack.js",
+        "render-opener-icons.mjs"
+      ],
+      "project": [
+        "**/*.{js,mjs,cjs}"
+      ],
+      "ignore": [
+        "test-fixtures/**"
+      ]
+    },
+    "packages/engine-client": {
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
+    },
+    "workers/push-relay": {
+      "entry": [
+        "worker.mjs",
+        "deploy.mjs"
+      ],
+      "project": [
+        "**/*.mjs"
+      ]
+    },
+    "workers/updates-proxy": {
+      "entry": [
+        "src/index.js"
+      ],
+      "project": [
+        "**/*.{js,mjs}"
+      ]
+    }
+  },
+  "ignoreBinaries": [
+    "du",
+    "pgrep",
+    "op",
+    "diskutil",
+    "uv",
+    "osascript",
+    "scutil",
+    "tailscale",
+    "plutil",
+    "sips",
+    "rsvg-convert"
+  ]
+}

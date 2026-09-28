@@ -1,31 +1,11 @@
 #!/usr/bin/env bun
-/**
- * THINGS THAT ARE TRUE OF THE SOURCE TEXT, asserted where no app has to run.
- *
- * Some invariants are about what the code SAYS rather than what it does: a
- * literal that must not come back, a call a view must still make. They need
- * no process, no simulator and no device — only the files. Asserting them
- * from inside a unit test is a trap, and one this repo has now fallen into
- * twice: a test that resolves its source root from `#filePath` is reading a
- * path baked in at COMPILE time on the machine that compiled it, while the
- * test itself runs in the app's process on the destination. On a simulator
- * sharing the Mac's filesystem that path happens to exist and the test
- * passes; on a device it does not exist and the test throws. The check looks
- * green exactly where it is not needed and red exactly where it is.
- *
- * So they live here, and run in `verify.yml`, which gates every pull request
- * and needs no Mac at all. A check moved here guards MORE than it did as a
- * Swift test, not less.
- *
- * ADDING ONE: append to CHECKS. A check is a name, a sentence saying what it
- * protects, and a `run` returning an array of human-readable failures (empty
- * when it holds). Keep the failure text actionable — it is read by someone
- * who has just been stopped by it and does not yet know why.
- */
+// Invariants of the source text, checked without running any app. Each CHECKS
+// entry is a name, what it protects, and a `run` returning actionable failures.
 import { readdir, readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
 import { engineTestFiles, shardOf } from "./engine-shard.mjs";
+import { commentRatchet } from "./comment-ratchet.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFile(join(ROOT, path), "utf8");
@@ -2252,6 +2232,15 @@ const CHECKS = [
           `apps/web: scanned ${files.length} source files and found none importing next/dynamic, which cannot be true while the panel, the settings panes, the sidebar and the annotate overlay are all code-split. Either the import was spelled a new way or NEXT_DYNAMIC_IMPORT has rotted; either way this check is now vacuous and must be re-anchored, not removed.`,
         ];
       }
+      return failures;
+    },
+  },
+  {
+    name: "comment-ratchet",
+    protects: "no workspace's comment-line count rises above scripts/comment-baseline.json, and no change adds a comment over 6 lines",
+    run() {
+      const { failures, notices } = commentRatchet(ROOT);
+      for (const notice of notices) console.log(`note  ${notice}`);
       return failures;
     },
   },

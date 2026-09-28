@@ -1,0 +1,9 @@
+{
+  "apps/engine": 51327,
+  "apps/web": 53109,
+  "apps/desktop": 8153,
+  "apps/ios": 8801,
+  "packages/engine-client": 9252,
+  "workers/push-relay": 147,
+  "workers/updates-proxy": 100
+}

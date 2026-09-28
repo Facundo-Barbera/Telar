@@ -34,6 +34,49 @@ We are not adopting Effect-TS or event sourcing.
 | 6 | Sessions as sub-agents: `create` with mode child/handoff, the result is the last message, one notice per child, 21 → 10 tools | |
 | 7 | One engine client: an `EngineClient` Transport, one `/api/engine/[...path]` catch-all, delete the pass-through routes | |
 | 8 | Comment strip, one package per PR, following the policy | alongside 4–5 |
+| 9 | Headless: the engine owns all functionality (pairing/auth, push, hosts, dictation, OAuth…); the cockpit becomes a static SPA; `telar-ui` is removed (#904). Absorbs phase 7 | inventory in progress |
+
+## Phase 9, headless (from the 27 Sep inventory)
+
+128 of the 155 `/api` routes are pure proxies. The real logic outside the engine:
+- the access gate `proxy.ts` (roles, host secret);
+- pairing, devices and remote settings (`remote.json`);
+- the push worker started from `instrumentation.ts` (relay/APNs, read-sync);
+- the Mac notification decider (IPC with main);
+- other Macs (`hosts.json`, forwarding);
+- `sessions/live` merging projects;
+- `fs`;
+- the MCP OAuth callback;
+- `about`;
+- `browse` and `desktop/metrics`, which the preload already covers.
+
+The pages are already client-only, so a static SPA is viable.
+
+Target:
+- The engine owns all the logic plus `store/remote` and `routes/auth`. Loopback listener: management token. Optional network listener: device tokens, serves the SPA, and aliases `/api/*` for current iOS builds.
+- Desktop serves the SPA over `telar://` and its protocol handler injects the bearer. `telar-ui` goes away.
+- One `EngineClient` with a Transport everywhere.
+
+PRs (~17), each landing as `store/*`/`routes/*`:
+1. remote (pair, devices, ping)
+2. auth
+3. `sessions/live` projects
+4. `fs`
+5. mobile push routes
+6. push worker into the engine (swapped in one PR)
+7. notification decider
+8. hosts
+9. OAuth callback
+10. `about`; delete `browse`/`metrics`
+11. catch-all + Transport (old phase 7)
+12. cockpit static-ready
+13. static build
+14. `telar://`
+15. remove `telar-ui`
+16. network listener + Tailscale
+17. iOS on `/v2` behind `ping.proto`
+
+Security invariants to preserve (10+): the engine token never reaches a browser or phone; only ping and pair are open; observers are GET-only; the pairing code is 8 digits, 5 min, 5 tries, fragment-only; hashes at rest with constant-time comparison; no CORS; Host-header checks on the network listener; login grants stay written by the shell.
 
 ## Decisions taken
 
