@@ -81,11 +81,6 @@
 import { DEEPGRAM_LISTEN_URL, askListen } from "./listen";
 import { DEEPGRAM_KEYTERM_PROVABLE_BYTES } from "./keyterms";
 
-// RE-EXPORTED rather than moved out from under its callers: the address is a
-// property of this endpoint and `listen.ts` owns it now, but a file that only
-// fits a glossary should not have to know that to name the URL.
-export { DEEPGRAM_LISTEN_URL };
-
 /** Deepgram's own sentence for this refusal, and the ONLY thing that earns a
  *  retry — see the header for the `400` that must not. */
 const KEYTERM_LIMIT = /keyterm limit exceeded/i;

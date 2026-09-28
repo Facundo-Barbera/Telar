@@ -15,7 +15,6 @@
  * is always empty) and `HOST_RATIFIED_READ_TOOLS` names no external id, so
  * every tool here parks for approval under the ordinary mode ladder.
  */
-import path from "node:path";
 import { z } from "zod";
 import { PLUGIN_API_VERSION, type ExternalPluginManifest, type PluginMeta } from "@telar/engine-client";
 import { err, json, type ToolFactory } from "../../tool-kit";
@@ -208,6 +207,3 @@ function buildExternalToolModule(loaded: LoadedExternalPlugin): PluginToolModule
     },
   };
 }
-
-/** For a log line or a status: where this plugin lives. */
-export const describeExternal = (loaded: LoadedExternalPlugin) => `${loaded.manifest.id} (${path.basename(loaded.dir)})`;

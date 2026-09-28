@@ -499,41 +499,6 @@ function resolveDiffBase(
 }
 
 /**
- * WHETHER AN ANCHORED COMMIT IS STILL THERE — issue #741.
- *
- * ────────────────────────────────────────────────────────────────────────────
- * AN ANCHOR DEGRADES; IT MUST NOT LIE. A turn's `before`/`after` are shas the
- * engine observed while the turn ran, and history moves afterwards. Measured in
- * throwaway repositories: after `git commit --amend` the pre-amend sha is STILL
- * a readable object and `git diff <old> <new>` still works; after
- * `reflog expire --expire-unreachable=now --all && gc --prune=now` it is gone.
- *
- * `resolveDiffBase`'S LESSON RUNS THE OTHER WAY HERE, and that is the whole
- * reason this is a separate function rather than a second call to it. There, a
- * ref that does not resolve falls back to HEAD, because a *name* the user typed
- * being wrong is a user error with an obvious recovery. Here the sha was
- * recorded by the engine, and falling back to HEAD would answer a comparison
- * NOBODY ASKED FOR with real hunks, and look entirely plausible doing it.
- * A missing object means the anchor is gone, and the only honest answer is to
- * say so.
- * ────────────────────────────────────────────────────────────────────────────
- *
- * `^{commit}` RATHER THAN A BARE SHA, so a sha that happens to name a blob or a
- * tree is refused rather than fed to `diff` as one side of a range.
- */
-export function anchorArgs(sha: string): string[] {
-  return ["cat-file", "-e", `${sha}^{commit}`];
-}
-
-/** What `cat-file -e` said about an anchor: present, gone, or unread. */
-export function readAnchorProbe(result: GitResult): { present: boolean; incomplete?: GitReadFailure } {
-  if (result.timedOut) return { present: false, incomplete: "timeout" };
-  // Non-zero from `cat-file -e` is the answer "no such object", which is a FACT
-  // about the repository rather than a failure of the read.
-  return { present: result.status === 0 };
-}
-
-/**
  * THE REVIEW, ASSEMBLED FROM READS THAT EACH MAY HAVE FAILED — issue #654.
  *
  * SHARED BY BOTH RUNNERS so the synchronous and nonblocking reviews can never

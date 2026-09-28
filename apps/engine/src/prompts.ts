@@ -130,18 +130,6 @@ export function getPrompt(paths: EngineStatePaths, projectId: string, id: string
   return readPrompts(paths, projectId).find((prompt) => prompt.id === id) ?? null;
 }
 
-/** Which projects have a shelf on disk. Not the project registry — that is
- *  `store.listProjects`, and a project with no prepared prompts has no file. */
-export function shelvedProjects(paths: EngineStatePaths): string[] {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(promptsDirectory(paths));
-  } catch {
-    return [];
-  }
-  return entries.filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -".json".length));
-}
-
 /**
  * THE SIZE BOUNDS, stated so a refusal is a sentence rather than a filesystem
  * error four layers down.

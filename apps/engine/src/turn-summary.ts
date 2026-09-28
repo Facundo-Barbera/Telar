@@ -288,25 +288,6 @@ function endedAt(turn: Turn): number | undefined {
 }
 
 /**
- * IS THIS TURN'S ROW SETTLED — i.e. can it still change?
- *
- * The reconcile that maintains the projection compares stored state against the
- * queue's, so a row is rewritten whenever the state moves. This is the other
- * half: a turn in a non-terminal state has a row that is still provisional (its
- * item count is whatever had happened by the last write), and a caller reading
- * the outline of a LIVE session should see that rather than a stale count
- * presented as final.
- */
-export const TERMINAL_TURN_STATES: ReadonlySet<Turn["state"]> = new Set<Turn["state"]>([
-  "completed",
-  "failed",
-  "stopped",
-  "discarded",
-  "steered",
-  "ambiguous",
-]);
-
-/**
  * WHERE A PATTERN MATCHED, WITH ENOUGH AROUND IT TO READ — `grep`'s context.
  *
  * Centred on the match rather than starting at it: "where did it mention

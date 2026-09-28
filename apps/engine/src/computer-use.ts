@@ -78,7 +78,6 @@ import {
  */
 export const COMPUTER_USE_SERVER_ID = "mac";
 
-export type { ComputerUseBackend };
 /** `helper` is present only for the helper bundled inside Telar.app. */
 export type ResolvedComputerUse = { server: McpServer; backend: ComputerUseBackend; helper?: BundledHelper };
 

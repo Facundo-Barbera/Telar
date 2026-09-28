@@ -80,8 +80,7 @@ import type { NotesCapability } from "./notes-tools/tools";
 import type { PromptsCapability } from "./prompts-tools/tools";
 
 export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";
-export type { DriverRequest, DriverRequestOutcome, DriverRun, DriverResult, ProviderTurnBinding, DriverSessionHooks, TurnDriver,
-  SessionsCapability, DsCapability, DisplayCapability, LatexCapability } from "./provider-contract";
+export type { DriverRequest, DriverRun, ProviderTurnBinding, DriverSessionHooks, TurnDriver, SessionsCapability } from "./provider-contract";
 import { ProviderUnavailableError, normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun,
   type DriverResult, type ProviderTurnBinding, type DriverSessionHooks, type TurnDriver } from "./provider-contract";
 import { requireCwd } from "./provider-contract";

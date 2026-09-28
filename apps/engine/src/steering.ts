@@ -1,8 +1,7 @@
 /**
  * STEERING PRIMITIVES — how "send now" reaches a turn that is already running.
  *
- * A mailbox that text can be pushed into mid-turn, and a boundary the prompt
- * generator waits on. Imported by `worker.ts`, `driver.ts` and
+ * A mailbox that text can be pushed into mid-turn. Imported by `worker.ts`, `driver.ts` and
  * `provider-contract.ts`: this is the ordinary session path, not a corner of
  * one, and `send` on every session goes through it.
  *
@@ -12,50 +11,6 @@
  */
 
 import type { NotificationDetail, TurnAttachment, WakeReason } from "@telar/engine-client";
-
-/**
- * A turn boundary the prompt generator can wait on.
- *
- * EDGE-TRIGGERED WITH A COUNTER, not a bare promise, and that is the whole
- * reason this is a class. A `result` message can arrive before the generator
- * gets around to awaiting the next boundary; a level-triggered signal would
- * miss it, the generator would park for ever, and the SDK would sit waiting
- * for an input that never comes — the same deadlock the mailbox was
- * introduced to kill, reintroduced one layer down.
- */
-export class TurnBoundary {
-  private settled = 0;
-  private observed = 0;
-  private closed = false;
-  private waiters: Array<(open: boolean) => void> = [];
-
-  /** A turn just ended. */
-  mark(): void {
-    this.settled += 1;
-    const waiting = this.waiters;
-    this.waiters = [];
-    for (const resolve of waiting) resolve(true);
-  }
-
-  /** The output stream ended: no further boundary can ever arrive. */
-  close(): void {
-    this.closed = true;
-    const waiting = this.waiters;
-    this.waiters = [];
-    for (const resolve of waiting) resolve(false);
-  }
-
-  /** Resolves `true` at the next (or an already-missed) boundary, `false` once
-   *  the stream is closed. */
-  next(): Promise<boolean> {
-    if (this.settled > this.observed) {
-      this.observed = this.settled;
-      return Promise.resolve(true);
-    }
-    if (this.closed) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => this.waiters.push(resolve));
-  }
-}
 
 /**
  * Text pushed into a running turn, waiting for the driver to take it.

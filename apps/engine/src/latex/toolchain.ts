@@ -11,9 +11,6 @@ import path from "node:path";
 import { defaultExec, type Exec } from "../ds/python-env";
 import { compareVersions, findBrew, type ToolInfo } from "../ds/toolchain";
 
-export type { ToolInfo } from "../ds/toolchain";
-export { findBrew } from "../ds/toolchain";
-
 export type TexliveFlavour = "mactex" | "tinytex" | "texlive";
 
 /** The programs a compile and a package install lean on, per root. */

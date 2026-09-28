@@ -81,7 +81,7 @@ type Resolved = Required<VolumeDeps>;
  * Re-exported so this module stays the one import a caller here needs — the
  * promise its header already makes.
  */
-export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "@telar/engine-client";
+export { mountRootsFor, volumeSupportOn } from "@telar/engine-client";
 
 function resolveDeps(deps: VolumeDeps): Resolved {
   const platform = deps.platform ?? process.platform;

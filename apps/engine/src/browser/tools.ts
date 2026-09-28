@@ -16,7 +16,7 @@
  * engine does not define is a tool an agent cannot reach.
  */
 import { z } from "zod";
-import { VIEWPORT_PRESET_KEYS, type ViewportPresetKey } from "../../../desktop/viewport-presets.js";
+import { VIEWPORT_PRESET_KEYS } from "../../../desktop/viewport-presets.js";
 
 // ── what a browser tool call returns ───────────────────────────────────────
 
@@ -92,11 +92,6 @@ export const BrowserToolName = z.enum([
   "browser_copy",
 ]);
 
-/** Named viewport sizes `browser_resize {preset}` accepts: THE SAME TABLE the
- *  desktop host requires (apps/desktop/viewport-presets.js), imported by
- *  relative path — `bun build` bundles it. The headless runtime, which has no
- *  presets, gets them resolved to numbers in `headlessBrowserToolCall`. */
-export type BrowserViewportPreset = ViewportPresetKey;
 /** The size a headless resize falls back to for a dimension it was not given
  *  — the headless browser's own starting size (transport.ts `viewportSize`). */
 export const BROWSER_DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;

@@ -3,13 +3,11 @@ import type { AutoCompact, Item, McpServer, NotificationDetail, TaskSeed, TurnAt
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
 import type { PromptsCapability } from "./prompts-tools/tools";
-import type { DsCapability } from "./ds/capability";
 import type { DisplayCapability } from "./display/tools";
 import type { RunCapability } from "./run/capability";
-import type { LatexCapability } from "./latex/capability";
 import type { SteerMailbox } from "./steering";
 
-export type { SessionsCapability, NotesCapability, PromptsCapability, DsCapability, DisplayCapability, LatexCapability };
+export type { SessionsCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {

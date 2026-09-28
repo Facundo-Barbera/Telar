@@ -47,9 +47,6 @@ import type { ToolInfo } from "../ds/toolchain";
  */
 export const MANAGED_TECTONIC_VERSION = "0.17.0";
 
-/** What the settings pane calls it, and the one place that string is written. */
-export const MANAGED_TECTONIC_LABEL = "Telar (managed)";
-
 export type ManagedRelease = {
   /** The Rust target triple naming the archive. */
   target: string;

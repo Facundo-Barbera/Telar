@@ -290,11 +290,6 @@ export function isExecutableFile(candidate: string): boolean {
   }
 }
 
-export function cliCandidatePaths(id: CliId): string[] {
-  const spec = SPECS[id];
-  return candidatePathsFor(spec.bin, process.env[spec.overrideEnv]);
-}
-
 /** The first runnable candidate, or nothing. The un-judged half of `resolveCli`
  *  — used for helpers that have no version to check. */
 export function findExecutable(bin: string): string | undefined {

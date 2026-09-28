@@ -804,18 +804,6 @@ export class EngineStateError extends Error {
 export const ENGINE_EXIT_LOCK_HELD = 3;
 
 /**
- * THE TWO WAYS `turnAnswer` MISSES — declared in `turn-summary.ts` and
- * re-exported here, where they are thrown (#592, then #516's wall).
- *
- * The move is about what a module DRAGS: the query wall that pairs a sentence
- * with each of these is bound inside the out-of-process worker, which holds no
- * store, and importing them from this file would have put the whole
- * `EngineStore` in that process to reach two string literals. Every existing
- * importer of `TURN_ANSWER_NONE` from `./state` is untouched.
- */
-export { TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "./turn-summary";
-
-/**
  * How large one attached file may be.
  *
  * 20 MB is above every screenshot and design mock and below the point where
