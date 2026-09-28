@@ -78,13 +78,13 @@ describe("newCommentRuns", () => {
 });
 
 describe("countFindings", () => {
-  test("fails above the baseline or without one, and notes a drop", () => {
-    const { failures, notices } = countFindings({ a: 30, b: 21, c: 5, d: 9 }, { a: 30, b: 20, d: 10 });
+  test("fails a rise over the merge base, and notes a count below the baseline", () => {
+    const { failures, notices } = countFindings({ a: 30, b: 21, c: 5, d: 9 }, { a: 30, b: 20, d: 9 }, { a: 30, b: 25, d: 10 });
     expect(failures).toEqual([
-      "b: 21 comment lines, above its baseline of 20. Delete comments rather than raising the baseline.",
-      "c: no baseline in scripts/comment-baseline.json. Run `bun run comments:baseline`.",
+      "b: this change adds 1 comment lines (20 → 21). Delete comments rather than adding them.",
+      "c: this change adds 5 comment lines (0 → 5). Delete comments rather than adding them.",
     ]);
-    expect(notices).toEqual(["d: 9 comment lines, below its baseline of 10. Run `bun run comments:baseline` to lock that in."]);
+    expect(notices).toEqual(["d: 9 comment lines, below the baseline of 10. Run `bun run comments:baseline` to lock that in."]);
   });
 });
 
@@ -117,7 +117,7 @@ describe("commentRatchet", () => {
     run(root, "add", ".");
     run(root, "commit", "-qm", "essay");
     const { failures } = commentRatchet(root, "base");
-    expect(failures.some((f) => f.startsWith("apps/engine: 8 comment lines, above its baseline of 1"))).toBe(true);
+    expect(failures).toContain("apps/engine: this change adds 7 comment lines (1 → 8). Delete comments rather than adding them.");
     expect(failures).toContain("apps/engine/b.ts:1-7: a new 7-line comment. The limit is 6; AGENTS.md allows 3.");
   });
 
@@ -125,7 +125,26 @@ describe("commentRatchet", () => {
     const root = repo();
     writeFileSync(join(root, "apps/engine/a.ts"), "const a = 1;\n");
     expect(commentRatchet(root, "base").failures).toEqual([]);
-    expect(commentRatchet(root, "base").notices).toEqual(["apps/engine: 0 comment lines, below its baseline of 1. Run `bun run comments:baseline` to lock that in."]);
+    expect(commentRatchet(root, "base").notices).toEqual(["apps/engine: 0 comment lines, below the baseline of 1. Run `bun run comments:baseline` to lock that in."]);
+  });
+
+  test("raising the committed baseline does not let a change add comments", () => {
+    const root = repo();
+    writeFileSync(join(root, "apps/engine/a.ts"), "// one\n// two\nconst a = 1;\n");
+    writeFileSync(join(root, BASELINE_FILE), JSON.stringify({ "apps/engine": 2 }));
+    run(root, "commit", "-qam", "more");
+    expect(commentRatchet(root, "base").failures).toEqual(["apps/engine: this change adds 1 comment lines (1 → 2). Delete comments rather than adding them."]);
+  });
+
+  test("a stale committed baseline does not fail a change that adds no comments", () => {
+    const root = repo();
+    run(root, "checkout", "-qb", "main-moved");
+    writeFileSync(join(root, "apps/engine/c.ts"), "// main's own\nexport const c = 1;\n");
+    run(root, "add", ".");
+    run(root, "commit", "-qm", "main moved");
+    writeFileSync(join(root, "apps/engine/a.ts"), "// one\nconst a = 1;\n");
+    run(root, "commit", "-qam", "pr: code only, baseline left at 1");
+    expect(commentRatchet(root, "main-moved~1").failures).toEqual([]);
   });
 
   test("names a base it cannot find instead of passing", () => {
