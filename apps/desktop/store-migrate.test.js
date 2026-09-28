@@ -1,20 +1,5 @@
 "use strict";
 
-/**
- * MOVING THE STORE — issue #630, `store-migrate.js`.
- *
- * THE PROPERTY UNDER TEST, above every other: **after any failure, the source
- * is exactly as it was.** Not "recoverable", not "mostly there" — byte-for-byte
- * what it was before the attempt. Every refusal case below asserts it, and the
- * sweep at the end asserts it for a failure injected at each step in turn,
- * because "nothing destructive before a verified copy" is a claim that is only
- * worth anything if it holds on the paths nobody rehearses.
- *
- * Real files in a temp directory throughout. The copy, the hashes and the
- * renames are the thing being tested; against a mocked `fs` this would be a
- * test of the mock.
- */
-
 const { afterEach, beforeEach, expect, test } = require("bun:test");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
@@ -41,8 +26,6 @@ afterEach(() => {
   fs.rmSync(scratch, { recursive: true, force: true });
 });
 
-/** A store with the shape the real one has: two subtrees, nested, and a file
- *  big enough that a streamed hash actually streams. */
 function seedStore(root) {
   fs.mkdirSync(path.join(root, "engine", "sessions", "session_one"), { recursive: true });
   fs.mkdirSync(path.join(root, "remote"), { recursive: true });
@@ -53,7 +36,6 @@ function seedStore(root) {
   return initialiseStore(root);
 }
 
-/** Every file under a root as `relative -> sha256`, for before/after compares. */
 function fingerprint(root) {
   const out = {};
   const walk = (relative) => {
@@ -67,11 +49,7 @@ function fingerprint(root) {
   return out;
 }
 
-/** A terabyte. `2 ** 40` rather than `1 << 40`: a JavaScript shift is 32-bit,
- *  so the obvious spelling of this quietly means 256 bytes. */
 const roomy = () => 2 ** 40;
-
-// --- Preflight --------------------------------------------------------------
 
 test("a target inside the source is refused, and so is a source inside the target", () => {
   expect(migrate.preflight({ source, target: path.join(source, "inside") }, { freeSpace: roomy }).step).toBe("target");
@@ -118,8 +96,6 @@ test("a store containing a symlink is refused rather than guessed at", () => {
   expect(outcome.message).toContain("symbolic link");
 });
 
-// --- The move that works ----------------------------------------------------
-
 test("a move copies every byte, carries the store's id, and retires the source without deleting it", async () => {
   const before = fingerprint(source);
   const storeId = readStamp(source).storeId;
@@ -132,24 +108,20 @@ test("a move copies every byte, carries the store's id, and retires the source w
 
   expect(outcome.ok).toBe(true);
   expect(outcome.storeId).toBe(storeId);
-  // The id is CARRIED, not regenerated — this is what lets the marker still
-  // recognise the store after it has moved.
+
   expect(readStamp(target).storeId).toBe(storeId);
 
-  // Every file arrived, byte for byte.
   const after = fingerprint(target);
   for (const [file, hash] of Object.entries(before)) {
     if (file === STAMP_NAME) continue;
     expect(after[file]).toBe(hash);
   }
 
-  // The source is RETIRED, not gone.
   expect(fs.existsSync(path.join(source, "engine"))).toBe(false);
   const retired = migrate.retiredSubtrees(source, outcome.stamp);
   expect(retired).toHaveLength(2);
   expect(fs.existsSync(path.join(retired[0].path, "projects.json"))).toBe(true);
 
-  // No staging left behind, and both byte-paying phases were reported.
   expect(fs.readdirSync(target).some((name) => name.startsWith(migrate.STAGING_PREFIX))).toBe(false);
   expect([...phases].sort()).toEqual(["copying", "verifying"]);
 });
@@ -167,12 +139,9 @@ test("a store with no remote subtree yet moves what it has", async () => {
   expect(fs.existsSync(path.join(target, "remote"))).toBe(false);
 });
 
-// --- The move that does not -------------------------------------------------
-
 test("a copy that does not verify leaves the source untouched and switches nothing", async () => {
   const before = fingerprint(source);
-  // Corrupt the copy the instant it lands, which is what a verification that
-  // trusted its own writes would never notice.
+
   const outcome = await migrate.migrateStore(
     { source, target, onProgress: () => {} },
     {
@@ -220,23 +189,10 @@ test("a damaged database stops the move before the original is retired", async (
 test("no sqlite binding is not silently a pass, and does not block a verified copy", async () => {
   fs.writeFileSync(path.join(source, "engine", "threads.sqlite"), "whatever");
   const outcome = await migrate.migrateStore({ source, target }, { freeSpace: roomy, checkSqlite: () => ({ unavailable: true }) });
-  // The hashes proved the copy; the health check simply had nothing to say.
+
   expect(outcome.ok).toBe(true);
 });
 
-// --- Worktrees, which do not move by being copied ----------------------------
-
-/**
- * ISSUE #630, and the defect this file shipped before the fix. A worktree
- * directory is bytes, so a copy carries it perfectly — and git still believes
- * it lives where it used to, because the pointer BACK at the worktree lives in
- * the repository and nothing touched it. The next `prune` anywhere then deletes
- * the registration of work that is sitting right there.
- *
- * Real `git` against a real repository: the whole finding is about what git
- * does with two files on disk, and a stub would only agree with whatever this
- * module already believes.
- */
 function seedWorktree(root) {
   const repository = path.join(scratch, "repo");
   fs.mkdirSync(repository, { recursive: true });
@@ -263,13 +219,10 @@ test("a migrated worktree is still registered, and git can still find it", async
   expect(outcome.worktrees.repaired).toEqual([moved]);
   expect(outcome.worktrees.failed).toEqual([]);
 
-  // The registration now names the NEW path, and not the retired one.
   const listed = git(["worktree", "list"]);
   expect(listed).toContain(moved);
   expect(listed).not.toContain(worktree);
 
-  // And the thing that actually matters: a prune — which runs on every session
-  // teardown — does not delete it.
   git(["worktree", "prune"]);
   expect(git(["worktree", "list"])).toContain(moved);
   expect(fs.readFileSync(path.join(moved, "file.txt"), "utf8")).toBe("hello");
@@ -278,8 +231,7 @@ test("a migrated worktree is still registered, and git can still find it", async
 
 test("a repository that cannot be reached is reported, not silently skipped", async () => {
   const { worktree } = seedWorktree(source);
-  // The repository's own disk is away. The worktree copied fine; the repair
-  // cannot happen now and must be visible rather than swallowed.
+
   fs.writeFileSync(path.join(worktree, ".git"), "gitdir: /nowhere/that/exists/.git/worktrees/session-one");
 
   const outcome = await migrate.migrateStore({ source, target }, { freeSpace: roomy, checkSqlite: () => ({ ok: true }) });
@@ -292,8 +244,6 @@ test("a repository that cannot be reached is reported, not silently skipped", as
 test("a store with no worktrees at all repairs nothing and complains about nothing", () => {
   expect(migrate.repairMovedWorktrees(source)).toEqual({ repaired: [], failed: [] });
 });
-
-// --- Removing the old store -------------------------------------------------
 
 test("the old store cannot be removed until the new one has actually been opened", async () => {
   const moved = await migrate.migrateStore({ source, target }, { freeSpace: roomy, checkSqlite: () => ({ ok: true }) });
@@ -317,10 +267,7 @@ test("removing twice is refused rather than pretending", async () => {
   expect(migrate.deleteRetiredSubtrees({ source, stamp: moved.stamp, openedAt }).ok).toBe(false);
 });
 
-// --- The sweep --------------------------------------------------------------
-
 test("NO failure at any step leaves the source changed", async () => {
-  /** Each way the move can die, as a dep bundle that kills it there. */
   const failures = {
     "no room": { freeSpace: () => 1 },
     "target unreadable": { freeSpace: roomy, target: path.join(scratch, "does-not-exist") },
@@ -355,7 +302,7 @@ test("NO failure at any step leaves the source changed", async () => {
 
     expect(`${name}: ${outcome.ok}`).toBe(`${name}: false`);
     expect(fingerprint(source)).toEqual(before);
-    // And the target never became a store: no stamp means nothing opens it.
+
     if (!overridden) expect(fs.existsSync(path.join(target, STAMP_NAME))).toBe(false);
   }
 });

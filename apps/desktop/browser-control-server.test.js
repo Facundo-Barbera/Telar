@@ -55,9 +55,6 @@ describe("desktop browser control server", () => {
 });
 
 describe("the scope decides which window's browser answers (#311)", () => {
-  // The shell resolves the host per request (`managerForScope` in main.js);
-  // the server's part of that contract is handing the resolver the scope the
-  // request names — on every route, before the manager is touched.
   test("every route resolves its host from the scope in the request", async () => {
     const asked = [];
     const hosts = {
@@ -81,8 +78,7 @@ describe("the scope decides which window's browser answers (#311)", () => {
       expect(await (await post("/open", { scopeKey: "session-a" })).json()).toEqual({ window: "one" });
       expect(await (await post("/bind", { scopeKey: "session-a", profileKey: "none" })).json()).toEqual({ window: "one" });
       expect(asked).toEqual(["session-b", "session-b", "session-a", "session-a"]);
-      // No window has this session's browser open yet: the shell's fallback is
-      // a window, and only a shell with none at all answers "not ready".
+
       const none = await fetch(`${origin}/state?scopeKey=session-c`, { headers });
       expect(none.status).toBe(503);
     } finally {
@@ -100,7 +96,7 @@ describe("the scope decides which window's browser answers (#311)", () => {
     try {
       const headers = { Authorization: "Bearer secret" };
       expect((await fetch(`http://127.0.0.1:${control.port}/nope`, { headers })).status).toBe(404);
-      // /state is a GET; the method is part of the route, not decoration.
+
       expect((await fetch(`http://127.0.0.1:${control.port}/state`, { method: "POST", headers })).status).toBe(404);
       expect(asked).toBe(0);
     } finally {
@@ -111,8 +107,6 @@ describe("the scope decides which window's browser answers (#311)", () => {
 
 describe("control state over the wire", () => {
   test("/state relays per-tab controller and opener so the engine can route around a human", async () => {
-    // A fake manager with the REAL state shape: what the engine's desktop
-    // client parses is this wire contract, not the manager internals.
     const control = await startBrowserControlServer({
       port: 0,
       token: "secret",
@@ -159,8 +153,7 @@ describe("the app's own process metrics (#488)", () => {
       const response = await fetch(`http://127.0.0.1:${control.port}/metrics`, { headers: { Authorization: "Bearer secret" } });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ readAt: 42, totals: { cpuPercent: 96 } });
-      // "What is burning a core" is worth asking of a shell with no window
-      // open, so the route must never be gated on one having claimed a scope.
+
       expect(asked).toBe(0);
     } finally {
       await control.close();
@@ -260,7 +253,7 @@ describe("a session's browser is over (#883)", () => {
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ released: true });
-      // `destroy`, and no `closedByPerson`: the agent is not told the person did it.
+
       expect(released).toEqual([["session-a", true]]);
     } finally {
       await control.close();

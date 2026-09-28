@@ -1,33 +1,3 @@
-// apps/ios/testflight-external.sh, RUN FOR REAL AGAINST A STUBBED App Store
-// Connect. The script is the step between "altool said UPLOAD SUCCEEDED" and
-// "external testers can install it": poll processing, find the external
-// group, add the build, submit for Beta App Review. None of that can be tried
-// against Apple without publishing a build to people, so `curl` is shadowed
-// on PATH by a stub that answers from a canned sequence and records what it
-// was asked — and the script is run by /bin/bash, the 3.2 the macOS runner
-// images report, for the same reason shell-array-expansion.test.js does.
-//
-// It lives beside that file because `test:desktop:unit`'s glob is the shell
-// suite CI actually runs (#760 §7 is what happens to a test outside a glob).
-//
-// What is proved, in order of how much it would cost to be wrong about:
-//
-//   - THE TOKEN NEVER REACHES THE LOG. The stub captures the Authorization
-//     header; the script's output — under `bash -x`, which prints every
-//     command — must not contain it, nor the word Bearer, nor a line of the
-//     .p8. A nightly's log is public to everyone with read access.
-//   - THE JWT IS ONE APPLE WOULD ACCEPT: ES256 header with the key id, the
-//     issuer and audience in the payload, a 20-minute life, and a signature
-//     that VERIFIES against the key's public half in raw r||s form — the DER
-//     walk in the script is the one piece of it that could be subtly wrong.
-//   - "ALREADY" IS SUCCESS on both writes, so a re-run after a dead step
-//     finishes instead of failing on what the first attempt got done.
-//   - A MISSING EXTERNAL GROUP fails and says what it found instead, and
-//     nothing is POSTed after it.
-//
-// No test waits on a real clock: the poll interval is set to 0 and the
-// give-up test sets the budget to 0 as well.
-
 const { beforeAll, describe, expect, test } = require("bun:test");
 const { spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
@@ -43,8 +13,6 @@ const BUILD_NUMBER = "202609230300";
 const KEY_ID = "ABC123DEF4";
 const ISSUER_ID = "69a6de70-0000-47e3-e053-5b8c7c11a4d1";
 
-// A real P-256 key in the PKCS#8 PEM shape Apple's .p8 files have, so the
-// script signs with exactly the openssl invocation it will use in CI.
 let keyDir;
 let keyPath;
 let publicKeyDer;
@@ -60,7 +28,6 @@ beforeAll(() => {
   publicKeyDer = pub.stdout;
 });
 
-/** A stub `curl` that answers from `$STUB_DIR/responses/N` and records the request. */
 const CURL_STUB = `#!/bin/bash
 # Test double for curl: the Nth invocation answers with responses/N (first
 # line the status, the rest the body), the way --fail-with-body + -w would.
@@ -129,10 +96,6 @@ const SUBMIT_BODY = JSON.stringify({
   data: { type: "betaAppReviewSubmissions", relationships: { build: { data: { type: "builds", id: "b-1" } } } },
 });
 
-/**
- * The full happy sequence: Apple hiccups once, the build appears, processes,
- * gets its What to Test text, is added and submitted.
- */
 const HAPPY = [
   reply(503, APPLE_DOWN),
   reply(200, NO_BUILD),
@@ -147,10 +110,6 @@ const HAPPY = [
 const ADD_AT = HAPPY.length - 2;
 const SUBMIT_AT = HAPPY.length - 1;
 
-/**
- * Run the script by /bin/bash with `curl` shadowed. `responses` is what the
- * stub answers, in order; `env` overrides; `trace` runs it under `bash -x`.
- */
 const run = ({ responses, env = {}, trace = false, script = SCRIPT, args = [BUILD_NUMBER] }) => {
   const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "asc-stub-"));
   fs.mkdirSync(path.join(stubDir, "bin"));
@@ -213,7 +172,6 @@ describe("testflight-external.sh offers a processed build to the external group"
     expect(outcome.calls[ADD_AT].data).toBe(ADD_BODY);
     expect(outcome.calls[SUBMIT_AT].data).toBe(SUBMIT_BODY);
 
-    // Status codes are what it prints, and the 503 was said and survived.
     expect(outcome.stdout).toContain("-> 503");
     expect(outcome.stdout).toContain("-> 200");
     expect(outcome.stdout).toContain("-> 204");
@@ -344,23 +302,20 @@ describe("the token", () => {
   test("never appears in the output, even under bash -x", () => {
     const outcome = run({ responses: HAPPY, trace: true });
     expect(outcome.status).toBe(0);
-    // Every call carried one, so the stub saw as many as there were calls; if
-    // this were 0 the check below would be vacuous.
+
     expect(outcome.tokens).toHaveLength(HAPPY.length);
     for (const token of outcome.tokens) {
       expect(outcome.output).not.toContain(token);
-      // Nor any one segment of it — the signature alone is enough to reuse.
+
       for (const part of token.split(".")) expect(outcome.output).not.toContain(part);
     }
     expect(outcome.output).not.toContain("Bearer");
     expect(outcome.output).not.toContain("Authorization");
-    // The key itself: any body line of the PEM.
+
     const pemLines = fs.readFileSync(keyPath, "utf8").split("\n").filter((line) => line && !line.startsWith("-----"));
     expect(pemLines.length).toBeGreaterThan(0);
     for (const line of pemLines) expect(outcome.output).not.toContain(line);
-    // The trace proves the run was traced and the guard engaged, and the
-    // status lines prove the calls went through — the curl line itself is
-    // exactly what `set +x` keeps out of the trace.
+
     expect(outcome.stderr).toContain("+ set +x");
     expect(outcome.stderr).not.toContain("+ curl");
     expect(outcome.stdout).toContain("-> 201");
@@ -378,7 +333,6 @@ describe("the token", () => {
     expect(payload.exp - payload.iat).toBe(1200);
     expect(Math.abs(payload.iat - Math.floor(Date.now() / 1000))).toBeLessThan(60);
 
-    // Raw r||s, 64 bytes — not the DER openssl produced.
     const signature = fromBase64Url(signatureB64);
     expect(signature).toHaveLength(64);
     const key = await crypto.subtle.importKey("spki", publicKeyDer, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
@@ -391,8 +345,6 @@ describe("the token", () => {
     expect(verified).toBe(true);
   });
 });
-
-// ---- testflight-app.sh: a brand-new app record made ready for nightlies ----
 
 const NEW_BUNDLE = "io.github.novarix.telar";
 const NEW_APP = { data: [{ type: "apps", id: "a-new", attributes: { bundleId: NEW_BUNDLE } }] };
@@ -440,7 +392,7 @@ describe("testflight-app.sh makes a brand-new app ready for nightlies", () => {
     const tester = JSON.parse(outcome.calls[5].data).data;
     expect(tester.attributes).toEqual({ email: HOLDER_EMAIL, firstName: "Ada", lastName: "Lovelace" });
     expect(tester.relationships.betaGroups.data).toEqual([{ type: "betaGroups", id: "g-int" }]);
-    // The tester's address is sent to Apple, never printed.
+
     expect(outcome.output).not.toContain(HOLDER_EMAIL);
 
     expect(outcome.calls[7].url).toBe(`${API}/v1/apps/6807300090/betaAppLocalizations`);

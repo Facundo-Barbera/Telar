@@ -1,18 +1,5 @@
 "use strict";
 
-/**
- * THE GATE BEFORE THE ENGINE — issue #630, `store-gate.js`.
- *
- * The property, again and from the other side: **an absent drive never ends up
- * having a store written where the history was.** `store-location.test.js` pins
- * that the classifier never says `first-run`; this pins that the loop acting on
- * those answers never creates anything either, including when somebody clicks
- * retry twenty times while the drive stays in their bag.
- *
- * The presenter is injected, so every state here is a test rather than a thing
- * you discover by unplugging a disk.
- */
-
 const { afterEach, beforeEach, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -50,8 +37,6 @@ function makeVolumeStore(name = "Drive", storeId) {
 
 const mountsAt = (...mounted) => (candidate) => mounted.includes(candidate);
 
-// --- Opening ----------------------------------------------------------------
-
 test("a first run adopts the default root and records it", async () => {
   const outcome = await awaitStore({ userData, defaultRoot }, { present: never });
   expect(outcome.root).toBe(defaultRoot);
@@ -61,15 +46,13 @@ test("a first run adopts the default root and records it", async () => {
 });
 
 test("AN EXISTING INSTALL IS ADOPTED, NOT REPLACED — the upgrade path", async () => {
-  // A store full of history, with no stamp and no marker: exactly what every
-  // install looks like the first time it runs a build that has this.
   fs.mkdirSync(path.join(defaultRoot, "engine", "sessions"), { recursive: true });
   fs.writeFileSync(path.join(defaultRoot, "engine", "projects.json"), '{"projects":[{"id":"p"}]}');
 
   const outcome = await awaitStore({ userData, defaultRoot }, { present: never });
 
   expect(outcome.root).toBe(defaultRoot);
-  // Adopting wrote one small file beside what was there. Nothing else moved.
+
   expect(JSON.parse(fs.readFileSync(path.join(defaultRoot, "engine", "projects.json"), "utf8")).projects).toHaveLength(1);
   expect(fs.existsSync(path.join(defaultRoot, STAMP_NAME))).toBe(true);
 });
@@ -95,8 +78,6 @@ test("opening is stamped on the marker, which later gates deleting a migration s
   await awaitStore({ userData, defaultRoot }, { present: never, now: () => 5000 });
   expect(readMarker(userData).marker.active.lastOpenedAt).toBe(5000);
 });
-
-// --- Waiting ----------------------------------------------------------------
 
 test("an absent drive waits, and the drive arriving is what ends the wait", async () => {
   const drive = makeVolumeStore();
@@ -134,8 +115,7 @@ test("waiting through many retries creates nothing at all", async () => {
 
   expect(outcome.quit).toBe(true);
   expect(asked).toBe(20);
-  // NOTHING was created: no store at the default, no store at the recorded
-  // path, and the marker still points where it did.
+
   expect(fs.existsSync(path.join(defaultRoot, STAMP_NAME))).toBe(false);
   expect(fs.existsSync(path.join(scratch, "Volumes"))).toBe(false);
   expect(readMarker(userData).marker.active.path).toBe(drive.root);
@@ -150,8 +130,6 @@ test("quitting rather than continuing leaves the recorded store recorded", async
   expect(readMarker(userData).marker.active.storeId).toBe(drive.storeId);
 });
 
-// --- Starting over ----------------------------------------------------------
-
 test("starting a new store is deliberate, and archives rather than discards", async () => {
   const drive = makeVolumeStore();
   adoptStore(userData, { path: drive.root, storeId: drive.storeId, volume: { mount: drive.mount, uuid: "U", label: "Drive" } });
@@ -165,13 +143,11 @@ test("starting a new store is deliberate, and archives rather than discards", as
   expect(outcome.root).toBe(defaultRoot);
   const { marker } = readMarker(userData);
   expect(marker.archived).toHaveLength(1);
-  // The old location, its id and its drive are all still recoverable by hand.
+
   expect(marker.archived[0].path).toBe(drive.root);
   expect(marker.archived[0].storeId).toBe(drive.storeId);
   expect(marker.archived[0].volume.uuid).toBe("U");
 });
-
-// --- Refusals ---------------------------------------------------------------
 
 test("a foreign store is refused and is NOT offered a fresh start", async () => {
   const drive = makeVolumeStore();
@@ -191,7 +167,7 @@ test("a foreign store is refused and is NOT offered a fresh start", async () => 
 
   expect(shown.severity).toBe("refuse");
   expect(shown.title).toContain("different Telar store");
-  // Making a THIRD store is not the answer to finding a second one.
+
   expect(shown.newStore).toBe(false);
 });
 

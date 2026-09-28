@@ -1,6 +1,3 @@
-// AUTH-001 (#195): the controller between "an entry finished" and "a grant was
-// written". Every dependency is a fake; every assertion is about metadata —
-// nothing in this file, or in the module under test, can hold a credential.
 const { describe, expect, test } = require("bun:test");
 const { createLoginOfferFlow, isTrustedOfferSender } = require("./login-offer-flow");
 const { captureEntry, OFFER_TTL_MS } = require("./login-offer");
@@ -48,7 +45,7 @@ describe("when the offer window opens", () => {
     const { flow, ui } = harness();
     flow.entryFinished(capture());
     flow.dismiss();
-    flow.entryFinished(capture({ at: 2000, tabUid: "tab_9" })); // second account, same address
+    flow.entryFinished(capture({ at: 2000, tabUid: "tab_9" }));
     expect(ui.open).toBe(1);
   });
 
@@ -125,20 +122,19 @@ describe("what a confirmation writes", () => {
 
   test("a confirmation for a world that moved is refused — a newer entry replaced the held state", async () => {
     const { flow, written, ui } = harness();
-    // The person dismissed site B earlier this run…
+
     flow.entryFinished(capture({ origin: "https://other.example.net/x", tabUid: "tab_2" }));
     flow.dismiss();
-    // …the offer opens for site A…
+
     flow.entryFinished(capture({ at: 1400 }));
     await flow.state();
-    // …then an entry on B finishes while the window is open (suppressed as an
-    // offer, but it IS the capture main now holds).
+
     flow.entryFinished(capture({ origin: "https://other.example.net/x", tabUid: "tab_2", at: 1450 }));
-    const closesBefore = ui.close; // the earlier dismiss() closed once already
+    const closesBefore = ui.close;
     const result = await flow.confirm({ itemId: "item_a" });
     expect(result.ok).toBe(false);
     expect(written).toEqual([]);
-    expect(ui.close).toBe(closesBefore + 1); // the refusal also closes the window
+    expect(ui.close).toBe(closesBefore + 1);
   });
 
   test("a confirmation that arrives too late is refused", async () => {
@@ -192,15 +188,15 @@ describe("the offer moving while the vault answers", () => {
   test("metadata fetched for offer A never becomes offer B's confirmable list", async () => {
     const gate = deferred();
     const { flow, written } = harness({ listCandidates: () => gate.promise });
-    flow.entryFinished(capture()); // offer A opens; its listing is in flight
+    flow.entryFinished(capture());
     const pending = flow.state();
-    // B replaces A while the vault is still answering for A.
+
     flow.entryFinished(capture({ origin: "https://other.example.net/x", tabUid: "tab_2", at: 1400 }));
     gate.resolve({ ok: true, candidates: [{ id: "item_a", title: "Example — work", domain: "example.com", vault: "Private" }] });
     const stale = await pending;
     expect(stale.error).toBeTruthy();
     expect(stale.candidates).toBeUndefined();
-    // A's item cannot be confirmed under B's scope: it was never listed for B.
+
     const result = await flow.confirm({ itemId: "item_a" });
     expect(result.ok).toBe(false);
     expect(written).toEqual([]);
@@ -228,7 +224,7 @@ describe("the offer moving while the vault answers", () => {
     flow.entryFinished(capture());
     await flow.state();
     const first = flow.confirm({ itemId: "item_a" });
-    const second = await flow.confirm({ itemId: "item_a" }); // the double-click
+    const second = await flow.confirm({ itemId: "item_a" });
     expect(second).toEqual({ ok: false, error: "A confirmation is already being saved." });
     gate.resolve();
     expect((await first).ok).toBe(true);
@@ -241,13 +237,13 @@ describe("the offer moving while the vault answers", () => {
     flow.entryFinished(capture());
     await flow.state();
     const pending = flow.confirm({ itemId: "item_a" });
-    // A new sign-in elsewhere opens offer B while A's grant is being saved.
+
     flow.entryFinished(capture({ origin: "https://other.example.net/x", tabUid: "tab_2", at: 1450 }));
     gate.resolve();
     expect((await pending).ok).toBe(true);
-    // B's offer was not torn down by A's completion…
+
     expect(ui.close).toBe(0);
-    // …and the window now asks about B.
+
     expect((await flow.state()).origin).toBe("https://other.example.net");
   });
 });
@@ -262,11 +258,11 @@ describe("who may speak on the offer channels", () => {
   test("only the trusted window's own top frame", () => {
     const { window, webContents, mainFrame } = makeWindow();
     expect(isTrustedOfferSender({ sender: webContents, senderFrame: mainFrame }, window)).toBe(true);
-    // Another renderer — a browser tab, the cockpit — is refused.
+
     expect(isTrustedOfferSender({ sender: {}, senderFrame: mainFrame }, window)).toBe(false);
-    // A subframe of the right WebContents is refused.
+
     expect(isTrustedOfferSender({ sender: webContents, senderFrame: {} }, window)).toBe(false);
-    // No window, or a destroyed one, trusts nobody.
+
     expect(isTrustedOfferSender({ sender: webContents, senderFrame: mainFrame }, null)).toBe(false);
     expect(isTrustedOfferSender({ sender: webContents, senderFrame: mainFrame }, { isDestroyed: () => true, webContents })).toBe(false);
   });

@@ -1,8 +1,3 @@
-// THE DEV SELF-UPDATE'S DECISIONS, PINNED (DEV-005). Everything here runs
-// without Electron: dev-update-core.js is the testable half by design. The
-// swap helper is exercised as the real bash script against throwaway fake
-// bundles, with the launcher stubbed so nothing actually opens.
-
 const { describe, expect, test } = require("bun:test");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -111,7 +106,6 @@ describe("swap planning refuses anything that could overwrite the running app", 
   });
 });
 
-// A staged bundle with exactly the pieces validateCandidate looks for.
 function fakeCandidate({ helper = true, channel = "dev" } = {}) {
   const app = path.join(tmp("telar-candidate-"), "Telar Dev.app");
   const write = (parts, content) => {
@@ -144,19 +138,7 @@ describe("a candidate is re-checked off disk before anything is swapped", () => 
   });
 });
 
-// GENUINELY macOS-ONLY, and the only such block in this suite (issue #752).
-//
-// `core.helperScript()` is a real bash script that calls `ditto`, which does
-// not exist on Linux — so this runs the swap for real on a Mac and is skipped
-// elsewhere. Everything else in this file is platform-independent and keeps
-// running everywhere.
-//
-// IT MUST STILL RUN SOMEWHERE. `Verify`'s macOS leg exists for this block; if
-// that leg is ever dropped, this stops executing at all rather than failing,
-// which is the quiet kind of coverage loss. Do not skip it without checking
-// what is left running it.
 describe.skipIf(process.platform !== "darwin")("the swap helper, run for real against fake bundles", () => {
-  // The launcher is a recording stub; "open" never runs in tests.
   const runSwap = ({ staged, target }) => {
     const work = tmp("telar-swapwork-");
     const log = path.join(work, "update.log");
@@ -165,9 +147,7 @@ describe.skipIf(process.platform !== "darwin")("the swap helper, run for real ag
     fs.writeFileSync(launcher, `#!/bin/bash\necho "$1" >> "${record}"\n`, { mode: 0o755 });
     const script = path.join(work, "swap.sh");
     fs.writeFileSync(script, core.helperScript(), { mode: 0o755 });
-    // The "quitting app" is a pid that has ALREADY been reaped: spawnSync
-    // blocks bun's event loop, so a live child would linger as a zombie and
-    // `kill -0` in the helper would wait on it forever.
+
     const parent = spawnSync("true");
     const result = spawnSync("bash", [script, String(parent.pid), staged, target, work, log, launcher], {
       encoding: "utf8",
@@ -185,7 +165,7 @@ describe.skipIf(process.platform !== "darwin")("the swap helper, run for real ag
 
     const { result, work, launched } = runSwap({ staged, target });
     expect(result.status).toBe(0);
-    // The new build is at the target; the old one is intact as last-good.
+
     expect(fs.existsSync(path.join(target, "Contents", "MacOS", "Telar Dev"))).toBe(true);
     expect(fs.existsSync(path.join(target, "Contents", "OLD_MARKER"))).toBe(false);
     expect(fs.readFileSync(path.join(work, "last-good.app", "Contents", "OLD_MARKER"), "utf8")).toBe("previous build");

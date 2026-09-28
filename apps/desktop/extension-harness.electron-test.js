@@ -1,25 +1,3 @@
-/**
- * 1PASSWORD EXTENSION COMPATIBILITY HARNESS — dev-only, evidence-only.
- *
- * Loads the OFFICIAL 1Password Chrome extension (Chrome Web Store id
- * aeblfdkhhhdcdjpifhhbdiojplfjncoa, publisher AgileBits Inc) into a real
- * Electron session shaped like the integrated browser's, opens a local dummy
- * login page, and records what actually works. It proves nothing by loading
- * alone: every claim below is a measured fact written to a JSON report, and
- * what was NOT measured is listed under `untested` / `limitations`.
- *
- *   · runs with its OWN temp userData and a temp `persist:` partition — never
- *     the app's, never a user browser profile, vault or extension storage;
- *   · downloads the CRX from Google's update endpoint only (no third party);
- *   · adds no 1Password trust, unlocks nothing, fills nothing;
- *   · a hidden window; no focus taken.
- *
- * Run: `bun run test:desktop:extension`. (Directly: `env -u ELECTRON_RUN_AS_NODE
- * electron ./extension-harness.electron-test.js` — with that variable set,
- * Electron runs the file as plain Node and `app` is undefined.)
- * Env: TELAR_1P_CRX=/path/to/1password.crx to reuse a download.
- * Output: <tmp>/telar-1password-harness-<id>/report.json, and a summary on stdout.
- */
 const { app, BrowserWindow, WebContentsView, session } = require("electron");
 const { attachExtensionSupport, registerShimPreload, unpackVerified } = require("./extension-compat");
 const fs = require("node:fs");
@@ -80,7 +58,6 @@ function download(url, dest, hops = 0) {
   });
 }
 
-/** CRX3: magic "Cr24", u32 version, u32 header length, header, then a zip. */
 function unpackCrx(crxPath, outDir) {
   const bytes = fs.readFileSync(crxPath);
   if (bytes.toString("ascii", 0, 4) !== "Cr24") throw new Error("not a CRX");
@@ -99,7 +76,6 @@ async function evaluateIn(contents, expression) {
 }
 
 async function main() {
-  // ── 1. obtain the official package ──────────────────────────────────
   const crxPath = process.env.TELAR_1P_CRX || path.join(work, "1password.crx");
   if (process.env.TELAR_1P_CRX) {
     step("crx", { source: "TELAR_1P_CRX", bytes: fs.statSync(crxPath).size });
@@ -108,9 +84,7 @@ async function main() {
     step("crx", { source: "clients2.google.com (Chrome Web Store update endpoint)", ...got });
   }
   const unpacked = path.join(work, "unpacked");
-  // COMPAT MODE (TELAR_1P_COMPAT=1): preserve the CRX3 publisher key so the
-  // id matches the store's, attach electron-chrome-extensions to the session,
-  // and add the two shims the worker needs. Default: bare Electron, as before.
+
   const compat = process.env.TELAR_1P_COMPAT === "1";
   report.mode = compat ? "compat" : "bare";
   let identity;
@@ -134,12 +108,9 @@ async function main() {
   };
   step("manifest", report.manifest);
 
-  // ── 2. a session shaped like the integrated browser's ───────────────
   const ses = session.fromPartition(PARTITION);
   const window = new BrowserWindow({ show: false, width: 1000, height: 700 });
-  // Native-messaging launch diagnostics from the library, payloads EXCLUDED:
-  // its debug logger prints "send"/"receive" with the message body; the sink
-  // below keeps only launch/config/exit lines and redacts everything else.
+
   const nativeLog = [];
   if (compat) {
     const debug = require(require.resolve("debug", { paths: [path.dirname(require.resolve("electron-chrome-extensions"))] }));
@@ -149,23 +120,18 @@ async function main() {
       const fmt = String(args[0] ?? "");
       if (/\b(send|receive|sending|pending)\b/i.test(fmt)) { nativeLog.push("[redacted message line]"); return; }
       let line = util.format(...args).replace(/\u001b\[[0-9;]*m/g, "").replace(/^\S+\s+electron-chrome-extensions:nativeMessaging\s*/, "");
-      // Host stderr: keep it (it is the host explaining itself), but never a JSON body.
+
       if (/^stderr:/.test(line) && /[{[]/.test(line)) line = "stderr: [redacted: structured]";
       nativeLog.push(line.slice(0, 240));
     };
   }
   let extensions;
   if (compat) {
-    // Shims first, so they run in the extension main world before the
-    // library's preload freezes `chrome`.
-    // The member probe (step 7b) gets a generated key so its id is known up
-    // front and can be origin-allowed for the shims — harness only.
     const probeKey = require("node:crypto").generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "der" });
     report.probeId = [...require("node:crypto").createHash("sha256").update(probeKey).digest().subarray(0, 16)].map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15))).join("");
     report.probeKey = probeKey.toString("base64");
     const shimPreload = registerShimPreload(ses, work, [EXTENSION_ID, report.probeId]);
-    // Minimal host: chrome.tabs.create/remove map onto plain views in the
-    // hidden window. Enough for the worker; the app supplies the real one.
+
     const hostTabs = [];
     extensions = attachExtensionSupport(ses, {
       createTab: async (details) => {
@@ -207,20 +173,16 @@ async function main() {
     return;
   }
 
-  // ── 3. background: is the MV3 service worker alive? ─────────────────
   await sleep(6000);
   const running = Object.values(ses.serviceWorkers.getAllRunning()).map((info) => ({ scope: info.scope, scriptUrl: info.scriptUrl }));
   const extensionWorker = running.find((info) => info.scope.startsWith(extension.url));
   report.apis.backgroundServiceWorker = { running: Boolean(extensionWorker), allRunning: running, events: swEvents.slice(0, 20) };
   step("background", report.apis.backgroundServiceWorker);
   if (manifest.manifest_version === 3 && !extensionWorker) {
-    // NOT "MV3 unsupported": the control extension's MV3 worker (step 7)
-    // runs. What is observed is 1Password's own worker dying on boot.
     const crash = swEvents.filter((entry) => entry.level === 3).map((entry) => entry.message);
     blocker(`1Password's MV3 background service worker is not running after load; its boot log shows: ${JSON.stringify(crash)}. The uncaught TypeError is at a \`.onClicked\` listener (chrome.contextMenus / chrome.notifications, neither implemented by Electron) and \`require(webRequest)\` has no source in this build.`);
   }
 
-  // ── 4. content script injection on a local dummy login page ─────────
   const server = http.createServer((_request, response) => {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     response.end(FIXTURE);
@@ -234,7 +196,7 @@ async function main() {
   view.webContents.on("console-message", (details) => pageConsole.push(String(details.message).slice(0, 200)));
   await view.webContents.loadURL(`http://127.0.0.1:${port}/`);
   await sleep(6000);
-  // 1Password's content script decorates fillable fields; any of these marks it.
+
   const injected = await evaluateIn(
     view.webContents,
     `({
@@ -254,7 +216,6 @@ async function main() {
     blocker("No 1Password content-script effect observed on the dummy login page (no field decoration). Injection itself works in this partition — see the control extension in step 7 — so this is downstream of the dead worker.");
   }
 
-  // ── 5. the action popup, and the APIs it would need ─────────────────
   const popupPath = manifest.action?.default_popup || manifest.browser_action?.default_popup;
   const popup = new WebContentsView({ webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } });
   window.contentView.addChildView(popup);
@@ -321,10 +282,6 @@ async function main() {
   step("popup", report.apis.popup);
   if (apis.action !== "object") blocker("chrome.action is unavailable: no toolbar button / popup lifecycle.");
 
-  // ── 6. native messaging, PROBED rather than assumed. A dummy host name:
-  //      this never reaches 1Password and registers nothing. What matters is
-  //      whether the port disconnects with Chrome's "not found" (the API is
-  //      wired to a host lookup) or something else (no host support at all).
   if (popupLoad.ok && apis.connectNative === "function") {
     const probe = await evaluateIn(
       popup.webContents,
@@ -339,8 +296,7 @@ async function main() {
     ).catch((error) => ({ outcome: "evalError", error: String(error) }));
     report.apis.nativeMessaging = { ...probe, hostLog: nativeLog.slice(0, 20) };
     step("nativeMessaging", report.apis.nativeMessaging);
-    // Docs omit connectNative; the runtime has it. What matters is what the
-    // port does — and it is refused by Electron before any host lookup.
+
     if (probe.outcome === "disconnected" && /disabled by the system administrator/i.test(probe.lastError || "")) {
       blocker(`Native messaging is refused by Electron itself: connectNative exists but the port disconnects with "${probe.lastError}" — no native-host registry is consulted. Without a working native port the extension cannot talk to the 1Password desktop app from this host.`);
     }
@@ -353,9 +309,6 @@ async function main() {
     "1Password desktop trust for a SIGNED Telar.app: 1Password for Mac lets a user add an additional browser that is in /Applications and Apple code-signed (support.1password.com/additional-browsers, 2026-08-17). Whether it would accept a signed Telar build is NOT tested here — this harness runs an unsigned dev Electron from node_modules, and the native port is refused by Electron before 1Password is ever asked.",
   ];
 
-  // ── 7. CONTROL: does Electron inject content scripts into this partition
-  //      at all? A three-line MV3 extension answers that independently of
-  //      1Password's own bootstrap (which may depend on its dead worker).
   const control = path.join(work, "control-extension");
   fs.mkdirSync(control, { recursive: true });
   fs.writeFileSync(
@@ -379,9 +332,6 @@ async function main() {
   report.apis.control = { ...controlLoad, contentScriptInjected: controlInjected === "1", backgroundWorkerRunning: controlWorker };
   step("control", report.apis.control);
 
-  // ── 7b. WHICH members exist INSIDE an MV3 worker in this session (with
-  //        the same preloads 1Password's worker gets). A probe worker writes
-  //        its findings to storage.local; we read them back.
   const probe = path.join(work, "probe-extension");
   fs.mkdirSync(probe, { recursive: true });
   const members = [
@@ -417,7 +367,6 @@ async function main() {
   const missing = probeResult && !probeResult.error ? Object.entries(probeResult).filter(([k, v]) => !k.startsWith("__") && v === "undefined").map(([k]) => k) : [];
   step("workerMembers", { missing, shimsInWorker: probeResult?.__shims, frozen: probeResult?.__frozen, probeId: probeResult?.__id, expectedProbeId: report.probeId });
 
-  // ── 8. gates that are Telar's, not Electron's ────────────────────────
   report.limitations = [
     `Extension identity: the runtime id (${extension.id}) differs from the Chrome Web Store id (${EXTENSION_ID}). Unpacking a CRX drops the signature, and the manifest carries no \`key\` (present: ${Object.prototype.hasOwnProperty.call(manifest, "key")}), so Electron derives an id from the path. Anything keyed on the store id — the extension's own origin checks, 1Password's side, update_url (${manifest.update_url ?? "none"}) — is not exercised as it would be in Chrome. Not worked around: adding a \`key\` to impersonate the store id would be identity spoofing.`,
     "Environment: unsigned dev Electron 43 from node_modules with a temp userData; not a signed, /Applications-installed Telar.",

@@ -6,11 +6,10 @@ const http = require("node:http");
 const { download, MAX_DOWNLOAD_BYTES, classifyWorkerError, ExtensionHost, clampRect, readIconDataUrl, roundPopupCorners, POPUP_CORNER_RADIUS } = require("./extension-host");
 
 describe("popup geometry stays inside its region", () => {
-  const region = { x: 100, y: 50, width: 400, height: 300 }; // e.g. window content ∩ work area
+  const region = { x: 100, y: 50, width: 400, height: 300 };
   test("a popup overflowing the right/bottom edge is pushed back in", () => {
-    // Anchored near the right edge, extending further right than the region.
     expect(clampRect({ x: 480, y: 60, width: 320, height: 200 }, region)).toEqual({ x: 180, y: 60, width: 320, height: 200 });
-    // Past the bottom.
+
     expect(clampRect({ x: 120, y: 300, width: 200, height: 200 }, region)).toEqual({ x: 120, y: 150, width: 200, height: 200 });
   });
   test("a popup larger than the region is shrunk to fit, then aligned to its origin", () => {
@@ -22,7 +21,6 @@ describe("popup geometry stays inside its region", () => {
 });
 
 describe("the 1Password popup is rounded rather than a white rectangle", () => {
-  /** Enough of a BrowserWindow to see what was asked of it. */
   function fakePopup() {
     const listeners = new Map();
     const inserted = [];
@@ -45,7 +43,7 @@ describe("the 1Password popup is rounded rather than a white rectangle", () => {
     roundPopupCorners(popup);
     expect(popup.backgroundColor).toBe("#00000000");
     expect(popup.inserted).toHaveLength(1);
-    // A radius alone would still let the content scroll past the corner.
+
     expect(popup.inserted[0]).toContain(`border-radius:${POPUP_CORNER_RADIUS}px`);
     expect(popup.inserted[0]).toContain("overflow:hidden");
     expect(popup.inserted[0]).toMatch(/^html,body\{/);
@@ -54,12 +52,11 @@ describe("the 1Password popup is rounded rather than a white rectangle", () => {
   test("it is re-applied on every load, because the popup navigates itself", () => {
     const popup = fakePopup();
     roundPopupCorners(popup);
-    // 1Password walks from its unlock screen to its item list inside the same
-    // window; `insertCSS` does not survive that.
+
     popup.emit("did-finish-load");
     popup.emit("did-finish-load");
     expect(popup.inserted).toHaveLength(3);
-    // …but never into a window that has already gone.
+
     popup.destroyed = true;
     popup.emit("did-finish-load");
     expect(popup.inserted).toHaveLength(3);
@@ -78,20 +75,20 @@ describe("the official icon comes only from the verified extension dir", () => {
   test("reads the manifest's own 128px icon as a PNG data URL, and refuses anything outside the dir or non-PNG", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-icon-"));
     fs.mkdirSync(path.join(dir, "images"), { recursive: true });
-    // A 1x1 PNG.
+
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
     fs.writeFileSync(path.join(dir, "images", "op.png"), png);
     fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ icons: { "128": "images/op.png" } }));
     const url = readIconDataUrl(dir);
     expect(url).toMatch(/^data:image\/png;base64,/);
-    // A manifest pointing outside the dir is refused.
+
     fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ icons: { "128": "../../../etc/hosts" } }));
     expect(readIconDataUrl(dir)).toBeNull();
-    // A non-PNG is refused.
+
     fs.writeFileSync(path.join(dir, "note.txt"), "x");
     fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ icons: { "128": "note.txt" } }));
     expect(readIconDataUrl(dir)).toBeNull();
-    // No icons at all → null, not a throw.
+
     fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ name: "x" }));
     expect(readIconDataUrl(dir)).toBeNull();
   });
@@ -129,7 +126,6 @@ describe("extension download hardening", () => {
     expect(fs.existsSync(dest)).toBe(false);
   });
   test("a redirect to a non-Google host is refused even from a Google origin", async () => {
-    // Simulated by calling with the redirect target directly: the same check runs per hop.
     const dest = tmp();
     await expect(download("https://evil.example/1password.crx", dest)).rejects.toThrow(/refusing host/);
     expect(fs.existsSync(dest)).toBe(false);
@@ -139,7 +135,6 @@ describe("extension download hardening", () => {
     expect(MAX_DOWNLOAD_BYTES).toBeLessThanOrEqual(64 * 1024 * 1024);
   });
 });
-
 
 describe("extension release channel policy", () => {
   const { extensionsEnabled } = require("./extension-host");
@@ -157,12 +152,6 @@ describe("extension release channel policy", () => {
   });
 });
 
-/**
- * ISSUE #296. `session.fromPartition(p)` is a process-lifetime singleton, so a
- * host's registrations outlive the host. A translucency change rebuilds the
- * window, and with it the manager and every host it owns — against the very
- * same sessions.
- */
 describe("a host lets go of what outlives it", () => {
   const { EventEmitter } = require("node:events");
   function fakeSession() {
@@ -188,12 +177,10 @@ describe("a host lets go of what outlives it", () => {
     const first = hostOn(session);
     expect(session.serviceWorkers.listenerCount("console-message")).toBe(1);
 
-    // The old manager goes; the new one builds a host on the SAME session.
     first.dispose();
     const second = hostOn(session);
     expect(session.serviceWorkers.listenerCount("console-message")).toBe(1);
 
-    // Five more rebuilds read the same, which is the whole point.
     let host = second;
     for (let i = 0; i < 5; i += 1) {
       host.dispose();
@@ -203,7 +190,7 @@ describe("a host lets go of what outlives it", () => {
 
     host.dispose();
     expect(session.serviceWorkers.listenerCount("console-message")).toBe(0);
-    // Idempotent: a second dispose is not an error.
+
     expect(() => host.dispose()).not.toThrow();
   });
 
