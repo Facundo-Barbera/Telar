@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AutoCompact, McpServer, NotificationDetail, RequestDecision, TurnObservation } from "@telar/engine-client";
 import { createCodexDriver, type CodexDriverOptions } from "../src/drivers/codex";
-import type { DriverRequest } from "../src/driver";
+import type { DriverRequest } from "../src/drivers";
 import type { SteerMailbox } from "../src/domains/turns";
 import { allowCliInThisFile } from "./allow-cli";
 

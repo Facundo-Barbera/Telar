@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, EngineClientError, sanitizeTransportCause } from "@telar/engine-client";
 import { startEngine } from "../src/daemon";
-import type { TurnDriver } from "../src/driver";
+import type { TurnDriver } from "../src/drivers";
 import { EngineWorker } from "../src/worker";
 import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
 import { stubModels } from "./stub-models";

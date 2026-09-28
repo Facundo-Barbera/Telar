@@ -3,7 +3,7 @@ import { COMPUTER_USE_DRIVERS, driverTakesComputerUse, type McpServer, type Prov
 import { codexMcpServers } from "../../drivers/codex";
 import { claimHasComputerUse, COMPUTER_USE_SERVER_ID, createComputerUseGate, resolveComputerUse, withComputerUse, type ComputerUseProbe } from "./gate";
 import { mcpConfiguration } from "../../drivers/opencode";
-import type { DriverRun } from "../../provider-contract";
+import type { DriverRun } from "../../drivers";
 
 const DRIVERS: readonly ProviderDriverKind[] = ["claude", "codex", "opencode"];
 

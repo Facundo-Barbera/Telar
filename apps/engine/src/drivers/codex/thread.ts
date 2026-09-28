@@ -4,7 +4,7 @@ import { RELAY_RULE } from "../../domains/turns";
 import { BROWSER_BRIEFING } from "../../domains/browser";
 import { claimHasComputerUse } from "../../domains/computer-use";
 import { pluginBriefings } from "../../plugins/bundled";
-import type { DriverRun } from "../../provider-contract";
+import type { DriverRun } from "../contract";
 import { RUN_BRIEFING } from "../../run/briefing";
 
 export type CodexThreadConfig = {

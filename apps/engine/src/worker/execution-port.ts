@@ -1,9 +1,6 @@
 import type { EngineClient } from "@telar/engine-client";
-import type { EngineStore } from "./state";
+import type { EngineStore } from "../state";
 
-/** Lifecycle operations shared by direct embedded and remote HTTP execution.
- * Tool capabilities remain a separate boundary and retain their authorization.
- */
 export type ExecutionPort = Pick<EngineClient,
   | "registerWorker" | "workerHeartbeat" | "claimTurn" | "markTurnRunning"
   | "reportObservations" | "openRequest" | "completeTurn" | "failTurn"
@@ -33,9 +30,6 @@ export function createExecutionPort(store: EngineStore, registration: Registrati
   };
 }
 
-/** Override lifecycle calls only. Bind remaining capability calls to the HTTP
- * client so neither adapter bypasses their existing authorization handlers.
- */
 export function withDirectExecution(client: EngineClient, port: ExecutionPort,
   normalizeError: (error: unknown) => Error): EngineClient {
   return new Proxy(client, {

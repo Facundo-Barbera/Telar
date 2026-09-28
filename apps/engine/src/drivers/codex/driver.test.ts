@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { AutoCompact } from "@telar/engine-client";
-import { ProviderUnavailableError } from "../../driver";
+import { ProviderUnavailableError } from "../contract";
 import { SteerMailbox } from "../../domains/turns";
 import { clearWire, completed, deltas, mcp, PEER, runTurn, scratchPath, sent, started, useFakeCodex, wire } from "../../../test/codex-harness";
 

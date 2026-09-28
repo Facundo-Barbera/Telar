@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, TELAR_MCP_SERVER, canonicalToolName } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import type { DriverRun, TurnDriver } from "../src/provider-contract";
+import type { DriverRun, TurnDriver } from "../src/drivers";
 import { collectTelarWall, telarWall, toSdkTools, type TelarCapabilities } from "../src/telar-socket";
 import type { ToolFactory } from "../src/tool-kit";
 import { stubModels } from "./stub-models";

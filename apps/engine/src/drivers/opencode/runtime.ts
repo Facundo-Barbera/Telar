@@ -8,7 +8,7 @@ import { BROWSER_BRIEFING } from "../../domains/browser";
 import { RUN_BRIEFING } from "../../run/briefing";
 import { pluginBriefings } from "../../plugins/bundled";
 import { writeOrientationInstructions } from "../../orientation";
-import type { DriverRun } from "../../provider-contract";
+import type { DriverRun } from "../contract";
 
 export type OpenCodeRuntime = { client: OpencodeClient; closed: boolean; close(): void };
 

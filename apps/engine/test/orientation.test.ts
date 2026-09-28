@@ -46,7 +46,7 @@ import { createClaudeDriver } from "../src/driver";
 import { EngineStore } from "../src/state";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { EngineClient } from "@telar/engine-client";
-import type { DriverRun } from "../src/provider-contract";
+import type { DriverRun } from "../src/drivers";
 import type { ToolFactory } from "../src/tool-kit";
 
 let home: string;

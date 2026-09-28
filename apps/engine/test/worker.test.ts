@@ -5,7 +5,7 @@ import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { BrowserToolSocket } from "../src/domains/browser";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { ProviderUnavailableError, type TurnDriver } from "../src/driver";
+import { ProviderUnavailableError, type TurnDriver } from "../src/drivers";
 import { defaultWorkerConcurrency, EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";
 import { eventually, until } from "./wait";

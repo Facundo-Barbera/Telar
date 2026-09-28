@@ -1,6 +1,6 @@
 import type { RequestDecision, UserInputField } from "@telar/engine-client";
 import { TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
-import { normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun } from "../../provider-contract";
+import { normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun } from "../contract";
 import type { CodexAppServer, CodexServerRequest } from "./app-server";
 import { codexApprovalRequest, MCP_ELICITATION, record, str } from "./items";
 

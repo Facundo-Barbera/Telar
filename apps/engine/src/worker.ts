@@ -15,7 +15,7 @@ import { runSecretFill } from "./domains/browser";
 import { ratifiedReadTools } from "./plugins/policy";
 import { isMountPoint, mountPointForRoot, type VolumeDeps } from "./volumes";
 import { RateLimitedError, setPluginReadTools } from "./driver";
-import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
+import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./drivers";
 import { createOnePasswordSecrets, type SecretsProvider } from "./domains/browser";
 import type { LoginGrantStore } from "./domains/browser";
 import { providerProcessEnv } from "./domains/providers";
