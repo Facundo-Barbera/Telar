@@ -8,8 +8,6 @@ export * from "./tools";
 export * from "./assignments";
 export * from "./plugins";
 export * from "./run";
-export * from "./notes";
-export * from "./prompts";
 export * from "./github";
 export * from "./events";
 export * from "./observations";

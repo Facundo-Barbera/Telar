@@ -1,3 +1,6 @@
+import { notesClient } from "./notes/client";
+import type { EngineTransport } from "./platform/transport";
+import { promptsClient } from "./prompts/client";
 import { parsePublishedAppearance, type PublishedAppearance } from "./look";
 import { diffBaseQuery, filePatchQuery } from "./protocol/diff-query";
 import type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
@@ -30,7 +33,6 @@ import {
   type GitignoreResult,
   type ComputerUseGrant,
   type ComputerUseStatus,
-  type AgentMessageIntent,
   type AgentOrientation,
   type InboxPolicy,
   type RememberedLogin,
@@ -62,15 +64,9 @@ import {
   type UsageLimits,
   type UsageLimitSource,
   type UsageLimitSourceKind,
-  type ProjectNote,
-  type ProjectNoteAuthor,
-  type NotesMcpInfo,
-  type PreparedPrompt,
-  type PreparedPromptAuthor,
   type ModelCatalogue,
   type ModelOverlay,
   type CustomProviderModel,
-  type ProviderModel,
   type SessionDiff,
   type McpOAuthStatus,
   type McpServer,
@@ -111,7 +107,6 @@ import {
   type ProviderInstanceEnvVar,
   type AutoCompact,
   type ProviderProbe,
-  type ProviderUpdate,
   type ProviderUpdateRun,
   type LiveSessionRow,
   type Session,
@@ -165,6 +160,8 @@ import {
 } from "./protocol";
 
 export * from "./protocol";
+export * from "./notes/schema";
+export * from "./prompts/schema";
 
 export * from "./look";
 
@@ -449,13 +446,15 @@ export type { DirectoryEntry, DirectoryListing } from "./files/schema";
 export { LOCAL_HOST_ID, type PublicHost } from "./hosts/schema";
 export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
-export class EngineClient {
+export interface EngineClient extends Methods<typeof notesClient>, Methods<typeof promptsClient> {}
+
+export class EngineClient implements EngineTransport {
   constructor(
     readonly discovery: EngineDiscovery,
     private readonly fetchImpl: FetchLike = fetch,
   ) {}
 
-  private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal, operation?: string): Promise<T> {
+  async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal, operation?: string): Promise<T> {
     const named = operation === undefined ? {} : { operation };
     let response: Response;
     try {
@@ -1069,79 +1068,6 @@ export class EngineClient {
    *  underneath the engine, and a stale branch name is worse than a slow one. */
   projectGit(projectId: string): Promise<{ git: GitOverview }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/git`);
-  }
-
-  projectNotes(projectId: string): Promise<{ notes: ProjectNote[] }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/notes`);
-  }
-
-  projectNote(projectId: string, noteId: string): Promise<{ note: ProjectNote }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`);
-  }
-
-  /** A body may be empty — the gesture is "+, type a title, come back to it",
-   *  and a store that refused the half-written note would lose the title. */
-  createProjectNote(
-    projectId: string,
-    input: {
-      title: string;
-      body?: string;
-      pinned?: boolean;
-      author?: ProjectNoteAuthor;
-    },
-  ): Promise<{ note: ProjectNote }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/notes`, input);
-  }
-
-  updateProjectNote(
-    projectId: string,
-    noteId: string,
-    patch: { title?: string; body?: string; pinned?: boolean; order?: number },
-  ): Promise<{ note: ProjectNote }> {
-    return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`, patch);
-  }
-
-  deleteProjectNote(projectId: string, noteId: string): Promise<{ deleted: boolean }> {
-    return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`);
-  }
-
-  pinProjectNote(projectId: string, noteId: string, pinned: boolean): Promise<{ note: ProjectNote }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}/pin`, { pinned });
-  }
-
-  notesMcpInfo(): Promise<{ mcp: NotesMcpInfo }> {
-    return this.request("GET", "/v2/notes/mcp-info");
-  }
-
-  projectPrompts(projectId: string): Promise<{ prompts: PreparedPrompt[] }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/prompts`);
-  }
-
-  /** `text` is required and may not be blank: a prepared prompt with no message
-   *  is a row that does nothing when you press it. */
-  createProjectPrompt(
-    projectId: string,
-    input: {
-      title: string;
-      text: string;
-      reason?: string;
-      sessionId?: string;
-      author?: PreparedPromptAuthor;
-    },
-  ): Promise<{ prompt: PreparedPrompt }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/prompts`, input);
-  }
-
-  updateProjectPrompt(
-    projectId: string,
-    promptId: string,
-    patch: { title?: string; text?: string; reason?: string },
-  ): Promise<{ prompt: PreparedPrompt }> {
-    return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`, patch);
-  }
-
-  deleteProjectPrompt(projectId: string, promptId: string): Promise<{ deleted: boolean }> {
-    return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`);
   }
 
   /**
@@ -2026,5 +1952,9 @@ export class EngineClient {
     );
   }
 }
+
+type Methods<T> = { [K in keyof T]: OmitThisParameter<T[K]> };
+
+Object.assign(EngineClient.prototype, notesClient, promptsClient);
 
 export { ENGINE_PROTOCOL_VERSION };
