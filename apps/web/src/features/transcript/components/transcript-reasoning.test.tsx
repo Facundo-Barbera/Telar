@@ -8,7 +8,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ActivityGroup, TranscriptItem } from "./transcript";
+import { ActivityGroup } from "./activity";
+import { TranscriptItem } from "./transcript-item";
 import type { JournalItem } from "@/lib/engine/journal";
 
 const base = { id: "item_r", runId: "run_1", sessionId: "session_1", startedAt: 1, streamedText: "", openedBy: 0 } as const;

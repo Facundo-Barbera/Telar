@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TurnFailureRow } from "./transcript";
+import { TurnFailureRow } from "./turn-status";
 
 /**
  * #290 — ONE OF A TURN'S FAILURES IS NOT A FAULT.

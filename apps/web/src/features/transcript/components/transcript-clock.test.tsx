@@ -24,7 +24,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { WorkingIndicator } from "./transcript";
+import { WorkingIndicator } from "./turn-status";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

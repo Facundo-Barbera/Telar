@@ -24,8 +24,8 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";
-import { SessionTurn } from "../session-cockpit";
-import { withoutOpeningNotification } from "../transcript";
+import { SessionTurn } from "@/components/session-cockpit";
+import { withoutOpeningNotification } from "./model";
 import type { JournalItem, JournalTurn } from "@/lib/engine/journal";
 
 const WORKER = "session_worker123456";

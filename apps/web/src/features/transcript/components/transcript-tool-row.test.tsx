@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UNKNOWN_PATH } from "@telar/engine-client";
-import { TranscriptItem } from "./transcript";
+import { TranscriptItem } from "./transcript-item";
 import type { JournalItem } from "@/lib/engine/journal";
 
 const base = { runId: "run_1", sessionId: "session_1", startedAt: 1, streamedText: "", openedBy: 0 } as const;

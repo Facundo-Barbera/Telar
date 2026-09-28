@@ -1,4 +1,4 @@
-import { SessionSkeleton } from "@/components/session-skeleton";
+import { SessionSkeleton } from "@/features/transcript";
 
 /** The frame a conversation lands in — see `components/session-skeleton.tsx`
  *  for why this file is a latency fix rather than a decoration (#407). */

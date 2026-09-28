@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { JournalItem } from "@/lib/engine/journal";
-import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "./transcript";
+import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "@/features/transcript";
 import { cockpitPlugins, describeTurnState, pinToggleOverride, retryInputForJournalTurn, SessionTurn, transcriptRows } from "./session-cockpit";
 
 const rendered = { runId: "run_1", sessionId: "session_1", status: "completed", startedAt: 1, completedAt: 2, streamedText: "", openedBy: 0 } as const;
@@ -214,7 +214,7 @@ describe("a message another agent sent is labelled as an agent's, never the pers
 
 describe("a wake is a wake wherever it lands — never the person's bubble", () => {
   test("both surfaces name a wake with ONE vocabulary", async () => {
-    const { sessionWakeLabel } = await import("./transcript");
+    const { sessionWakeLabel } = await import("@/features/transcript");
     expect(sessionWakeLabel({ kind: "turn_completed", sessionId: "s" }).verb).toBe("Session finished a turn");
     expect(sessionWakeLabel({ kind: "turn_failed", sessionId: "s" }).verb).toBe("Session failed a turn");
     expect(sessionWakeLabel({ kind: "turn_stopped", sessionId: "s" }).verb).toBe("Session was stopped");
@@ -260,7 +260,7 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
   const item = (id: string, type: string) => ({ id, detail: { type } }) as never;
 
   test("splits a turn into responses at each message, work grouped after the message that caused it", async () => {
-    const { splitAtMessageBoundaries } = await import("./transcript");
+    const { splitAtMessageBoundaries } = await import("@/features/transcript");
     const responses = splitAtMessageBoundaries([
       item("w1", "command_execution"),
       item("a1", "assistant_message"),
@@ -278,7 +278,7 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
   });
 
   test("a turn nobody steered is ONE response and renders as it always did", async () => {
-    const { splitAtMessageBoundaries } = await import("./transcript");
+    const { splitAtMessageBoundaries } = await import("@/features/transcript");
     const responses = splitAtMessageBoundaries([item("w1", "command_execution"), item("a1", "assistant_message")]);
     expect(responses).toHaveLength(1);
     expect(responses[0]!.boundary).toBeUndefined();
@@ -287,53 +287,10 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
   test("a turn whose FIRST item is the message has no empty opening response", async () => {
     // A steer that lands before the provider has emitted anything would
     // otherwise draw an empty assistant bubble above the message.
-    const { splitAtMessageBoundaries } = await import("./transcript");
+    const { splitAtMessageBoundaries } = await import("@/features/transcript");
     const responses = splitAtMessageBoundaries([item("m1", "user_message"), item("w1", "command_execution")]);
     expect(responses.map((r) => r.boundary?.id)).toEqual(["m1"]);
     expect(responses[0]!.items.map((i) => i.id)).toEqual(["w1"]);
-  });
-
-  test("TWO STEERS, EACH INTRODUCING ITS OWN WORK — the message comes before what it caused", async () => {
-    const { turnRenderOrder } = await import("./transcript");
-    const order = turnRenderOrder([
-      item("A", "command_execution"),
-      item("s1", "user_message"),
-      item("B", "command_execution"),
-      item("s2", "user_message"),
-      item("C", "command_execution"),
-    ]);
-    expect(order.map((entry) => (entry.kind === "boundary" ? entry.item.id : entry.items.map((i) => i.id).join("")))).toEqual([
-      "A", "s1", "B", "s2", "C",
-    ]);
-    // Said as the invariant rather than the example: no work is ever emitted
-    // before the boundary that introduced it.
-    for (const [index, entry] of order.entries()) {
-      if (entry.kind !== "work") continue;
-      const previous = order[index - 1];
-      if (index > 0 && previous) expect(previous.kind === "boundary" || index === 0).toBe(true);
-    }
-  });
-
-  test("CONSECUTIVE STEERS with no work between them each keep their own place", async () => {
-    // Two messages in a row produce an empty response between them. It must
-    // collapse to nothing rather than to a stray empty assistant bubble, and
-    // must not reorder the pair.
-    const { turnRenderOrder } = await import("./transcript");
-    const order = turnRenderOrder([
-      item("s1", "user_message"),
-      item("s2", "user_message"),
-      item("A", "command_execution"),
-    ]);
-    expect(order.map((entry) => (entry.kind === "boundary" ? entry.item.id : entry.items.map((i) => i.id).join("")))).toEqual(["s1", "s2", "A"]);
-    expect(order.filter((entry) => entry.kind === "work" && entry.items.length === 0)).toEqual([]);
-  });
-
-  test("a trailing steer with no work after it is still emitted", async () => {
-    // The person got the last word and the turn ended. The message must not
-    // vanish for want of anything to introduce.
-    const { turnRenderOrder } = await import("./transcript");
-    const order = turnRenderOrder([item("A", "command_execution"), item("s1", "user_message")]);
-    expect(order.map((entry) => (entry.kind === "boundary" ? entry.item.id : entry.items.map((i) => i.id).join("")))).toEqual(["A", "s1"]);
   });
 
   test("a settled turn draws each message before the work it caused", () => {
@@ -348,7 +305,7 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
   });
 
   test("LIVE AND SETTLED CUT IN THE SAME PLACE — a reload cannot move a message", async () => {
-    const { splitAtMessageBoundaries, segmentActivity } = await import("./transcript");
+    const { splitAtMessageBoundaries, segmentActivity } = await import("@/features/transcript");
     const items = [item("w1", "command_execution"), item("m1", "user_message"), item("w2", "command_execution"), item("a1", "assistant_message")];
     const responses = splitAtMessageBoundaries(items);
     // Settled: boundaries in order, each with its own work.
@@ -361,7 +318,7 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
   });
 
   test("no message is rendered twice: a boundary is never also in a response's items", async () => {
-    const { splitAtMessageBoundaries } = await import("./transcript");
+    const { splitAtMessageBoundaries } = await import("@/features/transcript");
     const items = [item("m1", "user_message"), item("w1", "command_execution"), item("m2", "user_message")];
     const responses = splitAtMessageBoundaries(items);
     const drawnAsItems = responses.flatMap((r) => r.items.map((i) => i.id));

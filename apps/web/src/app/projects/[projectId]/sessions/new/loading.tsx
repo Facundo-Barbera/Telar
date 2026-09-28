@@ -1,4 +1,4 @@
-import { SessionSkeleton } from "@/components/session-skeleton";
+import { SessionSkeleton } from "@/features/transcript";
 
 /** The canvas has no transcript to draw, so its skeleton holds the composer's
  *  place and nothing else — see `components/session-skeleton.tsx` (#407). */

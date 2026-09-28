@@ -28,9 +28,11 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";
-import { SessionTurn } from "../session-cockpit";
-import { ActivityGroup, bareNotificationTurn, groupNotificationTurns, NotificationRow } from "../transcript";
-import { ROW } from "../transcript-fold";
+import { SessionTurn } from "@/components/session-cockpit";
+import { ActivityGroup } from "./activity";
+import { bareNotificationTurn, groupNotificationTurns } from "../model";
+import { NotificationRow } from "./notification-row";
+import { ROW } from "./transcript-fold";
 import type { JournalItem, JournalTurn } from "@/lib/engine/journal";
 
 const WORKER = "session_worker123456";

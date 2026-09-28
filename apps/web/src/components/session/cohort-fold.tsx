@@ -29,8 +29,7 @@ import { ChevronRightIcon } from "lucide-react";
 import type { NotificationDetail } from "@telar/engine-client";
 import type { JournalItem, JournalTurn } from "@/lib/engine/journal";
 import { cn } from "@/lib/utils";
-import { tallyParts } from "../transcript";
-import { ROW } from "../transcript-fold";
+import { ROW, tallyParts } from "@/features/transcript";
 
 export type FoldTurn = Pick<JournalTurn, "runId" | "origin" | "state" | "acceptedAt" | "notification" | "agentIntent" | "items" | "failure" | "held">;
 

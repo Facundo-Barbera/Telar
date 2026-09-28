@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ActivityGroup } from "../transcript";
+import { ActivityGroup } from "@/features/transcript";
 import { SessionTurn } from "../session-cockpit";
 import { AgentMessageBubble } from "./conversation-message";
 import type { JournalTurn } from "@/lib/engine/journal";
