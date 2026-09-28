@@ -53,7 +53,7 @@ function rung(name: string): number {
 
 // fileURLToPath, not `.pathname`: this repo is checked out under a path with a
 // space in it, and a URL's pathname keeps that percent-encoded.
-const ROOTS = ["app", "components", "lib"].map((dir) => fileURLToPath(new URL(`../${dir}`, import.meta.url)));
+const ROOTS = ["app", "components", "features", "lib"].map((dir) => fileURLToPath(new URL(`../${dir}`, import.meta.url)));
 
 function sources(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {

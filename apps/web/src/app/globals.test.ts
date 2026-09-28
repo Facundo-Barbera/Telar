@@ -346,7 +346,7 @@ describe("the text scale", () => {
    * 10 → 0.625rem, 9 → 0.5625rem), so the sweep changed nothing about how the
    * app looks until the slider moves.
    */
-  const corpus = ["app", "components", "lib"] as const;
+  const corpus = ["app", "components", "features", "lib"] as const;
 
   test("no component pins a font size in px", () => {
     const offenders: string[] = [];
@@ -507,7 +507,7 @@ describe("cards must paint", () => {
      * that palette's own tokens, which `bg-*` cannot express.
      */
     const offenders: string[] = [];
-    for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
       const source = withoutProse(file);
       for (const hit of source.matchAll(CARD_SHAPED)) {
         const value = hit[1] ?? hit[2] ?? "";
@@ -522,25 +522,12 @@ describe("cards must paint", () => {
     expect(offenders).toEqual([]);
   });
 
-  /**
-   * The surfaces held to the reading-surface half of the rule — #691 brought the
-   * Git surfaces in as the first of them. Anything outside this set is unaudited,
-   * not exempt; a surface joins in the commit that makes it pass.
-   *
-   * BY PREFIX RATHER THAN BY FILENAME, and that is the lesson of #692 landing on
-   * top of this: that change extracted `EntryCard`, `ForgeFacts` and
-   * `MergeFooter` out of one 1000-line surface, and a guard naming three exact
-   * files would have gone on passing while the card it was written for moved to a
-   * `github-detail-*.tsx` beside it and quietly lost its fill. Every
-   * `github-*`/`diff-*` module under components/session is in, whether it existed
-   * when this was written or not — which is the whole point of a lint over a
-   * review note.
-   */
-  const READING_SURFACE_PREFIXES = ["github-", "diff-"] as const;
-
-  const readingSurfaces = sources(["components/session"], /\.tsx?$/)
-    .filter((file) => READING_SURFACE_PREFIXES.some((prefix) => path.basename(file).startsWith(prefix)))
-    .map((file) => ({ file: path.relative(path.join(here, ".."), file), source: withoutProse(file) }));
+  // The reading surfaces: every diff-* module and the whole github feature, matched by
+  // folder or prefix so a component split out of a surface stays covered.
+  const readingSurfaces = [
+    ...sources(["components/session"], /\.tsx?$/).filter((file) => path.basename(file).startsWith("diff-")),
+    ...sources(["features/github"], /\.tsx$/),
+  ].map((file) => ({ file: path.relative(path.join(here, ".."), file), source: withoutProse(file) }));
 
   test("the reading-surface set is not empty, and holds the surfaces #691 brought in", () => {
     // Every assertion below iterates this set: an empty one would report a clean
@@ -689,7 +676,7 @@ describe("the state vocabulary", () => {
     // that actually held eight raw ramps each — lib/file-kinds.ts and
     // lib/glyph-paths.ts — are LOOKUP TABLES of class strings in .ts. A class
     // string is a class string wherever it is written down.
-    for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
       for (const hit of withoutProse(file).matchAll(pattern)) {
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
       }
@@ -704,7 +691,7 @@ describe("the state vocabulary", () => {
     // from the live tokens instead, and each flips ENDS between the schemes.
     const pattern = /\b(?:bg|text|border|ring|fill|stroke)-(?:black|white)\/\d+|rgba?\(\s*0\s*,\s*0\s*,\s*0\s*[,)]/g;
     const offenders: string[] = [];
-    for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
       for (const hit of withoutProse(file).matchAll(pattern)) {
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
       }
