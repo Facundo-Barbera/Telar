@@ -21,7 +21,7 @@ export {
 
 // One factory for both worker deployments, so the embedded and out-of-process workers can't drift in what they offer.
 
-export function browserCapability(browser: EngineBrowser): BrowserSocketCapability {
+function browserCapability(browser: EngineBrowser): BrowserSocketCapability {
   return {
     call: (scopeKey, name, args) => browser.call(scopeKey, name, args),
     isReadOnly: (name, args) => browser.isReadOnly(name, args),

@@ -1,8 +1,7 @@
-export { installedPlugins } from "./installed";
 export { pluginRoutes } from "./routes";
 export { pluginScopedRoutes } from "./scoped";
 export { pluginSessionRoutes } from "./session-routes";
-export { bundledPlugins, bundledPluginToolModules, pluginBriefings, pluginToolModules, setPluginToolModules } from "./bundled";
+export { bundledPluginToolModules, pluginBriefings, pluginToolModules, setPluginToolModules } from "./bundled";
 export { type DsCapability, type EnvironmentRow } from "./data-science/capability";
 export { dsTools } from "./data-science/ds-tools";
 export { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./data-science/environments";
@@ -17,9 +16,8 @@ export { NOTEBOOK_MAX_BYTES, storeDsCapability } from "./data-science/store-capa
 export { type TableWindow, windowCsv } from "./data-science/table";
 export { type BootstrapRequest, type CreateEnvironmentRequest, planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython } from "./data-science/telar-venv";
 export { adoptBinaryDir, findBinary, type Toolchain } from "./data-science/toolchain";
-export { isSymlink } from "./external/installer";
-export { externalPluginsDir, type LoadedExternalPlugin, loadInstalledPlugins } from "./external/manifest";
-export { externalPlugin, externalToolModule } from "./external/module";
+export { externalPluginsDir, loadInstalledPlugins } from "./external/manifest";
+export { externalToolModule } from "./external/module";
 export { PluginHost } from "./host";
 export { type LatexBootstrapRequest, planLatexBootstrap } from "./latex/bootstrap";
 export { type CompileStatus, type LatexCapability } from "./latex/capability";
@@ -34,3 +32,4 @@ export { ratifiedReadTools } from "./policy";
 export { PluginInputError } from "./scoped-routes";
 export { pluginCall } from "./tool-module";
 export { dataScienceBlock, latexBlock, PluginToolchains } from "./toolchains";
+export { createEnginePlugins } from "./engine-host";
