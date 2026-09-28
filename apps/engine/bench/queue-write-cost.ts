@@ -60,7 +60,6 @@ const WATCHED = [
   "readTasks",
   "trimResolvedRequests",
   "closeOrphanedTasks",
-  "touchSession",
   "appendEvent",
   "noteSessionRevision",
   "bumpRevisionFor",
