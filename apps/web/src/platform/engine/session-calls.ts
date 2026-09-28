@@ -21,6 +21,7 @@ import { snapshotQuery } from "@telar/engine-client";
 import { answeringHost, EngineApiError, opens, reads, request, type EngineApiErrorCode } from "./transport";
 import type { Fetcher } from "./host-client";
 import type { LiveSessionsPage } from "./client";
+import { randomUuid } from "@/platform/random-uuid";
 
 /** The cockpit's own sessions calls: the ones no package domain client covers yet. */
 export function sessionCalls(fetcher: Fetcher) {
@@ -233,7 +234,7 @@ export function turnCalls(fetcher: Fetcher) {
     /** THE STOP BUTTON: end the live turn and settle what was waiting behind
      *  it, leaving the session idle. No latch — the next message just runs. */
     stopSession: (sessionId: string) =>
-      request<{ stopped: Turn[]; live?: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", commandId: crypto.randomUUID() }),
+      request<{ stopped: Turn[]; live?: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", commandId: randomUuid() }),
     /** Deprecated compatibility alias for session Stop; never creates a latch. */
     pauseSession: (sessionId: string) =>
       request<{ session: Session; stopped?: Turn; held: number; already: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/pause`, {}),

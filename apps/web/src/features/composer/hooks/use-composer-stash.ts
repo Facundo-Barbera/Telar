@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { appendPrompt, mergeAttachments, splitImages, type StashedImage, type ShelfRow, usePromptShelf } from "@/features/prompts";
+import { randomUuid } from "@/platform/random-uuid";
 import { encodeImagesForStash, filesFromStash } from "../stash-images";
 import type { ComposerEditorHandle } from "../components/composer-editor";
 
@@ -64,7 +65,7 @@ export function useComposerStash({
         setStashing(false);
       }
     }
-    const ok = shelf.stash({ id: crypto.randomUUID(), at: Date.now(), prompt: text, images: encoded.images });
+    const ok = shelf.stash({ id: randomUuid(), at: Date.now(), prompt: text, images: encoded.images });
     if (!ok) {
       setNote("There was no room to stash this. Nothing was taken from the box.");
       return;
@@ -87,7 +88,7 @@ export function useComposerStash({
         const images = taken.images;
         window.setTimeout(() => {
           if (held.current.length > before) return;
-          shelf.put(images, crypto.randomUUID(), Date.now());
+          shelf.put(images, randomUuid(), Date.now());
           setNote("This chat cannot hold images — they are back in the stash.");
         }, 0);
       }
