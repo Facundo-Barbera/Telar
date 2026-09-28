@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telar: blueprint de arquitectura</title>
+<style>
+:root{--bg:#141619;--panel:#1b1e22;--line:#2a2e34;--fg:#e7e9ec;--muted:#98a0aa;--accent:#7aa2f7;--good:#8bd49c;--bad:#e06c75;--warn:#e5c07b;--r:12px}
+@media (prefers-color-scheme:light){:root{--bg:#f5f6f8;--panel:#fff;--line:#e2e5ea;--fg:#1c1f25;--muted:#5d6570;--accent:#3867d6;--good:#2f9e5d;--bad:#c9444f;--warn:#b7861c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,Inter,system-ui,sans-serif}
+main{max-width:1180px;margin:0 auto;padding:40px 28px 100px}
+h1{font-size:30px;margin:0;letter-spacing:-.02em}
+h2{font-size:19px;margin:56px 0 6px;letter-spacing:-.01em}
+h2 small{font-size:13px;color:var(--muted);font-weight:400;margin-left:8px}
+.lead{color:var(--muted);margin:6px 0 0;max-width:780px}
+.sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+.grid{display:grid;gap:12px}.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px}
+.card h3{margin:0 0 8px;font-size:14px}
+.before{border-top:3px solid var(--bad)}.after{border-top:3px solid var(--good)}
+.tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted);margin-right:4px}
+.tag.b{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}.tag.g{color:var(--good);border-color:color-mix(in srgb,var(--good) 40%,transparent)}
+code,.tree{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+code{color:var(--muted)}
+.tree{white-space:pre;overflow-x:auto;color:var(--fg)}
+.tree .m{color:var(--muted)}.tree .d{color:var(--accent)}.tree .x{color:var(--bad)}.tree .n{color:var(--good)}
+.kpi .v{font-size:26px;font-weight:650}.kpi .l{font-size:12px;color:var(--muted)}
+.kpi .arrow{color:var(--muted);font-size:18px;margin:0 6px}
+.kpi .v .to{color:var(--good)}.kpi .v .from{color:var(--bad)}
+.dots{display:flex;flex-wrap:wrap;gap:2px;margin-top:8px}.dots i{width:7px;height:7px;border-radius:2px;background:var(--bad);opacity:.75}
+.dots.g i{background:var(--good)}
+.toggle{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px}
+.toggle button{background:transparent;border:0;color:var(--muted);padding:6px 14px;font:inherit;font-size:13px;cursor:pointer}
+.toggle button.on{background:var(--accent);color:#fff}
+.domains{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+.area{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--panel)}
+.area b{font-size:12px;display:block;margin-bottom:6px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.area span{display:block;font:12px ui-monospace,Menlo,monospace;padding:3px 6px;border-radius:6px;margin:3px 0;background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.flow{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap}
+.flow .step{flex:1;min-width:130px;border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--panel);font-size:12px}
+.flow .step b{display:block;font-size:13px;margin-bottom:4px}
+.flow .arr{align-self:center;color:var(--muted)}
+.rule{display:grid;grid-template-columns:32px 1fr;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.rule .i{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:color-mix(in srgb,var(--accent) 15%,transparent);font-weight:700;color:var(--accent)}
+.rule b{display:block}.rule span{color:var(--muted);font-size:13px}
+.rule em{font-style:normal;font-size:11px;color:var(--good);margin-left:6px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:12px}
+.road{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+.road .p{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--panel);font-size:12px;position:relative}
+.road .p b{display:block;font-size:13px;margin-bottom:4px}
+.road .p .n{position:absolute;top:-10px;left:10px;background:var(--accent);color:#fff;border-radius:99px;font-size:11px;padding:1px 8px}
+.q{border-left:3px solid var(--warn);padding:8px 12px;background:color-mix(in srgb,var(--warn) 8%,transparent);border-radius:0 8px 8px 0;margin:8px 0;font-size:13px}
+.hide{display:none}
+</style>
+</head>
+<body><main>
+
+<h1>Telar: blueprint de arquitectura</h1>
+<p class="lead">Cómo tiene que verse el repo para que crecer, depurar y delegar a un agente sea fácil. Una idea central: <b>cada feature vive en un solo lugar, con el mismo nombre y la misma forma en engine, web, desktop e iOS.</b></p>
+
+<h2>El problema, en números</h2>
+<div class="grid g4">
+  <div class="card kpi before"><div class="v"><span class="from">81</span><span class="arrow">→</span><span class="to">0</span></div><div class="l">archivos sueltos en <code>engine/src</code></div><div class="dots" id="d1"></div></div>
+  <div class="card kpi before"><div class="v"><span class="from">149</span><span class="arrow">→</span><span class="to">0</span></div><div class="l">archivos sueltos en <code>web/lib</code></div><div class="dots" id="d2"></div></div>
+  <div class="card kpi before"><div class="v"><span class="from">148</span><span class="arrow">→</span><span class="to">5</span></div><div class="l">entradas en la raíz de <code>apps/desktop</code></div><div class="dots" id="d3"></div></div>
+  <div class="card kpi before"><div class="v"><span class="from">17k</span><span class="arrow">→</span><span class="to">≤800</span></div><div class="l">líneas del archivo más grande (<code>state.ts</code>)</div></div>
+</div>
+<div class="grid g4" style="margin-top:12px">
+  <div class="card kpi"><div class="v"><span class="from">0</span><span class="arrow">→</span><span class="to">~20</span></div><div class="l">dominios con nombre compartido entre apps</div></div>
+  <div class="card kpi"><div class="v"><span class="from">2</span><span class="arrow">→</span><span class="to">1</span></div><div class="l">formas de ubicar tests (engine usa <code>test/</code>, web junto al código)</div></div>
+  <div class="card kpi"><div class="v"><span class="from">61 KB</span><span class="arrow">→</span><span class="to">~5</span></div><div class="l"><code>verify.yml</code> → workflows por app</div></div>
+  <div class="card kpi"><div class="v"><span class="from">0</span><span class="arrow">→</span><span class="to">1</span></div><div class="l">glosario compartido (en AGENTS.md, como T3)</div></div>
+</div>
+
+<h2>El mapa de dominios <small>el vocabulario común de todo el repo</small></h2>
+<p class="sub">Cada caja es una carpeta con el <b>mismo nombre</b> en <code>engine</code>, <code>web</code>, <code>ios</code> y <code>engine-client</code>. Así, "¿dónde está X?" siempre tiene la misma respuesta.</p>
+<div class="domains">
+  <div class="area"><b>Núcleo</b><span>sessions</span><span>turns</span><span>projects</span><span>worktrees</span></div>
+  <div class="area"><b>Agentes</b><span>providers</span><span>agent-tools</span><span>plugins</span><span>computer-use</span></div>
+  <div class="area"><b>Workspace</b><span>files</span><span>git</span><span>github</span><span>terminal</span><span>browser</span></div>
+  <div class="area"><b>Acceso</b><span>remote</span><span>hosts</span><span>push</span></div>
+  <div class="area"><b>Experiencia</b><span>appearance</span><span>settings</span><span>dictation</span><span>notes</span><span>prompts</span></div>
+  <div class="area"><b>Operación</b><span>usage</span><span>schedules</span><span>storage</span><span>updates</span></div>
+</div>
+
+<h2>Anatomía de un dominio <small>siempre la misma forma</small></h2>
+<div class="grid g2">
+  <div class="card"><h3>Engine: <code>apps/engine/src/domains/sessions/</code></h3>
+<div class="tree"><span class="d">sessions/</span>
+├─ index.ts         <span class="m">API pública del dominio (lo único importable)</span>
+├─ store.ts         <span class="m">estado + persistencia (ex-EngineStore)</span>
+├─ routes.ts        <span class="m">HTTP /v2/sessions/* con zod</span>
+├─ tools.ts         <span class="m">herramientas MCP que ven los agentes</span>
+├─ *.ts             <span class="m">lógica pura (create.ts, settle.ts…)</span>
+└─ *.test.ts        <span class="m">junto al archivo que prueba</span></div></div>
+  <div class="card"><h3>Web: <code>apps/web/src/features/sessions/</code></h3>
+<div class="tree"><span class="d">sessions/</span>
+├─ index.ts         <span class="m">lo que otras features pueden usar</span>
+├─ <span class="d">components/</span>     <span class="m">SessionRow, TitleMenu…</span>
+├─ <span class="d">hooks/</span>          <span class="m">useSessionSync, useSettling…</span>
+├─ api.ts           <span class="m">llamadas al engine (vía EngineClient)</span>
+├─ model.ts         <span class="m">lógica pura, sin React</span>
+└─ *.test.ts(x)</div></div>
+  <div class="card"><h3>Contrato: <code>packages/engine-client/src/sessions/</code></h3>
+<div class="tree"><span class="d">sessions/</span>
+├─ schema.ts        <span class="m">tipos zod de request/response</span>
+└─ client.ts        <span class="m">métodos del EngineClient</span></div></div>
+  <div class="card"><h3>iOS: <code>apps/ios/TelarMobile/Features/Sessions/</code></h3>
+<div class="tree"><span class="d">Sessions/</span>
+├─ SessionsStore.swift
+├─ SessionView.swift
+└─ …                <span class="m">misma palabra, mismo lugar</span></div></div>
+</div>
+
+<h2>Antes → después, árbol por árbol</h2>
+<div class="toggle" id="tg"><button class="on" data-v="b">Antes</button><button data-v="a">Después</button><button data-v="both">Lado a lado</button></div>
+<div class="grid g2" id="trees">
+  <div class="card before" data-side="b"><h3>Engine hoy</h3>
+<div class="tree"><span class="d">apps/engine/src/</span>
+├─ state.ts                <span class="x">17.000 líneas, 459 métodos</span>
+├─ daemon.ts               <span class="x">5.600 · 183 rutas en una función</span>
+├─ driver.ts               <span class="x">4.700 · un closure de 3.400</span>
+├─ worker.ts  execution-store.ts  github.ts …
+├─ <span class="x">+77 archivos sueltos más</span>
+│   agent-notice claude-adopt claude-fork cleanup
+│   clone diff files git gitignore host-path
+│   mcp-oauth models notes orientation prompts
+│   schedules steering storage textgen usage
+│   worktree worktree-setup worktrees-move …
+└─ 14 carpetas sin patrón común
+<span class="d">apps/engine/test/</span>            <span class="x">225 tests lejos del código</span></div></div>
+  <div class="card after hide" data-side="a"><h3>Engine después</h3>
+<div class="tree"><span class="d">apps/engine/src/</span>
+├─ main.ts                 <span class="m">arranque</span>
+├─ <span class="d">platform/</span>             <span class="m">lo que no es un feature</span>
+│  ├─ kernel/              <span class="m">comandos, journal, hooks</span>
+│  ├─ db/                  <span class="m">ExecutionStore (SQLite)</span>
+│  ├─ http/                <span class="m">router, auth, zod, errores</span>
+│  ├─ git/  fs/  process/
+├─ <span class="d">domains/</span>              <span class="n">~20 carpetas con la misma forma</span>
+│  ├─ sessions/  turns/  projects/  worktrees/
+│  ├─ providers/  agent-tools/  plugins/
+│  ├─ files/  github/  terminal/  browser/
+│  ├─ remote/  hosts/  push/  dictation/
+│  └─ settings/  usage/  schedules/  storage/ …
+├─ <span class="d">drivers/</span>              <span class="m">claude/ codex/ opencode/ (provider runtimes)</span>
+└─ <span class="d">worker/</span>               <span class="m">claim-loop, execute, leases</span>
+<span class="n">tests junto a cada archivo · integración en test/integration/</span></div></div>
+
+  <div class="card before" data-side="b"><h3>Web hoy</h3>
+<div class="tree"><span class="d">apps/web/</span>
+├─ <span class="d">lib/</span>                   <span class="x">149 archivos sueltos</span>
+│   composer-chip composer-draft composer-tokens…
+│   session-list session-links session-settling…
+│   terminal-bridge terminal-keys terminal-theme…
+│   desktop-app desktop-store desktop-updates…
+├─ <span class="d">components/</span>            <span class="x">39 sueltos</span> + session/ settings/ …
+│   session-cockpit.tsx     <span class="x">4.400</span>
+│   right-panel.tsx  composer.tsx  app-sidebar.tsx
+└─ <span class="d">app/api/</span>               <span class="x">155 rutas, 128 son proxy</span></div></div>
+  <div class="card after hide" data-side="a"><h3>Web después</h3>
+<div class="tree"><span class="d">apps/web/src/</span>
+├─ <span class="d">app/</span>                   <span class="m">solo páginas finas (luego SPA)</span>
+├─ <span class="d">features/</span>              <span class="n">mismos nombres que el engine</span>
+│  ├─ sessions/   <span class="m">cockpit, rail, rows, sync</span>
+│  ├─ composer/   <span class="m">editor, chips, drafts, stash</span>
+│  ├─ transcript/ turns/  panel/
+│  ├─ terminal/  browser/  files/  github/
+│  ├─ settings/  appearance/  dictation/ …
+├─ <span class="d">ui/</span>                    <span class="m">sistema de diseño (shadcn + primitivos)</span>
+├─ <span class="d">platform/</span>              <span class="m">engine client, desktop bridge, host</span>
+└─ <span class="d">lib/</span>                   <span class="m">solo utilidades genéricas (format, clipboard)</span>
+<span class="n">/api: 1 catch-all → engine (fase headless)</span></div></div>
+
+  <div class="card before" data-side="b"><h3>Desktop hoy</h3>
+<div class="tree"><span class="d">apps/desktop/</span>             <span class="x">148 entradas en la raíz</span>
+├─ main.js  preload.js  browser-manager.js
+├─ browser-*.js  login-offer*.js  dev-update*
+├─ *.test.js  *.electron-test.js  (mezclados)
+├─ build-app.sh  after-pack.js  *.html
+└─ icon-candidates/  icon-renders/  <span class="x">(restos)</span></div></div>
+  <div class="card after hide" data-side="a"><h3>Desktop después</h3>
+<div class="tree"><span class="d">apps/desktop/</span>
+├─ <span class="d">src/</span>  main/ browser/ terminal/ login/
+│         store/ preload/ windows/ dev/
+├─ <span class="d">test/</span>  unit + <span class="d">electron/</span>
+├─ <span class="d">scripts/</span>  build, install, after-pack
+├─ <span class="d">assets/</span>
+└─ package.json            <span class="n">5 entradas; luego TypeScript</span></div></div>
+
+  <div class="card before" data-side="b"><h3>Repo hoy</h3>
+<div class="tree"><span class="d">scripts/</span>                 <span class="x">30 archivos planos</span>
+  source-invariants.mjs    <span class="x">111 KB</span>
+<span class="d">.github/workflows/</span>       verify.yml <span class="x">61 KB</span>, 8 más
+README.md                 <span class="x">159 líneas, sin orden fijo</span>
+AGENTS.md                 <span class="m">1 archivo, sin mapa</span></div></div>
+  <div class="card after hide" data-side="a"><h3>Repo después</h3>
+<div class="tree"><span class="d">scripts/</span>  <span class="d">checks/ ci/ release/ dev/</span>
+<span class="d">.github/workflows/</span>
+  ci.yml   <span class="m">(llama por app →)</span> ci-engine ci-web ci-desktop ci-ios ci-workers
+  release-desktop.yml  release-ios.yml  deploy-workers.yml
+<span class="d">docs/</span>
+  README.md <span class="m">índice</span>   <span class="d">user/</span>  <span class="d">operations/</span>  <span class="d">internals/</span>
+  <span class="d">migration/</span>       <span class="m">(temporal, se borra al terminar)</span>
+README.md    <span class="n">plantilla fija de 6 secciones</span>
+AGENTS.md    <span class="n">mapa + reglas; cada app y dominio tiene el suyo</span></div></div>
+</div>
+
+<h2>Cómo encuentra un agente dónde trabajar</h2>
+<p class="sub">Ejemplo real: <i>"agrega un botón para archivar la sesión desde el rail"</i>.</p>
+<div class="grid g2">
+  <div class="card before"><h3>Hoy</h3>
+  <div class="flow">
+    <div class="step"><b>¿Dónde?</b>grep en 700+ archivos</div><span class="arr">→</span>
+    <div class="step"><b>Encuentra</b><code>app-sidebar.tsx</code> (2k), <code>session-row.tsx</code>, <code>lib/session-mutations.ts</code>, <code>state.ts</code> (17k), <code>daemon.ts</code> (5.6k)…</div><span class="arr">→</span>
+    <div class="step"><b>Resultado</b>agrega todo al archivo más cercano y el monolito crece</div>
+  </div></div>
+  <div class="card after"><h3>Después</h3>
+  <div class="flow">
+    <div class="step"><b>1. AGENTS.md</b>glosario + "dónde vive el código": "archivar" → dominio <code>sessions</code></div><span class="arr">→</span>
+    <div class="step"><b>2. La carpeta se explica sola</b><code>index.ts</code> muestra las entradas; los nombres de archivo dicen qué hace cada uno</div><span class="arr">→</span>
+    <div class="step"><b>3. Cambia 3–4 archivos</b>todos en <code>domains/sessions</code> + <code>features/sessions</code></div>
+  </div></div>
+</div>
+
+<h2>Las reglas <small>cada una verificada por CI, no por buena voluntad</small></h2>
+<div class="grid g2">
+<div class="card">
+  <div class="rule"><div class="i">1</div><div><b>Todo código vive en un dominio o en platform/ui</b><span>No hay archivos sueltos en <code>src/</code>. Carpetas permitidas en la raíz de cada app: una lista fija.</span><em>check:structure</em></div></div>
+  <div class="rule"><div class="i">2</div><div><b>Un dominio solo se importa por su <code>index.ts</code></b><span>Nada de <code>../otro-dominio/store</code>. platform y ui nunca importan dominios.</span><em>lint de fronteras</em></div></div>
+  <div class="rule"><div class="i">3</div><div><b>Archivos ≤ 800 líneas, funciones ≤ 150</b><span>Si tocas uno más grande, extraes lo que cambiaste. Meta: ≤ 500.</span><em>oxlint + eslint, error</em></div></div>
+  <div class="rule"><div class="i">4</div><div><b>Comentarios: por defecto ninguno</b><span>Máximo 3 líneas y solo invariantes locales. Lo que cruza dominios va a <code>docs/internals/</code>.</span><em>ratchet de comentarios</em></div></div>
+</div>
+<div class="card">
+  <div class="rule"><div class="i">5</div><div><b>Sin catálogos de archivos</b><span>No hay README por dominio ni listas de archivos o métodos: la estructura y los nombres se explican solos. Un README solo existe si el paquete tiene una API pública que mapear.</span><em>como T3</em></div></div>
+  <div class="rule"><div class="i">6</div><div><b>Test junto al archivo, con el mismo nombre</b><span><code>archive.ts</code> → <code>archive.test.ts</code>, también la integración. <code>test/</code> guarda solo helpers y fixtures compartidos. T3 tiene 1.258 tests así y solo 15 aparte.</span><em>check:structure</em></div></div>
+  <div class="rule"><div class="i">7</div><div><b>Sin código muerto</b><span>knip pasa de solo reportar a bloquear.</span><em>knip, error</em></div></div>
+  <div class="rule"><div class="i">8</div><div><b>Un PR deja todo más chico o igual</b><span>Si solo mueve código, también tiene que borrar algo.</span><em>regla de builders</em></div></div>
+</div>
+</div>
+
+<h2>Formato de tests</h2>
+<div class="grid g3">
+  <div class="card"><h3>Unidad <span class="tag g">junto al código</span></h3>
+<div class="tree">describe("archiveSession", () => {
+  it("archives an idle session", …)
+  it("refuses while a turn runs", …)
+})</div><p class="sub" style="margin:8px 0 0">Un <code>describe</code> por unidad y un <code>it</code> por comportamiento, escrito como "hace X cuando Y".</p></div>
+  <div class="card"><h3>Integración <span class="tag g">también junto al código</span></h3><p class="sub" style="margin:0"><code>routes.test.ts</code> arranca el engine real en un home temporal y habla HTTP. <code>test/</code> guarda solo helpers y fixtures (<code>makeSession()</code>, homes temporales).</p></div>
+  <div class="card"><h3>Prohibido</h3><p class="sub" style="margin:0">Leer el código fuente como texto · timers reales · el store real · fixtures a mano: se usan builders como <code>makeSession()</code> en <code>test/fixtures</code>.</p></div>
+</div>
+
+<h2>Documentación <small>el modelo de T3 Code: poca y con reglas de qué entra</small></h2>
+<div class="grid g4">
+  <div class="card"><h3>README.md <span class="tag">~120 líneas</span></h3><p class="sub" style="margin:0">Qué es y por qué · instalar · enlace a docs · cómo contribuir y desarrollar. Nada más.</p></div>
+  <div class="card"><h3>AGENTS.md <span class="tag">~150 líneas</span></h3><p class="sub" style="margin:0">Un solo archivo en la raíz (<code>CLAUDE.md</code> = <code>@AGENTS.md</code>) con:</p><ul class="sub" style="margin:4px 0 0;padding-left:16px"><li>el <b>glosario</b> (sesión, turno, rail, panel, host…);</li><li><b>dónde vive el código</b>, en 6 líneas y el mapa de dominios;</li><li>criterio, cómo verificar, qué documentar y qué no commitear.</li></ul></div>
+  <div class="card"><h3>docs/ <span class="tag">3 carpetas</span></h3><p class="sub" style="margin:0"><code>user/</code>: cómo usar cada feature.<br><code>operations/</code>: publicar, desarrollar, depurar.<br><code>internals/</code>: decisiones y trampas que cruzan componentes.<br>Más un <code>README</code> índice.</p></div>
+  <div class="card"><h3>Qué NO entra</h3><p class="sub" style="margin:0">Catálogos de archivos o métodos · narrar el flujo del código · resúmenes de PRs · planes, investigaciones y borradores (eso vive en el issue). "Los agentes pueden leer el código."</p></div>
+</div>
+
+<h2>Workflows y scripts</h2>
+<div class="grid g2">
+  <div class="card before"><h3>Hoy</h3><p class="sub" style="margin:0">Un <code>verify.yml</code> de 61 KB corre todo en cada PR. Hay 9 workflows escritos sobre la marcha, 30 scripts planos, y <code>source-invariants.mjs</code> de 111 KB con reglas mezcladas.</p></div>
+  <div class="card after"><h3>Después</h3><p class="sub" style="margin:0"><code>ci.yml</code> detecta qué apps cambiaron y llama solo a sus workflows (<code>ci-engine</code>, <code>ci-web</code>…). Releases: uno por plataforma. Scripts: <code>checks/ ci/ release/ dev/</code>. <code>source-invariants</code> se parte en checks con nombre.</p></div>
+</div>
+
+<h2>Cómo llegamos <small>cada paso deja main en verde</small></h2>
+<div class="road">
+  <div class="p"><span class="n">1</span><b>Acordar</b>este blueprint + AGENTS.md con glosario y mapa</div>
+  <div class="p"><span class="n">2</span><b>Guardas</b>check:structure, fronteras y tamaño, en modo aviso</div>
+  <div class="p"><span class="n">3</span><b>Engine</b>platform/ + domains/, absorbiendo la descomposición de EngineStore</div>
+  <div class="p"><span class="n">4</span><b>Contrato</b>engine-client por dominio</div>
+  <div class="p"><span class="n">5</span><b>Web</b>src/features + ui + platform; la descomposición del cockpit cae ahí</div>
+  <div class="p"><span class="n">6</span><b>Desktop + iOS</b>src/ y Features/ con los mismos nombres</div>
+  <div class="p"><span class="n">7</span><b>Cerrar</b>docs, CI por app, y las guardas pasan de aviso a error</div>
+</div>
+<p class="sub" style="margin-top:12px">Headless, sesiones como sub-agentes y el recorte de comentarios siguen, pero ya dentro de <code>domains/</code> y <code>features/</code>: cada PR aterriza en su lugar definitivo.</p>
+
+<h2>Decisiones tomadas <small>27 sep</small></h2>
+<div class="card">
+<table>
+<tr><td>1</td><td>Dominios con el mismo nombre en engine, web, iOS y contrato</td><td class="g">✓ aprobado</td></tr>
+<tr><td>2</td><td>Tests junto al código, incluida la integración. <code>test/</code> solo guarda helpers y fixtures (así lo hace T3: 1.258 tests junto al código contra 15 aparte)</td><td class="g">✓ evidencia de T3</td></tr>
+<tr><td>3</td><td>Documentación: <code>docs/{user,operations,internals}</code> + índice. Un solo <code>AGENTS.md</code> con glosario. Sin README por dominio</td><td class="g">✓ ajustado al modelo de T3</td></tr>
+<tr><td>4</td><td>La web pasa a <code>src/</code></td><td class="g">✓ aprobado</td></tr>
+<tr><td>5</td><td>La lista de dominios, tal como está arriba</td><td class="g">✓ aprobado</td></tr>
+</table></div>
+
+</main>
+<script>
+const dots=(id,n)=>{const e=document.getElementById(id);for(let i=0;i<n;i++)e.appendChild(document.createElement('i'))};
+dots('d1',81);dots('d2',149);dots('d3',148);
+const show=v=>{document.querySelectorAll('#trees [data-side]').forEach(c=>{c.classList.toggle('hide',!(v==='both'||c.dataset.side===v))});
+document.getElementById('trees').style.gridTemplateColumns=v==='both'?'1fr 1fr':'1fr 1fr'};
+document.querySelectorAll('#tg button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#tg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');show(b.dataset.v)});
+show('b');
+</script>
+</body></html>
