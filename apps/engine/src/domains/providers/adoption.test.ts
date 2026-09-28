@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../../state";
-import { claudeProjectSlug } from ".";
+import { claudeProjectSlug } from "../../drivers/claude";
 
 const SOURCE_CWD = "/tmp/telar-adopt-store-source";
 

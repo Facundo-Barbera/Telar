@@ -36,3 +36,4 @@ export { ProviderRegistry, type ProviderInstanceInput } from "./registry";
 export { installedCli, ModelCatalogues, type InstalledCli } from "./catalogues";
 export { providersRoutes } from "./routes";
 export { sessionProviderRoutes, type ProviderSkillsOptions } from "./session-routes";
+export { type AdoptionInput, ConversationAdoption } from "./adoption";
