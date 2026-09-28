@@ -1,5 +1,5 @@
 import { commentRatchet } from "../comment-ratchet.mjs";
-import { sizeRatchet } from "../size-ratchet.mjs";
+import { sizeLimits } from "../size-limits.mjs";
 import { contextMenusCheck } from "./context-menus.mjs";
 import { dropdownLabelsCheck } from "./dropdown-labels.mjs";
 import { ROOT } from "./files.mjs";
@@ -30,8 +30,8 @@ export const SOURCE_CHECKS = [
     run: () => commentRatchet(ROOT),
   },
   {
-    name: "size-ratchet",
-    protects: "no new file over 800 lines, no oversized file growing past its merge base, and no new or grown function over 150 lines",
-    run: () => sizeRatchet(ROOT),
+    name: "size-limits",
+    protects: "no source file over 800 lines and no function over 150, except the files listed in ALLOWED — which must leave the list once they fit",
+    run: () => sizeLimits(ROOT),
   },
 ];

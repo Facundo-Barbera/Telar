@@ -178,207 +178,179 @@ function logPathFor(directory) {
   return path.join(directory, `engine-${stamp}-${process.pid}.log`);
 }
 
-async function main() {
-  const options = parseArgv(process.argv.slice(2));
-  const command = options.command?.length ? options.command : DEFAULT_COMMAND;
-  const logPath = logPathFor(options.logDir ?? path.join(os.tmpdir(), "telar-engine-tests"));
-  const log = fs.createWriteStream(logPath, { flags: "a" });
-
-  // SAID BEFORE THE RUN, NOT AFTER IT. A run that never ends never reaches its
-  // own summary, so the file's name has to be on screen while it is still going.
-  process.stdout.write(`[test-engine-bounded] ${command.join(" ")} in ${process.cwd()}\n`);
-  process.stdout.write(`[test-engine-bounded] log: ${logPath}\n`);
-  log.write(`# ${new Date().toISOString()} ${command.join(" ")} in ${process.cwd()} (budget ${options.budgetMs}ms)\n`);
-
-  const group = processGroupFor(process.platform, (pid, signal) => process.kill(pid, signal));
+function spawnGroup(command, group) {
   const child = spawn(command[0], command.slice(1), {
     cwd: process.cwd(),
     stdio: ["ignore", "pipe", "pipe"],
-    // THE GRANDCHILD IS THE POINT: `bun run test` spawns `bun test`, and a kill
-    // that only reached the child would strand exactly the process #807 is about.
+    // `bun run test` spawns `bun test`; only a group kill reaches the grandchild.
     detached: group.detached,
   });
-
-  /**
-   * THE PID IS READ ONCE, HERE, AND NEVER OFF `child` AGAIN.
-   *
-   * `child.pid` IS CLEARED WHEN THE PROCESS EXITS, and every signal this file
-   * sends is aimed at a GROUP — `kill(-pid, …)`. Read late, that is
-   * `kill(-undefined)`, which coerces to `kill(0)`: the signal every process in
-   * THIS process's own group, which on a developer's machine is their shell and
-   * whatever else they are running. Measured while proving the hang case: the
-   * kernel refused it with EPERM, which is the only reason it was noticed
-   * rather than delivered.
-   */
+  // Read once: `child.pid` clears on exit, and `kill(-undefined)` becomes `kill(0)`,
+  // which signals this process's own group (the developer's shell).
   const childPid = child.pid;
   if (typeof childPid !== "number" || childPid <= 0) {
     throw new Error(`test-engine-bounded: ${command[0]} reported no pid, so its process group cannot be bounded`);
   }
+  return { child, childPid };
+}
 
-  /**
-   * THE LAST LINE, KEPT SEPARATELY FROM THE LOG. It is what a hang has instead
-   * of a tally, and reading it back off a file the run may still be writing is
-   * a race this does not need to take.
-   */
-  let lastLine = "";
-  /** Enough tail to hold the end-of-run tallies without holding a whole run. */
-  let recent = "";
-  let pending = "";
-
+/** Tees the child's output to the screen and a timestamped log, keeping the tail for the tally. */
+function captureOutput(child, log) {
+  const state = { lastLine: "", recent: "", pending: "" };
   const absorb = (chunk) => {
     const text = String(chunk);
-    recent = (recent + text).slice(-64_000);
+    state.recent = (state.recent + text).slice(-64_000);
     process.stdout.write(text);
-    pending += text;
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
+    state.pending += text;
+    const lines = state.pending.split("\n");
+    state.pending = lines.pop() ?? "";
     for (const line of lines) {
-      if (line.trim()) lastLine = line;
+      if (line.trim()) state.lastLine = line;
       log.write(`${new Date().toISOString()} ${line}\n`);
     }
   };
   child.stdout.on("data", absorb);
   child.stderr.on("data", absorb);
+  const flush = () => {
+    if (!state.pending.trim()) return;
+    state.lastLine = state.pending;
+    log.write(`${new Date().toISOString()} ${state.pending}\n`);
+  };
+  return { state, flush };
+}
 
-  const startedAt = Date.now();
-  let timedOut = false;
-  let groupLiveness = "alive";
-
-  const stop = (force) => {
+function stopperFor(group, childPid) {
+  return (force) => {
     try {
       group.stop(childPid, force);
     } catch (error) {
-      // ESRCH is what "there was nothing left to stop" looks like, and it is
-      // the outcome this wanted. EPERM is the other answer that must not
-      // escalate: it means the group is not ours to signal, and the one way a
-      // group we spawned becomes somebody else's is a recycled pid — where
-      // trying harder is the worst available move.
+      // ESRCH: nothing left to stop. EPERM: a recycled pid that is not ours to signal.
       if (error?.code !== "ESRCH" && error?.code !== "EPERM") throw error;
     }
   };
+}
 
-  /**
-   * WHAT WAS IN THE GROUP WHEN IT WAS STOPPED. Filled on both paths that stop
-   * anything, and ALWAYS BEFORE THE SIGNAL: after the kill there is nothing
-   * left to name, which is how #807 came to be reported as five bare pids.
-   */
-  let groupInspection = null;
-
+/** Runs the child under the budget; resolves with its exit and whether the budget fired. */
+async function awaitBounded(child, childPid, stop, budgetMs) {
+  const run = { timedOut: false, groupInspection: null };
   const budget = setTimeout(() => {
-    timedOut = true;
-    // A hang's group is as diagnostic as a survivor's — more so, because the
-    // process holding it open is still there to be identified.
-    groupInspection = inspectProcessGroup(childPid, "budget");
+    run.timedOut = true;
+    // Inspected before the signal: after the kill there is nothing left to name.
+    run.groupInspection = inspectProcessGroup(childPid, "budget");
     stop(false);
     setTimeout(() => stop(true), STOP_GRACE_MS).unref?.();
-  }, options.budgetMs);
-
-  // A Ctrl-C on the wrapper must not leave the tree behind either.
+  }, budgetMs);
   const relay = () => stop(true);
   process.on("SIGINT", relay);
   process.on("SIGTERM", relay);
-
-  const exit = await new Promise((resolve) => {
+  run.exit = await new Promise((resolve) => {
     child.on("error", (error) => resolve({ code: null, signal: null, error }));
     child.on("close", (code, signal) => resolve({ code, signal, error: undefined }));
   });
   clearTimeout(budget);
   process.off("SIGINT", relay);
   process.off("SIGTERM", relay);
-  if (pending.trim()) {
-    lastLine = pending;
-    log.write(`${new Date().toISOString()} ${pending}\n`);
-  }
+  return run;
+}
 
-  /**
-   * THE GROUP IS OVER WHEN THE RUN IS — WHETHER OR NOT IT TIMED OUT.
-   *
-   * THIS IS #807's ACTUAL ORPHAN, and the case a timeout-only wrapper misses
-   * entirely: the five processes in the incident were alive AFTER their tests
-   * had finished. A runner exiting is not evidence that what it spawned exited,
-   * so the group is ASKED, and anything still in it is stopped rather than
-   * handed to the next person as a pid.
-   *
-   * ONLY ESRCH MEANS GONE, per `platform.ts` — EPERM is a group that exists and
-   * is not ours, and Windows answers `unanswerable`, which is never a synonym
-   * for `gone`. A run that leaves one of those says so in the verdict instead
-   * of claiming a clean tree.
-   */
+/**
+ * A runner exiting is not evidence its children did (#807, #849). Asked at once, with
+ * no grace: a leaked CLI dies ~100 ms after the runner, and a grace would hide it.
+ * Only ESRCH means gone; EPERM and Windows' `unanswerable` are never `gone`.
+ */
+async function reapGroup(group, childPid, stop, run) {
   let reapedSurvivors = false;
-  /**
-   * ASKED AT ONCE, WITH NO GRACE — #849, and on purpose. The leak #849 found on
-   * a Mac is a real Claude Code CLI that a live test never shut down; it dies
-   * about 100 ms AFTER the runner does, because the runner's exit closes its
-   * stdin. A grace of even a second would have filed that as "on its way out"
-   * and gone green, which is the finding hidden. Anything still in the group
-   * when the runner has exited is something a test did not stop; a test that
-   * stopped and awaited its children leaves the group empty here, measured.
-   */
   if (group.liveness(childPid) === "alive") {
     reapedSurvivors = true;
-    // NAMED BEFORE IT IS STOPPED (#849). This is the whole of the change: the
-    // run exits 0, prints a clean tally, and something is still in its group —
-    // and until this line the only record of it was the sentence "the run left
-    // processes in its group", which cannot be acted on. `ps` here turns that
-    // into a pid, a ppid and a command line, which is enough to find the test
-    // file that leaked it.
-    groupInspection = inspectProcessGroup(childPid, "survivors");
+    run.groupInspection = inspectProcessGroup(childPid, "survivors");
     stop(true);
   }
-  // POLLED, NOT SAMPLED ONCE. A process killed a moment ago is still answerable
-  // until it is reaped, so a single read right after the signal reports `alive`
-  // for a tree that is on its way out — measured on the suite's own run.
+  // Polled: a process killed a moment ago still answers until it is reaped.
+  let groupLiveness = "alive";
   for (let waited = 0; waited < 2_000; waited += 50) {
     groupLiveness = group.liveness(childPid);
     if (groupLiveness !== "alive") break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  return { reapedSurvivors, groupLiveness };
+}
 
-  const tally = tallyIn(recent);
-  const elapsedMs = Date.now() - startedAt;
-
-  /**
-   * THE TWO SIGNALS, COMBINED IN ONE PLACE. `exited` is this process's own
-   * wall-clock verdict and is never read off the child's exit code; `tally` is
-   * the child's own count. Neither is derived from the other, which is what
-   * makes `hung` distinguishable from `failed` at all.
-   */
-  const exited = !timedOut;
-  /**
-   * A GREEN RUN THAT LEFT SOMETHING RUNNING IS NOT A PASS — #849.
-   *
-   * Until this line the wrapper reaped survivors, printed a sentence, and exited
-   * 0: the exact shape the issue reports, a clean tally and a clean exit code
-   * with processes still alive behind them. A sentence in a 3000-test log is a
-   * thing nobody reads, and an instrument that only reports is how the leak
-   * survived two green runs unexamined. So it is its own outcome with its own
-   * exit code, and CI goes red on it.
-   *
-   * ONLY WHEN SOMETHING WAS NAMED, OR COULD NOT BE LOOKED FOR. A group that was
-   * alive at the check and empty by the time `ps` ran had a process on its way
-   * out, not a leak, and a red that cannot say what leaked is worse than none.
-   * An inspection that could not run at all fails CLOSED: survivors were seen
-   * and nothing proved they were harmless.
-   *
-   * A FAILING RUN STAYS `failed`. The red test is the first thing to fix, and
-   * the rows are printed below either way.
-   */
+/**
+ * `exited` is this process's wall clock, `tally` the child's own count; neither derives
+ * from the other. A green run that left a named survivor (or could not look) is `leaked`,
+ * not `passed`; a failing run stays `failed`.
+ */
+function outcomeOf({ timedOut, tally, reapedSurvivors, groupInspection }) {
   const leaked =
     reapedSurvivors && groupInspection?.phase === "survivors" && (groupInspection.rows.length > 0 || !groupInspection.supported || Boolean(groupInspection.reason));
-  const outcome = !exited
-    ? "hung"
-    : tally === undefined
-      ? "unknown"
-      : tally.fail > 0
-        ? "failed"
-        : leaked
-          ? "leaked"
-          : "passed";
+  if (timedOut) return "hung";
+  if (tally === undefined) return "unknown";
+  if (tally.fail > 0) return "failed";
+  return leaked ? "leaked" : "passed";
+}
+
+function printInspection({ phase, supported, reason, rows, truncated }) {
+  const what = phase === "budget" ? "holding the run open at its budget" : "still in the group after a clean exit";
+  if (!supported || reason) {
+    process.stdout.write(`[test-engine-bounded] could not enumerate what was ${what}: ${reason}\n`);
+  } else if (rows.length === 0) {
+    process.stdout.write(`[test-engine-bounded] nothing was ${what} by the time ps ran — it had already exited\n`);
+  } else {
+    process.stdout.write(`[test-engine-bounded] ${rows.length}${truncated ? `+ (capped at ${MAX_GROUP_ROWS})` : ""} process(es) ${what}:\n`);
+    for (const row of rows) {
+      process.stdout.write(`[test-engine-bounded]   pid=${row.pid} ppid=${row.ppid} pgid=${row.pgid} etime=${row.etime} ${row.command}\n`);
+    }
+  }
+}
+
+function printVerdict(verdict, tally, exit) {
+  const { outcome, exited, budgetMs, elapsedMs, groupLiveness } = verdict;
+  const counted = tally === undefined ? "no end-of-run tally" : `${tally.pass} pass, ${tally.fail} fail`;
+  process.stdout.write(
+    `[test-engine-bounded] ${outcome} — ${counted}; ` +
+      `${exited ? `exited ${exit.signal ? `on ${exit.signal}` : String(exit.code)}` : `killed at the ${budgetMs}ms budget`} ` +
+      `after ${(elapsedMs / 1000).toFixed(1)}s; process group ${groupLiveness}\n`,
+  );
+  if (outcome !== "passed") process.stdout.write(`[test-engine-bounded] last line: ${verdict.lastLine || "(nothing was printed)"}\n`);
+  if (verdict.reapedSurvivors) process.stdout.write(`[test-engine-bounded] the run left processes in its group after exiting; they were stopped\n`);
+  if (outcome === "leaked") {
+    process.stdout.write(
+      `[test-engine-bounded] LEAKED: every test passed, but a test spawned something it did not stop. The rows below name it; ` +
+        `find the test that starts that command and kill it in its own teardown (#849)\n`,
+    );
+  }
+  if (verdict.groupInspection) printInspection(verdict.groupInspection);
+  process.stdout.write(`[test-engine-bounded] log: ${verdict.logPath}\n`);
+}
+
+async function main() {
+  const options = parseArgv(process.argv.slice(2));
+  const command = options.command?.length ? options.command : DEFAULT_COMMAND;
+  const logPath = logPathFor(options.logDir ?? path.join(os.tmpdir(), "telar-engine-tests"));
+  const log = fs.createWriteStream(logPath, { flags: "a" });
+
+  // Said before the run: a run that never ends never reaches its summary.
+  process.stdout.write(`[test-engine-bounded] ${command.join(" ")} in ${process.cwd()}\n`);
+  process.stdout.write(`[test-engine-bounded] log: ${logPath}\n`);
+  log.write(`# ${new Date().toISOString()} ${command.join(" ")} in ${process.cwd()} (budget ${options.budgetMs}ms)\n`);
+
+  const group = processGroupFor(process.platform, (pid, signal) => process.kill(pid, signal));
+  const { child, childPid } = spawnGroup(command, group);
+  const output = captureOutput(child, log);
+  const startedAt = Date.now();
+  const stop = stopperFor(group, childPid);
+  const run = await awaitBounded(child, childPid, stop, options.budgetMs);
+  output.flush();
+  const { reapedSurvivors, groupLiveness } = await reapGroup(group, childPid, stop, run);
+
+  const tally = tallyIn(output.state.recent);
+  const { exit, timedOut, groupInspection } = run;
+  const outcome = outcomeOf({ timedOut, tally, reapedSurvivors, groupInspection });
   const verdict = {
     outcome,
-    exited,
+    exited: !timedOut,
     timedOut,
-    elapsedMs,
+    elapsedMs: Date.now() - startedAt,
     budgetMs: options.budgetMs,
     exitCode: exit.code,
     exitSignal: exit.signal,
@@ -389,7 +361,7 @@ async function main() {
     groupInspection,
     childPid,
     logPath,
-    lastLine: lastLine.trim(),
+    lastLine: output.state.lastLine.trim(),
     command,
     ...(exit.error ? { spawnError: exit.error.message } : {}),
   };
@@ -397,50 +369,9 @@ async function main() {
   log.write(`# ${new Date().toISOString()} ${JSON.stringify(verdict)}\n`);
   await new Promise((resolve) => log.end(resolve));
   if (options.verdictOut) fs.writeFileSync(options.verdictOut, `${JSON.stringify(verdict, null, 2)}\n`);
+  printVerdict(verdict, tally, exit);
 
-  const counted = tally === undefined ? "no end-of-run tally" : `${tally.pass} pass, ${tally.fail} fail`;
-  process.stdout.write(
-    `[test-engine-bounded] ${outcome} — ${counted}; ` +
-      `${exited ? `exited ${exit.signal ? `on ${exit.signal}` : String(exit.code)}` : `killed at the ${options.budgetMs}ms budget`} ` +
-      `after ${(elapsedMs / 1000).toFixed(1)}s; process group ${groupLiveness}\n`,
-  );
-  if (outcome !== "passed") process.stdout.write(`[test-engine-bounded] last line: ${verdict.lastLine || "(nothing was printed)"}\n`);
-  // SAID OUT LOUD, because a run that passes while leaving processes behind is
-  // exactly the shape #807 reports and the one nobody would otherwise look at.
-  if (reapedSurvivors) process.stdout.write(`[test-engine-bounded] the run left processes in its group after exiting; they were stopped\n`);
-  if (outcome === "leaked") {
-    process.stdout.write(
-      `[test-engine-bounded] LEAKED: every test passed, but a test spawned something it did not stop. The rows below name it; ` +
-        `find the test that starts that command and kill it in its own teardown (#849)\n`,
-    );
-  }
-  // THE ROWS, IN THE LOG AND ON SCREEN. Printed for both phases, because the
-  // reader of a hung run wants the same table as the reader of a leaky one.
-  // A supported inspection that found nothing says so rather than printing
-  // nothing at all: absent output and an empty group are different facts, and
-  // this repository has been bitten by them being written the same way.
-  if (groupInspection) {
-    const { phase, supported, reason, rows, truncated } = groupInspection;
-    const what = phase === "budget" ? "holding the run open at its budget" : "still in the group after a clean exit";
-    if (!supported || reason) {
-      process.stdout.write(`[test-engine-bounded] could not enumerate what was ${what}: ${reason}\n`);
-    } else if (rows.length === 0) {
-      process.stdout.write(`[test-engine-bounded] nothing was ${what} by the time ps ran — it had already exited\n`);
-    } else {
-      process.stdout.write(`[test-engine-bounded] ${rows.length}${truncated ? `+ (capped at ${MAX_GROUP_ROWS})` : ""} process(es) ${what}:\n`);
-      for (const row of rows) {
-        process.stdout.write(`[test-engine-bounded]   pid=${row.pid} ppid=${row.ppid} pgid=${row.pgid} etime=${row.etime} ${row.command}\n`);
-      }
-    }
-  }
-  process.stdout.write(`[test-engine-bounded] log: ${logPath}\n`);
-
-  /**
-   * ONE EXIT CODE PER OUTCOME. A caller that only knows zero-from-not-zero
-   * still gets the right answer; one that wants to tell a hang from a red test
-   * — or a leak from either — no longer has to guess, which is the whole point
-   * of the file. `scripts/engine-shard.mjs` passes 2, 3 and 4 through unchanged.
-   */
+  // One exit code per outcome; `scripts/engine-shard.mjs` passes 2, 3 and 4 through.
   process.exit({ passed: 0, failed: 1, hung: 2, unknown: 3, leaked: 4 }[outcome]);
 }
 
