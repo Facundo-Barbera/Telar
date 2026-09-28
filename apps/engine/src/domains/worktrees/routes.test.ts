@@ -94,7 +94,7 @@ test("an unreadable record blocks a CUT and nothing else", async () => {
    * session and all their history over the file that says where checkouts go
    * would be a bigger failure than the one being prevented.
    */
-  expect((await client.health()).ok ?? true).toBeTruthy();
+  expect((await client.health()).version).toBe(2);
   expect(Array.isArray((await client.listProjects()).projects)).toBe(true);
   // And it is recoverable from the same route that reports it.
   expect((await client.setWorktreesRoot(null)).worktreesRoot.kind).toBe("default");

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { workspacePath } from "@telar/engine-client";
 import { worktreeReady } from "../../../../test/worktree-ready";
 import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner } from "../../../platform/git/runner";
 import { TELAR_SKILL } from "..";
@@ -21,7 +22,7 @@ describe("creating a session", () => {
     const session = store.getSession(id);
     expect(session.preparation).toMatchObject({ state: "preparing" });
     await worktreeReady(store, id);
-    expect(fs.existsSync(path.join(session.workspace.path, "README.md"))).toBe(true);
+    expect(fs.existsSync(path.join(workspacePath(session.workspace)!, "README.md"))).toBe(true);
     expect(store.turns(id)).toEqual([]);
     expect(String(created.json!.note)).toContain("Nothing is queued and nothing has started");
   });
@@ -29,7 +30,7 @@ describe("creating a session", () => {
   test("a local session shares the project's checkout, and says so", async () => {
     const { store, projectId, projectRoot } = engine();
     const created = await call(wall(store), "sessions_create", { projectId, envMode: "local" });
-    expect(store.getSession(created.json!.id as string).workspace.path).toBe(fs.realpathSync(projectRoot));
+    expect(workspacePath(store.getSession(created.json!.id as string).workspace)).toBe(fs.realpathSync(projectRoot));
     expect(created.json!.branch).toBeUndefined();
   });
 

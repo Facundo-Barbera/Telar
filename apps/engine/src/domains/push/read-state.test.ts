@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type http from "node:http";
 import { EngineClientError, type EngineClient } from "@telar/engine-client";
 import { matchRoute } from "../../platform/http/router";
 import { createDesktopStream, DESKTOP_DISMISS, dismissDesktop } from "./desktop";
@@ -11,7 +12,7 @@ const sessions: Record<string, { activity: string; lastTurnSequence?: number; la
   waiting: { activity: "blocked", lastTurnSequence: 3, lastReadTurnSequence: 3 },
 };
 
-function readState(ids: string) {
+async function readState(ids: string) {
   const client = {
     async session(id: string) {
       if (id === "gone") throw new EngineClientError("not_found", "no such session", 404);
@@ -21,7 +22,7 @@ function readState(ids: string) {
   } as unknown as EngineClient;
   const routes = pushRoutes({ client: () => client, pairedDevices: () => [] });
   const { route, params } = matchRoute(routes, "GET", "/v2/push/read-state")!;
-  return route.handle({ body: {}, params, query: new URLSearchParams({ ids }) });
+  return (await route.handle({ body: {}, params, query: new URLSearchParams({ ids }), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }))!;
 }
 
 describe("the reconcile route", () => {

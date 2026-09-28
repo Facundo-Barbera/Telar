@@ -144,8 +144,8 @@ test("a toolkit registers under the SAME one server, and only when the turn carr
       names.push(name);
       return { name, handler };
     },
-    createSdkMcpServer: (input: { tools: { name: string }[] }) => input,
-    async *query(input: { options: { mcpServers?: Record<string, { tools: { name: string }[] }> } }) {
+    createSdkMcpServer: (input: unknown) => input,
+    async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
       seen.serverKeys = Object.keys(input.options.mcpServers ?? {});
       yield { type: "result", subtype: "success" };
     },
@@ -195,7 +195,7 @@ test("a turn that carries the run capability registers run_* on the in-process t
       names.push(name);
       return { name, handler };
     },
-    createSdkMcpServer: (input: { tools: { name: string }[] }) => input,
+    createSdkMcpServer: (input: unknown) => input,
     async *query() {
       yield { type: "result", subtype: "success" };
     },

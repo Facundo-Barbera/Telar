@@ -212,7 +212,7 @@ test("a running turn that journals nothing for longer than the threshold is repo
   expect(turn.stalled).toBeDefined();
   // The silence is measured from the last evidence there WAS — the
   // `turn.started` record `markRunning` wrote — not from an arbitrary now.
-  expect(turn.stalled!.since).toBe(turn.startedAt);
+  expect(turn.stalled!.since).toBe(turn.startedAt!);
   expect(turn.stalled!.noticedAt).toBe(time.at());
   expect(turn.lastProgressAt).toBe(turn.startedAt);
   // ADVISORY, NOT A KILL. Nothing was stopped, failed or requeued.
@@ -292,7 +292,7 @@ test("a worker whose heartbeat keeps arriving on schedule does not keep its wedg
   expect(turn.stalled).toBeDefined();
   // Measured from the turn's last real evidence, which the heartbeats did not
   // move — thirty minutes ago, not one.
-  expect(turn.stalled!.since).toBe(turn.startedAt);
+  expect(turn.stalled!.since).toBe(turn.startedAt!);
   expect(time.at() - turn.stalled!.since).toBe(30 * 60_000);
 });
 

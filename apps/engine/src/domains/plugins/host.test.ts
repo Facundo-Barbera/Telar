@@ -137,8 +137,8 @@ describe("bounded startup", () => {
       {
         meta: meta("leaky"),
         init: (context) => {
-          context.onDispose("socket", () => released.push("socket"));
-          context.onDispose("sweeper", () => released.push("sweeper"));
+          context.onDispose("socket", () => { released.push("socket"); });
+          context.onDispose("sweeper", () => { released.push("sweeper"); });
           throw new Error("toolchain probe failed");
         },
       },
@@ -156,7 +156,7 @@ describe("bounded startup", () => {
       {
         meta: meta("messy"),
         init: (context) => {
-          context.onDispose("first", () => released.push("first"));
+          context.onDispose("first", () => { released.push("first"); });
           context.onDispose("second", () => {
             throw new Error("nope");
           });
@@ -224,7 +224,7 @@ describe("disable means drain", () => {
   test("a plugin that declares no busy hook releases at once", async () => {
     const calls: string[] = [];
     const subject = host([
-      { meta: meta("simple"), hooks: { releaseProject: (projectId) => calls.push(`release:${projectId}`) } },
+      { meta: meta("simple"), hooks: { releaseProject: (projectId) => { calls.push(`release:${projectId}`); } } },
     ]);
     await subject.startAll();
     expect(await subject.drainProject("simple", "p")).toEqual({ drained: true, stillBusy: false });
@@ -244,9 +244,9 @@ describe("disable means drain", () => {
   test("a session going away fans out to every ready plugin, so nothing calls a feature by name", async () => {
     const seen: string[] = [];
     const subject = host([
-      { meta: meta("one"), hooks: { releaseSession: (id, why) => seen.push(`one:${id}:${why}`) } },
-      { meta: meta("two"), hooks: { releaseSession: (id) => seen.push(`two:${id}`) } },
-      { meta: meta("broken"), init: () => { throw new Error("no"); }, hooks: { releaseSession: () => seen.push("broken") } },
+      { meta: meta("one"), hooks: { releaseSession: (id, why) => { seen.push(`one:${id}:${why}`); } } },
+      { meta: meta("two"), hooks: { releaseSession: (id) => { seen.push(`two:${id}`); } } },
+      { meta: meta("broken"), init: () => { throw new Error("no"); }, hooks: { releaseSession: () => { seen.push("broken"); } } },
     ]);
     await subject.startAll();
     await subject.releaseSession("ses_1", "archived");

@@ -177,6 +177,7 @@ test("the claim carries enabled plugin ids, and Data Science and LaTeX only when
   // Data Science on with no interpreter anywhere: switched on but unresolved,
   // so it stays off the claim rather than handing the agent tools that fail.
   await client.updateProject("project_one", {
+    // @ts-expect-error deprecated alias the engine still accepts
     latex: { enabled: true, toolchain: { kind: "texlive", path: "/bin/echo" } },
     dataScience: { enabled: true },
   });

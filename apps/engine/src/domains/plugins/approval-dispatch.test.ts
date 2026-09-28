@@ -1,41 +1,5 @@
-/**
- * DOES THE APPROVAL ACTUALLY DECIDE WHETHER A PLUGIN'S WRITE RUNS.
- *
- * `domains/plugins/approval.test.ts` asserts CLASSIFICATION — that both wires call a
- * given tool the same kind. `drivers/codex/driver.test.ts` asserts REGISTRATION — that
- * the socket's url reaches `thread/start`. Neither is evidence that a declined
- * plugin write cannot execute anyway, because in neither does the provider ever
- * touch the socket.
- *
- * This file closes that gap. The repo's fake Codex app-server is driven through
- * the `mcp-elicitation-telar-plugins` scenario, which asks for approval and
- * then — ONLY on accept — makes a real `tools/call` against a real
- * `telar` socket over loopback. The plugin's capability counts how many
- * times it actually ran, so every assertion here is about EXECUTION rather than
- * about cards:
- *
- *   decline           → the capability never runs
- *   accept            → it runs exactly once
- *   acceptForSession  → it runs once (the widening is the engine's to record,
- *                       and Codex is told plain `accept`)
- *
- * ── WHAT THIS PROVES, AND WHAT IT DOES NOT ──────────────────────────────────
- * It proves TELAR'S HALF: that the engine's decision is forwarded, and that a
- * declined decision means the plugin's capability is never invoked. The fixture
- * is the thing that chooses to call the socket only after an accept, so what is
- * under test is the driver→gate→dispatch path, NOT real Codex's behaviour.
- *
- * IT IS NOT EVIDENCE that a real Codex always elicits before executing an MCP
- * tool. Nothing here can establish that — it is a property of the provider, not
- * of this code — and the socket deliberately holds no gate of its own, so if a
- * real provider ever called `tools/call` without eliciting, the wall would
- * serve it. The credential is the only thing standing between an unelicited
- * call and execution. That limit is real and is stated rather than papered over.
- *
- * No paid provider call: the app-server is this repo's own fixture, pinned
- * fail-closed through `CODEX_BIN`, and the plugin is the proof plugin. No token
- * is ever logged.
- */
+// A declined plugin write never executes: the fake Codex app-server calls the real socket only
+// after an accept. This proves the engine's half, not that a real provider always elicits.
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -124,6 +88,7 @@ async function turnWithDecision(decision: "accept" | "decline" | "acceptForSessi
   });
   const result = await driver.run({
     prompt: "hi",
+    sessionId: "session_one",
     cwd: "/tmp/project",
     signal: new AbortController().signal,
     onObservations: async () => undefined,

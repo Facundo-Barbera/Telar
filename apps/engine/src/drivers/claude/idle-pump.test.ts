@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { TurnObservation } from "@telar/engine-client";
+import type { TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import { SteerMailbox } from "../../domains/turns";
 import { createClaudeDriver, run } from "../../../test/claude-harness";
 
@@ -33,7 +33,7 @@ const sessionDoor = (options: { refuse?: boolean } = {}) => {
       onTasks: async (batch: TurnObservation[]) => void tasks.push(...batch),
       onProviderTurn: async ({ input, reason }: { input: string; reason: unknown }) => {
         if (options.refuse) return undefined;
-        const record = { input, reason, observations: [] as TurnObservation[], requests: [] as unknown[] };
+        const record: (typeof turns)[number] = { input, reason, observations: [], requests: [] };
         turns.push(record);
         return {
           runId: `run_provider_${(runSeq += 1)}`,

@@ -122,7 +122,7 @@ test("a limit that is not a positive integer is refused, not defaulted", () => {
 function committed(home: string): number {
   const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
   const db = new Database(path.join(home, "execution.sqlite"), { readonly: true });
-  try { return Number(db.query("SELECT COUNT(*) AS n FROM events WHERE session_id='session_one'").get()!.n); }
+  try { return Number(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM events WHERE session_id='session_one'").get()!.n); }
   finally { db.close(); }
 }
 

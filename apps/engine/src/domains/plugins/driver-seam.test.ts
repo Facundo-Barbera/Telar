@@ -137,9 +137,9 @@ test("the Claude driver registers the plugin's tools in-process under the shared
   let servers: Record<string, { tools?: { name: string }[] }> | undefined;
   const driver = createClaudeDriver(async () => ({
     tool: (name: string) => ({ name }),
-    createSdkMcpServer: (input: { tools: { name: string }[] }) => ({ tools: input.tools }),
-    async *query(input: { options: { mcpServers?: Record<string, never> } }) {
-      servers = input.options.mcpServers;
+    createSdkMcpServer: (input: { tools: unknown[] }) => ({ tools: input.tools }),
+    async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
+      servers = input.options.mcpServers as typeof servers;
       yield { type: "result", subtype: "success" };
     },
   }));
@@ -202,8 +202,8 @@ test("a plugin's write parks a card on BOTH wires and its read does not, from th
       _meta: { codex_approval_kind: "mcp_tool_call", tool_params: {} },
     })?.kind;
 
-  expect(claude("hello_state")).toBe(codex("hello_state"));
-  expect(claude("hello_ping")).toBe(codex("hello_ping"));
+  expect(claude("hello_state")).toBe(codex("hello_state")!);
+  expect(claude("hello_ping")).toBe(codex("hello_ping")!);
   // A negative control, so the equality above is not passing because everything
   // classifies the same way.
   expect(claude("hello_state")).not.toBe(claude("hello_ping"));

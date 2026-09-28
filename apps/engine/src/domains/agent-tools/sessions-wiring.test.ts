@@ -103,8 +103,8 @@ test("the sessions toolkit registers under the SAME one server, and only when th
       names.push(name);
       return { name, handler };
     },
-    createSdkMcpServer: (input: { tools: { name: string }[] }) => input,
-    async *query(input: { options: { mcpServers?: Record<string, { tools: { name: string }[] }> } }) {
+    createSdkMcpServer: (input: { tools: unknown[] }) => input,
+    async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
       seen.serverKeys = Object.keys(input.options.mcpServers ?? {});
       yield { type: "result", subtype: "success" };
     },
@@ -125,7 +125,7 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     status: async () => {
       throw new Error("this test does not read status");
     },
-    stop: async () => ({ stopped: false }),
+    stop: async () => ({ stopped: [] }),
     settle: async () => {
       throw new Error("this test does not settle");
     },
@@ -141,10 +141,31 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     resolveRequest: async () => {
       throw new Error("this test does not resolve");
     },
+    query: {
+      find: async () => {
+        throw new Error("this test does not query");
+      },
+      outline: async () => {
+        throw new Error("this test does not query");
+      },
+      answer: async () => {
+        throw new Error("this test does not query");
+      },
+      steps: async () => {
+        throw new Error("this test does not query");
+      },
+      step: async () => {
+        throw new Error("this test does not query");
+      },
+      grep: async () => {
+        throw new Error("this test does not query");
+      },
+    },
   };
 
   await claudeDriver(sdk).run({
     prompt: "prompt",
+    sessionId: "session_one",
     cwd: "/tmp",
     signal: new AbortController().signal,
     onObservations: async () => undefined,
@@ -187,6 +208,7 @@ test("the sessions toolkit registers under the SAME one server, and only when th
   names.length = 0;
   await claudeDriver(sdk).run({
     prompt: "prompt",
+    sessionId: "session_one",
     cwd: "/tmp",
     signal: new AbortController().signal,
     onObservations: async () => undefined,
@@ -263,7 +285,7 @@ async function turnWith(
 
 test("a running turn is handed the toolkit, and what it creates is stamped as an agent's", async () => {
   let made: Session | undefined;
-  let listed: { sessions: Session[]; projects: Array<{ id: string; name: string }> } | undefined;
+  let listed: Awaited<ReturnType<SessionsCapability["list"]>> | undefined;
   const { client, hostId, sawCapability } = await turnWith(async (sessions) => {
     const { projects } = await sessions.list();
     made = await sessions.create({ projectId: projects[0]!.id, title: "made mid-turn", envMode: "worktree" });
@@ -281,10 +303,12 @@ test("a running turn is handed the toolkit, and what it creates is stamped as an
   // lands behind it, which is the whole reason creating one no longer stalls
   // every other session on the machine.
   expect(made!.preparation).toMatchObject({ state: "preparing" });
-  for (let i = 0; i < 400 && !fs.existsSync(path.join(made!.workspace.path, "README.md")); i++) {
+  const workspace = made!.workspace;
+  if (workspace.mode === "none") throw new Error("a worktree session has a checkout");
+  for (let i = 0; i < 400 && !fs.existsSync(path.join(workspace.path, "README.md")); i++) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  expect(fs.existsSync(path.join(made!.workspace.path, "README.md"))).toBe(true);
+  expect(fs.existsSync(path.join(workspace.path, "README.md"))).toBe(true);
 
   // The engine agrees, read back through the ordinary API.
   const { session } = await client.session(made!.id);

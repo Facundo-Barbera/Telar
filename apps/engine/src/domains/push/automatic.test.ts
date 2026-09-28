@@ -10,7 +10,7 @@ test("automatic work starts once without a follow or notification opt-in; idle p
   const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return {status:200};};
   let r=(await deliverRecord(record(),[work],send,1000))!;
   expect(sent).toHaveLength(1);
-  expect(sent[0]!.token).toBe(r.pushToStartToken);
+  expect(sent[0]!.token).toBe(r.pushToStartToken!);
   expect(sent[0]!.payload.aps).toMatchObject({event:"start","attributes-type":"SessionActivityAttributes","input-push-token":1,attributes:{hostId:r.hostId,sessionId:AUTOMATIC_ACTIVITY,hostName:"Studio Mac"}});
   expect(JSON.stringify(sent[0])).not.toContain(work.title);
   r=(await deliverRecord(r,[work],send,1010))!;expect(sent).toHaveLength(1);

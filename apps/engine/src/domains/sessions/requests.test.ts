@@ -156,7 +156,8 @@ test("opening the same requestId twice returns the SAME answer instead of a seco
   const token = runningTurn(store);
   const first = store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
   const second = store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
-  expect(second).toEqual({ ...first, notified: true });
+  const reopened = { ...first, notified: true };
+  expect(second).toEqual(reopened);
   expect(store.requests("session_one")).toHaveLength(1);
 
   store.resolveRequest("session_one", "req_1", { decision: "accept" });

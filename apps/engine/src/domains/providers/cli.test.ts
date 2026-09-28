@@ -148,9 +148,9 @@ test("the messages are short enough to read on a settings row", () => {
   const directory = root();
   const pinned = fakeCli(directory, "claude", "2.0.5");
   process.env.PATH = directory;
-  expect(resolveCli("claude", { binaryPath: pinned }).message.length).toBeLessThan(140);
+  expect(resolveCli("claude", { binaryPath: pinned }).message!.length).toBeLessThan(140);
 
-  expect(resolveCli("claude").message.length).toBeLessThan(360);
+  expect(resolveCli("claude").message!.length).toBeLessThan(360);
 });
 
 test("a patch-ahead OpenCode drifts rather than refusing, and stays usable", () => {
@@ -162,7 +162,7 @@ test("a patch-ahead OpenCode drifts rather than refusing, and stays usable", () 
   expect(resolution.status).toBe("drifted");
   expect(cliUsable(resolution)).toBe(true);
   expect(resolution.message).toContain(OPENCODE_VERSION);
-  expect(resolution.message.length).toBeLessThan(140);
+  expect(resolution.message!.length).toBeLessThan(140);
 });
 
 test("a different OpenCode minor is still a refusal, and names the install that fixes it", () => {

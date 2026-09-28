@@ -38,7 +38,7 @@ test("a session says what it is doing, and a parked request outranks a running t
   expect(store.getSession("session_one").activityAt).toBe(100);
 
   // Answering it hands the session back to the work it was doing.
-  store.resolveRequest("session_one", "req_one", "accept");
+  store.resolveRequest("session_one", "req_one", { decision: "accept" });
   expect(store.getSession("session_one").activity).toBe("working");
 });
 

@@ -11,6 +11,7 @@ function row(id: string, extra: Partial<ProviderModel> = {}): ProviderModel {
     hiddenByUser: false,
     efforts: [],
     fastMode: false,
+    legacy: false,
     source: "provider",
     ...extra,
   };

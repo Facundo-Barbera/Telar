@@ -80,6 +80,7 @@ export function runTurn(scenario: string, run: RunOptions = {}) {
   });
   const result = driver.run({
     prompt: run.prompt ?? "hi",
+    sessionId: "session_test",
     cwd: run.cwd ?? "/tmp/project",
     signal: controller.signal,
     onObservations: async (batch) => void observations.push(...batch),

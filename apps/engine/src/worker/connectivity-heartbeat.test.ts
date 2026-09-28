@@ -174,7 +174,7 @@ test("the transport cause is retained, and carries no URL or credential", () => 
   const error = new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "workerHeartbeat", transport: "TypeError:ECONNRESET" });
   expect(error.operation).toBe("workerHeartbeat");
   expect(error.transport).toBe("TypeError:ECONNRESET");
-  expect(JSON.stringify({ message: error.message, ...error })).not.toContain("sk-secret");
+  expect(JSON.stringify({ ...error, message: error.message })).not.toContain("sk-secret");
 });
 
 test("every connectivity outcome reaches the diagnostic sink, sanitized and bounded", async () => {

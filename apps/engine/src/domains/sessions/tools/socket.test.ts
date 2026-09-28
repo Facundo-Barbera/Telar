@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient } from "@telar/engine-client";
+import { EngineClient, workspacePath } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../../../daemon";
 import { collectSessionsWallTools } from "..";
 import type { SessionsCapability } from "..";
@@ -207,7 +207,7 @@ describe("the protocol surface", () => {
     // The cut runs behind the tool's answer now (#496) — the row is complete,
     // the directory arrives a moment later.
     await worktreeReady(daemon.store, made.id);
-    expect(fs.existsSync(path.join(session.workspace.path, "README.md"))).toBe(true);
+    expect(fs.existsSync(path.join(workspacePath(session.workspace)!, "README.md"))).toBe(true);
 
     // A tool the wall does not have is a -32602, not a silent success.
     const missing = await rpc(daemon, mcp.secret, {

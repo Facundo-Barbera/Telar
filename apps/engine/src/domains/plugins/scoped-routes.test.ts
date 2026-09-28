@@ -114,6 +114,7 @@ test("off for a project refuses its project verbs, except the ones used to choos
   expect(choosing.body.error?.message ?? "").not.toContain("not enabled");
 
   // Turned on, the project verb answers — and answers as the old path does.
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { latex: { enabled: true, toolchain: { kind: "texlive", path: "/bin/echo" } } });
   const generic = await call("GET", "/v2/projects/project_one/plugins/latex/packages");
   expect(generic.body.error?.message ?? "").not.toContain("not enabled");

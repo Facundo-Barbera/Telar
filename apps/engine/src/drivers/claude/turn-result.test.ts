@@ -185,8 +185,8 @@ describe("session_state_changed is the turn's end where the CLI sends it", () =>
     // what makes a result-less `idle` provably ours.
     const driver = createClaudeDriver(
       async () => ({
-        async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
-          const first = await prompt[Symbol.asyncIterator]().next();
+        async *query({ prompt }: { prompt: string | AsyncIterable<{ uuid?: string }> }) {
+          const first = await (prompt as AsyncIterable<{ uuid?: string }>)[Symbol.asyncIterator]().next();
           yield state("running");
           yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: first.value!.uuid };
           yield { type: "assistant", message: { content: [{ type: "text", text: "the answer" }], stop_reason: "end_turn" } };

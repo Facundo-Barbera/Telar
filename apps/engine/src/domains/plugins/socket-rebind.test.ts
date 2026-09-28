@@ -284,7 +284,7 @@ test("the Claude query cold-starts when the enabled set changes, and only then",
   const driver = createClaudeDriver(async () => ({
     tool: (name: string) => ({ name }),
     createSdkMcpServer: (input: unknown) => input,
-    async *query(input: { prompt: AsyncIterable<unknown> }) {
+    async *query(input: { prompt: string | AsyncIterable<unknown> }) {
       seen.queryCalls += 1;
       for await (const message of input.prompt) {
         void message;

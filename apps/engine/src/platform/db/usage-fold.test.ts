@@ -2,9 +2,15 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { UsageSnapshot } from "@telar/engine-client";
 import { ExecutionStore } from "./execution-store";
-import { projectJournal } from "../../../../web/src/platform/engine/journal";
 import { turnUsage } from "../../../test/store-internals";
+
+// The cockpit's fold, loaded by a computed path so the engine typecheck stays out of the web app.
+const WEB_JOURNAL = "../../../../web/src/platform/engine/journal";
+const { projectJournal } = (await import(WEB_JOURNAL)) as {
+  projectJournal: (turns: unknown[], items: unknown[], events: unknown[]) => Array<{ usage?: UsageSnapshot }>;
+};
 
 const roots: string[] = [];
 afterEach(() => {
@@ -66,7 +72,7 @@ const usageRows = (store: ExecutionStore, sessionId: string) =>
 /** The turn as the cockpit would draw it, folded by the production projector. */
 function replayedUsage(store: ExecutionStore, sessionId: string, runId: string) {
   const turns = [{ runId, input: "hello", state: "completed" as const }];
-  return projectJournal(turns as never, [], store.events(sessionId) as never)[0]?.usage;
+  return projectJournal(turns, [], store.events(sessionId))[0]?.usage;
 }
 
 /* ------------------------------------------------------------------ *
