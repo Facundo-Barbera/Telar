@@ -4,8 +4,8 @@
  */
 
 import type { ProviderDriverKind, ProviderSkill, ProviderSkillSource, RuntimeMode } from "@telar/engine-client";
-import { fileReference, directoryReference, skillReference } from "./drag-reference";
-import { insertRankedSearchResult, normalizeSearchQuery, scoreQueryMatch, type RankedSearchResult } from "./search-ranking";
+import { fileReference, directoryReference, skillReference } from "@/lib/drag-reference";
+import { insertRankedSearchResult, normalizeSearchQuery, scoreQueryMatch, type RankedSearchResult } from "@/lib/search-ranking";
 
 export type CompletionGlyph = "file" | "directory" | "note" | "access" | "model" | "effort" | "driver" | "env" | "stop" | "compact" | "resume" | "skill";
 
@@ -106,7 +106,7 @@ export function rankPaths(index: readonly PathEntry[], query: string, limit = 12
   return ranked.map((entry) => completionForPath(entry.item));
 }
 
-export type CommandContext = {
+type CommandContext = {
   busy: boolean;
   fresh: boolean;
   runtimeMode?: RuntimeMode;

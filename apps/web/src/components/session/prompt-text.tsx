@@ -24,8 +24,7 @@
  */
 
 import { Fragment } from "react";
-import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle } from "@/lib/composer-chip";
-import { chipIsDirectory, chipPath, segmentDraft } from "@/lib/composer-tokens";
+import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipIsDirectory, chipPath, chipTitle, segmentDraft } from "@/features/composer";
 import { chipGlyphFor } from "@/lib/glyph-paths";
 import { cn } from "@/lib/utils";
 import type { TelarReference } from "@/lib/drag-reference";

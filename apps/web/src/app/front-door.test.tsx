@@ -45,7 +45,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { FrontDoor } = await import("./front-door");
-const { canvasHrefFor } = await import("@/lib/composer-project");
+const { canvasHrefFor } = await import("@/features/composer");
 
 const NOTE_KEY = "telar.front-door.v1";
 const STAMP = 1_700_000_000_000;

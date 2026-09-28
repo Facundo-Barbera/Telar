@@ -47,7 +47,7 @@ import { Row, Segmented, SettingsGroup } from "./settings-shell";
 import { JobLog, type JobHandle } from "./job-log";
 import { MANAGER_LABEL, PackagesPanel } from "./packages-panel";
 import { cn } from "@/lib/utils";
-import { writeDraft } from "@/lib/composer-draft";
+import { writeDraft } from "@/features/composer";
 import { canvasHref } from "@/lib/session-list";
 
 const api = createEngineApi();

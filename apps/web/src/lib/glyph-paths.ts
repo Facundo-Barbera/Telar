@@ -3,7 +3,7 @@
  * imperatively, so they cannot mount React icons. Path data is lucide's (ISC), copied verbatim.
  */
 
-import { chipIsDirectory, chipPath } from "./composer-tokens";
+import { chipIsDirectory, chipPath } from "@/features/composer";
 import type { TelarReference } from "./drag-reference";
 import { fileKind, type FileGlyph } from "./file-kinds";
 

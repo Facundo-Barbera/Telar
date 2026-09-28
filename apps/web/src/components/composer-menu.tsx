@@ -19,7 +19,7 @@
 
 import { Fragment } from "react";
 import { BotIcon, DownloadIcon, FolderIcon, GaugeIcon, GitBranchIcon, Minimize2Icon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon, WandSparklesIcon } from "lucide-react";
-import type { Completion, CompletionGlyph } from "@/lib/composer-completions";
+import type { Completion, CompletionGlyph } from "@/features/composer";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { cn } from "@/lib/utils";
 

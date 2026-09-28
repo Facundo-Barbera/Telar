@@ -17,7 +17,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { GitHubSurface } = await import("./github-surface");
-const { readDraft, writeDraft } = await import("@/lib/composer-draft");
+const { readDraft, writeDraft } = await import("@/features/composer");
 
 const ISSUE = {
   number: 695,

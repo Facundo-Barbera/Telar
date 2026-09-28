@@ -26,7 +26,7 @@ installNavigation();
 const { SessionCockpit } = await import("./session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
 const { clearTranscriptCache } = await import("@/lib/transcript-cache");
-const { readDraft, writeDraft } = await import("@/lib/composer-draft");
+const { readDraft, writeDraft } = await import("@/features/composer");
 const { runCommand } = await import("@/lib/commands");
 
 const STARTED = 1_700_000_000_000;
