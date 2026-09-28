@@ -18,8 +18,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import type { TerminalBridge, TerminalChunk, TerminalEnding } from "@/lib/terminal-bridge";
-import { attachTerminal, gridMeasurer, terminalKeyHandler } from "@/lib/terminal-session";
+import type { TerminalBridge, TerminalChunk, TerminalEnding } from "./bridge";
+import { attachTerminal, gridMeasurer, terminalKeyHandler } from "./session";
 
 /**
  * A DOM for this file only, registered at module scope and handed back in

@@ -9,7 +9,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { describeTerminalEnding } from "@/lib/terminal-bridge";
+import { describeTerminalEnding } from "./bridge";
 
 describe("describeTerminalEnding", () => {
   test("an observed exit says so, with its status", () => {

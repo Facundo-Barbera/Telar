@@ -42,18 +42,17 @@ import { Button } from "@/components/ui/button";
 import { claimChords } from "@/features/commands";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
-import { createRunApi } from "@/lib/run/api";
-import { RunGlyph } from "@/lib/run/icons";
-import { isOpenTerminal, statusDetail, statusLabel, statusTone, type RunTone } from "@/lib/run/presentation";
-import { useRunStatusFeed } from "@/lib/run/status-stream";
-import type { RunConfigurationView, RunView } from "@/lib/run/types";
-import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalEnding } from "@/lib/terminal-bridge";
-import { endTerminal, mayClose } from "@/lib/terminal-close";
-import { runAsChip } from "@/lib/terminal-reveal";
-export { TERMINAL_ID_PARAM } from "@/lib/terminal-bridge";
-import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
-import { domImageBackend, KittyGraphicsAddon } from "@/lib/terminal-kitty/addon";
-import { attachTerminal, gridMeasurer, terminalKeyHandler } from "@/lib/terminal-session";
+import { createRunApi } from "../run/api";
+import { RunGlyph } from "../run/icons";
+import { isOpenTerminal, statusDetail, statusLabel, statusTone, type RunTone } from "../run/presentation";
+import { useRunStatusFeed } from "../run/status-stream";
+import type { RunConfigurationView, RunView } from "../run/types";
+import { describeTerminalEnding, isUnenterableCwd, terminalBridge, type TerminalEnding } from "../bridge";
+import { endTerminal, mayClose } from "../close";
+import { runAsChip } from "../reveal";
+import { TERMINAL_CHORD_CLAIMS } from "../keys";
+import { domImageBackend, KittyGraphicsAddon } from "../kitty/addon";
+import { attachTerminal, gridMeasurer, terminalKeyHandler } from "../session";
 import {
   activateShell,
   addShell,
@@ -67,9 +66,9 @@ import {
   upsertRunShell,
   workspaceParams,
   type TerminalWorkspace,
-} from "@/lib/terminal-workspace";
+} from "../workspace";
 import { RunPane } from "./run-pane";
-import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
+import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "../theme";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();

@@ -12,10 +12,10 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { headerMode, RunHeaderControl } from "./run-header-control";
 import { RunConfigEditor } from "./run-config-editor";
-import { latestOpenTerminal, openTerminals, runSummary, statusLabel, statusTone } from "@/lib/run/presentation";
-import { RunGlyph } from "@/lib/run/icons";
-import type { RunApi } from "@/lib/run/api";
-import type { RunConfigurationView, RunStatusAnswer, RunView } from "@/lib/run/types";
+import { latestOpenTerminal, openTerminals, runSummary, statusLabel, statusTone } from "../run/presentation";
+import { RunGlyph } from "../run/icons";
+import type { RunApi } from "../run/api";
+import type { RunConfigurationView, RunStatusAnswer, RunView } from "../run/types";
 
 const view = (over: Partial<RunView> = {}): RunView => ({
   terminalId: "term_1",

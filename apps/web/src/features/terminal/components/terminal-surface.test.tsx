@@ -25,8 +25,8 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { TERMINAL_IMAGE_OPTIONS, TerminalSurface } from "./terminal-surface";
-import type { LiveTerminal, TerminalActivity, TerminalChunk, TerminalEnding, TerminalOpenRequest } from "@/lib/terminal-bridge";
-import type { RunView } from "@/lib/run/types";
+import type { LiveTerminal, TerminalActivity, TerminalChunk, TerminalEnding, TerminalOpenRequest } from "../bridge";
+import type { RunView } from "../run/types";
 import {
   activateShell,
   addShell,
@@ -38,7 +38,7 @@ import {
   upsertRunShell,
   workspaceParams,
   TERMINAL_ID_PARAM,
-} from "@/lib/terminal-workspace";
+} from "../workspace";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -617,7 +617,7 @@ describe("image protocols", () => {
     const options = Object.keys(TERMINAL_IMAGE_OPTIONS);
     expect(options.some((key) => key.toLowerCase().includes("kitty"))).toBe(false);
     const typings = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../node_modules/@xterm/addon-image/typings/addon-image.d.ts"),
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../node_modules/@xterm/addon-image/typings/addon-image.d.ts"),
       "utf8",
     );
     expect(typings).toContain("sixelSupport");

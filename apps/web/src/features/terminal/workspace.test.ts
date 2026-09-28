@@ -31,7 +31,7 @@ import {
   TERMINAL_ID_PARAM,
   TERMINAL_WORKSPACE_PARAM,
   type TerminalWorkspace,
-} from "./terminal-workspace";
+} from "./workspace";
 
 const ids = (state: TerminalWorkspace) => state.shells.map((shell) => shell.id);
 

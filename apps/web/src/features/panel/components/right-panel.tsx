@@ -40,7 +40,7 @@ const NotebookSurface = dynamic(() => import("@/components/session/notebook-surf
 const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface));
 const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
 const GitHubSurface = dynamic(() => import("@/features/github").then((mod) => mod.GitHubSurface));
-const TerminalSurface = dynamic(() => import("@/components/session/terminal-surface").then((mod) => mod.TerminalSurface));
+const TerminalSurface = dynamic(() => import("@/features/terminal").then((mod) => mod.TerminalSurface));
 const ImageLightbox = dynamic(() => import("@/components/session/image-lightbox").then((mod) => mod.ImageLightbox));
 
 export type RightPanelProps = {

@@ -9,8 +9,8 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { TerminalActivity, TerminalBridge } from "@/lib/terminal-bridge";
-import { closeTerminalTab, decideClose, endTerminal, mayClose } from "@/lib/terminal-close";
+import type { TerminalActivity, TerminalBridge } from "./bridge";
+import { closeTerminalTab, decideClose, endTerminal, mayClose } from "./close";
 import {
   addShell,
   emptyWorkspace,
@@ -20,7 +20,7 @@ import {
   workspaceParams,
   TERMINAL_ID_PARAM,
   TERMINAL_WORKSPACE_PARAM,
-} from "@/lib/terminal-workspace";
+} from "./workspace";
 
 const idle = (id: string): TerminalActivity => ({ id, active: false, processes: 0 });
 const busy = (id: string, processes: number, command?: string): TerminalActivity => ({

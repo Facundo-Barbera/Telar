@@ -28,8 +28,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlusIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
-import { createRunApi, type RunApi } from "@/lib/run/api";
-import { RunGlyph } from "@/lib/run/icons";
+import { createRunApi, type RunApi } from "../run/api";
+import { RunGlyph } from "../run/icons";
 import {
   openCount,
   openTerminals,
@@ -39,10 +39,10 @@ import {
   statusTone,
   terminalTitle,
   type RunTone,
-} from "@/lib/run/presentation";
-import { mayClose } from "@/lib/terminal-close";
-import { useRunStatusFeed } from "@/lib/run/status-stream";
-import type { RunConfigurationDraft, RunConfigurationView, RunView } from "@/lib/run/types";
+} from "../run/presentation";
+import { mayClose } from "../close";
+import { useRunStatusFeed } from "../run/status-stream";
+import type { RunConfigurationDraft, RunConfigurationView, RunView } from "../run/types";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RunConfigEditor } from "./run-config-editor";

@@ -40,12 +40,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { claimChords } from "@/features/commands";
 import { EngineApiError } from "@/lib/engine/client";
-import type { RunApi } from "@/lib/run/api";
-import { byteDroppedNotice, byteFeed } from "@/lib/run/terminal-feed";
-import { terminalBridge } from "@/lib/terminal-bridge";
-import { TERMINAL_CHORD_CLAIMS } from "@/lib/terminal-keys";
-import { gridMeasurer, ptyByteWriter, terminalKeyHandler } from "@/lib/terminal-session";
-import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
+import type { RunApi } from "../run/api";
+import { byteDroppedNotice, byteFeed } from "../run/terminal-feed";
+import { terminalBridge } from "../bridge";
+import { TERMINAL_CHORD_CLAIMS } from "../keys";
+import { gridMeasurer, ptyByteWriter, terminalKeyHandler } from "../session";
+import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "../theme";
 import { cn } from "@/lib/utils";
 
 /** Deep enough to hold a build's output and the failure above it; a run is not
