@@ -1,25 +1,11 @@
 "use client";
 
-/**
- * The usage chart — one 2px line plus a 12%-opacity area per provider, every
- * series measured FROM THE SAME ZERO BASELINE (never stacked: stacking would
- * imply one provider always rides on the other). Hand-rolled SVG like the
- * t3 code original; the geometry lives in a `preserveAspectRatio="none"` box
- * and ALL TEXT LIVES OUTSIDE IT in ordinary HTML, so nothing distorts.
- *
- * Colors are chart-local custom properties, validated (dataviz six checks,
- * both modes) rather than eyeballed — see usage-page.tsx where they are
- * declared. Identity is never color-alone: the legend pairs each dot with its
- * label, and the page's breakdown table is the table view.
- */
-
 import { useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export type ChartSeries = {
   key: string;
   label: string;
-  /** CSS color — a `var(--…)` the page declared and validated. */
   color: string;
   values: number[];
 };
@@ -28,7 +14,6 @@ const W = 960;
 const H = 260;
 const PAD_TOP = 8;
 
-/** 1/2/5 × 10ⁿ ceiling — the peak must land on the scale, never be clipped. */
 function niceMax(peak: number): number {
   if (peak <= 0) return 1;
   const magnitude = 10 ** Math.floor(Math.log10(peak));
@@ -44,7 +29,6 @@ export function UsageChart({
   format,
 }: {
   series: ChartSeries[];
-  /** One short label per index; first, middle and last are shown. */
   labels: string[];
   format: (value: number) => string;
 }) {
@@ -80,7 +64,6 @@ export function UsageChart({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex gap-2">
-        {/* Y labels beside the plot, not inside the distorting viewBox. */}
         <div className="relative w-12 shrink-0 text-right text-3xs tabular-nums text-muted-foreground">
           {ticks.map((tick) => (
             <span key={tick} className="absolute right-0 -translate-y-1/2" style={{ top: `${(y(tick) / H) * 100}%` }}>
@@ -94,7 +77,6 @@ export function UsageChart({
               <line key={tick} x1={0} x2={W} y1={y(tick)} y2={y(tick)} className="stroke-border/50" strokeWidth={1} vectorEffect="non-scaling-stroke" />
             ))}
             <line x1={0} x2={W} y1={H} y2={H} className="stroke-border" strokeWidth={1} vectorEffect="non-scaling-stroke" />
-            {/* All fills first, then all strokes, so no area washes a line. */}
             {paths.map((entry) => (
               <path key={`${entry.key}-a`} d={entry.area} fill={entry.color} opacity={0.12} />
             ))}
@@ -105,7 +87,6 @@ export function UsageChart({
               <line x1={x(hover)} x2={x(hover)} y1={PAD_TOP} y2={H} className="stroke-foreground/30" strokeWidth={1} vectorEffect="non-scaling-stroke" />
             )}
           </svg>
-          {/* ≥8px hover markers, HTML so they stay round under the stretch. */}
           {hover !== undefined &&
             paths.map((entry) => (
               <span
@@ -143,7 +124,6 @@ export function UsageChart({
         <span>{labels[Math.floor((count - 1) / 2)]}</span>
         <span>{labels[count - 1]}</span>
       </div>
-      {/* The legend — identity by dot + label, never color alone. */}
       <div className="ml-14 flex items-center gap-4 text-xs text-muted-foreground">
         {series.map((entry) => (
           <span key={entry.key} className="flex items-center gap-1.5">

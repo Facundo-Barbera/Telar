@@ -1,32 +1,5 @@
 "use client";
 
-/**
- * USAGE — what this engine's sessions spent, over time.
- *
- * t3 code's usage page, architecture included: the engine scans the provider
- * CLIs' OWN transcripts (`~/.claude/projects`, `~/.codex/sessions`), so the
- * page counts everything this machine ran — inside Telar or not — with the
- * real model on every record. Cost is the transcript's own figure where one
- * exists, the LiteLLM rate table's base tier where it doesn't, and ABSENT
- * (a dash, never $0.00) for models neither knows; shares are of processed
- * tokens so a missing rate cannot skew them.
- *
- * THE TWO SERIES COLOURS ARE --chart-1 AND --chart-2, and that is a change of
- * mind this note owes an explanation for. They used to be four hexes injected
- * in a chart-local <style>, picked with the dataviz validator against two
- * NAMED surfaces — white and `#161616`. That validation was sound and it is
- * also exactly the problem: `#161616` is Telar's dark canvas and nobody else's.
- * The moment a reader wears Ember or something they built, the chart is two
- * fixed sRGB values sitting on a surface they were never checked against, and
- * unlike every other colour in the app they cannot move with it.
- *
- * The chart tokens are the app's answer to the same question, already: five
- * hues at one lightness, 72 degrees apart so no pair collapses under any CVD,
- * with a dark step tuned on the dark spine. --chart-1 (264) and --chart-2 (336)
- * are the same two families the hexes were — a blue and a magenta — and they
- * re-tune themselves for whatever canvas they land on.
- */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCwIcon } from "lucide-react";
 import type { UsageReport } from "@telar/engine-client";
@@ -35,8 +8,8 @@ import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Segmented } from "@/components/settings/settings-shell";
-import { UsageChart, type ChartSeries } from "@/components/usage/usage-chart";
-import { UsageLimitsSection } from "@/components/usage/usage-limits";
+import { UsageChart, type ChartSeries } from "./usage-chart";
+import { UsageLimitsSection } from "./usage-limits";
 import {
   DRIVER_LABEL,
   foldUsage,
@@ -45,7 +18,7 @@ import {
   formatTokens,
   formatUsd,
   type UsageFold,
-} from "@/lib/usage-report";
+} from "../model";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -81,9 +54,7 @@ export function UsagePage() {
   const report = result?.window === windowKey ? result.report : undefined;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  // Stale-while-revalidate per window: switching filters shows the last
-  // report for that window INSTANTLY and refreshes behind it — the engine's
-  // transcript rescan must never gate a button press.
+  // Stale-while-revalidate per window: the engine's transcript rescan must never gate a button press.
   const cache = useRef(new Map<WindowKey, UsageReport>());
   const request = useRef(0);
 
@@ -123,8 +94,7 @@ export function UsagePage() {
   const fold: UsageFold | undefined = useMemo(() => (report ? foldUsage(report) : undefined), [report]);
   const resolution = report?.resolution ?? "day";
 
-  // The cost chart draws only providers that actually price their turns; a
-  // flat zero line for Codex would read as "ran and cost nothing".
+  // A flat zero cost line would read as "ran and cost nothing", so unpriced providers are left out.
   const chartSeries: ChartSeries[] = useMemo(() => {
     if (!fold) return [];
     return fold.providers
@@ -180,17 +150,7 @@ export function UsagePage() {
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-5 py-5">
-          {/* CAPACITY BEFORE SPEND. What is left decides whether the next turn
-              runs; what was spent is history. The section draws nothing at all
-              unless a hub is configured, so the page below is unchanged for
-              everybody who has not set one up — and it sits OUTSIDE the
-              `fold && !empty` gate deliberately: a machine that ran nothing
-              locally can still be pooling accounts that are nearly out. */}
           <UsageLimitsSection />
-          {/* These two used to ride in the header's subtitle. The subtitle is
-              gone (it crowded the title), but an engine that could not answer
-              and a model with no known rate are both things a person reading
-              a cost figure needs to be told, so they moved into the flow. */}
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           {!error && unpricedProvider && metric === "cost" && (
             <p className="text-sm text-muted-foreground">Some models have no known rate; their cost is not counted.</p>
@@ -200,8 +160,6 @@ export function UsagePage() {
 
           {fold && !empty && (
             <>
-              {/* Hero: the headline figure and its per-provider split, beside
-                  the chart. */}
               <section className="grid gap-6 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
                 <div className="flex flex-col gap-3">
                   <div>
@@ -219,8 +177,6 @@ export function UsagePage() {
                         <Dot driver={provider.driver} />
                         <span className="min-w-0 flex-1 truncate">{DRIVER_LABEL[provider.driver]}</span>
                         <span className="tabular-nums text-muted-foreground">{formatShare(provider.share)}</span>
-                        {/* A partially-priced figure is a FLOOR and still worth
-                            showing; the dash is only for "no cost known at all". */}
                         <span className="w-20 text-right tabular-nums">
                           {metric === "cost" ? (provider.costUsd > 0 ? formatUsd(provider.costUsd) : "—") : formatTokens(provider.processed)}
                         </span>
@@ -236,7 +192,6 @@ export function UsagePage() {
                 </div>
               </section>
 
-              {/* Totals — the four-way token split plus the turn count. */}
               <section>
                 <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Totals</p>
                 <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
@@ -250,8 +205,6 @@ export function UsagePage() {
 
               <Breakdown fold={fold} metric={metric} resolution={resolution} />
 
-              {/* WHERE THE NUMBERS CAME FROM — a missing install must read as
-                  "not scanned", never as "spent nothing". */}
               {report && (
                 <p className="text-xs text-muted-foreground">
                   {report.sources
@@ -331,7 +284,6 @@ function Breakdown({ fold, metric, resolution }: { fold: UsageFold; metric: Metr
               </tr>
             </thead>
             <tbody>
-              {/* Newest first — the row you came to read is the top one. */}
               {fold.periods
                 .filter((period) => period.total.turns > 0)
                 .toReversed()
@@ -346,8 +298,6 @@ function Breakdown({ fold, metric, resolution }: { fold: UsageFold; metric: Metr
                         </td>
                       );
                     })}
-                    {/* A partially-priced total shows what WAS priced; a total
-                        with no cost figure at all shows the dash, not $0.00. */}
                     <td className={num}>
                       {metric === "cost" ? (period.total.costUsd > 0 ? formatUsd(period.total.costUsd) : "—") : formatTokens(period.total.processed)}
                     </td>
