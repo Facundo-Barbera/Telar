@@ -21,7 +21,7 @@ import { pluginBriefings } from "./plugins/bundled";
 import { canonicalEnvPatch, canonicalJson, canonicalServers, changedFields, fieldDigest, fieldDigests, resolveChildEnv, ClaudeRuntimeStore, MessageFeed, UNATTENDED_BACKGROUND_WORK_MS, taskMemoryFrom, type ClaudeSessionRuntime, type RuntimeBindings, type RuntimeQuery } from "./drivers/claude";
 import { framedSteerText, steerRowTitle, type SteerMessage } from "./domains/turns";
 import { ProviderUnavailableError, normalizeOutcome, requireCwd, type DriverRun, type ProviderTurnBinding, type DriverSessionHooks, type TurnDriver } from "./drivers/contract";
-import { taskOutputFileFrom } from "./task-output";
+import { taskOutputFileFrom } from "./drivers/claude";
 import { claudeInitialContent, claudeNotificationOrigin, claudeNotificationContent, claudeStreamingInputEnabled, singleUserMessage, claudeMcpServers, claudeContextEnvForModel, claudeToolSearchEnv, SESSION_STATE_ENV, claudeWindowOf, selectedContextMaxFromModel, claudeEffort, type SdkCanUseTool, type SdkUserMessage, type ClaudeTurnBindings, type ClaudeSdk } from "./drivers/claude/sdk";
 import { requestKindForTool, requestDetailForToolCall, itemId, oneLine, asRecord, contentBlocks, str, itemDetailForToolCall, titleForToolCall } from "./drivers/claude/mapping";
 import { taskKindForType, taskKindForTypeOrUndefined, isForegroundShell, taskStateForStatus, isTerminalTaskState, planDetailForTodos } from "./drivers/claude/tasks";

@@ -114,7 +114,7 @@ import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { readWorktreesRoot } from "./worktrees-location";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
-import { readTaskOutput, resolveTaskOutputFile } from "./task-output";
+import { readTaskOutput, resolveTaskOutputFile } from "./drivers/claude";
 import { filesRoutes } from "./domains/files";
 import { settingsRoutes } from "./domains/settings";
 import { dictationRoutes } from "./domains/dictation";
