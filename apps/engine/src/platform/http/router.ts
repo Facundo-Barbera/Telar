@@ -36,10 +36,11 @@ export function router(routes: readonly Route[], options: RouterOptions): http.R
       const matched = matchRoute(routes, request.method ?? "GET", url.pathname);
       if (!matched) return await fallback(request, response, url);
       options.authorize(matched.route.auth, request);
-      const input = { body: request.method === "GET" ? {} : await body(request), params: matched.params, query: url.searchParams };
-      const answer = await matched.route.handle(input);
+      const parsed = request.method === "GET" || matched.route.body === "raw" ? {} : await body(request);
+      const answer = await matched.route.handle({ body: parsed, params: matched.params, query: url.searchParams, request, response });
+      if (!answer) return;
       if (answer.bytes) response.writeHead(answer.status, answer.headers).end(answer.bytes);
-      else writeJson(response, answer.status, answer.body);
+      else writeJson(response, answer.status, answer.body, answer.headers);
     } catch (error) {
       writeError(response, options.errorFor(error));
     }
