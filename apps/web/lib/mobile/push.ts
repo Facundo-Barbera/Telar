@@ -148,8 +148,9 @@ export function isDeadToken(result: DeliveryResult): boolean {
   return result.status === 410 || (result.status === 400 && result.reason !== undefined && DEAD_TOKEN_REASONS.has(result.reason));
 }
 export class PushInputError extends Error {}
-/** The phone app's bundle ids, which are its APNs topics. `com.telar.mobile` is the app before #1042. */
-const MOBILE_TOPICS = new Set(["io.github.novarix.telar", "io.github.novarix.telar.dev", "com.telar.mobile", "com.telar.mobile.dev"]);
+// Phone bundle ids = APNs topics. Delete the legacy ids on `until`, with BUNDLES in workers/push-relay/v2.mjs.
+const LEGACY_BUNDLE_IDS = { until: "2026-11-01", ids: ["com.telar.mobile", "com.telar.mobile.dev"] };
+const MOBILE_TOPICS = new Set(["io.github.novarix.telar", "io.github.novarix.telar.dev", ...LEGACY_BUNDLE_IDS.ids]);
 const hex = /^[a-fA-F0-9]{32,512}$/;
 const uuid = /^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$/;
 
