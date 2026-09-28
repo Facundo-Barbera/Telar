@@ -13,7 +13,7 @@ import { machineBlocksFor } from "./settings-panes";
 import { GeneratedSettingsRows } from "./generated-settings";
 import { generatedGroupTitle, settingsFields } from "../settings-form";
 import { machineSettingsPatch } from "../sections";
-import { Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 

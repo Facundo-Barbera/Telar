@@ -6,7 +6,7 @@ import { ArchiveIcon, ClockIcon, GitBranchIcon, HistoryIcon, ScrollTextIcon } fr
 import { createEngineApi } from "@/platform/engine/index";
 import { fmtAgo, formatBytes } from "@/lib/format";
 import { Button } from "@/components/ui/button";
-import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/components/settings/settings-shell";
+import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/features/settings";
 import { WorktreeListSection } from "./worktree-list-section";
 import { WorktreesRootRows } from "./worktrees-root-section";
 

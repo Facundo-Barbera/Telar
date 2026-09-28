@@ -8,7 +8,7 @@ import { createEngineApi } from "@/platform/engine/index";
 import { machineSettingsPatch } from "../sections";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 

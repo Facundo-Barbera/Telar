@@ -1,4 +1,4 @@
-import { SettingsPage } from "@/components/settings/settings-page";
+import { SettingsPage } from "@/features/settings";
 
 export const dynamic = "force-dynamic";
 

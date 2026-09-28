@@ -21,7 +21,7 @@ import { PanelRow } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
 import { fmtAgo } from "@/lib/format";
-import { issueStatus, offersMerge, pullStatus, STATUS_LABEL, STATUS_TONE, type ForgeStatus } from "@/lib/github-forge";
+import { issueStatus, offersMerge, pullStatus, STATUS_LABEL, STATUS_TONE, type ForgeStatus } from "../github-forge";
 import { cn } from "@/lib/utils";
 import { GitHubAvatar } from "./github-avatar";
 

@@ -4,7 +4,7 @@ import { FolderGitIcon, RefreshCwIcon, ShieldCheckIcon } from "lucide-react";
 import { DEFAULT_DETACHED_RUNTIME_MODE, DEFAULT_SESSION_DEFAULTS, type EnvMode, type RuntimeMode } from "@telar/engine-client";
 import { useSessionDefaults } from "@/features/sessions";
 import { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS, RUNTIME_MODES } from "@/features/providers";
-import { Dropdown, Row, SettingsGroup, ToggleRow, useRestoreDefaults } from "@/components/settings/settings-shell";
+import { Dropdown, Row, SettingsGroup, ToggleRow, useRestoreDefaults } from "@/features/settings";
 
 export function WorkspaceSection() {
   const { defaults, loading, save, error } = useSessionDefaults();

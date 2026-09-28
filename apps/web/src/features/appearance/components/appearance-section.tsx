@@ -19,7 +19,7 @@ import { halfFromBase } from "../palette-from-image";
 import { mergeById, readAppearanceHome } from "../appearance-home";
 import { THEME_TOKENS, type ThemeToken } from "../theme-palettes";
 import { Button } from "@/components/ui/button";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "@/components/settings/settings-shell";
+import { Row, Segmented, SettingsGroup, ToggleRow } from "@/features/settings";
 import { DepthControl } from "./depth-control";
 import { LooksSection } from "./looks-section";
 import { GroupStrip } from "./studio/tool-strip";

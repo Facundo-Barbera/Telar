@@ -7,9 +7,9 @@ import {
   ContextMenuRadioItem,
   ContextMenuSeparator,
 } from "@/components/ui/context-menu";
-import { OpenerIcon } from "@/components/session/opener-icon";
+import { OpenerIcon } from "./opener-icon";
 import { fileReference, type TelarReference } from "@/lib/drag-reference";
-import type { WorkspaceFileMenu } from "@/lib/workspace-open";
+import type { WorkspaceFileMenu } from "../workspace-open";
 
 /** One menu for the address row and the body; the textarea keeps the browser's own edit menu. */
 export function FileMenuItems({

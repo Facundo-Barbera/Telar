@@ -17,7 +17,7 @@ import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, SettingsGroup, useRestoreDefaults } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup, useRestoreDefaults } from "@/features/settings";
 
 type Unit = "hours" | "days";
 

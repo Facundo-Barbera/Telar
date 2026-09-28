@@ -27,7 +27,7 @@ import { ProjectIconPicker } from "./project-icon-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { McpSection } from "@/features/agent-tools";
 import { RemoveProjectSection } from "./remove-project-section";
-import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "@/components/settings/settings-shell";
+import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "@/features/settings";
 import { ProjectWorkspaceSection } from "./workspace-config-section";
 
 const api = createEngineApi();

@@ -5,7 +5,7 @@
 
 import { chipIsDirectory, chipPath } from "@/features/composer";
 import type { TelarReference } from "./drag-reference";
-import { fileKind, type FileGlyph } from "./file-kinds";
+import { fileKind, type FileGlyph } from "@/features/files";
 
 /** Everything inside a 24×24 `<svg>` drawn with lucide's stroke conventions. */
 const FILE_GLYPH_MARKUP: Record<FileGlyph, string> = {

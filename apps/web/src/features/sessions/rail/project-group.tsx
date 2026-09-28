@@ -14,7 +14,19 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { ProjectAvatar } from "@/features/projects/index";
-import { OpenerIcon } from "@/components/session/opener-icon";
+import {
+  OpenerIcon,
+  workspaceOpenBlocker,
+  workspaceOpener,
+  type WorkspaceOpenersAnswer,
+  preferredOpenerSnapshot,
+  remembersOpener,
+  serverPreferredOpenerSnapshot,
+  subscribePreferredOpener,
+  workspaceOpenerEntries,
+  writePreferredOpener,
+  type WorkspaceOpenerEntry,
+} from "@/features/files";
 import { SessionRow } from "./session-row";
 import {
   ContextMenu,
@@ -39,16 +51,6 @@ import type { ProjectPlace } from "@/features/hosts";
 import type { ProjectGroup as Group, RailJumpSlot } from "../session-groups";
 import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "../session-list";
 import type { SessionRowChanged } from "../session-mutations";
-import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpenersAnswer } from "@/lib/workspace-open";
-import {
-  preferredOpenerSnapshot,
-  remembersOpener,
-  serverPreferredOpenerSnapshot,
-  subscribePreferredOpener,
-  workspaceOpenerEntries,
-  writePreferredOpener,
-  type WorkspaceOpenerEntry,
-} from "@/lib/workspace-opener-preference";
 import { cn } from "@/lib/utils";
 
 function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root: string | undefined) {

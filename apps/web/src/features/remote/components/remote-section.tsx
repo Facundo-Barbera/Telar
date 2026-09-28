@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { QrCodeView } from "./qr-code";
 import { CopyCommand } from "@/components/ui/copy-command";
 import { PushNotificationsGroup } from "@/features/push";
-import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/components/settings/settings-shell";
+import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/features/settings";
 
 interface RemoteDevice {
   id: string;

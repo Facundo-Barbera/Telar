@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Row, Segmented, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, Segmented, SettingsGroup } from "@/features/settings";
 import { JobLog, type JobHandle } from "../components/job-log";
 import { MANAGER_LABEL, PackagesPanel } from "../components/packages-panel";
 import { cn } from "@/lib/utils";

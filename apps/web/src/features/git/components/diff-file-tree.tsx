@@ -4,9 +4,8 @@ import { useMemo, useState } from "react";
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
 
 import type { GitFileChange } from "@telar/engine-client";
-import { buildFileTree, directoryPaths, flattenTree, type FileTreeRow } from "@/lib/file-tree";
+import { buildFileTree, directoryPaths, flattenTree, type FileTreeRow, FileKindIcon } from "@/features/files";
 import { REVIEW_STATUS_LETTER } from "../session-review";
-import { FileKindIcon } from "@/components/session/file-icon";
 import { cn } from "@/lib/utils";
 
 const INDENT = 10;

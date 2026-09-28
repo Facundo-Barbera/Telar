@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { DictationMicrophoneSection } from "./dictation-microphone-section";
-import { Dropdown, Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Dropdown, Row, SettingsGroup } from "@/features/settings";
 
 const PROVIDERS: { id: DictationProviderId; label: string }[] = [
   { id: "off", label: "Off" },

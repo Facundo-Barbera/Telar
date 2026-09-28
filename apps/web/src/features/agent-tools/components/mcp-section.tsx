@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Row, Segmented, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, Segmented, SettingsGroup } from "@/features/settings";
 import { HEALTH_DOT, signInAction, signInSummary, statusFor } from "../mcp-oauth";
 
 const api = createEngineApi();

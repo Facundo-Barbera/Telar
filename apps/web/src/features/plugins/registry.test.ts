@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { isPluginSurface, pluginCommands, pluginSurfaces, viewerAvailable } from "./registry";
 import { panelTabForPath } from "@/features/panel/index";
-import { editorFileForPath } from "@/lib/editor-workspace";
+import { editorFileForPath } from "@/features/files/editor-workspace";
 import { defaultRightPanelWidth } from "@/features/panel/index";
 
 describe("the web plugin registry, gated by the enabled ids", () => {

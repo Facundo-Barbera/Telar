@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { GeneratedSettingsRows } from "./generated-settings";
 import { settingsFields } from "../settings-form";
-import { Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 

@@ -2,7 +2,7 @@
 
 import { XIcon, type LucideIcon } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { activateForge, closeForge, forgeNumbersAfter, otherForgeNumbers, showForgeList, type ForgeOpen } from "@/lib/forge-workspace";
+import { activateForge, closeForge, forgeNumbersAfter, otherForgeNumbers, showForgeList, type ForgeOpen } from "../forge-workspace";
 import { cn } from "@/lib/utils";
 import type { ForgeListKind } from "../model";
 

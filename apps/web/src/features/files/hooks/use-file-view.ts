@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import type { EditorViewState } from "@/lib/editor-workspace";
-import { carryTokens, highlight, type HighlightedLine } from "@/lib/highlight";
+import type { EditorViewState } from "../editor-workspace";
+import { carryTokens, highlight, type HighlightedLine } from "../highlight";
 
 const HIGHLIGHT_DELAY_MS = 120;
 

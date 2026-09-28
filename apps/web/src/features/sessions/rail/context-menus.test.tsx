@@ -6,7 +6,7 @@ import { liveRow, mountRail, project, pushes, stubRail } from "@/lib/testing/rai
 import { projectSettingsHref } from "@/features/projects";
 import { canvasHref } from "../session-list";
 import type { ProjectGroup } from "../session-groups";
-import { readPreferredOpener } from "@/lib/workspace-opener-preference";
+import { readPreferredOpener } from "@/features/files/workspace-opener-preference";
 import { ProjectGroupSection } from "./project-group";
 
 installTestDom();

@@ -5,7 +5,7 @@ import { FileTextIcon, FlaskConicalIcon, FolderIcon, PackagePlusIcon, PlugIcon, 
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { describeValue, parseNumberField, type SettingsField } from "../settings-form";
-import { Dropdown, Row } from "@/components/settings/settings-shell";
+import { Dropdown, Row } from "@/features/settings";
 
 const INHERIT = "__inherit";
 

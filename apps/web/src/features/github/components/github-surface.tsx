@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import dynamic from "next/dynamic";
 import { CircleDotIcon, GitPullRequestIcon } from "lucide-react";
 import type { GitHubIssue } from "@telar/engine-client";
-import { emptyForge, openForge, type ForgeOpen } from "@/lib/forge-workspace";
+import { emptyForge, openForge, type ForgeOpen } from "../forge-workspace";
 import { cn } from "@/lib/utils";
 import { useGitHubList } from "../hooks/use-github-list";
 import { useIssueSession } from "../hooks/use-issue-session";

@@ -1,4 +1,4 @@
-import { avatarSrc, authorMonogram } from "@/lib/github-forge";
+import { avatarSrc, authorMonogram } from "../github-forge";
 import { cn } from "@/lib/utils";
 
 // Stateless fallback: the monogram is drawn underneath and a failed image hides itself,

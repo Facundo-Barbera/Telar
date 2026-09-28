@@ -28,7 +28,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { LookThumb } from "./look-thumb";
-import { Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup } from "@/features/settings";
 
 function stackPhrase(layers: readonly { type: string }[]): string {
   if (layers.length === 0) return "flat";

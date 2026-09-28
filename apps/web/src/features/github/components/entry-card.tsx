@@ -5,7 +5,7 @@ import { ExternalLinkIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { PanelDivider } from "@/components/ui/panel";
 import { fmtAgo } from "@/lib/format";
-import { reviewLabel, type ForgeEntry } from "@/lib/github-forge";
+import { reviewLabel, type ForgeEntry } from "../github-forge";
 import { cn } from "@/lib/utils";
 import { exactTime } from "../model";
 import { GitHubAvatar } from "./github-avatar";

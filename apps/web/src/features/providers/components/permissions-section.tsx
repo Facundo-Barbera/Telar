@@ -8,7 +8,9 @@ import { DRIVER_LABEL, DRIVERS } from "../provider-instances";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup } from "@/features/settings";
+
+// The bundled computer-use helper is cua-driver (trycua/cua, MIT).
 
 const api = createEngineApi();
 

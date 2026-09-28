@@ -5,7 +5,7 @@ import { BellIcon, SmartphoneIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmtAgo } from "@/lib/format";
 import type { ActivityReport, NotifyOn } from "@telar/engine-client";
-import { Dropdown, Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Dropdown, Row, SettingsGroup } from "@/features/settings";
 
 export interface PushRelayStatus {
   configured: boolean;

@@ -7,7 +7,7 @@ import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
 import { createEngineApi } from "@/platform/engine";
-import { buildForgeTimeline, issueStatus, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeStatus } from "@/lib/github-forge";
+import { buildForgeTimeline, issueStatus, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeStatus } from "../github-forge";
 import { cn } from "@/lib/utils";
 import { useForgeDetail } from "../hooks/use-forge-detail";
 import { ChecksBlock } from "./checks-block";

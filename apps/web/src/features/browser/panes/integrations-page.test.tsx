@@ -7,7 +7,7 @@ import { typeInto } from "@/lib/testing/type-into";
 import { NewBrowserProfileDialog } from "../settings";
 import { BrowserProfilesSection } from "./browser-profiles-section";
 import { IntegrationsPage } from "./integrations-page";
-import { Row } from "@/components/settings/settings-shell";
+import { Row } from "@/features/settings/components/settings-shell";
 
 installTestDom();
 

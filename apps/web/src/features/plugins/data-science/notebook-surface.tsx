@@ -5,15 +5,22 @@ import { ChevronDownIcon, ChevronRightIcon, CirclePlayIcon, NotebookIcon, PlayIc
 import type { TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/platform/engine/index";
 import type { CellOutput, KernelState, NotebookCell, NotebookRead } from "./ds";
-import { EditorAddressRow } from "@/components/session/editor-chrome";
+import {
+  EditorAddressRow,
+  OverlayEditor,
+  claimCellDraft,
+  claimCellDrafts,
+  draftScope,
+  forgetCellDraft,
+  newDraftOwner,
+  rememberCellDraft,
+} from "@/features/files";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { MessageResponse } from "@/components/ui/message";
-import { OverlayEditor } from "@/components/session/overlay-editor";
 import { CellOutputView } from "./cell-output";
-import { claimCellDraft, claimCellDrafts, draftScope, forgetCellDraft, newDraftOwner, rememberCellDraft } from "@/lib/editor-drafts";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { KernelPill } from "./kernel-pill";
 import { cn } from "@/lib/utils";

@@ -5,7 +5,7 @@ import type { GitHubIssue, GitHubSnapshot } from "@telar/engine-client";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { fmtAgo } from "@/lib/format";
-import { filterChips, UNAVAILABLE } from "@/lib/github-forge";
+import { filterChips, UNAVAILABLE } from "../github-forge";
 import { cn } from "@/lib/utils";
 import type { GitHubList } from "../hooks/use-github-list";
 import { listCount, type ForgeListKind } from "../model";

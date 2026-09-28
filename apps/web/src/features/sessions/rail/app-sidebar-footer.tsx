@@ -3,12 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChartNoAxesColumnIcon, DownloadIcon, FlameIcon, Loader2Icon, PowerIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
-import { useDesktopUpdate } from "@/lib/desktop-updates";
+import { useDesktopUpdate, UpdateToast, RestartUpdateDialog } from "@/features/updates";
 import { formatCpu, useRunawayNotice, type RunawayRenderer } from "@/lib/desktop-metrics";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { UpdateToast } from "@/components/ui/update-toast";
 import { ProgressRing } from "@/components/ui/progress-ring";
-import { RestartUpdateDialog } from "@/components/ui/restart-update-dialog";
 import { cn } from "@/lib/utils";
 
 const iconButton = (active = false) =>

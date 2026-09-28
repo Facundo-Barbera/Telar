@@ -2,8 +2,8 @@
 
 import { ChevronDownIcon } from "lucide-react";
 import type { GitRefEntry } from "@telar/engine-client";
-import { scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
-import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
+import { scopesFor, type DiffScopeKind, type DiffTab } from "../diff-scope";
+import { turnFor, turnLabel, type DiffTurn } from "../diff-turns";
 import { fmtAgo } from "@/lib/format";
 import {
   DropdownMenu,

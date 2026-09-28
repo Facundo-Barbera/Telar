@@ -2,7 +2,7 @@
  * THE TERMINAL'S OWN TABS — the shells open inside one Terminal surface.
  *
  * WHY THIS IS NOT `right-panel-tabs.ts`, and it is the Editor's argument
- * (lib/editor-workspace.ts) applied to a second surface. A shell used to be a
+ * (features/files/editor-workspace.ts) applied to a second surface. A shell used to be a
  * top-level panel tab: three of them wrote "Terminal", "Terminal", "Terminal"
  * across the strip and pushed Diff and Issues off the edge, so opening a second
  * shell cost you the surfaces you were working with. Shells are not surfaces.

@@ -22,7 +22,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { SlidersHorizontalIcon } from "lucide-react";
-import { Row, SettingsGroup, SettingsShell } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup, SettingsShell } from "@/features/settings/components/settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "@/features/settings";
 import { TELAR_DARK, TELAR_LIGHT } from "@telar/engine-client";
 import { STATE_INK, TINT_FLOOR, tintCost } from "../tint-separation";

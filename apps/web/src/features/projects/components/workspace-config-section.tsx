@@ -19,7 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { Dropdown, Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Dropdown, Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 

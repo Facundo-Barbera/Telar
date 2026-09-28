@@ -2,6 +2,9 @@ import { cn } from "@/lib/utils";
 import { routeOf } from "../model-connections";
 import type { ProviderDriverKind } from "@telar/engine-client";
 
+// Connection marks are models.dev provider logos (MIT, github.com/sst/models.dev); OPENCODE_MARK is from
+// opencode's brand assets (MIT, github.com/anomalyco/opencode). Originals and ATTRIBUTION.md: public/model-providers/.
+
 export type Mark = { viewBox: string; d: string; dim?: string; dimOpacity?: number };
 
 const MARKS: Record<string, Mark> = {

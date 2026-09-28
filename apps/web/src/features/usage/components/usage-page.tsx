@@ -7,7 +7,7 @@ import { createEngineApi } from "@/platform/engine";
 import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Segmented } from "@/components/settings/settings-shell";
+import { Segmented } from "@/features/settings";
 import { UsageChart, type ChartSeries } from "./usage-chart";
 import { UsageLimitsSection } from "./usage-limits";
 import {
