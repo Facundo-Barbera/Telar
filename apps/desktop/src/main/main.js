@@ -696,7 +696,7 @@ function startExtensionHost(win, manager, partition) {
     tabs: {
       createTab: async (details) => {
         const url = details.url || "about:blank";
-        if (/^chrome-extension:/.test(url)) {
+        if (url.startsWith('chrome-extension:')) {
           const page = host.openExtensionPage(url, win);
           return [page.webContents, page];
         }
@@ -715,7 +715,7 @@ function startExtensionHost(win, manager, partition) {
       },
       removeTab: (wc) => {
         const tab = manager.tabs.find((t) => t.view && t.view.webContents === wc);
-        if (tab) { manager.closeTabRef(tab, "human"); return; }
+        if (tab) { manager.closeTabRef(tab); return; }
         for (const page of host.extensionWindows) if (!page.isDestroyed() && page.webContents === wc) page.close();
       },
     },

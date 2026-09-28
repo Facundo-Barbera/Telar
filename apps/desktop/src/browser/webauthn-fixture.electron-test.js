@@ -86,7 +86,7 @@ async function main() {
   const extensions = attachExtensionSupport(ses, {
     createTab: async () => { throw new Error("fixture opens no tabs"); }, selectTab: () => undefined, removeTab: () => undefined,
   }, { preloadDir: work, window });
-  const extension = await ses.extensions.loadExtension(unpacked, { allowFileAccess: false });
+  await ses.extensions.loadExtension(unpacked, { allowFileAccess: false });
   await sleep(2500);
 
   const view = openTab();

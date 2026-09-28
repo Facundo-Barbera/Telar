@@ -1108,7 +1108,7 @@ describe("closing a real process group that ignores SIGTERM", () => {
     let grandchild;
     let active;
     async function runCase(host) {
-      const { id } = host.open({ shell: "/bin/sh", env: {}, sessionId: "s_fixture" });
+      host.open({ shell: "/bin/sh", env: {}, sessionId: "s_fixture" });
       await ready;
       grandchild = Number(/CHILD=(\d+)/.exec(out)[1]);
       [active] = await host.activeProcesses();

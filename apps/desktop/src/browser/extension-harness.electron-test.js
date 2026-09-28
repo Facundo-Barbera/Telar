@@ -119,9 +119,9 @@ async function main() {
     debug.log = (...args) => {
       const fmt = String(args[0] ?? "");
       if (/\b(send|receive|sending|pending)\b/i.test(fmt)) { nativeLog.push("[redacted message line]"); return; }
-      let line = util.format(...args).replace(/\u001b\[[0-9;]*m/g, "").replace(/^\S+\s+electron-chrome-extensions:nativeMessaging\s*/, "");
+      let line = util.stripVTControlCharacters(util.format(...args)).replace(/^\S+\s+electron-chrome-extensions:nativeMessaging\s*/, "");
 
-      if (/^stderr:/.test(line) && /[{[]/.test(line)) line = "stderr: [redacted: structured]";
+      if (line.startsWith('stderr:') && /[{[]/.test(line)) line = "stderr: [redacted: structured]";
       nativeLog.push(line.slice(0, 240));
     };
   }
@@ -262,8 +262,8 @@ async function main() {
           webRequestOnBeforeRedirect: typeof chrome?.webRequest?.onBeforeRedirect?.addListener,
           bodyText: document.body ? document.body.innerText.slice(0, 200) : null,
           bodyChildren: document.body ? document.body.children.length : 0,
-          bodyHtmlHead: document.body ? document.body.innerHTML.replace(/\s+/g, ' ').slice(0, 400) : null,
-          shadowText: [...document.querySelectorAll('*')].filter((el) => el.shadowRoot).map((el) => el.shadowRoot.textContent.replace(/\s+/g, ' ').slice(0, 200)).slice(0, 3),
+          bodyHtmlHead: document.body ? document.body.innerHTML.replace(/\\s+/g, ' ').slice(0, 400) : null,
+          shadowText: [...document.querySelectorAll('*')].filter((el) => el.shadowRoot).map((el) => el.shadowRoot.textContent.replace(/\\s+/g, ' ').slice(0, 200)).slice(0, 3),
           visibleText: [...document.querySelectorAll('h1,h2,h3,p,button,a,label,span')].map((el) => el.textContent.trim()).filter(Boolean).slice(0, 25),
           buttons: [...document.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') || b.textContent.trim()).filter(Boolean).slice(0, 12),
           images: [...document.querySelectorAll('img,svg')].length,

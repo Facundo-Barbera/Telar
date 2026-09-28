@@ -44,7 +44,7 @@ async function main() {
   const pageHost = Object.assign(Object.create(ExtensionHost.prototype), { session: ses, extensionWindows: new Set() });
   const extensions = attachExtensionSupport(ses, {
     createTab: async (details) => {
-      if (/^chrome-extension:/.test(details.url || "")) {
+      if ((details.url || "").startsWith("chrome-extension:")) {
         const page = pageHost.openExtensionPage(details.url, window);
         return [page.webContents, page];
       }

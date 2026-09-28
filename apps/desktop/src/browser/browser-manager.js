@@ -329,7 +329,7 @@ class DesktopBrowserManager {
     if (kind === "preview") return this.openPreview(scope, action.index);
     if (kind === "end-preview") return this.closePreview(scope, action.index);
     if (kind === "new") return (await this.createTab(scope, action.url || "about:blank", "human"), this.state(scope));
-    if (kind === "close") return (this.closeTab(scope, action.index, "human"), this.state(scope));
+    if (kind === "close") return (this.closeTab(scope, action.index), this.state(scope));
 
     if (kind === "resize") {
       const tab = action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index);
@@ -355,7 +355,7 @@ class DesktopBrowserManager {
         await this.selectTab(scope, action.index);
         break;
       case "close":
-        this.closeTab(scope, action.index, opener);
+        this.closeTab(scope, action.index);
         break;
 
       case "duplicate": {
@@ -520,7 +520,7 @@ class DesktopBrowserManager {
           if (args.action === "new") { if (isProtectedUrl(args.url)) throw new Error("Browser tools cannot open extension pages."); await this.createTab(scope, args.url || "about:blank", "agent"); return this.listTabs(scope); }
 
           if (args.action === "select") { await this.focusAgentTab(scope, args.index); return this.listTabs(scope); }
-          if (args.action === "close") { this.closeTabRef(pinned || (args.index === undefined ? this.agentTab(scope) : this.tabAt(scope, args.index)), "agent"); return this.listTabs(scope); }
+          if (args.action === "close") { this.closeTabRef(pinned || (args.index === undefined ? this.agentTab(scope) : this.tabAt(scope, args.index))); return this.listTabs(scope); }
           throw new Error("Unknown browser_tabs action.");
         case "browser_navigate": {
           if (isProtectedUrl(args.url)) throw new Error("Browser tools cannot open extension pages.");
@@ -706,7 +706,7 @@ class DesktopBrowserManager {
     this.cancelBoundsEmit();
 
     this.permissionPrompts.dispose();
-    for (const tab of [...this.tabs]) {
+    for (const tab of this.tabs) {
       this.hibernateTab(tab);
     }
     this.tabs = [];

@@ -506,7 +506,7 @@ class TerminalHost {
         resolve();
       };
       record.onLeaderExit = () => {
-        for (const group of [...pending]) {
+        for (const group of pending) {
           try {
             this.killTree(group, 0);
           } catch (error) {

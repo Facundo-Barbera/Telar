@@ -100,7 +100,7 @@ function installNativeObserver() {
   const realSpawn = cp.spawn;
   cp.spawn = function (file, args, opts) {
     const child = realSpawn.call(this, file, args, opts);
-    if (/1Password-BrowserSupport$/.test(String(file)) && typeof child.pid === "number") {
+    if (String(file).endsWith('1Password-BrowserSupport') && typeof child.pid === "number") {
       const pid = child.pid;
       const startedAt = Date.now();
       liveHelpers.set(pid, { startedAt });
@@ -330,7 +330,7 @@ class ExtensionHost {
     return this.status();
   }
 
-  async openPopup(window, tabWebContents, anchorRect, scopeKey) {
+  async openPopup(window, tabWebContents, anchorRect) {
     if (this.phase !== "ready" || !this.extensions) throw new Error(this.error || "The 1Password extension is not ready.");
 
     const popupHold = `${this.holdPrefix}:popup:${(this._holdSeq += 1)}`;

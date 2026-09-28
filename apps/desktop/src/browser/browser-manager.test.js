@@ -1040,7 +1040,7 @@ describe("the shared-browser interaction model — human input wins, agent defer
   });
 
   test("a TIMED-OUT action cannot keep mutating once its successor starts: its next step stops on the cancelled context", async () => {
-    const { manager, views, clock } = harness({ rpcTimeoutMs: 50 });
+    const { manager, views } = harness({ rpcTimeoutMs: 50 });
     await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
     await observed(manager);
     const debug = views[0].webContents.debugger;
@@ -1078,7 +1078,7 @@ describe("the shared-browser interaction model — human input wins, agent defer
     manager.noteHumanInput("s", { force: true });
     const pending = manager.callTool("s", "browser_tabs", { action: "close", index: 1 });
 
-    manager.closeTab("s", 0, "human");
+    manager.closeTab("s", 0);
     clock.t += 5_000;
     const result = await pending;
     expect(result.isError).toBeUndefined();
@@ -1095,7 +1095,7 @@ describe("the shared-browser interaction model — human input wins, agent defer
     manager.noteHumanInput("s", { force: true });
     await observed(manager);
     const pending = manager.callTool("s", "browser_click", { target: "e1" });
-    manager.closeTab("s", 0, "human");
+    manager.closeTab("s", 0);
     clock.t += 5_000;
     const result = await pending;
     expect(result.isError).toBe(true);
@@ -1198,7 +1198,7 @@ describe("the shared-browser interaction model — human input wins, agent defer
       const view = views[0];
       messages.length = 0;
 
-      manager.closeTab("t", 0, "human");
+      manager.closeTab("t", 0);
       await new Promise((resolve) => setTimeout(resolve, 5));
 
       expect(manager.state("t").tabs).toEqual([]);
@@ -1213,7 +1213,7 @@ describe("the shared-browser interaction model — human input wins, agent defer
     test("`ended` is an EVENT, so a later read of the state does not repeat it", async () => {
       const { manager } = harness();
       await manager.createTab("t", "https://example.com", "human");
-      manager.closeTab("t", 0, "human");
+      manager.closeTab("t", 0);
       await new Promise((resolve) => setTimeout(resolve, 5));
       expect(manager.state("t").ended).toBeUndefined();
     });
@@ -1221,7 +1221,7 @@ describe("the shared-browser interaction model — human input wins, agent defer
     test("opening a browser again starts fresh — the profile binding outlives the browser", async () => {
       const { manager } = harness();
       await manager.createTab("t", "https://example.com", "human");
-      manager.closeTab("t", 0, "human");
+      manager.closeTab("t", 0);
       await new Promise((resolve) => setTimeout(resolve, 5));
 
       await manager.createTab("t", "https://again.example", "human");
@@ -1695,7 +1695,7 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
       ["tab-1", "https://one.example/", "human", undefined],
       ["tab-2", "https://two.example/", "agent", { width: 390, height: 844 }],
     ]);
-    manager.closeTab("s1", 1, "human");
+    manager.closeTab("s1", 1);
     await settled();
     doc = store.latest();
     expect(doc.scopes.s1.tabs.map((tab) => tab.id)).toEqual(["tab-1"]);
@@ -3051,7 +3051,7 @@ describe("two pointers — the human's view and the agent's tab move independent
     await manager.callTool("s", "browser_tabs", { action: "new", url: "https://mine.example/" });
     await observed(manager);
 
-    manager.closeTab("s", 1, "human");
+    manager.closeTab("s", 1);
 
     const orphaned = await manager.callTool("s", "browser_snapshot", {});
     expect(orphaned.isError).toBe(true);
@@ -3670,7 +3670,7 @@ describe("the page's context menu and its DevTools (#423)", () => {
     expect(first.webContents.isDevToolsOpened()).toBe(true);
 
     expect(harness.manager.state("session-a").tabs.map((tab) => tab.devtools)).toEqual([true, false]);
-    harness.manager.closeTab("session-a", 0, "human");
+    harness.manager.closeTab("session-a", 0);
     expect(first.webContents.isDevToolsOpened()).toBe(false);
     expect(second.webContents.isDevToolsOpened()).toBe(false);
   });
@@ -4016,7 +4016,7 @@ describe("the browser's options menu", () => {
     test("closing the TAB takes its window with it — never a window addressing nothing", async () => {
       const { manager, previewWindows } = await shown();
       await manager.action("session-a", { action: "preview" });
-      manager.closeTab("session-a", 0, "human");
+      manager.closeTab("session-a", 0);
       expect(previewWindows[0].isDestroyed()).toBe(true);
     });
 
@@ -4137,7 +4137,7 @@ describe("a focused page owns ⌘1..⌘9 (#660)", () => {
     const { manager, views, scopes } = await withTabs(2);
     views[1].webContents.emit("focus");
     expect(scopes.at(-1)).toEqual(TAB_SELECT_CHORDS);
-    manager.closeTab("s1", 1, "human");
+    manager.closeTab("s1", 1);
 
     expect(scopes.at(-1)).toEqual([]);
   });

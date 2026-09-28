@@ -238,7 +238,7 @@ export function pluginConfigFromLegacy(legacy: Record<string, unknown>): PluginC
 }
 
 export function legacyFromPluginConfig(config: PluginConfig): Record<string, unknown> {
-  return { enabled: config.enabled, ...(config.settings ?? {}) };
+  return { enabled: config.enabled, ...config.settings };
 }
 
 export function readProjectPlugins(project: {

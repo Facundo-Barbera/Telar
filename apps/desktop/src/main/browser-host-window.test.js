@@ -1,6 +1,4 @@
 const { describe, expect, test } = require("bun:test");
-const fs = require("node:fs");
-const path = require("node:path");
 const { mainSource } = require("../../test/main-source");
 
 const main = mainSource();

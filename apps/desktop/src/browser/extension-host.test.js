@@ -2,7 +2,6 @@ const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const http = require("node:http");
 const { download, MAX_DOWNLOAD_BYTES, classifyWorkerError, ExtensionHost, clampRect, readIconDataUrl, roundPopupCorners, POPUP_CORNER_RADIUS } = require("./extension-host");
 
 describe("popup geometry stays inside its region", () => {

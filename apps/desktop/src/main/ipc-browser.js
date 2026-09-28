@@ -38,7 +38,7 @@ function registerBrowserIpc(main) {
     const tab = manager.activeTab(input?.scopeKey);
     await manager.wakeTab(tab);
     const win = BrowserWindow.fromWebContents(event.sender);
-    return host.openPopup(win, tab.view.webContents, input?.anchorRect || { x: 0, y: 0, width: 24, height: 24 }, input?.scopeKey);
+    return host.openPopup(win, tab.view.webContents, input?.anchorRect || { x: 0, y: 0, width: 24, height: 24 });
   });
 
   ipcMain.handle("telar:browser:bind-profile", (event, input) =>

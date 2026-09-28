@@ -403,12 +403,12 @@ module.exports = {
     this.emitState(scope);
   },
 
-  closeTab(scopeKey, index, closedBy = "agent") {
+  closeTab(scopeKey, index) {
     const scope = this.requireScope(scopeKey);
-    return this.closeTabRef(index === undefined ? this.activeTab(scope) : this.tabAt(scope, index), closedBy);
+    return this.closeTabRef(index === undefined ? this.activeTab(scope) : this.tabAt(scope, index));
   },
 
-  closeTabRef(tab, closedBy = "agent") {
+  closeTabRef(tab) {
     const scope = tab.scopeKey;
     const scoped = this.scopeTabs(scope);
     if (!scoped.includes(tab)) throw new Error("That browser tab is already closed.");

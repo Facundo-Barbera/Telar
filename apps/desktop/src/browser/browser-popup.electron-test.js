@@ -95,7 +95,6 @@ async function main() {
   manager.declareProfile("popup", "none");
   const scope = "popup";
   const tabsOf = () => manager.state(scope).tabs;
-  const contentsAt = (index) => manager.scopeTabs(scope)[index]?.view?.webContents || null;
 
   try {
     await manager.createTab(scope, `${base}/`, "human");

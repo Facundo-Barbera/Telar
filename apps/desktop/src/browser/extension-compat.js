@@ -225,7 +225,7 @@ function mainWorldShims(allowedIds) {
     const setting = () => ({
       get: (_details, cb) => {
         const r = { value: false, levelOfControl: "not_controllable" };
-        cb && cb(r);
+        cb?.(r);
         return Promise.resolve(r);
       },
       set: notControllable("This setting is not controllable by this host."),
@@ -241,7 +241,7 @@ function mainWorldShims(allowedIds) {
   for (const name of ["onBeforeRequest", "onBeforeSendHeaders", "onSendHeaders", "onHeadersReceived", "onAuthRequired", "onResponseStarted", "onBeforeRedirect", "onCompleted", "onErrorOccurred", "onActionIgnored"]) {
     if (!wr[name] || typeof wr[name].addListener !== "function") wr[name] = eventSurface();
   }
-  if (typeof wr.handlerBehaviorChanged !== "function") wr.handlerBehaviorChanged = (cb) => { cb && cb(); return Promise.resolve(); };
+  if (typeof wr.handlerBehaviorChanged !== "function") wr.handlerBehaviorChanged = (cb) => { cb?.(); return Promise.resolve(); };
   define(chrome, "webRequest", wr);
 
   if (chrome.tabs && typeof chrome.tabs.captureVisibleTab !== "function") {
