@@ -57,7 +57,7 @@ const statusByCode: Record<EngineErrorCode, number> = {
   internal_error: 500,
 };
 
-export function engineErrorResponse(error: unknown): Response {
+function engineErrorResponse(error: unknown): Response {
   if (error instanceof EngineClientError) {
     return Response.json(
       { error: { code: error.code, message: error.message } },
@@ -106,14 +106,8 @@ export async function requestObject(request: Request): Promise<Record<string, un
 export type PluginDoorMethod = "GET" | "POST" | "DELETE";
 
 /**
- * A PLUGIN'S PROJECT OR MACHINE VERB, forwarded as-is. The engine client names
- * only the session door (`plugin`), so the project door
- * (`/v2/projects/:id/plugins/<plugin>/<verb>`) and the machine door
- * (`/v2/plugins/<plugin>/<verb>`) are spoken here with the client's own
- * discovery and token. The engine's status comes back unchanged (a verb that
- * starts a job answers 202), and a refusal is thrown as the same
- * `EngineClientError` the client would throw, so `engineErrorResponse` maps it
- * exactly as it maps every other proxy's.
+ * A plugin's project or machine verb, spoken with the client's discovery and token since the client names only the session door.
+ * The engine's status comes back unchanged; a refusal throws the same `EngineClientError` the client would.
  */
 export async function enginePluginDoor(
   scope: { projectId: string } | "machine",
@@ -154,12 +148,19 @@ const FORWARDED_HEADERS = ["content-type", "etag", "cache-control"];
 
 type EngineAnswer = { status: number; body: unknown; headers: Headers };
 
-async function engineFetch(method: string, pathname: string, init: { body?: string; headers?: Record<string, string> } = {}): Promise<Response> {
+type FetchInit = { body?: string; headers?: Record<string, string>; signal?: AbortSignal };
+
+async function engineFetch(method: string, pathname: string, init: FetchInit = {}): Promise<Response> {
   const { discovery } = await engineClient();
   const headers = new Headers({ authorization: `Bearer ${discovery.token}`, ...init.headers });
   if (init.body !== undefined) headers.set("content-type", "application/json");
   try {
-    return await fetch(`http://${discovery.host}:${discovery.port}${pathname}`, { method, headers, ...(init.body === undefined ? {} : { body: init.body }) });
+    return await fetch(`http://${discovery.host}:${discovery.port}${pathname}`, {
+      method,
+      headers,
+      ...(init.body === undefined ? {} : { body: init.body }),
+      ...(init.signal ? { signal: init.signal } : {}),
+    });
   } catch {
     throw new EngineClientError("engine_unavailable", "engine is unreachable");
   }
@@ -184,26 +185,33 @@ export async function engineCall(method: string, pathname: string, body?: unknow
   return answerOf(await engineFetch(method, pathname, body === undefined ? {} : { body: JSON.stringify(body) }));
 }
 
-/** Sends `request` to the engine at `pathname` (query included) and answers with its status, body and caching headers. */
-export async function engineForward(request: Request, pathname: string): Promise<Response> {
-  try {
-    const hasBody = request.method !== "GET" && request.method !== "HEAD";
-    const ifNoneMatch = request.headers.get("if-none-match");
-    const answer = await answerOf(
-      await engineFetch(request.method, pathname, {
-        ...(hasBody ? { body: (await request.text()) || "{}" } : {}),
-        ...(ifNoneMatch ? { headers: { "if-none-match": ifNoneMatch } } : {}),
-      }),
-    );
-    const out = new Headers();
-    for (const name of FORWARDED_HEADERS) {
-      const value = answer.headers.get(name);
-      if (value) out.set(name, value);
-    }
-    if (answer.status === 304) return new Response(null, { status: 304, headers: out });
-    if (answer.body instanceof ArrayBuffer) return new Response(answer.body, { status: answer.status, headers: out });
-    return Response.json(answer.body, { status: answer.status, headers: out });
-  } catch (error) {
-    return engineErrorResponse(error);
+const SSE_HEADERS = { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" };
+
+/** Sends `request` to the engine at `pathname` (query included) and answers with its status, body and caching headers; an event stream passes through unbuffered until the caller disconnects. */
+export const engineForward = engineRoute(async (request: Request, pathname: string) => {
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  const ifNoneMatch = request.headers.get("if-none-match");
+  const response = await engineFetch(request.method, pathname, {
+    ...(hasBody ? { body: (await request.text()) || "{}" } : {}),
+    ...(ifNoneMatch ? { headers: { "if-none-match": ifNoneMatch } } : {}),
+    signal: request.signal,
+  });
+  if (response.ok && response.body && response.headers.get("content-type")?.includes("text/event-stream")) {
+    return new Response(response.body, { status: response.status, headers: SSE_HEADERS });
   }
+  const answer = await answerOf(response);
+  const out = new Headers();
+  for (const name of FORWARDED_HEADERS) {
+    const value = answer.headers.get(name);
+    if (value) out.set(name, value);
+  }
+  if (answer.status === 304) return new Response(null, { status: 304, headers: out });
+  if (answer.body instanceof ArrayBuffer) return new Response(answer.body, { status: answer.status, headers: out });
+  return Response.json(answer.body, { status: answer.status, headers: out });
+});
+
+/** Forwards `/api/<path>` to the engine's `/v2/<path>` unchanged, for routes whose paths mirror the engine's. */
+export function engineProxy(request: Request): Promise<Response> {
+  const { pathname, search } = new URL(request.url);
+  return engineForward(request, `${pathname.replace(/^\/api\//, "/v2/")}${search}`);
 }
