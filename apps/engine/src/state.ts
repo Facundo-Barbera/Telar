@@ -15,7 +15,6 @@ import {
   type RetentionBucket,
   type JournalRetirement,
   type UsageLimitSource,
-  machineAllows,
   type ProjectPlugins,
   assignmentsOf,
   // THE CLIENTS' OWN SETTLING RULE, imported rather than re-implemented: the
@@ -104,7 +103,7 @@ import { requireRunningClaimFromQueue, WorkerChannel, TurnWakes, TurnRecovery, i
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
-import { readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
+import { readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
 import { WorkspaceReads, cloneRepository, commitSessionWork, ensureTelarGitignore, isCloneFailure, pushSessionBranch, removeTelarGitignore, type GitOverview } from "./domains/git";
 import {  } from "./platform/git/parse";
 import { type AttachedBrowser, SessionBrowser } from "./domains/browser";
@@ -113,7 +112,7 @@ import {  } from "zod";
 import { type AdoptionInput, ConversationAdoption } from "./domains/providers";
 import { type ClaudeConversation } from "./drivers/claude";
 import { BUNDLED_MANIFEST, type ModelManifest, readModelCatalogue } from "./domains/providers";
-import { type BootstrapRequest, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, type DsCapability, DsFiles, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type RequirementsSource, type ResolvedLatex, storeDsCapability, storeLatexCapability, type TableWindow, telarVenvDir, type Toolchain, windowCsv } from "./domains/plugins";
+import { type KernelState, PluginDoors, type BootstrapRequest, type CreateEnvironmentRequest, type DsCapability, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, type ManagedTectonicStatus, type RequirementsSource, type ResolvedLatex, type TableWindow, type Toolchain } from "./domains/plugins";
 import { ScheduleBook, type ScheduleInput } from "./domains/schedules";
 import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
@@ -382,6 +381,7 @@ export class EngineStore {
   private readonly subscriptions: SessionSubscriptions;
   private readonly lifecycle: SessionLifecycle;
   private readonly schedules: ScheduleBook;
+  private readonly pluginDoors: PluginDoors;
   private readonly workspaceReads: WorkspaceReads;
   private readonly requestGate: RequestGate;
   private readonly sessionTerminals: SessionTerminals;
@@ -591,107 +591,26 @@ export class EngineStore {
     return this.sessionTerminals.closeForPerson(sessionId);
   }
 
-  /**
-   * The daemon's kernel host, attached like the browser and for the same
-   * reason: the store must build in a test without spawning Python. Absent
-   * means every kernel verb refuses with "no kernel host".
-   */
-  private kernels?: KernelHost;
-
   attachKernels(host: KernelHost): void {
-    this.kernels = host;
+    this.pluginDoors.attachKernels(host);
   }
 
   /** Environment builds and package installs, as jobs the settings page polls. */
   readonly dsJobs = new JobRunner(() => this.now());
 
-  /**
-   * THE DATA-SCIENCE DOOR FOR ONE SESSION. Resolves the project's interpreter
-   * with the worktree rule, builds the capability over the daemon's kernel
-   * host and this store's files, and refuses when the project has not opted
-   * in. Every route and every toolkit reaches the kernel through this.
-   */
+  /** Compile and tlmgr jobs: a sibling runner, so a compile never queues behind pip installs. */
+  readonly latexJobs = new JobRunner(() => this.now());
+
   dataScience(sessionId: string): DsCapability {
-    const session = this.records.get(sessionId);
-    const resolved = this.resolveDataScience(session);
-    if (!resolved) {
-      throw new EngineStateError(
-        "invalid_request",
-        machineAllows(this.machinePlugins(), "data-science")
-          ? "data science is not enabled for this session's project"
-          : "data science is turned off for this Mac",
-      );
-    }
-    if (!this.kernels) throw new EngineStateError("invalid_request", "this engine has no kernel host");
-    return storeDsCapability({
-      sessionId,
-      cwd: workspaceRootOf(session),
-      python: resolved.pythonPath,
-      telarVenv: telarVenvDir(this.paths.root, session.projectId!, session.workspace.mode === "worktree" ? path.basename(session.workspace.path) : undefined),
-      host: this.kernels,
-      files: new DsFiles(path.join(sessionDir(this.paths, sessionId), "ds")),
-      // A notebook with plots in it passes the editor's 512 KB ceiling in one
-      // cell; both fences take the notebook-sized cap instead.
-      readFile: (target) => readFenced(workspaceRootOf(session), target, "session workspace", NOTEBOOK_MAX_BYTES),
-      writeFile: (target, text, expected) => writeFenced(workspaceRootOf(session), target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
-      putAttachment: (input) => this.putAttachment(sessionId, input),
-      attachmentBytes: (id) => this.attachmentBytes(sessionId, id).data,
-      appendEvent: (event) => { this.appendEvent(sessionId, event); },
-      now: () => this.now(),
-      // Package operations resolve the environment against THIS session's
-      // workspace — the worktree rule again — and run as the store's jobs.
-      packages: () => this.dataSciencePackages(session.projectId!, workspaceRootOf(session)),
-      startInstall: (input) => this.dataScienceInstall(session.projectId!, input as Parameters<EngineStore["dataScienceInstall"]>[1], workspaceRootOf(session)),
-      waitJob: (jobId, timeoutMs) => this.dsJobs.wait(jobId, timeoutMs),
-      environments: async () => ({ environments: await this.dataScienceOps.environmentRows(session.projectId!, workspaceRootOf(session)) }),
-      useEnvironment: (target) => this.dataScienceUseEnvironment(sessionId, target),
-    });
+    return this.pluginDoors.dataScience(sessionId);
   }
 
   resolveDataScience(session: Session): { pythonPath: string } | undefined {
     return this.toolchains.resolveDataScience(session);
   }
 
-  /** Compile and tlmgr jobs — a SIBLING runner, not `dsJobs`, so a thesis
-   *  compile never queues behind three pip installs and the job-id namespaces
-   *  stay apart. Same class, own concurrency budget. */
-  readonly latexJobs = new JobRunner(() => this.now());
-
-  /** The last compile per session, for `latex_status` and the surface. */
-  private readonly latexCompiles = new Map<string, LatexCompileMemory>();
-
-  /**
-   * THE LATEX DOOR FOR ONE SESSION, shaped like `dataScience()` above:
-   * resolves the project's toolchain with the worktree rule for `mainFile`,
-   * builds the capability over this store's jobs, and refuses when the
-   * project has not opted in.
-   */
   latex(sessionId: string): LatexCapability {
-    const session = this.records.get(sessionId);
-    const resolved = this.resolveLatex(session);
-    if (!resolved) {
-      // WHICH SWITCH, so a person knows where to go. The ceiling and the
-      // project's own setting produce the same refusal but not the same fix.
-      throw new EngineStateError(
-        "invalid_request",
-        machineAllows(this.machinePlugins(), "latex")
-          ? "LaTeX is not enabled for this session's project"
-          : "LaTeX is turned off for this Mac",
-      );
-    }
-    return storeLatexCapability({
-      sessionId,
-      cwd: workspaceRootOf(session),
-      resolved,
-      toolchain: () => this.latexToolchain(),
-      jobs: this.latexJobs,
-      appendEvent: (event) => { this.appendEvent(sessionId, event); },
-      now: () => this.now(),
-      lastCompile: {
-        get: () => this.latexCompiles.get(sessionId),
-        set: (status) => { this.latexCompiles.set(sessionId, status); },
-      },
-    });
+    return this.pluginDoors.latex(sessionId);
   }
 
   resolveLatex(session: Session): ResolvedLatex | undefined {
@@ -706,36 +625,12 @@ export class EngineStore {
     return this.toolchains.installManaged();
   }
 
-  /** The kernel host reporting a state change; journaled so the panel's pill follows it. */
-  recordKernelState(sessionId: string, state: "starting" | "idle" | "busy" | "restarting" | "dead", reason?: string): void {
-    try {
-      this.records.require(sessionId);
-    } catch {
-      return; // a kernel outliving its session has nowhere to report
-    }
-    this.appendEvent(sessionId, { type: "kernel.state.changed", state, ...(reason ? { reason } : {}) });
+  recordKernelState(sessionId: string, state: KernelState, reason?: string): void {
+    this.pluginDoors.recordKernelState(sessionId, state, reason);
   }
 
-  /**
-   * A WINDOW OF ROWS from a CSV, TSV or Parquet file in the session's tree.
-   * CSV is parsed here; Parquet goes through the kernel (pyarrow), so it needs
-   * data science on. The fence is `readFenced`'s.
-   */
-  async sessionTable(sessionId: string, target: string, options: { offset: number; limit: number; sort?: string; desc?: boolean }): Promise<TableWindow> {
-    const session = this.records.get(sessionId);
-    if (/\.parquet$/i.test(target)) {
-      const ds = this.dataScience(sessionId);
-      const sort = options.sort ? `.sort_values(${JSON.stringify(options.sort)}, ascending=${options.desc ? "False" : "True"})` : "";
-      const code = `import pandas as _pd, json as _j\n_df = _pd.read_parquet(${JSON.stringify(path.resolve(workspaceRootOf(session), target))})${sort}\n_w = _df.iloc[${options.offset}:${options.offset + options.limit}]\nprint("__TELAR_TABLE__" + _j.dumps({"columns": list(map(str, _df.columns)), "dtypes": [str(_df.dtypes[c]) for c in _df.columns], "total": int(len(_df)), "rows": _j.loads(_w.to_json(orient="values", date_format="iso"))}, default=str))`;
-      const result = await ds.execute({ code, producer: "table" });
-      const line = result.outputs.find((o) => o.kind === "text" && o.text.includes("__TELAR_TABLE__"));
-      if (!result.ok || !line || line.kind !== "text") throw new EngineStateError("invalid_request", result.error ? `${result.error.ename}: ${result.error.evalue}` : "could not read the parquet file");
-      const parsed = JSON.parse(line.text.slice(line.text.indexOf("__TELAR_TABLE__") + 15)) as Omit<TableWindow, "offset" | "path">;
-      return { path: target, offset: options.offset, ...parsed };
-    }
-    const file = readFenced(workspaceRootOf(session), target, "session workspace");
-    if (file.binary) throw new EngineStateError("invalid_request", "that file is not text");
-    return { path: target, ...windowCsv(file.text, /\.tsv$/i.test(target) ? "\t" : ",", options), ...(file.truncated ? { truncated: true } : {}) };
+  sessionTable(sessionId: string, target: string, options: { offset: number; limit: number; sort?: string; desc?: boolean }): Promise<TableWindow> {
+    return this.pluginDoors.table(sessionId, target, options);
   }
 
   listAttachments(sessionId: string, options: { tag?: string } = {}): TurnAttachment[] {
@@ -1178,6 +1073,21 @@ export class EngineStore {
       appendEvent: (sessionId, event, runId) => this.appendEvent(sessionId, event, runId),
       requestOpened: (sessionId, turn, request) => this.fireSubscriptions(sessionId, "request_opened", turn, { request }),
     });
+    this.pluginDoors = new PluginDoors(this.dsJobs, this.latexJobs, {
+      engineRoot: this.paths.root,
+      now: () => this.now(),
+      getSession: (sessionId) => this.records.get(sessionId),
+      requireSession: (sessionId) => this.records.require(sessionId),
+      machinePlugins: () => this.machinePlugins(),
+      resolveDataScience: (session) => this.resolveDataScience(session),
+      resolveLatex: (session) => this.resolveLatex(session),
+      latexToolchain: () => this.latexToolchain(),
+      sessionDir: (sessionId) => sessionDir(this.paths, sessionId),
+      putAttachment: (sessionId, input) => this.putAttachment(sessionId, input),
+      attachmentBytes: (sessionId, attachmentId) => this.attachmentBytes(sessionId, attachmentId).data,
+      appendEvent: (sessionId, event) => void this.appendEvent(sessionId, event),
+      dataScienceOps: () => this.dataScienceOps,
+    });
     this.schedules = new ScheduleBook(this.kernel, {
       requireSession: (sessionId) => void this.records.require(sessionId),
       submitTurn: (sessionId, input) => this.submitTurn(sessionId, input),
@@ -1231,7 +1141,7 @@ export class EngineStore {
       releaseBrowser: (sessionId, reason) => this.browser.release(sessionId, reason),
       releasePlugins: (sessionId, reason) => {
         this.pluginRelease?.(sessionId, reason);
-        void this.kernels?.dispose(sessionId, reason);
+        this.pluginDoors.disposeKernel(sessionId, reason);
       },
       releasesArchivedCheckouts: () => this.cleanup.policy().archived,
     });
