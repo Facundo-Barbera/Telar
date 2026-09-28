@@ -18,8 +18,7 @@ type SurfaceId = (typeof SURFACES)[number]["id"] | PluginSurfaceId;
 
 type Surface = { id: SurfaceId; label: string; icon: LucideIcon; blurb: string };
 
-const findSurface = (id: string): Surface | undefined =>
-  SURFACES.find((surface) => surface.id === id) ?? PLUGIN_SURFACES.find((surface) => surface.id === id);
+const ALL_SURFACES: readonly Surface[] = [...SURFACES, ...PLUGIN_SURFACES];
 
 export const NO_PLUGINS: readonly string[] = [];
 export const NO_PANELS: readonly PluginPanelSource[] = [];
@@ -158,7 +157,7 @@ export function isPanelTab(value: string): value is PanelTab {
   for (const prefix of FILE_TAB_PREFIXES) if (value.startsWith(prefix)) return value.length > prefix.length;
   if (value.startsWith(ISSUE_PREFIX)) return forgeNumber(value, ISSUE_PREFIX) !== undefined;
   if (value.startsWith(PULL_PREFIX)) return forgeNumber(value, PULL_PREFIX) !== undefined;
-  return findSurface(value) !== undefined;
+  return ALL_SURFACES.some((surface) => surface.id === value);
 }
 
 export function browserTabLabel(tab: Pick<BrowserTab, "title" | "url">): string {
@@ -187,7 +186,7 @@ export function describePanelTab(tab: PanelTab, browser?: BrowserState, live?: r
   if (pullNumber !== undefined) return { label: `#${pullNumber}`, icon: GitPullRequestIcon, blurb: `Pull request #${pullNumber}` };
   const pageId = browserTabId(tab);
   if (pageId === undefined) {
-    const surface = findSurface(tab)!;
+    const surface = ALL_SURFACES.find((entry) => entry.id === tab)!;
     return { label: surface.label, icon: surface.icon, blurb: surface.blurb };
   }
   if (pageId === LIVE_BROWSER_PAGE_ID) return { label: "Browser", icon: GlobeIcon, blurb: "Integrated browser" };

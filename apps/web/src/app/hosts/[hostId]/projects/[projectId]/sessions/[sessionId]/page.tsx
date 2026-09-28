@@ -1,4 +1,4 @@
-import { SessionCockpit } from "@/features/sessions";
+import { SessionCockpit } from "@/features/sessions/cockpit";
 
 /**
  * A SESSION ON ANOTHER MAC — the same cockpit, at an address that names the

@@ -1,4 +1,4 @@
-import { SessionCockpit } from "@/features/sessions";
+import { SessionCockpit } from "@/features/sessions/cockpit";
 
 export const dynamic = "force-dynamic";
 

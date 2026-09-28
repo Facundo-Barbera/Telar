@@ -6,5 +6,3 @@ export { groupSessions, railJumpSlots, railRowsForCommandKeys } from "./session-
 export { canvasHref, deriveSessionList, sessionHref, sessionKey, type SidebarSession } from "./session-list";
 export { snapshotStore } from "./snapshot-cache";
 export { appendToDraft } from "./cockpit/model";
-export { SessionCockpit } from "./cockpit/components/session-cockpit";
-export { SessionTurn } from "./cockpit/components/session-turn";
