@@ -102,7 +102,7 @@ private func stubAPI() -> HTTPEngineAPI {
     @Test func projectIconCarriesTheKeyAsTheCacheBuster() async throws {
         StubURLProtocol.handler = { request in
             #expect(request.url?.path() == "/api/projects/project_dud/icon")
-            #expect(request.url?.query() == "v=sha-abc")
+            #expect(request.url?.query() == "v=sha-abc&format=png")
             return (200, Data([0x89, 0x50, 0x4E, 0x47]))
         }
         let data = try await stubAPI().projectIcon("project_dud", icon: "sha-abc")

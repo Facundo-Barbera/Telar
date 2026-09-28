@@ -4,16 +4,20 @@ import UIKit
 
 @MainActor @Observable final class ProjectIconCache {
     static let shared = ProjectIconCache(root: SnapshotCache.default.root.appending(path: "icons"))
+    static let retryAfter: TimeInterval = 60
 
     private let root: URL
+    private let now: () -> Date
     private var images: [String: UIImage] = [:]
-
-    private var failed: Set<String> = []
+    private var failedAt: [String: Date] = [:]
     private var loading: Set<String> = []
 
-    init(root: URL) {
+    init(root: URL, now: @escaping () -> Date = Date.init) {
         self.root = root
+        self.now = now
     }
+
+    var pending: Int { loading.count }
 
     func image(host: HostID, projectId: EngineID, icon: String) -> UIImage? {
         images[cacheKey(host, projectId, icon)]
@@ -21,7 +25,8 @@ import UIKit
 
     func load(host: HostID, projectId: EngineID, icon: String, api: any EngineAPI) {
         let key = cacheKey(host, projectId, icon)
-        guard images[key] == nil, !failed.contains(key), !loading.contains(key) else { return }
+        guard images[key] == nil, !loading.contains(key) else { return }
+        if let failed = failedAt[key], now().timeIntervalSince(failed) < Self.retryAfter { return }
         loading.insert(key)
         let file = fileURL(host, projectId, icon)
         Task.detached(priority: .utility) { [weak self] in
@@ -41,7 +46,12 @@ import UIKit
 
     private func settle(_ key: String, image: UIImage?) {
         loading.remove(key)
-        if let image { images[key] = image } else { failed.insert(key) }
+        if let image {
+            images[key] = image
+            failedAt[key] = nil
+        } else {
+            failedAt[key] = now()
+        }
     }
 
     private func cacheKey(_ host: HostID, _ projectId: EngineID, _ icon: String) -> String {

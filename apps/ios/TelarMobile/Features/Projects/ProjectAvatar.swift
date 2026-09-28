@@ -30,6 +30,13 @@ struct ProjectAvatar: View {
     private var icons: ProjectIconCache { .shared }
 
     var body: some View {
+        mark.task(id: "\(hostId?.uuidString ?? "")/\(projectId ?? "")/\(icon ?? "")/\(api != nil)") {
+            guard let icon, let projectId, let hostId, let api else { return }
+            icons.load(host: hostId, projectId: projectId, icon: icon, api: api)
+        }
+    }
+
+    @ViewBuilder private var mark: some View {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if let symbol = telarIconSymbol(iconName) {
             Image(systemName: symbol)
@@ -57,10 +64,6 @@ struct ProjectAvatar: View {
                 .background(Color(hue: hue / 360, saturation: 0.45, brightness: 0.5).opacity(0.25))
                 .clipShape(RoundedRectangle(cornerRadius: size / 4, style: .continuous))
                 .accessibilityHidden(true)
-                .task(id: "\(hostId?.uuidString ?? "")/\(projectId ?? "")/\(icon ?? "")") {
-                    guard let icon, let projectId, let hostId, let api else { return }
-                    icons.load(host: hostId, projectId: projectId, icon: icon, api: api)
-                }
         } else {
             Image(systemName: "folder")
                 .font(.system(size: size * 0.75))
