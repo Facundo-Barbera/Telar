@@ -22,7 +22,7 @@
  * components/settings/providers-section.tsx.
  */
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { BlocksIcon, DownloadIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, InfoIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
@@ -30,7 +30,9 @@ import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
-import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
+import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "./settings-registry";
+import { machinePaneFor, projectPaneFor } from "@/components/plugins/settings-panes";
+import { pluginSettingsSearchEntries } from "@/lib/plugins/settings-form";
 import { useSectionFromUrl } from "./use-section-from-url";
 
 /**
@@ -284,6 +286,26 @@ export function SettingsPage() {
     return () => window.clearTimeout(task);
   }, [load]);
 
+  /**
+   * THE STATIC INDEX, PLUS EVERY GENERATED PLUGIN ROW. A plugin's settings are
+   * its schema, which arrives with the engine's answer — so its rows join the
+   * index when health does, anchored exactly where the generated pane draws
+   * them. A plugin whose pane is bespoke draws no generated rows at that scope.
+   */
+  const search = useMemo(() => {
+    if (!health?.plugins?.length) return SETTINGS_SEARCH_INDEX;
+    const page = (id: string) => {
+      const found = SETTINGS_SEARCH_PAGES.find((entry) => entry.id === id);
+      return { id, label: found?.label ?? id };
+    };
+    const generated = pluginSettingsSearchEntries(
+      health.plugins,
+      { project: page("projects"), machine: page("plugins") },
+      (scope, id) => (scope === "project" ? projectPaneFor(id) : machinePaneFor(id)) !== undefined,
+    );
+    return { entries: [...SETTINGS_SEARCH_INDEX.entries, ...generated] };
+  }, [health]);
+
   return (
     <SettingsShell
       title="Settings"
@@ -294,7 +316,7 @@ export function SettingsPage() {
       backHref="/"
       // `/` from anywhere in here finds a row by name without knowing which
       // pane holds it. See settings-registry.ts.
-      search={SETTINGS_SEARCH_INDEX}
+      search={search}
     >
       <Suspense fallback={null}>
         {active === "appearance" && <AppearanceSection />}

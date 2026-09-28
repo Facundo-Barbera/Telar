@@ -45,6 +45,9 @@ import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { machinePaneFor } from "@/components/plugins/settings-panes";
+import { GeneratedSettingsRows } from "@/components/plugins/generated-settings";
+import { generatedGroupTitle, settingsFields } from "@/lib/plugins/settings-form";
+import { machineSettingsPatch } from "@/lib/plugins/sections";
 import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
@@ -157,7 +160,22 @@ export function PluginsPage() {
           would apply to nothing, and the switch above already says why. */}
       {machinePanePlugins(plugins, machine).map((status) => {
         const Pane = machinePaneFor(status.meta.id);
-        return Pane ? <Pane key={status.meta.id} machine={machine} onChange={setMachine} /> : null;
+        if (Pane) return <Pane key={status.meta.id} machine={machine} onChange={setMachine} />;
+        // NO BESPOKE PANE: the fields its schema declares, generated.
+        const fields = settingsFields(status.machineSettingsSchema);
+        if (fields.length === 0) return null;
+        const section = status.meta.settings.find((entry) => entry.scope === "machine");
+        return (
+          <SettingsGroup key={status.meta.id} title={generatedGroupTitle(status, "machine")} {...(section?.blurb ? { description: section.blurb } : {})}>
+            <GeneratedSettingsRows
+              fields={fields}
+              values={machine?.entries[status.meta.id]?.settings ?? {}}
+              onWrite={async (settings) => {
+                setMachine((await api.updateMachinePlugins(machineSettingsPatch(machine, status.meta.id, settings))).machine);
+              }}
+            />
+          </SettingsGroup>
+        );
       })}
     </>
   );

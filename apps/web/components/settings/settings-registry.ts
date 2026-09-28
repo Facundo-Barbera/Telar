@@ -24,9 +24,11 @@
  *   - THE PROJECTS PANE'S PER-PROJECT MCP LIST, whose heading is the
  *     project's own name — the rule two bullets down. The built-in plugin
  *     editors on that pane ARE indexed; their headings are copy.
- *   - PLUGIN-CONTRIBUTED SECTIONS. They arrive from the engine at runtime, and
- *     a plugin does not declare searchable rows in its manifest today. The
- *     Plugins pane itself is indexed; what a plugin puts inside it is not.
+ *   - A PLUGIN'S GENERATED ROWS. They are built from the schema the plugin
+ *     publishes, which arrives with the engine's answer — so they join the
+ *     index at runtime (`pluginSettingsSearchEntries`, merged in
+ *     settings-page.tsx), anchored where the generated pane draws them. What is
+ *     declared here is the bespoke panes' copy.
  *   - ROWS BUILT FROM DATA — one per MCP server, per paired device, per
  *     provider login, per other Mac. Their titles are values, not copy, and a
  *     stale index of them would be worse than none.

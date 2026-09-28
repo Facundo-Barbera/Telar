@@ -4,12 +4,12 @@
  * THE GENERIC PLUGIN PANE — enable, disable, and read what a plugin says about
  * itself. The pane a feature gets when nobody has written it a bespoke one.
  *
- * WHAT IT DELIBERATELY DOES NOT DO: render a settings FORM. A plugin's settings
- * blob is opaque to the protocol and validated by the plugin's own schema at the
- * engine, so a generic editor here would either be a JSON textarea — which is
- * not a settings page, it is a way to write invalid config — or a guess at
- * shapes it cannot see. Enabling is the part that is genuinely generic; a
- * plugin that needs fields ships a pane, exactly as Data science and LaTeX do.
+ * AND, ONCE ON, ITS SETTINGS — generated from the schema the engine publishes
+ * for it (`GeneratedSettingsRows`): toggles, choices, text, paths and numbers,
+ * each project field offering "Inherit (<Mac value>)" where the plugin names a
+ * Mac default. Not a JSON textarea and not a guess: the same schema validates
+ * the write at the engine. Fields it cannot draw (lists, nested choices) are a
+ * bespoke block's job, registered beside the pane.
  *
  * A FAILED PLUGIN SAYS SO. `EngineHealth` carries the startup error, and a
  * toggle that silently does nothing because the plugin never started is worse
@@ -21,9 +21,11 @@ import { CircleAlertIcon, PlugIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { enablePatch, type PluginSectionEntry } from "@/lib/plugins/sections";
-import { pluginEnabled, readProjectPlugins } from "@telar/engine-client";
+import { pluginEnabled, pluginSettings, readProjectPlugins } from "@telar/engine-client";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { GeneratedSettingsRows } from "@/components/plugins/generated-settings";
+import { settingsFields } from "@/lib/plugins/settings-form";
 import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
@@ -49,13 +51,18 @@ export function PluginSettings({
   project,
   onChange,
   machineOff = false,
+  machineSettings,
 }: {
   entry: PluginSectionEntry;
   project: Project;
   onChange: (project: Project) => void;
   machineOff?: boolean;
+  /** This Mac's settings for the plugin — what an unset project field inherits. */
+  machineSettings?: Record<string, unknown>;
 }) {
-  const enabled = pluginEnabled(readProjectPlugins(project).plugins, entry.pluginId);
+  const { plugins } = readProjectPlugins(project);
+  const enabled = pluginEnabled(plugins, entry.pluginId);
+  const fields = settingsFields(entry.settingsSchema);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -99,6 +106,18 @@ export function PluginSettings({
           />
         }
       />
+
+      {enabled && !machineOff && !failed && fields.length > 0 && (
+        <GeneratedSettingsRows
+          fields={fields}
+          values={pluginSettings(plugins, entry.pluginId)}
+          inherited={machineSettings ?? {}}
+          onWrite={async (settings) => {
+            // The same generic arm as the switch, keeping it on.
+            onChange((await api.updateProject(project.id, enablePatch(entry.pluginId, true, settings))).project);
+          }}
+        />
+      )}
 
       {failed && (
         <Row
