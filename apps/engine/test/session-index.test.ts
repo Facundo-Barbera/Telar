@@ -30,7 +30,7 @@ const root = (): string => {
 const stores: EngineStore[] = [];
 /** A store on the SQLite backend, which is the only one that has an index. */
 function indexed(directory = root(), clock?: () => number): EngineStore {
-  const store = new EngineStore(directory, clock ?? (() => 1_700_000_000_000), { executionStorage: "sqlite" });
+  const store = new EngineStore(directory, clock ?? (() => 1_700_000_000_000));
   stores.push(store);
   return store;
 }

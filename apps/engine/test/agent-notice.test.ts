@@ -32,7 +32,7 @@ afterEach(() => {
 function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-notice-"));
   homes.push(home);
-  const store = new EngineStore(home, Date.now, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, Date.now);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   for (const id of ["session_host", "session_worker"]) store.createSession({ id, projectId: "project_one" });

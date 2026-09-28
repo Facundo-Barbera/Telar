@@ -10,7 +10,7 @@ function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-delivery-")); homes.push(home);
   // A resolvable model, so `claimNextTurn` can build a claim (held mail rides its notes).
   fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
-  const store = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(store);
+  const store = new EngineStore(home, Date.now); stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   for (const id of ["session_host", "session_worker", "session_observer"]) store.createSession({ id, projectId: "project_one" });
   store.submitTurn("session_worker", { runId: "run_source", input: "work" });

@@ -45,7 +45,7 @@ test("an interrupted transaction rolls back both journal and queue and invalidat
 test("migration preserves history, keeps a backup, and reopening cannot return to stale JSON", () => {
   const { store: original, home } = setup("json");
   original.submitTurn("session_one", { runId: "run_one", input: "keep me" });
-  const migrated = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(migrated);
+  const migrated = new EngineStore(home, Date.now); stores.push(migrated);
   expect(migrated.turns("session_one")[0]?.input).toBe("keep me");
   expect(fs.existsSync(path.join(home, "execution-json-backup", "session_one", "queue.json"))).toBe(true);
   migrated.stopSession("session_one");
@@ -133,7 +133,7 @@ test("human Stop keeps agent traffic blocked across restart until a fresh human 
   const { home, store } = setup();
   store.executeCommand("stop", () => store.stopSession("session_one", "user"), "stop_guard");
   store.closeExecutionStore();
-  const reopened = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(reopened);
+  const reopened = new EngineStore(home, Date.now); stores.push(reopened);
   expect(() => reopened.submitAgentTurn("session_one", { runId: "run_noise", input: "checkpoint" })).toThrow("stopped by its user");
   expect(reopened.turns("session_one")).toHaveLength(0);
   reopened.submitTurn("session_one", { runId: "run_human", input: "new task" });
@@ -456,7 +456,7 @@ test("a restart retires the claim on a stopped turn without disturbing the sessi
   const before = store.getSession("session_one").updatedAt;
   store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
 
-  const reopened = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(reopened);
+  const reopened = new EngineStore(home, Date.now); stores.push(reopened);
   reopened.recover(); // what the daemon runs at boot
   const turn = reopened.turns("session_one")[0]!;
   expect(turn.claim).toBeUndefined();
@@ -485,7 +485,7 @@ test("the pre-SQLite backup is kept for its week and then swept, and the sweep s
   original.closeExecutionStore(); stores.splice(stores.indexOf(original), 1);
 
   // The migration itself, which is what writes the backup.
-  const migrated = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(migrated);
+  const migrated = new EngineStore(home, Date.now); stores.push(migrated);
   const backup = path.join(home, "execution-json-backup");
   expect(fs.existsSync(path.join(backup, "session_one", "queue.json"))).toBe(true);
   // INSIDE ITS WEEK IT STAYS, and the report says so rather than nothing: a

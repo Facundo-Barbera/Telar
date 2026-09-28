@@ -909,7 +909,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         `Telar engine: compacted ${rows.toLocaleString("en-US")} superseded journal rows across ${journal.sessions.toLocaleString("en-US")} sessions\n`,
       );
     },
-    executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
+    executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "json" ? "json" : "sqlite"),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),

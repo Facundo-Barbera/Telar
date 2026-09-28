@@ -30,7 +30,7 @@ function setup() {
   // A Claude default this home already knows, so `claimNextTurn` is not withheld
   // waiting for a model list.
   fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
-  const store = new EngineStore(home, () => 1_700_000_000_000, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => 1_700_000_000_000);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   for (const id of ["session_host", "session_worker"]) store.createSession({ id, projectId: "project_one" });

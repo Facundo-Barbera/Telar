@@ -42,7 +42,7 @@ afterEach(() => {
 function setup(creatorMode: RuntimeMode): EngineStore {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-ceiling-"));
   homes.push(home);
-  const store = new EngineStore(home, () => 1_000, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => 1_000);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_creator", projectId: "project_one", title: "Coordinator" });

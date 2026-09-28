@@ -5029,7 +5029,7 @@ export class EngineStore {
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
     const migrated = fs.existsSync(this.paths.executionStore) || fs.existsSync(path.join(root, "execution.sqlite"));
     if (migrated && options.executionStorage === "json") throw new Error("this engine home has migrated to SQLite; restore a backup to downgrade");
-    if (migrated || options.executionStorage === "sqlite") {
+    if (migrated || options.executionStorage !== "json") {
       // The journal sweep says what it removed when it removes it, which is
       // seconds AFTER the open rather than during it — the first pass on a
       // large store is a minute's work and belongs nowhere near the startup

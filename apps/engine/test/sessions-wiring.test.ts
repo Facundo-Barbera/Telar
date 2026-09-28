@@ -403,7 +403,7 @@ test("the six queries reach the engine's routes from an out-of-process turn", as
     // turn into a sentence, not as an empty answer.
     seen.step = await sessions.query.step(self, "run_one", 99, 1_000).catch((error: Error) => error.message);
     seen.answer = await sessions.query.answer(self, { from: 0, limit: 100 }).catch((error: Error) => error.message);
-  }, { executionStorage: "sqlite" });
+  });
   expect(sawCapability).toBe(true);
 
   const outline = seen.outline as { turns: Array<{ runId: string; input: string }>; total: number };

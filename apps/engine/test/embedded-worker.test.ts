@@ -342,7 +342,7 @@ test("embedded execution does not depend on the HTTP lifecycle transport", async
     throw new Error("HTTP lifecycle transport must not run for embedded execution");
   }));
   try {
-    const daemon = await startEngine({ models: stubModels, engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
+    const daemon = await startEngine({ models: stubModels, engineRoot: root(), embeddedWorker: {
       pollMs: 10,
       createDriver: () => ({ run: async ({ onObservations }) => {
         await onObservations([{ kind: "item.started", item: { id: "i_direct", detail: { type: "assistant_message", text: "" } } }]);
@@ -362,7 +362,7 @@ test("embedded execution does not depend on the HTTP lifecycle transport", async
 
 test("shutdown disposes the selected OpenCode adapter and its session-lived runtime", async () => {
   let disposed = 0;
-  const daemon = await startEngine({ models: stubModels, engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), embeddedWorker: {
     pollMs: 10, createDriver: () => (kind) => kind === "opencode" ? { run: async () => ({ text: "fixture" }), dispose: () => { disposed++; } } : undefined,
   } });
   daemon.store.registerProject({ id: "project_dispose", name: "Dispose", root: "/tmp" });

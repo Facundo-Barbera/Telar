@@ -98,7 +98,7 @@ const table: Array<{ answer: string; bytes: number; note: string }> = [];
 beforeAll(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-query-acceptance-"));
   fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
-  daemon = await startEngine({ models: stubModels, engineRoot: home, executionStorage: "sqlite" });
+  daemon = await startEngine({ models: stubModels, engineRoot: home });
   seedQueryFixture(daemon.store);
 }, 120_000);
 

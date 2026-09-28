@@ -1555,7 +1555,7 @@ describe("subscribing and answering", () => {
  */
 function queryEngine(): { store: EngineStore; projectId: string } {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-sessions-query-"), () => Date.now(), { executionStorage: "sqlite" });
+  const store = new EngineStore(tmp("telar-sessions-query-"), () => Date.now());
   openStores.push(store);
   const project = store.registerProject({ name: "aurora", root: projectRoot });
   return { store, projectId: project.id };

@@ -26,7 +26,7 @@ function setup() {
   homes.push(home);
   let now = 1_000_000;
   const clock = { advance: (ms: number) => (now += ms) };
-  const store = new EngineStore(home, () => now, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => now);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   for (const id of ["session_host", "session_a", "session_b", "session_c", "session_d"]) store.createSession({ id, projectId: "project_one", title: id });

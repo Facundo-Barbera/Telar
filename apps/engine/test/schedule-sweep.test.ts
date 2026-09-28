@@ -33,7 +33,7 @@ function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-sched-"));
   homes.push(home);
   const clock = { now: START };
-  const store = new EngineStore(home, () => clock.now, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => clock.now);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
@@ -41,7 +41,7 @@ function setup() {
 }
 
 function reopen(home: string, now: number) {
-  const store = new EngineStore(home, () => now, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => now);
   stores.push(store);
   return store;
 }

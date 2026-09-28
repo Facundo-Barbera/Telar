@@ -140,7 +140,7 @@ const unsanctioned = (root: string): string[] => {
 /** The workload. See the coverage list in this file's header — anything not
  *  here is explicitly out of this test's reach. */
 function drive(engineRoot: string): EngineStore {
-  const store = new EngineStore(engineRoot, () => START, { executionStorage: "sqlite" });
+  const store = new EngineStore(engineRoot, () => START);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "one", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
@@ -169,7 +169,7 @@ test("a representative workload leaves nothing at the store root that nothing de
   // A SECOND BOOT OVER THE SAME HOME, because several things are written only
   // on open — the legacy fence, the backup sweep, the reconciles — and a test
   // that never reopened would miss every one of them.
-  const reopened = new EngineStore(engineRoot, () => START + 1000, { executionStorage: "sqlite" });
+  const reopened = new EngineStore(engineRoot, () => START + 1000);
   stores.push(reopened);
 
   expect(unsanctioned(engineRoot)).toEqual([]);

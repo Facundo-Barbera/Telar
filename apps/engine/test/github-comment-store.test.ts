@@ -44,7 +44,6 @@ function setup(reply: GhResult = POSTED) {
   homes.push(home);
   const calls: string[][] = [];
   const store = new EngineStore(home, Date.now, {
-    executionStorage: "sqlite",
     gh: async (_cwd, args) => {
       calls.push(args);
       return reply;
@@ -166,7 +165,6 @@ test("a posted comment drops the thread's cache so the panel is not thirty secon
   homes.push(home);
   let body = "before";
   const store = new EngineStore(home, Date.now, {
-    executionStorage: "sqlite",
     gh: async (_cwd, args) => (args[1] === "comment" ? POSTED : args[1] === "view" ? thread(body) : { status: 1, stdout: "", stderr: "no" }),
   });
   stores.push(store);

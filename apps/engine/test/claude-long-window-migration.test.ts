@@ -116,13 +116,13 @@ describe("the one-time [1m] rewrite", () => {
 
   test("the SQLite backend is migrated the same way", () => {
     const root = dir("telar-long-window-sqlite-");
-    const store = new EngineStore(root, () => 100, { executionStorage: "sqlite" });
+    const store = new EngineStore(root, () => 100);
     store.registerProject({ id: "project_one", name: "One", root: dir("telar-long-window-checkout-") });
     store.createSession({ id: "session_opus", projectId: "project_one" });
     // A bare id stored the way an older engine left it: a record, with no marker.
     store.updateSession("session_opus", { model: { instanceId: "claude", model: "opus" } });
     fs.rmSync(path.join(root, MARKER));
-    const reopened = new EngineStore(root, () => 200, { executionStorage: "sqlite" });
+    const reopened = new EngineStore(root, () => 200);
     expect(reopened.claudeLongWindowMigration).toEqual({ sessions: 1, projects: 0 });
     expect(reopened.getSession("session_opus").model?.model).toBe("opus[1m]");
   });

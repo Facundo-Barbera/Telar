@@ -30,7 +30,7 @@ const NEEDLE = "only-in-the-completed-item";
 function build(turns = 3): string {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-slim-"));
   homes.push(home);
-  const engine = new EngineStore(home, () => START, { executionStorage: "sqlite" });
+  const engine = new EngineStore(home, () => START);
   engine.registerProject({ id: "project_one", name: "one", root: "/tmp" });
   engine.createSession({ id: "session_one", projectId: "project_one" });
   for (let turn = 0; turn < turns; turn += 1) {
