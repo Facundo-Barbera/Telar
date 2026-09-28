@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { GET } from "../../app/api/mobile/read-state/route";
 import { decideApiAccess } from "../remote/gate";
-import { addDevice, hashToken, mintDeviceToken, type DeviceRole, type RemoteFile } from "../remote/store";
+import { hashToken, type DeviceRole, type RemoteFile } from "../remote/store";
+import { addDevice, mintDeviceToken } from "@/lib/testing/remote";
 import { emitSessionRead, onSessionRead } from "../session-read-events";
 import { clearedSessions, parseReadStateIds, READ_STATE_MAX } from "./read-sync";
 

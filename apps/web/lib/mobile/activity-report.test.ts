@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { activityLine } from "../../components/settings/push-notifications-group";
 import { PUT as pushPUT } from "../../app/api/mobile/push/route";
-import { addDevice, mintDeviceToken } from "../remote/store";
+import { addDevice, mintDeviceToken } from "@/lib/testing/remote";
 import { AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, activityReport, tokenFingerprint, type PushRecord } from "./push";
 import { deliverRecord } from "./worker";
 

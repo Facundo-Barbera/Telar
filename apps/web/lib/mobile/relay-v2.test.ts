@@ -17,7 +17,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addDevice, mintDeviceToken } from "../remote/store";
+import { addDevice, mintDeviceToken } from "@/lib/testing/remote";
 import { PUT as pushPUT } from "../../app/api/mobile/push/route";
 import { GET as relayGET } from "../../app/api/mobile/relay/route";
 import { activityDelivery, automaticActivityDelivery, notification, parseRegistration, pushAvailable, readPushRecords, saveRegistration, type Delivery, type MobileRegistration } from "./push";

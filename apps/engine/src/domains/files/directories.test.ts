@@ -13,7 +13,7 @@ import {
   MAX_ENTRIES,
   within,
   type DirectoryOutcome,
-} from "../src/fs-dirs";
+} from "./directories";
 import type { DirectoryListing } from "@telar/engine-client";
 
 const homes: string[] = [];

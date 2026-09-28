@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addDevice, mintDeviceToken, revokeDevice, setDeviceRole } from "../remote/store";
+import { addDevice, mintDeviceToken, revokeDevice, setDeviceRole } from "@/lib/testing/remote";
 import { GET, PUT } from "../../app/api/mobile/push/route";
 import { GET as notifyGET, PUT as notifyPUT } from "../../app/api/mobile/notify/route";
 import { readPushRecords } from "./push";

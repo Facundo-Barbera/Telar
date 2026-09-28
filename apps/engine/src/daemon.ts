@@ -131,7 +131,9 @@ import { describeReclaim } from "./worktree-inventory";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 import { readTaskOutput, resolveTaskOutputFile } from "./task-output";
-import { fsRoute } from "./routes/fs";
+import { filesRoutes } from "./domains/files";
+import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
+import { matchRoute } from "./platform/http/route";
 
 /**
  * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
@@ -162,6 +164,7 @@ export type EngineDaemonOptions = {
   engineRoot?: string;
   /** Where external plugins are installed. Defaults to `<TELAR_HOME>/plugins`. */
   pluginsDir?: string;
+  remoteDir?: string;
   port?: number;
   now?: () => number;
   /**
@@ -1256,6 +1259,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * feature.
    */
   const pluginsDir = options.pluginsDir ?? externalPluginsDir(root);
+  const domainRoutes = [...filesRoutes(), ...remoteRoutes(createRemoteStore(options.remoteDir ?? remoteDirFor(root)))];
   const external = loadInstalledPlugins(pluginsDir);
   const externalModule = (loaded: LoadedExternalPlugin) =>
     externalPlugin(loaded, {
@@ -1912,15 +1916,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, health());
         return;
       }
-      if (request.method === fsRoute.method && url.pathname === fsRoute.path) {
-        const answer = fsRoute.handle(url);
+      const domainRoute = matchRoute(domainRoutes, request.method ?? "GET", url.pathname);
+      if (domainRoute) {
+        const input = { body: request.method === "GET" ? {} : await body(request), params: domainRoute.params, query: url.searchParams };
+        const answer = domainRoute.route.handle(input);
         writeJson(response, answer.status, answer.body);
         return;
       }
-      /**
-       * A provider's models. NOT project-scoped: a catalogue describes an
-       * installed harness, and every project on this machine sees the same one.
-       */
       if (request.method === "GET" && url.pathname === "/v2/models") {
         const driver = url.searchParams.get("driver") ?? "claude";
         const instanceId = url.searchParams.get("instanceId");

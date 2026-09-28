@@ -3,29 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  addDevice,
-  consumePairing,
-  hashToken,
-  matchDevice,
-  mintDeviceToken,
-  mintPairing,
-  normalisePairingCode,
-  PAIRING_MAX_ATTEMPTS,
-  readRemote,
-  remoteHome,
-  renameDevice,
-  revokeDevice,
-  revokeOtherDevices,
-  RemoteStoreError,
-  setDeviceRole,
-  setExposure,
-  setRequireAuth,
-  setTailscaleServe,
-  storePath,
-  writeRemote,
-  touchDevice,
-} from "./store";
+import { readRemote, remoteHome, RemoteStoreError, storePath } from "./store";
 
 const savedTelarHome = process.env.TELAR_HOME;
 const savedTelarCockpit = process.env.TELAR_COCKPIT;
@@ -39,6 +17,11 @@ function freshHome(): string {
   return home;
 }
 
+function writeFile(content: unknown): void {
+  fs.mkdirSync(path.dirname(storePath()), { recursive: true });
+  fs.writeFileSync(storePath(), JSON.stringify(content));
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   if (savedTelarHome === undefined) delete process.env.TELAR_HOME;
@@ -47,126 +30,10 @@ afterEach(() => {
   else process.env.TELAR_COCKPIT = savedTelarCockpit;
 });
 
-describe("remote store", () => {
-  test("a missing file reads as a FRESH store, which requires pairing", () => {
-    // #357: the pane opened on "Require pairing" off while warning that
-    // anything able to reach the address has full control. Nothing is locked
-    // out — the process that launched the server carries the host secret and is
-    // admitted before the gate looks for a device (gate.test.ts).
+describe("reading the remote store", () => {
+  test("a missing file requires pairing", () => {
     freshHome();
     expect(readRemote()).toEqual({ version: 1, requireAuth: true, devices: [] });
-  });
-
-  test("writes are atomic and leave no temp files behind", () => {
-    freshHome();
-    setRequireAuth(true);
-    const dir = path.dirname(storePath());
-    expect(fs.readdirSync(dir)).toEqual(["remote.json"]);
-    expect(readRemote().requireAuth).toBe(true);
-  });
-
-  test("device tokens have the documented shape and never touch disk raw", () => {
-    freshHome();
-    const raw = mintDeviceToken();
-    expect(raw).toMatch(/^tlr_[A-Za-z0-9_-]{43}$/);
-    addDevice("Phone", raw);
-    const bytes = fs.readFileSync(storePath(), "utf8");
-    expect(bytes.includes(raw)).toBe(false);
-    expect(bytes.includes(hashToken(raw))).toBe(true);
-  });
-
-  test("matchDevice accepts the right token and rejects a near miss", () => {
-    freshHome();
-    const raw = mintDeviceToken();
-    const device = addDevice("Phone", raw);
-    expect(matchDevice(readRemote(), raw)?.id).toBe(device.id);
-    expect(matchDevice(readRemote(), raw.slice(0, -1) + (raw.endsWith("a") ? "b" : "a"))).toBeUndefined();
-  });
-
-  test("revoking removes the device and its access", () => {
-    freshHome();
-    const raw = mintDeviceToken();
-    const device = addDevice("Phone", raw);
-    expect(revokeDevice(device.id)).toBe(true);
-    expect(matchDevice(readRemote(), raw)).toBeUndefined();
-    expect(revokeDevice(device.id)).toBe(false);
-  });
-
-  test("pairing is one-time and expires", () => {
-    freshHome();
-    const { code } = mintPairing(1000, 600_000);
-    // Replay: first consume wins, second meets an empty slot.
-    expect(consumePairing(code, 2000)).toBe(true);
-    expect(consumePairing(code, 2000)).toBe("none-pending");
-
-    const expired = mintPairing(1000, 600_000);
-    expect(consumePairing(expired.code, 601_001)).toBe("expired");
-  });
-
-  test("minting a new pairing replaces the pending one", () => {
-    freshHome();
-    const first = mintPairing(1000);
-    const second = mintPairing(2000);
-    expect(consumePairing(first.code, 3000)).toBe("mismatch");
-    expect(consumePairing(second.code, 3000)).toBe(true);
-  });
-
-  test("the code is eight digits and pairs however it is spaced", () => {
-    freshHome();
-    const { code } = mintPairing(1000);
-    expect(code).toMatch(/^\d{8}$/);
-    expect(normalisePairingCode(`${code.slice(0, 4)} ${code.slice(4)}`)).toBe(code);
-    expect(normalisePairingCode(`${code.slice(0, 4)}-${code.slice(4)}`)).toBe(code);
-    expect(normalisePairingCode("1234567")).toBeUndefined();
-    expect(normalisePairingCode("12345678a")).toBeUndefined();
-    expect(consumePairing(`${code.slice(0, 4)} ${code.slice(4)}`, 2000)).toBe(true);
-  });
-
-  test("five wrong guesses burn the code, whichever form the guesser tries", () => {
-    freshHome();
-    const { code } = mintPairing(1000);
-    const wrong = code === "00000000" ? "00000001" : "00000000";
-    for (let n = 1; n < PAIRING_MAX_ATTEMPTS; n++) {
-      expect(consumePairing(n % 2 ? wrong : "tlr_not-it", 2000)).toBe("mismatch");
-    }
-    expect(consumePairing(wrong, 2000)).toBe("burned");
-    // Burned means gone: even the right code no longer pairs.
-    expect(consumePairing(code, 2000)).toBe("none-pending");
-  });
-
-  test("a pending pairing written by the old build still answers to its long token", () => {
-    freshHome();
-    const old = mintDeviceToken();
-    const file = readRemote();
-    file.pairing = { tokenHash: hashToken(old), createdAt: 1000, expiresAt: 601_000 };
-    writeRemote(file);
-    expect(consumePairing("12345678", 2000)).toBe("mismatch");
-    expect(consumePairing(old, 2000)).toBe(true);
-  });
-
-  test("tailscale serve is persisted only with pairing on, like exposure", () => {
-    freshHome();
-    // Switched off explicitly: a fresh store requires pairing now (#357), and
-    // what this pins is the refusal, not which way the store starts.
-    setRequireAuth(false);
-    expect(() => setTailscaleServe(true)).toThrow(/pairing/);
-    setRequireAuth(true);
-    expect(setTailscaleServe(true).tailscaleServe).toBe(true);
-    expect(readRemote().tailscaleServe).toBe(true);
-    expect(setTailscaleServe(false).tailscaleServe).toBeUndefined();
-  });
-
-  test("touchDevice throttles writes and never throws", () => {
-    freshHome();
-    const raw = mintDeviceToken();
-    const device = addDevice("Phone", raw);
-    touchDevice(device.id, 100_000);
-    expect(readRemote().devices[0].lastSeenAt).toBe(100_000);
-    touchDevice(device.id, 130_000); // under the 60s throttle
-    expect(readRemote().devices[0].lastSeenAt).toBe(100_000);
-    touchDevice(device.id, 170_000);
-    expect(readRemote().devices[0].lastSeenAt).toBe(170_000);
-    touchDevice("dev_missing", 200_000); // no-op, no throw
   });
 
   test("remoteHome applies the launcher discipline", () => {
@@ -184,104 +51,19 @@ describe("remote store", () => {
 
   test("a file written before roles existed reads every device as full", () => {
     freshHome();
-    fs.mkdirSync(path.dirname(storePath()), { recursive: true });
-    fs.writeFileSync(
-      storePath(),
-      JSON.stringify({
-        version: 1,
-        requireAuth: true,
-        devices: [{ id: "dev_old", name: "Old phone", tokenHash: "ab".repeat(32), createdAt: 1 }],
-      }),
-    );
-    const device = readRemote().devices[0];
-    expect(device.role).toBe("full");
-    expect(device.platform).toBeUndefined();
+    writeFile({ version: 1, requireAuth: true, devices: [{ id: "dev_old", name: "Old phone", tokenHash: "ab".repeat(32), createdAt: 1 }] });
+    expect(readRemote().devices[0]!.role).toBe("full");
   });
 
-  test("addDevice records platform and defaults to full", () => {
+  test("an unknown version reads as open, unlike a missing file", () => {
     freshHome();
-    const device = addDevice("Phone", mintDeviceToken(), { platform: "ios" });
-    expect(device.role).toBe("full");
-    expect(device.platform).toBe("ios");
-    expect(readRemote().devices[0].platform).toBe("ios");
-  });
-
-  test("renameDevice trims, floors and caps the name", () => {
-    freshHome();
-    const device = addDevice("Phone", mintDeviceToken());
-    expect(renameDevice(device.id, "  Facundo's iPhone  ")?.name).toBe("Facundo's iPhone");
-    expect(renameDevice(device.id, "   ")?.name).toBe("Unnamed device");
-    expect(renameDevice(device.id, "x".repeat(100))?.name).toBe("x".repeat(64));
-    expect(renameDevice("dev_missing", "Ghost")).toBeUndefined();
-  });
-
-  test("setDeviceRole round-trips, and refuses to demote the last full device while the gate is on", () => {
-    freshHome();
-    const phone = addDevice("Phone", mintDeviceToken());
-    const browser = addDevice("Browser", mintDeviceToken());
-    setRequireAuth(true);
-    expect(setDeviceRole(browser.id, "observer")?.role).toBe("observer");
-    expect(() => setDeviceRole(phone.id, "observer")).toThrow(RemoteStoreError);
-    // With the gate off the demotion is harmless and allowed.
-    setRequireAuth(false);
-    expect(setDeviceRole(phone.id, "observer")?.role).toBe("observer");
-    expect(setDeviceRole(phone.id, "full")?.role).toBe("full");
-  });
-
-  test("revokeOtherDevices keeps exactly the named device", () => {
-    freshHome();
-    const keep = addDevice("Phone", mintDeviceToken());
-    addDevice("Browser", mintDeviceToken());
-    addDevice("Old laptop", mintDeviceToken());
-    expect(revokeOtherDevices(keep.id)).toBe(2);
-    expect(readRemote().devices.map((device) => device.id)).toEqual([keep.id]);
-    expect(revokeOtherDevices(keep.id)).toBe(0);
-  });
-
-  test("an unknown version reads as the OPEN default, unlike a missing file", () => {
-    /**
-     * A DAMAGED FILE IS NOT A FRESH ONE. Every paired device is gone with it, so
-     * defaulting this branch to "require pairing" would lock a working install
-     * out of itself on the strength of a parse failure — a browser that has been
-     * reaching this cockpit for months would land on /pair with no way to mint a
-     * code. Falling open is the wrong answer in general and the right one here.
-     */
-    freshHome();
-    fs.mkdirSync(path.dirname(storePath()), { recursive: true });
-    fs.writeFileSync(storePath(), JSON.stringify({ version: 99, requireAuth: true, devices: [{}] }));
+    writeFile({ version: 99, requireAuth: true, devices: [{}] });
     expect(readRemote()).toEqual({ version: 1, requireAuth: false, devices: [] });
-  });
-});
-
-describe("where the socket listens", () => {
-  test("widening is refused while the gate is off", () => {
-    freshHome();
-    setRequireAuth(false);
-    // Binding every interface with no gate would publish an unauthenticated
-    // cockpit onto whatever network this machine is attached to.
-    expect(() => setExposure("network-accessible")).toThrow();
-    expect(readRemote().exposure).toBe("local-only");
-  });
-
-  test("turning the gate off closes the socket too", () => {
-    freshHome();
-    setRequireAuth(true);
-    setExposure("network-accessible");
-    expect(readRemote().exposure).toBe("network-accessible");
-    setRequireAuth(false);
-    expect(readRemote().exposure).toBe("local-only");
   });
 
   test("anything but the widening value reads as loopback", () => {
     freshHome();
-    writeRemote({ version: 1, requireAuth: true, devices: [], exposure: "wide-open" as never });
-    // A hand-edited or corrupted field cannot quietly open the socket.
-    expect(readRemote().exposure).toBe("local-only");
-  });
-
-  test("a file written before this setting existed reads as loopback", () => {
-    freshHome();
-    writeRemote({ version: 1, requireAuth: true, devices: [] });
+    writeFile({ version: 1, requireAuth: true, devices: [], exposure: "wide-open" });
     expect(readRemote().exposure).toBe("local-only");
   });
 });

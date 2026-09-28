@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import fs from "node:fs";
 import { decideApiAccess } from "@/lib/remote/gate";
 import { HOST_HEADER } from "@/lib/remote/host-token";
-import { readRemote, remoteHome, storePath, touchDevice, type RemoteFile } from "@/lib/remote/store";
+import { readRemote, remoteHome, storePath, type RemoteFile } from "@/lib/remote/store";
+import { engineCall } from "@/lib/engine/forward";
 
 /**
  * The cockpit's front door. Once pairing is required, every /api call must
@@ -48,6 +49,15 @@ function loadRemote(): RemoteFile | null {
   return file;
 }
 
+const TOUCH_QUIET_MS = 60_000;
+
+/** The engine owns remote.json, so the last-seen stamp is asked of it, at most once a minute per device. */
+function touchDevice(file: RemoteFile, deviceId: string): void {
+  const lastSeenAt = file.devices.find((device) => device.id === deviceId)?.lastSeenAt;
+  if (lastSeenAt !== undefined && Date.now() - lastSeenAt < TOUCH_QUIET_MS) return;
+  void engineCall("POST", `/v2/remote/devices/${encodeURIComponent(deviceId)}/seen`, {}).catch(() => undefined);
+}
+
 export function proxy(request: NextRequest): Response | undefined {
   const file = loadRemote();
   if (!file) return undefined;
@@ -65,7 +75,7 @@ export function proxy(request: NextRequest): Response | undefined {
     file,
   );
   if (decision.allow) {
-    if (decision.deviceId) touchDevice(decision.deviceId);
+    if (decision.deviceId) touchDevice(file, decision.deviceId);
     return undefined;
   }
   // An unpaired API caller gets the typed 401; an unpaired PERSON gets the

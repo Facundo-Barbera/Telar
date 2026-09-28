@@ -29,7 +29,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addDevice, mintDeviceToken } from "../remote/store";
+import { addDevice, mintDeviceToken } from "@/lib/testing/remote";
 import { GET as pushGET } from "../../app/api/mobile/push/route";
 import { GET as relayGET } from "../../app/api/mobile/relay/route";
 import { notification, pushConfigured, readPushRecords, saveRegistration, signalKey, writePushRecords, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
