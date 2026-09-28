@@ -8,7 +8,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { PluginStatus } from "@telar/engine-client";
-import { settingsRowId } from "@/lib/settings-search";
+import { settingsRowId } from "@/features/settings";
 import { projectPluginSections } from "./sections";
 import { FIXTURE_SCHEMA } from "../../../test-fixtures/plugin-settings-schema";
 import { generatedGroupTitle, parseNumberField, pluginSettingsSearchEntries, settingsFields } from "./settings-form";

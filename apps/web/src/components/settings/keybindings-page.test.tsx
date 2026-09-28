@@ -5,8 +5,7 @@ import { COMMANDS, defaultKeymap, mergeKeymap, type Command, type Keymap } from 
 // The formatter moved out of the pane in #401 — every control bound to a chord
 // draws its caps now, so a settings page is not where they can live.
 import { keyCaps } from "@/lib/key-caps";
-import { searchSettings } from "@/lib/settings-search";
-import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
+import { searchSettings, SETTINGS_SEARCH_INDEX } from "@/features/settings";
 import { KeybindingsPage, jumpChordsFrom, keybindingRows, recordedChord } from "./keybindings-page";
 
 /**
