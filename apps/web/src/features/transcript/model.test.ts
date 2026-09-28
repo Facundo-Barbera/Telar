@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { failedCount } from "./transcript";
+import { failedCount } from "./model";
 
 /**
  * A collapsed run reports HOW MUCH failed, not merely that something did (#206).

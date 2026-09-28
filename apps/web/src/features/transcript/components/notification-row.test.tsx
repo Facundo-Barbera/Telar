@@ -12,7 +12,9 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";
-import { NotificationRow, notificationLabel, sessionWakeLabel } from "../transcript";
+import { notificationLabel } from "../model";
+import { sessionWakeLabel } from "./item-rows";
+import { NotificationRow } from "./notification-row";
 
 const PEER: NotificationDetail = {
   kind: "peer_message",

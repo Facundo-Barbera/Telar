@@ -16,7 +16,7 @@ import type { ClaudeConversation, ConversationImportDetail } from "@telar/engine
 import type { JournalItem } from "@/lib/engine/journal";
 import { installTestDom, mount, flush } from "@/lib/testing/dom";
 import { ConversationRow, ResumePicker } from "./resume-picker";
-import { TranscriptItem } from "../transcript";
+import { TranscriptItem } from "@/features/transcript";
 
 installTestDom();
 

@@ -6,7 +6,7 @@ import { BotIcon, ChevronRightIcon, TerminalIcon } from "lucide-react";
 import type { TaskState } from "@telar/engine-client";
 import type { JournalTask } from "@/lib/engine/journal";
 import { startReferenceDrag, taskReference } from "@/lib/drag-reference";
-import { TranscriptItem } from "@/components/transcript";
+import { TranscriptItem } from "@/features/transcript";
 import { PanelDivider, PanelEmpty, PanelRow } from "@/components/ui/panel";
 import { RelatedConversations } from "@/components/session/related-conversations";
 import { HeldReports } from "@/components/session/held-reports";
