@@ -22,6 +22,11 @@ export class EngineApiError extends Error {
   }
 }
 
+/** The cause itself when the engine raised it, otherwise an internal error carrying `fallback`. */
+export function asEngineError(cause: unknown, fallback: string): EngineApiError {
+  return cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", fallback);
+}
+
 /** The Mac to name in a failure, or nothing when this one answered. The UI
  *  shows the name when the Mac has given one, and falls back to the id rather
  *  than to silence — an id at least distinguishes two paired Macs. */

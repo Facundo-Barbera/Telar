@@ -8,7 +8,7 @@ import { apiTransport, EngineApiError, type Fetcher } from "./transport";
 import { machineCalls, settingsCalls } from "./machine-calls";
 import { sessionCalls, turnCalls } from "./session-calls";
 import { integrationCalls, workspaceCalls } from "./workspace-calls";
-export { EngineApiError, refusedBy, READ_BUDGET, OPEN_BUDGET } from "./transport";
+export { asEngineError, EngineApiError, refusedBy, READ_BUDGET, OPEN_BUDGET } from "./transport";
 
 /** One pass of the rail. `unchanged` means keep what you have, so `sessions` cannot be read without checking it. */
 export type LiveSessionsPage = {

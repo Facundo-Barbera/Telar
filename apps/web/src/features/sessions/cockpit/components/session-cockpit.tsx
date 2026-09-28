@@ -6,25 +6,14 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { ClockIcon, TriangleAlertIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/ui/alert";
 import { WorkspaceInspector } from "@/features/sessions/components/workspace-inspector";
-import {
-  type ClaudeConversation,
-  type RequestDecision,
-  type RuntimeMode,
-  type Turn,
-  type TurnModelSelection,
-  seedSessionTitle,
-  turnHasContent,
-  workspacePath,
-} from "@telar/engine-client";
-import { splitImages } from "@/features/prompts";
-import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/platform/engine";
+import { workspacePath } from "@telar/engine-client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, taskRoster } from "@/platform/engine";
-import { isCompactDraft, readDraft, writeDraft } from "@/features/composer";
 import { installNavigationMarks, markNavigation } from "@/platform/perf-marks";
 import { projectSettingsHref } from "@/features/projects";
 import { actionableRequests } from "../failed-turn-recovery";
-import { canvasHref, sessionHref } from "../../session-list";
-import { newSessionId, withSnooze } from "../../session-mutations";
+import { canvasHref } from "../../session-list";
+import { withSnooze } from "../../session-mutations";
 import { sessionLink } from "../../session-link";
 import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity } from "../../session-settling";
 import { useInboxPolicy } from "../../inbox-policy";
@@ -35,9 +24,9 @@ import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "../s
 import { ReadReceiptMarker, useReadReceipt } from "./read-receipt";
 import { questionFields } from "@/features/composer/question-drawer";
 import { normaliseContextNoticePercent } from "@/features/composer/context-notice";
-import { choiceNamesAnything, choiceOf, sessionModelSelection, type ModelChoice, useProviderInstance } from "@/features/providers";
+import { useProviderInstance } from "@/features/providers";
 import { processToReveal, stillWorking } from "../background-presence";
-import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
+import { Composer } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./cohort-fold";
 import { groupNotificationTurns, TranscriptWorkspace } from "@/features/transcript";
 import { issuePanelTab, pullPanelTab, RailToggle, RightPanel, type PanelTab, type TaskFocus } from "@/features/panel";
@@ -48,7 +37,7 @@ import { canvasPanelKey } from "@/features/panel";
 import { Button } from "@/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
 import { useCommandHandlers } from "@/features/commands";
-import { appendToDraft, pinToggleOverride, transcriptRows } from "../model";
+import { pinToggleOverride, transcriptRows } from "../model";
 import { SessionMasthead, SessionProblem, SoloTools, usePanelPresence } from "./masthead";
 import { EmptyTranscript, SessionTurn, TurnFrame } from "./session-turn";
 import { useSessionSync } from "../hooks/use-session-sync";
@@ -57,7 +46,9 @@ import { useJournalReactions } from "../hooks/use-journal-reactions";
 import { useSessionBrowser } from "../hooks/use-session-browser";
 import { useCockpitProject } from "../hooks/use-cockpit-project";
 import { useDraftConfig } from "../hooks/use-draft-config";
-import { handOffCanvas } from "../canvas-handoff";
+import { useComposerDraft } from "../hooks/use-composer-draft";
+import { useSessionActions } from "../hooks/use-session-actions";
+import { useSubmit } from "../hooks/use-submit";
 
 const api = createEngineApi();
 
@@ -92,18 +83,13 @@ export function SessionCockpit({
     hostId, projectId, serverProjectName, transcriptLanded,
   });
   const draftConfig = useDraftConfig({ projectId, fresh, projectDefaults });
-  const [draft, setDraft] = useState("");
-  /** Files picked but not yet sent. Held as `File`s rather than uploaded on
-   *  pick — see the upload loop in `submit` for why. */
-  const [attachments, setAttachments] = useState<File[]>([]);
-  const [draftRunId, setDraftRunId] = useState<string>();
+  const composer = useComposerDraft({ sessionId, projectId });
   /** The transcript's scroll layer, reachable from `submit`. */
   const follow = useRef<ConversationFollowHandle>(null);
   /** The reader has scrolled back through the transcript — the composer steps
    *  down to its compact shape so it covers less of what they are reading. */
   const [readingBack, setReadingBack] = useState(false);
   const onAtBottomChange = useCallback((atBottom: boolean) => setReadingBack(!atBottom), []);
-  const [sending, setSending] = useState(false);
   const pluginPanels = usePluginPanels(hostId, enabledPlugins);
   const [projectTranscript] = useState(createJournalProjector);
 
@@ -114,13 +100,10 @@ export function SessionCockpit({
     stepPanelTab, openPanel, togglePanel, showSessionBrowser, tabHandlers,
   } = useCockpitPanel({ panelKey, enabledPlugins, hostId, sessionId });
   const panelPresence = usePanelPresence(!solo && panel.open);
-  const owner = useRef<{ sessionId: string | undefined; projectId: string | undefined }>({ sessionId, projectId });
-  /** The live text, readable from an effect that must not re-run per keystroke. */
-  const draftText = useRef(draft);
   const { browser, browserCanStart, browserStart, openBrowser, browserDraftFlight, browserDraftSendPending } = useSessionBrowser({
     hostId, sessionId, projectId, transcriptLanded, events,
     draft: draftConfig.choices,
-    draftText, owner, panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab,
+    draftText: composer.draftText, owner: composer.owner, panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab,
   });
 
   useCommandHandlers(
@@ -142,20 +125,6 @@ export function SessionCockpit({
     },
     [solo, enabledPlugins, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
   );
-
-  // Appended rather than spliced: the caret lives inside ComposerEditor, out of reach here.
-  const insertIntoComposer = useCallback((text: string) => {
-    if (!text) return;
-    setDraft((current) => appendToDraft(current, text));
-    // A draft that came back from a turn stops being that turn's recall the
-    // moment anything is added to it — the same rule `onDraftChange` follows.
-    setDraftRunId(undefined);
-  }, [setDraft, setDraftRunId]);
-
-  const attachFromPanel = useCallback((files: readonly File[], caption?: string) => {
-    if (files.length > 0) setAttachments((current) => [...current, ...files].slice(0, MAX_ATTACHMENTS));
-    if (caption) insertIntoComposer(caption);
-  }, [setAttachments, insertIntoComposer]);
 
   const projectRepo = useRef<Promise<string | undefined> | undefined>(undefined);
   const routeLink = useCallback(
@@ -206,75 +175,6 @@ export function SessionCockpit({
 
   const revealNewTerminals = useJournalReactions({ events, browser, enabledPlugins, showPanelTab, updatePanel });
 
-  async function adoptConversation(conversation: ClaudeConversation): Promise<void> {
-    if (projectId === undefined) {
-      throw new EngineApiError("invalid_request", "This conversation has no project to create a session in.");
-    }
-    if (sessionId) {
-      // The engine refuses this too; saying it here means the person is told
-      // before a session is created rather than after.
-      throw new EngineApiError("conflict", "This conversation has already started. Open a new one to bring in another.");
-    }
-    const id = newSessionId();
-    const canvas = window.location.pathname;
-    const title = (conversation.customTitle || conversation.firstPrompt || conversation.title || "Claude Code conversation")
-      .replace(/\s+/g, " ")
-      .slice(0, 80);
-    const adoptApi = createEngineApi(hostFetcher(hostId));
-    window.history.replaceState(null, "", sessionHref({ id, projectId, hostId }));
-    let target: string;
-    try {
-      const created = await adoptApi.createSession(projectId, {
-        id,
-        title,
-        driver: "claude",
-        envMode: draftConfig.envMode,
-        ...(draftConfig.envMode === "worktree" && draftConfig.base.baseRef ? { baseRef: draftConfig.base.baseRef } : {}),
-        ...(draftConfig.envMode === "worktree" && draftConfig.base.branchName ? { branchName: draftConfig.base.branchName } : {}),
-      });
-      target = created.session.id;
-      if (target !== id) window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
-      const adopted = await adoptApi.adoptClaudeConversation(target, conversation.sessionId);
-      setSession(adopted.session);
-    } catch (cause: unknown) {
-      window.history.replaceState(null, "", canvas);
-      throw cause;
-    }
-    handOffCanvas(target, projectId, { panel, editors }, { clearCanvas: false });
-    clearTranscript();
-    owner.current = { sessionId: target, projectId };
-    setCreatedSessionId(target);
-  }
-
-  useEffect(() => {
-    draftText.current = draft;
-  }, [draft]);
-
-  useEffect(() => {
-    const task = window.setTimeout(() => {
-      if (owner.current.sessionId !== sessionId || owner.current.projectId !== projectId) {
-        const leaving = owner.current;
-        owner.current = { sessionId, projectId };
-        writeDraft(leaving.sessionId, leaving.projectId, draftText.current);
-        // authoritative, unlike the fallback below: a different composer's text
-        // is not a draft for this one.
-        setDraft(readDraft(sessionId, projectId));
-        return;
-      }
-      const stored = readDraft(sessionId, projectId);
-      // The first paint, where this reads back what a reload dropped. Never
-      // clobbers something already typed — here the restore is a fallback for
-      // an empty box, not an authority over it.
-      if (stored) setDraft((current) => current || stored);
-    }, 0);
-    return () => window.clearTimeout(task);
-  }, [sessionId, projectId]);
-
-  useEffect(() => {
-    const task = window.setTimeout(() => writeDraft(sessionId, projectId, draft), 400);
-    return () => window.clearTimeout(task);
-  }, [draft, sessionId, projectId]);
-
   const transcript = useMemo(
     // A peer's passive report is drawn inside the turn it arrived during — see
     // `hostPassiveArrivals`.
@@ -319,255 +219,12 @@ export function SessionCockpit({
     [openRequests],
   );
 
-  const stop = async () => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await api.stopSession(sessionId);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the session."));
-    } finally {
-      setSending(false);
-    }
-  };
-  const stopBackground = async () => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await api.stopBackgroundTasks(sessionId);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the background tasks."));
-    } finally {
-      setSending(false);
-    }
-  };
-  const compact = async () => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      // `kind: "compact"` is what makes it a gesture rather than a sentence:
-      // the transcript draws a system row, and the engine refuses a second
-      // one while this one is in flight.
-      await api.submitTurn(sessionId, { runId: newRunId(), input: "/compact", kind: "compact" });
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not start the compaction."));
-    } finally {
-      setSending(false);
-    }
-  };
-  const decideRequest = async (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => {
-    // Every one of these acts on a session that must already exist; the fresh
-    // canvas offers none of them.
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await api.resolveRequest(sessionId, requestId, { decision, ...(extra?.answers ? { answers: extra.answers } : {}) });
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not answer the approval."));
-    } finally {
-      setSending(false);
-    }
-  };
-    const retryAmbiguous = async (turn: Pick<Turn, "runId" | "state" | "input">) => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await retryAmbiguousTurn(api, sessionId, turn);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      // Retrying durably records a discard first. If only its new submission
-      // failed, refresh so the UI does not imply the prior run remains live.
-      try {
-        await hydrate();
-      } catch {
-        /* Preserve the original request error. */
-      }
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not retry the ambiguous turn."));
-    } finally {
-      setSending(false);
-    }
-  };
-  /** Sit out a usage limit and carry on, or stay stopped. Explicit either way:
-   *  the engine stores only a deliberate choice, so the driver's default keeps
-   *  applying to every session that never touched this. */
-  const setResumeAfterRateLimit = async (next: boolean) => {
-    if (!sessionId) return;
-    try {
-      const updated = await api.updateSession(sessionId, { resumeAfterRateLimit: next });
-      setSession(updated.session);
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not change that setting."));
-    }
-  };
-  /** Don't wait for the limit to lift. The engine re-queues the same turn, so
-   *  the provider session — and its context — carries on where it stopped. */
-  const resumeNow = async (runId: string) => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await api.resumeRateLimitedTurn(sessionId, runId);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not resume that turn."));
-    } finally {
-      setSending(false);
-    }
-  };
-  const submit = async () => {
-    if (!turnHasContent(draft, attachments.map((file) => file.type)) || browserDraftSendPending.current) return;
-    if (isCompactDraft(draft) && sessionId && session?.driver === "claude" && !active && !compacting) {
-      setDraft("");
-      writeDraft(sessionId, projectId, "");
-      await compact();
-      return;
-    }
-    // A send racing the first browser open joins its stable session identity.
-    let browserTarget: string | undefined;
-    if (browserDraftFlight.current) {
-      browserDraftSendPending.current = true;
-      const origin = window.location.pathname;
-      try {
-        browserTarget = await browserDraftFlight.current;
-      } catch (cause) {
-        setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not save the browser draft. Your message is still here."));
-        return;
-      } finally {
-        browserDraftSendPending.current = false;
-      }
-      const destination = sessionHref({ id: browserTarget, projectId, hostId });
-      if (window.location.pathname !== origin && window.location.pathname !== destination) return;
-    }
-    const runId = draftRunId ?? newRunId();
-    setDraftRunId(runId);
-    setSending(true);
-    follow.current?.toBottom();
-    // Cleared optimistically and before the round trip: the box emptying is the
-    // acknowledgement, and waiting on the network to give it back is the thing
-    // that makes queueing feel like a form submission.
-    const text = draft.trim();
-    const files = attachments;
-    setDraft("");
-    writeDraft(sessionId ?? browserTarget, projectId, "");
-    setDraftRunId(undefined);
-    setAttachments([]);
-    try {
-      let target = sessionId ?? browserTarget;
-      if (!target) {
-        if (projectId === undefined) {
-          setError(new EngineApiError("invalid_request", "This conversation has no project to create a session in."));
-          return;
-        }
-        const id = newSessionId();
-        const canvas = window.location.pathname;
-        window.history.replaceState(null, "", sessionHref({ id, projectId, hostId }));
-        const created = await api.createSession(projectId, {
-          id,
-          title: seedSessionTitle(text, splitImages(files).images.map((file) => file.name)),
-          driver: draftConfig.driver,
-          envMode: draftConfig.envMode,
-          ...(draftConfig.envMode === "worktree" && draftConfig.base.baseRef ? { baseRef: draftConfig.base.baseRef } : {}),
-          ...(draftConfig.envMode === "worktree" && draftConfig.base.branchName ? { branchName: draftConfig.base.branchName } : {}),
-        }).catch((cause: unknown) => {
-          window.history.replaceState(null, "", canvas);
-          throw cause;
-        });
-        target = created.session.id;
-        if (target !== id) window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
-        const model = sessionModelSelection(created.session.providerInstanceId, draftConfig.pick);
-        const creationPatch = {
-          ...(draftConfig.runtimeModeTouched ? { runtimeMode: draftConfig.runtimeMode } : {}),
-          ...(model ? { model } : {}),
-        };
-        if (Object.keys(creationPatch).length > 0) {
-          const patched = await api.updateSession(target, creationPatch);
-          setSession(patched.session);
-        }
-        handOffCanvas(target, projectId, { panel, editors }, { clearCanvas: false });
-        clearTranscript();
-        owner.current = { sessionId: target, projectId };
-        setCreatedSessionId(target);
-        // Only when the patch did not already give us a newer record.
-        if (Object.keys(creationPatch).length === 0) setSession(created.session);
-      }
-      const attachmentIds: string[] = [];
-      for (const file of files) {
-        const stored = await api.uploadAttachment(target, file);
-        attachmentIds.push(stored.attachment.id);
-      }
-      const pending = session?.model ?? draftConfig.pick;
-      await api.submitTurn(target, {
-        runId,
-        input: text,
-        ...(choiceNamesAnything(pending) ? { model: choiceOf(pending) as TurnModelSelection } : {}),
-        ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
-      });
-      // Only for a session that already existed. A just-created one is hydrated
-      // by the effect that fires when `sessionId` changes, and calling it here
-      // would run against the stale id captured in this closure.
-      if (sessionId) await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      // Give the words back — and the files. Losing a typed message to a failed
-      // post is unforgivable in a way that a visible error is not, and a human
-      // who has to re-pick four screenshots feels the same way about those.
-      setDraft(text);
-      setDraftRunId(runId);
-      setAttachments(files);
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not submit the turn."));
-    } finally {
-      setSending(false);
-    }
-  };
-  const rename = async (nextTitle: string) => {
-    if (!sessionId) return;
-    try {
-      const next = await api.updateSession(sessionId, { title: nextTitle });
-      setSession(next.session);
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not rename the session."));
-    }
-  };
-  const setModel = async (next: ModelChoice) => {
-    if (!session || !sessionId) return;
-    try {
-      const updated = await api.updateSession(sessionId, {
-        model:
-          sessionModelSelection(session.providerInstanceId, next) ??
-            // `null`, not `undefined`: JSON.stringify drops an undefined key, so
-              // the engine would see no patch and keep the old selection — the
-              // pill would say "Provider default" and the record would disagree.
-              null,
-      });
-      setSession(updated.session);
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not change the model."));
-    }
-  };
-  const setRuntimeMode = async (mode: RuntimeMode) => {
-    if (!sessionId) return;
-    // Not gated on `sending`: this is the brake, and a brake you cannot reach
-    // while the thing is moving is not a brake.
-    try {
-      const next = await api.updateSession(sessionId, { runtimeMode: mode });
-      setSession(next.session);
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not change the runtime mode."));
-    }
-  };
+  const actions = useSessionActions({ sessionId, session, hydrate, setSession, setError });
+  const { submit, adoptConversation } = useSubmit({
+    hostId, sessionId, projectId, session, composer, draft: { ...draftConfig.choices, runtimeModeTouched: draftConfig.runtimeModeTouched }, busy: Boolean(active) || compacting,
+    browserDraftFlight, browserDraftSendPending, follow, canvas: { panel, editors }, compact: actions.compact, hydrate,
+    setSending: actions.setSending, setSession, setError, clearTranscript, setCreatedSessionId,
+  });
 
   const { policy: inboxPolicy } = useInboxPolicy();
   const settleable: SettleableSession | undefined = session && {
@@ -807,7 +464,7 @@ export function SessionCockpit({
             projectResolved={projectResolved}
             session={session}
             {...(headerMenu ? { menu: headerMenu } : {})}
-            onRename={(next) => void rename(next)}
+            onRename={(next) => void actions.rename(next)}
             onWatchRun={() => showPanelTab("terminal")}
             onRunTerminals={revealNewTerminals}
             panel={
@@ -876,13 +533,13 @@ export function SessionCockpit({
                 roster={roster}
                 live={turn.runId === active?.runId}
                 requests={openRequests.filter((request) => (hostOf.get(request.runId) ?? request.runId) === turn.runId && request.id !== composerQuestion?.id)}
-                sending={sending}
-                onInsert={insertIntoComposer}
+                sending={actions.sending}
+                onInsert={composer.insertIntoComposer}
                 {...panelGestures}
-                onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
-                onRetry={(item) => void retryAmbiguous(item)}
+                onDecide={(requestId, decision, extra) => void actions.decideRequest(requestId, decision, extra)}
+                onRetry={(item) => void actions.retryAmbiguous(item)}
                 {...(turn.failureCode === "rate_limited" && turn.state === "failed"
-                  ? { onResumeNow: () => void resumeNow(turn.runId) }
+                  ? { onResumeNow: () => void actions.resumeNow(turn.runId) }
                   : {})}
               />
               </TurnFrame>
@@ -911,7 +568,7 @@ export function SessionCockpit({
         </ConversationViewport>
         </div>
         <Composer
-          draft={draft}
+          draft={composer.draft}
           // A fresh canvas is ready: there is nothing to wait for, because the
           // message you type is the thing that creates the session.
           ready={fresh || Boolean(session)}
@@ -919,8 +576,8 @@ export function SessionCockpit({
           // the viewport, and a composer changing height under it would move it
           // again.
           compact={readingBack && transcriptLanded}
-          attachments={attachments}
-          onAttach={setAttachments}
+          attachments={composer.attachments}
+          onAttach={composer.setAttachments}
           fresh={fresh}
           {...(fresh
             ? {
@@ -935,7 +592,7 @@ export function SessionCockpit({
               }
             : {})}
           busy={Boolean(active)}
-          sending={sending}
+          sending={actions.sending}
           {...(session?.runtimeMode ?? (fresh ? draftConfig.runtimeMode : undefined)
             ? { runtimeMode: session?.runtimeMode ?? draftConfig.runtimeMode }
             : {})}
@@ -957,35 +614,32 @@ export function SessionCockpit({
             :
               { snoozeWakeIn: wakeLabel(snoozedUntil, settlingNow) })}
           onWake={() => void snoozeFromMenu(null)}
-          {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
+          {...(session?.driver === "claude" ? { onCompact: () => void actions.compact() } : {})}
           compacting={compacting}
           contextNoticePercent={contextNoticePercent}
           {...(composerQuestion
             ? {
                 question: composerQuestion,
                 onAnswerQuestion: (requestId: string, answers: Record<string, string | string[]>) =>
-                  void decideRequest(requestId, "accept", { answers }),
-                onCancelQuestion: (requestId: string) => void decideRequest(requestId, "cancel"),
+                  void actions.decideRequest(requestId, "accept", { answers }),
+                onCancelQuestion: (requestId: string) => void actions.decideRequest(requestId, "cancel"),
               }
             : {})}
-          onDraftChange={(nextDraft) => {
-            setDraft(nextDraft);
-            setDraftRunId(undefined);
-          }}
+          onDraftChange={composer.changeDraft}
           onSubmit={() => void submit()}
-          onStop={() => void stop()}
-          onStopBackground={() => void stopBackground()}
+          onStop={() => void actions.stop()}
+          onStopBackground={() => void actions.stopBackground()}
           {...(solo ? {} : { onViewBackground: showProcesses })}
           // Before a session exists there is nothing to patch, so both choices
           // are held locally and applied by the one patch that follows creation.
           onRuntimeMode={
             fresh
               ? draftConfig.chooseRuntimeMode
-              : (mode) => void setRuntimeMode(mode)
+              : (mode) => void actions.setRuntimeMode(mode)
           }
-          {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void setResumeAfterRateLimit(next) })}
+          {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void actions.setResumeAfterRateLimit(next) })}
           {...(draftConfig.sessionDefaults.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimitDefault: draftConfig.sessionDefaults.resumeAfterRateLimit })}
-          onModelChange={fresh ? draftConfig.chooseModel : (next) => void setModel(next)}
+          onModelChange={fresh ? draftConfig.chooseModel : (next) => void actions.setModel(next)}
           // The composer's foot links its change count to the Diff surface —
           // a right-panel tab, so on the solo route the count stays a count
           // rather than becoming a link to nowhere.
@@ -1012,8 +666,8 @@ export function SessionCockpit({
           onOpenTab={showPanelTab}
           onOpenNewTab={showNewPanelTab}
           onOpenFileInNewTab={openFileInNewPanelTab}
-          onInsertReference={insertIntoComposer}
-          onAttach={attachFromPanel}
+          onInsertReference={composer.insertIntoComposer}
+          onAttach={composer.attachFromPanel}
           editors={editors}
           onEditorChange={updateEditor}
           hostId={hostId}
