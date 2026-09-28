@@ -183,11 +183,14 @@ struct SessionSidebar: View {
                     ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
                 }
             } else {
-                let bands = SessionNesting.bands(model, assignments: inbox.assignments, expanded: expandedParents, selected: selection)
                 draftRows
-                attentionBand(bands.attention)
-                pinnedBand(bands.pinned)
-                projectBands(bands.projects)
+                attentionBand
+                if SessionNesting.isFlat(inbox.filter.map { [inbox.layout($0)] } ?? Array(inbox.layouts.values)) {
+                    flatBands
+                } else {
+                    pinnedBand
+                    projectBands
+                }
                 shelf("Snoozed", rows: inbox.sections.snoozed.sorted { ($0.session.snoozedUntil ?? 0) < ($1.session.snoozedUntil ?? 0) }, open: $snoozedOpen)
 
                 shelf(
@@ -229,10 +232,11 @@ struct SessionSidebar: View {
     }
 
     @ViewBuilder
-    private func attentionBand(_ attention: [NestedRow]) -> some View {
+    private var attentionBand: some View {
+        let attention = model.attention.filter(matches)
         if !attention.isEmpty {
             Section {
-                ForEach(attention) { item in sessionRow(item.row, family: item.family, nested: item.nested, outlined: attention.contains { $0.family != nil }) }
+                ForEach(attention) { row in sessionRow(row) }
             } header: {
                 HStack(spacing: 6) {
                     Circle().fill(Theme.statusRed).frame(width: 6, height: 6)
@@ -248,33 +252,29 @@ struct SessionSidebar: View {
     }
 
     @ViewBuilder
-    private func pinnedBand(_ drawn: [NestedRow]) -> some View {
-        if !drawn.isEmpty {
+    private var pinnedBand: some View {
+        let pinnedRows = model.pinned.filter(matches)
+        if !pinnedRows.isEmpty {
             Section {
-                ForEach(drawn) { item in
-                    sessionRow(item.row, family: item.family, nested: item.nested, outlined: drawn.contains { $0.family != nil })
-                        .moveDisabled(item.nested)
-                }
+                ForEach(pinnedRows) { row in sessionRow(row) }
                     .onMove { offsets, destination in
-                        Task { await reorder(drawn.map(\.row), offsets: offsets, to: destination, key: .pinned) }
+                        Task { await reorder(pinnedRows, offsets: offsets, to: destination, key: .pinned) }
                     }
             }
         }
     }
 
     @ViewBuilder
-    private func projectBands(_ bands: [(group: SidebarProject, rows: [NestedRow])]) -> some View {
-        ForEach(bands, id: \.group.id) { group, drawn in
+    private var projectBands: some View {
+        ForEach(model.projects) { group in
             Section {
                 if !collapsed.contains(group.id) {
-                    ForEach(drawn) { item in
-                        sessionRow(item.row, variant: .slim, placesAbove: group.places.count, family: item.family, nested: item.nested,
-                                   outlined: drawn.contains { $0.family != nil })
-                            .moveDisabled(item.nested)
-                    }
-                    .onMove { offsets, destination in
-                        Task { await reorder(drawn.map(\.row), offsets: offsets, to: destination, key: .group(group.layoutKey)) }
-                    }
+                    let drawn = group.sessions
+
+                    ForEach(drawn) { row in sessionRow(row, variant: .slim, placesAbove: group.places.count) }
+                        .onMove { offsets, destination in
+                            Task { await reorder(drawn, offsets: offsets, to: destination, key: .group(group.layoutKey)) }
+                        }
                 }
             } header: {
                 Button {
@@ -304,10 +304,10 @@ struct SessionSidebar: View {
                         }
                         Spacer(minLength: 4)
 
-                        Text("\(drawn.count)").font(Theme.metaSmall).foregroundStyle(Theme.textMuted).monospacedDigit()
+                        Text("\(group.sessions.count)").font(Theme.metaSmall).foregroundStyle(Theme.textMuted).monospacedDigit()
                     }
                 }
-                .accessibilityLabel("\(group.name), \(drawn.count) shown, \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
+                .accessibilityLabel("\(group.name), \(group.sessions.count) shown, \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
                 .contextMenu {
                     newConversation(group)
                     Divider()
@@ -323,6 +323,29 @@ struct SessionSidebar: View {
 
                     Button("Move up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
                     Button("Move down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var flatBands: some View {
+        let rail = SessionNesting.flat(model, assignments: inbox.assignments, expanded: expandedParents, selected: selection)
+        if !rail.pinned.isEmpty {
+            Section {
+                ForEach(rail.pinned) { item in
+                    sessionRow(item.row, family: item.family, nested: item.nested, outlined: rail.pinned.contains { $0.family != nil })
+                        .moveDisabled(item.nested)
+                }
+                .onMove { offsets, destination in
+                    Task { await reorder(rail.pinned.map(\.row), offsets: offsets, to: destination, key: .pinned) }
+                }
+            }
+        }
+        if !rail.rows.isEmpty {
+            Section {
+                ForEach(rail.rows) { item in
+                    sessionRow(item.row, variant: .slim, family: item.family, nested: item.nested, outlined: rail.rows.contains { $0.family != nil })
                 }
             }
         }
@@ -417,12 +440,16 @@ struct SessionSidebar: View {
         return NavigationLink(value: row.id) {
             HStack(spacing: 4) {
                 if outlined && !nested { familyToggle(family).frame(width: 18) }
-                switch variant {
-                case .card: cardBody(row, showsProject: showsProject, host: host)
-                case .slim: slimBody(row, host: host)
+                if nested {
+                    SessionChildRow(session: row.session)
+                } else {
+                    switch variant {
+                    case .card: cardBody(row, showsProject: showsProject, host: host)
+                    case .slim: slimBody(row, host: host)
+                    }
                 }
             }
-            .padding(.leading, nested ? 32 : 0)
+            .padding(.leading, nested ? 22 : 0)
             .opacity(inbox.staleHosts.contains(row.hostId) ? 0.6 : 1)
 
             .overlay(alignment: .leading) {
@@ -529,7 +556,7 @@ struct SessionSidebar: View {
                 SessionStatusSlot(session: row.session)
             }
             HStack(spacing: 6) {
-                unreadDot(row.session)
+                UnreadDot(session: row.session)
 
                 Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)
                     .font(Theme.rowTitle).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.tail)
@@ -564,7 +591,7 @@ struct SessionSidebar: View {
             } else {
                 ProviderIconView(driver: row.session.driver, size: slimProviderMark).opacity(0.6)
             }
-            unreadDot(row.session)
+            UnreadDot(session: row.session)
             Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)
 
                 .font(Settling.showsUnreadMark(row.session) ? Theme.rowTitleSlim.weight(.medium) : Theme.rowTitleSlim)
@@ -596,13 +623,6 @@ struct SessionSidebar: View {
             .lineLimit(1).truncationMode(.tail)
             .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
             .accessibilityLabel("On \(name)")
-    }
-
-    @ViewBuilder private func unreadDot(_ session: Session) -> some View {
-        if Settling.showsUnreadMark(session) {
-            Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                .accessibilityLabel("Unread answer")
-        }
     }
 
     private func accentTone(_ session: Session) -> Color? {
@@ -752,7 +772,7 @@ struct SessionSidebar: View {
     private func saveOrder(_ order: [String], host: HostID) async {
         guard let api = settings.api(for: host) else { return }
         let previous = inbox.layout(host)
-        inbox.applyLayout(host, SidebarLayout(projectOrder: order, sessionOrder: previous.sessionOrder, pinnedOrder: previous.pinnedOrder))
+        inbox.applyLayout(host, SidebarLayout(projectOrder: order, sessionOrder: previous.sessionOrder, pinnedOrder: previous.pinnedOrder, mode: previous.mode))
         do {
             let current = (try? await api.sidebarLayout()) ?? previous
 

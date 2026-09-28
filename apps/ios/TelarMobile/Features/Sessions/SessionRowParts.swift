@@ -62,3 +62,31 @@ struct SessionStatusSlot: View {
         }
     }
 }
+
+struct UnreadDot: View {
+    let session: Session
+
+    var body: some View {
+        if Settling.showsUnreadMark(session) {
+            Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                .accessibilityLabel("Unread answer")
+        }
+    }
+}
+
+struct SessionChildRow: View {
+    let session: Session
+    @ScaledMetric(relativeTo: .footnote) private var providerMark: CGFloat = 12
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ProviderIconView(driver: session.driver, size: providerMark).opacity(0.6)
+            UnreadDot(session: session)
+            Text(session.title.isEmpty ? "Untitled session" : session.title)
+                .font(.footnote).foregroundStyle(Theme.text.opacity(Settling.showsUnreadMark(session) ? 1 : 0.7))
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            SessionStatusSlot(session: session)
+        }
+    }
+}

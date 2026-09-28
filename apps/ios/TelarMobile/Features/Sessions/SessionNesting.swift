@@ -6,10 +6,9 @@ struct SessionFamily {
     var needsYou: Int
 }
 
-struct NestedBands {
-    var attention: [NestedRow]
+struct FlatRail {
     var pinned: [NestedRow]
-    var projects: [(group: SidebarProject, rows: [NestedRow])]
+    var rows: [NestedRow]
 }
 
 struct NestedRow: Identifiable {
@@ -66,24 +65,33 @@ enum SessionNesting {
         }
     }
 
-    static func bands(
+    static func isFlat(_ layouts: [SidebarLayout]) -> Bool {
+        !layouts.isEmpty && layouts.allSatisfy { $0.mode == .flat }
+    }
+
+    static func flat(
         _ model: SidebarModel,
         assignments: [ScopedSessionID: [SessionAssignment]],
         expanded: Set<String>,
         selected: ScopedSessionID?
-    ) -> NestedBands {
-        let sections = [model.attention, model.pinned] + model.projects.map(\.sessions)
-        let home = Dictionary(sections.enumerated().flatMap { index, rows in rows.map { ($0.id, index) } }, uniquingKeysWith: { first, _ in first })
-        var placed = Array(repeating: [SessionFamily](), count: sections.count)
-        for family in families(sections.flatMap { $0 }, assignments: assignments, pinned: Set(model.pinned.map(\.id))) {
-            if let index = home[family.parent.id] { placed[index].append(family) }
+    ) -> FlatRail {
+        let pinned = Set(model.pinned.map(\.id))
+        let others = (model.attention + model.projects.flatMap(\.sessions)).sorted(by: newestActivityFirst)
+        let placed = families(model.pinned + others, assignments: assignments, pinned: pinned).flatMap { family -> [SessionFamily] in
+            guard family.parent.session.activity == .blocked else { return [family] }
+            return family.children.filter { $0.session.activity != .blocked }.map { SessionFamily(parent: $0, children: [], needsYou: 0) }
         }
-        let rows = placed.map { visible($0, expanded: expanded, selected: selected) }
-        return NestedBands(
-            attention: rows[0],
-            pinned: rows[1],
-            projects: zip(model.projects, rows.dropFirst(2)).filter { !$0.1.isEmpty }.map { ($0.0, $0.1) }
+        return FlatRail(
+            pinned: visible(placed.filter { pinned.contains($0.parent.id) }, expanded: expanded, selected: selected),
+            rows: visible(placed.filter { !pinned.contains($0.parent.id) }, expanded: expanded, selected: selected)
         )
+    }
+
+    private static func newestActivityFirst(_ a: HostedSession, _ b: HostedSession) -> Bool {
+        let at = { (s: Session) in max(s.updatedAt, s.activityAt ?? 0, s.lastTurnEndedAt ?? 0) }
+        if at(a.session) != at(b.session) { return at(a.session) > at(b.session) }
+        if a.session.createdAt != b.session.createdAt { return a.session.createdAt > b.session.createdAt }
+        return a.session.id < b.session.id
     }
 
     static func visible(_ families: [SessionFamily], expanded: Set<String>, selected: ScopedSessionID?) -> [NestedRow] {
