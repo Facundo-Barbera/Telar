@@ -99,6 +99,10 @@ Decision: `detachAssignments` stays. It is the "Continue myself" action for phas
 - The JSON journal backend is removed; the legacy import stays so old homes still migrate.
 - docs/ is emptied except this folder. Untracked drafts were archived outside the repo.
 
+## Order from 27 Sep (evening)
+
+Documentation first: AGENTS.md (glossary + domains), README, docs/internals, docs/user, docs/operations. Rewrites resume only after every agent has it. Target layout: `docs/migration/blueprint.html`.
+
 ## Log
 
 - 2026-09-27: audit done. Phase 1 started (web, engine, iOS+desktop).
