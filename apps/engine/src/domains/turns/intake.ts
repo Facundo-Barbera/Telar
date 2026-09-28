@@ -23,7 +23,7 @@ import {
   type SessionQueue,
   type SessionRecords,
 } from "../sessions";
-import { derivedBranchFor, prepareSessionWorktree, type WorktreePlan } from "../worktrees";
+import type { prepareSessionWorktree, WorktreePlan } from "../worktrees";
 import { MAX_DELIVERIES, mergeNotifications, peerNotification } from "./notification";
 
 export const MAX_TEXT_LENGTH = 200_000;
@@ -80,6 +80,9 @@ type IntakeDeps = {
   assertProjectAvailable: (projectId: string) => void;
   restoreWorktree: (sessionId: string) => void;
   prepareWorktree: (sessionId: string, projectRoot: string, plan: WorktreePlan, baseSha: string) => void;
+  // Injected rather than imported: the worktrees domain reaches agent-tools, which reads the sessions index at load.
+  planWorktree: typeof prepareSessionWorktree;
+  derivedBranchFor: (title: string, sessionId: string) => string | undefined;
   promoteTurn: (sessionId: string, runId: string) => Turn;
   requireSenderClaim: (proof: SenderProof) => { sessionId: string };
   hasLiveTurn: (sessionId: string) => boolean;
@@ -316,11 +319,11 @@ export class TurnIntake {
     if (session.envMode === "worktree") {
       if (!session.projectId) throw new EngineStateError("conflict", "a worktree draft requires a project");
       const project = this.deps.getProject(session.projectId);
-      const planned = prepareSessionWorktree(this.deps.git, {
+      const planned = this.deps.planWorktree(this.deps.git, {
         engineRoot: this.kernel.paths.root, projectRoot: project.root, projectName: project.name, sessionId,
         // The send already went through `assertProjectAvailable`; this is that reading, not a second one.
         availability: this.deps.availability(project),
-        branchSlug: draft.branchSlug ?? derivedBranchFor(text, sessionId),
+        branchSlug: draft.branchSlug ?? this.deps.derivedBranchFor(text, sessionId),
         ...(draft.baseRef ? { baseRef: draft.baseRef } : {}),
         ...(draft.branchName ? { branchName: draft.branchName } : {}),
       });

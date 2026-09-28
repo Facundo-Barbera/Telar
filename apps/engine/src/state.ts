@@ -17,13 +17,6 @@ import {
   type UsageLimitSource,
   type ProjectPlugins,
   assignmentsOf,
-  // THE CLIENTS' OWN SETTLING RULE, imported rather than re-implemented: the
-  // live list drops the rows a rail would shelve (#457), so an engine that
-  // disagreed with a cockpit here would produce a conversation neither of them
-  // shows. See `protocol/settling.ts`.
-  // AND THE WAKE MOMENT, from the same file and for the same reason. It already
-  // decides the scheduled expiry and the early wake together; `sweepSnoozeWakes`
-  // records what it answers rather than deciding again (#490, #586).
   type AssignmentTurn,
   type SessionAssignment,
   type LiveSessionRow,
@@ -113,7 +106,7 @@ import { type ClaudeConversation } from "./drivers/claude";
 import { BUNDLED_MANIFEST, type ModelManifest, readModelCatalogue } from "./domains/providers";
 import { type KernelState, PluginDoors, type BootstrapRequest, type CreateEnvironmentRequest, type DsCapability, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, type ManagedTectonicStatus, type RequirementsSource, type ResolvedLatex, type TableWindow, type Toolchain } from "./domains/plugins";
 import { ScheduleBook, type ScheduleInput } from "./domains/schedules";
-import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
+import { derivedBranchFor, prepareSessionWorktree, WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { backfillTurnSummaries, CheckoutSizes, CleanupStore, copyStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
 import { type AttachedTerminals, pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
@@ -1968,6 +1961,8 @@ export class EngineStore {
       assertProjectAvailable: (id) => this.assertProjectAvailable(id),
       restoreWorktree: (id) => void this.restoreSessionWorktree(id),
       prepareWorktree: (id, root, plan, baseSha) => this.lifecycle.prepareWorktree(id, root, plan, baseSha),
+      planWorktree: prepareSessionWorktree,
+      derivedBranchFor,
       promoteTurn: (id, runId) => this.promoteTurn(id, runId),
       requireSenderClaim: (proof) => this.requireSenderClaim(proof),
       hasLiveTurn: (id) => this.hasLiveTurn(id),
