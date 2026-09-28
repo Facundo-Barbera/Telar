@@ -1,25 +1,13 @@
-/**
- * WHAT A MULTI QUESTION LOOKS LIKE, and that a single one still looks the way
- * it did.
- *
- * These render the real drawer, the way `session/steering-boundary.test.tsx`
- * renders the real turn: the claims are about what reaches the screen, and a
- * checkbox that is only in the props is not one a person can act on.
- *
- * The one claim rendering cannot decide — that a pick on a multi does NOT
- * schedule the auto-advance hop — is asserted against the source, the same
- * reasoning `composer.test.ts` gives for its ordering claims. Its violation is
- * silent: the drawer would look right and simply walk off the question 200ms
- * after the first of several picks.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, jest, test } from "bun:test";
+import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { installTestDom, mount } from "@/lib/testing/dom";
 import { ComposerQuestionDrawer } from "./composer-question-drawer";
 import type { QuestionDraft, QuestionField } from "@/lib/question-drawer";
+
+installTestDom();
+afterEach(() => jest.useRealTimers());
 
 const toppings = (multiple: boolean): QuestionField => ({
   key: "q",
@@ -42,8 +30,6 @@ const render = (field: QuestionField, selected: string[] = [], custom = "") =>
 describe("a multi question", () => {
   test("every row carries a box, empty ones included — the affordance is legible before the first pick", () => {
     const html = render(toppings(true));
-    // Three rows, three empty boxes: nothing is chosen and the question still
-    // says "several are allowed".
     expect(html.match(/lucide-square /g) ?? []).toHaveLength(3);
     expect(html).not.toContain("lucide-square-check");
   });
@@ -96,17 +82,31 @@ describe("a single question is untouched", () => {
 });
 
 describe("the auto-advance hop", () => {
-  test("is guarded on the field being single — a multi must never walk off mid-answer", () => {
-    const source = fs
-      .readFileSync(path.join(fileURLToPath(new URL(".", import.meta.url)), "composer-question-drawer.tsx"), "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/^\s*\/\/.*$/gm, "");
-    const hop = source.indexOf("setTimeout");
-    expect(hop).toBeGreaterThan(-1);
-    // The guard is on the SAME condition that reaches the timeout, not merely
-    // somewhere in the file.
-    const guard = source.lastIndexOf("!field.multiple", hop);
-    expect(guard).toBeGreaterThan(-1);
-    expect(source.slice(guard, hop)).not.toContain("}");
+  const size: QuestionField = { key: "size", label: "Which size?", choices: ["S", "L"], multiple: false };
+
+  async function pickFirstOf(field: QuestionField) {
+    jest.useFakeTimers();
+    const drafts: QuestionDraft[] = [];
+    await mount(
+      <ComposerQuestionDrawer
+        fields={[field, size]}
+        draft={{ index: 0, selected: {}, custom: {} }}
+        onDraft={(next) => drafts.push(next)}
+        onCancelTurn={() => {}}
+        sending={false}
+      />,
+    );
+    const olive = [...document.querySelectorAll("button")].find((button) => button.textContent?.startsWith("Olive"))!;
+    await act(async () => olive.click());
+    await act(async () => jest.advanceTimersByTime(1_000));
+    return drafts.map((draft) => draft.index);
+  }
+
+  test("a pick on a single question moves on to the next one", async () => {
+    expect(await pickFirstOf(toppings(false))).toEqual([0, 1]);
+  });
+
+  test("a pick on a multi stays on the question — the person may pick more", async () => {
+    expect(await pickFirstOf(toppings(true))).toEqual([0]);
   });
 });

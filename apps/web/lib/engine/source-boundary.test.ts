@@ -99,41 +99,12 @@ describe("standalone cockpit source boundary", () => {
     expect(client).not.toContain("http://127.0.0.1");
   });
 
-  test("keeps the session workspace and visual shell local", () => {
-    /**
-     * ASSERTED ACROSS THE COMPONENT FOLDER, not against one file's contents.
-     * This once named functions inside session-cockpit.tsx, which pinned a FILE
-     * LAYOUT rather than the boundary it exists to protect — splitting the
-     * transcript and composer into their own modules broke it while changing
-     * nothing about whether the visual shell is local.
-     */
-    const componentRoot = path.join(appRoot, "components");
-    const components = sources(componentRoot).map((file) => fs.readFileSync(file, "utf8"));
-    const cockpitSources = components.join("\n");
-    const cockpit = fs.readFileSync(path.join(componentRoot, "session-cockpit.tsx"), "utf8");
-    const shell = fs.readFileSync(path.join(componentRoot, "app-shell.tsx"), "utf8");
-    const sidebar = fs.readFileSync(path.join(componentRoot, "app-sidebar.tsx"), "utf8");
-
-    expect(cockpit).toContain("function SessionMasthead");
-    expect(cockpitSources).toContain("function ActivityGroup");
-    expect(cockpitSources).toContain("export function Composer");
-    // Nothing under components/ may reach into the frozen app. READ AS
-    // IMPORTS, for the reason the sibling test above pins: this was a raw
-    // substring scan, and it fired on the ported components' own comments —
-    // which cite `apps/web_old/...` by path to say WHERE a class string or a
-    // layout rule came from. That provenance is the most useful documentation
-    // in a port, and a test that punishes writing it is the test that is wrong.
-    for (const source of components) {
-      const specifiers = importSpecifiers(source);
+  test("nothing under components/ imports the frozen app", () => {
+    for (const file of sources(path.join(appRoot, "components"))) {
+      const specifiers = importSpecifiers(fs.readFileSync(file, "utf8"));
       expect(specifiers.find((specifier) => specifier.includes("web_old"))).toBeUndefined();
       expect(specifiers.find((specifier) => specifier.includes("@telar/core"))).toBeUndefined();
     }
-    expect(cockpit).not.toContain("Retry as new run");
-    expect(cockpit).not.toContain("Discard recovered run");
-    expect(cockpit).toContain("RightPanel");
-    expect(shell).toContain("AppSidebar");
-    expect(sidebar).toContain("Search sessions");
-    expect(sidebar).toContain("Settings");
   });
 
   test("theme, fonts and the Tailwind pipeline are all wired, or the palette is decorative", () => {

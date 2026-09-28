@@ -1,19 +1,6 @@
-/**
- * THE RULE THIS FILE PINS: every menu in the right panel takes the native
- * browser view down while it is open.
- *
- * It is two tests, because the rule has two halves. The first is the counter
- * itself — one menu closing as another opens must not reveal the page under
- * the second. The second is a SOURCE SCAN, in the same spirit as
- * `components/ui/dropdown-menu.test.ts`: the failure it guards is not a type
- * error or a crash, it is a menu somebody adds to the panel next month that
- * renders *behind* the page on the desktop build and nowhere else. Nothing
- * else would catch that until a user reported a menu they could not see.
- *
- * The scan is deliberately a HEURISTIC — it does not parse JSX. It requires
- * each menu root in those two files to be CONTROLLED (`open={…}`) and to share
- * an identifier with something the file hands `useNativeViewOverlay`.
- */
+// Every menu over the native browser view must take the view down while open,
+// or on desktop it renders behind the page. The scan is a heuristic: each menu
+// root must be controlled by state the file hands `useNativeViewOverlay`.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -22,8 +9,12 @@ import { fileURLToPath } from "node:url";
 import { claimNativeView, createOverlayFreezer, nativeViewOverlayHidden, onNativeViewOverlay, type FrozenFrame } from "./native-view-overlay";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
-/** The files the panel's menus live in — the ones the native view sits under. */
-const SCANNED = ["components/right-panel.tsx", "components/browser-live.tsx"];
+// The panel's files, however they are split, plus anything else that claims the view.
+const SCANNED = (fs.readdirSync(path.join(here, "../components"), { recursive: true }) as string[]).map((file) => `components/${file}`).filter((file) => {
+  if (!file.endsWith(".tsx") || file.includes(".test.")) return false;
+  if (/(^|\/)(right-panel|browser-live)[^/]*(\/|\.tsx$)/.test(file)) return true;
+  return fs.readFileSync(path.join(here, "..", file), "utf8").includes("useNativeViewOverlay(");
+});
 
 describe("the native view is claimed while a menu is open", () => {
   test("the last release is what shows the page again", () => {
@@ -245,12 +236,9 @@ describe("every menu over the native view is wrapped by the hook", () => {
   });
 
   test("the panel's own files ship no menu the hook does not cover", () => {
-    for (const file of SCANNED) {
-      const source = fs.readFileSync(path.join(here, "..", file), "utf8");
-      // A file with menus must call the hook at all — a scan that silently
-      // passes because it found nothing is the failure mode to avoid.
-      expect(menuRoots(source).length).toBeGreaterThan(0);
-      expect([file, ...unguardedMenus(source)]).toEqual([file]);
-    }
+    const sources = SCANNED.map((file) => [file, fs.readFileSync(path.join(here, "..", file), "utf8")] as const);
+    // A scan that silently passes because it found nothing is the failure mode to avoid.
+    expect(sources.map(([, source]) => menuRoots(source).length).reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+    for (const [file, source] of sources) expect([file, ...unguardedMenus(source)]).toEqual([file]);
   });
 });

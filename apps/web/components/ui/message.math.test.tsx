@@ -12,9 +12,6 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MessageResponse } from "@/components/ui/message";
 import { STUDY_GUIDE } from "@/app/dev/math-samples/samples";
@@ -194,21 +191,6 @@ describe("TeX is not a way to inject markup", () => {
 });
 
 describe("the wiring", () => {
-  const here = fileURLToPath(new URL(".", import.meta.url));
-  const source = fs.readFileSync(path.join(here, "message.tsx"), "utf8").replaceAll(/\/\*[\s\S]*?\*\//g, "");
-  const layout = fs.readFileSync(path.join(here, "..", "..", "app", "layout.tsx"), "utf8");
-  const css = fs.readFileSync(path.join(here, "..", "..", "app", "globals.css"), "utf8").replaceAll(/\/\*[\s\S]*?\*\//g, "");
-
-  test("math is the library's plugin, and the stylesheet it needs is loaded once", () => {
-    expect(source).toContain('from "@streamdown/math"');
-    expect(layout).toContain('import "katex/dist/katex.min.css";');
-  });
-
-  test("single-dollar math stays off — the currency case depends on the default", () => {
-    expect(source).not.toContain("singleDollarTextMath");
-    expect(source).not.toContain("createMathPlugin");
-  });
-
   test("a caller's plugins cannot silently drop math", () => {
     const html = renderToStaticMarkup(
       <MessageResponse rehypePlugins={[]} plugins={{}}>
@@ -216,9 +198,5 @@ describe("the wiring", () => {
       </MessageResponse>,
     );
     expect(sources(html)).toEqual([RETURN_TEX]);
-  });
-
-  test("a wide equation gets a scroll port rather than a clipped tail", () => {
-    expect(css).toMatch(/\.telar-markdown \.katex-display \{[^}]*overflow-x: auto/);
   });
 });

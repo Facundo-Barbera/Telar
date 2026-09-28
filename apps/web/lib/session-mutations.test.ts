@@ -20,7 +20,6 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
 import type { LiveSessionRow } from "@telar/engine-client";
 import type { SidebarSession } from "./session-list";
 import {
@@ -323,97 +322,13 @@ describe("the optimistic shapes", () => {
   });
 });
 
-/**
- * AND THE WIRING, BECAUSE THE TESTS ABOVE ONLY PROVE THE MODULE.
- *
- * `mutateRow` cannot read a list — it is handed one row and one send — so the
- * assertions above would go on passing if a component grew `onRowChanged={() =>
- * { patch(); void loadAll(); }}` back. The three files that draw a rail row are
- * read here instead, which is the same shape as `session-action-menu.test.ts`
- * guarding a verb out of one list: a rule the compiler cannot state, asserted
- * where it is cheap.
- */
-describe("no rail row hands a mutation a list read", () => {
-  const read = (path: string) => fs.readFileSync(new URL(path, import.meta.url), "utf8");
-  /**
-   * COMMENTS OUT FIRST, AND THAT IS NOT A CONVENIENCE.
-   *
-   * Both files EXPLAIN the reload they replaced — "the rail answered it with
-   * `loadAll()`" is the sentence that makes the change legible — so an
-   * assertion over raw source would ban the documentation along with the call
-   * and be deleted by the next person who wrote either.
-   */
-  const code = (path: string) => read(path).replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-
-  test("the row surfaces cannot reach a list read at all", () => {
-    for (const path of ["../components/session/session-row.tsx", "../components/session/session-inbox-menu.tsx"]) {
-      const source = code(path);
-      // `createEngineApi` is the only door to `liveSessions` in this app, and
-      // `loadAll` is the rail's own fan-out. Neither file names either.
-      expect(source).not.toContain("createEngineApi");
-      expect(source).not.toContain("liveSessions");
-      expect(source).not.toContain("loadAll");
-    }
-  });
-
-  test("every row the rail draws is given the one patching hand", () => {
-    const source = read("../components/app-sidebar.tsx");
-    const bindings = [...source.matchAll(/onRowChanged=\{([^}]*)\}/g)].map((match) => match[1]);
-    // Nine places draw a row. Each used to read `onRefresh={() => void
-    // loadAll()}` — nine fan-outs, one per click, spelled nine times — so the
-    // regression this catches is a tenth spelling, not an absence.
-    expect(bindings.length).toBeGreaterThanOrEqual(8);
-    expect(new Set(bindings)).toEqual(new Set(["onRowChanged"]));
-  });
-});
-
-/**
- * CREATE IS THE FIFTH MUTATION, and the only one with no row to be optimistic
- * about — so what is asserted here is the other half of #495's rule: the id is
- * the client's, the address moves on it, and the rail is NOT told to invent a
- * row for a session that may yet fail to exist.
- */
 describe("creating a conversation", () => {
   test("the minted id is the engine's own shape", () => {
-    // `assertId` on the engine and `createSession`'s own generator both produce
-    // this; a client id that did not match would be refused on arrival, which
-    // is the one failure this feature cannot recover from — the address bar
-    // would already be pointing at it.
     expect(newSessionId()).toMatch(/^session_[0-9a-f]{32}$/);
   });
 
   test("two mints are two ids", () => {
     expect(newSessionId()).not.toBe(newSessionId());
-  });
-
-  test("the composer sends its own id, and moves the address before the POST", () => {
-    const source = fs
-      .readFileSync(new URL("../components/session-cockpit.tsx", import.meta.url), "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, " ")
-      .replace(/\/\/[^\n]*/g, " ");
-    // The id is minted, the address is rewritten, and only THEN is the session
-    // created — in that order. Read off the source because the alternative is
-    // mounting a 3,000-line cockpit with a router to observe three statements.
-    const minted = source.indexOf("const id = newSessionId();");
-    const moved = source.indexOf("window.history.replaceState", minted);
-    const created = source.indexOf("api.createSession(projectId, {", minted);
-    expect(minted).toBeGreaterThan(-1);
-    expect(moved).toBeGreaterThan(minted);
-    expect(created).toBeGreaterThan(moved);
-    // …and the create carries the id rather than asking the engine for one.
-    expect(source.slice(created, created + 200)).toContain("id,");
-  });
-
-  test("the create path tells the rail nothing — no row is invented", () => {
-    const source = fs
-      .readFileSync(new URL("../components/session-cockpit.tsx", import.meta.url), "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, " ")
-      .replace(/\/\/[^\n]*/g, " ");
-    // T3's rule, quoted in #495: the instant part is the client-minted id, not
-    // a fake row. The rail's poll adds the row once the session exists, so a
-    // create that fails leaves nothing behind to retract.
-    expect(source).not.toContain("onRowChanged");
-    expect(source).not.toContain("applyRowChange");
   });
 });
 

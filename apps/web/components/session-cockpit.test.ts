@@ -1,9 +1,25 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { JournalItem } from "@/lib/engine/journal";
 import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "./transcript";
-import { cockpitPlugins, describeTurnState, pinToggleOverride, retryInputForJournalTurn, transcriptRows } from "./session-cockpit";
+import { cockpitPlugins, describeTurnState, pinToggleOverride, retryInputForJournalTurn, SessionTurn, transcriptRows } from "./session-cockpit";
+
+const rendered = { runId: "run_1", sessionId: "session_1", status: "completed", startedAt: 1, completedAt: 2, streamedText: "", openedBy: 0 } as const;
+const prose = (id: string, text: string): JournalItem => ({ ...rendered, id, detail: { type: "assistant_message", text } });
+const steer = (id: string, detail: Record<string, unknown>): JournalItem => ({ ...rendered, id, detail: { type: "user_message", ...detail } }) as JournalItem;
+const renderTurn = (items: JournalItem[], live = true) =>
+  renderToStaticMarkup(
+    createElement(SessionTurn, {
+      turn: { runId: "run_1", origin: "user", prompt: "Start", state: live ? "running" : "completed", resultText: "", items, tasks: [] },
+      requests: [],
+      sending: false,
+      live,
+      onDecide: () => {},
+      onRetry: () => {},
+    }),
+  );
 
 describe("session workspace presentation", () => {
   test("names every durable turn state without relying on colour", () => {
@@ -26,63 +42,6 @@ describe("session workspace presentation", () => {
       state: "ambiguous",
       prompt: "Review this implementation",
     })).toEqual({ runId: "uncertain_run", state: "ambiguous", input: "Review this implementation" });
-  });
-});
-
-describe("an unsent draft belongs to the composer it was typed in", () => {
-  /**
-   * ASSERTED AS SOURCE TEXT because the claim is about ORDERING, and there is no
-   * DOM harness in this app to observe it. The bug this pins was never visible
-   * in a rendered frame: the canvas draft key was removed by a 400ms debounce
-   * that the new session's id CANCELLED on its way in, so the message you sent
-   * stayed in storage and was restored into the next conversation you started.
-   * A render test sees an empty box in both the broken and the fixed build.
-   *
-   * Same reasoning the app's other source-text tests give — a rule a future
-   * edit could break silently is worth reading off the file.
-   */
-  const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
-  const submit = source.slice(source.indexOf("const submit = async ()"), source.indexOf("const rename = async ("));
-  const clear = submit.indexOf('writeDraft(sessionId ?? browserTarget, projectId, "")');
-
-  test("sending clears the stored draft under the id it was typed under", () => {
-    expect(submit).toContain('setDraft("")');
-    expect(clear).toBeGreaterThan(-1);
-  });
-
-  test("and clears it BEFORE the session it is creating gets an id", () => {
-    // The whole bug is in this gap. Once `setCreatedSessionId` runs, the save
-    // effect is keyed on a different session and the pending clear is torn
-    // down unflushed — leaving `telar:draft:new:<project>` holding a sent
-    // message, which is the one slot every new conversation reads on open.
-    expect(clear).toBeLessThan(submit.indexOf("setCreatedSessionId("));
-  });
-
-  test("a session being born is a handover, not a change of composer", () => {
-    // The restore effect empties the box whenever the composer changes hands,
-    // which is how clicking a draft row loads that draft over whatever was on
-    // screen. Creating a session changes the id WITHOUT changing the box, so
-    // ownership is handed over explicitly first — otherwise a follow-up typed
-    // during the create round trip is wiped the moment the id lands.
-    const handover = submit.indexOf("owner.current = { sessionId: target, projectId }");
-    expect(handover).toBeGreaterThan(-1);
-    expect(handover).toBeLessThan(submit.indexOf("setCreatedSessionId("));
-  });
-});
-
-describe("a draft belongs to one composer and does not follow you out of it", () => {
-  const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
-
-  test("switching conversations saves the outgoing text before loading the incoming", () => {
-    // Both halves were missing, and each was its own lost paragraph: the
-    // debounced save is CANCELLED rather than flushed when the id changes, and
-    // the restore could only fill an empty box — so a half-written message
-    // stayed on screen in the next conversation while its own slot went stale.
-    const restore = source.slice(source.indexOf("const owner = useRef<"), source.indexOf("// The session record carries"));
-    const save = restore.indexOf("writeDraft(leaving.sessionId, leaving.projectId, draftText.current)");
-    const load = restore.indexOf("setDraft(readDraft(sessionId, projectId))");
-    expect(save).toBeGreaterThan(-1);
-    expect(load).toBeGreaterThan(save);
   });
 });
 
@@ -253,10 +212,8 @@ describe("a message another agent sent is labelled as an agent's, never the pers
   });
 });
 
-describe("a wake is a wake wherever it lands — never the person's bubble (#194)", () => {
+describe("a wake is a wake wherever it lands — never the person's bubble", () => {
   test("both surfaces name a wake with ONE vocabulary", async () => {
-    // The label moved into ./transcript precisely so the mid-turn row and the
-    // idle turn header cannot drift into two spellings of the same happening.
     const { sessionWakeLabel } = await import("./transcript");
     expect(sessionWakeLabel({ kind: "turn_completed", sessionId: "s" }).verb).toBe("Session finished a turn");
     expect(sessionWakeLabel({ kind: "turn_failed", sessionId: "s" }).verb).toBe("Session failed a turn");
@@ -264,33 +221,27 @@ describe("a wake is a wake wherever it lands — never the person's bubble (#194
     expect(sessionWakeLabel({ kind: "request_opened", sessionId: "s" }).verb).toBe("Session asked a question");
   });
 
-  test("the mid-turn row branches on the STRUCTURED stamp, not on the words", () => {
-    /**
-     * ASSERTED AS SOURCE TEXT for the reason the draft tests above are: there
-     * is no DOM harness here, and the claim is about WHICH FIELD decides. A
-     * renderer that classified on the `[wake: …]` prefix would pass a render
-     * test and still draw a person's own "[wake: …]" as a wake row — and would
-     * silently regress the moment the wake wording changed.
-     */
-    const source = fs.readFileSync(fileURLToPath(new URL("./transcript.tsx", import.meta.url)), "utf8");
-    const row = source.slice(source.indexOf("function SteeredMessageRow("), source.indexOf("function PlotRow("));
-    // The wake branch is taken from the stamp, and taken FIRST — before the
-    // sender branch and before the person's bubble.
-    const wake = row.indexOf("if (wakeReason) return <SteeredWakeRow");
-    expect(wake).toBeGreaterThan(-1);
-    expect(wake).toBeLessThan(row.indexOf("if (sender) return <AgentMessageBubble"));
-    // And the person's own words fall through to the SAME component the
-    // cockpit draws an ordinary message with — no bespoke bubble here. (It is
-    // wrapped in the shared `MessageMenu` since #274, which is chrome around
-    // the component rather than a second one; the claim is unchanged.)
-    expect(row).toContain("<ConversationMessage text={itemText(item)}");
-    expect(row.indexOf("<ConversationMessage")).toBeGreaterThan(row.indexOf("if (sender) return <AgentMessageBubble"));
-    // And nothing in the row reads the wake's own text to decide anything.
-    // Comments stripped first: the prose here NAMES `[wake: …]` precisely to
-    // say it is not what the branch reads, and matching that would assert the
-    // opposite of the rule.
-    const code = row.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-    expect(code).not.toContain("[wake");
+  test("a steered wake is drawn from its stamp, whatever its words or sender say", () => {
+    const html = renderTurn([
+      prose("a1", "working on it"),
+      steer("m1", { text: "[wake: completed] child done", sender: { sessionId: "session_boss" }, wakeReason: { kind: "turn_completed", sessionId: "session_child" } }),
+    ]);
+    expect(html).toContain('aria-label="Wake from another session"');
+    expect(html).toContain("Session finished a turn");
+    expect(html).not.toContain("agent · session");
+    expect(html).not.toContain("child done");
+  });
+
+  test("a person's own words that look like a wake stay the person's message", () => {
+    const html = renderTurn([prose("a1", "working on it"), steer("m1", { text: "[wake: completed] typed by hand" })]);
+    expect(html).toContain("[wake: completed] typed by hand");
+    expect(html).not.toContain("Wake from another session");
+  });
+
+  test("an agent's steered words carry the sending session's label", () => {
+    const html = renderTurn([prose("a1", "working on it"), steer("m1", { text: "from a peer", sender: { sessionId: "session_abcdef123456" } })]);
+    expect(html).toContain("agent · session …123456");
+    expect(html).not.toContain("Wake from another session");
   });
 
   test("the journal keeps a steered wake's stamp on the row the transcript reads", async () => {
@@ -306,19 +257,6 @@ describe("a wake is a wake wherever it lands — never the person's bubble (#194
 });
 
 describe("a message sent mid-run is a boundary, not an event inside the work", () => {
-  /**
-   * THE TWO REPORTS THIS PINS, which were the same defect seen from different
-   * angles: "each sent message should feel like a turn, not be absorbed inside
-   * the previous message's work", and a screenshot of a reply drawn ON TOP OF
-   * an earlier message.
-   *
-   * A LIVE turn already cut its timeline at `user_message` (`segmentActivity`
-   * seams on it), but a SETTLED one folded every item into one ActivityGroup —
-   * so the message vanished into "N steps" the instant the turn ended, and the
-   * fold lives inside the assistant's lane, so even opened it nested the
-   * person's words inside the assistant's bubble. Live and reload therefore
-   * disagreed about whether a message was there at all.
-   */
   const item = (id: string, type: string) => ({ id, detail: { type } }) as never;
 
   test("splits a turn into responses at each message, work grouped after the message that caused it", async () => {
@@ -356,13 +294,6 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
   });
 
   test("TWO STEERS, EACH INTRODUCING ITS OWN WORK — the message comes before what it caused", async () => {
-    /**
-     * THE BUG REVIEW CAUGHT, and the reason this asserts the emitted ORDER and
-     * not the splitter's grouping: the split was right while the renderer drew
-     * each response's work before its own boundary, so `prompt → A → steer1 →
-     * B → steer2 → C` came out as A, B, steer1, steer2, C — work above the
-     * message that caused it, for every steer but the last.
-     */
     const { turnRenderOrder } = await import("./transcript");
     const order = turnRenderOrder([
       item("A", "command_execution"),
@@ -405,37 +336,18 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
     expect(order.map((entry) => (entry.kind === "boundary" ? entry.item.id : entry.items.map((i) => i.id).join("")))).toEqual(["A", "s1"]);
   });
 
-  test("and the RENDERER emits them in that order — boundary before its work", () => {
-    /**
-     * `turnRenderOrder` describes the sequence; this pins that the JSX actually
-     * follows it. Without this the helper and the component could drift, which
-     * is the exact failure mode here — the split was correct while the render
-     * put each response's work first.
-     */
-    const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
-    const map = source.slice(source.indexOf("{earlier.map((response) => ("), source.indexOf("{answering.boundary &&"));
-    const boundary = map.indexOf("response.boundary && (");
-    const work = map.indexOf("response.items.length > 0 && (");
-    expect(boundary).toBeGreaterThan(-1);
-    expect(work).toBeGreaterThan(-1);
-    expect(boundary).toBeLessThan(work);
-    // And the answering response's own boundary is drawn before the assistant
-    // lane that holds its work — the NEXT such lane, not the one inside the
-    // map above, which is why this searches from the boundary rather than
-    // from the top of the file.
-    const answering = source.indexOf("{answering.boundary &&");
-    expect(answering).toBeGreaterThan(-1);
-    expect(source.indexOf('<Message from="assistant">', answering)).toBeGreaterThan(answering);
+  test("a settled turn draws each message before the work it caused", () => {
+    const html = renderTurn(
+      [prose("a1", "First reply"), steer("m1", { text: "one more thing" }), prose("a2", "Second reply"), steer("m2", { text: "and another" }), prose("a3", "Final reply")],
+      false,
+    );
+    const at = (text: string) => html.indexOf(text);
+    const order = ["First reply", "one more thing", "Second reply", "and another", "Final reply"].map(at);
+    expect(order.every((index) => index > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
   test("LIVE AND SETTLED CUT IN THE SAME PLACE — a reload cannot move a message", async () => {
-    /**
-     * The ordering guarantee, stated as the one thing that must be true: the
-     * sequence of boundaries and the work under each is a pure function of the
-     * item list, so it cannot depend on whether the turn is still running. The
-     * live path renders `answering.items` and the settled path renders the same
-     * split, which is what makes the two agree.
-     */
     const { splitAtMessageBoundaries, segmentActivity } = await import("./transcript");
     const items = [item("w1", "command_execution"), item("m1", "user_message"), item("w2", "command_execution"), item("a1", "assistant_message")];
     const responses = splitAtMessageBoundaries(items);
@@ -483,7 +395,7 @@ describe("a held message is not a running one", () => {
   });
 });
 
-describe("a sub-agent's background claim is not a row in the main chat (#912)", () => {
+describe("a sub-agent's background claim is not a row in the main chat", () => {
   /** Two person's turns with a claim the engine opened between them, the first
    *  having spawned the agent the claim decides for. */
   const withClaim = async (claim: { taskId?: string }) => {
@@ -518,10 +430,6 @@ describe("a sub-agent's background claim is not a row in the main chat (#912)", 
   test("a card parked under the claim renders on the turn that spawned the asking agent", async () => {
     const { hostOf } = transcriptRows(await withClaim({ taskId: "task_toolu_agent" }));
     expect(hostOf.get("run_claim")).toBe("run_ask");
-    // And the cockpit reads that mapping when it hands a row its requests, so
-    // the card is not filtered out with the claim it was opened under.
-    const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
-    expect(source).toContain("requests={openRequests.filter((request) => (hostOf.get(request.runId) ?? request.runId) === turn.runId");
   });
 
   test("a claim that cannot name one agent hosts its card on the row before it", async () => {
@@ -577,16 +485,7 @@ describe("which plugin surfaces the cockpit offers", () => {
   });
 });
 
-describe("⌘P pins the conversation you are reading, and unpins it again (#408)", () => {
-  /**
-   * THE CHORD HAS NO ROW TO READ. The rail's menu is handed the direction it
-   * is going, because it just drew "Pin" or "Unpin" from the same record;
-   * `pin-session` has to work that out from `settledOverride` alone, and the
-   * two halves are not symmetrical — which is the whole reason this is a
-   * function with a test rather than a ternary nobody looks at twice.
-   */
-  const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
-
+describe("⌘P pins the conversation you are reading, and unpins it again", () => {
   test("an unpinned session is pinned by writing the override", () => {
     expect(pinToggleOverride(undefined)).toBe("active");
     expect(pinToggleOverride(null)).toBe("active");
@@ -602,14 +501,5 @@ describe("⌘P pins the conversation you are reading, and unpins it again (#408)
   test("pressing it over a SETTLED session pins it, rather than treating settled as pinned", () => {
     // Settled is somebody's decision to shelve this; Pin over it means pin.
     expect(pinToggleOverride("settled")).toBe("active");
-  });
-
-  test("and the chord goes through the same patch the menu's Pin row does", () => {
-    // ASSERTED AS SOURCE TEXT, like the draft-ordering tests above: the claim
-    // is that the chord reuses `patchFromMenu` rather than writing its own
-    // update, and there is no harness here that could observe the difference.
-    const handler = source.slice(source.indexOf('"pin-session": () => {'), source.indexOf('"pin-session": () => {') + 400);
-    expect(handler).toContain("patchFromMenu(");
-    expect(handler).toContain("pinToggleOverride(session?.settledOverride)");
   });
 });

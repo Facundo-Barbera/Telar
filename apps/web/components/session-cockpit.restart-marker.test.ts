@@ -1,18 +1,31 @@
-/**
- * A TURN THE ENGINE WROTE AFTER A PLANNED RESTART is drawn as what it is — a
- * marker line — and never as a message bubble in the person's name. Pinned
- * against source, the way projects-page.test.tsx pins what only renders after a
- * live session exists.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SessionTurn } from "./session-cockpit";
 
-const source = readFileSync(new URL("./session-cockpit.tsx", import.meta.url), "utf8");
+const PROMPT = "Telar restarted to install an update in the middle of your last turn.";
 
 test("the continuation is not the person's bubble, and says it continued after the update", () => {
-  expect(source).toContain('turn.origin !== "session" && turn.origin !== "restart" && (');
-  expect(source).toContain("{turn.restartOrigin !== undefined && <Marker>continued after Telar restarted to update</Marker>}");
-  // In the answer lane's own condition, or the marker would render invisibly.
-  expect(source).toContain("turn.restartOrigin !== undefined ||");
+  const html = renderToStaticMarkup(
+    createElement(SessionTurn, {
+      turn: {
+        runId: "run_1",
+        origin: "restart",
+        restartOrigin: { reason: "update", plannedAt: 1_800_000_000_000, interruptedRunId: "run_0" },
+        prompt: PROMPT,
+        state: "queued",
+        resultText: "",
+        items: [],
+        tasks: [],
+      },
+      requests: [],
+      sending: false,
+      live: false,
+      onDecide: () => {},
+      onRetry: () => {},
+    }),
+  );
+  expect(html).toContain("continued after Telar restarted to update");
+  expect(html).not.toContain(PROMPT);
 });

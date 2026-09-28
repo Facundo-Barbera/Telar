@@ -124,6 +124,10 @@ const api = createEngineApi();
  *  two places and true in neither. */
 export const MAX_ATTACHMENTS = 16;
 
+/** What the box keeps after a stash of `captured`: whatever was typed after it while the pictures encoded. */
+export function draftAfterStash(now: string, captured: string): string {
+  return now.startsWith(captured) ? now.slice(captured.length) : "";
+}
 
 /**
  * ONE VALUE FOR EVERY PROVIDER KNOB, and one place that derives it.
@@ -885,15 +889,7 @@ export function Composer({
   /** The one thing that went wrong, said in place. There is no toast in this
    *  app and that is deliberate — see file-view-surface.tsx. */
   const [note, setNote] = useState<string>();
-  /**
-   * WHAT THE BOX HOLDS RIGHT NOW, readable from inside an await.
-   *
-   * Encoding pictures takes a beat, and a person carries on typing through it.
-   * `draft` inside `doStash` is the value from the render that started it; this
-   * ref is the value from the render that is on screen when it finishes, and
-   * the difference between them is exactly the characters typed in between —
-   * which must survive the clear.
-   */
+  /** What the box holds right now, readable from inside `doStash`'s await. */
   const latest = useRef(draft);
   useEffect(() => {
     latest.current = draft;
@@ -905,17 +901,7 @@ export function Composer({
     held.current = attachments;
   });
 
-  /**
-   * CAPTURE, ENCODE, WRITE, AND ONLY THEN CLEAR.
-   *
-   * The donor writes a text-only entry first, clears the box immediately, and
-   * attaches the compressed pictures afterwards — which buys instant clearing
-   * across a server upload it has and this app does not: attachments here are
-   * `File`s in memory until `submit` uploads them, so there is nothing to race.
-   * What the phased shape would cost is the whole point of the feature: the box
-   * emptied before the images were known to fit, and a half-written entry that a
-   * closed tab strands forever with no process that could reconcile it.
-   */
+  /** Capture, encode, write, and only then clear: a refused write leaves the box untouched. */
   const doStash = useCallback(async () => {
     const text = draft.trim();
     const { images, rest } = splitImages(attachments);
@@ -940,9 +926,7 @@ export function Composer({
       return;
     }
 
-    // WHAT YOU TYPED WHILE IT WAS ENCODING IS STILL YOURS. Only the run that
-    // was captured is removed; anything added after it stays in the box.
-    onDraftChange(latest.current.startsWith(draft) ? latest.current.slice(draft.length) : "");
+    onDraftChange(draftAfterStash(latest.current, draft));
     // What the stash could not carry goes straight back — the leftover chip is
     // its own explanation, which is why there is no message for it.
     onAttach([...rest, ...encoded.kept]);

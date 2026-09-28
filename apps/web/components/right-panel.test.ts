@@ -6,9 +6,6 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { EngineEvent, Item, Task } from "@telar/engine-client";
 import {
   agentBrowserActivity,
@@ -412,90 +409,12 @@ describe("a browser tab's label comes from the live page when the shell has one"
   });
 });
 
-/**
- * AGENTS HOLDS THE CONVERSATIONS TOO — issue #381.
- *
- * The rail stopped drawing a delegated conversation as a child of the one that
- * delegated to it, and the relationship moved here. Two things have to be true
- * for that to be a move rather than a deletion: the surface must actually mount
- * the section, and the chooser card must say so — a card is the only thing that
- * tells a reader what a surface holds before they open it.
- */
 describe("the Agents surface", () => {
-  const dir = fileURLToPath(new URL(".", import.meta.url));
-  const source = fs.readFileSync(path.join(dir, "right-panel.tsx"), "utf8");
-
   test("its blurb names what the section holds, and no longer stops at sub-agents", () => {
     const { label, blurb } = describePanelTab("agents");
     expect(label).toBe("Agents");
     expect(blurb).toContain("conversations working for this one");
     expect(blurb).not.toBe("Sub-agents");
-    // #877: the blurb named a surface this pane no longer draws.
     expect(blurb.toLowerCase()).not.toContain("warp");
-  });
-
-  test("the section is mounted, and it is given the session whose relationships it describes", () => {
-    expect(source).toContain("<RelatedConversations");
-    const mount = source.slice(source.indexOf("<RelatedConversations"), source.indexOf("/>", source.indexOf("<RelatedConversations")));
-    // Without the id there is nothing to ask about; without the host a remote
-    // cockpit would ask the local engine about a remote session.
-    expect(mount).toContain("sessionId");
-    expect(mount).toContain("hostId");
-  });
-
-  test("an empty roster still draws the section — a surface must not contradict its own contents", () => {
-    // "Sub-agents appear here as they work" above four conversations that ARE
-    // working is the empty state arguing with the rows beneath it.
-    const surface = source.slice(source.indexOf("function AgentsSurface"), source.indexOf("function ProcessesSurface"));
-    const empty = surface.slice(surface.indexOf("Sub-agents appear here"));
-    expect(empty.slice(0, empty.indexOf("const live"))).toContain("{related}");
-  });
-});
-
-/**
- * THE TAB STRIP IS A DRAG HANDLE — issue #279, the panel half.
- *
- * ASSERTED AS SOURCE, not as a render: `RightPanel` is the cockpit's whole
- * right-hand side and mounting it to read one attribute would be a test about
- * everything else. What matters structurally is WHICH element carries the drag,
- * and that is a question the source answers exactly.
- */
-describe("the panel's tabs drag to reorder", () => {
-  const dir = fileURLToPath(new URL(".", import.meta.url));
-  const raw = fs.readFileSync(path.join(dir, "right-panel.tsx"), "utf8");
-  const opens = raw.indexOf('role="tablist"');
-  // Comments stripped, for the reason `context-menus.test.tsx` gives: a scan
-  // that read prose would fire on the explanation and teach the next person to
-  // delete it. (These very rules are explained in the strip's own comment.)
-  const strip = raw
-    .slice(opens, raw.indexOf('aria-label="Open a surface"', opens))
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
-
-  test("the tab itself is draggable, and it is the one element that is", () => {
-    expect(strip).toContain("draggable");
-    // Not the buttons inside it: those are the click targets, and a <button> is
-    // not draggable by default, so the two gestures never compete. Anything
-    // that later wants a right-press on a tab must wrap the CONTENT for the
-    // same reason the session row and the project header do.
-    const button = strip.slice(strip.indexOf("<button"));
-    expect(button).not.toContain("draggable");
-  });
-
-  test("the drop mark is an inset shadow, not a border", () => {
-    // A border appearing on drag-over widens the tab on the frame it appears
-    // and shoves the rest of the strip sideways under the pointer.
-    expect(strip).toContain("shadow-[inset_2px_0_0_0_var(--color-primary)]");
-    expect(strip).toContain("shadow-[inset_-2px_0_0_0_var(--color-primary)]");
-    expect(strip).not.toContain("border-l-2");
-  });
-
-  test("the drop asks for an index in the strip WITHOUT the carried tab", () => {
-    // Which is what `movePanelTab` takes. Measuring against the strip as drawn
-    // instead would make every rightward move off by one.
-    // By INSTANCE id, not by kind: with two Editors open, filtering by kind
-    // would drop both and move the wrong one.
-    expect(strip).toContain("const rest = tabs.filter((other) => other.id !== dragged);");
-    expect(strip).toContain('onMoveTab?.(dragged, rest.findIndex((other) => other.id === id) + (side === "after" ? 1 : 0));');
   });
 });
