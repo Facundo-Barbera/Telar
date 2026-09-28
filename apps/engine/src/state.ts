@@ -30,7 +30,6 @@ import {
   type UsageLimitSource,
   resolveMcpServers,
   EngineRequest as RequestSchema,
-  Project as ProjectSchema,
   DataScienceConfig as DataScienceConfigSchema,
   type DataScienceConfig,
   LatexConfig as LatexConfigSchema,
@@ -43,7 +42,6 @@ import {
   type ProjectPlugins,
   migrateLegacyPluginFields,
   pluginBlock,
-  pluginConfigFromLegacy,
   readProjectPlugins,
   assignmentsOf,
   // THE CLIENTS' OWN SETTLING RULE, imported rather than re-implemented: the
@@ -158,20 +156,21 @@ import {
   type DictationProviderId,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
-import { assertId, assertStateVersion, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
+import { assertId, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
 import { RUNTIME_MODES, SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
 import { McpOAuthStore, McpServers, type PendingMcpOAuth } from "./domains/agent-tools";
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
+import { ProjectProbes, ProjectRegistry, type ProjectPatch } from "./domains/projects";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { awaitsRateLimitSweep, createSessionModules, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
 import { boundedOutline, cohortNotification, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, inlineExcerpt, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
-import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./domains/appearance";
+import { type ProjectIcon } from "./domains/appearance";
 import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./domains/files";
 import { type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
-import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
+import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
 import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER, defaultGhRunner, mergePull, openPullRequest, reactOn, readCheckLog, readForgeFacets, readGitHub, readIssue, readPull, readPullFiles, readPullForBranch, replyToThread, resolveThread, type GhRunner } from "./domains/github";
 import {  } from "zod";
@@ -185,7 +184,7 @@ import { createSessionWorktreeAsync, createWorktreeQueue, defaultWorktreeGitRunn
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { CheckoutSizes, CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor } from "./domains/terminal";
-import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
+import { findVolumeMount, mountSignature, type ProjectAvailability, type VolumeDeps } from "./volumes";
 
 /** The first line with anything on it, clamped for a cohort's member line. */
 /** A cohort member's `excerpt` and `chars` — see `CohortMember`. */
@@ -711,15 +710,8 @@ function assertText(value: unknown): asserts value is string {
   }
 }
 
-function assertAbsolutePath(value: unknown, label: string): asserts value is string {
-  if (typeof value !== "string" || !path.isAbsolute(value)) {
-    throw new EngineStateError("invalid_request", `${label} must be an absolute path`);
-  }
-}
 
-type ProjectRegistry = { version: typeof STATE_VERSION; projects: Project[] };
 
-const emptyRegistry = (): ProjectRegistry => ({ version: STATE_VERSION, projects: [] });
 
 
 /**
@@ -836,19 +828,6 @@ const dataScienceBlock = (project: Project): DataScienceConfig | undefined =>
   typedPluginBlock(project, "data-science", DataScienceConfigSchema);
 const latexBlock = (project: Project): LatexConfig | undefined => typedPluginBlock(project, "latex", LatexConfigSchema);
 
-/**
- * PARSING IS THE SCHEMAS' JOB NOW. v1 hand-rolled every one of these checks and
- * each was a place the type and the validator could drift; the whole reason
- * `packages/engine-client` took a zod dependency is that there is exactly one
- * definition per shape and the TypeScript type is derived from it.
- */
-function parseRegistry(value: unknown): ProjectRegistry {
-  assertStateVersion(value, "project registry");
-  const projects = ProjectSchema.array().safeParse((value as { projects?: unknown }).projects);
-  if (!projects.success) throw new EngineStateError("invalid_request", "invalid project registry");
-  for (const project of projects.data) assertAbsolutePath(project.root, "project root");
-  return { version: STATE_VERSION, projects: projects.data };
-}
 
 /**
  * The most recently FINISHED turn, whatever it finished as.
@@ -1058,6 +1037,8 @@ export class EngineStore {
   private readonly mcpServers: McpServers;
   private readonly providers: ProviderRegistry;
   private readonly usageSources: UsageLimitSources;
+  private readonly projectProbes: ProjectProbes;
+  private readonly projectRegistry: ProjectRegistry;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -2006,8 +1987,7 @@ export class EngineStore {
     // THE RAW REGISTRY, not `listProjects`: that probes every checkout for a
     // branch and an icon, and this wants a name. Several `git` calls per project
     // to prime a recogniser would be the cost of the feature.
-    const registry = this.readDocument(this.paths.projects);
-    const projects = registry === undefined ? [] : parseRegistry(registry).projects;
+    const projects = this.projectRegistry.read().projects;
     return {
       sessionTitles: sessions.flatMap((session) => (session.title ? [session.title] : [])),
       // A REMOVED PROJECT IS NOT ONE ANYBODY IS TALKING ABOUT — the same filter
@@ -2293,17 +2273,10 @@ export class EngineStore {
       onRetentionSweep: () => { this.sweepRetention(); },
     });
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
-    this.settings = new SettingsStore(this.kernel);
-    this.appearance = new AppearanceStore(this.kernel);
-    this.mcpOAuth = new McpOAuthStore(this.kernel);
-    this.mcpServers = new McpServers(this.kernel, { requireProject: (id) => void this.getProject(id), forgetGrant: (id, projectId) => this.mcpOAuth.delete(id, projectId) });
-    this.usageSources = new UsageLimitSources(this.kernel);
-    this.catalogues = new ModelCatalogues(this.kernel, {
-      readModels: options.models ?? readModelCatalogue,
-      cliVersion: options.cliVersion ?? installedCli,
-      manifest: options.manifest ?? BUNDLED_MANIFEST,
-    });
-    this.providers = new ProviderRegistry(this.kernel, this.ambientEnv);
+    ({
+      settings: this.settings, appearance: this.appearance, mcpOAuth: this.mcpOAuth, mcpServers: this.mcpServers, usageSources: this.usageSources,
+      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers,
+    } = this.leafStores(options));
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
       activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes,
@@ -2323,6 +2296,34 @@ export class EngineStore {
     this.claudeLongWindowMigration = this.migrateBareClaudeIds();
     this.claudeCompactionMigration = this.migrateClaudeCompactionToLimits();
     this.pluginFieldMigration = this.migrateLegacyPluginFieldsOnOpen();
+  }
+
+  /** The per-document stores that sit beside the sessions modules, built on the kernel. */
+  private leafStores(options: { models?: typeof readModelCatalogue; cliVersion?: (driver: ProviderDriverKind) => Promise<InstalledCli>; manifest?: ModelManifest }) {
+    const settings = new SettingsStore(this.kernel);
+    const appearance = new AppearanceStore(this.kernel);
+    const mcpOAuth = new McpOAuthStore(this.kernel);
+    const mcpServers = new McpServers(this.kernel, { requireProject: (id) => void this.getProject(id), forgetGrant: (id, projectId) => mcpOAuth.delete(id, projectId) });
+    const usageSources = new UsageLimitSources(this.kernel);
+    const projectProbes = new ProjectProbes(this.kernel, {
+      asyncGit: this.asyncGit,
+      volumes: this.volumes,
+      forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
+      onUnavailable: (project) => void this.recoverRemountedProject(project),
+    });
+    const projectRegistry = new ProjectRegistry(this.kernel, {
+      probes: projectProbes,
+      volumes: this.volumes,
+      sessionsOf: (projectId) => this.records.read().filter((session) => session.projectId === projectId).map((session) => session.id),
+      hasWorkInFlight: (sessionId) => this.sessionHasWorkInFlight(sessionId),
+    });
+    const catalogues = new ModelCatalogues(this.kernel, {
+      readModels: options.models ?? readModelCatalogue,
+      cliVersion: options.cliVersion ?? installedCli,
+      manifest: options.manifest ?? BUNDLED_MANIFEST,
+    });
+    const providers = new ProviderRegistry(this.kernel, this.ambientEnv);
+    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers };
   }
 
   /** How many projects the legacy-field fold changed on this open (0 on most). */
@@ -2579,144 +2580,25 @@ export class EngineStore {
     return { sessions, turns };
   }
 
-  /**
-   * The project's icon, found in its checkout and cached.
-   *
-   * A CACHE, BECAUSE THE FIND IS NOT FREE. `listProjects` is on the sidebar's
-   * poll path and the metadata refresh below runs every ten seconds per
-   * project; resolving from scratch each time meant a hundred-odd `stat`s per
-   * project per poll, forever, to re-learn an answer that almost never
-   * changes.
-   *
-   * TWO TTLs, BECAUSE THE TWO ANSWERS AGE DIFFERENTLY. "This file is the
-   * icon" stays true for as long as the file does, and a HIT IS CONFIRMED
-   * WITH ONE `stat` rather than trusted — which is what makes a REPLACED icon
-   * visible on the very next poll (the etag is derived from mtime and size, so
-   * the confirmation re-derives it) and a DELETED one fall back at once
-   * instead of leaving the serve route reading a path that is gone. "This
-   * project has no icon" is the answer a person is most likely to be in the
-   * middle of falsifying — they just added `public/favicon.ico` and are
-   * waiting to see it — so it is held for seconds, not minutes.
-   *
-   * `resolvedAt` IS NOT `at`, AND CONFIRMING NEVER MOVES IT. A confirmation
-   * proves the file it already knows about is still there; it cannot see a
-   * NEW file that now outranks it — a `.telar/icon.svg` added beside the
-   * `favicon.ico` currently winning, or an `index.html` whose href moved to a
-   * different file. If a confirmed hit refreshed the discovery clock, the
-   * sidebar's ten-second poll would keep resetting a five-minute TTL and the
-   * full search would never run again: the higher-priority icon would stay
-   * invisible for as long as the old one existed. So the discovery deadline is
-   * measured from the last FULL resolution and nothing else touches it.
-   *
-   * Bounded, because it is keyed by project id and nothing evicts on
-   * unregistration alone; oldest-first, which for a poll-driven map is close
-   * enough to least-recently-used and costs no bookkeeping.
-   */
-  private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; resolvedAt: number }>();
-  private static readonly ICON_TTL_FOUND = 300_000;
-  private static readonly ICON_TTL_MISSING = 15_000;
-  private static readonly ICON_CACHE_CAPACITY = 512;
 
-  /** Record a FULL resolution. Starts the discovery clock. */
-  private rememberProjectIcon(projectId: string, icon: ProjectIcon | undefined): ProjectIcon | undefined {
-    this.projectIconCache.delete(projectId);
-    this.projectIconCache.set(projectId, { ...(icon ? { icon } : {}), resolvedAt: this.now() });
-    while (this.projectIconCache.size > EngineStore.ICON_CACHE_CAPACITY) {
-      const oldest = this.projectIconCache.keys().next();
-      if (oldest.done) break;
-      this.projectIconCache.delete(oldest.value);
-    }
-    return icon;
-  }
 
-  /** Record a CONFIRMATION of the icon already known. Deliberately leaves
-   *  `resolvedAt` alone — see the note above. */
-  private refreshProjectIcon(projectId: string, icon: ProjectIcon): ProjectIcon {
-    const cached = this.projectIconCache.get(projectId);
-    if (cached) cached.icon = icon;
-    return icon;
-  }
 
-  /** The cached answer, or `undefined` when the cache cannot speak — which is
-   *  NOT the same as "no icon" and is why this returns a wrapper. */
-  private cachedProjectIcon(projectId: string): { icon?: ProjectIcon } | undefined {
-    const cached = this.projectIconCache.get(projectId);
-    if (!cached) return undefined;
-    const age = this.now() - cached.resolvedAt;
-    if (cached.icon) return age < EngineStore.ICON_TTL_FOUND ? { icon: cached.icon } : undefined;
-    return age < EngineStore.ICON_TTL_MISSING ? {} : undefined;
-  }
 
-  private async projectIconAsync(project: Pick<Project, "id" | "root">): Promise<ProjectIcon | undefined> {
-    const cached = this.cachedProjectIcon(project.id);
-    if (cached) {
-      if (!cached.icon) return undefined;
-      const confirmed = await confirmProjectIcon(cached.icon);
-      if (confirmed) return this.refreshProjectIcon(project.id, confirmed);
-    }
-    return this.rememberProjectIcon(project.id, await findProjectIconAsync(project.root));
-  }
 
-  /** Forget what was found for a project, so the next read resolves afresh.
-   *  Called wherever the engine's own idea of the project changes under it. */
-  private forgetProjectIcon(projectId: string): void {
-    this.projectIconCache.delete(projectId);
-  }
 
   /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
    *  project has none rather than guessing. */
   async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
     const project = this.getProject(projectId);
-    const icon = await this.projectIconAsync(project);
+    const icon = await this.projectProbes.icon(project);
     if (!icon) throw new EngineStateError("not_found", "this project has no icon");
     return icon;
   }
 
-  /**
-   * The registered projects.
-   *
-   * REMOVED ONES ARE NOT REGISTERED. Their records stay in the file so a
-   * restore can give back the same id and settings, but they are absent from
-   * this list — which is the list every picker, the sidebar and the
-   * new-session surfaces read, so removal is complete without a single one of
-   * them learning a new concept. `includeRemoved` exists for the one screen
-   * that has to name a removed project in order to offer to put it back.
-   */
   listProjects(options: { includeRemoved?: boolean } = {}): Project[] {
-    const registry = this.readDocument(this.paths.projects);
-    if (registry === undefined) return [];
-    return structuredClone(parseRegistry(registry).projects)
-      .filter((project) => options.includeRemoved || project.removedAt === undefined)
-      .map((project) => {
-        // A removed project's checkout is not polled: it is not on any surface
-        // that shows a branch or an icon, and a removed row must not keep a
-        // `git rev-parse` running against somebody's disk every ten seconds.
-        // Its availability is absent for the same reason — nothing probed it,
-        // so there is no answer to publish.
-        if (project.removedAt !== undefined) return project;
-        // THE METADATA READ IS WHAT PROBES (see `projectMetadata`), so the
-        // availability is asked for AFTER it rather than beside it: two probes
-        // in one listing would be two `stat`s per project for one answer.
-        const metadata = this.projectMetadata(project);
-        return { ...project, ...metadata, availability: this.projectAvailability(project) };
-      });
+    return this.projectRegistry.list(options);
   }
 
-  /**
-   * WHAT EACH PROJECT'S AVAILABILITY WAS THE LAST TIME ANYBODY LOOKED.
-   *
-   * NOT A TTL CACHE, and that distinction is the whole design. The value is
-   * never served in place of a probe — `projectAvailability` probes every time,
-   * because three `stat`s are cheaper than any bookkeeping that would avoid
-   * them. What this remembers is the PREVIOUS answer, so a CHANGE can be
-   * noticed: a drive coming back is the moment the branch, the icon, the diff
-   * and the file tree cached while it was away all became lies, and they are
-   * dropped then rather than at the end of somebody's TTL.
-   *
-   * In memory, like every other cache here: it is a fact about a cable, and a
-   * stale one surviving a restart would be worse than probing once on open.
-   */
-  private readonly projectAvailabilityCache = new Map<string, ProjectAvailability>();
 
   /**
    * WHICH MOUNT CONFIGURATION EACH AWAY PROJECT HAS ALREADY BEEN SEARCHED FOR.
@@ -2728,49 +2610,10 @@ export class EngineStore {
    */
   private readonly remountAttempts = new Map<string, string>();
 
-  /**
-   * IS THIS PROJECT'S DISK HERE — the one answer every surface reads.
-   *
-   * ONE OWNER, on purpose. A rail deciding for itself whether a folder is
-   * readable, a composer deciding again, and `assertProjectAvailable` deciding a
-   * third time is three chances to disagree about a cable, in three places a
-   * person would have to reconcile by hand. See `probeAvailability` for what it
-   * costs and why the mount is asked before the root.
-   *
-   * ALWAYS FRESH. The tick in `projectMetadata` decides how often anyone ASKS;
-   * it does not make this answer older than the question.
-   */
   projectAvailability(project: Pick<Project, "id" | "root"> & { volume?: Project["volume"] }): ProjectAvailability {
-    const availability = probeAvailability(project, this.volumes);
-    const previous = this.projectAvailabilityCache.get(project.id);
-    if (previous === availability) return availability;
-    this.projectAvailabilityCache.set(project.id, availability);
-    /**
-     * THE FIRST ANSWER IS NOT A TRANSITION. On a cold store every project moves
-     * from "nobody has looked" to something, and dropping every cache for each
-     * of them would make the first read of every surface the slow one.
-     */
-    if (previous !== undefined) this.forgetProjectReads(project);
-    return availability;
+    return this.projectProbes.availability(project);
   }
 
-  /**
-   * DROP WHAT WAS READ OFF A DISK THAT HAS SINCE CHANGED UNDER US.
-   *
-   * Called on an availability TRANSITION in either direction. Going away, the
-   * branch and icon in hand were read from a disk nobody can see any more;
-   * coming back, they are whatever the failing reads left behind — a blank
-   * branch, a "no icon", a diff that said `repository: false`. Neither is worth
-   * the ten seconds a TTL would keep it.
-   */
-  private forgetProjectReads(project: Pick<Project, "id" | "root">): void {
-    this.projectMetadataCache.delete(project.id);
-    this.forgetProjectIcon(project.id);
-    // `gitReadCache` is keyed by PATH rather than by project — the overview, the
-    // diff and every file patch under this root — so the root is what identifies
-    // the entries to drop.
-    this.forgetGitReadsUnder(project.root);
-  }
 
   /** Every cached git read that names `root` — see `forgetProjectReads`. */
   private forgetGitReadsUnder(root: string): void {
@@ -2779,101 +2622,7 @@ export class EngineStore {
     }
   }
 
-  /** Sidebar metadata refreshes off the request path. Cold rows appear immediately;
-   * branch/icon labels arrive on the next poll without blocking worker heartbeats. */
-  private readonly projectMetadataCache = new Map<string, {
-    root: string; at: number; value: Pick<Project, "branch" | "icon" | "remoteUrl">; pending?: Promise<void>;
-  }>();
 
-  private projectMetadata(project: Project): Pick<Project, "branch" | "icon" | "remoteUrl"> {
-    /**
-     * THE DISK IS ASKED ABOUT FIRST, AND BEFORE THE CACHE IS READ — issue #534.
-     *
-     * NO NEW TIMER. This is the call every listing already makes, so the probe
-     * rides it rather than earning a ticker of its own; `reprobeProjects` and
-     * the sweep at daemon start are the same probe at other moments, never a
-     * second opinion.
-     *
-     * ON EVERY CALL RATHER THAN ON THE TEN-SECOND TICK BELOW, because the two
-     * costs are not comparable: the tick exists to bound three `git` children
-     * and a directory walk, and this is three `stat`s. Putting it on the tick
-     * would have made "how long after I plug the drive back in does the rail
-     * say so" up to ten seconds for no saving worth having.
-     *
-     * BEFORE THE LOOKUP, not after, and that ordering is load-bearing: a
-     * transition DELETES this very entry, so an `entry` read first would be
-     * written back over the invalidation and keep the branch that was read off a
-     * disk nobody can see.
-     */
-    const availability = this.projectAvailability(project);
-    let entry = this.projectMetadataCache.get(project.id);
-    if (!entry || entry.root !== project.root) {
-      entry = { root: project.root, at: -Infinity, value: {} };
-      this.projectMetadataCache.set(project.id, entry);
-    }
-    /**
-     * NOTHING IS SPAWNED AGAINST A DISK THAT IS NOT THERE.
-     *
-     * This is the churn #534 is named for: three `git` children per project
-     * every ten seconds, each failing into an unplugged drive, each turning
-     * ENOENT into a status 1 that nothing reported — about 18 children a minute
-     * for one away project, forever. The icon read is skipped for the same
-     * reason and a worse one: it WALKS the checkout.
-     *
-     * AND THE LABELS GO WITH THEM. A branch name left over from before the
-     * unplug is a claim about a disk nobody can read; the row says the drive is
-     * away instead, which is the true thing and a shorter sentence.
-     */
-    if (availability !== "available") {
-      entry.value = {};
-      /**
-       * AND THE POLL IS ALSO WHERE A DRIVE COMES BACK UNDER A NEW NAME — step 7.
-       *
-       * `POST /v2/projects/reprobe` is the fast path and does this within a
-       * quarter-second of a mount; this is the floor under it, for a cockpit
-       * running without the desktop shell, a shell whose watcher died, and a
-       * drive swapped while the Mac was off. Bounded twice over: only for a
-       * project that cannot be read, and only once per distinct mount
-       * configuration — see `recoverRemountedProject`.
-       *
-       * `at` IS STAMPED FIRST because the recovery DELETES this entry on
-       * success, and writing to it afterwards would resurrect a detached one.
-       */
-      entry.at = this.now();
-      this.recoverRemountedProject(project);
-      return entry.value;
-    }
-    if (!entry.pending && this.now() - entry.at >= 10_000) {
-      const current = entry;
-      current.pending = Promise.all([
-        this.asyncGit(project.root, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 5_000 }),
-        // THROUGH THE CACHE, not around it. This runs every ten seconds per
-        // project; resolving from scratch here made the cache above dead
-        // weight and re-walked every checkout on the poll path.
-        this.projectIconAsync(project),
-        // WHICH REPOSITORY THIS CHECKOUT IS OF, on the same refresh as the
-        // branch — a `git config` read of a file git has already cached, beside
-        // a `rev-parse` that costs strictly more. Derived rather than stored so
-        // adding an origin, or moving the repository, is visible on the next
-        // poll instead of at the next re-registration.
-        projectRemoteAsync(this.asyncGit, project.root),
-      ]).then(([head, icon, remoteUrl]) => {
-        if (this.projectMetadataCache.get(project.id) !== current) return;
-        const branch = head.status === 0 ? head.stdout.trim() : "";
-        current.value = {
-          ...(branch && branch !== "HEAD" ? { branch } : {}),
-          ...(icon ? { icon: icon.etag } : {}),
-          ...(remoteUrl ? { remoteUrl } : {}),
-        };
-      }).catch(() => {
-        // A stalled checkout must not hold up the registry or lose its row.
-      }).finally(() => {
-        current.at = this.now();
-        current.pending = undefined;
-      });
-    }
-    return entry.value;
-  }
 
   /**
    * ASK EVERY PROJECT'S DISK NOW, rather than waiting for somebody to look.
@@ -2890,12 +2639,11 @@ export class EngineStore {
    * is drawing.
    */
   reprobeProjects(): { projects: number; changed: number; recovered: number } {
-    const registry = this.readDocument(this.paths.projects);
-    const projects = registry === undefined ? [] : parseRegistry(registry).projects.filter((project) => project.removedAt === undefined);
+    const projects = this.projectRegistry.read().projects.filter((project) => project.removedAt === undefined);
     let changed = 0;
     let recovered = 0;
     for (const project of projects) {
-      const before = this.projectAvailabilityCache.get(project.id);
+      const before = this.projectProbes.lastAvailability(project.id);
       let availability = this.projectAvailability(project);
       /**
        * A DRIVE MOUNTED SOMEWHERE ELSE IS STILL THIS DRIVE — see
@@ -2970,8 +2718,7 @@ export class EngineStore {
       return undefined;
     }
 
-    const registryDocument = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registryDocument);
+    const parsed = this.projectRegistry.read();
     const stored = parsed.projects.find((candidate) => candidate.id === project.id);
     if (stored === undefined) return undefined;
     const previousRoot = stored.root;
@@ -3011,9 +2758,9 @@ export class EngineStore {
 
     // The reads in hand were taken off a disk that has since come back at
     // another address; none of them describes anything that exists now.
-    this.forgetProjectReads({ id: project.id, root: previousRoot });
-    this.forgetProjectReads({ id: project.id, root });
-    this.projectAvailabilityCache.delete(project.id);
+    this.projectProbes.forgetReads({ id: project.id, root: previousRoot });
+    this.projectProbes.forgetReads({ id: project.id, root });
+    this.projectProbes.forgetAvailability(project.id);
 
     /**
      * ONE LINE, because a record the engine rewrote on its own is exactly the
@@ -3060,170 +2807,15 @@ export class EngineStore {
   }
 
   registerProject(input: { id?: string; name: string; root: string }): Project {
-    if (input.id !== undefined) assertId(input.id, "project id");
-    if (typeof input.name !== "string" || input.name.trim() === "") {
-      throw new EngineStateError("invalid_request", "project name must be non-empty");
-    }
-    assertAbsolutePath(input.root, "project root");
-    /**
-     * "MUST BE AN EXISTING DIRECTORY" ONLY WHEN IT IS NOT ONE. A folder that is
-     * there and cannot be read — a privacy permission macOS has not granted, a
-     * cloud-synced folder whose sync app is not answering — used to get the
-     * same sentence, which sends somebody looking for a folder they can see.
-     * And `statSync` was unguarded, so its failure left as a bare 500.
-     */
-    let projectRoot: string;
-    let directory: boolean;
-    try {
-      projectRoot = fs.realpathSync.native(input.root);
-      directory = fs.statSync(projectRoot).isDirectory();
-    } catch (cause) {
-      const code = (cause as NodeJS.ErrnoException | null)?.code;
-      if (code === "ENOENT" || code === "ENOTDIR") throw new EngineStateError("invalid_request", "project root must be an existing directory");
-      throw new EngineStateError(
-        "invalid_request",
-        `project root could not be read${code ? ` (${code})` : ""}: check that Telar is allowed into that folder, and for a cloud folder that its sync app is running`,
-      );
-    }
-    if (!directory) throw new EngineStateError("invalid_request", "project root must be an existing directory");
-    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registry);
-    const id = input.id ?? `project_${crypto.randomUUID().replaceAll("-", "")}`;
-    /**
-     * REGISTERING A REMOVED PROJECT'S CHECKOUT RESTORES IT, rather than minting
-     * a stranger with the same path.
-     *
-     * The match is on the canonical root, because that is what the person is
-     * actually doing: pointing Telar at this folder again. Giving them a new id
-     * would leave every session that ran here bound to an id nothing resolves,
-     * their MCP servers scoped to it, and their browser profile keyed to it —
-     * three silent losses from an action that reads like an undo. So the record
-     * comes back whole: same id, same name unless a new one was typed, same
-     * data-science and LaTeX blocks.
-     */
-    /**
-     * WHICH DISK THIS IS ON, asked once, here — see `volumes.ts`.
-     *
-     * REGISTRATION IS THE ONLY AFFORDABLE MOMENT for the `diskutil` child this
-     * costs: it is a request somebody is waiting on, it happens once per
-     * project, and every later question about the drive is answered by three
-     * `stat`s against what it records. A project on this Mac's own disk gets
-     * nothing and is unchanged in every respect.
-     */
-    const volume = volumeForRoot(projectRoot, this.volumes);
-    const tombstone = parsed.projects.find((project) => project.root === projectRoot && project.removedAt !== undefined);
-    if (tombstone && (input.id === undefined || input.id === tombstone.id)) {
-      delete tombstone.removedAt;
-      tombstone.name = input.name.trim();
-      tombstone.updatedAt = this.now();
-      // RE-READ ON THE WAY BACK IN, because a project put away before this
-      // existed carries no volume at all, and one put away on a drive that has
-      // since been reformatted carries the wrong uuid. Restoring is the person
-      // pointing at this folder again, so what the disk says now wins.
-      if (volume === undefined) delete tombstone.volume;
-      else tombstone.volume = volume;
-      this.writeDocument(this.paths.projects, parsed);
-      this.forgetProjectIcon(tombstone.id);
-      this.projectMetadataCache.delete(tombstone.id);
-      return structuredClone(tombstone);
-    }
-    const existing = parsed.projects.find((project) => project.id === id || project.root === projectRoot);
-    if (existing) {
-      if (existing.id === id && existing.root === projectRoot && existing.removedAt === undefined) return structuredClone(existing);
-      throw new EngineStateError("conflict", "project id or root is already registered");
-    }
-    const at = this.now();
-    const project: Project = {
-      id,
-      environmentId: "local",
-      name: input.name.trim(),
-      root: projectRoot,
-      createdAt: at,
-      updatedAt: at,
-      ...(volume === undefined ? {} : { volume }),
-    };
-    parsed.projects.push(project);
-    this.writeDocument(this.paths.projects, parsed);
-    // A fresh registration must not inherit a stale "no icon" answer cached
-    // for a project that briefly shared this id.
-    this.forgetProjectIcon(id);
-    this.projectMetadataCache.delete(id);
-    return structuredClone(project);
+    return this.projectRegistry.register(input);
   }
 
-  /**
-   * PUT A PROJECT AWAY. Nothing on disk is touched, and nothing is thrown out.
-   *
-   * WHAT THIS IS: the reversible inverse of `registerProject`. The repository,
-   * its git metadata, every worktree cut from it, the journal of every session
-   * that ran on it and the browser profiles those sessions used all stay
-   * exactly where they are — and so does the REGISTRATION RECORD, marked with
-   * `removedAt`. Telar stops offering the project; it does not forget it.
-   *
-   * WHY A TOMBSTONE RATHER THAN A SPLICE. Three things in this engine are
-   * keyed by a project id and outlive any one registration: a session's
-   * `projectId`, an MCP server's scope, and a browser profile's binding.
-   * Deleting the row and minting a new id on the way back in would silently
-   * strand all three — the person would point at the same folder, get a different
-   * project, and find their logged-in browser profile and their servers gone.
-   * Keeping the record makes restoring an actual undo.
-   *
-   * WHY IT REFUSES WITH WORK IN FLIGHT. A worker resolves its project by id on
-   * every step, so putting the registration away under a running turn turns a
-   * live conversation into a stream of refusals — silently, in a surface the
-   * person is not looking at. The ONLY alternatives are stopping their work or
-   * letting it break, and neither is something a settings row should do
-   * without being asked.
-   *
-   * WHAT COUNTS AS IN FLIGHT, stated rather than guessed at: every turn state
-   * that is not terminal (`queued`, `claimed`, `running`, `steering`), plus
-   * `ambiguous` — whose whole meaning is that the engine does not know whether
-   * a provider run is still out there, and a "maybe" is not a green light —
-   * plus any live backgrounded task, which by contract OUTLIVES the turn that
-   * started it and would otherwise walk straight past a turns-only check.
-   *
-   * Idle sessions keep working as READS while the project is away: their
-   * history, diffs and files all still resolve. What they cannot do is start
-   * new work — see `assertProjectAvailable`.
-   */
   unregisterProject(projectId: string): { project: Project; sessions: number } {
-    assertId(projectId, "project id");
-    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registry);
-    const project = parsed.projects.find((candidate) => candidate.id === projectId);
-    if (!project) throw new EngineStateError("not_found", "project does not exist");
-    if (project.removedAt !== undefined) throw new EngineStateError("conflict", "this project is already removed");
-    const sessions = this.records.read().filter((session) => session.projectId === projectId);
-    const busy = sessions.filter((session) => this.sessionHasWorkInFlight(session.id));
-    if (busy.length > 0) {
-      throw new EngineStateError(
-        "conflict",
-        `this project has ${busy.length === 1 ? "a session with work in flight" : `${busy.length} sessions with work in flight`} — let them finish or stop them first`,
-      );
-    }
-    project.removedAt = this.now();
-    project.updatedAt = project.removedAt;
-    this.writeDocument(this.paths.projects, parsed);
-    this.forgetProjectIcon(projectId);
-    this.projectMetadataCache.delete(projectId);
-    return { project: structuredClone(project), sessions: sessions.length };
+    return this.projectRegistry.unregister(projectId);
   }
 
-  /** Put a removed project back without needing its path — the settings page's
-   *  Restore. Registering its checkout again does the same thing. */
   restoreProject(projectId: string): Project {
-    assertId(projectId, "project id");
-    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registry);
-    const project = parsed.projects.find((candidate) => candidate.id === projectId);
-    if (!project) throw new EngineStateError("not_found", "project does not exist");
-    if (project.removedAt === undefined) return structuredClone(project);
-    delete project.removedAt;
-    project.updatedAt = this.now();
-    this.writeDocument(this.paths.projects, parsed);
-    this.forgetProjectIcon(projectId);
-    this.projectMetadataCache.delete(projectId);
-    return structuredClone(project);
+    return this.projectRegistry.restore(projectId);
   }
 
   /**
@@ -3290,153 +2882,11 @@ export class EngineStore {
   }
 
   getProject(projectId: string): Project {
-    assertId(projectId, "project id");
-    const registry = this.readDocument(this.paths.projects);
-    const project = registry === undefined ? undefined : parseRegistry(registry).projects.find((candidate) => candidate.id === projectId);
-    if (!project) throw new EngineStateError("not_found", "project does not exist");
-    return structuredClone(project);
+    return this.projectRegistry.get(projectId);
   }
 
-  /**
-   * Change what a project IS CALLED, what it OPENS ON, and what it OPTS INTO.
-   *
-   * THE ROOT IS STILL NOT PATCHABLE, and that is the line this method keeps:
-   * moving a project means registering the new folder, because the root is what
-   * every session, worktree and browser profile on it resolves against. A NAME
-   * IS NOT THAT. It was refused here only because nothing had asked yet, and a
-   * registry whose only rename was "register the same folder again, typing the
-   * name differently" made a rename look like a re-registration in every log
-   * that watched one.
-   *
-   * `null` REMOVES A STORED ANSWER rather than storing a neutral one — for
-   * `dataScience` and `latex` that is how "off" is spelled, so the registry
-   * does not grow a `{enabled: false}` for every project that tried a feature
-   * once; for `iconName`, `iconEmoji`, `defaultModel` and `envMode` it is how
-   * "go back to following this Mac" is spelled, which is a different sentence
-   * from any value they could hold.
-   *
-   * This method still refuses any key it does not know rather than storing it.
-   */
-  updateProject(
-    projectId: string,
-    patch: {
-      name?: string;
-      iconName?: string | null;
-      iconEmoji?: string | null;
-      defaultModel?: ModelSelectionValue | null;
-      envMode?: EnvMode | null;
-      dataScience?: DataScienceConfig | null;
-      latex?: LatexConfig | null;
-      plugins?: PluginPatch;
-    },
-  ): Project {
-    assertId(projectId, "project id");
-    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registry);
-    const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
-    if (index < 0) throw new EngineStateError("not_found", "project does not exist");
-    const current = parsed.projects[index]!;
-    // A removed project's settings are FROZEN, so what comes back on restore is
-    // exactly what was put away.
-    if (current.removedAt !== undefined) {
-      throw new EngineStateError("conflict", "this project was removed from Telar; restore it to change its settings");
-    }
-    const next: Project = { ...current, updatedAt: this.now() };
-    /**
-     * IDENTITY FIRST, AND BEFORE THE PLUGIN MAP BELOW — these four are plain
-     * scalars on the record and none of them participates in the mirroring
-     * dance, so they are applied and then forgotten about.
-     *
-     * EVERY ONE OF THEM IS VALIDATED AGAINST THE CONTRACT'S OWN SCHEMA rather
-     * than against a rule re-typed here. A second spelling of "what a model
-     * selection is" would be a second thing to forget when the contract moves.
-     */
-    if (patch.name !== undefined) {
-      const name = typeof patch.name === "string" ? patch.name.trim() : "";
-      if (name === "") throw new EngineStateError("invalid_request", "project name must be non-empty");
-      if (name.length > 200) throw new EngineStateError("invalid_request", "project name is too long");
-      next.name = name;
-    }
-    /**
-     * ONE PICKED ANSWER, NOT TWO. `iconName` and `iconEmoji` answer the same
-     * question — "what did somebody choose for this project" — and a record
-     * carrying both would leave the rail's preference order deciding which of
-     * two deliberate picks wins. So naming either CLEARS the other, which also
-     * makes the picker's Auto-detect one write rather than two.
-     */
-    if (patch.iconName === null) {
-      delete next.iconName;
-    } else if (patch.iconName !== undefined) {
-      const glyph = ProjectSchema.shape.iconName.safeParse(
-        typeof patch.iconName === "string" ? patch.iconName.trim() : patch.iconName,
-      );
-      if (!glyph.success || glyph.data === undefined) throw new EngineStateError("invalid_request", "project icon must be an icon name");
-      next.iconName = glyph.data;
-      delete next.iconEmoji;
-    }
-    if (patch.iconEmoji === null) {
-      delete next.iconEmoji;
-    } else if (patch.iconEmoji !== undefined) {
-      const mark = ProjectSchema.shape.iconEmoji.safeParse(
-        typeof patch.iconEmoji === "string" ? patch.iconEmoji.trim() : patch.iconEmoji,
-      );
-      if (!mark.success || mark.data === undefined) throw new EngineStateError("invalid_request", "project icon must be a short mark");
-      next.iconEmoji = mark.data;
-      delete next.iconName;
-    }
-    if (patch.defaultModel === null) {
-      delete next.defaultModel;
-    } else if (patch.defaultModel !== undefined) {
-      const model = ProjectSchema.shape.defaultModel.safeParse(patch.defaultModel);
-      if (!model.success || model.data === undefined) throw new EngineStateError("invalid_request", "default model selection is invalid");
-      next.defaultModel = model.data;
-    }
-    if (patch.envMode === null) {
-      delete next.envMode;
-    } else if (patch.envMode !== undefined) {
-      const mode = ProjectSchema.shape.envMode.safeParse(patch.envMode);
-      if (!mode.success || mode.data === undefined) throw new EngineStateError("invalid_request", "workspace mode must be local or worktree");
-      next.envMode = mode.data;
-    }
-    /**
-     * THE MAP IS THE ONLY WRITE. `dataScience` and `latex` are DEPRECATED INPUT
-     * ALIASES, kept one more release for a released cockpit: each is validated
-     * against its legacy schema and translated into a plugin patch, and neither
-     * key is ever stored — the record carries `plugins` alone.
-     */
-    const fromLegacy: PluginPatch = {};
-    if (patch.dataScience !== undefined) {
-      if (patch.dataScience === null) fromLegacy["data-science"] = null;
-      else {
-        const config = DataScienceConfigSchema.safeParse(patch.dataScience);
-        if (!config.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
-        fromLegacy["data-science"] = pluginConfigFromLegacy(config.data);
-      }
-    }
-    if (patch.latex !== undefined) {
-      if (patch.latex === null) fromLegacy.latex = null;
-      else {
-        const config = LatexConfigSchema.safeParse(patch.latex);
-        if (!config.success) throw new EngineStateError("invalid_request", "LaTeX configuration is invalid");
-        fromLegacy.latex = pluginConfigFromLegacy(config.data);
-      }
-    }
-    const pluginPatch: PluginPatch = { ...fromLegacy, ...patch.plugins };
-    if (Object.keys(pluginPatch).length > 0) {
-      next.plugins = applyPluginPatch(readProjectPlugins(next).plugins, pluginPatch);
-      // Compiles leave aux files under `.telar/latex/`; a project turning LaTeX
-      // on gets them ignored, through either arm.
-      if (pluginPatch.latex?.enabled) {
-        try {
-          ensureTelarGitignore(next.root, [{ rule: ".telar/latex/", alreadyCovered: [".telar/", ".telar", "/.telar/", ".telar/latex/"], why: "LaTeX aux files from Telar's compiles" }]);
-        } catch { /* not a repo, or unwritable — compiles still work */ }
-      }
-    }
-    delete (next as Record<string, unknown>).dataScience;
-    delete (next as Record<string, unknown>).latex;
-    parsed.projects[index] = next;
-    this.writeDocument(this.paths.projects, parsed);
-    return structuredClone(next);
+  updateProject(projectId: string, patch: ProjectPatch): Project {
+    return this.projectRegistry.update(projectId, patch);
   }
 
   /**
@@ -5778,8 +5228,7 @@ export class EngineStore {
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
   } {
-    const registry = this.readDocument(this.paths.projects);
-    const projects = registry === undefined ? [] : parseRegistry(registry).projects;
+    const projects = this.projectRegistry.read().projects;
     /**
      * ASSIGNMENTS RIDE THE LIST, not a fetch per row.
      *
