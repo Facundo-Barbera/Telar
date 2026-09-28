@@ -1,94 +1,139 @@
-/**
- * THE BROWSER'S MARKUP AND ITS TWO BROWSER-ONLY DECISIONS.
- *
- * The keyboard is `lib/directory-browser.test.ts` — it is a pure fold, so it is
- * tested as one. What is left here is what only exists once this renders: the
- * labels and aria wiring, the button that says what pressing it does, and the
- * handful of rules that cannot be a function because they read `window` (the
- * remembered directory, the Finder bridge). Those are pinned against source,
- * exactly as project-palette.test.tsx pins its own — a static render runs no
- * effects, so there is no listing in the markup to assert on.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DirectoryBrowser } from "./directory-browser";
+import { rememberedDirectoryKey } from "@/lib/directory-browser";
+import { EngineApiError } from "@/lib/engine/client";
+import type { DirectoryListing } from "@/lib/fs-dirs";
+import { buttonLabelled, click, flush, installTestDom, mount } from "@/lib/testing/dom";
+import { DirectoryBrowser, type DirectoryLister } from "./directory-browser";
 
-const source = readFileSync(new URL("./directory-browser.tsx", import.meta.url), "utf8");
+installTestDom();
+
+afterEach(() => {
+  window.localStorage.clear();
+  delete (window as { telarDesktop?: unknown }).telarDesktop;
+});
 
 const never = () => new Promise<never>(() => {});
 
-const render = (props: Partial<Parameters<typeof DirectoryBrowser>[0]> = {}) =>
-  renderToStaticMarkup(
-    <DirectoryBrowser actionLabel="Add" onSubmit={() => {}} onBack={() => {}} list={never} {...props} />,
-  );
+type Props = Partial<Parameters<typeof DirectoryBrowser>[0]>;
+
+const render = (props: Props = {}) =>
+  renderToStaticMarkup(<DirectoryBrowser actionLabel="Add" onSubmit={() => {}} onBack={() => {}} list={never} {...props} />);
+
+function listing(path: string, patch: Partial<DirectoryListing> = {}): DirectoryListing {
+  return {
+    path,
+    name: path.split("/").pop() ?? "",
+    parent: "/Users/me",
+    home: "/Users/me",
+    roots: [],
+    dirs: [
+      { name: "alpha", path: `${path}/alpha`, git: true, hidden: false },
+      { name: "beta", path: `${path}/beta`, git: false, hidden: false },
+    ],
+    truncated: false,
+    ...patch,
+  };
+}
+
+/** A lister that records every request and answers from `answer`. */
+function lister(answer: (input: Parameters<DirectoryLister>[0]) => DirectoryListing | Error = (input) => listing(input.path ?? "/Users/me/code")) {
+  const calls: Parameters<DirectoryLister>[0][] = [];
+  const list: DirectoryLister = async (input) => {
+    calls.push(input);
+    const result = answer(input);
+    if (result instanceof Error) throw result;
+    return result;
+  };
+  return { list, calls };
+}
+
+async function mountBrowser(props: Props = {}) {
+  const { host } = await mount(<DirectoryBrowser actionLabel="Add" onSubmit={() => {}} onBack={() => {}} list={never} {...props} />);
+  await flush(() => !host.textContent?.includes("Reading that folder…"));
+  return host;
+}
+
+async function key(target: Element, init: KeyboardEventInit) {
+  await act(async () => {
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  });
+  await flush();
+}
+
+const field = (host: Element) => host.querySelector('[aria-label="Folder path"]') as HTMLInputElement;
+const status = (host: Element) => host.querySelector('[role="status"]')?.textContent;
 
 test("the first paint is a field, a captioned list and a legend — never a blank panel", () => {
   const html = render();
   expect(html).toContain('aria-label="Folder path"');
   expect(html).toContain("Directories");
-  // The listing has not landed yet, and saying so beats an empty list that
-  // reads as "this folder has nothing in it".
   expect(html).toContain("Reading that folder…");
   expect(html).toContain("Navigate");
   expect(html).toContain("Up");
 });
 
 test("the button says what pressing it DOES, and names the key that does it", () => {
-  // "Add" for a folder that holds the project; "Clone here" for the parent the
-  // checkout will land in — the folder taken is not the same thing in the two
-  // flows, so one label for both would be wrong in one of them.
   expect(render({ actionLabel: "Add" })).toContain("Add");
   expect(render({ actionLabel: "Clone here" })).toContain("Clone here");
-  // ⌘Enter is not a key anybody guesses, and it is the one that finishes.
   expect(render()).toContain("⌘↵");
 });
 
-test("the highlight is announced, not just drawn", () => {
-  const html = render();
-  expect(html).toContain('role="combobox"');
-  expect(html).toContain('role="listbox"');
-  expect(html).toContain('aria-controls="directory-browser-entries"');
-  expect(source).toContain('role="option"');
-  expect(source).toContain("aria-selected={on}");
-  expect(source).toContain("aria-activedescendant");
+test("the highlight is announced, and the arrows move it", async () => {
+  const host = await mountBrowser({ list: lister().list });
+  const options = [...host.querySelectorAll('[role="option"]')];
+  expect(options.map((option) => option.textContent)).toEqual(["alpha", "beta"]);
+  expect(options.map((option) => option.getAttribute("aria-selected"))).toEqual(["true", "false"]);
+  expect(field(host).getAttribute("aria-activedescendant")).toBe("directory-browser-entry-0");
+
+  await key(field(host), { key: "ArrowDown" });
+  expect(field(host).getAttribute("aria-activedescendant")).toBe("directory-browser-entry-1");
+  expect(host.querySelector("#directory-browser-entry-1")?.getAttribute("aria-selected")).toBe("true");
 });
 
-test("the dotfolder toggle offers the OTHER state, and names its chord", () => {
-  const html = render();
-  // `hidden` is the engine's word for "they are shown", so the button that
-  // turns them on has to read "Show" — the inverted pair is an easy slip.
-  expect(html).toContain('aria-label="Show dotfolders"');
-  expect(html).toContain("Show dotfolders (⌘.)");
-  expect(source).toContain('aria-label={hidden ? "Hide dotfolders" : "Show dotfolders"}');
+test("the dotfolder toggle offers the OTHER state and asks for dotfolders", async () => {
+  expect(render()).toContain("Show dotfolders (⌘.)");
+  const { list, calls } = lister();
+  const host = await mountBrowser({ list });
+  await click(host.querySelector('[aria-label="Show dotfolders"]')!);
+  await flush(() => calls.length > 1);
+  expect(calls.at(-1)).toMatchObject({ hidden: true });
+  const toggle = host.querySelector('[aria-label="Hide dotfolders"]');
+  expect(toggle?.getAttribute("aria-pressed")).toBe("true");
 });
 
-test("the caller's sentence is shown, and its own refusal wins over it", () => {
-  // A clone that failed is the caller's to explain; a folder that would not
-  // list is this component's, and it is the more recent thing that happened.
-  expect(render({ notice: "That repository already exists there." })).toContain("That repository already exists there.");
-  expect(source).toContain("{error ?? notice ?? aside}");
+test("the caller's sentence is shown, and its own refusal wins over it", async () => {
+  const notice = "That repository already exists there.";
+  expect(render({ notice })).toContain(notice);
+  const host = await mountBrowser({ notice, list: lister(() => new EngineApiError("conflict", "That folder is outside what may be browsed.")).list });
+  expect(status(host)).toBe("That folder is outside what may be browsed.");
 });
 
-test("a pasted path is where the browser opens, and a missing one is explained", () => {
-  // Opened in preference to the remembered folder, and asked for with
-  // `nearest` so a file or a renamed folder opens its closest ancestor.
-  expect(source).toContain("startAt ?? (typeof window");
-  expect(source).toContain("...(nearest && target ? { nearest: true } : {})");
-  expect(source).toContain("so this is the nearest folder that exists.");
-  // A pasted path the listing refuses still falls back to home, but SAYS so —
-  // the reader is waiting for an answer about the path they gave.
-  expect(source).toContain("Showing home instead.");
-  // Browsing anywhere else is an exact request, and clears the sentence.
-  const open = source.slice(source.indexOf("const open = (path: string) => {"), source.indexOf("const showHidden"));
-  expect(open).toContain("setNearest(false);");
-  expect(open).toContain("setAside(undefined);");
+test("a pasted path opens at its nearest folder, says so, and browsing on clears it", async () => {
+  const { list, calls } = lister((input) => listing(input.path === "~/gone/file" ? "/Users/me/gone" : input.path!, input.nearest ? { missing: "~/gone/file" } : {}));
+  const host = await mountBrowser({ startAt: "~/gone/file", list });
+  expect(calls[0]).toEqual({ path: "~/gone/file", nearest: true });
+  expect(status(host)).toBe("Nothing to open at ~/gone/file, so this is the nearest folder that exists.");
+
+  await click(host.querySelector("#directory-browser-entry-0")!);
+  await flush(() => calls.length > 1);
+  expect(calls[1]).toEqual({ path: "/Users/me/gone/alpha" });
+  expect(status(host)).toBeUndefined();
 });
 
-test("a listing whose repository marks ran out of time says so", () => {
-  expect(source).toContain("listing?.gitPartial");
-  expect(source).toContain("not every repository is marked");
+test("a pasted path the listing refuses falls back to home and says why", async () => {
+  const { list, calls } = lister((input) => (input.path ? new EngineApiError("not_found", "No such folder.") : listing("/Users/me")));
+  const host = await mountBrowser({ startAt: "~/nowhere", list });
+  await flush(() => calls.length > 1);
+  expect(calls[1]).toEqual({});
+  expect(status(host)).toBe("No such folder. Showing home instead.");
+});
+
+test("a listing whose repository marks ran out of time says so", async () => {
+  const host = await mountBrowser({ list: lister((input) => listing(input.path ?? "/Users/me", { gitPartial: true })).list });
+  expect(host.textContent).toContain("not every repository is marked");
 });
 
 test("the busy state is the button's, not a spinner over the whole panel", () => {
@@ -97,52 +142,70 @@ test("the busy state is the button's, not a spinner over the whole panel", () =>
   expect(html).toContain("disabled");
 });
 
-/* ─── what only a browser can decide ─────────────────────────────────────── */
-
-test("the last directory is remembered per host, and a stale one is not a dead browser", () => {
-  expect(source).toContain("remembered(hostId)");
-  expect(source).toContain("remember(hostId, answer.path)");
-  // A remembered folder that has since been deleted falls back to home ONCE,
-  // rather than opening every visit on a refusal.
-  expect(source).toContain("fellBack.current = true;");
-  expect(source).toContain("setTarget(undefined);");
-  // localStorage throws outright in some privacy modes, which is not a reason
-  // to fail to draw a browser.
-  expect(source).toContain("window.localStorage.getItem");
-  expect(/catch\s*\{\s*return undefined;/.test(source)).toBe(true);
+test("the last directory is remembered per host", async () => {
+  window.localStorage.setItem(rememberedDirectoryKey("studio"), "/Users/me/work");
+  const { list, calls } = lister();
+  await mountBrowser({ hostId: "studio", list });
+  expect(calls[0]).toEqual({ path: "/Users/me/work" });
+  expect(window.localStorage.getItem(rememberedDirectoryKey("studio"))).toBe("/Users/me/work");
+  expect(window.localStorage.getItem(rememberedDirectoryKey(undefined))).toBeNull();
 });
 
-test("Open in Finder is a secondary link, desktop-only, and never for another Mac", () => {
-  // Revealing a same-named path on THIS Mac would show somebody the wrong
-  // folder — the rule lib/workspace-open.ts already states for a session.
-  expect(source).toContain("const here = !hostId || hostId === LOCAL_HOST_ID;");
-  expect(source).toContain("Boolean(bridge?.reveal) && here");
-  expect(source).toContain("Open in Finder");
-  // A link, not a button beside the primary one: it chooses nothing.
-  expect(source).toContain("underline underline-offset-2");
-  // And it is absent in a browser tab rather than greyed — a promise the web
-  // cannot keep, restated on every visit.
-  expect(render()).not.toContain("Open in Finder");
+test("a remembered folder that has gone opens home once, with nothing to say", async () => {
+  window.localStorage.setItem(rememberedDirectoryKey(undefined), "/Users/me/deleted");
+  const { list, calls } = lister((input) => (input.path ? new EngineApiError("not_found", "No such folder.") : listing("/Users/me")));
+  const host = await mountBrowser({ list });
+  await flush(() => calls.length > 1);
+  expect(calls).toEqual([{ path: "/Users/me/deleted" }, {}]);
+  expect(status(host)).toBeUndefined();
+  expect(window.localStorage.getItem(rememberedDirectoryKey(undefined))).toBe("/Users/me");
 });
 
-test("the native picker is offered only when the engine is unreachable", () => {
-  // The listing comes over HTTP, so no adapter means no browser at all —
-  // while `chooseDirectory` goes through the shell's own IPC and still works.
-  expect(source).toContain('code === "engine_unavailable"');
-  expect(source).toContain("Choose a folder with the system picker instead");
-  expect(render()).not.toContain("Choose a folder with the system picker instead");
+test("a storage that throws is not a reason to fail to draw", async () => {
+  const getItem = Storage.prototype.getItem;
+  Storage.prototype.getItem = () => {
+    throw new Error("denied");
+  };
+  try {
+    const { list, calls } = lister();
+    const host = await mountBrowser({ list });
+    expect(calls[0]).toEqual({});
+    expect(host.querySelectorAll('[role="option"]').length).toBe(2);
+  } finally {
+    Storage.prototype.getItem = getItem;
+  }
 });
 
-test("the fetch sets no state synchronously, which this app's lint rule refuses", () => {
-  // A `setLoading(true)` in the effect body cascades a second render on every
-  // listing; the spinner is turned on by whatever changed the target.
-  const effect = source.slice(source.indexOf("useEffect(() => {"), source.indexOf("const entries ="));
-  expect(effect).not.toContain("setLoading(true);\n    void list");
-  expect(source).toContain("const showHidden = (next: boolean) => {");
+test("Open in Finder reveals the listed folder, desktop-only, and never for another Mac", async () => {
+  const revealed: string[] = [];
+  (window as { telarDesktop?: unknown }).telarDesktop = { workspace: { reveal: async (path: string) => void revealed.push(path) } };
+  const local = await mountBrowser({ list: lister().list });
+  await click(buttonLabelled("Open in Finder", local));
+  expect(revealed).toEqual(["/Users/me/code"]);
+
+  const remote = await mountBrowser({ hostId: "studio", list: lister().list });
+  expect(buttonLabelled("Open in Finder", remote)).toBeUndefined();
+
+  delete (window as { telarDesktop?: unknown }).telarDesktop;
+  const tab = await mountBrowser({ list: lister().list });
+  expect(buttonLabelled("Open in Finder", tab)).toBeUndefined();
 });
 
-test("the keys are caught for the whole page, because clicking a row moves focus", () => {
-  // ⌘Enter has to keep working from a row's button, so the handler is on a
-  // `display: contents` wrapper rather than on the field alone.
-  expect(source).toContain('<div className="contents" onKeyDown={onKeyDown}>');
+test("the native picker is offered only when the engine is unreachable", async () => {
+  const offer = "Choose a folder with the system picker instead";
+  let fellBack = 0;
+  const onFallback = () => void (fellBack += 1);
+  const refused = await mountBrowser({ onFallback, list: lister(() => new EngineApiError("conflict", "No.")).list });
+  expect(buttonLabelled(offer, refused)).toBeUndefined();
+
+  const down = await mountBrowser({ onFallback, list: lister(() => new EngineApiError("engine_unavailable", "The engine is not running.")).list });
+  await click(buttonLabelled(offer, down));
+  expect(fellBack).toBe(1);
+});
+
+test("⌘Enter takes the folder being shown, even from a row's button", async () => {
+  const submitted: string[] = [];
+  const host = await mountBrowser({ onSubmit: (path) => void submitted.push(path), list: lister().list });
+  await key(host.querySelector("#directory-browser-entry-1")!, { key: "Enter", metaKey: true });
+  expect(submitted).toEqual(["/Users/me/code"]);
 });

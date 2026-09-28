@@ -1,32 +1,27 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { act, useState } from "react";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { buttonLabelled, click, flush, installTestDom, mount, stubFetch, type Route } from "@/lib/testing/dom";
+import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
+import { clearField, typeInto } from "@/lib/testing/type-into";
 import {
   cloneRequest,
   folderName,
   matchTargets,
   pathRequest,
   PROJECT_SOURCES,
+  ProjectPalette,
+  ProjectPalettePages,
   QUICK_PICK_LIMIT,
   sourceRows,
   targetPlace,
   type NewConversationTarget,
+  type PalettePage,
 } from "./project-palette";
 
-/**
- * THE PALETTE'S RULES, and the two halves they live in.
- *
- * `matchTargets`, `sourceRows` and `cloneRequest` are the whole of what typing
- * does, so they are exercised directly rather than through a render — the same
- * shape `lib/`-side logic gets everywhere else here. The KEYBOARD cannot be
- * driven by a static render (and the dialog renders through a portal, so there
- * is no markup to assert on either), so the parts that only exist after a
- * keystroke are pinned against source. settings-search-nav.test.tsx did the
- * same until #760 and is now mounted and driven with lib/testing/type-into.ts —
- * the way out for these pins too.
- */
-const source = readFileSync(new URL("./project-palette.tsx", import.meta.url), "utf8");
-const sidebar = readFileSync(new URL("./app-sidebar.tsx", import.meta.url), "utf8");
+installTestDom();
+afterEach(() => window.localStorage.clear());
 
 const targets: NewConversationTarget[] = [
   { id: "project_a", name: "Telar", root: "/Users/someone/code/telar" },
@@ -34,114 +29,202 @@ const targets: NewConversationTarget[] = [
   { id: "project_c", name: "Telar", hostId: "host_mini", hostName: "mini" },
 ];
 
+const listing = (path: string) => ({ path, name: folderName(path), parent: "/", home: "/Users/me", dirs: [] });
+
+/** `stubFetch`, plus every URL asked for (query string included) and paths that fail to connect. */
+function engine(routes: Record<string, Route>, unreachable: string[] = []) {
+  const calls = stubFetch(routes);
+  const urls: string[] = [];
+  const stubbed = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    urls.push(`${init?.method ?? "GET"} ${String(input)}`);
+    if (unreachable.some((path) => String(input).startsWith(path))) throw new TypeError("fetch failed");
+    return stubbed(input, init);
+  }) as typeof fetch;
+  return { calls, urls };
+}
+
+async function openPalette(props: { page?: PalettePage; targets?: NewConversationTarget[] } = {}) {
+  const log: string[] = [];
+  const chosen: NewConversationTarget[] = [];
+  await mount(
+    <ProjectPalette
+      open
+      {...(props.page ? { page: props.page } : {})}
+      targets={props.targets ?? targets}
+      onOpenChange={(next) => log.push(`open:${next}`)}
+      onChoose={(target) => (log.push(`choose:${target.id}`), chosen.push(target))}
+      onRegistered={() => log.push("registered")}
+    />,
+  );
+  await flush();
+  return { log, chosen };
+}
+
+const field = () => document.querySelector<HTMLInputElement>('[role="combobox"]')!;
+const options = () => [...document.querySelectorAll('[role="option"]')];
+const selected = () => document.querySelector('[role="option"][aria-selected="true"]')?.textContent ?? "";
+const page = () => document.body.textContent ?? "";
+
+async function key(init: KeyboardEventInit, target: Element = field()) {
+  await act(async () => {
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  });
+  await flush();
+}
+
 test("a blank query is every project, not none", () => {
   expect(matchTargets(targets, "").length).toBe(3);
   expect(matchTargets(targets, "   ").length).toBe(3);
 });
 
 test("the row's sub-line names the machine and then the path, in that order", () => {
-  // The kind is SAID rather than implied by the absence of a chip two columns
-  // away from the path it qualified.
   expect(targetPlace(targets[0])).toBe("Local · /Users/someone/code/telar");
-  // A paired Mac's project has no root in the rail's aggregate read, so the line
-  // is just the Mac — inventing "somewhere on mini" would be words for a fact.
+  // A paired Mac's project carries no root in the rail's read, so the line is just the Mac.
   expect(targetPlace(targets[2])).toBe("mini");
   expect(targetPlace({ id: "x", name: "x", hostName: "mini", root: "/code/x" })).toBe("mini · /code/x");
   expect(targetPlace({ id: "x", name: "x" })).toBe("Local");
 });
 
 test("anything the row shows is something you can type", () => {
-  // The row shows the name and that line — so both match, which is the rule that
-  // keeps a reader from typing what they can see and getting nothing.
   expect(matchTargets(targets, "notes").map((t) => t.id)).toEqual(["project_b"]);
   expect(matchTargets(targets, "mini").map((t) => t.id)).toEqual(["project_c"]);
   expect(matchTargets(targets, "code/notes").map((t) => t.id)).toEqual(["project_b"]);
-  // Including the word the row now says out loud.
   expect(matchTargets(targets, "local").map((t) => t.id)).toEqual(["project_a", "project_b"]);
-  // Case is not a filter.
   expect(matchTargets(targets, "TELAR").length).toBe(2);
   expect(matchTargets(targets, "nothing like this")).toEqual([]);
 });
 
-test("a paired Mac's projects are in the same list, told apart by the host", () => {
-  const both = matchTargets(targets, "telar");
-  expect(both.map((t) => t.hostName)).toEqual([undefined, "mini"]);
-  // Two Macs can register the same project id, so the row's key carries the
-  // host — otherwise React reconciles them into one row.
-  expect(source).toContain('key={`${target.hostId ?? "local"}:${target.id}`}');
+test("every project row is name · place · ⌘digit, and a paired Mac's same-named project is its own row", async () => {
+  await openPalette();
+  const rows = options();
+  expect(rows.map((row) => row.textContent)).toEqual([
+    "TTelarLocal · /Users/someone/code/telar⌘1",
+    "NNotesLocal · /Users/someone/code/notes⌘2",
+    "TTelarmini⌘3",
+    "Add a project…A folder on this Mac, or a repository to clone",
+  ]);
+  expect(document.querySelector('[role="listbox"]')?.getAttribute("aria-label")).toBe("Projects");
 });
 
-test("every project row is icon · name · place · ⌘digit", () => {
-  const row = source.slice(source.indexOf("{matches.map((target, row) => ("), source.indexOf("{/* THE DOOR TO THE OTHER PAGE"));
-  // The project's real mark, with all four of `ProjectAvatar`'s honesties behind
-  // it — a chosen glyph, the checkout's own icon, a tinted initial, a folder.
-  expect(row).toContain("<ProjectAvatar");
-  expect(row).toContain("title={target.name}");
-  expect(row).toContain("hint={targetPlace(target)}");
-  expect(row).toContain("key9: row + 1");
-  // The monitor chip beside the name is gone; the machine is on the sub-line.
-  expect(source).not.toContain("MonitorIcon");
-});
-
-test("the list is captioned, because the field says what you may type rather than what this is", () => {
-  expect(source).toContain('{page === "sources" ? "Sources" : "Projects"}');
-});
-
-test("⌘1..⌘9 take the first nine rows AS FILTERED", () => {
+test("⌘1..⌘9 take the first nine rows AS FILTERED", async () => {
   expect(QUICK_PICK_LIMIT).toBe(9);
-  // The number is the row's place in front of the reader, not its place in an
-  // unfiltered registry — so the key resolves through `take`, which indexes the
-  // page's own drawn rows.
-  expect(source).toContain("take(Number(event.key) - 1);");
-  expect(source).toContain("row < QUICK_PICK_LIMIT ? { key9: row + 1 }");
+  const { chosen } = await openPalette();
+  await typeInto(field(), "notes");
+  expect(options()[0]?.textContent).toContain("⌘1");
+  await key({ key: "1", metaKey: true });
+  expect(chosen.map((target) => target.id)).toEqual(["project_b"]);
 });
 
-test("the arrows wrap over whatever page is up, and Enter takes the highlighted row", () => {
-  expect(source).toContain("(current + delta + count) % count");
-  expect(source).toContain('if (event.key === "Enter") {');
-  expect(source).toContain("take(index);");
-  // One counter for both pages, so neither can drift out of the highlight's range.
-  expect(source).toContain('const count = page === "projects" ? matches.length + 1 : rows.length;');
+test("the arrows wrap, the highlight is announced, and Enter closes before it chooses", async () => {
+  const { log } = await openPalette();
+  expect(selected()).toContain("Telar");
+  await key({ key: "ArrowUp" });
+  expect(selected()).toContain("Add a project…");
+  await key({ key: "ArrowDown" });
+  await key({ key: "ArrowDown" });
+  expect(selected()).toContain("Notes");
+  expect(field().getAttribute("aria-activedescendant")).toBe("project-palette-projects-1");
+  await key({ key: "Enter" });
+  expect(log).toEqual(["open:false", "choose:project_b"]);
 });
 
-test("an IME's Enter commits a candidate rather than choosing a project", () => {
-  expect(source).toContain("composing.current || event.nativeEvent.isComposing || event.keyCode === 229");
+test("the mouse and the arrows never disagree about what Enter would take", async () => {
+  const { chosen } = await openPalette();
+  await act(async () => {
+    options()[2]!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+  });
+  expect(selected()).toBe("TTelarmini⌘3");
+  await key({ key: "Enter" });
+  expect(chosen.map((target) => target.hostId)).toEqual(["host_mini"]);
 });
 
-test("the highlight is announced, not just drawn", () => {
-  expect(source).toContain('role="listbox"');
-  expect(source).toContain('role="option"');
-  expect(source).toContain("aria-selected={on}");
-  expect(source).toContain("aria-activedescendant");
+test("an IME's Enter commits a candidate rather than choosing a project", async () => {
+  const { chosen } = await openPalette();
+  await act(async () => {
+    field().dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  });
+  await key({ key: "Enter" });
+  expect(chosen).toEqual([]);
+  await act(async () => {
+    field().dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+  });
+  await key({ key: "Enter" });
+  expect(chosen.map((target) => target.id)).toEqual(["project_a"]);
 });
 
-test("the mouse and the arrows never disagree about what Enter would take", () => {
-  expect(source).toContain("onMouseMove={onHover}");
+test("the empty state tells an empty registry apart from an empty search", async () => {
+  await openPalette({ targets: [] });
+  expect(page()).toContain("No projects registered yet.");
 });
 
-test("choosing closes before it navigates, and opening starts from a blank query on the asked-for page", () => {
-  const choose = source.slice(source.indexOf("const choose ="));
-  expect(choose.slice(0, 220)).toContain("onClose()");
-  const fresh = source.slice(source.indexOf("if (open !== wasOpen) {"));
-  expect(fresh.slice(0, 260)).toContain("setPage(openOn);");
-  expect(fresh.slice(0, 260)).toContain('setQuery("");');
+test("a search that matches nothing says so", async () => {
+  await openPalette();
+  await typeInto(field(), "nothing like this");
+  expect(page()).toContain("No project matches that.");
 });
 
-test("focus is the browser's — never a focus() call, which kills the WebKit build", () => {
-  expect(source).toContain("autoFocus");
-  // The prose above the component names `.focus()` to explain the ban, so the
-  // check is for a real call — a ref or an element reached and focused.
-  expect(/\b(current|ref|input|element)\??\.focus\(\)/.test(source)).toBe(false);
+test("reopening starts from a blank query on the asked-for page", async () => {
+  let setOpen: (open: boolean) => void = () => {};
+  function Reopenable() {
+    const [open, set] = useState(true);
+    setOpen = set;
+    return <ProjectPalette open={open} page="sources" targets={targets} onOpenChange={set} onChoose={() => {}} onRegistered={() => {}} />;
+  }
+  await mount(<Reopenable />);
+  await click(document.querySelector('[aria-label="Back to projects"]')!);
+  await typeInto(field(), "notes");
+  await act(async () => setOpen(false));
+  await act(async () => setOpen(true));
+  await flush();
+  expect(field().value).toBe("");
+  expect(document.querySelector('[role="listbox"]')?.getAttribute("aria-label")).toBe("Sources");
 });
 
-test("the empty state tells an empty registry apart from an empty search", () => {
-  expect(source).toContain("No projects registered yet.");
-  expect(source).toContain("No project matches that.");
+test("the Projects page's last row walks to Sources, which always has a way back", async () => {
+  await openPalette();
+  expect(buttonLabelled("Back to projects")).toBeUndefined();
+  expect(page()).not.toContain("Backspace Back");
+  await key({ key: "ArrowUp" });
+  await key({ key: "Enter" });
+  expect(document.querySelector('[role="listbox"]')?.getAttribute("aria-label")).toBe("Sources");
+  expect(document.querySelector("h2")?.textContent).toBe("Add a project");
+  expect(page()).toContain("Backspace Back");
+  await click(document.querySelector('[aria-label="Back to projects"]')!);
+  expect(document.querySelector('[role="listbox"]')?.getAttribute("aria-label")).toBe("Projects");
+  expect(document.querySelector("h2")?.textContent).toBe("New conversation");
+});
+
+test("Backspace goes back only on an empty field", async () => {
+  await openPalette({ page: "sources" });
+  await typeInto(field(), "g");
+  await key({ key: "Backspace" });
+  expect(document.querySelector('[role="listbox"]')?.getAttribute("aria-label")).toBe("Sources");
+  await clearField(field());
+  await key({ key: "Backspace" });
+  expect(document.querySelector('[role="listbox"]')?.getAttribute("aria-label")).toBe("Projects");
+});
+
+test("an embedded Projects page backs out to whatever holds it", async () => {
+  let backed = 0;
+  await mount(
+    <Dialog open>
+      <DialogContent>
+        <ProjectPalettePages page="projects" targets={targets} onClose={() => {}} onChoose={() => {}} onRegistered={() => {}} onBack={() => (backed += 1)} />
+      </DialogContent>
+    </Dialog>,
+  );
+  await flush();
+  expect(page()).toContain("Backspace Back");
+  await key({ key: "Backspace" });
+  expect(backed).toBe(1);
+  await click(document.querySelector('[aria-label="Back"]')!);
+  expect(backed).toBe(2);
 });
 
 /* ─── the second page ─────────────────────────────────────────────────────── */
 
-test("Sources lists six rows, three of them chipped and inert", () => {
+test("Sources lists six rows, three of them chipped and inert", async () => {
   expect(PROJECT_SOURCES.map((row) => row.title)).toEqual([
     "Local folder",
     "Git URL",
@@ -150,12 +233,14 @@ test("Sources lists six rows, three of them chipped and inert", () => {
     "Bitbucket",
     "Forgejo / Gitea",
   ]);
-  // Listed rather than hidden: somebody looking for Bitbucket learns Telar knows
-  // the word and has not wired it up, instead of concluding it does not exist.
-  expect(PROJECT_SOURCES.filter((row) => row.setupRequired).map((row) => row.id)).toEqual(["azure", "bitbucket", "forgejo"]);
-  expect(source).toContain("Setup Required");
-  // And pressing one says so rather than being a dead key.
-  expect(source).toContain("is not set up yet.");
+  await openPalette({ page: "sources" });
+  const chipped = options().filter((row) => row.textContent?.includes("Setup Required"));
+  expect(chipped.map((row) => row.id)).toEqual(["project-palette-sources-3", "project-palette-sources-4", "project-palette-sources-5"]);
+  await click(options()[4]);
+  expect(document.querySelector('[role="status"]')?.textContent).toBe(
+    "Bitbucket is not set up yet. Clone it yourself and add it as a local folder.",
+  );
+  expect(options()).toHaveLength(6);
 });
 
 test("every Sources row is a title and a one-line sub-line", () => {
@@ -169,22 +254,17 @@ test("every Sources row is a title and a one-line sub-line", () => {
 test("the Sources field filters on anything the rows say", () => {
   expect(sourceRows("").length).toBe(PROJECT_SOURCES.length);
   expect(sourceRows("folder").map((row) => row.id)).toEqual(["local"]);
-  // The sub-line is searchable too, so typing what you can read works.
   expect(sourceRows("self-hosted").map((row) => row.id)).toEqual(["forgejo"]);
   expect(sourceRows("nothing like this")).toEqual([]);
 });
 
 test("pasting a repository URL collapses the page to the one row that would act on it", () => {
-  // The reader has already said what they want; offering five other sources to
-  // arrow past is asking the question again.
   const github = sourceRows("https://github.com/owner/repo.git");
   expect(github.map((row) => row.id)).toEqual(["github"]);
   expect(github[0].hint).toBe("Clone https://github.com/owner/repo.git");
-
   expect(sourceRows("git@gitlab.com:owner/repo.git").map((row) => row.id)).toEqual(["git-url"]);
   expect(sourceRows("ssh://git@example.com/owner/repo.git").map((row) => row.id)).toEqual(["git-url"]);
-  // `owner/repo` is GitHub's shorthand, and the ENGINE expands it — this side
-  // only decides which row to draw.
+  // `owner/repo` is GitHub's shorthand; the engine expands it, this only picks the row.
   expect(sourceRows("NovarixHQ/Telar").map((row) => row.id)).toEqual(["github"]);
   expect(sourceRows("NovarixHQ/Telar")[0].hint).toBe("Clone NovarixHQ/Telar");
 });
@@ -193,33 +273,25 @@ test("ordinary words are not mistaken for URLs", () => {
   expect(cloneRequest("github")).toBeUndefined();
   expect(cloneRequest("local folder")).toBeUndefined();
   expect(cloneRequest("")).toBeUndefined();
-  // A path is not a URL: it would be a local folder, and that row has a picker.
   expect(cloneRequest("/Users/someone/code/telar")).toBeUndefined();
 });
 
 test("a pasted folder path collapses the page to Local folder instead of matching nothing", () => {
-  // The bug: a path fell through to the title filter and the page said "No
-  // source matches that" to the most direct answer a person can give.
   const drive = "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/[01] Work/repo";
   for (const pasted of [drive, "~/code/telar", "~", `file://${encodeURI(drive)}`]) {
-    const rows = sourceRows(pasted);
-    expect(rows.map((row) => row.id)).toEqual(["local"]);
+    expect(sourceRows(pasted).map((row) => row.id)).toEqual(["local"]);
   }
   expect(sourceRows(drive)[0].hint).toBe(`Open ${drive}`);
-  // Spaces, `@` and brackets are a path, not an scp URL or a shorthand.
   expect(cloneRequest(drive)).toBeUndefined();
 });
 
 test("a path arrives in the shapes people copy it in", () => {
   const drive = "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/[01] Work/repo";
-  // Finder's Copy as Pathname and a shell both quote; a terminal copy ends in
-  // a newline.
   expect(pathRequest(`'${drive}'`)).toBe(drive);
   expect(pathRequest(`"${drive}"`)).toBe(drive);
   expect(pathRequest(`${drive}\n`)).toBe(drive);
   expect(pathRequest(`  "${drive}"\r\n`)).toBe(drive);
   expect(pathRequest("'~/code/telar'")).toBe("~/code/telar");
-  // `file://` URLs are percent-decoded, and `localhost` is this machine.
   expect(pathRequest("file:///Users/me/My%20Drive/%5B01%5D%20Work/repo")).toBe("/Users/me/My Drive/[01] Work/repo");
   expect(pathRequest("file://localhost/Users/me/code")).toBe("/Users/me/code");
   expect(pathRequest(`file://${encodeURI(drive)}\n`)).toBe(drive);
@@ -230,182 +302,122 @@ test("only a path is a path", () => {
   expect(pathRequest("folder")).toBeUndefined();
   expect(pathRequest("owner/repo")).toBeUndefined();
   expect(pathRequest("https://github.com/owner/repo")).toBeUndefined();
-  // Another account's home, and another machine's file URL, are not ours to open.
   expect(pathRequest("~root/x")).toBeUndefined();
   expect(pathRequest("file://server/share/repo")).toBeUndefined();
-  // Mismatched quotes are not a quoted path.
   expect(pathRequest("'/Users/me/code\"")).toBeUndefined();
-  // And the ordinary filter still works for words.
-  expect(sourceRows("folder").map((row) => row.id)).toEqual(["local"]);
 });
 
-test("choosing Local folder with a path in the field opens the browser AT it", () => {
-  expect(source).toContain("setStartAt(pathRequest(query));");
-  expect(source).toContain('{...(page === "local" && startAt ? { startAt } : {})}');
-  // A fresh palette forgets the last one's path.
-  expect(source).toContain("setStartAt(undefined);");
-  expect(source).toContain("paste a URL or folder path");
+/* ─── the pages a source row walks to ─────────────────────────────────────── */
+
+const registerRoutes = (gitignore: Route = () => ({ gitignore: {} })) => ({
+  "GET /api/fs": () => listing("/Users/me/code/telar"),
+  "POST /api/projects": (body: unknown) => ({ project: { id: "project_new", name: (body as { name: string }).name } }),
+  "POST /api/projects/clone": () => ({ project: { id: "project_new", name: "repo" } }),
+  "POST /api/projects/project_new/gitignore": gitignore,
+  "DELETE /api/projects/project_new/gitignore": () => ({ gitignore: { removed: [] } }),
 });
 
-test("a clone row with nothing to clone opens the URL page instead of scolding the reader", () => {
-  // It used to answer with a sentence telling you to go and type in the field
-  // you had just left — a dead Enter key dressed up as guidance. Now the row
-  // walks to a page with a field on it, which is T3's shape.
-  expect(source).toContain('go(clone ? "clone-parent" : "clone-url");');
-  expect(source).toContain("Enter a Git clone URL and press Enter to continue");
-  // And a URL already in the search field skips that page, because the reader
-  // has already answered the question.
-  expect(source).toContain("const clone = cloneRequest(query);");
+test("Local folder with a pasted path opens the browser at it, and Add registers it with Telar's files ignored", async () => {
+  const { calls, urls } = engine(registerRoutes());
+  let announced = 0;
+  const count = () => (announced += 1);
+  window.addEventListener(PROJECTS_CHANGED_EVENT, count);
+  const { log } = await openPalette({ page: "sources" });
+  await typeInto(field(), "'/Users/me/code/telar'");
+  expect(options().map((row) => row.textContent)).toEqual(["Local folderOpen /Users/me/code/telar"]);
+  await key({ key: "Enter" });
+  await flush(() => Boolean(buttonLabelled("Add⌘↵")));
+  expect(document.querySelector("h2")?.textContent).toBe("Choose a project folder");
+  expect(urls).toContain("GET /api/fs?path=%2FUsers%2Fme%2Fcode%2Ftelar&nearest=1");
+
+  await click(buttonLabelled("Add⌘↵"));
+  await flush(() => log.includes("registered"));
+  expect(calls.map((call) => call.route)).toEqual([
+    "GET /api/fs",
+    "POST /api/projects",
+    "POST /api/projects/project_new/gitignore",
+  ]);
+  expect(calls[1]!.body).toEqual({ name: "telar", root: "/Users/me/code/telar" });
+  expect(log).toEqual(["open:false", "registered"]);
+  window.removeEventListener(PROJECTS_CHANGED_EVENT, count);
+  expect(announced).toBe(1);
+  expect(page()).toContain("telar was added.");
+  expect(page()).toContain("Telar's files are ignored in its .gitignore.");
+
+  await click(buttonLabelled("Undo"));
+  await flush(() => page().includes("taken back out"));
+  expect(calls.at(-1)!.route).toBe("DELETE /api/projects/project_new/gitignore");
+  expect(buttonLabelled("Undo")).toBeUndefined();
+  expect(log.at(-1)).toBe("registered");
 });
 
-test("Backspace goes back ONLY on an empty field", () => {
-  // The field is the title, so Backspace is a text key first — taking it while
-  // somebody deletes a typo would throw their page away mid-word. The rule
-  // itself is `paletteBack`, shared with the command palette that embeds these
-  // pages, and pinned in lib/command-palette.test.ts.
-  expect(source).toContain('if (event.key === "Backspace" && paletteBack(list, query, backRoot)) {');
-  expect(source).toContain("goBack();");
+test("a gitignore that cannot be written leaves the project registered and says so", async () => {
+  engine(
+    registerRoutes(() => {
+      throw new Error("read-only");
+    }),
+  );
+  const { log } = await openPalette({ page: "sources" });
+  await key({ key: "Enter" });
+  await flush(() => Boolean(buttonLabelled("Add⌘↵")));
+  await click(buttonLabelled("Add⌘↵"));
+  await flush(() => log.includes("registered"));
+  expect(page()).toContain("Telar's files could not be added to its .gitignore.");
+  expect(buttonLabelled("Undo")).toBeUndefined();
 });
 
-test("the legend names Backspace only on a page that has a back", () => {
-  expect(source).toContain("↑↓</kbd> Navigate");
-  expect(source).toContain("Enter</kbd> Select");
-  expect(source).toContain("Esc</kbd> Close");
-  const legend = source.slice(source.indexOf("Backspace</kbd> Back") - 200, source.indexOf("Backspace</kbd> Back"));
-  expect(legend).toContain('page === "sources" || onBack');
+test("a clone row with nothing to clone asks for the URL, refuses junk, then asks where to put it", async () => {
+  const { calls } = engine(registerRoutes());
+  const { log } = await openPalette({ page: "sources" });
+  await click(options()[1]);
+  expect(page()).toContain("Enter a Git clone URL and press Enter to continue");
+  const url = document.querySelector<HTMLInputElement>('[aria-label="Git clone URL"]')!;
+
+  await typeInto(url, "not a url");
+  await key({ key: "Enter" }, url);
+  expect(page()).toContain("That is not a clone URL.");
+
+  await clearField(url);
+  await typeInto(url, "owner/repo");
+  await key({ key: "Enter" }, url);
+  await flush(() => Boolean(buttonLabelled("Clone here⌘↵")));
+  expect(document.querySelector("h2")?.textContent).toBe("Choose where to clone");
+
+  await click(buttonLabelled("Clone here⌘↵"));
+  await flush(() => log.includes("registered"));
+  expect(calls.find((call) => call.route === "POST /api/projects/clone")?.body).toEqual({
+    url: "owner/repo",
+    parent: "/Users/me/code/telar",
+  });
 });
 
-test("the Sources page always has a back, and the Projects page has a door", () => {
-  // Both entry points converge here, and Projects is a legitimate place to
-  // arrive at from either — which is what `backRoot` says when there is nowhere
-  // further to go than these pages.
-  expect(source).toContain('const backRoot: PalettePage = onBack ? openOn : "projects";');
-  expect(source).toContain('backsTo === "projects" ? "Back to projects" : "Back"');
-  expect(source).toContain('title="Add a project…"');
-  // The door is a ROW, so the arrows reach it — `count` above already counts it.
-  expect(source).toContain('if (at >= matches.length) go("sources");');
+test("a URL already in the search field skips the URL page", async () => {
+  const { calls } = engine(registerRoutes());
+  const { log } = await openPalette({ page: "sources" });
+  await typeInto(field(), "https://github.com/owner/repo.git");
+  await key({ key: "Enter" });
+  await flush(() => Boolean(buttonLabelled("Clone here⌘↵")));
+  await click(buttonLabelled("Clone here⌘↵"));
+  await flush(() => log.includes("registered"));
+  expect(calls.find((call) => call.route === "POST /api/projects/clone")?.body).toEqual({
+    url: "https://github.com/owner/repo.git",
+    parent: "/Users/me/code/telar",
+  });
+});
+
+test("an unreachable engine offers the system picker, and what it picks is registered", async () => {
+  const { calls } = engine({ ...registerRoutes(), "POST /api/browse": () => ({ path: "/Users/me/picked/" }) }, ["/api/fs"]);
+  const { log } = await openPalette({ page: "sources" });
+  await key({ key: "Enter" });
+  const fallback = () => buttonLabelled("Choose a folder with the system picker instead");
+  await flush(() => Boolean(fallback()));
+  await click(fallback());
+  await flush(() => log.includes("registered"));
+  expect(calls.find((call) => call.route === "POST /api/projects")?.body).toEqual({ name: "picked", root: "/Users/me/picked" });
 });
 
 test("the folder name is what the project is called when nobody typed one", () => {
   expect(folderName("/Users/someone/code/telar")).toBe("telar");
   expect(folderName("/Users/someone/code/telar/")).toBe("telar");
   expect(folderName("C:\\code\\telar")).toBe("telar");
-});
-
-test("registering ignores Telar's files by default, and the toast carries the Undo", () => {
-  // It was a switch in the old dialog, off by default, which asked everybody a
-  // question about `.gitignore` on the way into their first project.
-  expect(source).toContain("await api.projectGitignore(project.id);");
-  expect(source).toContain("api\n      .undoProjectGitignore(toast.projectId)");
-  // The gitignore is a SECOND request and its failure is not the project's: the
-  // project stays registered and the toast says the rules did not land.
-  expect(source).toContain("Telar's files could not be added to its .gitignore.");
-  expect(source).toContain("announceProjectsChanged();");
-});
-
-test("the two ways in share one after-the-fact path", () => {
-  // Otherwise the clone flow and the folder flow drift on what they announce,
-  // what they ignore and what they report.
-  expect(source).toContain("await settle((await api.registerProject(");
-  expect(source).toContain("await settle((await api.cloneProject(");
-  // And the clone still asks where to put it rather than inventing a code
-  // folder — it is the browser page that asks now, not a Finder sheet.
-  expect(source).toContain('actionLabel={page === "local" ? "Add" : "Clone here"}');
-});
-
-/* ─── the three pages that replaced the Finder sheet ──────────────────────── */
-
-test("the source rows walk to a page instead of opening a native dialog", () => {
-  // `dialog.showOpenDialog` leaves the palette, has none of its keyboard, and
-  // from a browser tab or a paired Mac opens where nobody is looking.
-  expect(source).toContain("<DirectoryBrowser");
-  expect(source).toContain('go("local");');
-  // Every page the palette can be ON, including the ones you can only walk to.
-  expect(source).toContain('type Page = PalettePage | "local" | "clone-url" | "clone-parent";');
-});
-
-test("the exported page type still names only the two lists, for the command palette to reuse", () => {
-  // `page` is a prop the rail and ⌘N pass; the browser and the URL field are
-  // not destinations anything outside this file should be able to name.
-  expect(source).toContain('export type PalettePage = "projects" | "sources";');
-});
-
-test("the palette's own keys stop at the list pages", () => {
-  // Backspace goes UP in a folder browser. Left unguarded, the palette's rule
-  // would have sent it back to Projects instead.
-  expect(source).toContain('if (page !== "projects" && page !== "sources") return;');
-});
-
-test("every page is named for a screen reader, from a map rather than a five-deep ternary", () => {
-  expect(source).toContain("const PAGE_TITLES: Record<Page, string> = {");
-  expect(source).toContain("const PAGE_SENTENCES: Record<Page, string> = {");
-  // The name belongs to the PAGE, so it is drawn by the pages rather than set on
-  // the dialog around them: on the command palette that dialog is not even ours,
-  // and it outlives whichever of its pages is up.
-  expect(source).toContain('<DialogTitle className="sr-only">{PAGE_TITLES[page]}</DialogTitle>');
-  expect(source).toContain('<DialogDescription className="sr-only">{PAGE_SENTENCES[page]}</DialogDescription>');
-});
-
-test("the native picker survives as the fallback for an unreachable engine", () => {
-  // The listing crosses HTTP; `chooseDirectory` goes through the shell's own
-  // IPC and keeps working when the adapter does not.
-  expect(source).toContain("const pickWithSystem = (title: string, then: (path: string) => void) => {");
-  expect(source).toContain("onFallback={() =>");
-  expect(source).toContain('"Choose a project folder for Telar"');
-  expect(source).toContain('"Choose the folder to clone into"');
-});
-
-test("the clone URL outlives the page that asked for it", () => {
-  // Two pages: one asks for the URL, the next picks the parent. A URL held on
-  // the first would be gone by the time the clone runs.
-  expect(source).toContain("const [cloneUrl, setCloneUrl] = useState<string>();");
-  expect(source).toContain("api.cloneProject({ url: cloneUrl, parent })");
-  // And a fresh opening does not carry the last one's URL.
-  const fresh = source.slice(source.indexOf("if (open !== wasOpen) {"));
-  expect(fresh.slice(0, 320)).toContain("setCloneUrl(undefined);");
-});
-
-test("the URL page refuses junk with a sentence rather than walking on", () => {
-  expect(source).toContain("That is not a clone URL.");
-  expect(source).toContain("const takeCloneUrl = (typed: string) => {");
-});
-
-/* ─── the rail ────────────────────────────────────────────────────────────── */
-
-test("the rail has one New-conversation control, and ⌘N opens the same thing", () => {
-  // It used to be two: a plain button, and — only with a Mac paired — a menu.
-  // Both now go through `newConversation`, which is the single place that
-  // decides between the palette and a canvas — and since #402 the button asks
-  // for it by pressing the command rather than calling it.
-  expect(sidebar).toContain('onClick={() => run("new-conversation")}');
-  expect(sidebar).toContain('"new-conversation": () => newConversation(),');
-});
-
-test("a registry of one skips the palette rather than asking a question with one answer", () => {
-  // A search field over a list of one row, to be told what the cockpit already
-  // knew. The palette earns itself once there are two places to go.
-  expect(sidebar).toContain("const soleTarget = pickerTargets.length === 1 ? pickerTargets[0] : undefined;");
-  const decide = sidebar.slice(sidebar.indexOf("const newConversation ="));
-  expect(decide.slice(0, 280)).toContain("if (soleTarget) startSession(");
-  expect(decide.slice(0, 280)).toContain('else openPalette("projects");');
-});
-
-test("the palette is offered every project the rail already reads, this Mac's first", () => {
-  const list = sidebar.slice(sidebar.indexOf("const pickerTargets"));
-  expect(list.indexOf("projects.map")).toBeLessThan(list.indexOf("remoteProjects.map"));
-  // And a chosen row opens that project's canvas on ITS Mac, host and all.
-  expect(sidebar).toContain("startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })");
-});
-
-test("the register dialog is gone, and every way in is the palette's Sources page", () => {
-  // Two dialogs with two flags is how the rail ended up able to have a register
-  // form open behind a project picker. One piece of state still, now that the
-  // command palette's own list is a third page of the same surface.
-  expect(sidebar).not.toContain("RegisterProjectDialog");
-  // `asked` joins `open` on every path in — see command-palette.test.tsx: the
-  // palette is a chunk of its own now, and the rail only mounts it once one of
-  // these has fired (#492).
-  expect(sidebar).toContain('const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, asked: true, page, query: seed });');
-  expect(sidebar).toContain('onClick={() => openPalette("sources")}');
-  expect(sidebar).toContain('"add-project": () => openPalette("sources"),');
 });
