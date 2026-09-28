@@ -71,7 +71,7 @@ import { BUNDLED_RESERVATIONS, externalPluginsDir, loadInstalledPlugins, type Lo
 import { externalPlugin, externalToolModule, isExternalToolModule } from "./plugins/external/module";
 import { PluginHost } from "./plugins/host";
 import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type PluginScopedRoute } from "./plugins/routes";
-import { setPluginReadTools } from "./driver";
+import { setPluginReadTools } from "./drivers/claude";
 import { createRunMount } from "./run/mount";
 import { RunError } from "./run/types";
 import { maybeRetitleSession, runStructuredForPolicy } from "./domains/providers";

@@ -18,7 +18,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { EngineClient, parsePluginPanelView } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { requestKindForTool } from "../src/driver";
+import { requestKindForTool } from "../src/drivers/claude";
 import { loadInstalledPlugins } from "../src/plugins/external/manifest";
 import { externalMeta, externalToolModule } from "../src/plugins/external/module";
 import { ExternalPluginProcess, RESTART_BACKOFF_MS, type PluginChild, type PluginTimers } from "../src/plugins/external/process";

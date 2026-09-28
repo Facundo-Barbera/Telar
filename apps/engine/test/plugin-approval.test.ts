@@ -16,7 +16,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { codexApprovalRequest, MCP_ELICITATION } from "../src/drivers/codex";
-import { requestKindForTool, setPluginReadTools } from "../src/driver";
+import { requestKindForTool, setPluginReadTools } from "../src/drivers/claude";
 import { HOST_RATIFIED_READ_TOOLS, ratifiedReadTools } from "../src/plugins/policy";
 
 /** The default the module boots with, restored after any test that installs. */

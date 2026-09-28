@@ -1,7 +1,7 @@
 import { EngineClientError, type WorkerClaim, type WorkerTurnFailure } from "@telar/engine-client";
 import { collectTelarWall, telarWall, type TelarCapabilities, type TelarSocketLease, type TelarToolSocket } from "../telar-socket";
 import type { BrowserSocketLease, BrowserToolSocket } from "../domains/browser";
-import { RateLimitedError } from "../driver";
+import { RateLimitedError } from "../drivers/claude";
 import { ProviderUnavailableError, type DriverResult, type DriverRun, type DriverSessionHooks, type ProviderTurnBinding } from "../drivers";
 import { providerProcessEnv } from "../domains/providers";
 import { framedTurnInput, SteerMailbox, withTurnNotes } from "../domains/turns";

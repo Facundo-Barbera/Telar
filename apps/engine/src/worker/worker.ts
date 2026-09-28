@@ -2,7 +2,7 @@ import type { ProviderDriverKind, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError } from "@telar/engine-client";
 import { createOnePasswordSecrets, type SecretsProvider } from "../domains/browser";
 import { ratifiedReadTools } from "../plugins/policy";
-import { setPluginReadTools } from "../driver";
+import { setPluginReadTools } from "../drivers/claude";
 import type { DriverRequestOutcome, TurnDriver } from "../drivers";
 import { defaultWorkerConcurrency } from "./concurrency";
 import { executeClaim } from "./execute";
