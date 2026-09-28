@@ -1,5 +1,4 @@
 import type { ComponentProps } from "react";
-import type { Session } from "@telar/engine-client";
 import type { RightPanel } from "@/features/panel";
 import type { useCockpitPanel } from "../hooks/use-cockpit-panel";
 import type { useComposerDraft } from "../hooks/use-composer-draft";
@@ -7,13 +6,11 @@ import type { useSessionBrowser } from "../hooks/use-session-browser";
 import type { useSessionSync } from "../hooks/use-session-sync";
 import type { useTranscriptModel } from "../hooks/use-transcript-model";
 
-/** Everything the cockpit hands its right panel, gathered from the hooks that own each piece. */
-export function rightPanelProps({ open, hostId, sessionId, projectId, session, sync, model, panel, browser, composer, enabledPlugins, pluginPanels }: {
+export function rightPanelProps({ open, hostId, sessionId, projectId, sync, model, panel, browser, composer, enabledPlugins, pluginPanels }: {
   open: boolean;
   hostId: string;
   sessionId: string | undefined;
   projectId: string | undefined;
-  session: Session | undefined;
   sync: ReturnType<typeof useSessionSync>;
   model: ReturnType<typeof useTranscriptModel>;
   panel: ReturnType<typeof useCockpitPanel>;
@@ -22,6 +19,7 @@ export function rightPanelProps({ open, hostId, sessionId, projectId, session, s
   enabledPlugins: readonly string[];
   pluginPanels: ComponentProps<typeof RightPanel>["pluginPanels"];
 }): ComponentProps<typeof RightPanel> {
+  const { session } = sync;
   const { active } = model;
   return {
     open,

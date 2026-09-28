@@ -84,7 +84,7 @@ export function SessionCockpit({
   const { active } = model;
   const settling = useSettling(hostId, sessionId, sync);
   const actions = useSessionActions(sessionId, sync);
-  const { submit, adoptConversation } = useSubmit({
+  const submit = useSubmit({
     hostId, sessionId, projectId, busy: Boolean(active), sync, composer, draft: draftConfig, browser, panel: panelState, actions, follow, setCreatedSessionId,
   });
   const headerMenu = useTitleMenu({ hostId, projectId, projectName, sessionId, sync, settling });
@@ -144,7 +144,7 @@ export function SessionCockpit({
         />
         <Composer
           {...composerProps({
-            fresh, solo, session, projectId, projectName, composer, draft: draftConfig, actions, settling, model, submit, adoptConversation, showPanelTab,
+            fresh, solo, session, projectId, projectName, composer, draft: draftConfig, actions, settling, model, submit, showPanelTab,
             // Not while a conversation is opening: a composer changing height would move the viewport again.
             compact: readingBack && transcriptLanded,
             contextNoticePercent: normaliseContextNoticePercent(providerInstance?.contextNoticePercent),
@@ -154,7 +154,7 @@ export function SessionCockpit({
       {panelPresence.mounted && (
         <RightPanel
           {...rightPanelProps({
-            open: panelPresence.shown, hostId, sessionId, projectId, session, sync, model, panel: panelState, browser, composer, enabledPlugins, pluginPanels,
+            open: panelPresence.shown, hostId, sessionId, projectId, sync, model, panel: panelState, browser, composer, enabledPlugins, pluginPanels,
           })}
         />
       )}
