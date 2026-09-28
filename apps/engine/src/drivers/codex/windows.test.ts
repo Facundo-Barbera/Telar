@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ProviderModel } from "@telar/engine-client";
-import { parseCodexWindows, withCodexLongRows } from "../src/codex/windows";
+import { parseCodexWindows, withCodexLongRows } from "./windows";
 
 const row = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => ({
   id,
@@ -15,7 +15,6 @@ const row = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => (
   ...extra,
 });
 
-// The shape `codex debug models` prints on codex-cli 0.157.0.
 const CATALOG = JSON.stringify({
   models: [
     { slug: "gpt-6-sol", context_window: 272000, max_context_window: 872000 },

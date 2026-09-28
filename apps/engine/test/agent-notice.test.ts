@@ -18,7 +18,7 @@ import { EngineStore } from "../src/state";
 import { agentNotice, INLINE_CHARS, inlineExcerpt, reportBack } from "../src/agent-notice";
 import { frameAgentMessage, frameAgentNotice, framedSteerText, framedTurnInput, frameWakeMessage, RELAY_RULE } from "../src/domains/turns/attribution";
 import { claudeNotificationContent } from "../src/driver";
-import { codexNotificationInstruction } from "../src/codex-driver";
+import { codexNotificationInstruction } from "../src/drivers/codex";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];

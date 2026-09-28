@@ -243,7 +243,7 @@ function runToCompletion(executable: string, args: string[], input: TextGenDrive
       resolve(undefined);
       return;
     }
-    // The exact spawn shape `codex/app-server.ts` uses — the tuple literal is
+    // The exact spawn shape `drivers/codex/app-server.ts` uses — the tuple literal is
     // what keeps the overload resolvable under BOTH tsconfigs that compile
     // this file (the engine's and the web app's embedded-worker build).
     const child = spawn(executable, args, {

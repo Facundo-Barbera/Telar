@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // A scripted stand-in for `codex app-server`, driven through a REAL subprocess
-// boundary by codex-driver.test.ts via CODEX_BIN.
+// boundary by drivers/codex tests via CODEX_BIN.
 //
 // COPIED FROM apps/web_old/lib/fixtures/fake-codex-app-server.mjs and extended.
 // The value carried over is the part that cannot be re-derived: every method

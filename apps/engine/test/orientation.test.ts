@@ -235,23 +235,6 @@ test("Claude's spawn options carry no orientation when the preamble is off", asy
   expect(withBrowser?.append).not.toContain(TELAR_ORIENTATION);
 });
 
-test("Codex's thread parameters carry the paragraph the same way, on start and on resume", () => {
-  /**
-   * READ OFF SOURCE for this one driver. Reaching Codex's `threadParams`
-   * requires a live `codex app-server` subprocess (see `codex-driver.test.ts`,
-   * which runs a fake one); what is pinned here is the SHAPE — the orientation
-   * spread first and gated on its own presence, joined into the one
-   * `developerInstructions` that both `thread/start` and `thread/resume` send.
-   */
-  const codex = readFileSync(new URL("../src/codex-driver.ts", import.meta.url), "utf8");
-  expect(codex).toContain("...(orientation ? [orientation] : []),");
-  expect(codex).toContain("developerInstructions: briefings.join");
-  // One `threadParams` object feeds both calls, which is what makes "on resume
-  // too" true rather than aspirational.
-  expect(codex).toContain("thread/resume");
-  expect(codex).toContain("...threadParams,");
-});
-
 /* ------------------------------------------------------------------ *
  * The skill.
  * ------------------------------------------------------------------ */

@@ -578,7 +578,7 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
         The two facts in it are still true and still worth writing down, so
         they live where they bite instead:
           · Both providers get this list — apps/engine/src/driver.ts for the
-            Agent SDK translation, apps/engine/src/codex-driver.ts for the
+            Agent SDK translation, apps/engine/src/drivers/codex/thread.ts for the
             thread/start overlay.
           · `spec.headers` is stored as written and returned verbatim on read,
             so a bearer token set through the API round-trips to any browser

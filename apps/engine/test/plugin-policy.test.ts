@@ -16,7 +16,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { canonicalToolName, TELAR_MCP_SERVER } from "@telar/engine-client";
-import { codexApprovalRequest, MCP_ELICITATION } from "../src/codex/items";
+import { codexApprovalRequest, MCP_ELICITATION } from "../src/drivers/codex";
 import { requestKindForTool, setPluginReadTools } from "../src/driver";
 import { HOST_RATIFIED_READ_TOOLS, ratifiedReadTools } from "../src/plugins/policy";
 import { latexMeta } from "../src/plugins/latex";

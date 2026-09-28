@@ -1,6 +1,6 @@
 /**
  * The transport to one `bridge.py` process: newline-delimited JSON-RPC over
- * stdio. A near copy of `codex/app-server.ts`, and the differences are the
+ * stdio. A near copy of `drivers/codex/app-server.ts`, and the differences are the
  * point:
  *
  *   - `write()` IS DRAIN-AWARE AND SERIALIZED. `notebook_run_all` posts many
