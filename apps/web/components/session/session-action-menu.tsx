@@ -111,7 +111,7 @@ export const dropdownSessionMenuParts: SessionMenuParts = {
   SubContent: ({ children }) => <DropdownMenuSubContent className="min-w-44">{children}</DropdownMenuSubContent>,
 };
 
-export const contextSessionMenuParts: SessionMenuParts = {
+const contextSessionMenuParts: SessionMenuParts = {
   Item: ({ children, disabled, variant, onClick, title }) => (
     <ContextMenuItem disabled={disabled} variant={variant} onClick={onClick} title={title}>
       {children}

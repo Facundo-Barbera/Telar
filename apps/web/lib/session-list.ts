@@ -404,7 +404,7 @@ export function lastActivityAt(session: Pick<SidebarSession, "updatedAt" | "acti
   return Math.max(session.updatedAt, session.activityAt ?? 0, session.lastTurnEndedAt ?? 0);
 }
 
-export const activeNewestFirst = (a: SidebarSession, b: SidebarSession) =>
+const activeNewestFirst = (a: SidebarSession, b: SidebarSession) =>
   lastActivityAt(b) - lastActivityAt(a) || createdNewestFirst(a, b);
 
 /**

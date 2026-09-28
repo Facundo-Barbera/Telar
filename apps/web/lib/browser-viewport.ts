@@ -120,7 +120,7 @@ export const VIEWPORT_ZOOMS: ReadonlyArray<{ key: ViewportZoom; label: string }>
 ];
 
 /** The largest scale at which the whole page fits the stage, capped at 1. */
-export function fitScale(viewport: ViewportSize, stage: { width: number; height: number }): number {
+function fitScale(viewport: ViewportSize, stage: { width: number; height: number }): number {
   return Math.min(1, stage.width / viewport.width, stage.height / viewport.height);
 }
 

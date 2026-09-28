@@ -60,7 +60,7 @@ export function parseFollowMode(raw: string | null): FollowMode {
   return raw === "detached" ? "detached" : "follow";
 }
 
-export function readFollowMode(): FollowMode {
+function readFollowMode(): FollowMode {
   try {
     return parseFollowMode(window.localStorage.getItem(MODE_KEY));
   } catch {
@@ -90,7 +90,7 @@ export function detachFromHost(): void {
   writeFollowMode("detached");
 }
 
-export function followHostAgain(): void {
+function followHostAgain(): void {
   // Forget the stamp too: "follow again" must wear the current publication
   // even when it is the same one this window applied before detaching.
   writeAppliedStamp(null);

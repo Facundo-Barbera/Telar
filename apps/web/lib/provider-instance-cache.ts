@@ -33,7 +33,7 @@ const api = createEngineApi();
 
 /** Same-window propagation, mirroring `composer-draft.ts`. `storage` does not
  *  fire in the tab that wrote, and settings and the cockpit are one document. */
-export const PROVIDER_INSTANCES_CHANGED_EVENT = "telar:provider-instances";
+const PROVIDER_INSTANCES_CHANGED_EVENT = "telar:provider-instances";
 
 export function announceProviderInstancesChanged(): void {
   if (typeof window === "undefined") return;
@@ -71,7 +71,7 @@ function readProviderInstances(): Promise<ProviderInstance[]> {
 
 /** Drop the copy so the next read goes to the engine. Exported for a test; the
  *  event above is how the app does it. */
-export function forgetProviderInstances(): void {
+function forgetProviderInstances(): void {
   cached = undefined;
 }
 

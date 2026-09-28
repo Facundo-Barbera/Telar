@@ -37,7 +37,7 @@ const MAX_DRAFT = 20_000;
  */
 export const DRAFTS_CHANGED_EVENT = "telar:drafts";
 
-export function announceDraftsChanged(): void {
+function announceDraftsChanged(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(DRAFTS_CHANGED_EVENT));
 }

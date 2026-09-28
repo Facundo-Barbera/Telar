@@ -87,11 +87,6 @@ export function activePanelTab<Kind extends string>(state: PanelTabState<Kind>):
   return state.activeTab === undefined ? undefined : findPanelTab(state, state.activeTab);
 }
 
-/** Every open instance of one kind, in strip order. */
-export function panelTabsOfKind<Kind extends string>(state: PanelTabState<Kind>, kind: Kind): PanelTabInstance<Kind>[] {
-  return state.tabs.filter((tab) => tab.kind === kind);
-}
-
 /** Put an instance the caller has already minted into the strip, focused. */
 export function addPanelTab<Kind extends string>(state: PanelTabState<Kind>, tab: PanelTabInstance<Kind>): PanelTabState<Kind> {
   return {

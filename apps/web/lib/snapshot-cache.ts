@@ -109,7 +109,7 @@ function run<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRe
 
 /** The browser's store. Absent (undefined) where IndexedDB is — private
  *  mode in some browsers, the server — so a caller can simply not cache. */
-export function browserSnapshotStore(): SnapshotStore | undefined {
+function browserSnapshotStore(): SnapshotStore | undefined {
   if (typeof indexedDB === "undefined") return undefined;
   return {
     read: (key) => run<CachedSession | undefined>("readonly", (store) => store.get(key) as IDBRequest<CachedSession | undefined>),

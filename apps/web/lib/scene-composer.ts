@@ -78,7 +78,6 @@ import {
   MAX_SCENE_GRADIENT_LAYERS,
   MAX_SCENE_LAYERS,
   parseScene as parseSceneJson,
-  parseSceneImages,
   parseSceneLayer as parseSceneLayerValue,
   SCENE_LIMITS,
   type CustomGradientSpec,
@@ -118,8 +117,8 @@ export const SCENE_IMAGES_KEY = "telar-backdrop-scene-images";
 
 /** Layer images are compressed HARDER than the single-image backdrop: several
  *  of them share one quota, and each is drawn at a fraction of the window. */
-export const SCENE_LAYER_EDGE = 1024;
-export const MAX_SCENE_IMAGE_BYTES = 700 * 1024;
+const SCENE_LAYER_EDGE = 1024;
+const MAX_SCENE_IMAGE_BYTES = 700 * 1024;
 
 export const DEFAULT_SCENE_BASE: string = GRADIENT_STARTERS[0]?.id ?? "aurora";
 
@@ -452,63 +451,6 @@ export function composeState(layers: readonly SceneLayer[], images: Record<strin
   return { image, size: size.join(", "), position: position.join(", "), repeat: repeat.join(", ") };
 }
 
-
-/* ------------------------------------------------------------------ storage */
-
-function readKey(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-/** Write, or put the previous value back and say no — storeBackdropImage's
- *  contract, for the same reason: a scene that half-saved is worse than one
- *  that refused, and the composer has a line to show. */
-function writeKey(key: string, value: string): boolean {
-  let previous: string | null = null;
-  try {
-    previous = window.localStorage.getItem(key);
-  } catch {
-    return false; // Private browsing: nothing can be stored at all.
-  }
-  try {
-    window.localStorage.setItem(key, value);
-    return true;
-  } catch {
-    try {
-      if (previous === null) window.localStorage.removeItem(key);
-      else window.localStorage.setItem(key, previous);
-    } catch {
-      // The restore can fail too; composeScene skipping missing images keeps
-      // the app coherent either way.
-    }
-    return false;
-  }
-}
-
-export function readScene(): Scene {
-  return parseScene(readKey(SCENE_KEY));
-}
-
-export function readSceneImages(): Record<string, string> {
-  return parseSceneImages(readKey(SCENE_IMAGES_KEY));
-}
-
-export function writeScene(scene: Scene): boolean {
-  return writeKey(SCENE_KEY, JSON.stringify(scene));
-}
-
-/** The big one — this is the write that actually meets the quota. */
-export function writeSceneImages(images: Record<string, string>): boolean {
-  return writeKey(SCENE_IMAGES_KEY, JSON.stringify(images));
-}
-
-/** Roughly what the map costs, for the composer's hint line. */
-export function sceneImagesBytes(images: Record<string, string>): number {
-  return Object.values(images).reduce((total, value) => total + dataUrlBytes(value), 0);
-}
 
 /* ------------------------------------------------- the canvas (DOM, thin) */
 

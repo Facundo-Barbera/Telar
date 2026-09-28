@@ -34,7 +34,7 @@ const DS_IO: JobIo = {
 };
 
 /** Polls the job; calls `onDone` once with the final read. */
-export function useJob(handle: JobHandle | undefined, onDone?: (job: DataScienceJob) => void, io: JobIo = DS_IO) {
+function useJob(handle: JobHandle | undefined, onDone?: (job: DataScienceJob) => void, io: JobIo = DS_IO) {
   const [job, setJob] = useState<DataScienceJob>();
   const [lines, setLines] = useState<string[]>([]);
   // The latest `onDone` without re-arming the poll: written in an effect, read by the tick.

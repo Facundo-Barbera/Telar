@@ -42,7 +42,7 @@ const api = createEngineApi();
 /** The permanent key a stored management key is filed under, derived from the
  *  label the way a login's routing key is — so nobody is asked to make a
  *  permanent decision about a string before the temporary one about a name. */
-export function suggestSourceId(label: string, taken: readonly string[]): string {
+function suggestSourceId(label: string, taken: readonly string[]): string {
   const slug = label
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")

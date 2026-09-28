@@ -282,7 +282,7 @@ export function BrowserProfilesSection() {
  * settings screen that could mint one would be a settings screen handing out a
  * camera at a distance.
  */
-export function SitePermissionsGroup() {
+function SitePermissionsGroup() {
   const [profiles, setProfiles] = useState<SitePermissionProfile[]>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();

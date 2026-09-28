@@ -112,7 +112,7 @@ export function modifierHeldSnapshot(): boolean {
 }
 
 /** The server has no keyboard, so nothing is held and hydration agrees. */
-export function serverModifierHeld(): boolean {
+function serverModifierHeld(): boolean {
   return false;
 }
 

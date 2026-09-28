@@ -24,10 +24,6 @@ import { cn } from "@/lib/utils";
  *  amber means. `none` tints nothing, which is the common case. */
 export type PanelTone = "none" | "active" | "attention" | "danger" | "done" | "info";
 
-export function Panel({ className, ...props }: ComponentProps<"section">) {
-  return <section className={cn("flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card", className)} {...props} />;
-}
-
 /**
  * The header bar.
  *
@@ -77,10 +73,6 @@ export function PanelHeader({
       {actions && <span className="ml-auto flex shrink-0 items-center gap-0.5">{actions}</span>}
     </div>
   );
-}
-
-export function PanelBody({ className, ...props }: ComponentProps<"div">) {
-  return <div className={cn("min-h-0 flex-1 overflow-y-auto", className)} {...props} />;
 }
 
 /**

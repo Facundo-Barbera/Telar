@@ -145,7 +145,7 @@ export type Frost = (typeof FROSTS)[number];
  */
 
 /** Display value → the percentage the CSS actually subtracts from opacity. */
-export function translucencyCss(level: number): string {
+function translucencyCss(level: number): string {
   return `${Math.round(level * 0.9)}%`;
 }
 
@@ -253,11 +253,6 @@ function writeAppearance(patch: Partial<Appearance>): void {
   for (const listener of listeners) listener();
 }
 
-/** The stored appearance, read outside React. */
-export function currentAppearance(): Appearance {
-  return readAppearance();
-}
-
 export function useAppearance(): { appearance: Appearance; setAppearance: (patch: Partial<Appearance>) => void } {
   const appearance = useSyncExternalStore(subscribe, readAppearance, () => DEFAULT_APPEARANCE);
   const setAppearance = useCallback((patch: Partial<Appearance>) => writeAppearance(patch), []);
@@ -310,7 +305,7 @@ export function applyAppearance(appearance: Appearance): void {
  * wearing a whole LOOK writes everything except this, and the window's own
  * property is never a side effect of trying a colour scheme.
  */
-export function applyWindowChrome(appearance: Appearance): void {
+function applyWindowChrome(appearance: Appearance): void {
   const root = document.documentElement;
   if (appearance.translucent) root.setAttribute("data-translucent", "");
   else root.removeAttribute("data-translucent");

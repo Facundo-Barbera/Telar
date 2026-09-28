@@ -62,8 +62,8 @@ import { forgetLegacyAppearance, migrateLegacyAppearance } from "./legacy-appear
 import { composeState, SCENE_PRESETS } from "./scene-composer";
 import { repairInk, STATE_INK, TINT_FLOOR, TINT_TONES, tintCost, type TintTone } from "./tint-separation";
 
-export const COMPOSITION_KEY = "telar-composition";
-export const COMPOSITION_IMAGES_KEY = "telar-composition-images";
+const COMPOSITION_KEY = "telar-composition";
+const COMPOSITION_IMAGES_KEY = "telar-composition-images";
 
 /** The COMPILED stylesheet, cached for the pre-paint init script — which must
  *  not need the compiler. Rewritten on every composition change. */
@@ -79,10 +79,6 @@ export const DEFAULT_COMPOSITION: Composition = {
   light: { base: DEFAULT_BASE_LIGHT, layers: [], overrides: {} },
   dark: { base: DEFAULT_BASE_DARK, layers: [], overrides: {} },
 };
-
-export function neutralHalf(mode: CompositionMode): ThemeHalf {
-  return mode === "light" ? TELAR_LIGHT : TELAR_DARK;
-}
 
 /* ------------------------------------------------------------ the compiler */
 

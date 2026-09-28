@@ -73,7 +73,7 @@ const api = createEngineApi();
  * this file knows that what a reader needs to be told is that something is
  * being worked in RIGHT NOW and that waiting is the answer.
  */
-export const LOCK_TEXT: Record<string, string> = {
+const LOCK_TEXT: Record<string, string> = {
   unreadable: "On a drive that is not connected. Nothing was read, so nothing is claimed about it.",
   "in-use": "A session is working in it right now. Removing it would take the directory an agent is writing in.",
   protected: "The repository's own checkout, or the one Telar is running from. Never removable.",
@@ -83,7 +83,7 @@ export const LOCK_TEXT: Record<string, string> = {
 /** WHY A ROW NEEDS THE NAME TYPED. One sentence per reason rather than one for
  *  "not safe": push your branch, commit your work, and go and look are three
  *  different errands. */
-export const FORCE_TEXT: Record<string, string> = {
+const FORCE_TEXT: Record<string, string> = {
   dirty: "has uncommitted changes",
   unmerged: "is not merged",
   unknown: "could not be checked — Telar did not get an answer from git",

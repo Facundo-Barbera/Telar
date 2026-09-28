@@ -49,7 +49,7 @@ export type SidebarPrefs = {
 // than being a micro-optimisation: useSyncExternalStore compares snapshots by
 // reference and re-renders until two agree, so a getSnapshot that minted a
 // fresh `{ width: null, collapsed: null }` on every call would spin forever.
-export const NO_SIDEBAR_PREFS: SidebarPrefs = { width: null, collapsed: null };
+const NO_SIDEBAR_PREFS: SidebarPrefs = { width: null, collapsed: null };
 
 // ── the pure half ───────────────────────────────────────────────────────────
 
@@ -71,7 +71,7 @@ export function clampSidebarWidth(width: number, minWidth: number, maxWidth: num
 // tracking and the very next frame that proposes something acceptable takes
 // effect. That is what makes a sidebar dragged past its limit draggable BACK
 // rather than stuck against it.
-export function resolveDragWidth(
+function resolveDragWidth(
   currentWidth: number,
   proposedWidth: number,
   minWidth: number,
@@ -123,7 +123,7 @@ export function keepsRoomForMain(
 // absent, and absent means the sidebar renders its default rather than
 // inheriting a broken length. Returning the shared empty record when nothing
 // survives keeps the snapshot referentially stable; see NO_SIDEBAR_PREFS.
-export function sanitizeSidebarPrefs(raw: unknown): SidebarPrefs {
+function sanitizeSidebarPrefs(raw: unknown): SidebarPrefs {
   if (!raw || typeof raw !== "object") return NO_SIDEBAR_PREFS;
   const r = raw as Record<string, unknown>;
   const width =
@@ -133,7 +133,7 @@ export function sanitizeSidebarPrefs(raw: unknown): SidebarPrefs {
   return { width, collapsed };
 }
 
-export function parseSidebarPrefs(raw: string | null): SidebarPrefs {
+function parseSidebarPrefs(raw: string | null): SidebarPrefs {
   if (!raw) return NO_SIDEBAR_PREFS;
   try {
     return sanitizeSidebarPrefs(JSON.parse(raw));
@@ -156,7 +156,7 @@ function emit() {
 
 // Hydrated lazily on first client read, so the module is inert when imported on
 // the server or under a test runner with no DOM.
-export function getSidebarPrefs(key: string | null): SidebarPrefs {
+function getSidebarPrefs(key: string | null): SidebarPrefs {
   if (!key || typeof window === "undefined") return NO_SIDEBAR_PREFS;
   const hit = cache.get(key);
   if (hit) return hit;

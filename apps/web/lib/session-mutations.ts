@@ -282,7 +282,7 @@ export async function closeRowTerminals({
   }
 }
 
-export async function patchFailureMessage(response: Response): Promise<string> {
+async function patchFailureMessage(response: Response): Promise<string> {
   try {
     const payload = (await response.json()) as { error?: { message?: string } } | null;
     if (payload?.error?.message) return payload.error.message;

@@ -194,10 +194,6 @@ export function draftProblems(draft: RunConfigurationDraft): DraftProblem[] {
   return problems;
 }
 
-export function draftIsSavable(draft: RunConfigurationDraft): boolean {
-  return draftProblems(draft).length === 0;
-}
-
 /**
  * THE LINE BUFFER LEFT HERE WITH THE `<pre>` (#198).
  *

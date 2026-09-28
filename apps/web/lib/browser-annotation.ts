@@ -67,7 +67,7 @@ export type AnnotationTool = (typeof ANNOTATION_TOOLS)[number];
 /** A drag this short is a CLICK that wandered, not a shape. Below it a
  *  rectangle or an arrow is dropped rather than left on the frame as a
  *  speck nobody can select to remove. */
-export const MIN_DRAG_PX = 4;
+const MIN_DRAG_PX = 4;
 
 export function emptyAnnotation(): Annotation {
   return { marks: [], seq: 0 };

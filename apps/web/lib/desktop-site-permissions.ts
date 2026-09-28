@@ -78,7 +78,7 @@ export function desktopSitePermissions(): SitePermissionsBridge | undefined {
 
 /** The word each kind goes by, everywhere. Deliberately the page's vocabulary
  *  ("location", not "geolocation") — it is what a person is being asked about. */
-export const PERMISSION_KIND_WORDS: Record<SitePermissionKind, string> = {
+const PERMISSION_KIND_WORDS: Record<SitePermissionKind, string> = {
   camera: "camera",
   microphone: "microphone",
   notifications: "notifications",

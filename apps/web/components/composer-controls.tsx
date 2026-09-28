@@ -2,7 +2,7 @@
 
 import { Fragment, forwardRef, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, Minimize2Icon, MoreHorizontalIcon, SearchIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
-import type { ModelCatalogue, ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
+import type { ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
 import { choiceOf, effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
 import { keepStarredVisible, orderByFavorite } from "@/lib/model-favorites";
@@ -285,7 +285,7 @@ export function reasoningPillLabel(
 
 /** The word that asks Claude Code to reason harder on one turn. It is a keyword
  *  the CLI reads in the message itself — there is no setting behind it. */
-export const ULTRATHINK = "ultrathink";
+const ULTRATHINK = "ultrathink";
 
 /** Whether a draft already carries the keyword, matched the way the CLI does. */
 export function hasUltrathink(draft: string): boolean {

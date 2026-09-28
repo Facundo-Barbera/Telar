@@ -33,7 +33,7 @@ const api = createEngineApi();
 /** Same-window propagation. Carries no payload on purpose: the notebook is the
  *  engine's, so every listener re-reads the engine's own answer rather than
  *  trusting whatever a writer happened to hold. */
-export const PROJECT_NOTES_CHANGED_EVENT = "telar:project-notes";
+const PROJECT_NOTES_CHANGED_EVENT = "telar:project-notes";
 const CHANGED = PROJECT_NOTES_CHANGED_EVENT;
 
 /** Say the notebook changed. Callers call this AFTER the engine accepted the

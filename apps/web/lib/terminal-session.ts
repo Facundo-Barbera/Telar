@@ -48,7 +48,7 @@ export type TerminalLike = {
  */
 const SHORT_COLON_TRUECOLOUR = /\x1b\[([0-9;:]*?)([345]8):2:(\d+):(\d+):(\d+)(?=[;m])/g;
 
-export function normaliseTruecolourSgr(data: string): string {
+function normaliseTruecolourSgr(data: string): string {
   if (!data.includes(":2:")) return data;
   return data.replace(SHORT_COLON_TRUECOLOUR, (_all, before: string, kind: string, r: string, g: string, b: string) => `\u001b[${before}${kind}:2::${r}:${g}:${b}`);
 }
@@ -59,7 +59,7 @@ export function normaliseTruecolourSgr(data: string): string {
  * that has no final byte yet and prepends it to the next chunk. Anything that
  * is not an unfinished `ESC [` goes through as it arrived.
  */
-export function splitTrailingCsi(data: string): { ready: string; pending: string } {
+function splitTrailingCsi(data: string): { ready: string; pending: string } {
   const esc = data.lastIndexOf("\u001b");
   if (esc === -1) return { ready: data, pending: "" };
   const tail = data.slice(esc);
@@ -101,7 +101,7 @@ function iipTerminator(text: string, from: number): { at: number; length: number
   return { at: st, length: 2 };
 }
 
-export function iipSizeFiller(): (data: string) => string {
+function iipSizeFiller(): (data: string) => string {
   let held = "";
   const complete = (sequence: string, end: { at: number; length: number }): string => {
     const colon = sequence.indexOf(":");

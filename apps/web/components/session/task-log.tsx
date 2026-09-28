@@ -22,7 +22,7 @@ import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, ter
 import { cn } from "@/lib/utils";
 
 /** How often a running task's log is asked for. */
-export const TASK_LOG_POLL_MS = 1000;
+const TASK_LOG_POLL_MS = 1000;
 /** Pages read back to back before yielding to the next tick — a log that grew
  *  by megabytes between two polls is caught up over a few ticks, not one. */
 const MAX_PAGES_PER_TICK = 8;

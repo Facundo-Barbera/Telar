@@ -98,7 +98,7 @@ export function receiptToSend(input: {
  * the way to another one. Short enough that nobody notices, long enough that
  * the answer was actually on screen.
  */
-export const RECEIPT_SETTLE_MS = 700;
+const RECEIPT_SETTLE_MS = 700;
 
 /**
  * Retry, but not forever: a receipt is worth almost nothing on its own, and a
@@ -127,7 +127,7 @@ export function receiptRetryDelayMs(attempt: number): number {
  */
 export type ReceiptIdentity = { sessionId: string; hostId: string };
 
-export function sameIdentity(left: ReceiptIdentity | undefined, right: ReceiptIdentity | undefined): boolean {
+function sameIdentity(left: ReceiptIdentity | undefined, right: ReceiptIdentity | undefined): boolean {
   return left !== undefined && right !== undefined && left.sessionId === right.sessionId && left.hostId === right.hostId;
 }
 

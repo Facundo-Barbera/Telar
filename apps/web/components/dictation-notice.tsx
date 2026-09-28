@@ -40,7 +40,7 @@ import { cn } from "@/lib/utils";
 /** Long enough to read a sentence and a half, short enough that nobody has to
  *  dismiss it. A second longer than the updater's four, because these sentences
  *  carry an instruction and its are three words of news. */
-export const DICTATION_NOTICE_MS = 6_000;
+const DICTATION_NOTICE_MS = 6_000;
 
 export function DictationNotice({
   error,
