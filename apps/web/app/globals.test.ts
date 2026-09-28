@@ -346,12 +346,6 @@ describe("the text scale", () => {
    * 10 → 0.625rem, 9 → 0.5625rem), so the sweep changed nothing about how the
    * app looks until the slider moves.
    */
-  /**
-   * `test-fixtures/` IS IN SCOPE for both guards below. A harness renders the
-   * real components for a visual test, so a size pinned in one is a size the
-   * snapshot then certifies — the fixture would go on asserting the drift it
-   * introduced.
-   */
   const corpus = ["app", "components", "lib", "test-fixtures"] as const;
 
   test("no component pins a font size in px", () => {

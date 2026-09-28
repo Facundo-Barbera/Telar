@@ -9,8 +9,7 @@
  * every chunk fully drained within 250ms of its own arrival — and the user's
  * verdict on the packaged build was "way too fast for the input rate": at 5–10
  * chars/s each chunk flashed out at 3–7× the true rate and then the screen sat
- * dead for most of every gap (measured in
- * test-fixtures/streaming-reveal/measure.mjs, which re-prints those numbers).
+ * dead for most of every gap.
  * So the deadline is no longer the pace; it is only the BOUND. Each frame:
  *
  *   sustained = arrival × clamp(backlog / reserve, drainSlack.min, drainSlack.max)
