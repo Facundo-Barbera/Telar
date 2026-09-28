@@ -46,6 +46,10 @@
       ],
       "ignore": [
         "test-fixtures/**"
+      ],
+      "ignoreDependencies": [
+        "electron-builder",
+        "debug"
       ]
     },
     "packages/engine-client": {
@@ -94,6 +98,8 @@
     ],
     "packages/engine-client/src/protocol/plugins.ts": [
       "duplicates"
-    ]
+    ],
+    "apps/desktop/{desktop-handoff-core,desktop-handoff,dev-update-core,dev-update,tailscale,update-watchdog,store-location,store-migrate}.js": ["exports"],
+    "apps/desktop/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": ["exports"]
   }
 }

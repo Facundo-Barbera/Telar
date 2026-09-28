@@ -69,10 +69,6 @@ function resolveServerJs() {
   );
 }
 
-function serverBindHost(home) {
-  return remoteFile.serverBindHost(home);
-}
-
 function seatHostHeader(url) {
   if (!attachHostHeader(session.defaultSession, { appUrl: url, token: HOST_TOKEN })) {
     console.error(`[telar-desktop] could not attach the host header for ${url}; the window falls back to its cookie.`);
@@ -103,7 +99,7 @@ function startServer(port, home, { execPath, env, onMessage, onExit }) {
     env: {
       ...env,
       PORT: String(port),
-      HOSTNAME: serverBindHost(home),
+      HOSTNAME: remoteFile.serverBindHost(home),
       TELAR_HOST_TOKEN: HOST_TOKEN,
       TELAR_HOST_CLIENT: app.getName(),
       NODE_ENV: "production",
@@ -164,7 +160,6 @@ module.exports = {
   getStablePort,
   seatHostHeader,
   seatHostCookie,
-  serverBindHost,
   startServer,
   sendToServer,
   stopServer,

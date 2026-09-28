@@ -210,4 +210,4 @@ function createTabStore(userDataDir, { fsImpl = fs, writeDelayMs = 150, setTimer
   };
 }
 
-module.exports = { createTabStore, serializeInventory, parseInventory, rememberableUrl, INVENTORY_VERSION, FILE_NAME };
+module.exports = { createTabStore, serializeInventory, parseInventory, rememberableUrl, INVENTORY_VERSION };

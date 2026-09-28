@@ -475,9 +475,6 @@ module.exports = {
   describeKinds,
   systemSettingsSentence,
   PERMISSION_KINDS,
-  GRANTED_WITHOUT_ASKING,
   PROMPT_TIMEOUT_MS,
-  KIND_WORDS,
   FILE_NAME,
-  STORE_VERSION,
 };

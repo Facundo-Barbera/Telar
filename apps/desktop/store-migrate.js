@@ -452,17 +452,10 @@ function deleteRetiredSubtrees(input, deps = {}) {
 }
 
 module.exports = {
-  FREE_SPACE_MARGIN,
   STAGING_PREFIX,
-  RETIRED_INFIX,
-  stagingPath,
-  retiredPath,
   preflight,
-  measure,
   migrateStore,
   repairMovedWorktrees,
   retiredSubtrees,
   deleteRetiredSubtrees,
-  walkTree,
-  format,
 };

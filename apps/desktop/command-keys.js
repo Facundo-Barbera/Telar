@@ -254,22 +254,15 @@ function menuCommands(keymap, menu) {
   }));
 }
 
-function commandById(id) {
-  return COMMANDS.find((command) => command.id === id);
-}
-
 module.exports = {
   COMMANDS,
   chordForEvent,
-  chordsForEvent,
   claimedCommandIds,
-  commandById,
   defaultKeymap,
   keymapConflicts,
   keymapOverrides,
   menuCommands,
   mergeKeymap,
   normalizeChord,
-  normalizeKeyToken,
   resolveCommandForEvent,
 };

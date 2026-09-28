@@ -413,10 +413,8 @@ exit 2
 module.exports = {
   LEGACY_BUNDLE_ID,
   NEW_BUNDLE_ID,
-  FEED_PREFIX,
   CHANNELS,
   CONFIRM_SECONDS,
-  LEGACY_LEFTOVERS,
   TCC_RESET_ARGS,
   readFeedUrl,
   manifestUrl,
@@ -426,7 +424,6 @@ module.exports = {
   parseTeam,
   readBundleId,
   runningTeam,
-  runAsync,
   verifyCandidate,
   planHandoff,
   download,

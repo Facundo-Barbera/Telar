@@ -42,7 +42,6 @@ export type ViewportSizeLike = { width: number; height: number };
 
 export const VIEWPORT_PRESETS: ReadonlyArray<ViewportPreset>;
 export const VIEWPORT_PRESET_GROUPS: ReadonlyArray<{ key: ViewportPresetGroup; label: string }>;
-export const VIEWPORT_PRESET_ALIASES: Readonly<Record<ViewportPresetAlias, ViewportPresetEntryKey>>;
 /** Non-empty, so a zod enum can take it as-is. */
 export const VIEWPORT_PRESET_KEYS: readonly [ViewportPresetKey, ...ViewportPresetKey[]];
 

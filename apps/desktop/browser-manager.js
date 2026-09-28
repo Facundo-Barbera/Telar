@@ -12,8 +12,8 @@ const { installDownloadHandler } = require("./browser-downloads");
 const { VIEWPORT_PRESETS, presetOf } = require("./viewport-presets");
 const { CLOSED_BY_PERSON_MESSAGE, DEFER_MAX_MS, DEFER_POLL_MS, MAX_LIVE_VIEWS, RPC_TIMEOUT_MS, TAB_SELECT_CHORDS, createElectronView, electronSessionFor, errorResult, humanActiveOn, isReadTool, navigationFlag, okText, sleep, staleView, textOfResult, mixin } = require("./browser/shared");
 const { MAX_LOG_ITEMS, MAX_LOG_TEXT, renderConsole, renderNetwork, renderSnapshot } = require("./browser/render");
-const { DEFAULT_VIEWPORT, ZOOM_STEPS, fitViewport, resolveColorScheme, resolveViewport, resolveZoom, zoomStep } = require("./browser/viewport");
-const { SEARCH_URL, createExternalLinkPolicy, externalOpenTarget, looksLikeAddress, normalizeUrl } = require("./browser/urls");
+const { ZOOM_STEPS, fitViewport, resolveColorScheme, resolveViewport, resolveZoom, zoomStep } = require("./browser/viewport");
+const { createExternalLinkPolicy, externalOpenTarget, looksLikeAddress, normalizeUrl } = require("./browser/urls");
 const { keyChord } = require("./browser/page-input");
 
 class DesktopBrowserManager {
@@ -749,4 +749,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, keyChord, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, TAB_SELECT_CHORDS, resolveViewport, resolveZoom, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
+module.exports = { DesktopBrowserManager, managerForScope, keyChord, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, TAB_SELECT_CHORDS, resolveViewport, resolveZoom, fitViewport, zoomStep, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };

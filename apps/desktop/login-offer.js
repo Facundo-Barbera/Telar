@@ -140,6 +140,5 @@ module.exports = {
   offerKey,
   grantFromCapture,
   confirmationMatches,
-  GRANTABLE_FIELDS,
   OFFER_TTL_MS,
 };
