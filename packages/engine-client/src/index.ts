@@ -1,10 +1,12 @@
+import { appearanceClient } from "./appearance/client";
 import { notesClient } from "./notes/client";
 import type { EngineTransport } from "./platform/transport";
+import type { InboxPolicy, SidebarLayout } from "./settings/schema";
 import { promptsClient } from "./prompts/client";
 import { schedulesClient } from "./schedules/client";
+import { settingsClient } from "./settings/client";
 import { storageClient } from "./storage/client";
 import { usageClient } from "./usage/client";
-import { parsePublishedAppearance, type PublishedAppearance } from "./look";
 import { diffBaseQuery, filePatchQuery } from "./protocol/diff-query";
 import type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 import {
@@ -36,19 +38,12 @@ import {
   type GitignoreResult,
   type ComputerUseGrant,
   type ComputerUseStatus,
-  type AgentOrientation,
-  type InboxPolicy,
   type RememberedLogin,
-  type SessionDefaults,
-  type SessionDefaultsPatch,
   type CleanupPolicy,
   type CleanupState,
   type WorkspaceConfig,
   type ProjectWorkspaceOverrides,
   type ProjectWorkspaceView,
-  type SidebarLayout,
-  type SidebarMode,
-  type TextGenPolicy,
   type WorktreeMoveResult,
   type WorktreeInventory,
   type WorktreeReclaimItem,
@@ -153,10 +148,11 @@ export * from "./protocol";
 export * from "./notes/schema";
 export * from "./prompts/schema";
 export * from "./schedules/schema";
+export * from "./settings/schema";
 export * from "./storage/schema";
 export * from "./usage/schema";
 
-export * from "./look";
+export * from "./appearance/schema";
 
 export * from "./icons";
 
@@ -440,9 +436,11 @@ export { LOCAL_HOST_ID, type PublicHost } from "./hosts/schema";
 export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
 export interface EngineClient
-  extends Methods<typeof notesClient>,
+  extends Methods<typeof appearanceClient>,
+    Methods<typeof notesClient>,
     Methods<typeof promptsClient>,
     Methods<typeof schedulesClient>,
+    Methods<typeof settingsClient>,
     Methods<typeof storageClient>,
     Methods<typeof usageClient> {}
 
@@ -556,35 +554,10 @@ export class EngineClient implements EngineTransport {
     return this.request("GET", "/v2/health");
   }
 
-  async projectIcon(projectId: string, options: { format?: "png" } = {}): Promise<{ data: Uint8Array; contentType: string }> {
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/projects/${encodeURIComponent(projectId)}/icon${options.format ? `?format=${options.format}` : ""}`, {
-        method: "GET",
-        headers: { authorization: `Bearer ${this.discovery.token}` },
-      });
-    } catch {
-      throw new EngineClientError("engine_unavailable", "engine is unreachable");
-    }
-    if (!response.ok) {
-      let code: EngineErrorCode = "engine_unavailable";
-      let message = "engine request failed";
-      try {
-        const error = ((await response.json()) as EngineErrorBody | null)?.error;
-        if (error) ({ code, message } = error);
-      } catch {
-        // A non-JSON failure body keeps the defaults.
-      }
-      throw new EngineClientError(code, message, response.status);
-    }
-    return {
-      data: new Uint8Array(await response.arrayBuffer()),
-      contentType: response.headers.get("content-type") ?? "application/octet-stream",
-    };
+  projectIcon(projectId: string, options: { format?: "png" } = {}): Promise<{ data: Uint8Array; contentType: string }> {
+    return this.readBytes(`/v2/projects/${encodeURIComponent(projectId)}/icon${options.format ? `?format=${options.format}` : ""}`);
   }
 
-  /** The registered projects. `includeRemoved` also returns the put-away ones,
-   *  which carry `removedAt`; without it they are absent entirely. */
   listProjects(options: { includeRemoved?: boolean } = {}): Promise<{ projects: Project[] }> {
     return this.request("GET", options.includeRemoved ? "/v2/projects?includeRemoved=1" : "/v2/projects");
   }
@@ -720,39 +693,6 @@ export class EngineClient implements EngineTransport {
 
   /** The inbox's standing rule — see `InboxPolicy`. Environment-wide, so every
    *  client that reads this engine bands its list the same way. */
-  inboxPolicy(): Promise<{ inbox: InboxPolicy }> {
-    return this.request("GET", "/v2/inbox");
-  }
-
-  setInboxPolicy(patch: {
-    autoSettleAfterHours?: number | null;
-    /** The delegation grace — see `InboxPolicy`. `null` turns it off. */
-    settleDelegatedAfterHours?: number | null;
-    settledTerminalLimit?: number;
-  }): Promise<{ inbox: InboxPolicy }> {
-    return this.request("PATCH", "/v2/inbox", patch);
-  }
-
-  orientation(): Promise<{ orientation: AgentOrientation; text: string }> {
-    return this.request("GET", "/v2/orientation");
-  }
-
-  /** Either switch, by presence — an absent field is left alone, so turning the
-   *  skill off cannot silently re-enable the preamble. */
-  setOrientation(patch: { preamble?: boolean; skill?: boolean }): Promise<{ orientation: AgentOrientation; text: string }> {
-    return this.request("PATCH", "/v2/orientation", patch);
-  }
-
-  /** What a session is created with when the caller didn't say — see
-   *  `SessionDefaults`. Environment-wide, like the inbox rule above. */
-  sessionDefaults(): Promise<{ sessionDefaults: SessionDefaults }> {
-    return this.request("GET", "/v2/session-defaults");
-  }
-
-  setSessionDefaults(patch: SessionDefaultsPatch): Promise<{ sessionDefaults: SessionDefaults }> {
-    return this.request("PATCH", "/v2/session-defaults", patch);
-  }
-
   /** This Mac's workspace defaults — see `protocol/workspace.ts`. */
   machineWorkspace(): Promise<{ machine: WorkspaceConfig }> {
     return this.request("GET", "/v2/workspace");
@@ -799,23 +739,6 @@ export class EngineClient implements EngineTransport {
 
   dictationDiagnosis(): Promise<DictationDiagnosisAnswer> {
     return this.request("POST", "/v2/dictation/diagnose");
-  }
-
-  /** Where each project group sits in the rail — see `SidebarLayout`.
-   *  Environment-wide, like the inbox rule above. */
-  sidebarLayout(): Promise<{ layout: SidebarLayout }> {
-    return this.request("GET", "/v2/sidebar-layout");
-  }
-
-  /** One arrangement per call: an absent field is left alone, so a drop in the
-   *  pinned band cannot overwrite the groups the same rail just arranged. */
-  setSidebarLayout(patch: {
-    projectOrder?: string[];
-    sessionOrder?: Record<string, string[]>;
-    pinnedOrder?: string[];
-    mode?: SidebarMode;
-  }): Promise<{ layout: SidebarLayout }> {
-    return this.request("PATCH", "/v2/sidebar-layout", patch);
   }
 
   computerUseStatus(): Promise<{ computerUse: ComputerUseStatus }> {
@@ -904,89 +827,11 @@ export class EngineClient implements EngineTransport {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/setup?after=${after}`);
   }
 
-  /** Who writes generated titles and branch names — see `TextGenPolicy`. */
-  textGenPolicy(): Promise<{ textGen: TextGenPolicy }> {
-    return this.request("GET", "/v2/textgen");
-  }
-
-  setTextGenPolicy(patch: {
-    titles?: boolean;
-    renameBranches?: boolean;
-    driver?: ProviderDriverKind;
-    /** `null` returns to the driver's default model; absent leaves it alone. */
-    model?: string | null;
-  }): Promise<{ textGen: TextGenPolicy }> {
-    return this.request("PATCH", "/v2/textgen", patch);
-  }
-
   completeStructured(
     input: { prompt: string; schema: Record<string, unknown>; model?: string; effort?: "low" | "medium" | "high" },
     options: { signal?: AbortSignal } = {},
   ): Promise<{ result: Record<string, unknown> }> {
     return this.request("POST", "/v2/textgen/complete", input, options.signal);
-  }
-
-  async appearance(): Promise<{ appearance: PublishedAppearance | null; updatedAt: number | null }> {
-    const raw = await this.request<{ appearance?: unknown; updatedAt?: unknown }>("GET", "/v2/appearance");
-    return {
-      appearance: parsePublishedAppearance(raw.appearance) ?? null,
-      updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : null,
-    };
-  }
-
-  async appearanceHome(): Promise<{
-    settings: Record<string, unknown> | null;
-    themes: Record<string, unknown>[];
-    looks: Record<string, unknown>[];
-    images: string[];
-    skipped: { file: string; reason: string }[];
-  }> {
-    const raw = await this.request<Record<string, unknown>>("GET", "/v2/appearance/home");
-    const list = (value: unknown): Record<string, unknown>[] =>
-      Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry)) : [];
-    return {
-      settings: typeof raw["settings"] === "object" && raw["settings"] !== null && !Array.isArray(raw["settings"]) ? (raw["settings"] as Record<string, unknown>) : null,
-      themes: list(raw["themes"]),
-      looks: list(raw["looks"]),
-      images: Array.isArray(raw["images"]) ? raw["images"].filter((name): name is string => typeof name === "string") : [],
-      skipped: list(raw["skipped"]).map((entry) => ({ file: String(entry["file"] ?? ""), reason: String(entry["reason"] ?? "") })),
-    };
-  }
-
-  async putAppearanceEntry(kind: "themes" | "looks", id: string, value: Record<string, unknown>): Promise<void> {
-    await this.request("PUT", `/v2/appearance/home/${kind}/${encodeURIComponent(id)}`, value);
-  }
-
-  async deleteAppearanceEntry(kind: "themes" | "looks", id: string): Promise<void> {
-    await this.request("DELETE", `/v2/appearance/home/${kind}/${encodeURIComponent(id)}`);
-  }
-
-  async appearanceImage(name: string): Promise<{ data: Uint8Array; contentType: string }> {
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/appearance/home/images/${encodeURIComponent(name)}`, {
-        method: "GET",
-        headers: { authorization: `Bearer ${this.discovery.token}` },
-      });
-    } catch {
-      throw new EngineClientError("engine_unavailable", "engine is unreachable");
-    }
-    if (!response.ok) throw new EngineClientError(response.status === 404 ? "not_found" : "engine_unavailable", "no such image");
-    return { data: new Uint8Array(await response.arrayBuffer()), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
-  }
-
-  async putAppearanceSettings(settings: Record<string, unknown>): Promise<void> {
-    await this.request("PUT", "/v2/appearance/home/settings", settings);
-  }
-
-  setAppearance(blob: PublishedAppearance): Promise<{ ok: boolean; updatedAt: number; etag: string }> {
-    return this.request("PUT", "/v2/appearance", blob);
-  }
-
-  /** Forget the published look. Idempotent: clearing an empty mailbox is a
-   *  200, because "there is no published look" is the state either way. */
-  clearAppearance(): Promise<{ ok: boolean }> {
-    return this.request("DELETE", "/v2/appearance");
   }
 
   /** A project's git state — branch, dirty count, divergence, worktrees.
@@ -1111,11 +956,11 @@ export class EngineClient implements EngineTransport {
   }
 
   projectFileBytes(projectId: string, path: string): Promise<{ data: Uint8Array; contentType: string }> {
-    return this.rawBytes(`/v2/projects/${encodeURIComponent(projectId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
+    return this.readBytes(`/v2/projects/${encodeURIComponent(projectId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
   }
 
   sessionFileBytes(sessionId: string, path: string): Promise<{ data: Uint8Array; contentType: string }> {
-    return this.rawBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
+    return this.readBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
   }
 
   writeProjectFile(projectId: string, path: string, text: string, expectedSha256: string): Promise<WorkspaceWriteResult> {
@@ -1497,10 +1342,10 @@ export class EngineClient implements EngineTransport {
 
   /** The bytes behind an attachment. Immutable: the id is minted per write. */
   attachmentBytes(sessionId: string, attachmentId: string): Promise<{ data: Uint8Array; contentType: string }> {
-    return this.rawBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`);
+    return this.readBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`);
   }
 
-  private async rawBytes(pathAndQuery: string): Promise<{ data: Uint8Array; contentType: string }> {
+  async readBytes(pathAndQuery: string): Promise<{ data: Uint8Array; contentType: string }> {
     let response: Response;
     try {
       response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathAndQuery}`, {
@@ -1511,13 +1356,8 @@ export class EngineClient implements EngineTransport {
       throw new EngineClientError("engine_unavailable", "engine is unreachable");
     }
     if (!response.ok) {
-      let code: EngineErrorCode = "engine_unavailable";
-      let message = "engine request failed";
-      try {
-        const error = ((await response.json()) as EngineErrorBody | null)?.error;
-        if (error) ({ code, message } = error);
-      } catch { /* keep defaults */ }
-      throw new EngineClientError(code, message, response.status);
+      const error = ((await response.json().catch(() => null)) as EngineErrorBody | null)?.error;
+      throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "engine request failed", response.status);
     }
     return { data: new Uint8Array(await response.arrayBuffer()), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
   }
@@ -1881,6 +1721,6 @@ export class EngineClient implements EngineTransport {
 
 type Methods<T> = { [K in keyof T]: OmitThisParameter<T[K]> };
 
-Object.assign(EngineClient.prototype, notesClient, promptsClient, schedulesClient, storageClient, usageClient);
+Object.assign(EngineClient.prototype, appearanceClient, notesClient, promptsClient, schedulesClient, settingsClient, storageClient, usageClient);
 
 export { ENGINE_PROTOCOL_VERSION };

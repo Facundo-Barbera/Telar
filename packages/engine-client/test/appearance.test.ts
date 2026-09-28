@@ -15,7 +15,7 @@ import {
   type CustomGradientSpec,
   type PublishedAppearance,
   type ScenePresets,
-} from "../src/look";
+} from "../src/appearance/schema";
 
 /** The smallest thing that is still a Look, so each test can say what it is
  *  actually about instead of restating twelve members. */
