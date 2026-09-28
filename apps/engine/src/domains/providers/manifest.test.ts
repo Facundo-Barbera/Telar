@@ -9,7 +9,7 @@ import {
   claudeWindowTokensOf,
   longDefaultOf,
   type ModelManifest,
-} from "../src/model-manifest";
+} from "./manifest";
 
 const row = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => ({
   id,
@@ -24,8 +24,6 @@ const row = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => (
   ...extra,
 });
 
-/** Claude Code 2.1.280's catalogue as `parseClaudeModels` hands it over: the
- *  `default` row already folded into the `opus[1m]` it resolves to. */
 const CATALOGUE_2_1_280 = [
   row("opus[1m]", { resolves: "claude-opus-5-5[1m]", label: "Opus (1M context)", isDefault: true }),
   row("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]", label: "Fable" }),
@@ -80,7 +78,6 @@ describe("T3 Code's list, applied to the 2.1.280 catalogue", () => {
       { id: "claude-opus-5[1m]", label: "Opus 5", resolves: "claude-opus-5[1m]", source: "provider", fastMode: true, defaultWindow: true },
     ]);
     expect(bySlug("claude-opus-5")[0]!.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    // A fixed-1M profile takes no suffix; a 200k-only one has one row.
     expect(bySlug("claude-opus-4-8").map((model) => model.id)).toEqual(["claude-opus-4-8"]);
     expect(bySlug("claude-opus-4-5").map((model) => model.id)).toEqual(["claude-opus-4-5"]);
   });
@@ -103,7 +100,6 @@ describe("T3 Code's list, applied to the 2.1.280 catalogue", () => {
 describe("minVersion", () => {
   test("hides Opus 5.5 under 2.1.279, and the default stays Fable 5.1", () => {
     const out = applyModelManifest(CATALOGUE_2_1_280, BUNDLED_MANIFEST, "2.1.279");
-    // Both of its window rows.
     expect(out.filter((model) => model.hidden).map(canonical)).toEqual(["claude-opus-5-5", "claude-opus-5-5"]);
     expect(longDefaultOf(out)).toBe("claude-fable-5-1[1m]");
   });
@@ -114,8 +110,6 @@ describe("minVersion", () => {
 
   test("a hidden manifest default falls back to the CLI's own", () => {
     const out = applyModelManifest(CATALOGUE_2_1_280, BUNDLED_MANIFEST, "2.1.200");
-    // Fable 5.1 needs 2.1.257, Opus 5.5 2.1.280: the CLI's default model is
-    // hidden too, so nothing listed is default.
     expect(out.some((model) => model.isDefault)).toBe(false);
     const manifest: ModelManifest = { ...BUNDLED_MANIFEST, claude: { ...BUNDLED_MANIFEST.claude!, defaults: {} } };
     expect(longDefaultOf(applyModelManifest(CATALOGUE_2_1_280, manifest, "2.1.280"))).toBe("opus[1m]");
