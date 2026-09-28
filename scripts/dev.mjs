@@ -24,6 +24,8 @@ import {
   shouldLaunchDesktop,
   cockpitUrl as makeCockpitUrl,
   describeRemotePosture,
+  defaultTelarHome,
+  resolveTelarHome,
   webDevCommand,
 } from "./dev-lifecycle.mjs";
 import { httpsBaseUrl, probeServe, readStatus, serveTarget, startServe, stopServe } from "./tailscale.mjs";
@@ -35,23 +37,11 @@ import { httpsBaseUrl, probeServe, readStatus, serveTarget, startServe, stopServ
 import { gateWillRequireAuth, tailscaleServeRequested } from "../apps/desktop/src/main/remote-file.js";
 
 const repoDir = path.resolve(import.meta.dirname, "..");
-const defaultTelarHome = path.join(os.homedir(), ".telar-dogfood");
 /** What the dogfood home was called while this app was still named vNext. */
 const previousTelarHome = path.join(os.homedir(), ".telar-vnext-dogfood");
-const legacyHomes = new Set([path.join(os.homedir(), ".telar"), path.join(os.homedir(), ".telar-dev")]);
 const children = [];
 let stopping = false;
 let serveStarted = false;
-
-function resolveTelarHome(env = process.env) {
-  const selected = env.TELAR_HOME?.trim() || defaultTelarHome;
-  if (!path.isAbsolute(selected)) throw new Error("TELAR_HOME for Telar must be an absolute dedicated directory.");
-  const resolved = path.resolve(selected);
-  if (legacyHomes.has(resolved)) {
-    throw new Error(`Refusing to use legacy TELAR_HOME ${resolved}. Set TELAR_HOME to a dedicated dogfood directory.`);
-  }
-  return resolved;
-}
 
 /**
  * Carry the dogfood home across the rename, once.
@@ -67,7 +57,7 @@ function resolveTelarHome(env = process.env) {
  * the daemon locks.
  */
 function migrateDefaultHome(home) {
-  if (home !== defaultTelarHome) return;
+  if (home !== defaultTelarHome()) return;
   if (fs.existsSync(home) || !fs.existsSync(previousTelarHome)) return;
   fs.renameSync(previousTelarHome, home);
   process.stdout.write(`[telar] moved the dogfood home ${previousTelarHome} -> ${home}\n`);
