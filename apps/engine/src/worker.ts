@@ -6,8 +6,7 @@ import { collectTelarWall, telarWall, type TelarCapabilities, type TelarSocketLe
 import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
 import type { NotesCapability } from "./notes-tools/tools";
-import type { PromptsCapability } from "./prompts-tools/tools";
-import { promptsForComposer } from "./prompts";
+import { promptsForComposer, type PromptsCapability } from "./domains/prompts";
 import { createDisplayCapability } from "./display/capability";
 import { clientRunCapability } from "./run/client-capability";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";

@@ -1,20 +1,6 @@
-/**
- * The `prompt` toolkit — the wall an agent uses to hand a prepared message to
- * the person instead of acting on it.
- *
- * What is under test is the set of judgements the wall makes on top of the
- * store, which `prompt-shelf.test.ts` covers:
- *   · a draft defaults to THIS session, because the handoff case is the common
- *     one and a project-wide default would scatter every follow-up;
- *   · the wall declares the hand — nothing an agent writes is ever marked as
- *     the person's;
- *   · `prompt_drop` removes only what an agent wrote, and refuses the person's
- *     in a sentence they can act on;
- *   · nothing here lands anything: four read/write verbs and no send.
- */
 import { describe, expect, test } from "bun:test";
 import { assertTelarToolNames, type PreparedPrompt } from "@telar/engine-client";
-import { promptsTools, type PromptsCapability } from "../src/prompts-tools/tools";
+import { promptsTools, type PromptsCapability } from "./tools";
 
 type Registered = {
   name: string;
@@ -63,14 +49,10 @@ describe("the wall", () => {
   });
 
   test("every tool declares the prompt capability in its name", () => {
-    // Without the prefix these land in the generic `mcp__` bucket and lose
-    // their row type — the failure `tool-names.test.ts` exists to prevent.
     expect(() => assertTelarToolNames(build().names)).not.toThrow();
   });
 
   test("carries nothing accept-shaped: no verb sends, queues or answers", () => {
-    // INV-1. The whole point of drafting is that a person presses it, so a wall
-    // that could send its own draft would be the feature defeating itself.
     const names = build().names.join(" ");
     expect(names).not.toMatch(/send|queue|run|answer|accept/);
   });
@@ -81,7 +63,7 @@ describe("who a draft is for", () => {
     const seen: Array<{ sessionId?: string }> = [];
     const wall = build({
       create: async (input) => {
-        seen.push({ ...(input.sessionId ? { sessionId: input.sessionId } : {}) });
+        seen.push(input.sessionId ? { sessionId: input.sessionId } : {});
         return prompt({ ...input, sessionId: input.sessionId, author: "session" });
       },
     });

@@ -21,7 +21,7 @@ import type { ToolFactory } from "./tool-kit";
 import { displayTools } from "./display/tools";
 import { notesTools } from "./notes-tools/tools";
 import { pluginToolModules } from "./plugins/bundled";
-import { promptsTools } from "./prompts-tools/tools";
+import { promptsTools } from "./domains/prompts";
 import { runTools } from "./run/tools";
 import { sessionsTools } from "./sessions-tools/tools";
 

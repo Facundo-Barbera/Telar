@@ -1,27 +1,10 @@
-/**
- * THE PROMPT SHELF — the store's rules and the routes that expose them.
- *
- * What is under test is the set of decisions #87 forced, rather than the
- * getters:
- *   · `author` is provenance — stamped once, never patchable, and absent on the
- *     HTTP route means the HUMAN's, which is what keeps an agent's draft
- *     distinguishable from a prompt you set aside yourself;
- *   · a prompt may name the SESSION it was prepared for, and a composer offers
- *     the project's own plus its own session's and nobody else's;
- *   · a prompt with no text is refused, where a note with no body is allowed —
- *     the one place this store deliberately parts company with the notebook;
- *   · reads are tolerant per row, so a hand-edit that breaks one prompt costs
- *     one prompt and not the shelf;
- *   · `state.ts` is untouched, so the shelf's directory is derived and one
- *     project's file cannot be reached through another's id.
- */
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
+import { startEngine, type EngineDaemon } from "../../daemon";
 import {
   createPrompt,
   deletePrompt,
@@ -32,9 +15,9 @@ import {
   sortPrompts,
   updatePrompt,
   PreparedPromptsError,
-} from "../src/prompts";
-import { statePaths } from "../src/state";
-import { stubModels } from "./stub-models";
+} from "./store";
+import { statePaths } from "../../state";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -45,8 +28,6 @@ const tmp = (prefix: string): string => {
   return directory;
 };
 
-/** A throwaway repository with one commit — the house idiom, so a project can
- *  actually be registered rather than stubbed. */
 function repo(): string {
   const root = tmp("telar-shelf-repo-");
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -82,9 +63,6 @@ describe("the store", () => {
     expect(prompt.projectId).toBe("p1");
     expect(prompt.created.at).toBe(prompt.updated.at);
 
-    // The runtime half, which a cast gets past where the type alone does not.
-    // An agent's draft that could be relabelled as the person's own would erase
-    // exactly the distinction this shelf exists to keep.
     expect(() => updatePrompt(paths, "p1", prompt.id, { author: "you" } as never)).toThrow(/author/);
     expect(() => updatePrompt(paths, "p1", prompt.id, { projectId: "p2" } as never)).toThrow(/identity/);
     expect(readPrompts(paths, "p1")[0]!.author).toBe("session");
@@ -92,9 +70,6 @@ describe("the store", () => {
 
   test("a prompt with no text is refused, where a note with no body is not", () => {
     const paths = statePaths(tmp("telar-shelf-store-"));
-    // The notebook allows an empty body because "+, type a title, come back to
-    // it" is its gesture. A prompt with no text is a row that does nothing when
-    // you press it, which is the one thing a list of things-to-send must not be.
     expect(() => createPrompt(paths, "p1", { title: "Later", text: "", author: "you" })).toThrow(/needs its text/);
     expect(() => createPrompt(paths, "p1", { title: "Later", text: "   ", author: "you" })).toThrow(/needs its text/);
     expect(() => createPrompt(paths, "p1", { title: "  ", text: "x", author: "you" })).toThrow(/needs a title/);
@@ -123,25 +98,9 @@ describe("the store", () => {
     const prompt = (id: string, at: number) =>
       ({ id, projectId: "p1", title: id, text: "x", created: stamp(at), updated: stamp(at), author: "you", schemaVersion: 1 }) as never;
 
-    // No pin and no hand-order, unlike the notebook: a shelf of unsent prompts
-    // is a queue you are working off, not furniture you arrange.
     expect(sortPrompts([prompt("old", 1), prompt("new", 3), prompt("mid", 2)]).map((row) => row.id)).toEqual(["new", "mid", "old"]);
   });
 
-  /**
-   * THE SAME-MILLISECOND INVARIANT.
-   *
-   * `Date.now()` ties routinely — over loopback a create-then-create lands
-   * inside one millisecond about a quarter of the time — and a tie used to be
-   * settled by `sortPrompts`' id comparison, which is random hex. So two
-   * prompts written in the same millisecond came back in an arbitrary order,
-   * and "newest first" was a coin flip rather than a promise.
-   *
-   * PINNED BY PASSING ONE `Date` TWICE rather than by racing the clock: the tie
-   * is the condition under test, so it is made certain instead of hoped for. A
-   * test that raced would reproduce the bug about one run in eight, which is how
-   * it went unnoticed into main in the first place.
-   */
   test("two prompts created in the same millisecond still come back newest-first", () => {
     const paths = statePaths(tmp("telar-shelf-store-"));
     const frozen = new Date(1_000_000);
@@ -149,8 +108,6 @@ describe("the store", () => {
     const second = createPrompt(paths, "p1", { title: "Second", text: "b", author: "you" }, frozen);
 
     expect(readPrompts(paths, "p1").map((row) => row.title)).toEqual(["Second", "First"]);
-    // The mechanism, not just the symptom: the stamps must actually differ, or
-    // the order above is back to being decided by whichever id sorts first.
     expect(second.created.at).toBeGreaterThan(first.created.at);
   });
 
@@ -165,14 +122,10 @@ describe("the store", () => {
   test("a clock that steps backwards cannot reorder the shelf", () => {
     const paths = statePaths(tmp("telar-shelf-store-"));
     const first = createPrompt(paths, "p1", { title: "First", text: "a", author: "you" }, new Date(9_000_000));
-    // An NTP correction mid-burst. Without the strictly-increasing stamp this
-    // prompt would sort BELOW the one written before it.
     const second = createPrompt(paths, "p1", { title: "Second", text: "b", author: "you" }, new Date(1_000_000));
 
     expect(readPrompts(paths, "p1").map((row) => row.title)).toEqual(["Second", "First"]);
     expect(second.created.at).toBeGreaterThan(first.created.at);
-    // And the words agree with the number — the label is rendered from the
-    // instant the prompt is stamped with, not from the clock that was refused.
     expect(second.created.label).toBe(first.created.label);
   });
 
@@ -185,8 +138,6 @@ describe("the store", () => {
     const mine = promptsForComposer(readPrompts(paths, "p1"), "s1").map((row) => row.title);
     expect([...mine].sort()).toEqual(["Anyone's", "Mine"]);
 
-    // A composer with no session of its own — a fresh canvas — still sees the
-    // project's, which is the generation case's whole point.
     expect(promptsForComposer(readPrompts(paths, "p1"), undefined).map((row) => row.title)).toEqual(["Anyone's"]);
   });
 
@@ -196,8 +147,6 @@ describe("the store", () => {
       createPrompt(paths, "p1", { title: `p${index}`, text: "x", author: "you" }, new Date(1_000_000 + index * 1_000));
     }
     const shelf = readPrompts(paths, "p1");
-    // Refusing would fail an agent's handoff at the moment the shelf is most in
-    // use, and drop the prompt least likely to be wanted anyway.
     expect(shelf).toHaveLength(PROMPT_SHELF_LIMIT);
     expect(shelf[0]!.title).toBe(`p${PROMPT_SHELF_LIMIT}`);
     expect(shelf.some((row) => row.title === "p0")).toBe(false);
@@ -224,8 +173,6 @@ describe("the store", () => {
     const paths = statePaths(tmp("telar-shelf-store-"));
     const prompt = createPrompt(paths, "p1", { title: "Ship", text: "x", author: "you" });
     expect(deletePrompt(paths, "p1", prompt.id)).toBe(true);
-    // The ordinary way a prompt leaves this shelf is being sent, possibly from
-    // the other window — a retried delete must not be an error.
     expect(deletePrompt(paths, "p1", prompt.id)).toBe(false);
   });
 });
