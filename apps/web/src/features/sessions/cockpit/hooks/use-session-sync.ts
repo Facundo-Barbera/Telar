@@ -2,8 +2,9 @@
 
 import { type SetStateAction, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { EngineEvent, Session, SessionSnapshot } from "@telar/engine-client";
-import { createEngineApi, EngineApiError, INITIAL_TURNS, loadOlderTurns, projectJournal, sessionConnection, tailIntervalMs } from "@/platform/engine";
+import { asEngineError, createEngineApi, INITIAL_TURNS, loadOlderTurns, projectJournal, sessionConnection, tailIntervalMs, type EngineApiError } from "@/platform/engine";
 import { hostFetcher } from "@/platform/engine/host-client";
+import { usePoll } from "@/ui/hooks/use-poll";
 import { saveSnapshot, snapshotKey, snapshotStore } from "../../snapshot-cache";
 import { recallTranscript, rememberTranscript, transcriptKey } from "../transcript-cache";
 import { decideStale } from "../stale-state";
@@ -32,15 +33,6 @@ function record(photographed: { current: Photo | undefined }, host: string, id: 
     requests: snapshot.requests,
     ...(snapshot.page ? { page: snapshot.page } : {}),
   }).catch(() => undefined);
-}
-
-function staleSince(code: EngineApiError["code"], cachedAt: number | undefined, lastLiveAt: number | undefined) {
-  return decideStale({
-    code,
-    hasContent: cachedAt !== undefined || lastLiveAt !== undefined,
-    ...(cachedAt === undefined ? {} : { cachedAt }),
-    ...(lastLiveAt === undefined ? {} : { lastLiveAt }),
-  });
 }
 
 export function useSessionSync({ hostId, sessionId, initiallyLoading }: { hostId: string; sessionId: string | undefined; initiallyLoading: boolean }) {
@@ -89,8 +81,14 @@ export function useSessionSync({ hostId, sessionId, initiallyLoading }: { hostId
     record(photographed, hostId, id, snapshot);
   }, [hostId]);
   const fail = useCallback((cause: unknown, fallback: string) => {
-    const failure = cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", fallback);
-    const at = staleSince(failure.code, staleAt.current, lastLiveAt.current);
+    const failure = asEngineError(cause, fallback);
+    const [cachedAt, liveAt] = [staleAt.current, lastLiveAt.current];
+    const at = decideStale({
+      code: failure.code,
+      hasContent: cachedAt !== undefined || liveAt !== undefined,
+      ...(cachedAt === undefined ? {} : { cachedAt }),
+      ...(liveAt === undefined ? {} : { lastLiveAt: liveAt }),
+    });
     if (at === undefined) {
       setError(failure);
       return;
@@ -103,33 +101,19 @@ export function useSessionSync({ hostId, sessionId, initiallyLoading }: { hostId
     (id: string) => sessionConnection(hostId, createEngineApi(hostFetcher(hostId)), id, { turns: INITIAL_TURNS }).read(),
     [hostId],
   );
-  const hydrate = useCallback(
-    () =>
+  const pull = useCallback(
+    (type: "replace" | "tail") =>
       enqueueSync(async () => {
         if (!sessionId) return;
         const generation = syncGeneration.current;
-        const hydrated = await read(sessionId);
+        const snapshot = await read(sessionId);
         if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
-        dispatch({ type: "replace", data: hydrated, readKey: syncKey });
-        remember(sessionId, hydrated);
+        dispatch(type === "replace" ? { type, data: snapshot, readKey: syncKey } : { type, data: snapshot });
+        remember(sessionId, snapshot);
       }),
     [enqueueSync, sessionId, remember, read, syncKey],
   );
-  const tail = useCallback(() => {
-    if (tailInFlight.current) return Promise.resolve();
-    tailInFlight.current = true;
-    const flightGeneration = syncGeneration.current;
-    return enqueueSync(async () => {
-      if (!sessionId) return;
-      const generation = syncGeneration.current;
-      const snapshot = await read(sessionId);
-      if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
-      dispatch({ type: "tail", data: snapshot });
-      remember(sessionId, snapshot);
-    }).finally(() => {
-      if (flightGeneration === syncGeneration.current) tailInFlight.current = false;
-    });
-  }, [enqueueSync, sessionId, remember, read, syncKey]);
+  const hydrate = useCallback(() => pull("replace"), [pull]);
   const page = data.page;
   const loadOlder = useCallback(() => {
     const before = page?.before;
@@ -141,7 +125,7 @@ export function useSessionSync({ hostId, sessionId, initiallyLoading }: { hostId
       if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
       dispatch({ type: "older", data: older });
     })
-      .catch((cause) => setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not load earlier turns.")))
+      .catch((cause) => setError(asEngineError(cause, "Could not load earlier turns.")))
       .finally(() => setLoadingOlder(false));
   }, [enqueueSync, sessionId, page, loadingOlder, syncKey, hostId]);
 
@@ -175,18 +159,16 @@ export function useSessionSync({ hostId, sessionId, initiallyLoading }: { hostId
     };
   }, [hydrate, sessionId, hostId, fail, syncKey]);
 
-  const tailMs = tailIntervalMs(data.turns);
-  useEffect(() => {
-    if (!sessionId) return;
-    let cancelled = false;
-    const interval = window.setInterval(() => {
-      void tail().catch((cause) => !cancelled && fail(cause, "Could not tail the session journal."));
-    }, tailMs);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [tail, sessionId, fail, tailMs]);
+  usePoll((signal) => {
+    if (tailInFlight.current) return;
+    tailInFlight.current = true;
+    const generation = syncGeneration.current;
+    return pull("tail")
+      .catch((cause) => !signal.aborted && fail(cause, "Could not tail the session journal."))
+      .finally(() => {
+        if (generation === syncGeneration.current) tailInFlight.current = false;
+      });
+  }, sessionId ? tailIntervalMs(data.turns) : null, { immediate: false, key: syncKey });
 
   const setSession = useCallback((next: SetStateAction<Session | undefined>) => dispatch({ type: "session", next }), []);
   const clearTranscript = useCallback(() => dispatch({ type: "clear" }), []);
