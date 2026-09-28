@@ -1,5 +1,7 @@
 import {
+  assignmentsOf,
   PROVIDER_CAPABILITIES,
+  type AssignmentTurn,
   seedSessionTitle,
   turnHasContent,
   type Item,
@@ -181,6 +183,7 @@ export class TurnIntake {
         sender = { sessionId: claimed.sessionId };
       }
       const intent = input.intent ?? "report";
+      if ((intent === "result" || intent === "blocker") && sender.sessionId) this.assertAnswersAnAssignment(sessionId, sender.sessionId, intent);
       const waiting = intent === "result" && sender.sessionId ? this.deps.waitingSubscription(sessionId, sender.sessionId) : false;
       const correction = input.corrects && !this.deps.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
         ? this.correctionOf(sessionId, input.corrects, sender.sessionId)
@@ -224,6 +227,15 @@ export class TurnIntake {
       if (correction === "queued" || correction === "held") this.withdrawCorrected(sessionId, input.corrects!, correction);
       return result;
     });
+  }
+
+  private assertAnswersAnAssignment(recipientSessionId: string, senderSessionId: string, intent: "result" | "blocker"): void {
+    const assigners = [...new Set(assignmentsOf(this.deps.readQueue(senderSessionId).turns as AssignmentTurn[]).map((each) => each.fromSessionId))];
+    if (assigners.length === 0 || assigners.includes(recipientSessionId)) return;
+    throw new EngineStateError(
+      "conflict",
+      `${recipientSessionId} never assigned you work, so it cannot take your ${intent}. Send it to the session that assigned the work you are answering (${assigners.join(", ")}), or send ${recipientSessionId} a report.`,
+    );
   }
 
   /** The notification's row, written by the engine at accept and closed at once: it is what arrived, true before any worker claims it. */
