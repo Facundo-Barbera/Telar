@@ -1,0 +1,85 @@
+{
+  "latex": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "toolchain": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "tectonic",
+              "texlive",
+              "managed"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "pdflatex",
+              "lualatex",
+              "xelatex"
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "engine": {
+        "title": "Default engine",
+        "description": "What latexmk drives on a TeX Live install. Tectonic is XeTeX inside and ignores it.",
+        "icon": "settings",
+        "labels": {
+          "pdflatex": "pdfLaTeX",
+          "lualatex": "LuaLaTeX",
+          "xelatex": "XeLaTeX"
+        },
+        "type": "string",
+        "enum": [
+          "pdflatex",
+          "lualatex",
+          "xelatex"
+        ]
+      },
+      "autoInstallPackages": {
+        "title": "Install missing packages automatically",
+        "description": "When a TeX Live compile fails on a package it does not have, install it with tlmgr and compile once more. Tectonic already fetches packages by itself.",
+        "icon": "package-plus",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "dataScience": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "python": {
+        "title": "Default Python",
+        "description": "The interpreter a project with none of its own runs its kernel on.",
+        "info": "An absolute path: a Mac-wide default cannot be relative to a checkout.",
+        "widget": "path",
+        "icon": "flask-conical",
+        "type": "string",
+        "minLength": 1
+      },
+      "packages": {
+        "maxItems": 200,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(\\[[A-Za-z0-9._,\\s-]+\\])?\\s*((?:[<>=!~]=?|===)\\s*[A-Za-z0-9.*+!_-]+(?:\\s*,\\s*(?:[<>=!~]=?|===)\\s*[A-Za-z0-9.*+!_-]+)*)?$"
+        }
+      }
+    },
+    "additionalProperties": false
+  }
+}

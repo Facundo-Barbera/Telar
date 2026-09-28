@@ -75,11 +75,16 @@ export const latexMeta: PluginMeta = {
   ].join(" "),
   eventKinds: ["latex.compile.state"],
   settings: [
+    /**
+     * THE MAC-WIDE COMPILE DEFAULTS. The label heads the generated group on the
+     * Plugins pane (engine, package installs); the distribution cards are a
+     * bespoke block beside it.
+     */
     {
       id: "toolchain",
       scope: "machine",
-      label: "LaTeX",
-      blurb: "The distribution, engine and package behaviour a project inherits on this Mac.",
+      label: "Compiling",
+      blurb: "How a compile runs here, unless the project says otherwise.",
       icon: "HardDrive",
     },
     {

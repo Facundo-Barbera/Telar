@@ -13,7 +13,8 @@
  *
  * Labels and hints come from the schema's `title` and `description`; `info` is
  * the fact behind the row's ⓘ; `inherits` names the Mac key a project falls
- * back to, which is what draws "Inherit (<Mac value>)".
+ * back to, which is what draws "Inherit (<Mac value>)". `labels` names a
+ * select's choices for people, and `icon` is the row's glyph (a Lucide name).
  */
 import type { PluginStatus } from "@telar/engine-client";
 import { foldForSearch, settingsRowId, type SettingsSearchEntry } from "@/lib/settings-search";
@@ -26,8 +27,11 @@ export type SettingsField = {
   label: string;
   hint?: string;
   info?: string;
-  /** A select's choices. */
+  /** A select's choices, and how each reads. */
   options?: readonly string[];
+  optionLabels?: Readonly<Record<string, string>>;
+  /** A Lucide icon name, kebab-case. */
+  icon?: string;
   /** A number's bounds and whether it is whole. */
   min?: number;
   max?: number;
@@ -46,6 +50,8 @@ type JsonProperty = {
   info?: string;
   widget?: string;
   inherits?: string;
+  labels?: Record<string, string>;
+  icon?: string;
   minimum?: number;
   maximum?: number;
   default?: unknown;
@@ -93,6 +99,8 @@ export function settingsFields(schema: Record<string, unknown> | undefined): Set
       ...(property.description ? { hint: property.description } : {}),
       ...(property.info ? { info: property.info } : {}),
       ...(kind === "select" ? { options: property.enum as string[] } : {}),
+      ...(kind === "select" && property.labels ? { optionLabels: property.labels } : {}),
+      ...(property.icon ? { icon: property.icon } : {}),
       ...(property.minimum !== undefined ? { min: property.minimum } : {}),
       ...(property.maximum !== undefined ? { max: property.maximum } : {}),
       ...(types.includes("integer") ? { integer: true } : {}),

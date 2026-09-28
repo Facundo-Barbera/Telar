@@ -88,8 +88,8 @@ export const dataScienceMeta: PluginMeta = {
     {
       id: "defaults",
       scope: "machine",
-      label: "Data science",
-      blurb: "The Python and packages a project inherits on this Mac.",
+      label: "Data science defaults",
+      blurb: "What a project on this Mac inherits when it has not chosen for itself.",
       icon: "FlaskConical",
     },
   ],

@@ -31,7 +31,7 @@ import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "./settings-registry";
-import { machinePaneFor, projectPaneFor } from "@/components/plugins/settings-panes";
+import { projectPaneFor } from "@/components/plugins/settings-panes";
 import { pluginSettingsSearchEntries } from "@/lib/plugins/settings-form";
 import { useSectionFromUrl } from "./use-section-from-url";
 
@@ -290,7 +290,7 @@ export function SettingsPage() {
    * THE STATIC INDEX, PLUS EVERY GENERATED PLUGIN ROW. A plugin's settings are
    * its schema, which arrives with the engine's answer — so its rows join the
    * index when health does, anchored exactly where the generated pane draws
-   * them. A plugin whose pane is bespoke draws no generated rows at that scope.
+   * them. A plugin whose project pane is bespoke draws no generated rows there.
    */
   const search = useMemo(() => {
     if (!health?.plugins?.length) return SETTINGS_SEARCH_INDEX;
@@ -301,7 +301,8 @@ export function SettingsPage() {
     const generated = pluginSettingsSearchEntries(
       health.plugins,
       { project: page("projects"), machine: page("plugins") },
-      (scope, id) => (scope === "project" ? projectPaneFor(id) : machinePaneFor(id)) !== undefined,
+      // The Mac scope is always generated; a bespoke PROJECT pane draws its own rows.
+      (scope, id) => scope === "project" && projectPaneFor(id) !== undefined,
     );
     return { entries: [...SETTINGS_SEARCH_INDEX.entries, ...generated] };
   }, [health]);
