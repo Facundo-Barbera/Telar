@@ -195,7 +195,8 @@ export function TableSurface({ path, sessionId, active }: { path: string; sessio
                 {meta.columns.map((column, index) => {
                   const sorted = sort?.column === column;
                   return (
-                    <th key={column} onClick={() => setSort(sorted && !sort.desc ? { column, desc: true } : sorted ? undefined : { column, desc: false })} className="cursor-pointer select-none whitespace-nowrap border-b border-border bg-muted/60 px-2 py-1 text-left font-medium hover:bg-muted">
+                    // React bubbles the header menu's portaled clicks here; only a press on the header itself cycles.
+                    <th key={column} onClick={(event) => event.currentTarget.contains(event.target as Node) && setSort(sorted && !sort.desc ? { column, desc: true } : sorted ? undefined : { column, desc: false })} className="cursor-pointer select-none whitespace-nowrap border-b border-border bg-muted/60 px-2 py-1 text-left font-medium hover:bg-muted">
                       <HeaderMenu column={column} sort={sorted ? (sort.desc ? "desc" : "asc") : "none"} onSort={setSort}>
                         {column}
                         <span className="ml-1 font-normal text-muted-foreground">{meta.dtypes?.[index]}</span>
