@@ -42,13 +42,11 @@ import { processToReveal, stillWorking } from "../background-presence";
 import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./cohort-fold";
 import { groupNotificationTurns, TranscriptWorkspace } from "@/features/transcript";
-import { browserPanelTab, describeBrowserStart, editorInstanceKey, issuePanelTab, latestBrowserState, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "@/features/panel";
-import { desktopBrowserBridge } from "@/features/browser/desktop-browser-bridge";
+import { issuePanelTab, pullPanelTab, RailToggle, RightPanel, type PanelTab, type TaskFocus } from "@/features/panel";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/platform/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "../session-links";
 import { SessionSchedules } from "@/features/schedules";
-import { canvasPanelKey, writePanelTabs, clearPanelTabs } from "@/features/panel";
-import { writeEditor, clearEditor } from "@/features/files";
+import { canvasPanelKey } from "@/features/panel";
 import { Button } from "@/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
 import { useCommandHandlers } from "@/features/commands";
@@ -58,6 +56,8 @@ import { EmptyTranscript, SessionTurn, TurnFrame } from "./session-turn";
 import { useSessionSync } from "../hooks/use-session-sync";
 import { useCockpitPanel } from "../hooks/use-cockpit-panel";
 import { useJournalReactions } from "../hooks/use-journal-reactions";
+import { useSessionBrowser } from "../hooks/use-session-browser";
+import { handOffCanvas } from "../canvas-handoff";
 
 const api = createEngineApi();
 
@@ -185,34 +185,14 @@ export function SessionCockpit({
     stepPanelTab, openPanel, togglePanel, showSessionBrowser, tabHandlers,
   } = useCockpitPanel({ panelKey, enabledPlugins, hostId, sessionId });
   const panelPresence = usePanelPresence(!solo && panel.open);
-  /** Folded once here rather than in both the panel and the pinned summary, so
-   *  the two cannot disagree about which tabs are open. */
-  const browser = useMemo(() => latestBrowserState(events), [events]);
-
-  const [browserCanStart, setBrowserCanStart] = useState(false);
-  useEffect(() => {
-    if (!transcriptLanded) return;
-    let cancelled = false;
-    // Deferred to a task, same rule as the panel restore above: a synchronous
-    // setState in an effect body is a cascading render.
-    const task = window.setTimeout(() => {
-      setBrowserCanStart(false);
-      if (!sessionId) {
-        setBrowserCanStart(Boolean(projectId && (hostId !== LOCAL_HOST_ID || desktopBrowserBridge())));
-        return;
-      }
-      createEngineApi(hostFetcher(hostId)).browserState(sessionId).then(
-        (result) => {
-          if (!cancelled) setBrowserCanStart(result.browser.canStart ?? false);
-        },
-        () => undefined,
-      );
-    }, 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(task);
-    };
-  }, [sessionId, projectId, hostId, transcriptLanded]);
+  const owner = useRef<{ sessionId: string | undefined; projectId: string | undefined }>({ sessionId, projectId });
+  /** The live text, readable from an effect that must not re-run per keystroke. */
+  const draftText = useRef(draft);
+  const { browser, browserCanStart, browserStart, openBrowser, browserDraftFlight, browserDraftSendPending } = useSessionBrowser({
+    hostId, sessionId, projectId, transcriptLanded, events,
+    draft: { driver: draftDriver, envMode: draftEnvMode, base: draftBase, pick: draftPick, runtimeMode: draftRuntimeMode },
+    draftText, owner, panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab,
+  });
 
   useCommandHandlers(
     {
@@ -297,63 +277,6 @@ export function SessionCockpit({
 
   const revealNewTerminals = useJournalReactions({ events, browser, enabledPlugins, showPanelTab, updatePanel });
 
-  const owner = useRef<{ sessionId: string | undefined; projectId: string | undefined }>({ sessionId, projectId });
-  /** The live text, readable from an effect that must not re-run per keystroke. */
-  const draftText = useRef(draft);
-  const [browserStart, setBrowserStart] = useState<BrowserStartState>({ status: "idle" });
-  const browserOpening = useRef(false);
-  const browserDraftIdentity = useRef<{ path: string; id: string } | null>(null);
-  const browserDraftFlight = useRef<Promise<string> | null>(null);
-  const browserDraftSendPending = useRef(false);
-
-  async function ensureBrowserDraft(): Promise<string> {
-    if (sessionId) return sessionId;
-    // A draft is a session waiting to be created IN A project. There is no such
-    // thing without one, and `/main` never reaches here: it always has a
-    // session already.
-    if (projectId === undefined) throw new EngineApiError("invalid_request", "This conversation has no project to open a draft in.");
-    if (browserDraftFlight.current) return browserDraftFlight.current;
-    const origin = window.location.pathname;
-    if (browserDraftIdentity.current?.path !== origin) {
-      browserDraftIdentity.current = { path: origin, id: newSessionId() };
-    }
-    const id = browserDraftIdentity.current.id;
-    // Keep both requests on the originating host if navigation changes mid-flight.
-    const draftApi = createEngineApi(hostFetcher(hostId));
-    const flight = (async () => {
-      const created = await draftApi.createSession(projectId, {
-        id, draft: true, title: "Browser draft", driver: draftDriver, envMode: draftEnvMode,
-        ...(draftEnvMode === "worktree" ? draftBase : {}),
-      });
-      const model = sessionModelSelection(created.session.providerInstanceId, draftPick);
-      const patched = await draftApi.updateSession(id, {
-        runtimeMode: draftRuntimeMode,
-        ...(model ? { model } : {}),
-      });
-      // Keep the durable draft, but never navigate over a different conversation.
-      if (window.location.pathname !== origin) return id;
-      writeDraft(id, projectId, draftText.current);
-      writeDraft(undefined, projectId, "");
-      writePanelTabs(id, panel, Date.now());
-      // …and the files open in each Editor with them: the arrangement a person
-      // built while writing the first message is the arrangement they want
-      // while it runs.
-      for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(id, instance), state, Date.now());
-      clearPanelTabs(canvasPanelKey(projectId));
-      for (const instance of Object.keys(editors)) clearEditor(editorInstanceKey(canvasPanelKey(projectId), instance));
-      clearEditor(canvasPanelKey(projectId));
-      owner.current = { sessionId: id, projectId };
-      setSession(patched.session);
-      setCreatedSessionId(id);
-      const destination = sessionHref({ id, projectId, hostId });
-      browserDraftIdentity.current = { path: destination, id };
-      window.history.replaceState(null, "", destination);
-      return id;
-    })();
-    browserDraftFlight.current = flight;
-    try { return await flight; } finally { browserDraftFlight.current = null; }
-  }
-
   async function adoptConversation(conversation: ClaudeConversation): Promise<void> {
     if (projectId === undefined) {
       throw new EngineApiError("invalid_request", "This conversation has no project to create a session in.");
@@ -388,44 +311,10 @@ export function SessionCockpit({
       window.history.replaceState(null, "", canvas);
       throw cause;
     }
-    writePanelTabs(target, panel, Date.now());
-    for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(target, instance), state, Date.now());
+    handOffCanvas(target, projectId, { panel, editors }, { clearCanvas: false });
     clearTranscript();
     owner.current = { sessionId: target, projectId };
     setCreatedSessionId(target);
-  }
-
-  async function openBrowser() {
-    if (browserOpening.current) return;
-    browserOpening.current = true;
-    const origin = window.location.pathname;
-    setBrowserStart({ status: "pending" });
-    let destination = origin;
-    const browserApi = createEngineApi(hostFetcher(hostId));
-    try {
-      const target = await ensureBrowserDraft();
-      destination = sessionHref({ id: target, projectId, hostId });
-      if (window.location.pathname !== origin && window.location.pathname !== destination) return;
-      // Bind the native host before the engine asks it to create the first tab.
-      // This also covers a renderer updated while its engine is still running.
-      await desktopBrowserBridge()?.bindProfile?.(target, projectId ?? "none");
-      if (window.location.pathname !== origin && window.location.pathname !== destination) return;
-      const result = await browserApi.browserState(target, { start: true });
-      if (window.location.pathname !== destination) return;
-      setBrowserStart(describeBrowserStart(result.browser));
-      const active = result.browser.tabs.find((tab) => tab.active) ?? result.browser.tabs[0];
-      // On desktop the native strip owns the pages — one stable "Browser" tab.
-      if (active) {
-        if (desktopBrowserBridge()) showSessionBrowser();
-        else showPanelTab(browserPanelTab(active.id));
-      }
-    } catch (error) {
-      if (window.location.pathname === origin || window.location.pathname === destination) {
-        setBrowserStart({ status: "error", message: error instanceof Error ? error.message : "The engine could not start a browser." });
-      }
-    } finally {
-      browserOpening.current = false;
-    }
   }
 
   useEffect(() => {
@@ -717,9 +606,7 @@ export function SessionCockpit({
           const patched = await api.updateSession(target, creationPatch);
           setSession(patched.session);
         }
-        writePanelTabs(target, panel, Date.now());
-        // Every Editor's files travel with them — same hand-off, same reason.
-        for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(target, instance), state, Date.now());
+        handOffCanvas(target, projectId, { panel, editors }, { clearCanvas: false });
         clearTranscript();
         owner.current = { sessionId: target, projectId };
         setCreatedSessionId(target);
