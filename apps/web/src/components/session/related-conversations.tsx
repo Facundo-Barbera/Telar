@@ -36,11 +36,12 @@
  * None confers permission and none is a lifetime. Rows link through
  * `sessionHref`, which carries the host prefix — two Macs can mint one id.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowUpRightIcon, BellIcon, BellOffIcon, UsersIcon } from "lucide-react";
 import type { SessionAssignment, Subscription } from "@telar/engine-client";
 import { PanelEmpty, PanelRow, PanelSectionLabel, type PanelTone } from "@/components/ui/panel";
+import { usePoll } from "@/ui/hooks/use-poll";
 import { createEngineApi } from "@/lib/engine/client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { hostFetcher } from "@/lib/hosts/client";
@@ -317,25 +318,18 @@ const EMPTY_READ: Read = { rows: [], following: [], failed: false, done: false, 
  */
 function useRelated(sessionId: string | undefined, hostId: string | undefined, visible: boolean, nudge: number): Read {
   const [read, setRead] = useState<Read>(EMPTY_READ);
-  useEffect(() => {
-    if (!sessionId || !visible) return;
-    let live = true;
-    const api = createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
-    const tick = async () => {
+  usePoll(
+    async (signal) => {
+      if (!sessionId) return;
+      const api = createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
+      // All sessions, settled included: a delegate settles because its work was delivered.
       const [list, subscriptions] = await Promise.all([
-        // ALL OF THEM (#457). The route answers the unsettled rows by default,
-        // which is right for a RAIL and wrong here: a delegate is settled
-        // precisely BECAUSE its work was delivered, so the narrow list would
-        // drop the finished errands this panel exists to show. It ticks only
-        // while the panel is open and visible, which is what makes paying for
-        // the whole list the right trade in this one place.
         api.liveSessions({ all: true }).then((value) => value, () => undefined),
         api.sessionSubscriptions(sessionId).then((value) => value.subscriptions, () => undefined),
       ]);
-      if (!live) return;
+      if (signal.aborted) return;
+      // A failed read keeps the last good answer rather than claiming nobody is working here.
       setRead((current) => ({
-        // A FAILED READ PRESERVES THE LAST GOOD ANSWER. An empty list claims
-        // nobody is working here, and a dropped request is not evidence of that.
         rows: list
           ? list.sessions.map((session) => ({
               ...toSidebarSession(session, undefined, undefined, undefined, undefined, list.assignments?.[session.id]),
@@ -347,17 +341,11 @@ function useRelated(sessionId: string | undefined, hostId: string | undefined, v
         done: true,
         at: Date.now(),
       }));
-    };
-    void tick();
-    const timer = window.setInterval(() => void tick(), 10_000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-    // `nudge` is a request to come round NOW — a follow just changed the answer
-    // and ten seconds of a stale control is ten seconds of the panel arguing
-    // with a button the reader pressed.
-  }, [sessionId, hostId, visible, nudge]);
+    },
+    sessionId && visible ? 10_000 : null,
+    // `nudge` asks for a read now: a follow just changed the answer.
+    { key: `${sessionId}:${hostId}:${nudge}` },
+  );
   return read;
 }
 

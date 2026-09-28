@@ -28,7 +28,8 @@
  * unified patches, so we render them.
  */
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { useNow } from "@/ui/hooks/use-now";
+import { createContext, useContext, useMemo, useState } from "react";
 import {
   BookOpenIcon,
   BotIcon,
@@ -1544,30 +1545,6 @@ const formatElapsed = (seconds: number) =>
   seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 
 /**
- * THE TRANSCRIPT'S ONLY CLOCK (#498).
- *
- * The elapsed readout below is the one thing in a conversation that has to
- * change without an event arriving, so SOMETHING has to tick once a second
- * while a turn runs. It used to be `useState` in `SessionCockpit`, threaded down
- * as a `now` prop — which meant each tick re-rendered the whole cockpit and
- * every turn mounted under it, ten of them, to advance two numbers inside this
- * one component.
- *
- * The clock belongs to the thing that reads it. This component mounts only on a
- * live turn and unmounts the moment it settles, so the interval's lifetime is
- * already exactly the window in which a second-by-second clock means anything —
- * no `running` flag to thread, and nothing above it re-renders on a tick.
- */
-function useSecondsClock(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return now;
-}
-
-/**
  * The tail of a live turn.
  *
  * NO BORDER, NO CARD, NO BACKGROUND — a status LINE at the same 11px muted
@@ -1598,7 +1575,7 @@ export function WorkingIndicator({
    *  see `isCompacting`. */
   compacting?: boolean;
 }) {
-  const now = useSecondsClock();
+  const now = useNow(1_000);
   const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
   /**
    * SILENCE IS A GAP SINCE THE LAST THING THAT HAPPENED, not the age of the

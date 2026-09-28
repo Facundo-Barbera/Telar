@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { InboxIcon } from "lucide-react";
 import { PanelRow, PanelSectionLabel } from "@/components/ui/panel";
+import { usePoll } from "@/ui/hooks/use-poll";
 import { createEngineApi } from "@/lib/engine/client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { hostFetcher } from "@/lib/hosts/client";
@@ -33,24 +34,17 @@ export function HeldReportsView({ held }: { held: number }) {
  *  A failed read keeps the last good count rather than inventing zero. */
 function useHeld(sessionId: string | undefined, hostId: string | undefined, visible: boolean): number | undefined {
   const [held, setHeld] = useState<number>();
-  useEffect(() => {
-    if (!sessionId || !visible) return;
-    let live = true;
-    const api = createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
-    const tick = async () => {
-      const status = await api.sessionHeldReports(sessionId).then(
-        (value) => value,
-        () => undefined,
-      );
-      if (live && status !== undefined) setHeld(status.held);
-    };
-    void tick();
-    const timer = window.setInterval(() => void tick(), 10_000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, [sessionId, hostId, visible]);
+  usePoll(
+    async (signal) => {
+      if (!sessionId) return;
+      const status = await createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID))
+        .sessionHeldReports(sessionId)
+        .catch(() => undefined);
+      if (!signal.aborted && status !== undefined) setHeld(status.held);
+    },
+    sessionId && visible ? 10_000 : null,
+    { key: `${sessionId}:${hostId}` },
+  );
   return held;
 }
 
