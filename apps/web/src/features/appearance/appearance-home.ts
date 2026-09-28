@@ -1,6 +1,7 @@
 "use client";
 
 import { compositionFromV1, type Look } from "@telar/engine-client";
+import { createEngineApi } from "@/platform/engine";
 import { DEFAULT_APPEARANCE } from "./appearance";
 import { parseLook, parseThemeHalf } from "./looks";
 
@@ -42,39 +43,17 @@ function themeFileAsLook(entry: Record<string, unknown>): Look | undefined {
   };
 }
 
-export async function readAppearanceHome(signal?: AbortSignal): Promise<HomeRead> {
-  let payload: {
-    themes?: unknown;
-    looks?: unknown;
-    settings?: unknown;
-    images?: unknown;
-    skipped?: unknown;
-  };
-  try {
-    const response = await fetch("/api/appearance/home", { signal, cache: "no-store" });
-    if (!response.ok) return EMPTY;
-    payload = (await response.json()) as typeof payload;
-  } catch {
-    return EMPTY;
-  }
-
-  const unreadable: { file: string; reason: string }[] = Array.isArray(payload.skipped)
-    ? payload.skipped.flatMap((entry) =>
-        typeof entry === "object" && entry !== null ? [{ file: String((entry as Record<string, unknown>)["file"] ?? ""), reason: String((entry as Record<string, unknown>)["reason"] ?? "") }] : [],
-      )
-    : [];
-
-  const objects = (value: unknown): Record<string, unknown>[] =>
-    Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry)) : [];
-
+export async function readAppearanceHome(): Promise<HomeRead> {
+  const home = await createEngineApi().appearanceHome().catch(() => undefined);
+  if (!home) return EMPTY;
+  const unreadable = home.skipped.slice();
   const looks: Look[] = [];
-  for (const entry of objects(payload.themes)) {
+  for (const entry of home.themes) {
     const look = themeFileAsLook(entry);
     if (look) looks.push(look);
     else unreadable.push({ file: `themes/${String(entry["id"] ?? "?")}.json`, reason: "not a theme this build can read" });
   }
-
-  for (const entry of objects(payload.looks)) {
+  for (const entry of home.looks) {
     if (!isId(entry["id"])) {
       unreadable.push({ file: "looks/?.json", reason: "no usable id" });
       continue;
@@ -83,13 +62,7 @@ export async function readAppearanceHome(signal?: AbortSignal): Promise<HomeRead
     if (look) looks.push(look);
     else unreadable.push({ file: `looks/${entry["id"]}.json`, reason: "not a look this build can read" });
   }
-
-  return {
-    looks,
-    settings: typeof payload.settings === "object" && payload.settings !== null && !Array.isArray(payload.settings) ? (payload.settings as Record<string, unknown>) : null,
-    images: Array.isArray(payload.images) ? payload.images.filter((name): name is string => typeof name === "string") : [],
-    unreadable,
-  };
+  return { looks, settings: home.settings, images: home.images, unreadable };
 }
 
 export function mergeById<T extends { id: string }>(mine: readonly T[], home: readonly T[]): T[] {
