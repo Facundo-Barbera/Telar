@@ -274,7 +274,7 @@ import { applyModelManifest, BUNDLED_MANIFEST, legacyLongSpelling, longDefaultOf
 import { applyModelOverlay, chosenDefault } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
-import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./schedules";
+import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
 import type { ScheduleRow } from "./execution-store";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, type GitResult, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
