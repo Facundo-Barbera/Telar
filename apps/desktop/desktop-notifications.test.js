@@ -1,8 +1,7 @@
-// THE MAC'S OWN NOTIFICATIONS — the shell half, driven with a fake
-// Notification class. Nothing here touches Electron, a store or the network.
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const path = require("node:path");
+const { mainSource } = require("./main-source");
 const {
   DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS,
   ACTIVE_IDLE_SECONDS, PRESENCE_BEAT_MS, presenceMessage, createPresenceReporter,
@@ -58,9 +57,10 @@ describe("the channel's contract", () => {
   });
 
   test("main.js forks the server with the flag and listens on that child only", () => {
-    const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+    const main = mainSource();
     expect(main).toContain("[DESKTOP_NOTIFICATIONS_ENV]: \"1\"");
-    expect(main).toContain("serverChild.on(\"message\", (message) => desktopNotifier.handleServerMessage(message));");
+    expect(main).toContain("onMessage: (message) => desktopNotifier.handleServerMessage(message),");
+    expect(main).toContain("serverChild.on(\"message\", onMessage);");
   });
 
   test("main.js reports presence to that same child, and stops when it exits", () => {
@@ -74,7 +74,7 @@ describe("the channel's contract", () => {
   test("the server's staleness window outlasts the shell's beat", () => {
     const server = fs.readFileSync(path.join(__dirname, "../web/lib/mobile/desktop.ts"), "utf8");
     const stale = Number(/export const PRESENCE_STALE_MS = ([\d_]+);/.exec(server)?.[1].replaceAll("_", ""));
-    // Two missed beats are tolerated; a third means the shell is gone.
+
     expect(stale).toBeGreaterThanOrEqual(PRESENCE_BEAT_MS * 3);
   });
 
@@ -108,11 +108,11 @@ describe("presence", () => {
     const path = "/projects/p1/sessions/s1";
     expect(presenceMessage({ idleState: "active", locked: false, focused: true, viewingPath: path })).toEqual({ type: DESKTOP_PRESENCE, active: true, viewingPath: path });
     expect(presenceMessage({ idleState: "active", locked: false, focused: false, viewingPath: path })).toEqual({ type: DESKTOP_PRESENCE, active: true, viewingPath: null });
-    // Walked away with the session open: not active, and not "viewing" either.
+
     for (const away of [{ idleState: "idle" }, { idleState: "locked" }, { idleState: "unknown" }, { idleState: "active", locked: true }]) {
       expect(presenceMessage({ focused: true, viewingPath: path, ...away })).toEqual({ type: DESKTOP_PRESENCE, active: false, viewingPath: null });
     }
-    // Only an in-app path is ever reported.
+
     expect(presenceMessage({ idleState: "active", focused: true, viewingPath: "https://evil.example" }).viewingPath).toBeNull();
     expect(ACTIVE_IDLE_SECONDS).toBe(120);
   });
@@ -169,7 +169,7 @@ describe("the banner and its actions", () => {
     banner.handlers.action({ actionIndex: 0 });
     expect(sent).toEqual([{ type: DESKTOP_APPROVE, sessionId: "s1", requestId: "r1" }]);
     expect(opened).toEqual([]);
-    // Landed: nothing more to do.
+
     notifier.handleServerMessage({ type: DESKTOP_APPROVED, sessionId: "s1", requestId: "r1", ok: true });
     expect(opened).toEqual([]);
   });
@@ -180,7 +180,7 @@ describe("the banner and its actions", () => {
     FakeNotification.made[0].handlers.action({ actionIndex: 0 });
     notifier.handleServerMessage({ type: DESKTOP_APPROVED, sessionId: "s1", requestId: "r1", ok: false });
     expect(opened).toEqual(["/projects/p1/sessions/s1"]);
-    // A reply for a request this shell never sent opens nothing.
+
     notifier.handleServerMessage({ type: DESKTOP_APPROVED, sessionId: "s9", requestId: "r9", ok: false });
     expect(opened).toHaveLength(1);
   });
@@ -215,7 +215,7 @@ describe("read elsewhere", () => {
     notifier.handleServerMessage({ type: DESKTOP_DISMISS, sessionId: "s1" });
     expect([first.closed, second.closed]).toEqual([true, false]);
     expect(notifier.liveCount()).toBe(1);
-    // Closing is not opening: the person did not click it here.
+
     expect(opened).toEqual([]);
     notifier.handleServerMessage({ type: DESKTOP_DISMISS, sessionId: "never-shown" });
     expect(notifier.liveCount()).toBe(1);
