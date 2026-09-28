@@ -14,7 +14,7 @@ import { Database } from "bun:sqlite";
 import { EngineStore } from "../src/state";
 import { ExecutionStore, ITEM_ROWS_FOR_RUNS_SQL } from "../src/execution-store";
 import { sessionSnapshot } from "../src/session-bootstrap";
-import { arrayElementRanges, parseSpan } from "../src/document-window";
+import { arrayElementRanges, parseSpan } from "../src/platform/db/document-window";
 import { toLegacyHome } from "./store-internals";
 
 const roots: string[] = [];

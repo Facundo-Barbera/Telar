@@ -198,7 +198,7 @@ import {
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
 import { atomicWrite } from "./platform/fs/atomic";
-import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
+import { arrayElementRanges, parseSpan, type DocumentIndex } from "./platform/db/document-window";
 import {
   boundedOutline,
   context,
@@ -222,7 +222,7 @@ import type { DictationContext } from "./dictation/keyterms";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
-import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
+import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./domains/files";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import {
   commitSessionWork,

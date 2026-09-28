@@ -1,32 +1,3 @@
-/**
- * READING THE TAIL OF A SESSION DOCUMENT WITHOUT MATERIALISING THE REST (#419).
- *
- * `queue.json` and `items.json` are one JSON array each, appended to for the
- * life of a conversation, and every read of them used to be a whole-document
- * `JSON.parse` plus a whole-document zod validation — after which
- * `snapshotWindow` threw away everything outside the ten turns it answers with.
- * Measured at the engine boundary, the same 10-turn window cost 3.7 ms on a
- * 20-turn session and 38–44 ms on a 120-turn one: the price of a read was the
- * length of the conversation, not the size of the answer, and the cockpit pays
- * it once a second while a turn runs.
- *
- * THE INDEX IS BYTE OFFSETS INTO THE EXACT STORED TEXT (`documents.value`):
- * record where each array element starts and ends, then read back only the span
- * the window needs — `substr` over the value cast to a blob — and parse that.
- *
- * BYTES, NOT CHARACTERS, and the scanner below works on a `Buffer` for exactly
- * that reason. Conversations are full of non-ASCII, so a UTF-16 string offset
- * and a byte offset stop agreeing at the first accented character; SQLite's own
- * `substr` is character-based over TEXT and byte-based over BLOB. Scanning bytes is safe because every structural
- * character in JSON is ASCII and no UTF-8 continuation byte can be mistaken for
- * one.
- *
- * THE OFFSETS ARE DERIVED FROM THE TEXT, NOT FROM THE VALUE. A writer hands
- * this module the string it is about to store and gets back the ranges within
- * it, so the index cannot drift from the document by disagreeing about
- * formatting.
- */
-
 const QUOTE = 0x22;
 const BACKSLASH = 0x5c;
 const LBRACE = 0x7b;
@@ -36,23 +7,8 @@ const RBRACKET = 0x5d;
 const COMMA = 0x2c;
 const COLON = 0x3a;
 
-/** One element's half-open byte range within the document it was indexed from. */
 export type DocumentRange = { start: number; end: number };
 
-/**
- * What is written beside a document so its tail can be read alone.
- *
- * `length` IS THE STALENESS CHECK, and it is why this can be an optimisation
- * rather than a new source of truth: a document written by an older engine has
- * no index, and one edited behind the store's back (a test rewriting
- * `queue.json`, a restored backup, a legacy import) has one that no longer
- * describes it. Both cases compare unequal against the stored document's own
- * byte length, the index is discarded, and the read falls back to parsing the
- * whole document — slower, never wrong.
- *
- * `tag` carries the one field the window has to sort on — a turn's state —
- * so deciding WHICH elements to read needs no read at all.
- */
 export type DocumentIndex = {
   version: number;
   length: number;
@@ -69,13 +25,10 @@ function skipWhitespace(bytes: Buffer, at: number): number {
   return index;
 }
 
-/** Past the closing quote of the string opening at `at`. */
 function endOfString(bytes: Buffer, at: number): number {
   let index = at + 1;
   while (index < bytes.length) {
     const byte = bytes[index]!;
-    // An escape consumes the next byte whatever it is, which is what keeps a
-    // `\"` inside a message from being read as the end of the string.
     if (byte === BACKSLASH) {
       index += 2;
       continue;
@@ -86,7 +39,6 @@ function endOfString(bytes: Buffer, at: number): number {
   return index;
 }
 
-/** Past the last byte of the JSON value starting at `at`. */
 function endOfValue(bytes: Buffer, at: number): number {
   const first = bytes[at];
   if (first === undefined) return at;
@@ -118,14 +70,6 @@ function endOfValue(bytes: Buffer, at: number): number {
   return index;
 }
 
-/**
- * The byte range of every element of the top-level array property `name`.
- *
- * `undefined` when the document is not the shape this expects — not an error:
- * the caller's answer to an unindexable document is to write no index and keep
- * reading it whole, which is what every document written before this existed
- * already does.
- */
 export function arrayElementRanges(bytes: Buffer, name: string): DocumentRange[] | undefined {
   const wanted = Buffer.from(JSON.stringify(name), "utf8");
   let index = skipWhitespace(bytes, 0);
@@ -162,16 +106,6 @@ function elementRanges(bytes: Buffer, open: number, close: number): DocumentRang
   return ranges;
 }
 
-/**
- * The elements a span of document bytes holds, as one array.
- *
- * The span runs from one element's first byte to another's last, so whatever
- * separated them in the document — a comma, a newline, an indent — is still
- * between them and the whole thing is a valid array body once bracketed. The
- * caller filters: a span that reaches back to an old unsettled turn carries the
- * settled ones in between, and reading a few extra rows is cheaper than reading
- * each wanted one on its own.
- */
 export function parseSpan(bytes: Buffer): unknown[] {
   return JSON.parse(`[${bytes.toString("utf8")}]`) as unknown[];
 }

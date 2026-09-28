@@ -1,5 +1,5 @@
 import { startEngine } from "./daemon";
-import { hydrateHostPath } from "./host-path";
+import { hydrateHostPath } from "./platform/process/host-path";
 import { providerSkillRoots } from "./provider-skills";
 import { ENGINE_EXIT_LOCK_HELD, EngineStateError, engineRootFromEnv, statePaths } from "./state";
 
