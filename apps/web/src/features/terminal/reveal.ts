@@ -2,7 +2,7 @@
  * A TERMINAL THAT OPENS PUTS ITSELF IN THE PANEL — never the panel in front of
  * you ("Run = a new terminal", PR 5).
  *
- * An agent's `terminal_open`, a `run_start`, or the person's own Run menu each
+ * An agent's `terminal_open`, or the person's own Run menu, each
  * open an engine terminal, and every one arrives on the session's run feed as a
  * new `RunView`. It used to get a chip only while the Terminal surface happened
  * to be MOUNTED: with the panel hidden, or showing the Diff, an agent could

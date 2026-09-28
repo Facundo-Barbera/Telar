@@ -239,68 +239,10 @@ test("a note is handed over once", () => {
   expect(store.claims.claimNextTurn("worker_one")!.notes).toBeUndefined();
 });
 
-test("each run_* alias maps onto the terminal it replaced", async () => {
-  const { call, store, manager, host, closedByPerson } = surface();
-  const config = store.create("p", { name: "web dev", command: "bun run dev" });
-
-  const started = await call("run_start", { configId: config.id, replace: true });
-  const id = idIn(started.text);
-  expect(host.opened[0]!.request.origin).toBe("run");
-  await call("run_start", { configId: config.id });
-  expect(manager.terminals("s").filter((run) => run.status === "running")).toHaveLength(2);
-
-  const agentId = idIn((await call("terminal_open", { command: "bun test --watch" })).text);
-  const status = await call("run_status");
-  expect(status.text).toContain(id);
-  expect(status.text).not.toContain(agentId);
-  expect((await call("terminal_list")).text).toContain(agentId);
-
-  host.print(id, "Listening on 3000\r\n");
-  expect((await call("run_output", { runId: id })).text).toContain("Listening on 3000");
-  const waiting = call("run_wait", { runId: id, pattern: "compiled", timeoutMs: 5_000 });
-  host.print(id, "compiled\r\n");
-  expect((await waiting).text.startsWith("MATCHED")).toBe(true);
-
-  const restarted = await call("run_restart", { runId: id });
-  const newId = idIn(restarted.text);
-  expect(newId).not.toBe(id);
-  expect(manager.run(id).closedBy).toBe("agent");
-  expect(manager.run(newId).title).toBe("web dev");
-
-  await call("run_stop", { runId: newId });
-  expect(manager.run(newId).closedBy).toBe("agent");
-
-  const opened = manager.terminals("s").find((run) => run.title === "web dev #2")!;
-  host.personCloses(opened.terminalId);
-  expect(closedByPerson.map((run) => run.terminalId)).toEqual([opened.terminalId]);
-});
-
-test("run_release answers that it is no longer needed", async () => {
-  const { call } = surface();
-  const released = await call("run_release", { runId: "anything" });
-  expect(released.isError).toBe(false);
-  expect(released.text).toContain("No longer needed");
-});
-
 test("there is no terminal_send: the agent never types into a terminal", () => {
   const { tools } = surface();
   expect(tools.has("terminal_send")).toBe(false);
   expect([...tools.keys()].filter((name) => /send|write|type|input/.test(name))).toEqual([]);
-});
-
-test("every deprecated alias says which tool replaced it", () => {
-  const { tools } = surface();
-  for (const [name, replacement] of [
-    ["run_start", "terminal_open"],
-    ["run_status", "terminal_list"],
-    ["run_stop", "terminal_kill"],
-    ["run_restart", "terminal_open"],
-    ["run_output", "terminal_output"],
-    ["run_wait", "terminal_wait"],
-  ] as const) {
-    expect(tools.get(name)!.description).toStartWith("Deprecated: use ");
-    expect(tools.get(name)!.description).toContain(replacement);
-  }
 });
 
 test("the wall's descriptions stay inside their budget", () => {

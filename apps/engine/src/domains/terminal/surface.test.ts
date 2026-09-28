@@ -71,7 +71,7 @@ const route = (method: string, tail: string) => {
 test("every tool on this wall is terminal_- or run_-prefixed", () => {
   const tools = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: temp("tree") })).tools;
 
-  expect(tools.size).toBe(15);
+  expect(tools.size).toBe(8);
   for (const name of tools.keys()) {
     expect(name).toMatch(/^(terminal|run)_[a-z_]+$/);
   }
@@ -103,34 +103,34 @@ test("an absolute working directory is refused at the door, in words a human cou
 
 const terminalIn = (text: string): string => /terminal (pipe_[0-9a-f]+|term_[0-9a-z_]+)/.exec(text)![1]!;
 
-test("run_status lists THIS session's terminals, each with its id", async () => {
+test("terminal_list lists THIS session's terminals, each with its id", async () => {
   const tree = temp("tree");
   let sessionId = "s";
   const { store, tools } = surface(() => ({ sessionId, projectId: "p", worktreePath: tree }));
   const config = store.create("p", { name: "server", command: "sleep 30" });
 
-  const empty = await tools.get("run_status")!.call();
+  const empty = await tools.get("terminal_list")!.call();
   expect(empty.text).toContain("no terminals");
 
-  const started = await tools.get("run_start")!.call({ configId: config.id });
+  const started = await tools.get("terminal_open")!.call({ configId: config.id });
   expect(started.isError).toBe(false);
   expect(started.text).toContain("running");
   const id = terminalIn(started.text);
 
-  const seen = await tools.get("run_status")!.call();
+  const seen = await tools.get("terminal_list")!.call();
   expect(seen.text).toContain(id);
   expect(seen.text).toContain(tree);
 
   sessionId = "other";
-  expect((await tools.get("run_status")!.call()).text).toContain("no terminals");
+  expect((await tools.get("terminal_list")!.call()).text).toContain("no terminals");
 }, 15_000);
 
-test("run_start on a configuration already open opens another instance, and ignores replace", async () => {
+test("opening a configuration already open opens another instance", async () => {
   const tree = temp("tree");
   const { store, tools, manager } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", { name: "server", command: "sleep 30" });
-  const first = await tools.get("run_start")!.call({ configId: config.id });
-  const second = await tools.get("run_start")!.call({ configId: config.id, replace: true });
+  const first = await tools.get("terminal_open")!.call({ configId: config.id });
+  const second = await tools.get("terminal_open")!.call({ configId: config.id });
 
   expect(second.isError).toBe(false);
   expect(second.text).toContain('"server #2"');
@@ -138,37 +138,32 @@ test("run_start on a configuration already open opens another instance, and igno
   expect(manager.run(terminalIn(second.text)).status).toBe("running");
 }, 15_000);
 
-test("run_stop closes the terminal, records the agent as who closed it, and names the choice when there are two", async () => {
+test("terminal_kill closes the terminal and records the agent as who closed it", async () => {
   const tree = temp("tree");
   const { store, tools, manager } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", { name: "server", command: "sleep 30" });
-  const first = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
-  const second = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
+  const first = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
+  const second = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
-  const ambiguous = await tools.get("run_stop")!.call({});
-  expect(ambiguous.isError).toBe(true);
-  expect(ambiguous.text).toContain(first);
-  expect(ambiguous.text).toContain(second);
-
-  const closed = await tools.get("run_stop")!.call({ runId: first });
+  const closed = await tools.get("terminal_kill")!.call({ terminalId: first });
   expect(closed.isError).toBe(false);
   expect(manager.run(first).status).toBe("closed");
   expect(manager.run(first).closedBy).toBe("agent");
   expect(manager.run(second).status).toBe("running");
 
-  expect((await tools.get("run_status")!.call()).text).toContain("Closed by you");
+  expect((await tools.get("terminal_list")!.call()).text).toContain("Closed by you");
 }, 15_000);
 
 test("a close from the cockpit is the person's, and the agent is told so", async () => {
   const tree = temp("tree");
   const { store, tools, capability } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", { name: "server", command: "sleep 30" });
-  const id = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
   const closed = (await route("POST", "/run/stop").route.handle({ params: [], input: { terminalId: id }, capability })) as { closedBy?: string };
   expect(closed.closedBy).toBe("person");
-  expect((await tools.get("run_status")!.call()).text).toContain("Closed by the person");
-  expect((await tools.get("run_status")!.call()).text).toContain("Do not reopen it unless they ask");
+  expect((await tools.get("terminal_list")!.call()).text).toContain("Closed by the person");
+  expect((await tools.get("terminal_list")!.call()).text).toContain("Do not reopen it unless they ask");
 }, 15_000);
 
 test("a terminal id belonging to another session is not found rather than acted on", async () => {
@@ -176,26 +171,17 @@ test("a terminal id belonging to another session is not found rather than acted 
   let sessionId = "s";
   const { store, manager, tools, capability } = surface(() => ({ sessionId, projectId: "p", worktreePath: tree }));
   const config = store.create("p", { name: "server", command: "sleep 30" });
-  const started = await tools.get("run_start")!.call({ configId: config.id });
+  const started = await tools.get("terminal_open")!.call({ configId: config.id });
   const id = terminalIn(started.text);
 
   sessionId = "other";
-  const stopped = await tools.get("run_stop")!.call({ runId: id });
+  const stopped = await tools.get("terminal_kill")!.call({ terminalId: id });
   expect(stopped.isError).toBe(true);
   expect(stopped.text).toMatch(/no terminal/);
   await expect(route("POST", "/run/stop").route.handle({ params: [], input: { terminalId: id }, capability })).rejects.toThrow(/no terminal/);
 
   expect(manager.run(id).status).toBe("running");
 }, 15_000);
-
-test("run_release is kept only to say it is no longer needed", async () => {
-  const tree = temp("tree");
-  const { tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
-  const released = await tools.get("run_release")!.call({ runId: "anything" });
-  expect(released.isError).toBe(false);
-  expect(released.text).toContain("No longer needed");
-  expect(matchRunRoute("POST", "/run/release")).toBeUndefined();
-});
 
 test("output read through the tool is bounded, cursored, and scrubbed of secret values", async () => {
   const tree = temp("tree");
@@ -205,12 +191,12 @@ test("output read through the tool is bounded, cursored, and scrubbed of secret 
     command: 'echo "token=$TOKEN"; echo oops >&2',
     env: [{ key: "TOKEN", value: "sk_live_secret", secret: true }],
   });
-  await tools.get("run_start")!.call({ configId: config.id });
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
-  let output = await tools.get("run_output")!.call();
+  let output = await tools.get("terminal_output")!.call({ terminalId: id });
   for (let attempt = 0; attempt < 100 && !output.text.includes("token="); attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 20));
-    output = await tools.get("run_output")!.call();
+    output = await tools.get("terminal_output")!.call({ terminalId: id });
   }
   expect(output.text).toContain("token=«redacted»");
   expect(output.text).not.toContain("sk_live_secret");
@@ -235,13 +221,13 @@ test("the route table covers the whole capability and nothing else", () => {
 
 const chatty = (command: string) => ({ name: "server", command });
 
-test("run_wait blocks until a line matches, and says WHICH condition fired", async () => {
+test("terminal_wait blocks until a line matches, and says WHICH condition fired", async () => {
   const tree = temp("tree");
   const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("echo booting; sleep 0.3; echo 'Listening on http://localhost:3000'; sleep 30"));
-  await tools.get("run_start")!.call({ configId: config.id });
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
-  const waited = await tools.get("run_wait")!.call({ pattern: "Listening on", timeoutMs: 10_000 });
+  const waited = await tools.get("terminal_wait")!.call({ terminalId: id, pattern: "Listening on", timeoutMs: 10_000 });
   expect(waited.isError).toBe(false);
   expect(waited.text).toContain("MATCHED");
   expect(waited.text).toContain("Listening on http://localhost:3000");
@@ -252,22 +238,22 @@ test("a wait that times out says so first, rather than burying it under the log"
   const tree = temp("tree");
   const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("echo quiet; sleep 30"));
-  await tools.get("run_start")!.call({ configId: config.id });
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
-  const waited = await tools.get("run_wait")!.call({ pattern: "never happens", timeoutMs: 300 });
+  const waited = await tools.get("terminal_wait")!.call({ terminalId: id, pattern: "never happens", timeoutMs: 300 });
   expect(waited.isError).toBe(false);
   expect(waited.text.startsWith("TIMED OUT")).toBe(true);
   expect(waited.text).toContain("do not assume it is up");
 }, 20_000);
 
-test("run_wait exit waits a build out, and fires once the terminal has ended", async () => {
+test("terminal_wait exit waits a build out, and fires once the terminal has ended", async () => {
   const tree = temp("tree");
   const { store, tools, manager } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("echo building; sleep 0.2; echo done"));
-  const started = await tools.get("run_start")!.call({ configId: config.id });
+  const started = await tools.get("terminal_open")!.call({ configId: config.id });
   const id = terminalIn(started.text);
 
-  const waited = await tools.get("run_wait")!.call({ exit: true, timeoutMs: 10_000 });
+  const waited = await tools.get("terminal_wait")!.call({ terminalId: id, exit: true, timeoutMs: 10_000 });
   expect(waited.text).toContain("ENDED");
   expect(manager.run(id).status).toBe("exited");
 }, 20_000);
@@ -276,10 +262,10 @@ test("waiting for readiness on a recipe with no readiness URL is refused, not wa
   const tree = temp("tree");
   const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("sleep 30"));
-  await tools.get("run_start")!.call({ configId: config.id });
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
   const began = Date.now();
-  const waited = await tools.get("run_wait")!.call({ ready: true, timeoutMs: 60_000 });
+  const waited = await tools.get("terminal_wait")!.call({ terminalId: id, ready: true, timeoutMs: 60_000 });
   expect(waited.isError).toBe(true);
   expect(waited.text).toContain("readinessUrl");
   expect(Date.now() - began).toBeLessThan(5_000);
@@ -289,9 +275,9 @@ test("a wait with nothing to wait FOR is refused, because that is a sleep", asyn
   const tree = temp("tree");
   const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("sleep 30"));
-  await tools.get("run_start")!.call({ configId: config.id });
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
-  const waited = await tools.get("run_wait")!.call({ timeoutMs: 5_000 });
+  const waited = await tools.get("terminal_wait")!.call({ terminalId: id, timeoutMs: 5_000 });
   expect(waited.isError).toBe(true);
   expect(waited.text).toMatch(/pattern, ready or exit/);
 }, 20_000);
@@ -300,19 +286,19 @@ test("a bad regular expression is the CALLER'S mistake, worded as one", async ()
   const tree = temp("tree");
   const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("sleep 30"));
-  await tools.get("run_start")!.call({ configId: config.id });
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
-  const waited = await tools.get("run_wait")!.call({ pattern: "[unclosed", timeoutMs: 1_000 });
+  const waited = await tools.get("terminal_wait")!.call({ terminalId: id, pattern: "[unclosed", timeoutMs: 1_000 });
   expect(waited.isError).toBe(true);
   expect(waited.text).toContain("not a valid regular expression");
 }, 20_000);
 
-test("run_output narrows with tail, grep and stream WITHOUT moving the cursor", async () => {
+test("terminal_output narrows with tail, grep and stream WITHOUT moving the cursor", async () => {
   const tree = temp("tree");
   const { store, tools, capability } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("echo one; echo two; echo ERROR three; echo four >&2; sleep 30"));
-  await tools.get("run_start")!.call({ configId: config.id });
-  await tools.get("run_wait")!.call({ pattern: "four", timeoutMs: 10_000 });
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
+  await tools.get("terminal_wait")!.call({ terminalId: id, pattern: "four", timeoutMs: 10_000 });
 
   const whole = await capability.output({});
   expect(whole.lines.length).toBeGreaterThanOrEqual(4);
@@ -329,12 +315,12 @@ test("run_output narrows with tail, grep and stream WITHOUT moving the cursor", 
   expect(errs.lines.map((line) => line.text)).toEqual(["four"]);
   expect(errs.cursor).toBe(whole.cursor);
 
-  const none = await tools.get("run_output")!.call({ grep: "nothing matches this" });
+  const none = await tools.get("terminal_output")!.call({ terminalId: id, grep: "nothing matches this" });
   expect(none.text).toContain("no line in this window matched");
   expect(none.text).not.toContain("no output yet");
 }, 20_000);
 
-test("run_stop sends the signal it was asked for first, and the close escalates to SIGKILL regardless", async () => {
+test("terminal_kill sends the signal it was asked for first, and the close escalates to SIGKILL regardless", async () => {
   const tree = temp("tree");
   const signalled: Array<{ pid: number; signal: string }> = [];
   const { store, tools } = surface(
@@ -353,10 +339,10 @@ test("run_stop sends the signal it was asked for first, and the close escalates 
     },
   );
   const config = store.create("p", chatty("sleep 30"));
-  await tools.get("run_start")!.call({ configId: config.id });
+  const id = terminalIn((await tools.get("terminal_open")!.call({ configId: config.id })).text);
 
   try {
-    await tools.get("run_stop")!.call({ signal: "SIGINT" });
+    await tools.get("terminal_kill")!.call({ terminalId: id, signal: "SIGINT" });
     expect(signalled.map((entry) => entry.signal)).toEqual(["SIGINT", "SIGTERM", "SIGKILL"]);
   } finally {
     for (const pid of new Set(signalled.map((entry) => entry.pid))) {
