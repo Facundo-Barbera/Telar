@@ -1,5 +1,4 @@
 // Uses paths from this repository: single-child collapse exists for `packages/core/src/loom/...`.
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, MAX_SEARCH_MATCHES } from "./file-tree";
 

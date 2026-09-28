@@ -20,7 +20,6 @@
  *
  * `right-panel.chooser.test.tsx` explains why a DOM is registered per file.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

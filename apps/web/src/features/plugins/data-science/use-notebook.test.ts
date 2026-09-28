@@ -14,7 +14,6 @@
  * method notebook/read", "data-science has no notebook/read" and "engine
  * endpoint does not exist" for a missing route.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { EngineApiError } from "@/platform/engine";
 import { classifyNotebookRead } from "./use-notebook";

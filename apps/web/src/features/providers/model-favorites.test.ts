@@ -7,7 +7,6 @@
  * The stored KEYS are family ids now (`claude-sonnet-5`, not `sonnet[1m]`) —
  * what a star survives is pinned in model-families.test.ts, where the fold is.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { orderByFavorite, readFavorites } from "./model-favorites";
 

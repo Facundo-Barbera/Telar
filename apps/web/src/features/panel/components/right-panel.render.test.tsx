@@ -14,7 +14,6 @@
  * claim under test is the label text, and the menus have their own tests
  * (session/context-menus.render.test.tsx takes the same approach).
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { RightPanel } from "./right-panel";

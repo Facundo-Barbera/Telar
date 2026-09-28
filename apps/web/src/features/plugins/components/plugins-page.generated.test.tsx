@@ -10,7 +10,6 @@
  *                  with its packages block inside it
  *   a write        the generated row writes the whole blob, keeping the rest
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

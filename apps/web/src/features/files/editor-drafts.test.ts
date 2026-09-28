@@ -3,7 +3,6 @@
  * and asserts what a re-mount would find. Two mounts of one file can overlap in time; an old
  * mount's late answer must neither clear nor overwrite the newer mount's text.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import { SaveCoordinator, type SaveOutcome } from "./save-coordinator";
 import {

@@ -20,7 +20,6 @@
  * `session/terminal-surface.test.tsx` both say so — and the acceptance for the
  * pixels is the owner's own tab.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

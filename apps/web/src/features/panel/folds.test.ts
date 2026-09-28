@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, Item, Task } from "@telar/engine-client";
 import { agentBrowserActivity, browserScopeToRelease, describeBrowserStart, isLiveTask, journalWrites, latestBrowserState, splitRoster, tabBadge } from "./folds";

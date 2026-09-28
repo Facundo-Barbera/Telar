@@ -5,7 +5,6 @@
  * and swallows the press, which is precisely the bug these keys exist to stop.
  * So every case below names the octet: `^W` is 0x17 and nothing else is.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { claimChords, claimedCommandIds, defaultKeymap, normalizeChord, resolveCommandForEvent } from "@/features/commands";
 import { ptyBytesForKey, TERMINAL_CHORD_CLAIMS } from "./keys";

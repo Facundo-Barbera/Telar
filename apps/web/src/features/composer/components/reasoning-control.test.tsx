@@ -6,7 +6,6 @@
  * model whose default is unknown reads "Auto", and a model with nothing to set
  * has no pill at all.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { chipBasename, chipIsDirectory, chipPath, detectComposerTrigger, replaceTextRange, segmentDraft } from "./tokens";
 import { browserPageReference, checkReference, directoryReference, fileReference, issueReference, noteReference, pageReference, pullReference, skillReference, taskReference } from "./drag-reference";

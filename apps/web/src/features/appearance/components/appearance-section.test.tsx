@@ -16,7 +16,6 @@
  * therefore assert against a pane in its pre-hydration state, which is not the
  * pane this file is about.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

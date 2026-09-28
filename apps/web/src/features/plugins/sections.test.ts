@@ -6,7 +6,6 @@
  * every case here is either "the shipped features are unchanged" or "a new one
  * appears on its own".
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { PluginStatus } from "@telar/engine-client";
 import { blockPatch, enablePatch, machineSettingsPatch, projectPluginSections } from "./sections";

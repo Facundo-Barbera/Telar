@@ -16,7 +16,6 @@
  *
  * `right-panel.chooser.test.tsx` explains why a DOM is registered per file.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
@@ -133,7 +132,7 @@ beforeEach(() => {
     new Response(JSON.stringify({ listing: { workspacePath: CHECKOUT, repository: true, files: [], source: "git", truncated: false, readAt: 1 } }), {
       status: 200,
       headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
 });
 
 afterEach(() => {
@@ -250,7 +249,7 @@ describe("opening a shell", () => {
     // worse failure than landing in the wrong directory.
     globalThis.fetch = (async () => {
       throw new Error("engine away");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const bridge = installBridge({ openId: "term_a" });
     await mount({ sessionId: "session_a" });
     expect(bridge.opens.length).toBe(1);

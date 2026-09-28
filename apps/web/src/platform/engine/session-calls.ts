@@ -18,7 +18,8 @@ Subscription,
 WakeKind,TaskOutputPage
 } from "@telar/engine-client";
 import { snapshotQuery } from "@telar/engine-client";
-import { answeringHost, EngineApiError, opens, reads, request, type EngineApiErrorCode, type Fetcher } from "./transport";
+import { answeringHost, EngineApiError, opens, reads, request, type EngineApiErrorCode } from "./transport";
+import type { Fetcher } from "./host-client";
 import type { LiveSessionsPage } from "./client";
 
 /** The cockpit's own sessions calls: the ones no package domain client covers yet. */

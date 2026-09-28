@@ -2,10 +2,8 @@
 // unreachable or the terminal has already ended.
 
 import { domainMethods, type RunConfigurationDraft } from "@telar/engine-client";
-import { pathnameFetcher } from "@/platform/engine/host-client";
+import { pathnameFetcher, type Fetcher } from "@/platform/engine/host-client";
 import { apiTransport } from "@/platform/engine/transport";
-
-type Fetcher = typeof fetch;
 
 /** `/api/sessions/:id/run/…` — the run door is session-scoped because the
  *  project and the worktree are things the daemon knows about the session, not

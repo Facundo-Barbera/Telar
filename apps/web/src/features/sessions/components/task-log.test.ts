@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { TaskOutputPage } from "@telar/engine-client";
 import { drainTaskOutput } from "./task-log";

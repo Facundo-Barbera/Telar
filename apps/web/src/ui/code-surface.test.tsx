@@ -4,7 +4,6 @@
  * helper and on the mounted component — the button is clicked and the
  * clipboard is asked what it received (#760; these were source pins once).
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

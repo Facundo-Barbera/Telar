@@ -6,7 +6,6 @@
  * unpinned conversation read greyed out beside the pinned cards. Only a shelved
  * row (settled or snoozed) recedes now.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

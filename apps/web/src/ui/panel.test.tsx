@@ -2,7 +2,6 @@
  * A PANEL ROW DRAWS NO COLOURED RAIL. The owner wants no coloured left stripes
  * anywhere; a row that has a state says it as a word at its trailing edge.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PanelEmpty, PanelRow } from "@/ui/panel";

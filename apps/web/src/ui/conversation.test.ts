@@ -15,7 +15,6 @@
  * animate. The two ends matter equally — a viewport that never stops placing
  * itself is one the reader can never scroll up in.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { nextPlacement } from "@/ui/conversation";
 

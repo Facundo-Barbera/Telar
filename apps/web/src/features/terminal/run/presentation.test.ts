@@ -4,7 +4,6 @@
  * unattributable check, "Running" over a closed terminal, a password typed
  * into a field that will refuse it only after the round trip.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   draftProblems,

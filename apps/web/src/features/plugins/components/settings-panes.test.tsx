@@ -3,7 +3,6 @@
  * shipped features resolve to the editors they always had, and a plugin with
  * no entry falls back to the generic pane rather than to nothing.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PROJECT_PLUGINS_VERSION, type PluginStatus, type Project } from "@telar/engine-client";

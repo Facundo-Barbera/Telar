@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test is the test runner
 import { expect, test } from "bun:test";
 import type { SessionSnapshot, EngineEvent } from "@telar/engine-client";
 import { SessionConnection, sessionConnection } from "./session-connection";

@@ -7,7 +7,6 @@
  * is the arithmetic that decides the size, and the decode back to a `File` —
  * which bun can run, because it ships `File` and `atob`.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { fileFromStashedImage, filesFromStash, fitLongEdge } from "./stash-images";
 

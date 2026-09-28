@@ -6,7 +6,6 @@
  * before the user had typed a character. No test asked about it because nothing
  * about the code looked wrong.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { publishableEnv } from "./provider-instance-fields";
 

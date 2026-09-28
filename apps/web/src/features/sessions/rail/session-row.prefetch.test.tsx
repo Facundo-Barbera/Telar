@@ -12,7 +12,6 @@
  * "is this row cold or warm" — only indirectly, through whether it happened to
  * issue a request. The prop IS the decision; read it directly.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
@@ -120,7 +119,7 @@ describe("Settings ▸ Storage ▸ automatic cleanup", () => {
       new Response(JSON.stringify({ error: { code: "invalid", message: "The engine refused that." } }), {
         status: 400,
         headers: { "content-type": "application/json" },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
     await view.click(view.switches()[1]!);
     expect(view.host.querySelector('[role="alert"]')?.textContent).toContain("The engine refused that.");
     expect(view.switches()[1]!.getAttribute("aria-checked")).toBe("false");

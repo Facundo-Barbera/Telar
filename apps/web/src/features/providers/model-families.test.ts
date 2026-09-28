@@ -6,7 +6,6 @@
  * else's list: that `sonnet` and `sonnet[1m]` are one model, that Opus has no
  * standard row at all, and that a display name can carry a window in it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { ProviderModel } from "@telar/engine-client";
 import {

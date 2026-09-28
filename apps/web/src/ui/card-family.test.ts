@@ -12,7 +12,6 @@
  * and a warning card is that shape with a tint. The 14px rung itself is
  * pinned in `app/radius-doctrine.test.ts`.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 
 import { cardSurface } from "@/ui/card";

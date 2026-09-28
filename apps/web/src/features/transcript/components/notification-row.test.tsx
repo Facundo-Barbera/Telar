@@ -8,7 +8,6 @@
  * happened, that it does not quote a body it only announced, and that the body
  * is one press away when there IS one on this side.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";

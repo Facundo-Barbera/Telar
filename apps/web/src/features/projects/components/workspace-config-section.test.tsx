@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { resolveWorkspace, type ProjectWorkspaceOverrides, type ProjectWorkspaceView, type WorkspaceConfig } from "@telar/engine-client";

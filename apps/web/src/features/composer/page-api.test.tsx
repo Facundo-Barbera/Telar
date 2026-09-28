@@ -13,7 +13,6 @@
  * `window` in it. The preload (scripts/test-dom.mjs) has already settled the one
  * decision that has to be made before any test file loads.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { useState } from "react";

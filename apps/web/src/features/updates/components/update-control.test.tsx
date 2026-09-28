@@ -15,7 +15,6 @@
  * stubbed — mounting a router to read an `aria-label` off an anchor would be a
  * framework standing in for two strings.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, jest, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

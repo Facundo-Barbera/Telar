@@ -7,7 +7,6 @@
  * covered against the injected `RunApi` directly, because the popover's
  * contents only exist once a human opens it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { headerMode } from "../hooks/use-run-header";

@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { mock } from "bun:test";
 import * as navigation from "next/navigation";
 import { act } from "react";

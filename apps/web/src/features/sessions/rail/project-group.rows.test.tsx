@@ -17,7 +17,6 @@
  * asks — is the delegate on the same rail as everything else — of actual
  * markup, which is the only place an indent could still hide.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

@@ -1,5 +1,4 @@
 // Runs against real Shiki: dual-theme output and non-throwing refusals are library facts.
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { carryTokens, highlight, MAX_HIGHLIGHT_BYTES, type HighlightedLine } from "./highlight";
 

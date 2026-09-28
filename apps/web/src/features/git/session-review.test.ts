@@ -6,7 +6,6 @@
  * the diff that the transcript never mentioned, and what the transcript claimed
  * that the repository does not have.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitFileChange, SessionDiff } from "@telar/engine-client";
 import { describeReview, reconcileReview, repoRelativePath, reviewFraming } from "./session-review";

@@ -36,7 +36,6 @@
  * does it: the suite shares a process with tests written for a world that has
  * no `window`.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { renderToStaticMarkup } from "react-dom/server";

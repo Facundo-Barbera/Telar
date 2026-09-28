@@ -6,7 +6,6 @@
  * open would silently reveal the WRONG one. Every branch here is a sentence a
  * reader can act on rather than a disabled control with no explanation.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { workspaceFilePath, workspaceOpenBlocker } from "./workspace-open";
 

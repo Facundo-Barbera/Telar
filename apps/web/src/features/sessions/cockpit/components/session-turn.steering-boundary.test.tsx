@@ -11,7 +11,6 @@
  * These render the real `SessionTurn`. A collapsed run omits its rows from the
  * DOM entirely, so "the text is in the markup" IS "the reader can see it".
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SessionTurn } from "@/features/sessions/cockpit";

@@ -2,7 +2,6 @@
  * The flat rail, rendered: children fold behind their parent's summary line,
  * and the one that needs the person is drawn anyway.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

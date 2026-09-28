@@ -20,7 +20,6 @@
  * still draws. These render the real `SessionTurn`, so the count is the count a
  * reader sees.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";

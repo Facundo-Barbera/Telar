@@ -7,7 +7,6 @@
  * which the eighth entry is worth keeping. Both are invisible to a test of any
  * single colour, so they are pinned here.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   colourChips,

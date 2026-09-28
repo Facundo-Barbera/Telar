@@ -20,7 +20,6 @@
  * port uses for the out-of-gamut accents: clip per channel, as the shipped
  * tokens do, rather than gamut-map by reducing chroma.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 

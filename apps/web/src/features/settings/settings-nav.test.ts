@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { GlobeIcon } from "lucide-react";
 import { SECTION_IDS, SECTIONS } from "./settings-sections";

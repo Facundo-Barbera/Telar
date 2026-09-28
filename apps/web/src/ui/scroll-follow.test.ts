@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { FOLLOW_SLACK_PX, READER_GESTURE_MS, shouldRefollow } from "@/ui/scroll-follow";
 

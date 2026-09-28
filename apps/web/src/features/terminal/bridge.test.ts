@@ -7,7 +7,6 @@
  * and the host never produces it. The tab's reaper that used to live here is
  * `closeTerminalTab`, tested in lib/terminal-close.test.ts.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { describeTerminalEnding } from "./bridge";
 

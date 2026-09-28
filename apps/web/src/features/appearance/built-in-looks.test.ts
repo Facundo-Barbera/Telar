@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { parseLook, THEME_TOKENS } from "@telar/engine-client";
 import { BUILT_IN_LOOKS, BUILT_IN_NOTES, BUILT_IN_PREFIX, isBuiltInLook } from "./built-in-looks";

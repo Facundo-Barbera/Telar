@@ -16,7 +16,6 @@
  * surface therefore renders its header over a file it has not read yet, which
  * is the state the seam has to be right in too.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EDITOR_HEADER_ROW } from "./editor-chrome";

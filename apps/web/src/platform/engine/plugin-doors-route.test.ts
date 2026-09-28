@@ -1,5 +1,4 @@
 /** Generic plugin proxies against a real daemon on a temp home, like `projects-route.test.ts`. */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";

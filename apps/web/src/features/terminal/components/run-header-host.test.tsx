@@ -15,7 +15,6 @@
  * here — is the CONFIGURATIONS list, which is read on mount and on every open
  * and which a save must not be able to overwrite with an older answer.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createReadGuard, type ReadGuard } from "../hooks/use-run-header";

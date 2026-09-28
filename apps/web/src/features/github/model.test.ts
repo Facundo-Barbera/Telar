@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitHubCheck, GitOverview } from "@telar/engine-client";
 import { clearChip, githubQuery, hasFailed, isNotable, issueSessionStart, linkVerb, listCount, toggleLabel } from "./model";

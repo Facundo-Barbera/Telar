@@ -2,7 +2,6 @@
  * A picker has three answers: a path, a cancel, and "no picker here".
  * Cancel must never be reported as a failure.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { chooseDirectory, readDirectoryChoice } from "@/platform/desktop/choose-directory";
 

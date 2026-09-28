@@ -13,7 +13,6 @@
  * root invocation dropped NODE_ENV=test along with it, which is #293's failure
  * on top of a timeout nobody could see.
  */
-// @ts-expect-error Bun test types are provided by the test runner.
 import { expect, test } from "bun:test";
 
 const ceilingFromPreload = (globalThis as { __telarTestCeilingMs?: number }).__telarTestCeilingMs;

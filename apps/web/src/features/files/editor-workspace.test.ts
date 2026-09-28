@@ -1,6 +1,5 @@
 // A pinned or edited file is never replaced by the next tree click; browsing
 // never leaves a tab per file. The preview slot reconciles the two.
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   activateEditorFile,

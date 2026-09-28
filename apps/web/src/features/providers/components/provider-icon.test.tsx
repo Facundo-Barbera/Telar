@@ -9,7 +9,6 @@
  * edges the device grid has no pixel for. An inline style is the one thing that
  * class cannot override.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

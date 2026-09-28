@@ -14,7 +14,6 @@
  * about is whether the shell ASKS for it, and a stub answers that exactly while
  * keeping the test a test rather than a render of the whole cockpit.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

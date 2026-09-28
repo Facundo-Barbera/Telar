@@ -13,7 +13,6 @@
  * NOT StrictMode: its double-invoked effects would schedule two frames per
  * commit and the pacing here is measured in frames.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, useEffect } from "react";

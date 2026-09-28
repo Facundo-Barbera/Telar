@@ -10,7 +10,6 @@
  * markup. So these assert both halves of the fix — that the sentence is
  * complete, and that the element is allowed two lines to say it in.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { tallyParts } from "../model";

@@ -7,7 +7,6 @@
  * as the work on the reader's project. These render the real components, so
  * "the path is not in the markup" IS "the reader is not shown it".
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ActivityGroup } from "./activity";

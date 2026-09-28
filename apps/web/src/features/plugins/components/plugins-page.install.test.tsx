@@ -4,7 +4,6 @@
  *   add      a chosen folder is posted with the mode pressed; a refusal shows its reason
  *   remove   only installed plugins offer it, and only after a confirm
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

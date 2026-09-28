@@ -15,7 +15,6 @@
  * poll, and a static render never runs the effect that starts it. The strip is
  * the half that decides what a reader sees, so it is the half handed the answer.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { GitOverview, GitRefEntry, Session } from "@telar/engine-client";

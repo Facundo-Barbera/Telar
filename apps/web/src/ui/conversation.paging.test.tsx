@@ -18,7 +18,6 @@
  * assertion below vacuous; this one records its callback so the test can say
  * exactly when the reader reached the top edge.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

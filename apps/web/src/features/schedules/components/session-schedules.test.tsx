@@ -5,7 +5,6 @@
  * Mounted against a stubbed `fetch`, because what matters is which requests go
  * out — the read is narrowed to this session, and delete names the row.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

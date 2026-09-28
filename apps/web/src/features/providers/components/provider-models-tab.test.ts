@@ -5,7 +5,6 @@
  * component-render tests, so the rules worth pinning are the ones that can be
  * lifted out of the JSX.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { ProviderModel } from "@telar/engine-client";
 import { addableModelId, canBeDefault, modelCountLine, reorderIds } from "./provider-models-tab";

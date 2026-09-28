@@ -17,7 +17,6 @@
  *   ends that session; a confirm that named the gigabytes and hid the session
  *   is the kind people click and regret.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

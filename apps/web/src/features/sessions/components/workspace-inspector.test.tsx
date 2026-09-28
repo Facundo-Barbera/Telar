@@ -14,7 +14,6 @@
  * Static markup, so the effects never run: the notes are handed in, which is
  * also why the section takes them as a prop.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ProjectNote } from "@telar/engine-client";

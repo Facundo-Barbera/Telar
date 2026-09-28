@@ -7,7 +7,6 @@
  * starts from a `LiveSessionRow` parsed by the protocol and a count taken off
  * the live read's `terminals` map, through `toSidebarSession`, as the rail does.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LiveSessionRow } from "@telar/engine-client";

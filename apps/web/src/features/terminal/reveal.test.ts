@@ -6,7 +6,6 @@
  * person chose — the active tab, the active chip, whether the panel shows —
  * moves because an agent or a Run press opened something.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { RunView } from "./run/types";
 import type { PanelTabInstance, PanelTabState } from "@/features/panel";

@@ -2,7 +2,6 @@
  * Two engines deliberately sharing a session id: a row must reach the Mac it was read from,
  * and its failures must name that Mac. The engines are a map from URL to Response.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test, beforeEach } from "bun:test";
 import { createEngineApi, refusedBy, EngineApiError } from "./client";
 import { hostFetcher, hostFromPathname, hostName, hostPrefix, rememberHostName, rewriteApiPath, HOST_NAME_HEADER, LOCAL_HOST_ID } from "@/platform/engine/host-client";

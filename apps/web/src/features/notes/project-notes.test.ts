@@ -7,7 +7,6 @@
  * chip produces, because two spellings of one gesture is how a transcript ends
  * up looking like two people wrote it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { ProjectNote } from "@telar/engine-client";
 import { noteReference } from "@/features/composer/drag-reference";

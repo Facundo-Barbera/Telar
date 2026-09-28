@@ -5,7 +5,6 @@
  * deciding which of twenty rows to open, and every wrong one sends them to the
  * wrong row.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { ACTIVITY_TONE, activityBadge, fmtDuration, rowStatusText, rowSubtitle } from "./session-activity";
 

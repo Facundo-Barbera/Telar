@@ -10,7 +10,6 @@
  * The comparison is the only part of that path a test without a DOM can reach;
  * `observeSidebarLayout` dispatches a window event and the hook folds it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { SidebarLayout } from "@telar/engine-client";
 import { sameSidebarLayout } from "./sidebar-layout";

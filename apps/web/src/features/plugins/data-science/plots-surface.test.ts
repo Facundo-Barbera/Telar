@@ -6,7 +6,6 @@
  * passes at one chart read as three charts, each captioned with the execution
  * counter that drew it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { TurnAttachment } from "@telar/engine-client";
 import { plotGroupKey, plotLabel, stackPlots } from "./plots-surface";

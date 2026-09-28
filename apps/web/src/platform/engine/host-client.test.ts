@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { hostFetcher, hostFromPathname, hostPrefix, LOCAL_HOST_ID, rewriteApiPath } from "@/platform/engine/host-client";
 

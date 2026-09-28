@@ -15,7 +15,6 @@
  *   was chosen — the moment that sentence is needed is the moment the disk is
  *   not there to be asked.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
@@ -199,7 +198,7 @@ describe("moving the checkouts already cut", () => {
           },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
-      )) as typeof fetch;
+      )) as unknown as typeof fetch;
 
     await act(async () => {
       view.button("Move")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -218,7 +217,7 @@ describe("moving the checkouts already cut", () => {
       new Response(JSON.stringify({ error: { code: "conflict", message: "One session is still working in its checkout." } }), {
         status: 409,
         headers: { "content-type": "application/json" },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
 
     await act(async () => {
       view.button("Move")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));

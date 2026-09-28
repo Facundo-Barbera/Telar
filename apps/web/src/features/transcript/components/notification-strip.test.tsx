@@ -24,7 +24,6 @@
  * available to a server render, so the last is pinned where it is actually
  * decided: one shared `ROW` constant, which neither side can pad alone.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";

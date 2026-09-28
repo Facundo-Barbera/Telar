@@ -5,7 +5,6 @@
  * field with a Mac default offers "Inherit (<Mac value>)", and a change writes
  * the whole settings blob through the same generic arm as the enable switch.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

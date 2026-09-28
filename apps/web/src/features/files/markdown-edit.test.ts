@@ -3,7 +3,6 @@
  * triple, which is the whole surface — the component only ferries these values
  * to and from a textarea.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { applyMarkdownEdit } from "./markdown-edit";
 

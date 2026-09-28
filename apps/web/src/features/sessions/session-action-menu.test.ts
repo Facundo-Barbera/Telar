@@ -6,7 +6,6 @@
  * nothing about whether the two surfaces agree — which is the only thing this
  * module exists to guarantee.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   buildSessionActionMenuItems,
