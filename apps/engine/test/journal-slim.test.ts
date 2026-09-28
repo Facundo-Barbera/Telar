@@ -75,11 +75,11 @@ function raw(home: string): { stubs: number; needle: number; bytes: number } {
 test("a slimmed journal reads back exactly as it was written", () => {
   const home = build();
   const store = reopen(home);
-  store.compactJournal();
+  store.sweep(["compact"]).journal;
   const before = store.events("session_one");
   const stored = raw(home);
 
-  expect(store.slimJournal()).toEqual({ rows: 6, sessions: 1 });
+  expect(store.sweep(["slim"]).slimmed).toEqual({ rows: 6, sessions: 1 });
   // The sweep did something: every completed item is a stub, and no stored
   // row holds the command output any more.
   expect(raw(home).stubs).toBe(6);
@@ -93,11 +93,11 @@ test("a slimmed journal reads back exactly as it was written", () => {
 test("it runs once: a second sweep changes nothing", () => {
   const home = build();
   const store = reopen(home);
-  store.compactJournal();
-  store.slimJournal();
+  store.sweep(["compact"]).journal;
+  store.sweep(["slim"]).slimmed;
   const once = store.events("session_one");
   const bytes = raw(home).bytes;
-  expect(store.slimJournal()).toEqual({ rows: 0, sessions: 0 });
+  expect(store.sweep(["slim"]).slimmed).toEqual({ rows: 0, sessions: 0 });
   expect(raw(home).bytes).toBe(bytes);
   expect(store.events("session_one")).toEqual(once);
 });
@@ -106,18 +106,18 @@ test("nothing the compaction has not read is slimmed", () => {
   const home = build();
   const store = reopen(home);
   // No compaction yet: its watermark is 0, so the slimming must not start.
-  expect(store.slimJournal()).toEqual({ rows: 0, sessions: 0 });
+  expect(store.sweep(["slim"]).slimmed).toEqual({ rows: 0, sessions: 0 });
   expect(raw(home).stubs).toBe(0);
 });
 
 test("grep finds text that now lives only in the items row, and answers it whole", () => {
   const home = build();
   const store = reopen(home);
-  store.compactJournal();
+  store.sweep(["compact"]).journal;
   const before = store.grepEvents("session_one", NEEDLE, undefined, 50);
   expect(before).toHaveLength(3);
 
-  store.slimJournal();
+  store.sweep(["slim"]).slimmed;
   expect(raw(home).needle).toBe(0);
   const after = store.grepEvents("session_one", NEEDLE, undefined, 50);
   expect(after.map((row) => row.id)).toEqual(before.map((row) => row.id));
@@ -129,20 +129,20 @@ test("grep finds text that now lives only in the items row, and answers it whole
 test("a row that differs from its event is not slimmed", () => {
   const home = build(1);
   const store = reopen(home);
-  store.compactJournal();
+  store.sweep(["compact"]).journal;
   const before = store.events("session_one");
   // The item row moves on, so the event is no longer a copy of it.
   store.upsertItems("session_one", [{ id: "cmd_0", runId: "run_0", value: JSON.stringify({ id: "cmd_0", runId: "run_0", status: "completed", changed: true }) }]);
-  expect(store.slimJournal()).toEqual({ rows: 1, sessions: 1 });
+  expect(store.sweep(["slim"]).slimmed).toEqual({ rows: 1, sessions: 1 });
   expect(store.events("session_one")).toEqual(before);
 });
 
 test("a row that changes after it was slimmed gives the stub its item back first", () => {
   const home = build(1);
   const store = reopen(home);
-  store.compactJournal();
+  store.sweep(["compact"]).journal;
   const before = store.events("session_one");
-  store.slimJournal();
+  store.sweep(["slim"]).slimmed;
   expect(raw(home).stubs).toBe(2);
 
   store.upsertItems("session_one", [{ id: "cmd_0", runId: "run_9", value: JSON.stringify({ id: "cmd_0", runId: "run_9", status: "inProgress" }) }]);
@@ -153,9 +153,9 @@ test("a row that changes after it was slimmed gives the stub its item back first
 test("retention's guards and export are unchanged by a slimmed journal", () => {
   const home = build();
   const store = reopen(home);
-  store.compactJournal();
+  store.sweep(["compact"]).journal;
   const before = store.events("session_one");
-  store.slimJournal();
+  store.sweep(["slim"]).slimmed;
 
   const exportTo = path.join(home, "exports");
   expect(store.retireSession("session_one", { exportTo })).toEqual({ retired: true, events: before.length });

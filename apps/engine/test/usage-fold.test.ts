@@ -116,10 +116,10 @@ test("a journal that was compacted first still has its usage rows found", () => 
     // THE COMPACTION GOES FIRST, and it moves its own watermark to the terminal
     // turn event. A fold sharing that key would read `low` as that id, see
     // nothing below it, and report a clean sweep over three untouched rows.
-    expect(store.compactJournal()).toEqual({ deltas: 2, starts: 1, sessions: 1 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: 2, starts: 1, sessions: 1 });
     expect(usageRows(store, "session_one")).toHaveLength(3);
 
-    const folded = store.foldJournalUsage();
+    const folded = store.sweep(["fold"]).usage;
     expect(folded).toEqual({ rows: 2, turns: 1, sessions: 1, refused: 0 });
     expect(usageRows(store, "session_one")).toHaveLength(1);
     expect(turnUsage(store, "session_one", "run_one")).toEqual({
@@ -138,14 +138,14 @@ test("a second fold moves nothing, and does not sum a range the first one shrank
     write.endTurn("run_one");
     summarise(store, "session_one", "run_one");
 
-    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
     const first = turnUsage(store, "session_one", "run_one");
     expect(first).toEqual({ tokens: { input: 300, output: 1600, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2 });
 
     // The watermark alone would carry this, but the fold also seeks on a NULL
     // aggregate: a turn folded twice would add up one surviving row and write
     // 400 over 1600. Both halves are asserted by the same call.
-    expect(store.foldJournalUsage()).toEqual({ rows: 0, turns: 0, sessions: 0, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 0, turns: 0, sessions: 0, refused: 0 });
     expect(turnUsage(store, "session_one", "run_one")).toEqual(first!);
   } finally { store.close(); }
 });
@@ -171,7 +171,7 @@ test("a Codex-shaped turn keeps its spend, which its last row does not hold", ()
     write.endTurn("run_one");
     summarise(store, "session_one", "run_one");
 
-    expect(store.foldJournalUsage()).toEqual({ rows: 2, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 2, turns: 1, sessions: 1, refused: 0 });
     expect(turnUsage(store, "session_one", "run_one")).toEqual({
       tokens: { input: 11_700, output: 2_500, cacheRead: 7_000, cacheCreate: 0, reasoning: 112 },
       rows: 3,
@@ -198,7 +198,7 @@ test("the aggregate is written for exactly the turns folded and left null for th
     write.usage("run_two", { input: 40, output: 4 });
     summarise(store, "session_one", "run_two", 2);
 
-    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
     expect(turnUsage(store, "session_one", "run_one")).toEqual({
       tokens: { input: 30, output: 3, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2,
     });
@@ -207,7 +207,7 @@ test("the aggregate is written for exactly the turns folded and left null for th
 
     // …and once it ends, it folds on the next sweep like any other.
     write.endTurn("run_two");
-    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
     expect(turnUsage(store, "session_one", "run_two")).toEqual({
       tokens: { input: 70, output: 7, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2,
     });
@@ -223,7 +223,7 @@ test("a turn with nowhere to record the sum keeps every row it has", () => {
     write.endTurn("run_one");
     // No `turn_summaries` row: the aggregate has nowhere to go, so the delete
     // is refused rather than taken on the promise of writing it somewhere.
-    expect(store.foldJournalUsage()).toEqual({ rows: 0, turns: 0, sessions: 0, refused: 1 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 0, turns: 0, sessions: 0, refused: 1 });
     expect(usageRows(store, "session_one")).toHaveLength(2);
   } finally { store.close(); }
 });
@@ -255,7 +255,7 @@ test("a turn whose context occupancy drops mid-turn replays identically after th
       contextUsed: 40_000, contextMax: 200_000,
     });
 
-    expect(store.foldJournalUsage()).toEqual({ rows: 2, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 2, turns: 1, sessions: 1, refused: 0 });
     expect(replayedUsage(store, "session_one", "run_one")).toEqual(before!);
   } finally { store.close(); }
 });
@@ -275,7 +275,7 @@ test("a Claude-shaped turn keeps the priced total the transcript reads", () => {
     summarise(store, "session_one", "run_one");
 
     const before = replayedUsage(store, "session_one", "run_one");
-    expect(store.foldJournalUsage()).toEqual({ rows: 2, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 2, turns: 1, sessions: 1, refused: 0 });
     expect(replayedUsage(store, "session_one", "run_one")).toEqual(before!);
     // The price is on the surviving row, untouched and un-summed.
     expect(usageRows(store, "session_one")[0]).toMatchObject({ usage: { costUsd: 0.42 } });
@@ -305,7 +305,7 @@ test("the sweep alone leaves the file exactly as big; Reclaim is what shrinks it
     }
     expect(usageRows(store, "session_one")).toHaveLength(1_200);
 
-    const folded = store.foldJournalUsage();
+    const folded = store.sweep(["fold"]).usage;
     expect(folded).toEqual({ rows: 1_180, turns: 20, sessions: 1, refused: 0 });
     expect(usageRows(store, "session_one")).toHaveLength(20);
 
@@ -397,7 +397,7 @@ test("the fold bounds on the recorded terminal id, not on a re-parse of the jour
 
     // Move it back to the first turn's ending. Nothing about `events` changed.
     setTerminalHigh(root, "session_one", firstEnding);
-    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
     expect(turnUsage(store, "session_one", "run_one")).toEqual({
       tokens: { input: 30, output: 3, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2,
     });
@@ -409,7 +409,7 @@ test("the fold bounds on the recorded terminal id, not on a re-parse of the jour
     // AND THE OTHER DIRECTION: correct the row and the same turn folds, which
     // is what says the low value was the cause and not some unrelated refusal.
     setTerminalHigh(root, "session_one", write.lastId);
-    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
     expect(turnUsage(store, "session_one", "run_two")).toEqual({
       tokens: { input: 70, output: 7, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2,
     });
@@ -432,7 +432,7 @@ test("a store with no recorded bound folds correctly and has one afterwards", ()
     try { raw.query("DELETE FROM metadata WHERE key=?").run(`${TERMINAL_HIGH}session_one`); } finally { raw.close(); }
     expect(terminalHighRow(root, "session_one")).toBeNull();
 
-    expect(store.foldJournalUsage()).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["fold"]).usage).toEqual({ rows: 1, turns: 1, sessions: 1, refused: 0 });
     expect(turnUsage(store, "session_one", "run_one")).toEqual({
       tokens: { input: 300, output: 1600, cacheRead: 0, cacheCreate: 0, reasoning: 0 }, rows: 2,
     });

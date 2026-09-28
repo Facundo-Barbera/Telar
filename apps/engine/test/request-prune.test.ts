@@ -95,7 +95,7 @@ test("policy pairs go, and every request somebody resolved or left open stays", 
     write.endTurn("run_one");
     summarise(store, "run_one");
 
-    expect(store.pruneJournalRequests()).toEqual({ pairs: 3, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["prune"]).requests).toEqual({ pairs: 3, turns: 1, sessions: 1, refused: 0 });
     expect(requestRows(store)).toEqual([
       "opened:req_human", "resolved:req_human",
       "opened:req_session", "resolved:req_session",
@@ -123,7 +123,7 @@ test("a pair the mode at the time would not have resolved survives, read across 
     write.endTurn("run_one");
     summarise(store, "run_one");
 
-    expect(store.pruneJournalRequests().pairs).toBe(2);
+    expect(store.sweep(["prune"]).requests.pairs).toBe(2);
     expect(requestRows(store)).toEqual([
       "opened:req_forged", "resolved:req_forged",
       "opened:req_question", "resolved:req_question",
@@ -143,7 +143,7 @@ test("a pair with no recorded mode, or whose halves disagree, survives", () => {
     write.endTurn("run_one");
     summarise(store, "run_one");
 
-    expect(store.pruneJournalRequests().pairs).toBe(0);
+    expect(store.sweep(["prune"]).requests.pairs).toBe(0);
     expect(requestRows(store)).toHaveLength(6);
   } finally { store.close(); }
 });
@@ -158,7 +158,7 @@ test("an unsettled turn keeps its pairs, and one with no summary row is refused"
     write.policy("run_unsummarised", "req_unsummarised");
     write.endTurn("run_unsummarised");
 
-    expect(store.pruneJournalRequests()).toEqual({ pairs: 0, turns: 0, sessions: 0, refused: 1 });
+    expect(store.sweep(["prune"]).requests).toEqual({ pairs: 0, turns: 0, sessions: 0, refused: 1 });
     expect(requestRows(store)).toHaveLength(4);
     expect(turnPolicyRequests(store, "session_one", "run_unsummarised")).toBeUndefined();
   } finally { store.close(); }
@@ -178,17 +178,17 @@ test("it is idempotent, finds its pairs after compaction and the usage fold, and
 
     // The other sweeps go first and move their own watermarks to the terminal
     // event. A prune sharing one of those keys would find nothing.
-    store.compactJournal();
-    expect(store.foldJournalUsage().turns).toBe(1);
-    expect(store.pruneJournalRequests().pairs).toBe(1);
-    expect(store.pruneJournalRequests()).toEqual({ pairs: 0, turns: 0, sessions: 0, refused: 0 });
+    store.sweep(["compact"]).journal;
+    expect(store.sweep(["fold"]).usage.turns).toBe(1);
+    expect(store.sweep(["prune"]).requests.pairs).toBe(1);
+    expect(store.sweep(["prune"]).requests).toEqual({ pairs: 0, turns: 0, sessions: 0, refused: 0 });
 
     // A later turn, in a range whose mode row is below the watermark.
     write.policy("run_two", "req_b");
     write.policy("run_two", "req_c");
     write.endTurn("run_two");
     summarise(store, "run_two");
-    expect(store.pruneJournalRequests()).toEqual({ pairs: 2, turns: 1, sessions: 1, refused: 0 });
+    expect(store.sweep(["prune"]).requests).toEqual({ pairs: 2, turns: 1, sessions: 1, refused: 0 });
     expect(requestRows(store)).toEqual([]);
     expect(turnPolicyRequests(store, "session_one", "run_one")).toEqual({ command_execution: { accept: 1 } });
     expect(turnPolicyRequests(store, "session_one", "run_two")).toEqual({ command_execution: { accept: 2 } });
