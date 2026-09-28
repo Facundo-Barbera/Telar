@@ -1,4 +1,4 @@
-import { readDeviceCookie, identifyCaller, readRemote } from "@/features/remote/server";
+import { identifyCaller } from "@/features/remote/server";
 import { engineCall, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
@@ -6,9 +6,7 @@ export const runtime = "nodejs";
 
 const REGISTRATION_MAX_BYTES = 32768;
 
-function caller(request: Request) {
-  return identifyCaller({ authorization: request.headers.get("authorization"), deviceCookie: readDeviceCookie(request) }, readRemote());
-}
+const caller = async (request: Request) => (await identifyCaller(request)).device;
 
 const devicePath = (deviceId: string) => `/v2/push/devices/${encodeURIComponent(deviceId)}`;
 
@@ -18,13 +16,13 @@ async function relay(method: string, path: string, body?: unknown): Promise<Resp
 }
 
 export const GET = engineRoute(async (request: Request) => {
-  const device = caller(request);
+  const device = await caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
   return relay("GET", devicePath(device.id));
 });
 
 export const PUT = engineRoute(async (request: Request) => {
-  const device = caller(request);
+  const device = await caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
   if (device.role !== "full") return Response.json({ error: { message: "Full access is required." } }, { status: 403 });
   const reader = request.body?.getReader();

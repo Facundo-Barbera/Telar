@@ -374,7 +374,7 @@ function startEngineChild(home) {
     execArgv: ["--require", path.join(__dirname, "..", "preload", "server-preload.js")],
     env: {
       ...childEnv(home),
-
+      TELAR_HOST_TOKEN: uiServer.HOST_TOKEN,
       TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-engine-dev" : "telar-engine",
       NODE_ENV: "production",
 

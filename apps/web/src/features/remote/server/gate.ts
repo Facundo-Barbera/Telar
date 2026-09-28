@@ -1,39 +1,21 @@
-import { isHostToken } from "./host-token";
-import { matchDevice, type DeviceRole, type PairedDevice, type RemoteFile } from "./store";
+import { engineCall } from "@/platform/engine/server";
+import { readDeviceCookie } from "./cookie";
+import { HOST_HEADER } from "./host-token";
 
-export const EXEMPT_API_PATHS = new Set(["/api/ping", "/api/pair"]);
+export type Caller = { host: boolean; device?: { id: string; role: "full" | "observer" } };
+export type GateDecision = { allow: true; deviceId?: string; role?: "full" | "observer" } | { allow: false; code: "cockpit_unauthorized" | "cockpit_forbidden" };
 
-const OBSERVER_METHODS = new Set(["GET", "HEAD"]);
+const credentialsOf = (request: Request) => ({
+  authorization: request.headers.get("authorization"),
+  deviceCookie: readDeviceCookie(request),
+  hostHeader: request.headers.get(HOST_HEADER),
+});
 
-type GateDenial = { allow: false; code: "cockpit_unauthorized" | "cockpit_forbidden" };
-
-export type GateDecision = { allow: true; deviceId?: string; role?: DeviceRole } | GateDenial;
-
-export type GateCredentials = { authorization: string | null; deviceCookie: string | null; hostHeader?: string | null };
-
-export function identifyCaller(request: GateCredentials, file: RemoteFile): PairedDevice | undefined {
-  const bearer = request.authorization?.match(/^Bearer\s+(tlr_[A-Za-z0-9_-]+)$/)?.[1];
-  const candidate = bearer ?? request.deviceCookie;
-  return candidate ? matchDevice(file, candidate) : undefined;
+/** Who is calling, as the engine sees it: the host that runs this cockpit, a paired device, or neither. */
+export async function identifyCaller(request: Request): Promise<Caller> {
+  return (await engineCall("POST", "/v2/auth/identify", credentialsOf(request))).body as Caller;
 }
 
-export function isHostCaller(request: GateCredentials): boolean {
-  return isHostToken(request.hostHeader) || isHostToken(request.deviceCookie);
-}
-
-export function decideApiAccess(
-  request: GateCredentials & { pathname: string; method: string },
-  file: RemoteFile,
-): GateDecision {
-  if (!file.requireAuth) return { allow: true };
-  if (EXEMPT_API_PATHS.has(request.pathname)) return { allow: true };
-
-  if (isHostCaller(request)) return { allow: true, role: "full" };
-
-  const device = identifyCaller(request, file);
-  if (!device) return { allow: false, code: "cockpit_unauthorized" };
-  if (device.role === "observer" && !OBSERVER_METHODS.has(request.method.toUpperCase())) {
-    return { allow: false, code: "cockpit_forbidden" };
-  }
-  return { allow: true, deviceId: device.id, role: device.role };
+export async function decideAccess(request: Request, pathname: string): Promise<GateDecision> {
+  return (await engineCall("POST", "/v2/auth/decide", { ...credentialsOf(request), pathname, method: request.method })).body as GateDecision;
 }
