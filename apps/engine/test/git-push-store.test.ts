@@ -24,7 +24,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
-import type { GhResult } from "../src/github";
+import type { GhResult } from "../src/domains/github/gh";
 
 const made: string[] = [];
 const stores: EngineStore[] = [];

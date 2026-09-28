@@ -229,26 +229,7 @@ import { porcelainPaths } from "./platform/git/parse";
 import { inlineExcerpt, quotedExcerpt } from "./agent-notice";
 import { RELAY_RULE } from "./domains/turns";
 import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
-import {
-  commentOn,
-  commentOnPullLine,
-  readPullFiles,
-  readPullForBranch,
-  reactOn,
-  replyToThread,
-  resolveThread,
-  DEFAULT_ISSUE_FILTER,
-  DEFAULT_PULL_FILTER,
-  defaultGhRunner,
-  mergePull,
-  openPullRequest,
-  readCheckLog,
-  readForgeFacets,
-  readGitHub,
-  readIssue,
-  readPull,
-  type GhRunner,
-} from "./github";
+import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER, defaultGhRunner, mergePull, openPullRequest, reactOn, readCheckLog, readForgeFacets, readGitHub, readIssue, readPull, readPullFiles, readPullForBranch, replyToThread, resolveThread, type GhRunner } from "./domains/github";
 import { readModelCatalogue } from "./models";
 import { refuseCliSpawnUnderTest, resolveCliAsync } from "./cli-resolution";
 import { z } from "zod";

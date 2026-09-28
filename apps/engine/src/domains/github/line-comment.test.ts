@@ -1,18 +1,7 @@
-/**
- * Starting a review thread from the Diff surface — #1014. Fixture payloads only;
- * no test here reaches GitHub.
- */
 import { describe, expect, test } from "bun:test";
-import { porcelainPaths } from "../src/platform/git/parse";
-import {
-  commentOnPullLine,
-  hunkRanges,
-  lineCommentArgv,
-  readPullFiles,
-  readPullForBranch,
-  type GhResult,
-  type GhRunner,
-} from "../src/github";
+import { porcelainPaths } from "../../platform/git/parse";
+import { type GhResult, type GhRunner } from "./gh";
+import { commentOnPullLine, hunkRanges, lineCommentArgv, readPullFiles, readPullForBranch } from "./pulls";
 
 const ok = (stdout: string): GhResult => ({ status: 0, stdout, stderr: "" });
 const failed = (stderr: string, status = 1): GhResult => ({ status, stdout: "", stderr });
@@ -31,7 +20,6 @@ describe("placing a line on a pull request (#1014)", () => {
   test("every value is a field, never part of the path or a query", () => {
     const argv = lineCommentArgv(7, { ...LINE, body: "@/etc/passwd } {", path: "@x", startLine: 10, startSide: "LEFT" });
     expect(argv).toContain("repos/{owner}/{repo}/pulls/7/comments");
-    // Text travels as `-f`, so a leading `@` is never read as a file.
     for (const field of ["body=@/etc/passwd } {", "path=@x", `commit_id=${SHA}`, "side=RIGHT", "start_side=LEFT"]) {
       expect(argv[argv.indexOf(field) - 1]).toBe("-f");
     }
