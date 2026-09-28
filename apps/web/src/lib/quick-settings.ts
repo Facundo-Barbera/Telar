@@ -5,7 +5,7 @@
  *
  * The Quick settings rows apply immediately, through exactly the stores the
  * Settings pane writes — the colour scheme's own store
- * (components/theme-provider.tsx), the appearance store (lib/appearance.ts),
+ * (features/appearance), the appearance store (lib/appearance.ts),
  * the Looks shelf and `applyLook` (lib/looks.ts), the composition a worn Look
  * copies itself into (lib/composition.ts), and the shell's vibrancy bridge
  * (lib/desktop-appearance.ts). Nothing is reimplemented here: a quick row and
@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useTheme, type Theme } from "@/components/theme-provider";
+import { useTheme, type Theme } from "@/features/appearance";
 import {
   ACCENTS,
   MAX_FONT_SIZE,

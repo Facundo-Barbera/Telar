@@ -40,10 +40,9 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ChevronRightIcon } from "lucide-react";
-import { accentPrimary } from "@/lib/accent-colours";
+import { accentPrimary, detachFromHost, ThemeControl, useFollowNotice, useTheme } from "@/features/appearance";
 import { useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
-import { detachFromHost, useFollowNotice } from "@/lib/host-follow";
 import { applyLook, readLooks as readLooksNow, writeLooks, type Look } from "@/lib/looks";
 import {
   compositionHalf,
@@ -54,8 +53,6 @@ import {
 import { halfFromBase } from "@/lib/palette-from-image";
 import { mergeById, readAppearanceHome } from "@/lib/appearance-home";
 import { THEME_TOKENS, type ThemeToken } from "@/lib/theme-palettes";
-import { ThemeControl } from "@/components/theme-control";
-import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 import { DepthControl } from "./depth-control";

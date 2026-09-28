@@ -26,7 +26,7 @@ import { Row, SettingsGroup, SettingsShell } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { TELAR_DARK, TELAR_LIGHT } from "@telar/engine-client";
 import { STATE_INK, TINT_FLOOR, tintCost } from "@/lib/tint-separation";
-import { readTheme } from "@/components/theme-provider";
+import { readTheme } from "@/features/appearance";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

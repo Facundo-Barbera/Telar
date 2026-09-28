@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Project } from "@telar/engine-client";
-import { detachFromHost } from "@/lib/host-follow";
+import { detachFromHost } from "@/features/appearance";
 
 GlobalRegistrator.register({ url: "http://mini.tailnet:3000/settings" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

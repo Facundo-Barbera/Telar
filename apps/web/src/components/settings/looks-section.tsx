@@ -51,7 +51,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { DownloadIcon, MonitorSmartphoneIcon, PencilIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
-import { useFollowHost } from "@/lib/host-follow";
+import { useFollowHost } from "@/features/appearance";
 import { isHostWindow } from "@/lib/host-window";
 import {
   captureLook,
@@ -312,7 +312,7 @@ function LookRow({
  * A window reached over tailscale is the same app with its own localStorage, so
  * it used to start with an empty shelf and the default palette while the
  * machine it was driving wore something deliberate. It now FOLLOWS the host
- * (components/host-look-follower.tsx) until its person customises anything on
+ * (features/appearance) until its person customises anything on
  * this pane, at which point it detaches and keeps its own taste. This row is
  * where that state is visible and reversible: the switch is the follow mode
  * (lib/host-follow.ts), and re-enabling it wears the host's current look at
