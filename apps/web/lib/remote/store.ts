@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import type { DeviceIdentity } from "./identity";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { canonicalPath, isLegacyTelarHome } from "../telar-home";
 
 /**
  * The cockpit's pairing store — WHO may speak to /api from off this machine.
@@ -124,8 +124,8 @@ export const PAIRING_CODE_DIGITS = 8;
 
 /**
  * The same home discipline as engineRootFromWebEnv (lib/engine/engine-server.ts),
- * duplicated rather than imported so this module stays engine-free: launcher
- * flag required, absolute home, symlinks canonicalized, legacy homes refused.
+ * restated so this module stays engine-free: launcher flag required, absolute
+ * home, symlinks canonicalized, legacy homes refused (lib/telar-home.ts).
  */
 export function remoteHome(
   env: { TELAR_HOME?: string; TELAR_COCKPIT?: string } = process.env as { TELAR_HOME?: string; TELAR_COCKPIT?: string },
@@ -142,26 +142,6 @@ export function remoteHome(
     throw new RemoteStoreError("TELAR_HOME must not point at legacy Telar state.");
   }
   return path.join(canonicalHome, "remote");
-}
-
-function canonicalPath(input: string): string {
-  const resolved = path.resolve(input);
-  let existing = resolved;
-  const missing: string[] = [];
-  while (!fs.existsSync(existing)) {
-    const parent = path.dirname(existing);
-    if (parent === existing) break;
-    missing.unshift(path.basename(existing));
-    existing = parent;
-  }
-  let canonical = fs.realpathSync.native(existing);
-  for (const segment of missing) canonical = path.join(canonical, segment);
-  return canonical;
-}
-
-function isLegacyTelarHome(canonicalHome: string): boolean {
-  const userHome = canonicalPath(os.homedir());
-  return path.dirname(canonicalHome) === userHome && [".telar", ".telar-dev"].includes(path.basename(canonicalHome));
 }
 
 export function storePath(): string {

@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { canonicalPath, isLegacyTelarHome } from "../telar-home";
 import {
   EngineClientError,
   type EngineClient,
@@ -40,28 +39,6 @@ export function engineRootFromWebEnv(
   // it, so it deliberately does not — a client that renamed the store would race
   // the process that owns it.
   return path.join(canonicalHome, "engine");
-}
-
-/** Resolve existing symlinks while allowing a newly-created dedicated home. */
-function canonicalPath(input: string): string {
-  const resolved = path.resolve(input);
-  let existing = resolved;
-  const missing: string[] = [];
-  while (!fs.existsSync(existing)) {
-    const parent = path.dirname(existing);
-    if (parent === existing) break;
-    missing.unshift(path.basename(existing));
-    existing = parent;
-  }
-  let canonical = fs.realpathSync.native(existing);
-  for (const segment of missing) canonical = path.join(canonical, segment);
-  return canonical;
-}
-
-/** Reject both legacy state homes after canonicalizing aliases such as symlinks. */
-function isLegacyTelarHome(canonicalHome: string): boolean {
-  const userHome = canonicalPath(os.homedir());
-  return path.dirname(canonicalHome) === userHome && [".telar", ".telar-dev"].includes(path.basename(canonicalHome));
 }
 
 export async function engineClient(): Promise<EngineClient> {
