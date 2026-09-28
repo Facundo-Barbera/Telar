@@ -133,10 +133,10 @@ import { Dictation } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
 import { listWorkspaceFilesAsync, readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
-import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
-import { porcelainPaths } from "./platform/git/parse";
+import { cloneRepository, commitSessionWork, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, pushSessionBranch, removeTelarGitignore, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
+import {  } from "./platform/git/parse";
 import { type AttachedBrowser, SessionBrowser } from "./domains/browser";
-import { GitHubStore, commentOnPullLine, defaultGhRunner, openPullRequest, readPullFiles, readPullForBranch, type GhRunner } from "./domains/github";
+import { GitHubStore, defaultGhRunner, SessionPulls, type GhRunner } from "./domains/github";
 import {  } from "zod";
 import { type AdoptionInput, ConversationAdoption } from "./domains/providers";
 import { type ClaudeConversation } from "./drivers/claude";
@@ -467,19 +467,6 @@ function canonicalPath(input: string): string {
  * `invalid_request` RATHER THAN `not_found`: the session exists and the caller
  * is fine; what was asked of it does not apply to this kind of session.
  */
-/**
- * A branch name this engine is willing to put in an argv — issue #670.
- *
- * NOT A VALIDATION OF GIT'S RULES, which are longer than this and are git's to
- * enforce. This is the narrower question: can this string be mistaken for
- * something other than a ref by the program it is handed to. A leading `-`
- * makes it a flag, and the charset has no space, no `$` and no quote, so a value
- * that passes cannot be a second argument or a shell fragment. `gh` is spawned
- * without a shell, so this is belt and braces — and the braces are what keep a
- * text field from becoming a command the day somebody adds one.
- */
-const REF_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-
 
 /**
  * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
@@ -707,6 +694,7 @@ export class EngineStore {
   private readonly subscriptions: SessionSubscriptions;
   private readonly lifecycle: SessionLifecycle;
   private readonly schedules: ScheduleBook;
+  private readonly sessionPulls: SessionPulls;
   private readonly adoption: ConversationAdoption;
   readonly dictation: Dictation;
   private readonly dataScienceOps: DataScienceOps;
@@ -1536,6 +1524,13 @@ export class EngineStore {
       readQueue: (sessionId) => this.readQueue(sessionId),
       writeQueue: (sessionId, queue) => this.writeQueue(sessionId, queue),
       appendEvent: (sessionId, event, runId) => this.appendEvent(sessionId, event, runId),
+    });
+    this.sessionPulls = new SessionPulls(this.github, {
+      getSession: (sessionId) => this.records.get(sessionId),
+      getProject: (projectId) => this.getProject(projectId),
+      worktreeGit: this.worktreeGit,
+      asyncGit: this.asyncGit,
+      gh: this.gh,
     });
     this.schedules = new ScheduleBook(this.kernel, {
       requireSession: (sessionId) => void this.records.require(sessionId),
@@ -2682,132 +2677,16 @@ export class EngineStore {
     }
   }
 
-  /**
-   * Open a pull request for this session's branch — issue #670.
-   *
-   * ── IT REFUSES BEFORE `gh` IS ASKED, AND THAT IS THE POINT ──────────────────
-   * The same local reads the push arm uses answer every question that can make
-   * this impossible: not a repository, no origin, the wrong branch checked out,
-   * and — the one only this arm cares about — a branch the remote has never
-   * seen. Every one of those is a fact, so `gh` is not asked at all, which is
-   * what makes a refusal here free and certain rather than a round trip and a
-   * guess. `mergePull` decides four of its seven the same way.
-   *
-   * ── THE BASE IS A CHOICE AND THE HEAD IS NOT ────────────────────────────────
-   * The head branch is the session's, read off the record. The base is genuinely
-   * the reader's — "which branch should this merge into" has no answer the
-   * engine can derive — so it is accepted, defaulted to the remote's own default
-   * branch, and validated as a ref name. The validation is not decoration: this
-   * value becomes an argv element, and a `--flag` arriving where `gh` expects a
-   * branch is how a text field turns into a command.
-   */
-  async openSessionPullRequest(
-    sessionId: string,
-    input: { title: string; body?: string; base?: string },
-  ): Promise<GitHubPullCreateResult> {
-    const session = this.records.get(sessionId);
-    const workspace = session.workspace;
-    if (workspace.mode !== "worktree") {
-      return {
-        opened: false,
-        refusal: "not_pushed",
-        message: "This session works in the project's own checkout, so it has no branch of its own to open a pull request for.",
-      };
-    }
-    if (session.projectId === undefined) throw new EngineStateError("invalid_request", "this session has no project");
-    const project = this.getProject(session.projectId);
-    const cwd = workspaceRootOf(session);
-    const branch = workspace.branch;
-
-    const facts = await sessionBranchFacts(this.worktreeGit, cwd);
-    const blocked = pullRequestBlockedBy(facts, branch);
-    if (blocked) return { opened: false, refusal: "failed", message: blocked.message };
-    if (facts.upstream !== true) {
-      return {
-        opened: false,
-        refusal: "not_pushed",
-        message: `origin has never seen ${branch}. Push it first, and this becomes available.`,
-      };
-    }
-
-    const base = input.base?.trim() || (await this.defaultPullBase(project.root));
-    if (!base) {
-      return { opened: false, refusal: "failed", message: "This engine could not work out which branch to open the pull request against." };
-    }
-    if (!REF_NAME.test(base)) throw new EngineStateError("invalid_request", "that is not a branch name");
-
-    const result = await openPullRequest(this.gh, cwd, {
-      head: branch,
-      base,
-      title: input.title,
-      body: input.body ?? "",
-      sessionId: session.id,
-    });
-    // A new pull request belongs in the project's next forge read; the cached
-    // list would otherwise not have it for the rest of its window — the same
-    // staleness `projectPullMerge` refuses.
-    if (result.opened) this.github.forgetLists(project.id);
-    return structuredClone(result);
+  openSessionPullRequest(sessionId: string, input: { title: string; body?: string; base?: string }): Promise<GitHubPullCreateResult> {
+    return this.sessionPulls.open(sessionId, input);
   }
 
-  /**
-   * What placing a Diff line on this session branch's pull request needs — #1014.
-   *
-   * Read when asked, never cached: the surface asks once per branch-scope view,
-   * and the whole point is that HEAD, the dirty paths and the pull request's head
-   * are compared as they are NOW. A session with no branch of its own has no pull
-   * request, and says so by leaving `pull` out.
-   */
-  async sessionPullAnchor(sessionId: string): Promise<GitHubPullAnchor> {
-    const session = this.records.get(sessionId);
-    const workspace = session.workspace;
-    if (workspace.mode !== "worktree") return { dirty: [], files: [] };
-    const cwd = workspaceRootOf(session);
-    const [pull, local] = await Promise.all([readPullForBranch(this.gh, cwd, workspace.branch), this.checkoutHeadAndDirty(cwd)]);
-    if (!pull) return { ...local, files: [] };
-    return { pull, ...local, files: await readPullFiles(this.gh, cwd, pull.number) };
+  sessionPullAnchor(sessionId: string): Promise<GitHubPullAnchor> {
+    return this.sessionPulls.anchor(sessionId);
   }
 
-  /**
-   * Start a review thread on the session branch's pull request — #1014.
-   *
-   * THE PULL REQUEST IS THE BRANCH'S, NEVER THE CALLER'S: it is looked up again
-   * from the session record, so this route cannot comment anywhere else. And the
-   * commit the surface anchored to must still be both the checkout's HEAD and the
-   * pull request's head — otherwise the line numbers it chose describe a
-   * different file, and the answer is `stale` rather than a misplaced comment.
-   */
-  async sessionPullLineComment(sessionId: string, input: GitHubLineCommentInput): Promise<GitHubLineCommentResult> {
-    const session = this.records.get(sessionId);
-    const workspace = session.workspace;
-    if (workspace.mode !== "worktree") {
-      return { commented: false, refusal: "not_found", message: "This session has no branch of its own, so it has no pull request." };
-    }
-    const cwd = workspaceRootOf(session);
-    const [pull, local] = await Promise.all([readPullForBranch(this.gh, cwd, workspace.branch), this.checkoutHeadAndDirty(cwd)]);
-    if (!pull) return { commented: false, refusal: "not_found", message: `${workspace.branch} has no open pull request.` };
-    if (pull.headRefOid !== input.commitId || local.head !== input.commitId || local.dirty.includes(input.path)) {
-      return { commented: false, refusal: "stale", message: "The branch moved after this diff was read. Refresh and select the lines again." };
-    }
-    const result = await commentOnPullLine(this.gh, cwd, pull.number, input);
-    if (result.commented && session.projectId !== undefined) this.github.forgetDetail(session.projectId, "pull", pull.number);
-    return structuredClone(result);
-  }
-
-  private async checkoutHeadAndDirty(cwd: string): Promise<{ head?: string; dirty: string[] }> {
-    const [head, status] = await Promise.all([this.asyncGit(cwd, ["rev-parse", "HEAD"]), this.asyncGit(cwd, ["status", "--porcelain=v1", "-z"])]);
-    // A status that did not answer leaves HEAD out too: without the dirty list
-    // no line can be called safe, and no HEAD is what says so.
-    const sha = head.status === 0 && status.status === 0 ? head.stdout.trim() : "";
-    return { ...(sha ? { head: sha } : {}), dirty: status.status === 0 ? porcelainPaths(status.stdout) : [] };
-  }
-
-  /** The remote's own default branch, unqualified — `origin/main` is what a
-   *  worktree is cut from and `main` is what `gh pr create --base` takes. */
-  private async defaultPullBase(projectRoot: string): Promise<string | undefined> {
-    const listing = await listGitRefsAsync(this.worktreeGit, projectRoot);
-    const qualified = await defaultRemoteBaseAsync(this.worktreeGit, projectRoot, listing);
-    return qualified?.replace(/^origin\//, "");
+  sessionPullLineComment(sessionId: string, input: GitHubLineCommentInput): Promise<GitHubLineCommentResult> {
+    return this.sessionPulls.lineComment(sessionId, input);
   }
 
   /**
