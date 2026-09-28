@@ -63,13 +63,11 @@ describe("the lights sit on the app header's centreline", () => {
   test("reserving width for the lights also means sitting on their centreline", () => {
     const fs = require("node:fs");
     const path = require("node:path");
-    const web = path.join(__dirname, "..", "..", "..", "web", "src", "components");
-    const files = [];
-    for (const dir of [web, path.join(web, "common"), path.join(web, "settings")]) {
-      for (const name of fs.readdirSync(dir)) {
-        if (name.endsWith(".tsx")) files.push(path.join(dir, name));
-      }
-    }
+    const web = path.join(__dirname, "..", "..", "..", "web", "src");
+    const files = fs
+      .readdirSync(web, { recursive: true })
+      .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
+      .map((name) => path.join(web, name));
     const reserves = files.filter((file) => fs.readFileSync(file, "utf8").includes("--titlebar-inset"));
 
     expect(reserves.length).toBeGreaterThan(2);
