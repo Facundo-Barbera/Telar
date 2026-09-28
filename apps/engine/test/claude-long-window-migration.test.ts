@@ -30,7 +30,8 @@ const MARKER = "claude-long-window-migration.json";
 /** A store as a pre-#986 engine left it: bare ids on disk, and no marker. */
 function oldStore(): string {
   const root = dir("telar-long-window-");
-  const store = new EngineStore(root, () => 100);
+  // A JSON home, which the next open imports into SQLite.
+  const store = new EngineStore(root, () => 100, { executionStorage: "json" });
   store.registerProject({ id: "project_one", name: "One", root: dir("telar-long-window-checkout-") });
   store.registerProject({ id: "project_two", name: "Two", root: dir("telar-long-window-checkout-") });
   store.createSession({ id: "session_opus", projectId: "project_one" });

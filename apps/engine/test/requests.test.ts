@@ -60,12 +60,8 @@ function readyStore(runtimeMode: "approval-required" | "auto" | "full-access" | 
   });
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
-  // Runtime mode is chosen at creation from `detached`; set it directly here
-  // so each case tests one mode rather than the default ladder.
-  const file = path.join(store.paths.sessions, "session_one", "session.json");
-  const session = JSON.parse(fs.readFileSync(file, "utf8")) as { runtimeMode: string };
-  session.runtimeMode = runtimeMode;
-  fs.writeFileSync(file, JSON.stringify(session));
+  // One mode per case rather than the default ladder.
+  store.updateSession("session_one", { runtimeMode });
   return { store, parked };
 }
 
@@ -101,7 +97,8 @@ test("approval-required parks a command, records that someone was told, and bloc
     kind: "command_execution",
     detail: bashDetail,
   });
-  expect(opened).toMatchObject({ state: "open", notified: true });
+  // The notifier runs after the commit, so the stored row is what records it.
+  expect(opened).toMatchObject({ state: "open" });
   expect(parked).toEqual(["req_1"]);
   expect(store.requests("session_one")[0]).toMatchObject({ state: "open", notified: true });
 });
@@ -159,7 +156,7 @@ test("opening the same requestId twice returns the SAME answer instead of a seco
   const token = runningTurn(store);
   const first = store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
   const second = store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
-  expect(second).toEqual(first);
+  expect(second).toEqual({ ...first, notified: true });
   expect(store.requests("session_one")).toHaveLength(1);
 
   store.resolveRequest("session_one", "req_1", { decision: "accept" });
@@ -276,8 +273,9 @@ test("secret_access PARKS in full-access — the one kind besides user_input tha
     kind: "secret_access",
     detail: secretDetail,
   });
-  expect(opened).toMatchObject({ state: "open", notified: true });
+  expect(opened).toMatchObject({ state: "open" });
   expect(parked).toEqual(["req_secret"]);
+  expect(store.requests("session_one")[0]).toMatchObject({ state: "open", notified: true });
 });
 
 test("resolving a secret_access carries the item pick in answers, and the journal never holds a value", () => {
@@ -299,13 +297,9 @@ test("resolving a secret_access carries the item pick in answers, and the journa
     expect.objectContaining({ requestId: "req_secret", decision: "accept", answers: { item: "item_gh" } }),
   ]);
 
-  // THE REDACTION SWEEP: everything this session persisted — journal,
-  // requests, queue, session doc — read raw off disk. The detail was built
-  // from metadata (titles, domains, kinds), so no file may hold a vault
-  // value; the sentinel stands in for one and must appear nowhere. What this
-  // pins is the CONTRACT that the fill path hands state nothing but metadata
-  // — the orchestrator-side half lives in secret-fill.test.ts.
-  const sessionDir = path.join(store.paths.sessions, "session_one");
+  // Everything the engine persisted, read raw off disk: no file may hold the
+  // vault value. The orchestrator-side half lives in secret-fill.test.ts.
+  store.closeExecutionStore();
   const files: string[] = [];
   const walk = (directory: string): void => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -314,15 +308,12 @@ test("resolving a secret_access carries the item pick in answers, and the journa
       else files.push(full);
     }
   };
-  walk(sessionDir);
-  expect(files.length).toBeGreaterThan(0);
-  for (const file of files) {
-    expect(fs.readFileSync(file, "utf8"), file).not.toContain(SENTINEL);
-  }
+  walk(store.paths.root);
+  const raw = files.map((file) => fs.readFileSync(file, "latin1")).join("\n");
+  expect(raw).not.toContain(SENTINEL);
   // And the candidate metadata IS there — the sweep read the right files.
-  const requestsRaw = fs.readFileSync(path.join(sessionDir, "requests.json"), "utf8");
-  expect(requestsRaw).toContain("item_gh");
-  expect(requestsRaw).toContain("github.com");
+  expect(raw).toContain("item_gh");
+  expect(raw).toContain("github.com");
 });
 
 // ── the shared-browser control journal ─────────────────────────────────────

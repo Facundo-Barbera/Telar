@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Turn } from "@telar/engine-client";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv } from "../src/state";
+import type { ExecutionStore } from "../src/execution-store";
 import { INLINE_CHARS } from "../src/agent-notice";
 import { RELAY_RULE } from "../src/attribution";
 import { summariseTurn } from "../src/turn-summary";
@@ -31,12 +32,22 @@ afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-function readyStore(): { store: EngineStore; root: string } {
+function readyStore(executionStorage?: "json"): { store: EngineStore; root: string } {
   const stateRoot = root();
-  const store = new EngineStore(stateRoot, () => 100);
+  const store = new EngineStore(stateRoot, () => 100, { executionStorage });
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
   return { store, root: stateRoot };
+}
+
+const documents = (store: EngineStore) => (store as unknown as { executionStore: ExecutionStore }).executionStore;
+
+// Rewrites a stored session_one document, as an older build left it.
+function editDocument(store: EngineStore, stateRoot: string, name: string, edit: (value: any) => void): void {
+  const file = path.join(stateRoot, "sessions", "session_one", name);
+  const value = documents(store).read(file);
+  edit(value);
+  documents(store).write(file, value);
 }
 
 test("the engine requires an explicit absolute home and writes only beneath its Telar root", () => {
@@ -114,8 +125,9 @@ test("submitting a stable run id is idempotent and a session has only one active
   expect(queued.turn.state).toBe("queued");
 });
 
+// JSON journal only; deleted with the JSON backend.
 test("the event cursor is the last journal id, read without the journal", () => {
-  const { store, root: stateRoot } = readyStore();
+  const { store, root: stateRoot } = readyStore("json");
   expect(store.eventCursor("session_one")).toBe(1); // session.created
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   store.stopTurn("session_one", "run_one");
@@ -233,8 +245,9 @@ test("streamed deltas journal without rewriting the item projection, and the clo
     { kind: "item.started", item: { id: "i_1", detail: { type: "assistant_message", text: "" } } },
   ]);
 
-  const spy = spyOn(fs, "renameSync");
-  const projectionWrites = () => spy.mock.calls.filter(([, to]) => String(to).endsWith("items.json")).length;
+  const upserts = spyOn(documents(store), "upsertItems");
+  const texts = spyOn(documents(store), "writeText");
+  const projectionWrites = () => upserts.mock.calls.length + texts.mock.calls.filter(([file]) => file.endsWith("items.json")).length;
   try {
     for (const text of ["hel", "lo ", "there"]) {
       store.ingestObservations("session_one", "run_one", token, [
@@ -248,7 +261,8 @@ test("streamed deltas journal without rewriting the item projection, and the clo
     ]);
     expect(projectionWrites()).toBe(1);
   } finally {
-    spy.mockRestore();
+    upserts.mockRestore();
+    texts.mockRestore();
   }
 
   // The deltas are still durable, and the projection carries the folded text —
@@ -358,12 +372,10 @@ test("a request left open on an already-ended turn is retired at boot; one on an
   });
   // Fail the turn behind the store's back, as an older build did: the
   // request stays open on disk beside a failed turn.
-  const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
-  const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
-  queue.turns[0].state = "failed";
-  queue.turns[0].completedAt = 90;
-  queue.turns[0].failure = { code: "driver_failed", message: "old build" };
-  fs.writeFileSync(queueFile, JSON.stringify(queue), "utf8");
+  editDocument(store, stateRoot, "queue.json", (queue) => {
+    Object.assign(queue.turns[0], { state: "failed", completedAt: 90, failure: { code: "driver_failed", message: "old build" } });
+  });
+  store.closeExecutionStore();
 
   const reopened = new EngineStore(stateRoot, () => 200);
   // Read alone already refuses to call the session blocked...
@@ -467,16 +479,12 @@ test("the boot sweep closes every terminal turn's leftovers in one pass over eac
     });
     // End each turn behind the store's back, the way an older build's crash
     // left them: terminal on disk with its rows still open.
-    const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
-    const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
-    for (const turn of queue.turns) {
-      if (turn.runId !== runId) continue;
-      turn.state = "failed";
-      turn.completedAt = 90;
-      turn.failure = { code: "driver_failed", message: "old build" };
-    }
-    fs.writeFileSync(queueFile, JSON.stringify(queue), "utf8");
+    editDocument(store, stateRoot, "queue.json", (queue) => {
+      const turn = queue.turns.find((candidate: Turn) => candidate.runId === runId);
+      Object.assign(turn, { state: "failed", completedAt: 90, failure: { code: "driver_failed", message: "old build" } });
+    });
   }
+  store.closeExecutionStore();
 
   const reopened = new EngineStore(stateRoot, () => 300);
   reopened.recover();
@@ -1091,8 +1099,8 @@ test("tasks are journalled AND projected, so a cold session still knows a sub-ag
     "item.started",
     "task.completed",
   ]);
-  // A projection, on disk, beside the journal — not derived on read.
-  expect(fs.existsSync(path.join(stateRoot, "sessions", "session_one", "tasks.json"))).toBe(true);
+  // A stored projection beside the journal — not derived on read.
+  expect(documents(store).read(path.join(stateRoot, "sessions/session_one/tasks.json"))).toMatchObject({ tasks: [{ id: "task_a" }] });
 });
 
 test("a session names its provider, and the routing instance is derived from it", () => {
@@ -1145,10 +1153,7 @@ test("a delta for an item that was never opened is dropped rather than journalle
 
 test("a v1 document names the version break instead of reading as corruption", () => {
   const { store, root: stateRoot } = readyStore();
-  const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
-  const queue = JSON.parse(fs.readFileSync(queueFile, "utf8")) as { version: number };
-  queue.version = 1;
-  fs.writeFileSync(queueFile, `${JSON.stringify(queue)}\n`);
+  editDocument(store, stateRoot, "queue.json", (queue) => { queue.version = 1; });
   // A bare schema failure here would read as disk corruption and send an
   // operator looking in the wrong place.
   expect(() => store.turns("session_one")).toThrow(/protocol v1/);
@@ -1191,8 +1196,9 @@ test("project roots are canonical existing directories and legacy homes are reje
   }
 });
 
+// JSON journal only; deleted with the JSON backend.
 test("an interrupted final journal append is truncated, while malformed complete records are rejected", () => {
-  const { store, root: stateRoot } = readyStore();
+  const { store, root: stateRoot } = readyStore("json");
   const journal = path.join(stateRoot, "sessions", "session_one", "events.ndjson");
   const valid = fs.readFileSync(journal, "utf8");
   fs.appendFileSync(journal, '{"id":2');
@@ -1205,6 +1211,7 @@ test("an interrupted final journal append is truncated, while malformed complete
   expect(() => store.readEvents("session_one")).toThrow();
 });
 
+// JSON journal only; deleted with the JSON backend.
 describe("the journal head is read from disk once per store, then kept in memory", () => {
   /**
    * `appendEvent` used to parse the whole journal on every append to learn
@@ -1218,12 +1225,12 @@ describe("the journal head is read from disk once per store, then kept in memory
   const ids = (store: EngineStore): number[] => store.readEvents("session_one").map((event) => event.id);
 
   test("a restarted store continues the id sequence from the journal on disk", () => {
-    const { store, root: stateRoot } = readyStore();
+    const { store, root: stateRoot } = readyStore("json");
     store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
     store.stopTurn("session_one", "run_one");
     expect(ids(store)).toEqual([1, 2, 3]);
 
-    const restarted = new EngineStore(stateRoot, () => 200);
+    const restarted = new EngineStore(stateRoot, () => 200, { executionStorage: "json" });
     restarted.submitTurn("session_one", { runId: "run_two", input: "Again" });
     expect(ids(restarted)).toEqual([1, 2, 3, 4]);
     // The original instance's memory is stale after the other wrote — which
@@ -1236,13 +1243,13 @@ describe("the journal head is read from disk once per store, then kept in memory
     // The crash happened before the JSON finished reaching disk. The fragment
     // is not a record; a restart drops it and the next id follows the last
     // COMPLETE one rather than the torn one's claimed id.
-    const { store, root: stateRoot } = readyStore();
+    const { store, root: stateRoot } = readyStore("json");
     store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
     const journal = journalOf(stateRoot);
     const intact = fs.readFileSync(journal, "utf8");
     fs.appendFileSync(journal, '{"id":3,"at":100,"sessionId":"session_one","type":"turn.st');
 
-    const restarted = new EngineStore(stateRoot, () => 200);
+    const restarted = new EngineStore(stateRoot, () => 200, { executionStorage: "json" });
     restarted.stopTurn("session_one", "run_one");
     const after = fs.readFileSync(journal, "utf8");
     expect(after.startsWith(intact)).toBe(true);
@@ -1257,13 +1264,13 @@ describe("the journal head is read from disk once per store, then kept in memory
     // The crash happened after the JSON bytes landed but before the newline.
     // That observation is real and must not be lost; the next append must
     // not be glued onto it either.
-    const { store, root: stateRoot } = readyStore();
+    const { store, root: stateRoot } = readyStore("json");
     store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
     const journal = journalOf(stateRoot);
     const unterminated = JSON.stringify({ id: 3, at: 100, sessionId: "session_one", type: "turn.started", runId: "run_one" });
     fs.appendFileSync(journal, unterminated);
 
-    const restarted = new EngineStore(stateRoot, () => 200);
+    const restarted = new EngineStore(stateRoot, () => 200, { executionStorage: "json" });
     restarted.stopTurn("session_one", "run_one");
     const lines = fs.readFileSync(journal, "utf8").split("\n");
     expect(lines.at(-1)).toBe("");
@@ -1282,7 +1289,7 @@ describe("the journal head is read from disk once per store, then kept in memory
     // after the head is seeded no append on this session may touch it —
     // counted per append so a regression to "read every time" is caught even
     // if some other read slips in once.
-    const { store, root: stateRoot } = readyStore();
+    const { store, root: stateRoot } = readyStore("json");
     const journal = journalOf(stateRoot);
     store.submitTurn("session_one", { runId: "warm", input: "seed the head" });
     store.stopTurn("session_one", "warm");
@@ -1306,7 +1313,7 @@ describe("the journal head is read from disk once per store, then kept in memory
   });
 
   test("a deleted session's head is forgotten, so a recreated id starts a fresh journal", () => {
-    const { store } = readyStore();
+    const { store } = readyStore("json");
     store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
     store.stopTurn("session_one", "run_one");
     expect(store.deleteSession("session_one")).toBe(true);
@@ -1315,7 +1322,7 @@ describe("the journal head is read from disk once per store, then kept in memory
   });
 
   test("a failed append forgets the head so the next one re-reads and repairs", () => {
-    const { store, root: stateRoot } = readyStore();
+    const { store, root: stateRoot } = readyStore("json");
     const journal = journalOf(stateRoot);
     store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
 
@@ -3343,10 +3350,9 @@ describe("a message typed into a session that had already been claimed", () => {
     const claim = store.claimTurn("session_one", "worker_one")!;
     store.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
 
-    const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
-    const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
-    for (const turn of queue.turns) if (turn.claim) delete turn.claim.sequence;
-    fs.writeFileSync(queueFile, JSON.stringify(queue));
+    editDocument(store, stateRoot, "queue.json", (queue) => {
+      for (const turn of queue.turns) if (turn.claim) delete turn.claim.sequence;
+    });
 
     store.markRunning("session_one", "run_live", claim.claim!.token);
     expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
@@ -3963,6 +3969,7 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
   const claim = store.claimTurn("session_one", "worker_one")!;
   store.markRunning("session_one", "run_lost", claim.claim!.token);
   store.submitTurn("session_one", { runId: "run_held", input: "before the crash" });
+  store.closeExecutionStore();
   const rebooted = new EngineStore(stateRoot, () => 200);
   rebooted.recover();
 
@@ -3971,12 +3978,10 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
    * still carried a stale `held` flag skipped it — and was reported as
    * "released", which is a lie about a turn that has already ended.
    */
-  const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
-  const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
-  const stale = queue.turns.find((turn: { runId: string }) => turn.runId === "run_held");
-  stale.state = "stopped";
-  stale.completedAt = 150;
-  fs.writeFileSync(queueFile, JSON.stringify(queue), "utf8");
+  editDocument(rebooted, stateRoot, "queue.json", (queue) => {
+    Object.assign(queue.turns.find((turn: Turn) => turn.runId === "run_held"), { state: "stopped", completedAt: 150 });
+  });
+  rebooted.closeExecutionStore();
   const withStale = new EngineStore(stateRoot, () => 300);
   expect(() => withStale.releaseHeldTurn("session_one", "run_held")).toThrow(/only a queued turn can be released/);
 
@@ -3992,10 +3997,8 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
    */
   const { store: away, root: awayRoot } = readyStore();
   away.submitTurn("session_one", { runId: "run_held", input: "before the crash" });
-  const awayFile = path.join(awayRoot, "sessions", "session_one", "queue.json");
-  const awayQueue = JSON.parse(fs.readFileSync(awayFile, "utf8"));
-  awayQueue.turns[0].held = { at: 100, reason: "engine_restart" };
-  fs.writeFileSync(awayFile, JSON.stringify(awayQueue), "utf8");
+  editDocument(away, awayRoot, "queue.json", (queue) => { queue.turns[0].held = { at: 100, reason: "engine_restart" }; });
+  away.closeExecutionStore();
   const registryFile = path.join(awayRoot, "projects.json");
   const registry = JSON.parse(fs.readFileSync(registryFile, "utf8"));
   registry.projects[0].removedAt = 150;
@@ -4321,14 +4324,9 @@ describe("stop is stop — there is no pause to resume", () => {
   test("session Stop terminalizes legacy held work before clearing its pause latch", () => {
     const { store, root: directory } = readyStore();
     store.submitTurn("session_one", { runId: "run_held", input: "keep these words" });
-    const queueFile = path.join(directory, "sessions", "session_one", "queue.json");
-    const metadataFile = path.join(directory, "sessions", "session_one", "session.json");
-    const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
-    queue.turns[0].held = { at: 100, reason: "session_paused" };
-    fs.writeFileSync(queueFile, JSON.stringify(queue));
-    const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
-    metadata.paused = { at: 100, by: "human" };
-    fs.writeFileSync(metadataFile, JSON.stringify(metadata));
+    editDocument(store, directory, "queue.json", (queue) => { queue.turns[0].held = { at: 100, reason: "session_paused" }; });
+    editDocument(store, directory, "session.json", (metadata) => { metadata.paused = { at: 100, by: "human" }; });
+    store.closeExecutionStore();
     const legacy = new EngineStore(directory, () => 200);
     legacy.stopSession("session_one");
     expect(legacy.turns("session_one")[0]).toMatchObject({ state: "stopped", input: "keep these words" });
