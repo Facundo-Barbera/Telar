@@ -38,7 +38,7 @@ import {
   type SitePermissionKind,
   type SitePermissionProfile,
 } from "@/lib/desktop-site-permissions";
-import { NewBrowserProfileDialog, PermissionKindIcon } from "@/features/browser";
+import { NewBrowserProfileDialog, PermissionKindIcon } from "@/features/browser/settings";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
