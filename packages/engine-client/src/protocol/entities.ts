@@ -1633,6 +1633,9 @@ export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
  *  this document" cap as the project order, applied one list at a time. */
 export const MAX_SIDEBAR_SESSION_ORDER = 1000;
 
+export const SidebarMode = z.enum(["grouped", "flat"]);
+export type SidebarMode = z.infer<typeof SidebarMode>;
+
 /**
  * WHERE EACH PROJECT GROUP SITS IN THE RAIL — the arrangement, kept apart from
  * the list it arranges.
@@ -1676,10 +1679,13 @@ export const SidebarLayout = z.object({
     .record(z.string().min(1).max(200), z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_SESSION_ORDER))
     .default({}),
   pinnedOrder: z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_SESSION_ORDER).default([]),
+  /** How the rail draws the list: by project (the default), or one flat list
+   *  with spawned sessions nested under their parent. */
+  mode: SidebarMode.default("grouped"),
 });
 export type SidebarLayout = z.infer<typeof SidebarLayout>;
 
-export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };
+export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" };
 
 /**
  * COMPUTER USE, MEASURED — the settings page's permission readout, and since

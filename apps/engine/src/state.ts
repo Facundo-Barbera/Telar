@@ -41,6 +41,7 @@ import {
   MAX_SIDEBAR_SESSION_ORDER,
   SessionDefaults as SessionDefaultsSchema,
   SidebarLayout as SidebarLayoutSchema,
+  SidebarMode,
   workspaceBaseRef,
   workspacePath,
   TextGenPolicy as TextGenPolicySchema,
@@ -1257,7 +1258,7 @@ const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSIO
 
 /** "Nobody has arranged anything" — what an unreadable layout document costs.
  *  Spelled once so the three arrangements cannot fall back to different things. */
-const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [], sessionOrder: {}, pinnedOrder: [] });
+const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" });
 
 /** The order every session list is in: newest work first, ties broken by id so
  *  two passes over the same store never disagree. Named because two readers
@@ -1419,6 +1420,7 @@ const cloneSidebarLayout = (layout: SidebarLayout): SidebarLayout => ({
   projectOrder: [...layout.projectOrder],
   sessionOrder: Object.fromEntries(Object.entries(layout.sessionOrder).map(([key, ids]) => [key, [...ids]])),
   pinnedOrder: [...layout.pinnedOrder],
+  mode: layout.mode,
 });
 
 function assertStateVersion(value: unknown, document: string): void {
@@ -3957,7 +3959,7 @@ export class EngineStore {
    * else. Absent means "unchanged", never "empty" — otherwise one rail's write
    * would erase an arrangement another rail had just made.
    */
-  setSidebarLayout(patch: { projectOrder?: unknown; sessionOrder?: unknown; pinnedOrder?: unknown }): SidebarLayout {
+  setSidebarLayout(patch: { projectOrder?: unknown; sessionOrder?: unknown; pinnedOrder?: unknown; mode?: unknown }): SidebarLayout {
     const next: SidebarLayout = { ...this.getSidebarLayout() };
     if (patch.projectOrder !== undefined) {
       const parsed = SidebarLayoutSchema.shape.projectOrder.safeParse(patch.projectOrder);
@@ -3988,6 +3990,11 @@ export class EngineStore {
         );
       }
       next.pinnedOrder = [...new Set(parsed.data)];
+    }
+    if (patch.mode !== undefined) {
+      const parsed = SidebarMode.safeParse(patch.mode);
+      if (!parsed.success) throw new EngineStateError("invalid_request", 'mode must be "grouped" or "flat"');
+      next.mode = parsed.data;
     }
     this.writeDocument(this.paths.sidebarLayout, { version: STATE_VERSION, ...next });
     return cloneSidebarLayout(next);

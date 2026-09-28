@@ -1,3 +1,4 @@
+import type { SidebarMode } from "@telar/engine-client";
 import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 
 /**
@@ -31,6 +32,7 @@ export async function PATCH(request: Request) {
         ...("projectOrder" in body ? { projectOrder: body.projectOrder as string[] } : {}),
         ...("sessionOrder" in body ? { sessionOrder: body.sessionOrder as Record<string, string[]> } : {}),
         ...("pinnedOrder" in body ? { pinnedOrder: body.pinnedOrder as string[] } : {}),
+        ...("mode" in body ? { mode: body.mode as SidebarMode } : {}),
       }),
     );
   } catch (error) {
