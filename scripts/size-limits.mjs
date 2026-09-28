@@ -10,8 +10,6 @@ export const MAX_FUNCTION_LINES = 150;
 // The only files allowed over the limits, each with the reason. One that fits again fails until it is removed here.
 export const ALLOWED = {
   "apps/engine/src/state.ts": "the store monolith; the kernel extraction is taking it apart",
-  "apps/desktop/src/browser/browser-manager.test.js": "test file awaiting a split by browser feature",
-  "apps/desktop/src/terminal/terminal-host.test.js": "test file awaiting a split",
   "apps/engine/src/domains/sessions/tools/tools.test.ts": "test file awaiting a split by tool group",
   "apps/engine/src/domains/turns/notification.test.ts": "test file awaiting a split",
   "apps/engine/src/platform/db/execution-store.test.ts": "test file awaiting a split",
