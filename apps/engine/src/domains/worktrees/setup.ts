@@ -1,28 +1,10 @@
-/**
- * ══ A NEW WORKTREE'S SETUP, IN THE BACKGROUND ══
- *
- * `setup.command` from the project's workspace config runs in the new
- * checkout while the agent starts reading. Only `blocking: true` makes the
- * first turn wait (the store keeps `preparation` at `preparing` until this
- * ends). Everything else about it is Run's discipline, reused rather than
- * re-derived: the same launcher (a detached process group one signal reaches
- * whole), the same shell resolution, the same `taskkill /T` on Windows.
- *
- * ONE PER SESSION, AND RE-RUNNABLE. A second start while one runs is refused;
- * after it ends, a start runs it again — a setup command is expected to be
- * idempotent (`bun install --frozen-lockfile` twice is a no-op), and the log
- * of the new run replaces the old one.
- *
- * ON DISK, BESIDE THE SESSION: `setup.json` (the status) and `setup.log` (the
- * output), so a restarted engine still shows what happened. A run that was
- * going when the engine went away is `interrupted`, never `running` — nothing
- * is holding it any more, and claiming otherwise would be a lie with a spinner.
- */
+// One setup run per session, re-runnable. Only `blocking: true` holds the first turn.
+// setup.json and setup.log sit beside the session; a run the engine lost is `interrupted`.
 import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceConfig } from "@telar/engine-client";
-import { atomicWrite } from "./platform/fs/atomic";
-import { resolveShell, type RunHandle, type RunLauncher } from "./domains/terminal";
+import { atomicWrite } from "../../platform/fs/atomic";
+import { resolveShell, type RunHandle, type RunLauncher } from "../terminal";
 
 export type SetupState = "running" | "succeeded" | "failed" | "timed-out" | "stopped" | "interrupted";
 
@@ -124,10 +106,7 @@ export class WorktreeSetups {
     return this.live.get(sessionId)?.done ?? Promise.resolve(this.status(sessionId));
   }
 
-  /**
-   * Run the command. Resolves once the run has STARTED (or was refused);
-   * `wait` is for its end. `undefined` when the config has no setup.
-   */
+  // Resolves once the run has started or was refused; `wait` is for its end.
   async start(
     sessionId: string,
     input: { worktree: string; config: WorkspaceConfig; env?: Record<string, string> },

@@ -18,7 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
-import { writeWorktreesRoot } from "../src/worktrees-location";
+import { writeWorktreesRoot } from "../src/domains/worktrees";
 
 const made: string[] = [];
 const tmp = (prefix: string): string => {

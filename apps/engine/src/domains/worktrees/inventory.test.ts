@@ -16,10 +16,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildInventory, classifyCheckout, describeReclaim, type CheckoutFacts } from "../src/worktree-inventory";
-import { createAsyncGitRunner } from "../src/platform/git/runner";
-import { removeUnregisteredCheckout } from "../src/domains/worktrees";
-import { measureDirectory } from "../src/domains/storage";
+import { buildInventory, classifyCheckout, describeReclaim, type CheckoutFacts } from "./inventory";
+import { createAsyncGitRunner } from "../../platform/git/runner";
+import { removeUnregisteredCheckout } from "./checkout";
+import { measureDirectory } from "../storage";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {

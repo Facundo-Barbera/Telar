@@ -2,9 +2,9 @@ import path from "node:path";
 import { HttpError } from "../../platform/http/http";
 import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
-import { describeReclaim } from "../../worktree-inventory";
-import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "../../worktrees-location";
-import { describeOutcome } from "../../worktrees-move";
+import { describeReclaim } from "./inventory";
+import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./location";
+import { describeOutcome } from "./move";
 
 const settledChoice = (value: unknown): { settled?: "archive" | "release" } => (value === "archive" || value === "release" ? { settled: value } : {});
 

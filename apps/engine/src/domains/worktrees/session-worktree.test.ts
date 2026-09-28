@@ -6,7 +6,7 @@ import { EngineStateError, EngineStore } from "../../state";
 import { worktreeReady } from "../../../test/worktree-ready";
 import { createAsyncGitRunner, defaultAsyncGitRunner, defaultGitRunner, type AsyncGitRunner } from "../../platform/git/runner";
 import { prepareSessionWorktree, removeSessionWorktreeAsync, WorktreeError, derivedBranchFor } from "./index";
-import { defaultWorktreesRoot } from "../../worktrees-location";
+import { defaultWorktreesRoot } from "./location";
 import { gitOverviewAsync, sessionDiffAsync, sessionFilePatchAsync } from "../git";
 import { tmp, removeTmp, engineHome, worktreeFixtures, repo } from "../../../test/worktree-fixtures";
 
