@@ -3,8 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { Composition, Look } from "@telar/engine-client";
 import { decideFollow, parseFollowMode, readFollowNotice, wearPublication, writeFollowNotice } from "./host-follow";
-import { DEFAULT_COMPOSITION, writeComposition } from "@/lib/composition";
-import { lookTintMessage } from "@/lib/looks";
+import { DEFAULT_COMPOSITION, writeComposition } from "./composition";
+import { lookTintMessage } from "./looks";
 
 const published = { updatedAt: 1_700_000_000_000, appearance: { version: 2 } };
 

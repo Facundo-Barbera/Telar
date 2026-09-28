@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { createEngineApi } from "@/lib/engine/client";
-import { useAppearance } from "@/lib/appearance";
+import { useAppearance } from "../appearance";
 import { decideFollow, readAppliedStamp, useFollowHost, wearPublication, writeAppliedStamp } from "../host-follow";
 import { isHostWindow } from "@/lib/host-window";
 import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";

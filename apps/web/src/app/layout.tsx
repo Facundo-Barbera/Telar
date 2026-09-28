@@ -25,9 +25,7 @@ import "streamdown/styles.css";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 import { ClipboardShim } from "@/components/clipboard-shim";
-import { AppearanceProvider, ThemeProvider, THEME_INIT_SCRIPT } from "@/features/appearance";
-import { APPEARANCE_INIT_SCRIPT } from "@/lib/appearance";
-import { BACKDROP_INIT_SCRIPT } from "@/lib/backdrop";
+import { APPEARANCE_INIT_SCRIPT, AppearanceProvider, BACKDROP_INIT_SCRIPT, ThemeProvider, THEME_INIT_SCRIPT } from "@/features/appearance";
 import { AppShell } from "@/components/app-shell";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });

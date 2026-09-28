@@ -3,9 +3,9 @@
 import { useEffect } from "react";
 import { AppearancePublisher } from "./appearance-publisher";
 import { HostLookFollower } from "./host-look-follower";
-import { applyAppearance, useAppearance } from "@/lib/appearance";
-import { applyBackdrop, useBackdropCss } from "@/lib/backdrop";
-import { applyThemeCss, recompileStaleCss, useComposition } from "@/lib/composition";
+import { applyAppearance, useAppearance } from "../appearance";
+import { applyBackdrop, useBackdropCss } from "../backdrop";
+import { applyThemeCss, recompileStaleCss, useComposition } from "../composition";
 
 export function AppearanceProvider({ children }: { children: React.ReactNode }) {
   const { appearance } = useAppearance();

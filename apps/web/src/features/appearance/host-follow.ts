@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import type { Look } from "@telar/engine-client";
-import { applyLook, type LookAppearance } from "@/lib/looks";
+import { applyLook, type LookAppearance } from "./looks";
 
 export type FollowMode = "follow" | "detached";
 

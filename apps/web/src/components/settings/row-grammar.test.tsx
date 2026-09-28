@@ -22,7 +22,7 @@ const { Dropdown } = await import("./settings-shell");
 const { WorkspaceSection } = await import("./workspace-section");
 const { TextGenSection } = await import("./textgen-section");
 const { DataScienceSection } = await import("./data-science-section");
-const { LooksSection } = await import("./looks-section");
+const { LooksSection } = await import("@/features/appearance/components/looks-section");
 
 test("the packages fields are Rows with names, not unlabelled blocks", () => {
   const html = renderToStaticMarkup(<PackagesPanel scope={{ projectId: "project_a" }} />);

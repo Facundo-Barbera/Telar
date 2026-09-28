@@ -33,7 +33,7 @@
      `text-xs`, so the scale was real, consistently applied, and invisible to
      anyone reading globals.css looking for it.
 
-     Rem, not px, because `lib/appearance.ts` sets `html { font-size }` between
+     Rem, not px, because `features/appearance/appearance.ts` sets `html { font-size }` between
      13 and 18px and the whole app is meant to follow the reader's slider.
      Values are the ones already in the tree, so nothing moves at the 16px
      default.
@@ -565,7 +565,7 @@
    theme and the Depth setting. */
 :root {
   /* WHAT THE DEPTH SETTING MOVES — `data-depth` on <html>, written pre-paint by
-     APPEARANCE_INIT_SCRIPT (lib/appearance.ts) and kept in step by
+     APPEARANCE_INIT_SCRIPT (features/appearance/appearance.ts) and kept in step by
      applyAppearance. Pure MULTIPLIERS on the half's own dials, never absolute
      values: "deep" has to mean the same thing to a light theme and a dark one,
      and those two want very different shadows.
@@ -657,7 +657,7 @@
    way the base palette's does.
 
    Selectors: `[data-accent=…]` is <html> (set pre-paint by
-   APPEARANCE_INIT_SCRIPT in lib/appearance.ts), and `.dark [data-accent=…]`
+   APPEARANCE_INIT_SCRIPT in features/appearance/appearance.ts), and `.dark [data-accent=…]`
    (descendant) lets the settings pane's swatches retint a single span with the
    same attribute — one source for every value.
 
@@ -733,7 +733,7 @@
 [data-font-mono="system"] { --app-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 /* THE SIZE OF MONO CONTENT, and pointedly not of mono CHROME.
-   `--app-font-mono-size` is written on <html> by lib/appearance.ts. It lands
+   `--app-font-mono-size` is written on <html> by features/appearance/appearance.ts. It lands
    on the elements that actually hold code — inline code, blocks, keys, sample
    output — rather than on the `font-mono` utility, because that class is also
    what every panel header and status chip wears. Sizing by the class would
@@ -760,7 +760,7 @@ code, pre, kbd, samp {
    tab is a bug (there is no vibrancy behind it — the page behind is white).
    `data-telar-shell` is set by the shell's preload before any page script. */
 /* `--translucency` is percent TRANSPARENCY, written inline on <html> by
-   lib/appearance.ts (the slider in Settings → Appearance, 0–100 display
+   features/appearance/appearance.ts (the slider in Settings → Appearance, 0–100 display
    mapped to 0–90 here). The fallback matches DEFAULT_APPEARANCE.
 
    THE WASH IS PAINTED EXACTLY ONCE, ON BODY. The first cut put the alpha on
@@ -773,7 +773,7 @@ code, pre, kbd, samp {
    backdrop-blur header washes go fully transparent — their blur is what
    keeps them legible, and a 65%-opaque bar over a see-through canvas would
    read as a solid stripe. */
-/* THE SAME WASH NOW SERVES TWO SCENES. `data-backdrop` (lib/backdrop.ts) puts
+/* THE SAME WASH NOW SERVES TWO SCENES. `data-backdrop` (features/appearance/backdrop.ts) puts
    a gradient or an image under the app in ANY window — no shell required,
    there is really something behind the page — so every see-through rule gates
    on either attribute. `:is()` keeps the specificity at the higher of the two
@@ -1038,7 +1038,7 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   color-scheme: dark;
 }
 
-/* ─── THE BACKDROP LAYER (lib/backdrop.ts) ──────────────────────────────────
+/* ─── THE BACKDROP LAYER (features/appearance/backdrop.ts) ──────────────────────────────────
 
    One fixed div, first child of body, painted entirely from variables the
    init script and applyBackdrop write on <html>. Inset is negative so a
@@ -1099,7 +1099,7 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   pointer-events: none;
   background-color: var(--background);
   /* `none` is the honest fallback: the variables are written inline on <html>
-     by lib/backdrop.ts, and until they are, there is no scene. */
+     by features/appearance/backdrop.ts, and until they are, there is no scene. */
   background-image: var(--backdrop-light, none);
   background-size: var(--backdrop-size-light, cover);
   background-position: var(--backdrop-position-light, center);
@@ -1568,7 +1568,7 @@ pre span[style*="--sdm-c"] {
 
    PX, NEVER REM, FOR EVERY NUMBER IN THIS BLOCK. The lights are placed in
    window coordinates by the OS, and the interface font-size preference sets
-   `font-size` on <html> (lib/appearance.ts) — so a `rem` here is 13px..18px of
+   `font-size` on <html> (features/appearance/appearance.ts) — so a `rem` here is 13px..18px of
    root, and drags the reserved width and the band's centreline off the lights
    with it (#203). Everything else keeps scaling with the reader's type. */
 :root {

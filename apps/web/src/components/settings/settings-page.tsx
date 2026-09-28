@@ -60,7 +60,7 @@ import { useSectionFromUrl } from "./use-section-from-url";
  * path for the bundler to see it at all (next/dist/docs/01-app/02-guides/
  * lazy-loading.md). A table keyed by section id would compile and split nothing.
  */
-const AppearanceSection = dynamic(() => import("./appearance-section").then((mod) => mod.AppearanceSection));
+const AppearanceSection = dynamic(() => import("@/features/appearance/components/appearance-section").then((mod) => mod.AppearanceSection));
 const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
 const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
