@@ -21,7 +21,6 @@ import { useDraftConfig } from "../hooks/use-draft-config";
 import { useJournalReactions } from "../hooks/use-journal-reactions";
 import { useLinkRouting } from "../hooks/use-link-routing";
 import { useNavigationMarks } from "../hooks/use-navigation-marks";
-import { useReadReceiptMarker } from "../hooks/use-read-receipt-marker";
 import { useSessionActions } from "../hooks/use-session-actions";
 import { useSessionBrowser } from "../hooks/use-session-browser";
 import { useSessionSync } from "../hooks/use-session-sync";
@@ -32,6 +31,7 @@ import { useTranscriptModel } from "../hooks/use-transcript-model";
 import { composerProps } from "./composer-props";
 import { rightPanelProps } from "./right-panel-props";
 import { SessionMasthead, SoloTools, usePanelPresence } from "./masthead";
+import { useReadReceipt } from "./read-receipt";
 import { TranscriptList } from "./transcript-list";
 
 export function SessionCockpit({
@@ -95,7 +95,7 @@ export function SessionCockpit({
   });
   const headerMenu = useTitleMenu({ hostId, projectId, projectName, sessionId, session, settling, setError });
   useNavigationMarks(pathname, transcriptLanded, sync.loading);
-  const receipt = useReadReceiptMarker({ hostId, sessionId, session, turns, loading: sync.loading, setSession });
+  const receipt = useReadReceipt({ hostId, sessionId, session, turns, loading: sync.loading, setSession });
   const providerInstance = useProviderInstance(session?.providerInstanceId, session?.driver);
   const panelGestures = solo
     ? {}
