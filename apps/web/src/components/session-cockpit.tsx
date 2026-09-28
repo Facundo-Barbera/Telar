@@ -68,7 +68,7 @@ import { CohortFold, foldCohortTurns } from "./session/cohort-fold";
 // one function every notification verb in this app comes from (#572) — so this
 // header cannot name a happening differently from the row below it.
 import { ActivityGroup, groupNotificationTurns, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
-import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, isRestorablePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, isRestorablePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "@/features/panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
@@ -83,8 +83,7 @@ import {
   addPanelTab,
   canvasPanelKey,
   closePanelTab,
-  collapseBrowserTabs,
-  collapseTerminalTabs,
+  collapsePanelTabs,
   emptyPanelTabs,
   findPanelTab,
   movePanelTab,
@@ -98,7 +97,7 @@ import {
   clearPanelTabs,
   type PanelTabParams,
   type PanelTabState,
-} from "@/lib/right-panel-tabs";
+} from "@/features/panel";
 import { closeTerminalTab } from "@/lib/terminal-close";
 import { createRunApi } from "@/lib/run/api";
 import { foldTerminalParams } from "@/lib/terminal-workspace";
@@ -2037,7 +2036,7 @@ export function SessionCockpit({
       // On desktop the native strip owns the pages: collapse any per-page
       // browser tabs persisted before this change into one "Browser" tab, so
       // an upgraded session does not still show the old per-page outer tabs.
-      const browsers = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      const browsers = desktopBrowserBridge() ? collapsePanelTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
       /**
        * THE SHELLS SOMEBODY LEFT RUNNING SURVIVE THE UPGRADE. A shell used to
        * be its own outer tab, so a session saved before the Terminal grew an
@@ -2051,7 +2050,7 @@ export function SessionCockpit({
        * to answer for them, and a strip that still showed three Terminals in a
        * browser tab would be wrong about this build either way.
        */
-      const next = collapseTerminalTabs(browsers, (tab) => tab === "terminal", "terminal", foldTerminalParams);
+      const next = collapsePanelTabs(browsers, (tab) => tab === "terminal", "terminal", foldTerminalParams);
       /**
        * THE FIRST EDITOR IS LOADED WHETHER OR NOT ITS TAB IS OPEN — closing the
        * Editor has never thrown away the files in it, and reopening must still

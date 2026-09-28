@@ -17,7 +17,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { restoreDefaultKeymap, setChord } from "@/lib/commands";
-import type { PanelTabItem } from "@/components/right-panel";
+import type { PanelTabItem } from "@/features/panel";
 import type { SidebarSession } from "@/lib/session-list";
 import { KeyHint, KeyHintOverlay } from "./key-hint";
 
@@ -186,7 +186,7 @@ describe("the call sites #401 lists", () => {
   });
 
   test("the panel's tab strip: both arrows while there is a tab to step to, and the toggle always", async () => {
-    const { RightPanel } = await import("../right-panel");
+    const { RightPanel } = await import("@/features/panel");
     const panel = (tabs: PanelTabItem[]) =>
       mount(
         <RightPanel sessionId="session_a" tabs={tabs} tab={tabs[0]!.id} onTabChange={() => {}} onOpenTab={() => {}} onCloseTab={() => {}} onClose={() => {}} />,

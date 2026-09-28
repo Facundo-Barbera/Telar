@@ -22,7 +22,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { OpenWorkspaceButton } from "./open-workspace-button";
 import { WorkspaceInspector } from "./workspace-inspector";
-import { RailToggle } from "@/components/right-panel";
+import { RailToggle } from "@/features/panel";
 import { RunHeaderControl } from "@/components/run/run-header-control";
 import type { RunApi } from "@/lib/run/api";
 

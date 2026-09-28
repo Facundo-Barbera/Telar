@@ -25,7 +25,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { RightPanel, type PanelTabItem } from "./right-panel";
+import { RightPanel } from "./right-panel";
+import type { PanelTabItem } from "../model";
 import type { TerminalOpenRequest } from "@/lib/terminal-bridge";
 
 GlobalRegistrator.register({ url: "http://localhost/" });

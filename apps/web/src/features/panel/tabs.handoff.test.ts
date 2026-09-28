@@ -12,7 +12,7 @@ import {
   readPanelTabs,
   writePanelTabs,
   type PanelTabState,
-} from "./right-panel-tabs";
+} from "./tabs";
 
 type Tab = "run" | "changes" | "editor";
 const isTab = (tab: string): tab is Tab => tab === "run" || tab === "changes" || tab === "editor";

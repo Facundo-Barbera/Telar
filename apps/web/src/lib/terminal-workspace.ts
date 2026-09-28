@@ -71,7 +71,7 @@ export type TerminalWorkspace = {
 /**
  * The params key a terminal tab carries its PTY's id in — the shape written by
  * every build BEFORE shells became inner tabs, and still the whole of what
- * `collapseTerminalTabs` has to read to keep somebody's running shells alive
+ * `collapsePanelTabs` has to read to keep somebody's running shells alive
  * across the upgrade.
  *
  * DECLARED HERE rather than in `terminal-bridge.ts` (which re-exports it, so

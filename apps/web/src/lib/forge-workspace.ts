@@ -4,7 +4,7 @@
  * keys.
  */
 
-import type { PanelTabParams } from "@/lib/right-panel-tabs";
+import type { PanelTabParams } from "@/features/panel";
 
 /** `at` absent means the list is showing. */
 export type ForgeOpen = {

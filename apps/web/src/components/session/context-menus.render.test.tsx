@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ContextMenu } from "@/components/ui/context-menu";
-import { RightPanel, type PanelTabItem } from "@/components/right-panel";
+import { RightPanel, type PanelTabItem } from "@/features/panel";
 import { click, flush, installTestDom, mount, stubFetch } from "@/lib/testing/dom";
 import { directoryReference, fileReference, type TelarReference } from "@/lib/drag-reference";
 import type { EditorState } from "@/lib/editor-workspace";

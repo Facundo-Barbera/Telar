@@ -13,7 +13,7 @@ import {
   defaultRightPanelWidth,
   RIGHT_PANEL_DEFAULT_WIDTH,
   RIGHT_PANEL_WIDE_DEFAULT_WIDTH,
-} from "./right-panel-layout";
+} from "./layout";
 
 const tab = (kind: string) => ({ kind });
 
