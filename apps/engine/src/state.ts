@@ -155,7 +155,7 @@ import { providerProcessEnv } from "./domains/providers";
 import { adoptClaudeConversation, type Adoption, type ClaudeConversation, describeAdoption, describeImport, type ForkCut, listAdoptableConversations } from "./drivers/claude";
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
 import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, listPackages, listTexPackages, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, windowCsv } from "./domains/plugins";
-import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
+import { ScheduleBook, type ScheduleInput } from "./domains/schedules";
 import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, prepareSessionWorktree, derivedBranchFor, type WorktreePlan, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { CheckoutSizes, CleanupStore, copyStore, type CheckoutSizesOptions } from "./domains/storage";
@@ -822,6 +822,7 @@ export class EngineStore {
   private readonly activity: SessionActivity;
   private readonly subscriptions: SessionSubscriptions;
   private readonly lifecycle: SessionLifecycle;
+  private readonly schedules: ScheduleBook;
 
   private registerCacheHooks(): void {
     this.kernel.onRollback(() => this.kernel.runProgress.clear());
@@ -1784,13 +1785,18 @@ export class EngineStore {
       readQueue: (sessionId) => this.readQueue(sessionId),
       readEvents: (sessionId) => this.readEvents(sessionId),
       subscriptionsOf: (sessionId) => this.subscriptions.subscriptionsOf(sessionId),
-      nextWake: (sessionId) => this.nextScheduledWake(sessionId),
+      nextWake: (sessionId) => this.schedules.nextWake(sessionId),
       autoSettleAfterHours: () => this.getInboxPolicy().autoSettleAfterHours,
       ...(options.onQueueChanged ? { onQueueChanged: options.onQueueChanged } : {}),
     }));
     this.subscriptions = this.createSubscriptions();
     this.lifecycle = this.createLifecycle();
     this.worktrees = this.worktreeMaintenance();
+    this.schedules = new ScheduleBook(this.kernel, {
+      requireSession: (sessionId) => void this.records.require(sessionId),
+      submitTurn: (sessionId, input) => this.submitTurn(sessionId, input),
+      bumpList: () => this.sessionIndex.bumpList(),
+    });
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
     this.sessionIndexBackfill = this.sessionIndex.backfill();
@@ -6415,129 +6421,24 @@ export class EngineStore {
    * Returns the sessions it woke, so a caller — and a test — can see the tick's
    * work without waiting on a timer.
    */
-  /* ── schedules (#543) ─────────────────────────────────────────────────── */
-
-  /**
-   * ══ EVERY SCHEDULE WHOSE APPOINTMENT HAS PASSED — issue #543 ══
-   *
-   * THE FIFTH SWEEP, AND THE SAME SHAPE AS THE OTHER FOUR because a deadline
-   * passing is still not an event. `sweepSnoozeWakes` is the direct precedent —
-   * a stored future timestamp with nobody to notice it — and `sweepRateLimited`
-   * is the stronger one, because it already REQUEUES A TURN from a deadline,
-   * unattended, on the argument that "a limit that lifted at 3am should not
-   * leave the session shelved".
-   *
-   * DEADLINE-DRIVEN, NEVER CATCH-UP. It asks which rows are due, not how many
-   * ticks it missed — so five seconds of lag and five days of sleep take the
-   * same path, and nothing here depends on whether `setInterval` is
-   * suspend-aware. The decision itself is `decideSchedule`, which is pure.
-   *
-   * ONE BAD ROW MUST NOT STOP THE PASS, the per-row `try` every sweep here has.
-   * A row whose session was deleted is the ordinary case rather than an error:
-   * it is disabled, so the sweep stops reconsidering it every thirty seconds
-   * for ever, and stays visible on the settings surface.
-   */
   sweepSchedules(): string[] {
-    const store = this.kernel.executionStore;
-    const now = this.now();
-    const acted: string[] = [];
-    for (const row of store.dueSchedules(now)) {
-      try {
-        const decision = decideSchedule(row.rule, row.zone, row.nextRunAt, now);
-        if (!decision.fire) {
-          // SKIPPED, AND SAID SO. Without the recorded instant the boundary —
-          // "Telar was not running at 09:00" — is invisible, and an invisible
-          // boundary is indistinguishable from a broken scheduler.
-          this.writeScheduleRow(store, { ...row, nextRunAt: decision.nextRunAt, lastRunStatus: "skipped", lastSkippedAt: decision.skipped ?? row.nextRunAt });
-          acted.push(row.id);
-          continue;
-        }
-        const runId = `run_sched_${row.id}_${row.nextRunAt}`;
-        this.submitTurn(row.sessionId, {
-          runId,
-          input: row.prompt,
-          origin: "schedule",
-          scheduleOrigin: { scheduleId: row.id, dueAt: row.nextRunAt },
-        });
-        this.writeScheduleRow(store, { ...row, nextRunAt: decision.nextRunAt, lastRunAt: now, lastRunId: runId, lastRunStatus: "fired" });
-        acted.push(row.id);
-      } catch {
-        /**
-         * The session is gone, or refused the turn. Disable rather than retry:
-         * a row that cannot fire is not made more likely to fire by being
-         * reconsidered every thirty seconds, and leaving it enabled would turn
-         * one deleted session into a permanent tick.
-         */
-        try {
-          this.writeScheduleRow(store, { ...row, enabled: false, nextRunAt: this.scheduleParkedAt(row.nextRunAt, now) });
-        } catch {
-          /* the store itself is unhappy; the next sweep tries again */
-        }
-      }
-    }
-    return acted;
-  }
-
-  /** Where a row that could not fire is parked: past `now`, so a re-enabled row
-   *  does not immediately fire the appointment it already failed. */
-  private scheduleParkedAt(dueAt: number, now: number): number {
-    return Math.max(dueAt, now) + 1;
-  }
-
-  private nextScheduledWake(sessionId: string): number | undefined {
-    return this.listSchedules(sessionId).filter((schedule) => schedule.enabled).reduce<number | undefined>((soonest, schedule) => (soonest === undefined || schedule.nextRunAt < soonest ? schedule.nextRunAt : soonest), undefined);
+    return this.schedules.sweep();
   }
 
   listSchedules(sessionId?: string): ScheduleRow[] {
-    return this.kernel.executionStore.listSchedules(sessionId);
+    return this.schedules.list(sessionId);
   }
 
   readSchedule(id: string): ScheduleRow | undefined {
-    return this.kernel.executionStore.readSchedule(id);
+    return this.schedules.read(id);
   }
 
-  /** Create or replace one schedule. The FIRST `nextRunAt` is computed here
-   *  rather than taken from the caller: a client that could name it could aim a
-   *  row at the past and make the grace rule meaningless. */
-  putSchedule(input: { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean }): ScheduleRow {
-    const store = this.kernel.executionStore;
-    if (!input.prompt.trim()) throw new EngineStateError("invalid_request", "a schedule needs a prompt");
-    this.records.require(input.sessionId);
-    const now = this.now();
-    const existing = input.id ? store.readSchedule(input.id) : undefined;
-    const row: ScheduleRow = {
-      id: input.id ?? `sched_${crypto.randomUUID()}`,
-      sessionId: input.sessionId,
-      prompt: input.prompt,
-      rule: input.rule,
-      zone: usableZone(input.zone),
-      enabled: input.enabled ?? true,
-      createdAt: existing?.createdAt ?? now,
-      nextRunAt: nextOccurrence(input.rule, input.zone, now),
-      ...(existing?.lastRunAt === undefined ? {} : { lastRunAt: existing.lastRunAt }),
-      ...(existing?.lastRunId === undefined ? {} : { lastRunId: existing.lastRunId }),
-      ...(existing?.lastRunStatus === undefined ? {} : { lastRunStatus: existing.lastRunStatus }),
-      ...(existing?.lastSkippedAt === undefined ? {} : { lastSkippedAt: existing.lastSkippedAt }),
-    };
-    this.writeScheduleRow(store, row);
-    return row;
+  putSchedule(input: ScheduleInput): ScheduleRow {
+    return this.schedules.put(input);
   }
 
   deleteSchedule(id: string): boolean {
-    const deleted = this.kernel.executionStore.deleteSchedule(id);
-    if (deleted) this.sessionIndex.bumpList();
-    return deleted;
-  }
-
-  /**
-   * A SCHEDULE ROW IS PART OF THE ANSWER NOW — a session's `scheduled` state
-   * and its wake time are read off these rows — so a write to one moves the
-   * list's revision. The rows live in their own table, outside `writeDocument`,
-   * so nothing else would: a rail would keep showing a wake that was deleted.
-   */
-  private writeScheduleRow(store: ExecutionStore, row: ScheduleRow): void {
-    store.writeSchedule(row);
-    this.sessionIndex.bumpList();
+    return this.schedules.delete(id);
   }
 
   sweepSnoozeWakes(): string[] {

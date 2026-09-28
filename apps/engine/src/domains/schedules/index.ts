@@ -1,2 +1,3 @@
-export { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./rules";
+export { ScheduleBook, type ScheduleInput } from "./book";
+export type { ScheduleRule } from "./rules";
 export { schedulesRoutes } from "./routes";
