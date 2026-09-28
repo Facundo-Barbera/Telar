@@ -1,37 +1,10 @@
 "use client";
 
-/**
- * THE QUICK EDITOR — a title, a markdown body, and nothing else.
- *
- * The user asked for "a place to draw quick notes of the project", and the word
- * that decides this component is QUICK: no toolbar, no tag field, no preview
- * pane, no save button as the primary gesture. Type and walk away.
- *
- * ── AUTOSAVE ON BLUR, AND ⌘S FOR THE IMPATIENT ──────────────────────────────
- * Blur is what actually happens: a person types the note, then clicks back into
- * the composer to use it. So blur commits. ⌘S commits and closes, because that
- * is the key everybody's hands already press and because the browser's Save
- * dialog must never open — `preventDefault` is the first statement in the
- * branch, the same rule the composer's own handler keeps.
- *
- * A DEBOUNCED TIMER IS DELIBERATELY NOT HERE. It would write a note four times
- * while a sentence was being typed, each write bumping `updated` and each one
- * reordering nothing but costing a request; and it would still need the blur
- * commit for the last keystroke. One commit per visit is the honest shape.
- *
- * ── A NEW NOTE IS NOT CREATED UNTIL IT HAS A TITLE ──────────────────────────
- * Opening "+" and pressing Escape must leave no trace. So the first commit is a
- * POST and every later one a PATCH, and a commit with a blank title is simply
- * not made — which is also why the engine allows an empty BODY: "type a title,
- * come back to it later" is the gesture, and a store that refused the half-
- * written note would lose the title the user just typed.
- */
-
 import { useCallback, useRef, useState } from "react";
 import { Loader2Icon, PinIcon, PinOffIcon, Trash2Icon } from "lucide-react";
 import type { ProjectNote } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
-import { announceProjectNotesChanged } from "@/lib/project-notes";
+import { announceProjectNotesChanged } from "../project-notes";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -42,7 +15,6 @@ export function ProjectNoteEditor({
   onClose,
 }: {
   projectId: string;
-  /** Absent for "+": the note is created on the first commit that has a title. */
   note?: ProjectNote;
   onClose: () => void;
 }) {
@@ -51,14 +23,7 @@ export function ProjectNoteEditor({
   const [pinned, setPinned] = useState(Boolean(note?.pinned));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  /** The id this editor is writing to — the prop's, or the one the first POST
-   *  minted. A ref rather than state: the next commit reads it, and a render is
-   *  not what has to happen when it changes. */
   const id = useRef(note?.id);
-  /** What the engine currently holds, so a blur that changed nothing is not a
-   *  request. One string because the two fields commit together, and JSON
-   *  because it is the one cheap encoding with no separator a note could
-   *  contain. */
   const committed = (next: { title: string; body: string }) => JSON.stringify([next.title, next.body]);
   const saved = useRef(committed({ title: note?.title ?? "", body: note?.body ?? "" }));
 
@@ -80,9 +45,6 @@ export function ProjectNoteEditor({
         announceProjectNotesChanged();
         return true;
       } catch (cause) {
-        // THE ENGINE'S OWN SENTENCE, shown where it happened. A note that failed
-        // to save must say so beside the text, not in a toast the user has
-        // already walked away from.
         setError(cause instanceof Error ? cause.message : "The engine did not accept that.");
         return false;
       } finally {
@@ -95,8 +57,6 @@ export function ProjectNoteEditor({
   const togglePin = async () => {
     const next = !pinned;
     setPinned(next);
-    // An unsaved new note carries the pin into its POST rather than needing a
-    // second request; an existing one flips now.
     if (!id.current) return;
     try {
       await api.pinProjectNote(projectId, id.current, next);
@@ -129,8 +89,6 @@ export function ProjectNoteEditor({
           void commit({ title, body }).then((ok) => ok && onClose());
           return;
         }
-        // Escape closes without committing what is on screen — but whatever was
-        // already committed stays, because it was already saved.
         if (event.key === "Escape") onClose();
       }}
     >
@@ -176,9 +134,6 @@ export function ProjectNoteEditor({
         </button>
         <span className="ml-auto flex items-center gap-1.5 text-3xs text-muted-foreground">
           {saving && <Loader2Icon className="size-3 animate-spin" />}
-          {/* WHO WROTE IT, when it was not the reader. Provenance is stamped
-              once and never changes, so a note an agent kept stays marked as
-              one — and that is worth a word in the only place it is edited. */}
           {note?.author === "session" ? "written by an agent · " : ""}
           {saving ? "Saving…" : "Saves when you click away · ⌘S"}
         </span>

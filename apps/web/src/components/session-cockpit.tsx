@@ -123,7 +123,7 @@ import {
 } from "@/lib/session-action-menu";
 import { dropdownSessionMenuParts, SessionActionContextMenu, SessionActionMenuItems } from "./session/session-action-menu";
 import { ApprovalCard } from "./approval-card";
-import { MainSidebarTrigger, useMainIsLeftmost } from "./main-sidebar-trigger";
+import { MainSidebarTrigger, useMainIsLeftmost } from "@/components/ui/main-sidebar-trigger";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";

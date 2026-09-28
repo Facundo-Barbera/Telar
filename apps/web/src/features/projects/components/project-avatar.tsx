@@ -7,27 +7,6 @@ import { projectHue, projectIconUrl, projectInitial } from "@/lib/project-avatar
 import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
 
-/**
- * A project's mark, in four honesties: the one a person CHOSE, else the icon its
- * checkout actually carries, else a tinted initial from its name, else the plain
- * folder that says "a directory, and nothing more is known".
- *
- * THE CHOSEN MARK IS FIRST, and that ordering is the whole point of being able
- * to choose one: a project whose checkout carries a favicon nobody likes has no
- * other way to say so. The chosen mark and the discovered one are separate
- * fields on the record rather than one (`Project.iconName` explains why), so
- * preferring one here costs no branch anywhere else.
- *
- * A NAME THIS BUILD DOES NOT KNOW IS NOT A MARK. `isTelarIcon` is the guard
- * rather than `IdentityIcon`'s own fallback: that one draws a quiet ring for an
- * unknown id, which is right for a browser profile (whose ring IS its identity)
- * and wrong here — a project has three better answers behind this one, and a
- * record from a newer build should reach them rather than stop at a circle.
- *
- * The `<img>` FAILS FORWARD: the engine's icon key is derived on list and the
- * file can vanish between the list and the fetch, so a broken image flips to
- * the initial instead of a missing-image glyph.
- */
 export function ProjectAvatar({
   name,
   projectId,
@@ -39,13 +18,9 @@ export function ProjectAvatar({
 }: {
   name?: string;
   projectId?: string;
-  /** `Project.icon` — the content-derived key. Absent means no file was found. */
   icon?: string;
-  /** `Project.iconName` — the glyph a person picked. Outranks `icon`. */
   iconName?: string;
-  /** `Project.iconEmoji` — a mark typed before the picker existed. Outranks `icon`. */
   iconEmoji?: string;
-  /** Rendered box in px. The type stays square at any size. */
   size?: number;
   className?: string;
 }) {
@@ -53,9 +28,6 @@ export function ProjectAvatar({
   const box = { width: size, height: size };
 
   if (isTelarIcon(iconName)) {
-    // `currentColor` on purpose — no `color` passed: a chosen glyph takes the
-    // ink of whatever list it is in (rail, picker, header), so it reads as part
-    // of the row rather than as a sticker on it.
     return (
       <span aria-hidden style={box} className={cn("flex shrink-0 items-center justify-center", className)}>
         <IdentityIcon icon={iconName} className="size-full" />
@@ -66,8 +38,6 @@ export function ProjectAvatar({
     return (
       <span
         aria-hidden
-        // Sized off the box like the initial below, so a mark and a letter sit
-        // at the same weight wherever the two appear in one list.
         style={{ ...box, fontSize: Math.round(size * 0.72) }}
         className={cn("flex shrink-0 items-center justify-center leading-none", className)}
       >
@@ -95,8 +65,6 @@ export function ProjectAvatar({
         style={{
           ...box,
           fontSize: Math.max(7, Math.round(size * 0.62)),
-          // Muted, light/dark-agnostic: low saturation and mid lightness read
-          // on both grounds without a theme branch.
           backgroundColor: `hsl(${projectHue(name.trim())} 45% 50% / 0.25)`,
           color: `hsl(${projectHue(name.trim())} 45% 38%)`,
         }}

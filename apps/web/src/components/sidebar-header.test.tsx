@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import { buttonLabelled, click, flush, installTestDom, mount, press } from "@/lib/testing/dom";
 import { liveRow, loadRail, mountRail, project, pushes, stubRail } from "@/lib/testing/rail";
-import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
+import { SidebarProjectFilter } from "@/features/sessions";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import { writeDraft } from "@/features/composer";
 import { projectFilterKey } from "@/lib/project-filter";

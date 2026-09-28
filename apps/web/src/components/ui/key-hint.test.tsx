@@ -153,7 +153,7 @@ describe("the call sites #401 lists", () => {
 
   test("a rail row wears its jump number while the modifier is held", async () => {
     installNavigation();
-    const { SessionRow } = await import("../session/session-row");
+    const { SessionRow } = await import("@/features/sessions");
     const { SidebarProvider } = await import("./sidebar");
     const session = { id: "session_1", title: "Exoplanets", projectId: "p1", activity: "idle", createdAt: 1, updatedAt: 1 } as SidebarSession;
     const host = await mount(

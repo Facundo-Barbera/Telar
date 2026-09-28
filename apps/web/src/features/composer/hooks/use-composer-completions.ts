@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import type { ProviderDriverKind, ProviderSkills, RuntimeMode } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
-import { rankNotes, useProjectNotes } from "@/lib/project-notes";
+import { rankNotes, useProjectNotes } from "@/features/notes";
 import {
   availableCommands,
   buildPathIndex,

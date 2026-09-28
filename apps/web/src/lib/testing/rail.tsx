@@ -73,7 +73,7 @@ export const liveReads = (requests: RailRequest[]) => requests.filter((request) 
 
 // A query-suffixed specifier is its own module instance, so a file that mocks
 // `app-sidebar` (app-shell.solo.test.tsx) neither replaces nor observes this one.
-export const loadRail = () => import("@/components/app-sidebar?rail" as string) as Promise<typeof import("@/components/app-sidebar")>;
+export const loadRail = () => import("@/features/sessions/rail/app-sidebar?rail" as string) as Promise<typeof import("@/features/sessions/rail/app-sidebar")>;
 
 /** Mounts the whole rail and waits for its first pass (and the layout read) to land. */
 export async function mountRail() {

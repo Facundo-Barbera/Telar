@@ -13,9 +13,9 @@ import {
   SlidersHorizontalIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { ProjectAvatar } from "@/components/projects/project-avatar";
+import { ProjectAvatar } from "@/features/projects";
 import { OpenerIcon } from "@/components/session/opener-icon";
-import { SessionRow } from "@/components/session/session-row";
+import { SessionRow } from "@/features/sessions";
 import {
   ContextMenu,
   ContextMenuContent,

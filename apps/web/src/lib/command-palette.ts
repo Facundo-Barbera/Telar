@@ -1,6 +1,5 @@
 import { MAX_FONT_SIZE, MIN_FONT_SIZE } from "@telar/engine-client";
-import type { NewConversationTarget } from "@/components/project-palette";
-import { matchTargets } from "@/components/project-palette";
+import { type NewConversationTarget, matchTargets } from "@/features/projects";
 import type { Command, CommandId, Keymap } from "@/lib/commands";
 
 export const RECENT_CONVERSATION_LIMIT = 8;
@@ -262,15 +261,3 @@ export function paletteRows<S extends PaletteSessionLike>(sections: readonly Pal
   return sections.flatMap((section) => section.rows);
 }
 
-/** Where Backspace goes from a sub-page; only on an empty field. `root` is the
- *  page this opening started on — sources walks back to projects unless it was
- *  the entry point. */
-export function paletteBack(
-  page: PaletteSubPage,
-  query: string,
-  root: PaletteSubPage,
-): PaletteSubPage | "root" | undefined {
-  if (query !== "") return undefined;
-  if (page === "sources" && root !== "sources") return "projects";
-  return "root";
-}

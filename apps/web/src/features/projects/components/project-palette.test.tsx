@@ -1,5 +1,5 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { buttonLabelled, click, flush, installTestDom, mount, stubFetch, type Route } from "@/lib/testing/dom";
@@ -9,16 +9,16 @@ import {
   cloneRequest,
   folderName,
   matchTargets,
+  paletteBack,
   pathRequest,
   PROJECT_SOURCES,
-  ProjectPalette,
-  ProjectPalettePages,
   QUICK_PICK_LIMIT,
   sourceRows,
   targetPlace,
   type NewConversationTarget,
   type PalettePage,
-} from "./project-palette";
+} from "../palette-model";
+import { ProjectPalette, ProjectPalettePages } from "./project-palette";
 
 installTestDom();
 afterEach(() => window.localStorage.clear());
@@ -31,7 +31,6 @@ const targets: NewConversationTarget[] = [
 
 const listing = (path: string) => ({ path, name: folderName(path), parent: "/", home: "/Users/me", dirs: [] });
 
-/** `stubFetch`, plus every URL asked for (query string included) and paths that fail to connect. */
 function engine(routes: Record<string, Route>, unreachable: string[] = []) {
   const calls = stubFetch(routes);
   const urls: string[] = [];
@@ -80,7 +79,6 @@ test("a blank query is every project, not none", () => {
 
 test("the row's sub-line names the machine and then the path, in that order", () => {
   expect(targetPlace(targets[0])).toBe("Local · /Users/someone/code/telar");
-  // A paired Mac's project carries no root in the rail's read, so the line is just the Mac.
   expect(targetPlace(targets[2])).toBe("mini");
   expect(targetPlace({ id: "x", name: "x", hostName: "mini", root: "/code/x" })).toBe("mini · /code/x");
   expect(targetPlace({ id: "x", name: "x" })).toBe("Local");
@@ -222,8 +220,6 @@ test("an embedded Projects page backs out to whatever holds it", async () => {
   expect(backed).toBe(2);
 });
 
-/* ─── the second page ─────────────────────────────────────────────────────── */
-
 test("Sources lists six rows, three of them chipped and inert", async () => {
   expect(PROJECT_SOURCES.map((row) => row.title)).toEqual([
     "Local folder",
@@ -264,7 +260,6 @@ test("pasting a repository URL collapses the page to the one row that would act 
   expect(github[0].hint).toBe("Clone https://github.com/owner/repo.git");
   expect(sourceRows("git@gitlab.com:owner/repo.git").map((row) => row.id)).toEqual(["git-url"]);
   expect(sourceRows("ssh://git@example.com/owner/repo.git").map((row) => row.id)).toEqual(["git-url"]);
-  // `owner/repo` is GitHub's shorthand; the engine expands it, this only picks the row.
   expect(sourceRows("NovarixHQ/Telar").map((row) => row.id)).toEqual(["github"]);
   expect(sourceRows("NovarixHQ/Telar")[0].hint).toBe("Clone NovarixHQ/Telar");
 });
@@ -306,8 +301,6 @@ test("only a path is a path", () => {
   expect(pathRequest("file://server/share/repo")).toBeUndefined();
   expect(pathRequest("'/Users/me/code\"")).toBeUndefined();
 });
-
-/* ─── the pages a source row walks to ─────────────────────────────────────── */
 
 const registerRoutes = (gitignore: Route = () => ({ gitignore: {} })) => ({
   "GET /api/fs": () => listing("/Users/me/code/telar"),
@@ -420,4 +413,24 @@ test("the folder name is what the project is called when nobody typed one", () =
   expect(folderName("/Users/someone/code/telar")).toBe("telar");
   expect(folderName("/Users/someone/code/telar/")).toBe("telar");
   expect(folderName("C:\\code\\telar")).toBe("telar");
+});
+
+describe("where Backspace goes", () => {
+  test("nowhere at all while there is something to delete", () => {
+    expect(paletteBack("sources", "gith", "projects")).toBeUndefined();
+    expect(paletteBack("projects", "x", "projects")).toBeUndefined();
+  });
+
+  test("Sources walks to Projects before it leaves the pages", () => {
+    expect(paletteBack("sources", "", "projects")).toBe("projects");
+  });
+
+  test("a page that was itself the door leaves the pages", () => {
+    expect(paletteBack("sources", "", "sources")).toBe("root");
+    expect(paletteBack("projects", "", "projects")).toBe("root");
+  });
+
+  test("the standalone palette's Sources always has a back, because its root is Projects", () => {
+    expect(paletteBack("sources", "", "projects")).toBe("projects");
+  });
 });

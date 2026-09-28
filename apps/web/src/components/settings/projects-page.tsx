@@ -78,7 +78,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { AgentControl, modelOptionsOf, ReasoningControl } from "@/features/composer";
 import { useModelCatalogue } from "@/lib/model-catalogue-cache";
-import { ProjectIconPicker } from "@/components/projects/project-icon-picker";
+import { ProjectIconPicker } from "@/features/projects";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { projectPaneFor } from "@/components/plugins/settings-panes";
 import { McpSection } from "./mcp-section";

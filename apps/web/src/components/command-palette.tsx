@@ -58,8 +58,8 @@ import { useState } from "react";
 // The conversation rows' own glyph — a kind of row, not a command, so it is
 // named here rather than looked up through the registry's icon map.
 import { CheckIcon, MessageSquareIcon as SessionGlyph, SearchIcon, ShirtIcon } from "lucide-react";
-import { ProjectAvatar } from "@/components/projects/project-avatar";
 import {
+  ProjectAvatar,
   PaletteRow as Row,
   ProjectPalettePages,
   RegisteredToast,
@@ -67,7 +67,7 @@ import {
   type NewConversationTarget,
   type PalettePage,
   type Registered,
-} from "@/components/project-palette";
+} from "@/features/projects";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { KeyHint } from "@/components/ui/key-hint";
 import {

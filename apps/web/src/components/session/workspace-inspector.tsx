@@ -29,8 +29,7 @@ import type { ProjectNote } from "@telar/engine-client";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { noteReference, startReferenceDrag } from "@/lib/drag-reference";
-import { useProjectNotes } from "@/lib/project-notes";
-import { ProjectNoteEditor } from "@/components/project-notes-editor";
+import { useProjectNotes, ProjectNoteEditor } from "@/features/notes";
 
 /** How many rows the list shows before it offers to unfold. Cuts from the END
  *  and never re-sorts, so the row you were looking at does not move. */
