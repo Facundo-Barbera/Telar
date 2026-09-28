@@ -1,29 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
-import {
-  BROWSER_ANSWER_BUDGETS,
-  BROWSER_DESCRIPTION_MAX_BYTES,
-  BROWSER_TOOLS,
-  boundBrowserResult,
-  boundBrowserText,
-} from "../src/browser";
-import { BrowserToolSocket, type BrowserSocketCapability } from "../src/browser/socket";
-
-/**
- * THE CEILING ON A BROWSER ANSWER (#515 item 7).
- *
- * The fixtures are the ones `apps/desktop/browser-answer-size.test.js`
- * measures the renderers against — a 2,000-node tree, 500 console lines, 300
- * network rows — rebuilt here in the ANSWER's shape rather than the tree's,
- * because the engine bounds text and must not grow a dependency on the desktop
- * app to do it. The desktop test is what proves those shapes are what the host
- * actually emits.
- */
+import { boundBrowserResult, boundBrowserText, BROWSER_ANSWER_BUDGETS } from "./bounds";
+import { BROWSER_DESCRIPTION_MAX_BYTES, BROWSER_TOOLS } from "./tools";
+import { type BrowserSocketCapability, BrowserToolSocket } from "./socket";
 
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 
-/** A rendered snapshot of roughly the size the desktop host's 500-line cap
- *  lets through: ~31 KB, which is about twice its budget. */
 function snapshotAnswer(lines = 500): string {
   const rows = [`Page: Invoices — Acme`, `URL: https://acme.example.com/invoices`, ""];
   for (let i = 1; i <= lines; i++) {
@@ -61,7 +43,6 @@ describe("every heavy browser answer comes in under its budget", () => {
       expect(bytes(answer)).toBeGreaterThan(budget);
       const bounded = boundBrowserText(name, answer);
       expect(bytes(bounded)).toBeLessThanOrEqual(budget);
-      // The marker is machine-recognisable AND tells a model what to do next.
       expect(bounded).toMatch(/\[… \d+ more characters not shown — narrow with .+\]/);
       expect(bounded).toContain(narrow);
       console.log(`  ${name}: ${bytes(answer)} → ${bytes(bounded)} bytes (budget ${budget})`);
@@ -72,7 +53,6 @@ describe("every heavy browser answer comes in under its budget", () => {
     const answer = consoleAnswer();
     const bounded = boundBrowserText("browser_console_messages", answer);
     const reported = Number(/\[… (\d+) more characters/.exec(bounded)![1]);
-    // The marker itself is not part of the answer it is reporting on.
     const kept = bounded.slice(bounded.indexOf("]\n") + 2);
     expect(reported).toBe(answer.length - kept.length);
   });
@@ -98,7 +78,6 @@ describe("which end survives the cut", () => {
     expect(bounded.startsWith("Page: Invoices — Acme\nURL: https://acme.example.com/invoices")).toBe(true);
     expect(bounded).toContain("Row 1 —");
     expect(bounded).not.toContain("Row 500 —");
-    // The marker is where the reader arrives at the cut.
     expect(bounded.trimEnd().endsWith("]")).toBe(true);
     expect(bounded.split("\n").at(-1)).toMatch(/^\[… /);
   });
@@ -111,7 +90,6 @@ describe("which end survives the cut", () => {
       const bounded = boundBrowserText(name, answer);
       expect(bounded).toContain(newest);
       expect(bounded).not.toContain(oldest);
-      // Read order is unchanged: entries are not reshuffled, only dropped.
       expect(bounded.split("\n")[0]).toMatch(/^\[… /);
       const body = bounded.split("\n").slice(1);
       expect(body.at(-1)).toContain(newest);
@@ -133,9 +111,6 @@ describe("which end survives the cut", () => {
   });
 
   test("one line longer than the whole budget is cut inside itself rather than answered empty", () => {
-    // The host caps a console entry's text at 2,000 characters, but nothing
-    // caps how many of them a single `Log.entryAdded` becomes on a page that
-    // logs an object graph — and a budget must survive a one-line answer.
     const single = `[error] ${"y".repeat(50_000)}`;
     const bounded = boundBrowserText("browser_console_messages", single);
     expect(bytes(bounded)).toBeLessThanOrEqual(BROWSER_ANSWER_BUDGETS.browser_console_messages!);
@@ -147,7 +122,6 @@ describe("which end survives the cut", () => {
     const answer = Array.from({ length: 4000 }, (_, i) => `GET https://例え.example.com/請求書/${i}—💡`).join("\n");
     const bounded = boundBrowserText("browser_network_requests", answer);
     expect(bytes(bounded)).toBeLessThanOrEqual(BROWSER_ANSWER_BUDGETS.browser_network_requests!);
-    // A lone surrogate would survive a JSON round trip as U+FFFD.
     expect(JSON.parse(JSON.stringify(bounded))).toBe(bounded);
     expect(bounded).not.toContain("�");
   });
@@ -224,9 +198,6 @@ describe("what the toolkit costs before a single page is opened", () => {
       }
     }
     console.log(`  telar-browser descriptions: ${total} bytes across ${BROWSER_TOOLS.length} tools`);
-    // The whole server's prose, in every browsing session's context. Raised
-    // from 3,000 when the coordinate route joined: click and hover describe
-    // both ways to address a page, and drag is a seventeenth tool.
     expect(total).toBeLessThan(3_600);
   });
 

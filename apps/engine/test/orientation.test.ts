@@ -40,7 +40,7 @@ import { sessionsTools } from "../src/sessions-tools/tools";
 import { notesTools } from "../src/domains/notes";
 import { displayTools } from "../src/display/tools";
 import { runTools } from "../src/run/tools";
-import { BROWSER_BRIEFING } from "../src/browser/briefing";
+import { BROWSER_BRIEFING } from "../src/domains/browser";
 import { RUN_BRIEFING } from "../src/run/briefing";
 import { createClaudeDriver } from "../src/driver";
 import { EngineStore } from "../src/state";

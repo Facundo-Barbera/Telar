@@ -9,7 +9,7 @@
  * the contract, drawn by the cockpit, and unreachable.
  */
 import { expect, test } from "bun:test";
-import { BROWSER_TOOLS } from "../src/browser";
+import { BROWSER_TOOLS } from "../src/domains/browser";
 import { itemDetailForToolCall, titleForToolCall } from "../src/driver";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
 import type { SessionsCapability } from "../src/sessions-tools/tools";

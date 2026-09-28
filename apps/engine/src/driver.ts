@@ -12,7 +12,7 @@
  * downstream of that one omission.
  */
 import crypto from "node:crypto";
-import { BROWSER_BRIEFING } from "./browser/briefing";
+import { BROWSER_BRIEFING } from "./domains/browser";
 import { RUN_BRIEFING } from "./run/briefing";
 import fs from "node:fs";
 import type {

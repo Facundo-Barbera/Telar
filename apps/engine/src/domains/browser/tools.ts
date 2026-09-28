@@ -1,30 +1,9 @@
-/**
- * The agent-facing browser tool surface, and the result shape a call returns.
- *
- * PORTED FROM `apps/web_old/lib/browser-mcp.ts` WITH ITS SDK COUPLING CUT. The
- * legacy definitions were built with the Agent SDK's `tool()` helper and typed
- * their result as `Awaited<ReturnType<SdkMcpToolDefinition["handler"]>>`, which
- * made the browser — a thing that has nothing to do with Claude — unusable
- * without the Claude SDK loaded. The engine must be able to drive a page for a
- * Codex session, and a unit test must be able to assert on a tool result
- * without importing a provider. So the schemas are plain zod here and the
- * result is an engine-local MCP content shape.
- *
- * These schemas are the ENGINE's copy of the contract, not Playwright MCP's.
- * They are deliberately a narrower surface than `@playwright/mcp` exposes (no
- * `browser_evaluate`, no `browser_handle_dialog`, no file uploads): a tool the
- * engine does not define is a tool an agent cannot reach.
- */
 import { z } from "zod";
-import { VIEWPORT_PRESET_KEYS } from "../../../desktop/src/browser/viewport-presets.js";
-
-// ── what a browser tool call returns ───────────────────────────────────────
+import { VIEWPORT_PRESET_KEYS } from "../../../../desktop/src/browser/viewport-presets.js";
 
 const McpTextContent = z.object({ type: z.literal("text"), text: z.string() });
 type McpTextContent = z.infer<typeof McpTextContent>;
 
-/** `data` is base64. Playwright MCP only sends this when the runtime was
- *  launched with `--image-responses allow`, which `transport.ts` does. */
 const McpImageContent = z.object({
   type: z.literal("image"),
   data: z.string(),
@@ -32,17 +11,6 @@ const McpImageContent = z.object({
 });
 type McpImageContent = z.infer<typeof McpImageContent>;
 
-/**
- * Any content block MCP grows that this engine does not model yet (`resource`,
- * `audio`, …). Kept so a newer @playwright/mcp cannot make a whole result fail
- * to parse over one block nobody reads.
- *
- * THE REFINEMENT IS THE POINT. Without it this arm also swallows a MALFORMED
- * `text` block — `{ type: "text", text: 42 }` fails the text arm, falls through
- * to here, matches, and is silently accepted as an opaque block whose text
- * every caller then reads as `undefined`. A forward-compatibility escape hatch
- * must never be able to accept a shape we DO know and got wrong.
- */
 const McpUnknownContent = z
   .looseObject({ type: z.string().min(1) })
   .refine((block) => block.type !== "text" && block.type !== "image", {
@@ -53,22 +21,11 @@ type McpUnknownContent = z.infer<typeof McpUnknownContent>;
 const McpContentBlock = z.union([McpTextContent, McpImageContent, McpUnknownContent]);
 type McpContentBlock = z.infer<typeof McpContentBlock>;
 
-/**
- * The `tools/call` result.
- *
- * `isError` IS NOT A TRANSPORT ERROR. MCP reports a tool that ran and failed
- * (bad selector, navigation refused) as a normal result with `isError: true`
- * and the reason in its text — a JSON-RPC `error` means the call never ran at
- * all. Conflating them is how "element not found" turns into "the browser
- * crashed" in a session journal.
- */
 export const BrowserToolResult = z.object({
   content: z.array(McpContentBlock).default([]),
   isError: z.boolean().optional(),
 });
 export type BrowserToolResult = z.infer<typeof BrowserToolResult>;
-
-// ── the tools ──────────────────────────────────────────────────────────────
 
 const BrowserToolName = z.enum([
   "browser_list_tabs",
@@ -92,73 +49,28 @@ const BrowserToolName = z.enum([
   "browser_copy",
 ]);
 
-/** The size a headless resize falls back to for a dimension it was not given
- *  — the headless browser's own starting size (transport.ts `viewportSize`). */
 export const BROWSER_DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
 type BrowserToolName = z.infer<typeof BrowserToolName>;
 
 export type BrowserToolDefinition = {
   name: BrowserToolName;
-  /**
-   * Written for the model, not for a human reader. It is the only thing that
-   * tells an agent when this tool is the right one, so it names the situation
-   * rather than describing the parameters.
-   *
-   * UNDER 350 BYTES, ENFORCED BY A TEST (#515). Every description here is in
-   * the context of every session that can browse, whether or not it ever opens
-   * a page — nineteen tools' worth of prose, paid for on every turn. Anything
-   * that needs more than a couple of sentences of reasoning belongs in this
-   * file's header or in the `telar` skill, where a model reads it once and
-   * only when it is relevant.
-   */
   description: string;
   input: z.ZodObject;
 };
 
-/** The ceiling `BROWSER_TOOLS` is held to. */
 export const BROWSER_DESCRIPTION_MAX_BYTES = 350;
 
 const EMPTY = z.object({});
 
-/**
- * `target` is a ref out of the most recent `browser_snapshot`, and `element` is
- * the human-readable description of the same node. Both are passed on every
- * interaction: Playwright MCP uses `element` for its own error messages, so a
- * failure reads "could not click the Save button" rather than "could not click
- * e17". It stays optional because a retry that has the ref and not the prose is
- * still worth letting through.
- */
 const targeted = {
   target: z.string().min(1),
   element: z.string().optional(),
 };
 
-/**
- * WHICH TAB — accepted by reads AND by writes.
- *
- * It used to be reads only, on the rule "reads on a human-held tab are
- * allowed, writes never". That rule was protecting the wrong thing: what must
- * not happen is an agent typing into a page while a person is using it, and
- * that is enforced where it actually lives — the desktop host defers a write
- * while their hands are on that tab and refuses one decided from a view the
- * agent has not refreshed. Withholding the parameter did not add safety; it
- * only meant every write landed on one shared "current tab", so an agent could
- * not work in a background tab at all and a person switching tabs silently
- * re-aimed the agent's next click.
- *
- * Omitted means the tab the agent is working in, which is NOT necessarily the
- * one the human is looking at — `browser_list_tabs` marks both.
- */
 const tabId = {
   tabId: z.number().int().nonnegative().optional(),
 };
 
-/**
- * WHERE THE SNAPSHOT HAS NO REF. A page drawn on a `<canvas>` (a spreadsheet,
- * a diagram) exposes nothing to point at, so click and hover also take a point
- * in `browser_take_screenshot`'s CSS pixels. Exactly one of the two: a ref and
- * a point together would leave the host guessing which one was meant.
- */
 const point = {
   target: z.string().min(1).optional(),
   element: z.string().optional(),
@@ -187,8 +99,6 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
       "Open, close, or move to a tab in Telar's integrated browser. \"new\" opens one and moves you into it, \"select\" moves you to an existing one; neither changes what the human is looking at. List tabs first when more than one is open.",
     input: z.object({
       action: z.enum(["list", "new", "close", "select"]),
-      // Tabs are addressed positionally by Playwright MCP, so a fractional or
-      // negative index is not a near-miss — it is a different tab or none.
       index: z.number().int().nonnegative().optional(),
       url: z.string().optional(),
     }),
@@ -209,21 +119,8 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     description:
       "Read the accessibility snapshot of the tab you are working in, or the tabId you name. Use its exact target refs for interactions. The answer is capped at 16 KB: on a large page pass target (a ref from the last snapshot) to read one region, or depth to stop at a level.",
     input: z.object({
-      /** A ref from THIS tab's last snapshot: renders that node's subtree
-       *  instead of the document. Refs are re-minted by every snapshot, so a
-       *  ref from an older one is refused by name rather than widened. */
       target: z.string().optional(),
-      /** Levels below the root of what is rendered — `{target, depth: 1}` is
-       *  "that node and its children". */
       depth: z.number().int().nonnegative().optional(),
-      /**
-       * Accepted and INERT, on both backends. Element rectangles come from a
-       * separate CDP measurement the snapshot path does not make; the panel's
-       * own picker asks for them by another route. Kept in the schema so a
-       * call that passes it is not a validation error (#515 keeps every
-       * argument accepted), and left undefined rather than defaulted to true
-       * so nothing reads a promise into it.
-       */
       boxes: z.boolean().optional(),
       ...tabId,
     }),
@@ -246,7 +143,6 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     description:
       "Type into an editable element by target or, with no target, into whatever has focus (say a cell you just clicked by x,y). In your tab or the tabId you name.",
     input: z.object({
-      // Optional: absent means the focused element, which is not cleared first.
       target: z.string().min(1).optional(),
       element: z.string().optional(),
       ...tabId,
@@ -327,9 +223,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     description:
       "Read console messages from the tab you are working in, or the tabId you name. level is a floor and defaults to info; pass all for the quieter ones too. The answer is capped at 6 KB and the newest lines are the ones kept — raise level to see further back. Also lists downloads and their paths.",
     input: z.object({
-      /** A FLOOR, not an exact match: "warning" answers warnings and errors. */
       level: z.enum(["error", "warning", "info", "debug"]).default("info"),
-      /** Every level, whatever `level` says. */
       all: z.boolean().optional(),
       ...tabId,
     }),
@@ -339,10 +233,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     description:
       "Read network requests from the tab you are working in, or the tabId you name. The answer is capped at 6 KB and the newest rows are the ones kept — pass filter, a substring of the URL, to ask about one endpoint rather than the whole page.",
     input: z.object({
-      /** Accepted and INERT: the host records every request and has never
-       *  classified them. Kept accepted so no existing call breaks (#515). */
       static: z.boolean().default(false),
-      /** A plain substring of the URL. */
       filter: z.string().optional(),
       ...tabId,
     }),
@@ -357,25 +248,14 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
           z.object({
             ...targeted,
             kind: z.enum(["username", "password", "otp", "field"]),
-            /** The 1Password field label, required in spirit when kind is
-             *  "field" — enforced by the fill path, not the schema, so the
-             *  error can say what to do. */
             label: z.string().optional(),
           }),
         )
         .min(1),
-      /** Which item, as a hint (title). The human's pick on the approval card
-       *  is what decides; a hint can only reorder the candidates. */
       item: z.string().optional(),
-      /** Press this after filling — the login button's snapshot ref. */
       submit: z.object({ ...targeted }).optional(),
     }),
   },
-  /**
-   * NEITHER TOUCHES THE SYSTEM CLIPBOARD. Chromium has one clipboard, the
-   * user's, so a tab-scoped one cannot exist: paste hands the page the event a
-   * real paste delivers, and copy reads back what the page's own handler set.
-   */
   {
     name: "browser_paste",
     description:
@@ -396,8 +276,6 @@ function browserToolDefinition(name: string): BrowserToolDefinition | null {
   return BY_NAME.get(name) ?? null;
 }
 
-/** Every name the engine will forward to the browser. `isReadOnlyBrowserCall`
- *  derives from this, so an unlisted tool is unknown rather than assumed safe. */
 export const BROWSER_TOOL_NAMES: ReadonlySet<string> = new Set(BrowserToolName.options);
 
 export class BrowserToolInputError extends Error {
@@ -407,16 +285,6 @@ export class BrowserToolInputError extends Error {
   }
 }
 
-/**
- * Validate a tool call's arguments before they leave the engine.
- *
- * WORTH DOING EVEN THOUGH PLAYWRIGHT MCP VALIDATES TOO. A rejection here costs
- * nothing and names the field; a rejection over there costs a 30-second RPC
- * round trip through a browser process we may have just spawned, and comes back
- * as prose. It also applies the schema DEFAULTS (screenshot `type`, console
- * `level`) so the engine's journal records the arguments the browser actually
- * received rather than the ones the model happened to type.
- */
 export function parseBrowserToolInput(name: string, input: unknown = {}): Record<string, unknown> {
   const definition = browserToolDefinition(name);
   if (!definition) throw new BrowserToolInputError(`Unknown browser tool: ${name}`);

@@ -11,14 +11,14 @@ import { promptsForComposer } from "./prompts";
 import { createDisplayCapability } from "./display/capability";
 import { clientRunCapability } from "./run/client-capability";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
-import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
-import { runSecretFill } from "./browser/secret-fill";
+import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./domains/browser";
+import { runSecretFill } from "./domains/browser";
 import { ratifiedReadTools } from "./plugins/policy";
 import { isMountPoint, mountPointForRoot, type VolumeDeps } from "./volumes";
 import { RateLimitedError, setPluginReadTools } from "./driver";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
-import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
-import type { LoginGrantStore } from "./secrets/login-grants";
+import { createOnePasswordSecrets, type SecretsProvider } from "./domains/browser";
+import type { LoginGrantStore } from "./domains/browser";
 import { providerProcessEnv } from "./provider-instances";
 import { framedTurnInput, SteerMailbox, withTurnNotes } from "./domains/turns";
 

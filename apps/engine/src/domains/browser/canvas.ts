@@ -1,13 +1,3 @@
-/**
- * The engine's coordinate tools, translated for the headless runtime.
- *
- * The desktop host takes `browser_click {x, y}` as-is. Playwright MCP does not:
- * with `--caps vision` (see `transport.ts`) it has separate `browser_mouse_*_xy`
- * tools instead. This is the one place that knows the mapping, and the one
- * place that says which canvas tools the headless runtime cannot do at all —
- * typing into whatever has focus, and paste/copy without the system clipboard.
- */
-
 export type HeadlessCanvasCall = { name: string; args: Record<string, unknown> } | { refusal: string };
 
 function hasPoint(args: Record<string, unknown>): boolean {
