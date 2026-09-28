@@ -1,9 +1,7 @@
-// Refusal sentences are part of the contract; rendering is pinned in
-// `components/session/github-surface.session.test.tsx`.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { GitOverview } from "@telar/engine-client";
-import { issueSessionStart } from "./model";
+import type { GitHubCheck, GitOverview } from "@telar/engine-client";
+import { clearChip, githubQuery, hasFailed, isNotable, issueSessionStart, linkVerb, listCount, toggleLabel } from "./model";
 
 const issue = { number: 695, title: "Issue → session: a row action", url: "https://github.com/o/r/issues/695" };
 
@@ -21,14 +19,12 @@ describe("when a worktree can be cut", () => {
     const start = issueSessionStart({ issue, projectId: "project_1", git: git({ defaultBase: "origin/main" }) });
 
     expect(start).toMatchObject({ ok: true, baseRef: "origin/main" });
-    // `?base=` both seeds the base and arms worktree mode.
     expect(start.ok && start.href).toBe("/projects/project_1/sessions/new?base=origin%2Fmain");
   });
 
   test("the first message is the row's own reference, so a press and a drag produce the same session", () => {
     const start = issueSessionStart({ issue, projectId: "project_1", git: git() });
 
-    // Number alone is unreadable in a transcript weeks later.
     expect(start.ok && start.text).toBe('#695 "Issue → session: a row action" (https://github.com/o/r/issues/695)');
   });
 
@@ -66,7 +62,6 @@ describe("when it cannot", () => {
   });
 
   test("the disk is asked about before git, so a repository in somebody's bag is never called 'not a repository'", () => {
-    // An unplugged drive's git read looks like an unversioned folder; don't blame `repository` first.
     const start = issueSessionStart({
       issue,
       projectId: "project_1",
@@ -105,5 +100,45 @@ describe("when it cannot", () => {
     const start = issueSessionStart({ issue, projectId: "project_1" });
 
     expect(start).toEqual({ ok: false, reason: "Telar could not read this project's checkout, so it did not cut a worktree." });
+  });
+});
+
+describe("the list filter", () => {
+  const filter = { state: "open" as const, assignee: "ada", author: "grace", milestone: "Wave 1", labels: ["bug"] };
+
+  test("pull requests send no milestone, because gh cannot filter them by one", () => {
+    expect(githubQuery("pulls", filter)).toEqual({ pulls: { state: "open", assignee: "ada", author: "grace", labels: ["bug"] } });
+    expect(githubQuery("issues", filter)).toEqual({ issues: filter });
+  });
+
+  test("a label toggles, and a chip clears only its own facet", () => {
+    expect(toggleLabel(filter, "bug").labels).toEqual([]);
+    expect(toggleLabel(filter, "ui").labels).toEqual(["bug", "ui"]);
+    expect(clearChip(filter, { key: "l:bug", label: "bug", clear: "label", value: "bug" })).toEqual({ ...filter, labels: [] });
+    expect(clearChip(filter, { key: "a:ada", label: "@ada", clear: "assignee" })).toEqual({ ...filter, assignee: undefined });
+  });
+
+  test("a full page admits it may be truncated", () => {
+    expect(listCount(0, "issues")).toBe("no issues");
+    expect(listCount(1, "pull requests")).toBe("1 pull request");
+    expect(listCount(50, "issues")).toBe("50+ issues");
+  });
+});
+
+describe("checks and links", () => {
+  const check = (status: string, conclusion?: string) => ({ name: "ci", status, ...(conclusion ? { conclusion } : {}) }) as GitHubCheck;
+
+  test("a running or failing check is notable; a skipped one is not", () => {
+    expect(isNotable(check("IN_PROGRESS"))).toBe(true);
+    expect(isNotable(check("COMPLETED", "FAILURE"))).toBe(true);
+    expect(isNotable(check("COMPLETED", "SKIPPED"))).toBe(false);
+    expect(hasFailed(check("COMPLETED", "TIMED_OUT"))).toBe(true);
+    expect(hasFailed(check("IN_PROGRESS"))).toBe(false);
+  });
+
+  test("only a closed issue says it was closed by a pull request", () => {
+    expect(linkVerb(true, "OPEN")).toBe("closes");
+    expect(linkVerb(false, "CLOSED")).toBe("closed by");
+    expect(linkVerb(false, "OPEN")).toBe("will close with");
   });
 });
