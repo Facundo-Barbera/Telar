@@ -105,7 +105,7 @@ import {
   type ForgeEntry,
 } from "@/lib/github-forge";
 import { checkReference, failingChecksReference, issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
-import { GitHubAvatar } from "@/components/session/github-avatar";
+import { GitHubAvatar } from "./github-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";

@@ -3,7 +3,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitOverview } from "@telar/engine-client";
-import { issueSessionStart } from "./issue-session";
+import { issueSessionStart } from "./model";
 
 const issue = { number: 695, title: "Issue → session: a row action", url: "https://github.com/o/r/issues/695" };
 

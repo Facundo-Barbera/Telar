@@ -117,7 +117,7 @@ const FileViewSurface = dynamic(() => import("@/components/session/file-view-sur
 const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));
 const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface));
 const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
-const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
+const GitHubSurface = dynamic(() => import("@/features/github").then((mod) => mod.GitHubSurface));
 const TaskLog = dynamic(() => import("@/components/session/task-log").then((mod) => mod.TaskLog));
 /** THE HEAVIEST ARM ON THE LADDER: xterm.js, its WebGL renderer and its image
  *  decoder. Nothing but this tab needs a terminal emulator in the bundle, and
@@ -576,10 +576,6 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
      screen unreachable. */
   (tab) => tab === "terminal",
 ];
-
-/* WHICH NUMBERS ARE ALREADY OPEN is no longer a question about the STRIP (#693).
-   A detail opens inside its list, so the list surface holds its own open set and
-   marks its own rows from it — see session/github-surface.tsx. */
 
 /** Anything shaped like a tab id this build understands — the validator for
  *  what comes back out of localStorage. A browser page whose id is no longer

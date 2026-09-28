@@ -83,9 +83,9 @@ import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
 import { filterChips, issueStatus, offersMerge, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeFilterChip, type ForgeStatus } from "@/lib/github-forge";
 import { insertReference, issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
-import { GitHubAvatar } from "@/components/session/github-avatar";
+import { GitHubAvatar } from "./github-avatar";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
-import { issueSessionStart } from "@/lib/issue-session";
+import { issueSessionStart } from "../model";
 import { canvasHref } from "@/lib/session-list";
 import {
   activateForge,
@@ -131,7 +131,7 @@ import { cn } from "@/lib/utils";
  * for a detail nobody has clicked yet, so the import that used to sit up in the
  * panel comes DOWN here rather than becoming a static one.
  */
-const ForgeDetailSurface = dynamic(() => import("@/components/session/github-detail-surface").then((mod) => mod.ForgeDetailSurface));
+const ForgeDetailSurface = dynamic(() => import("./github-detail-surface").then((mod) => mod.ForgeDetailSurface));
 
 const api = createEngineApi();
 
