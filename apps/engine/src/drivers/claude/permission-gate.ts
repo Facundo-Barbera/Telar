@@ -34,6 +34,7 @@ export const gateFor = (onRequest: NonNullable<DriverRun["onRequest"]>): SdkCanU
                 kind: "user_input",
                 detail: { kind: "user_input", prompt: "The agent needs your input to continue.", fields },
                 toolUseId: options.toolUseID,
+                signal: options.signal,
               }),
             );
             if (outcome.decision === "cancel") {
@@ -69,6 +70,7 @@ export const gateFor = (onRequest: NonNullable<DriverRun["onRequest"]>): SdkCanU
             kind: requestKindForTool(toolName),
             detail: requestDetailForToolCall(toolName, input),
             toolUseId: options.toolUseID,
+            signal: options.signal,
           }),
         );
         if (decision === "accept" || decision === "acceptForSession") return { behavior: "allow" };

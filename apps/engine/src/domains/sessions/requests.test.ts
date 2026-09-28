@@ -254,6 +254,43 @@ test("a stop while a human is deciding settles the driver instead of hanging the
   expect((await client.session("session_one")).turns[0]?.state).toBe("stopped");
 });
 
+test("a request the provider withdraws is cancelled, so the running turn stops reading as waiting on you", async () => {
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 2_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one", detached: false });
+
+  const withdraw = new AbortController();
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => { finish = resolve; });
+  let seen: string | undefined;
+  const driver: TurnDriver = {
+    async run({ onRequest }) {
+      seen = normalizeOutcome(await onRequest!({ kind: "command_execution", detail: bashDetail, toolUseId: "toolu_1", signal: withdraw.signal })).decision;
+      await finished;
+      return { text: "carried on" };
+    },
+  };
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 25 });
+  workers.push(worker);
+  await worker.start();
+  await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  await eventually(async () => {
+    expect((await client.session("session_one")).session.activity).toBe("blocked");
+  });
+
+  withdraw.abort();
+  await eventually(() => expect(seen).toBe("cancel"));
+  await eventually(async () => {
+    const snapshot = await client.session("session_one");
+    expect(snapshot.requests[0]).toMatchObject({ state: "resolved", decision: "cancel", resolvedBy: "cancelled" });
+    expect(snapshot.turns[0]?.state).toBe("running");
+    expect(snapshot.session.activity).toBe("working");
+  });
+  finish();
+});
+
 // ── secret_access: the kind no mode may resolve ────────────────────────────
 
 const SENTINEL = "SENTINEL-vault-value-77aa";
