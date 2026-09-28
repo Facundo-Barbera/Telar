@@ -143,7 +143,7 @@ function developmentIconPath() {
   if (app.isPackaged) return undefined;
 
   for (const name of ["icon-dev.png", "icon.png"]) {
-    const icon = path.join(__dirname, "..", "..", "build", name);
+    const icon = path.join(__dirname, "..", "..", "assets", name);
     if (fs.existsSync(icon)) return icon;
   }
   return undefined;

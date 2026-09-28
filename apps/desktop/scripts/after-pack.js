@@ -129,7 +129,7 @@ exports.default = async function afterPack(context) {
   const arch = ARCH_NAMES[context.arch] ?? process.arch;
   const found = verifyPackagedPty(appPath, { arch });
   console.log(`  • node-pty unpacked and runnable from ${found.from}${found.chmodded ? " (spawn-helper made executable)" : ""}`);
-  const pin = JSON.parse(fs.readFileSync(path.join(__dirname, "src", "main", "computer-use-helper.json"), "utf8"));
+  const pin = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "src", "main", "computer-use-helper.json"), "utf8"));
   const helper = verifyPackagedComputerUse(appPath, pin, { required: process.env.TELAR_REQUIRE_COMPUTER_USE_HELPER === "1" });
   console.log(helper ? `  • computer-use helper ${pin.bundleId} (cua-driver ${pin.version}) packaged` : "  • no computer-use helper in this build (not required)");
 };

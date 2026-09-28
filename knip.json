@@ -45,8 +45,7 @@
         "src/preload/*.js",
         "src/**/*.electron-test.js",
         "test/electron/desktop-e2e*.js",
-        "after-pack.js",
-        "render-opener-icons.mjs"
+        "scripts/after-pack.js"
       ],
       "project": [
         "**/*.{js,mjs,cjs}"

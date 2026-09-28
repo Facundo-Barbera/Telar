@@ -61,7 +61,7 @@ function iconDirs(cwd: string): string[] {
     // Packaged: electron-builder copies the shell's PNGs to <Resources>/branding.
     path.join(cwd, "..", "..", "..", "branding"),
     // Dev repo: `next dev` runs in apps/web.
-    path.join(cwd, "..", "desktop", "build"),
+    path.join(cwd, "..", "desktop", "assets"),
   ];
 }
 

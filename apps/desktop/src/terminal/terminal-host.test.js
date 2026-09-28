@@ -18,7 +18,7 @@ const {
   unusableCwd,
   defaultShell,
 } = require("./terminal-host");
-const { verifyPackagedPty, UNPACKED } = require("../../after-pack");
+const { verifyPackagedPty, UNPACKED } = require("../../scripts/after-pack");
 
 function fakePty(pid = 4242, ptsName) {
   const calls = { writes: [], resizes: [] };

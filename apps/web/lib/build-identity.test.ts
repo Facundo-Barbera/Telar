@@ -27,7 +27,7 @@ function layout(options: { icons?: string[]; productName?: string } = {}): strin
   const web = path.join(root, "web");
   fs.mkdirSync(web, { recursive: true });
   if (options.icons?.length) {
-    const build = path.join(root, "desktop", "build");
+    const build = path.join(root, "desktop", "assets");
     fs.mkdirSync(build, { recursive: true });
     for (const icon of options.icons) fs.writeFileSync(path.join(build, icon), pngBytes(icon));
   }
@@ -109,7 +109,7 @@ describe("build identity", () => {
   test("the icon key moves when the bytes do, which is what the immutable cache rests on", () => {
     const web = layout({ icons: ["icon.png"] });
     const first = buildIdentity({}, web).icon!.key;
-    const file = path.join(web, "..", "desktop", "build", "icon.png");
+    const file = path.join(web, "..", "desktop", "assets", "icon.png");
     fs.writeFileSync(file, pngBytes("a rather longer icon than before"));
     expect(buildIdentity({}, web).icon!.key).not.toBe(first);
   });

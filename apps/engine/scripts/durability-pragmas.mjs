@@ -18,7 +18,7 @@
  *
  * Node can strip types and run the `.ts` directly, and that would prove the
  * `node:sqlite` half. What it would not prove is that the pragmas survive the
- * bundler — `apps/desktop/build-app.sh` runs `bun build --target=node` over the
+ * bundler — `apps/desktop/scripts/build-app.sh` runs `bun build --target=node` over the
  * engine, and a probe that skipped that step would be testing a file the app
  * does not contain. So this performs the same `bun build` over a one-file entry
  * and runs its output, which is the packaged path minus the .app.
@@ -51,7 +51,7 @@ const EXPECTED = { synchronous: 1, checkpointFullfsync: 1, fullfsync: 0 };
 
 let failed = false;
 try {
-  // The same flags `apps/desktop/build-app.sh` uses for the engine, minus the
+  // The same flags `apps/desktop/scripts/build-app.sh` uses for the engine, minus the
   // entry point. `NODE_OPTIONS=` for the reason that script gives: an inherited
   // one is meant for node and bun's bundler is not node.
   execFileSync(
