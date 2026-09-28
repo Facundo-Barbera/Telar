@@ -113,8 +113,8 @@ import {
 import { DICTATION_OFF, DictationError } from "./dictation/token";
 import { dictationProvider } from "./dictation/provider";
 import * as notebook from "./domains/notes";
-import * as shelf from "./prompts";
-import { PreparedPromptsError } from "./prompts";
+import * as shelf from "./domains/prompts";
+import { PreparedPromptsError } from "./domains/prompts";
 import type { GhRunner } from "./domains/github";
 import { checkoutRootsOf, measureStore, reapNodeModules, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, withCheckouts, type CheckoutSizesOptions } from "./domains/storage";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
