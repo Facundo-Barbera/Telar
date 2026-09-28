@@ -8,7 +8,7 @@ import { hydrateHostPath } from "../platform/process/host-path";
 import { TelarToolSocket } from "../domains/agent-tools";
 import { createLoginGrantStore } from "../domains/browser";
 import { bundledPluginToolModules, externalPluginsDir, externalToolModule, loadInstalledPlugins, setPluginToolModules } from "../domains/plugins";
-import { engineRootFromEnv } from "../state";
+import { engineRootFromEnv } from "../platform/fs/engine-root";
 import { statePaths } from "../platform/fs/state-paths";
 import { EngineWorker, workerConcurrencyFromEnv } from ".";
 import { WorkerReconnectController } from "./supervisor";

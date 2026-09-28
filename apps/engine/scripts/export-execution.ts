@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ExecutionStore } from "../src/platform/db/execution-store";
-import { acquireDaemonLock } from "../src/state";
+import { acquireDaemonLock } from "../src/platform/process/daemon-lock";
 import { statePaths } from "../src/platform/fs/state-paths";
 
 const [home, destination] = process.argv.slice(2);

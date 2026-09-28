@@ -38,7 +38,9 @@ import { closeServer, listenLoopback, removeOwnDiscovery, writeDiscovery } from 
 import type { Route } from "./platform/http/route";
 import { router } from "./platform/http/router";
 import { startSweepers, type Sweep } from "./platform/process/sweepers";
-import { acquireDaemonLock, EngineStore, engineRootFromEnv, migrateLegacyEngineRoot, type EngineNotifier } from "./state";
+import { EngineStore, type EngineNotifier } from "./state";
+import { engineRootFromEnv, migrateLegacyEngineRoot } from "./platform/fs/engine-root";
+import { acquireDaemonLock } from "./platform/process/daemon-lock";
 import { startEmbeddedWorker, type EmbeddedDoorbell, type EmbeddedWorkerConfig } from "./worker/embedded";
 import { createExecutionPort } from "./worker/execution-port";
 import { createWorkerRegistry } from "./worker/registry";

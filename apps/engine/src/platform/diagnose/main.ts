@@ -1,4 +1,4 @@
-import { engineRootFromEnv } from "../../state";
+import { engineRootFromEnv } from "../fs/engine-root";
 import { DiagnoseError, scanStalled } from "./stalled";
 
 const USAGE = `telar diagnose stalled [--root <engine root>] [--minutes N]
