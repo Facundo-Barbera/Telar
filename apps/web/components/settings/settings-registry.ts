@@ -73,14 +73,12 @@ import {
   MonitorIcon,
   NetworkIcon,
   PackageIcon,
-  PackagePlusIcon,
   PaletteIcon,
   PlugIcon,
   PlugZapIcon,
   RefreshCwIcon,
   ScrollTextIcon,
   ServerIcon,
-  SettingsIcon,
   ShieldCheckIcon,
   SlidersHorizontalIcon,
   SmartphoneIcon,
@@ -738,37 +736,17 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
-        title: "Compiling",
+        // The Mac-wide defaults that are fields of a plugin's schema — Default
+        // engine, Install missing packages automatically, Default Python — are
+        // GENERATED rows and join the index at runtime (settings-page.tsx). What
+        // is declared here is the bespoke block beside them, which sits in a
+        // group whose heading is the plugin's own section label.
         rows: [
-          {
-            title: "Default engine",
-            hint: "What a TeX install drives when a project has not chosen.",
-            keywords: ["pdflatex", "xelatex", "lualatex", "latexmk", "engine"],
-            icon: SettingsIcon,
-          },
-          {
-            title: "Install missing packages automatically",
-            hint: "When a compile fails on a missing package, install it and compile once more.",
-            keywords: ["tlmgr", "packages", "latex", "auto install"],
-            icon: PackagePlusIcon,
-          },
-        ],
-      },
-      {
-        title: "Data science defaults",
-        rows: [
-          {
-            id: "plugins-data-science-python",
-            title: "Default Python",
-            hint: "The interpreter a project with none of its own runs its kernel on.",
-            keywords: ["python", "interpreter", "kernel", "jupyter"],
-            icon: FlaskConicalIcon,
-          },
           {
             id: "plugins-data-science-packages",
             title: "Default packages",
             hint: "Installed into environments Telar creates from here on.",
-            keywords: ["pandas", "numpy", "packages", "pip", "environment"],
+            keywords: ["pandas", "numpy", "packages", "pip", "environment", "data science"],
             icon: PackageIcon,
           },
         ],

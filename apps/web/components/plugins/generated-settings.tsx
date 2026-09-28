@@ -11,13 +11,28 @@
  * (or, at project scope, to what the Mac says). A refused write leaves the
  * control on the stored value and says why under the row.
  */
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
+import { FileTextIcon, FlaskConicalIcon, FolderIcon, PackagePlusIcon, PlugIcon, SettingsIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { describeValue, parseNumberField, type SettingsField } from "@/lib/plugins/settings-form";
 import { Dropdown, Row } from "@/components/settings/settings-shell";
 
 const INHERIT = "__inherit";
+
+/**
+ * THE GLYPHS A SCHEMA MAY NAME, by Lucide's kebab-case name. A short list on
+ * purpose — importing every icon to honour any name would ship the whole set to
+ * every settings page. An unknown name draws no glyph rather than a wrong one.
+ */
+const ICONS: Readonly<Record<string, ComponentType<{ className?: string }>>> = {
+  settings: SettingsIcon,
+  "package-plus": PackagePlusIcon,
+  "flask-conical": FlaskConicalIcon,
+  folder: FolderIcon,
+  "file-text": FileTextIcon,
+  plug: PlugIcon,
+};
 
 export type GeneratedSettingsProps = {
   fields: readonly SettingsField[];
@@ -37,7 +52,11 @@ export function GeneratedSettingsRows({ fields, values, inherited, onWrite, disa
     const next: Record<string, unknown> = { ...values };
     if (value === undefined) delete next[key];
     else next[key] = value;
-    setErrors(({ [key]: _cleared, ...rest }) => rest);
+    setErrors((current) => {
+      const rest = { ...current };
+      delete rest[key];
+      return rest;
+    });
     try {
       await onWrite(next);
     } catch (cause) {
@@ -83,10 +102,13 @@ function GeneratedRow({
   // What an unset field means: the Mac's value when it inherits one, the
   // schema's default otherwise.
   const fallback = inherits ? inheritsFrom : field.defaultValue;
-  const inheritLabel = `Inherit (${describeValue(inheritsFrom) ?? "not set"})`;
+  const shown = (raw: unknown) => (typeof raw === "string" && field.optionLabels?.[raw]) || describeValue(raw);
+  const inheritLabel = `Inherit (${shown(inheritsFrom) ?? "not set"})`;
   const set = value !== undefined;
+  const icon = field.icon ? ICONS[field.icon] : undefined;
   const common = {
     label: field.label,
+    ...(icon ? { icon } : {}),
     ...(field.hint ? { hint: field.hint } : {}),
     ...(field.info ? { info: field.info } : {}),
     ...(error ? { error } : {}),
@@ -117,7 +139,7 @@ function GeneratedRow({
             { value: "true", label: "On" },
             { value: "false", label: "Off" },
           ]
-        : (field.options ?? []).map((option) => ({ value: option, label: option }));
+        : (field.options ?? []).map((option) => ({ value: option, label: field.optionLabels?.[option] ?? option }));
     const current = set ? String(value) : inherits ? INHERIT : String(fallback ?? choices[0]?.value ?? "");
     return (
       <Row

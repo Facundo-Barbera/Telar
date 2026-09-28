@@ -469,8 +469,16 @@ export const PluginLatexDistributionWrite = PluginLatexDistribution.refine(
 const latexMachineFields = {
   /** Which TeX install compiles here when the project has not chosen one. */
   toolchain: PluginLatexDistribution.optional(),
-  /** The engine a TeX Live compile runs. Tectonic is XeTeX inside and ignores it. */
-  engine: PluginLatexEngine.optional(),
+  /**
+   * The engine a TeX Live compile runs. Tectonic is XeTeX inside and ignores it.
+   * The `.meta()` here and below is the cockpit's generated settings row.
+   */
+  engine: PluginLatexEngine.optional().meta({
+    title: "Default engine",
+    description: "What latexmk drives on a TeX Live install. Tectonic is XeTeX inside and ignores it.",
+    icon: "settings",
+    labels: { pdflatex: "pdfLaTeX", lualatex: "LuaLaTeX", xelatex: "XeLaTeX" },
+  }),
   /**
    * Whether a compile may fetch the packages a document asks for.
    *
@@ -479,7 +487,12 @@ const latexMachineFields = {
    * behaviour: off, a missing package is an error with the package named; on,
    * tlmgr installs it and the compile carries on.
    */
-  autoInstallPackages: z.boolean().optional(),
+  autoInstallPackages: z.boolean().optional().meta({
+    title: "Install missing packages automatically",
+    description:
+      "When a TeX Live compile fails on a package it does not have, install it with tlmgr and compile once more. Tectonic already fetches packages by itself.",
+    icon: "package-plus",
+  }),
 };
 
 const dataScienceMachineFields = {
@@ -489,7 +502,13 @@ const dataScienceMachineFields = {
    * a worktree resolves its own `.venv`, a Mac-wide default cannot be relative
    * to a checkout it does not know about.
    */
-  python: z.string().min(1).optional(),
+  python: z.string().min(1).optional().meta({
+    title: "Default Python",
+    description: "The interpreter a project with none of its own runs its kernel on.",
+    info: "An absolute path: a Mac-wide default cannot be relative to a checkout.",
+    widget: "path",
+    icon: "flask-conical",
+  }),
   /**
    * What a NEW environment is built with. A list of requirement strings, not a
    * lockfile and not a promise about environments that already exist — nothing

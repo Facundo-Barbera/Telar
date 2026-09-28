@@ -37,14 +37,14 @@
  * group: it has no Mac-wide fields worth a form.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { BlocksIcon, CircleAlertIcon } from "lucide-react";
 import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
 import { machineAllows } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { machinePaneFor } from "@/components/plugins/settings-panes";
+import { machineBlocksFor } from "@/components/plugins/settings-panes";
 import { GeneratedSettingsRows } from "@/components/plugins/generated-settings";
 import { generatedGroupTitle, settingsFields } from "@/lib/plugins/settings-form";
 import { machineSettingsPatch } from "@/lib/plugins/sections";
@@ -153,28 +153,34 @@ export function PluginsPage() {
 
       {/* GLOBAL CONFIGURATION, per plugin. Driven by the manifest: a plugin
           appears here because it DECLARED a machine-scoped section, not because
-          this file names it — so the day a third plugin has Mac-wide defaults,
-          the only edit is the pane itself and its row in `SETTINGS_PANES`.
+          this file names it — so a third plugin's Mac-wide defaults are its
+          schema's fields, generated, plus whatever blocks it registers.
 
           A FAILED OR SWITCHED-OFF PLUGIN CONTRIBUTES NOTHING. Its defaults
           would apply to nothing, and the switch above already says why. */}
       {machinePanePlugins(plugins, machine).map((status) => {
-        const Pane = machinePaneFor(status.meta.id);
-        if (Pane) return <Pane key={status.meta.id} machine={machine} onChange={setMachine} />;
-        // NO BESPOKE PANE: the fields its schema declares, generated.
+        // THE GENERATED GROUP IS THE PANE; a plugin's registered blocks join it
+        // (components/plugins/settings-panes.tsx) — whole groups before it,
+        // rows inside it after its fields.
+        const { machineGroups: Groups, machineRows: Rows } = machineBlocksFor(status.meta.id);
         const fields = settingsFields(status.machineSettingsSchema);
-        if (fields.length === 0) return null;
         const section = status.meta.settings.find((entry) => entry.scope === "machine");
         return (
-          <SettingsGroup key={status.meta.id} title={generatedGroupTitle(status, "machine")} {...(section?.blurb ? { description: section.blurb } : {})}>
-            <GeneratedSettingsRows
-              fields={fields}
-              values={machine?.entries[status.meta.id]?.settings ?? {}}
-              onWrite={async (settings) => {
-                setMachine((await api.updateMachinePlugins(machineSettingsPatch(machine, status.meta.id, settings))).machine);
-              }}
-            />
-          </SettingsGroup>
+          <Fragment key={status.meta.id}>
+            {Groups && <Groups machine={machine} onChange={setMachine} />}
+            {(fields.length > 0 || Rows) && (
+              <SettingsGroup title={generatedGroupTitle(status, "machine")} {...(section?.blurb ? { description: section.blurb } : {})}>
+                <GeneratedSettingsRows
+                  fields={fields}
+                  values={machine?.entries[status.meta.id]?.settings ?? {}}
+                  onWrite={async (settings) => {
+                    setMachine((await api.updateMachinePlugins(machineSettingsPatch(machine, status.meta.id, settings))).machine);
+                  }}
+                />
+                {Rows && <Rows machine={machine} onChange={setMachine} />}
+              </SettingsGroup>
+            )}
+          </Fragment>
         );
       })}
     </>

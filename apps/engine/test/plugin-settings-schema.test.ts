@@ -44,3 +44,32 @@ test("a plugin without a schema publishes none, and one that cannot be expressed
   const odd = new PluginHost([{ meta, settingsSchema: z.object({ at: z.date() }) }], { daemonId: "d", stateDir: tempDir() }).statuses()[0]!;
   expect(odd.settingsSchema).toBeDefined();
 });
+
+test("Data Science's and LaTeX's Mac fields are published for the generated pane — and the web fixture matches", async () => {
+  const { latexPlugin } = await import("../src/plugins/latex");
+  const { dataSciencePlugin } = await import("../src/plugins/data-science");
+  const never = () => {
+    throw new Error("not used");
+  };
+  const host = new PluginHost(
+    [
+      latexPlugin({ resolve: never, jobs: { list: () => [], disposeAll: () => {} }, settings: {} as never }),
+      dataSciencePlugin({ resolve: never, projectOf: () => undefined, settings: {} as never }),
+    ],
+    { daemonId: "d", stateDir: tempDir() },
+  );
+  const [latex, ds] = host.statuses();
+  const latexMachine = latex!.machineSettingsSchema as Schema;
+  expect(latexMachine.properties.engine).toMatchObject({ title: "Default engine", labels: { pdflatex: "pdfLaTeX" } });
+  expect(latexMachine.properties.autoInstallPackages).toMatchObject({ type: "boolean", title: "Install missing packages automatically" });
+  const dsMachine = ds!.machineSettingsSchema as Schema;
+  expect(dsMachine.properties.python).toMatchObject({ title: "Default Python", widget: "path" });
+  // The section labels head the generated groups, so a search anchor survives the move.
+  expect(latex!.meta.settings.find((section) => section.scope === "machine")?.label).toBe("Compiling");
+  expect(ds!.meta.settings.find((section) => section.scope === "machine")?.label).toBe("Data science defaults");
+  // The web renders against a copy of exactly these; a drifted copy fails here.
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(import.meta.dir, "../../web/test-fixtures/bundled-machine-schemas.json"), "utf8"),
+  ) as Record<string, unknown>;
+  expect(fixture).toEqual({ latex: latex!.machineSettingsSchema, dataScience: ds!.machineSettingsSchema });
+});

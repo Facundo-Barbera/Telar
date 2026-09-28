@@ -24,26 +24,27 @@
  * The other choices come from the SAME probe the project pane uses
  * (`/api/latex/toolchain`), so the two panes cannot disagree about what is
  * installed.
+ *
+ * ONLY THE DISTRIBUTION IS BESPOKE. The engine and package rows are fields of
+ * LaTeX's own schema and are generated beside this block ("Compiling", see
+ * components/plugins/generated-settings.tsx); what is here is the one choice
+ * whose options come from probing the Mac, and the managed install's verb.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleAlertIcon, DownloadIcon, HardDriveIcon, PackagePlusIcon, SettingsIcon } from "lucide-react";
+import { CircleAlertIcon, DownloadIcon, HardDriveIcon } from "lucide-react";
 import type { LatexToolchain, ManagedTectonic, PluginLatexEngine, ProjectPlugins } from "@telar/engine-client";
 import { latexMachineSettings } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { machineSettingsPatch } from "@/lib/plugins/sections";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
 
 /** How often the pane re-asks while a download is running. */
 const INSTALL_POLL_MS = 1500;
-
-/** base-ui refuses `""`, so "nothing pinned" needs a sentinel of its own. */
-const ENGINE_DEFAULT = "__engine-default";
 
 export const ENGINE_LABEL: Record<PluginLatexEngine, string> = {
   pdflatex: "pdfLaTeX",
@@ -56,7 +57,7 @@ type Choice = { kind: "tectonic" | "texlive" | "managed"; path?: string };
 const sameChoice = (a: Choice | undefined, b: Choice): boolean =>
   a?.kind === b.kind && (b.kind === "managed" || a?.path === b.path);
 
-export function LatexMachineSettings({
+export function LatexDistributionSettings({
   machine,
   onChange,
 }: {
@@ -225,45 +226,6 @@ export function LatexMachineSettings({
             />
           );
         })}
-      </SettingsGroup>
-
-      <SettingsGroup title="Compiling" description="How a compile runs here, unless the project says otherwise.">
-        {/* THE ENGINE IS A TEX LIVE FACT AND SAYS SO. Tectonic is XeTeX inside
-            and takes no engine flag, so a row that silently did nothing on the
-            default distribution would be worse than one that explains itself. */}
-        <Row
-          icon={SettingsIcon}
-          label="Default engine"
-          hint="What latexmk drives on a TeX Live install. Tectonic is XeTeX inside and ignores it."
-          {...(settings.engine ? { onRevert: () => void save({ engine: undefined }) } : {})}
-          control={
-            <Select
-              value={settings.engine ?? ENGINE_DEFAULT}
-              onValueChange={(next: unknown) => {
-                if (typeof next !== "string") return;
-                void save({ engine: next === ENGINE_DEFAULT ? undefined : (next as PluginLatexEngine) });
-              }}
-              disabled={busy}
-            >
-              <SelectTrigger size="sm" className="w-40">
-                <SelectValue>{settings.engine ? ENGINE_LABEL[settings.engine] : "pdfLaTeX"}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ENGINE_DEFAULT}>pdfLaTeX</SelectItem>
-                <SelectItem value="lualatex">{ENGINE_LABEL.lualatex}</SelectItem>
-                <SelectItem value="xelatex">{ENGINE_LABEL.xelatex}</SelectItem>
-              </SelectContent>
-            </Select>
-          }
-        />
-
-        <ToggleRow
-          icon={PackagePlusIcon}
-          label="Install missing packages automatically"
-          hint="When a TeX Live compile fails on a package it does not have, install it with tlmgr and compile once more. Tectonic already fetches packages by itself."
-          checked={settings.autoInstallPackages === true}
-          onCheckedChange={(next: boolean) => void save({ autoInstallPackages: next ? true : undefined })}
-        />
 
         {error && <Row icon={CircleAlertIcon} label="Could not save" hint={error} control={<Badge variant="outline">Error</Badge>} />}
       </SettingsGroup>

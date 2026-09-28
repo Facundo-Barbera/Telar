@@ -88,7 +88,7 @@ A plugin with no web contributions (for example `hello`) draws no tab, opener, c
 - An unknown id adds nothing.
 - The phone still calls the Mac's `/api/sessions/:id/{ds,latex}/*` aliases rather than the generic plugin route. The Mac it is paired with may predate that web route (added in P2a), and the aliases keep a new phone working against it.
 
-### 4. Settings schema (P3: generated renderer done; DS/LaTeX migration next)
+### 4. Settings schema (P3: done)
 
 - The host publishes each plugin's `settingsSchema` / `machineSettingsSchema` on `PluginStatus` as JSON Schema. It is generated with zod's `toJSONSchema` from the same schema that validates writes.
 - `.meta()` on a field supplies the row's copy and three renderer hints:
@@ -104,7 +104,15 @@ A plugin with no web contributions (for example `hello`) draws no tab, opener, c
 - This is the default for any plugin without a bespoke pane. Project fields appear under the enable switch once the plugin is on (Projects pane). Mac fields appear on the Plugins pane while the plugin is allowed.
 - Generated rows join Settings search at runtime (`pluginSettingsSearchEntries`), anchored where they render.
 - The enable switches do not move: one on Plugins for the Mac, one on Projects for each project.
-- **Next:** move Data Science's and LaTeX's expressible fields (for example LaTeX's main file, engine and auto-install packages) onto the generator. Their environment lists, package tables and installers stay bespoke blocks, registered through the P2a pane registry.
+- **Data Science and LaTeX use the generator.**
+  - Every field their schemas can express is generated:
+    - LaTeX's Mac "Compiling" group: *Default engine* (with `labels`), *Install missing packages automatically*.
+    - Data Science's Mac *Default Python*, as a path field.
+  - Everything else stays bespoke, registered as blocks in `components/plugins/settings-panes.tsx`:
+    - `machineGroups`: whole groups before the generated group. Used by LaTeX's distribution cards and managed install.
+    - `machineRows`: rows inside the generated group. Used by Data Science's default packages list.
+    - `project`: a whole project editor. Both plugins keep theirs, because every project field they have is a choice probed from the Mac: environments and packages, distributions and main-file candidates.
+  - The Mac section labels ("Compiling", "Data science defaults") head the generated groups, so the moved rows keep their search anchors.
 
 ### 5. Events
 
@@ -146,5 +154,5 @@ requires?: { id; label; probe: verb; install?: verb }[]
    - The claim's dedicated fields are gone. `plugins` carries the two plugins when they resolve for the session.
    - **Rolling back to an engine older than the map is no longer supported.** Such an engine would see no Data Science or LaTeX settings.
 4. **P2**: UI registry covering panels, viewers, commands and event renderers. P2a (web) and P2b (iOS) are done.
-5. **P3**: settings generated from the schema, with one switch per scope. The renderer is done; the DS/LaTeX migration follows.
+5. **P3 (done)**: settings generated from the schema, with one switch per scope. Data Science and LaTeX keep only the blocks the generator cannot draw.
 6. **P4**: external plugins, covering the folder loader, the supervised process, MCP tools and routes, declarative UI, and install/uninstall.

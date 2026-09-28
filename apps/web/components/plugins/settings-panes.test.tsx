@@ -15,25 +15,26 @@ mock.module("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-const { machinePaneFor, projectPaneFor, SETTINGS_PANES } = await import("./settings-panes");
+const { machineBlocksFor, projectPaneFor, SETTINGS_PANES } = await import("./settings-panes");
 const { DataScienceSection } = await import("@/components/settings/data-science-section");
-const { DataScienceMachineSettings } = await import("@/components/settings/data-science-machine-settings");
+const { DataSciencePackagesRow } = await import("@/components/settings/data-science-machine-settings");
 const { LatexSection } = await import("@/components/settings/latex-section");
-const { LatexMachineSettings } = await import("@/components/settings/latex-machine-settings");
+const { LatexDistributionSettings } = await import("@/components/settings/latex-machine-settings");
 const { ProjectPluginPanes } = await import("@/components/settings/projects-page");
 
-test("the two shipped features resolve to their own panes, at both scopes", () => {
+test("the two shipped features keep only what the generated pane cannot draw", () => {
   expect(projectPaneFor("data-science")).toBe(DataScienceSection);
-  expect(machinePaneFor("data-science")).toBe(DataScienceMachineSettings);
+  // The Mac scope is generated; each adds the one block its schema cannot express.
+  expect(machineBlocksFor("data-science")).toEqual({ machineRows: DataSciencePackagesRow });
   expect(projectPaneFor("latex")).toBe(LatexSection);
-  expect(machinePaneFor("latex")).toBe(LatexMachineSettings);
+  expect(machineBlocksFor("latex")).toEqual({ machineGroups: LatexDistributionSettings });
   // Losing an id here would silently replace a working editor with a checkbox.
   expect(Object.keys(SETTINGS_PANES).sort()).toEqual(["data-science", "latex"]);
 });
 
 test("a plugin with no entry resolves to none — including an inherited key", () => {
   expect(projectPaneFor("hello")).toBeUndefined();
-  expect(machinePaneFor("hello")).toBeUndefined();
+  expect(machineBlocksFor("hello")).toEqual({});
   expect(projectPaneFor("constructor")).toBeUndefined();
 });
 
