@@ -12,7 +12,7 @@ test("a held report, then the run's clean ending: one wake naming both", () => {
 
   worker.end();
 
-  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  const queued = store.queries.turns("session_host").filter((turn) => turn.state === "queued");
   expect(queued).toHaveLength(1);
   expect(queued[0]!.notification!.entries?.map((entry) => [entry.kind, entry.wakeKind])).toEqual([
     ["peer_message", undefined],
@@ -30,7 +30,7 @@ test("a run that FAILS after a held report still wakes the host, carrying the re
   store.turnLifecycle.failTurn("session_a", worker.runId, worker.token, { code: "driver_failed", message: "the CLI died" });
 
   expect(recordOf(store, worker.runId)).toBeUndefined();
-  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  const queued = store.queries.turns("session_host").filter((turn) => turn.state === "queued");
   expect(queued).toHaveLength(1);
   expect(queued[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
   expect(queued[0]!.notification!.entries!.at(-1)!.wakeKind).toBe("turn_failed");
@@ -76,7 +76,7 @@ test("a report and a result from one run, before the host has started: one deliv
 
   // The clean ending folds into the waiting result.
   worker.end();
-  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  const queued = store.queries.turns("session_host").filter((turn) => turn.state === "queued");
   expect(queued).toHaveLength(1);
   expect(queued[0]!.runId).toBe("run_sent_second");
   expect(queued[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
@@ -135,5 +135,5 @@ test("a new errand resets it: the next run's completion without a result wakes a
   store.turnLifecycle.completeTurn("session_a", child.runId, child.claim!.token, { text: "Stopped halfway." });
 
   expect(recordOf(store, child.runId)).toBeUndefined();
-  expect(store.turns("session_host").some((turn) => turn.state === "queued" && turn.notification?.runId === child.runId)).toBe(true);
+  expect(store.queries.turns("session_host").some((turn) => turn.state === "queued" && turn.notification?.runId === child.runId)).toBe(true);
 });

@@ -11,13 +11,14 @@ import type {
 } from "@telar/engine-client";
 
 export type SessionBootstrapStore = {
-  eventCursor(sessionId: string): number;
-  turns(sessionId: string): Turn[];
-  items(sessionId: string): Item[];
-  tasks(sessionId: string): Task[];
-  sessionAssignments(sessionId: string): SessionAssignment[];
   records: { get(sessionId: string): Session };
   queries: {
+    eventCursor(sessionId: string): number;
+    turns(sessionId: string): Turn[];
+    items(sessionId: string): Item[];
+    tasks(sessionId: string): Task[];
+    assignments(sessionId: string): SessionAssignment[];
+    readEvents(sessionId: string, after?: number): EngineEvent[];
     snapshotRequests(sessionId: string): EngineRequest[];
     snapshotWindow(
       sessionId: string,
@@ -26,7 +27,6 @@ export type SessionBootstrapStore = {
   };
   prefixes: { get(sessionId: string, itemId: string, through: number): { streamed: string; streamedThrough: number } | undefined };
   subscriptions: { subscriptionsFor(subscriberSessionId: string): Subscription[] };
-  readEvents(sessionId: string, after?: number): EngineEvent[];
 };
 
 export type SessionBootstrapWindow = { turns: number; before?: string };
@@ -41,13 +41,13 @@ export function sessionSnapshot(
   sessionId: string,
   window?: SessionBootstrapWindow,
 ): SessionSnapshot {
-  const cursor = store.eventCursor(sessionId);
+  const cursor = store.queries.eventCursor(sessionId);
   const rows =
     window === undefined
       ? {
-          turns: store.turns(sessionId),
-          items: store.items(sessionId),
-          tasks: store.tasks(sessionId),
+          turns: store.queries.turns(sessionId),
+          items: store.queries.items(sessionId),
+          tasks: store.queries.tasks(sessionId),
           requests: store.queries.snapshotRequests(sessionId),
         }
       : store.queries.snapshotWindow(sessionId, { limit: window.turns, ...(window.before === undefined ? {} : { before: window.before }) });
@@ -61,7 +61,7 @@ export function sessionSnapshot(
     session: store.records.get(sessionId),
     ...rows,
     items,
-    assignments: store.sessionAssignments(sessionId),
+    assignments: store.queries.assignments(sessionId),
   };
 }
 
@@ -73,7 +73,7 @@ export function sessionBootstrap(
   const snapshot = sessionSnapshot(store, sessionId, window);
   return {
     ...snapshot,
-    events: store.readEvents(sessionId, snapshot.cursor ?? 0),
+    events: store.queries.readEvents(sessionId, snapshot.cursor ?? 0),
     subscriptions: store.subscriptions.subscriptionsFor(sessionId),
   };
 }

@@ -42,7 +42,7 @@ test("an image-only message is a message; a blank one with only a PDF, or nothin
   const { turn } = store.intake.submitTurn("session_one", { runId: "run_image", input: "", attachments: [shot.id] });
   expect(turn).toMatchObject({ input: "", state: "queued", attachments: [shot] });
   // Its outline line names the picture rather than going blank.
-  expect(summariseTurn(turn, store.items("session_one")).input).toBe("[Screenshot.png]");
+  expect(summariseTurn(turn, store.queries.items("session_one")).input).toBe("[Screenshot.png]");
   // Idempotent like any other send.
   expect(store.intake.submitTurn("session_one", { runId: "run_image", input: "", attachments: [shot.id] }).replayed).toBe(true);
 
@@ -54,7 +54,7 @@ test("an image-only message is a message; a blank one with only a PDF, or nothin
   ]) {
     expect(() => store.intake.submitTurn("session_one", attempt)).toThrow(EngineStateError);
   }
-  expect(store.turns("session_one").map((row) => row.runId)).toEqual(["run_image"]);
+  expect(store.queries.turns("session_one").map((row) => row.runId)).toEqual(["run_image"]);
 });
 
 test("a browser draft promoted by an image-only message is titled by its picture", () => {

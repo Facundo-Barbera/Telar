@@ -54,11 +54,11 @@ test("the indexed fold answers the partition the documents describe", () => {
   const store = indexed();
   seed(store);
 
-  const ids = (all: boolean): string[] => store.liveSessionRows({ all }).sessions.map((session) => session.id).sort();
+  const ids = (all: boolean): string[] => store.live.rows({ all }).sessions.map((session) => session.id).sort();
   expect(ids(false)).toEqual(["session_aaaa"]);
   // The wide answer adds the settled one; archived is in neither.
   expect(ids(true)).toEqual(["session_aaaa", "session_bbbb"]);
-  expect(store.liveSessionRows().settledCount).toBe(1);
+  expect(store.live.rows().settledCount).toBe(1);
 });
 
 test("the row carries the folded activity, so a blocked session is decided without its queue", () => {
@@ -67,7 +67,7 @@ test("the row carries the folded activity, so a blocked session is decided witho
   store.intake.submitTurn("session_aaaa", { runId: "run_one", input: "hello" });
   store.claims.claimNextTurn("worker_one");
 
-  const [row] = store.liveSessionRows().sessions;
+  const [row] = store.live.rows().sessions;
   expect(row?.id).toBe("session_aaaa");
   // Claimed, not yet running: the fold calls that `queued`, and a queued session
   // is one `isShelved` refuses to take — which is the decision the row now makes.
@@ -80,7 +80,7 @@ test("a metadata-only write carries the folded fields over rather than re-readin
   store.intake.submitTurn("session_aaaa", { runId: "run_one", input: "hello" });
   store.turnLifecycle.stopTurn("session_aaaa", "run_one");
 
-  const folded = store.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
+  const folded = store.live.rows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
   expect(folded?.lastTurnSequence).toBe(1);
 
   /**
@@ -90,7 +90,7 @@ test("a metadata-only write carries the folded fields over rather than re-readin
    * sequence is one the unread rule can never mark read.
    */
   store.lifecycle.updateSession("session_aaaa", { title: "renamed" });
-  const after = store.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
+  const after = store.live.rows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
   expect(after?.title).toBe("renamed");
   expect(after?.lastTurnSequence).toBe(folded?.lastTurnSequence);
   expect(after?.lastTurnEndedAt).toBe(folded?.lastTurnEndedAt);
@@ -107,7 +107,7 @@ test("a session deleted takes its row with it, and the next open finds no orphan
   // The backfill on open reconciles: nothing to build, nothing to drop.
   const reopened = indexed(home);
   expect(reopened.sessionIndexBackfill).toEqual({ built: 0, removed: 0 });
-  expect(reopened.liveSessionRows({ all: true }).sessions.map((session) => session.id)).not.toContain("session_aaaa");
+  expect(reopened.live.rows({ all: true }).sessions.map((session) => session.id)).not.toContain("session_aaaa");
 });
 
 test("the backfill builds the rows a binary without the index left behind", async () => {
@@ -130,21 +130,21 @@ test("the backfill builds the rows a binary without the index left behind", asyn
 
   const reopened = indexed(home);
   expect(reopened.sessionIndexBackfill).toEqual({ built: 3, removed: 1 });
-  expect(reopened.liveSessionRows().sessions.map((session) => session.id)).toEqual(["session_aaaa"]);
-  expect(reopened.liveSessionRows().settledCount).toBe(1);
+  expect(reopened.live.rows().sessions.map((session) => session.id)).toEqual(["session_aaaa"]);
+  expect(reopened.live.rows().settledCount).toBe(1);
 });
 
 test("a command that throws leaves neither the document nor the row", () => {
   const store = indexed();
   seed(store);
-  const before = store.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
+  const before = store.live.rows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
 
   expect(() => store.executeCommand("deliberate failure", () => {
     store.lifecycle.updateSession("session_aaaa", { title: "written inside a doomed command" });
     throw new Error("rolled back");
   })).toThrow("rolled back");
 
-  const after = store.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
+  const after = store.live.rows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
   expect(after?.title).toBe(before?.title);
   expect(after?.updatedAt).toBe(before?.updatedAt);
 });
@@ -155,28 +155,28 @@ test("the cursor moves for a session on the list and not for one on the shelf", 
 
   // A write to the pinned-settled session: it is not in the default answer, so
   // the default cursor must not move — and the wide one must.
-  const listBefore = store.sessionsRevision();
-  const allBefore = store.sessionsRevision({ all: true });
+  const listBefore = store.live.revision();
+  const allBefore = store.live.revision({ all: true });
   store.lifecycle.updateSession("session_bbbb", { title: "renamed on the shelf" });
-  expect(store.sessionsRevision()).toBe(listBefore);
-  expect(store.sessionsRevision({ all: true })).toBeGreaterThan(allBefore);
+  expect(store.live.revision()).toBe(listBefore);
+  expect(store.live.revision({ all: true })).toBeGreaterThan(allBefore);
 
   // A write to the live one moves both.
-  const listNow = store.sessionsRevision();
+  const listNow = store.live.revision();
   store.lifecycle.updateSession("session_aaaa", { title: "renamed on the list" });
-  expect(store.sessionsRevision()).toBeGreaterThan(listNow);
+  expect(store.live.revision()).toBeGreaterThan(listNow);
 });
 
 test("crossing between the list and the shelf moves every reader's cursor", () => {
   const store = indexed();
   seed(store);
-  const before = store.sessionsRevision();
+  const before = store.live.revision();
   // `settledCount` rides the DEFAULT answer, so a row leaving the list changes
   // that answer even though the row itself is no longer in it.
   store.lifecycle.updateSession("session_aaaa", { settledOverride: "settled" });
-  expect(store.sessionsRevision()).toBeGreaterThan(before);
-  expect(store.liveSessionRows().sessions).toHaveLength(0);
-  expect(store.liveSessionRows().settledCount).toBe(2);
+  expect(store.live.revision()).toBeGreaterThan(before);
+  expect(store.live.rows().sessions).toHaveLength(0);
+  expect(store.live.rows().settledCount).toBe(2);
 });
 
 /**
@@ -214,14 +214,14 @@ test("the aggregate and the list it replaces name the same newest project", () =
   store.lifecycle.archiveSession("session_cccc");
 
   // The fold `composerProject` makes: the newest project wins.
-  const activity = store.projectActivity();
+  const activity = store.live.projectActivity();
   expect(activity.map((entry) => entry.projectId).sort()).toEqual(["project_busy", "project_quiet"]);
   expect([...activity].sort((left, right) => right.updatedAt - left.updatedAt)[0]!.projectId).toBe("project_busy");
 
   // AND IT MATCHES THE WIDE LIST IT REPLACES, folded the way the front door
   // folded it. This is the assertion that would catch a population drift.
   const fromRows = new Map<string, number>();
-  for (const row of store.liveSessionRows({ all: true }).sessions) {
+  for (const row of store.live.rows({ all: true }).sessions) {
     if (!row.projectId) continue;
     if (row.updatedAt > (fromRows.get(row.projectId) ?? 0)) fromRows.set(row.projectId, row.updatedAt);
   }
@@ -243,16 +243,16 @@ test("a project whose sessions are all archived is absent from the aggregate", (
   store.lifecycle.createSession({ id: "session_aaaa", projectId: "project_done", title: "finished" });
   store.lifecycle.createSession({ id: "session_bbbb", projectId: "project_live", title: "going" });
 
-  expect(store.projectActivity().map((entry) => entry.projectId).sort()).toEqual(["project_done", "project_live"]);
+  expect(store.live.projectActivity().map((entry) => entry.projectId).sort()).toEqual(["project_done", "project_live"]);
   store.lifecycle.archiveSession("session_aaaa");
-  expect(store.projectActivity().map((entry) => entry.projectId)).toEqual(["project_live"]);
+  expect(store.live.projectActivity().map((entry) => entry.projectId)).toEqual(["project_live"]);
 
   // A SETTLED session still votes, which is the other half of the rule: the
   // shelf is a reading state, not an ending. This is the distinction that made
   // `?all=1` the right ask before and makes `archived = 0` the right filter now.
   store.lifecycle.updateSession("session_bbbb", { settledOverride: "settled" });
-  expect(store.liveSessionRows().sessions).toHaveLength(0);
-  expect(store.projectActivity().map((entry) => entry.projectId)).toEqual(["project_live"]);
+  expect(store.live.rows().sessions).toHaveLength(0);
+  expect(store.live.projectActivity().map((entry) => entry.projectId)).toEqual(["project_live"]);
 });
 
 /**
@@ -274,8 +274,8 @@ test("the aggregate is a fraction of the wide list's payload", () => {
     });
   }
 
-  const wide = Buffer.byteLength(JSON.stringify(store.liveSessionRows({ all: true }).sessions));
-  const narrow = Buffer.byteLength(JSON.stringify(store.projectActivity()));
+  const wide = Buffer.byteLength(JSON.stringify(store.live.rows({ all: true }).sessions));
+  const narrow = Buffer.byteLength(JSON.stringify(store.live.projectActivity()));
 
   // 40 sessions, 2 projects. The wide answer grows with the first number and
   // this one with the second, which is the whole point — so the ratio is the
@@ -283,23 +283,23 @@ test("the aggregate is a fraction of the wide list's payload", () => {
   expect(narrow).toBeLessThan(wide / 20);
   // And both describe the same two projects, so this is not a comparison
   // against an empty answer.
-  expect(store.projectActivity()).toHaveLength(2);
-  expect(store.liveSessionRows({ all: true }).sessions).toHaveLength(40);
+  expect(store.live.projectActivity()).toHaveLength(2);
+  expect(store.live.rows({ all: true }).sessions).toHaveLength(40);
 });
 
 test("a document the live answer never reads moves no cursor at all", () => {
   const store = indexed();
   seed(store);
-  const before = store.sessionsRevision({ all: true });
+  const before = store.live.revision({ all: true });
   /**
    * THE NARROWING THIS ISSUE IS ABOUT. An OAuth poll, a usage refresh, a
    * provider secret — none appear in `/v2/sessions/live`, and each used to make
    * every connected rail re-read all 291 sessions.
    */
   store.settings.setTextGen({ titles: false });
-  expect(store.sessionsRevision({ all: true })).toBe(before);
+  expect(store.live.revision({ all: true })).toBe(before);
 
   // But the three it DOES read still move it.
   store.setInboxPolicy({ autoSettleAfterHours: 12 });
-  expect(store.sessionsRevision()).toBeGreaterThan(before);
+  expect(store.live.revision()).toBeGreaterThan(before);
 });

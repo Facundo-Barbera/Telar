@@ -30,7 +30,7 @@ describe("subscribing and answering", () => {
       store.turnLifecycle.completeTurn(target.id, runId, token, { text: "done" });
     }
     expect(store.subscriptions.subscriptionsFor(host.id)).toHaveLength(0);
-    expect(store.turns(host.id)).toHaveLength(1);
+    expect(store.queries.turns(host.id)).toHaveLength(1);
   });
 
   test("sessionIds subscribes a cohort, which is listed and removed by its id", async () => {
@@ -66,11 +66,11 @@ describe("subscribing and answering", () => {
     const token = store.claims.claimTurn(peer.id, "worker_one")!.claim!.token;
     store.turnLifecycle.markRunning(peer.id, "run_peer", token);
     store.turnLifecycle.completeTurn(peer.id, "run_peer", token, { text: "done" });
-    expect(store.turns(host.id)).toHaveLength(0);
+    expect(store.queries.turns(host.id)).toHaveLength(0);
     store.intake.submitTurn(host.id, { runId: "run_human", input: "continue" });
     expect(store.records.get(host.id).agentMessagesBlocked).toBeUndefined();
     expect((await call(tools, "sessions_send", { intent: "task", sessionId: host.id, input: "fresh report" })).isError).not.toBe(true);
-    expect(store.turns(host.id)).toHaveLength(2);
+    expect(store.queries.turns(host.id)).toHaveLength(2);
   });
 
   test("subscribe, list, unsubscribe — a round trip that records nothing on either session", async () => {

@@ -84,7 +84,7 @@ test("a turn has a row when it is ACCEPTED, and the row is right when it ENDS", 
   expect(ended.answer.endsWith("…")).toBe(true);
   expect(ended.endedAt).toBeGreaterThan(0);
 
-  const stored = summariseTurn(store.turns("session_0")[0]!, store.items("session_0"));
+  const stored = summariseTurn(store.queries.turns("session_0")[0]!, store.queries.items("session_0"));
   expect(stored.itemTitles).toEqual(["Read state.ts"]);
   expect(stored.answerHead).toHaveLength(ANSWER_HEAD_CHARS);
 });
@@ -244,7 +244,7 @@ test("outline does not fold the journal: a 60,000-event session costs what a sma
   ]);
   store.turnLifecycle.completeTurn("session_0", "run_big", token, { text: "the big answer" });
 
-  expect(store.eventCursor("session_0")).toBeGreaterThan(60_000);
+  expect(store.queries.eventCursor("session_0")).toBeGreaterThan(60_000);
 
   const big = Bun.nanoseconds();
   const outline = store.queries.turnOutline("session_0", { limit: 20 });
@@ -330,8 +330,8 @@ test("a wake's outline row is its summary line, not the machine label on `input`
   store.turnLifecycle.markRunning("session_child", "run_child", token);
   store.turnLifecycle.completeTurn("session_child", "run_child", token, { text: "all done" });
 
-  const wake = store.turns("session_host")[0]!;
-  const row = summariseTurn(wake, store.items("session_host"));
+  const wake = store.queries.turns("session_host")[0]!;
+  const row = summariseTurn(wake, store.queries.items("session_host"));
   expect(row.input).toStartWith("[wake: completed]");
   expect(row.input).not.toContain("[notification:");
   expect(row.input.length).toBeLessThanOrEqual(INPUT_LINE_CHARS);

@@ -41,7 +41,7 @@ test("a browser draft survives reload without a turn or worktree and materialize
   store.lifecycle.updateSession(draft.id, { runtimeMode: "approval-required", model: { instanceId: draft.providerInstanceId, model: "fixture-model", effort: "medium" } });
   expect(draft.workspace.mode).toBe("local");
   expect(calls.some((args) => args[0] === "worktree")).toBe(false);
-  expect(store.turns(draft.id)).toHaveLength(0);
+  expect(store.queries.turns(draft.id)).toHaveLength(0);
   expect(store.lifecycle.createSession({ id: draft.id, projectId: "project_draft", draft: true }).id).toBe(draft.id);
   const reopened = new EngineStore(path.join(root, "engine"), () => 200, { git });
   expect(reopened.records.get(draft.id)).toMatchObject({ draft: { baseRef: "main", branchName: "browser-work" }, driver: "codex", runtimeMode: "approval-required", model: { model: "fixture-model", effort: "medium" } });
@@ -56,7 +56,7 @@ test("a browser draft survives reload without a turn or worktree and materialize
   await settled(reopened, draft.id);
   expect(reopened.records.get(draft.id).preparation).toBeUndefined();
   expect(calls.filter((args) => args[0] === "worktree" && args[1] === "add")).toHaveLength(1);
-  expect(reopened.turns(draft.id)).toHaveLength(1);
+  expect(reopened.queries.turns(draft.id)).toHaveLength(1);
 });
 
 test("a failed first-send workspace allocation lands on the row, and still runs nothing", async () => {
@@ -83,7 +83,7 @@ test("a failed first-send workspace allocation lands on the row, and still runs 
   expect(session.preparation?.state).toBe("failed");
   expect(session.preparation?.error).toContain("fixture refused");
   expect(session.draft).toBeUndefined();
-  expect(store.turns(draft.id)).toHaveLength(1);
+  expect(store.queries.turns(draft.id)).toHaveLength(1);
   expect(store.claims.claimTurn(draft.id, "worker_one")).toBeUndefined();
 });
 
@@ -111,5 +111,5 @@ test("an archived or compact-only draft cannot allocate a workspace or start an 
   store.lifecycle.archiveSession(draft.id);
   expect(() => store.intake.submitTurn(draft.id, { runId: "run_archived", input: "Start" })).toThrow(/archived/);
   expect(calls.some((args) => args[0] === "worktree")).toBe(false);
-  expect(store.turns(draft.id)).toHaveLength(0);
+  expect(store.queries.turns(draft.id)).toHaveLength(0);
 });

@@ -5,18 +5,9 @@
 import { ExecutionStore, type ExecutionHousekeeping } from "./platform/db/execution-store";
 import fs from "node:fs";
 import {
-  countsAsActivity,
-  isBackgroundWork,
-  assignmentsOf,
-  type AssignmentTurn,
-  type SessionAssignment,
-  type LiveSessionRow,
   type InboxPolicy,
-  type SidebarLayout,
   type EngineEvent,
-  type Item,
   type ProviderDriverKind,
-  type Task,
   type Project,
   type RequestKind,
   type Session,
@@ -34,8 +25,8 @@ import { McpOAuthStore, McpServers } from "./domains/agent-tools";
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli } from "./domains/providers";
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources } from "./domains/usage";
-import { SessionQueries, SessionSettler, createSessionModules, SessionAttachments, workspaceRootOf, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, RequestGate } from "./domains/sessions";
-import { requireRunningClaimFromQueue, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake } from "./domains/turns";
+import { SessionQueries, LiveSessions, SessionSettler, createSessionModules, SessionAttachments, workspaceRootOf, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, RequestGate } from "./domains/sessions";
+import { requireRunningClaimFromQueue, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -51,70 +42,10 @@ import { derivedBranchFor, prepareSessionWorktree, WorktreeMaintenance, createWo
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { backfillTurnSummaries, CheckoutSizes, CleanupStore, copyStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
-import { type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
+import { type VolumeDeps } from "./platform/fs/volumes";
 
 import { statePaths, type EngineStatePaths } from "./platform/fs/state-paths";
 export { EngineStateError };
-
-/**
- * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
- *
- * SPELLED AS A PICK RATHER THAN A DELETE-LIST, so a field added to `Session`
- * tomorrow does not silently join every polling answer: growing the wire has to
- * be a decision somebody writes down here. Absent keys are left absent rather
- * than set to `undefined`, because `JSON.stringify` drops the one and the point
- * of this function is the bytes.
- */
-const liveRow = (session: Session): LiveSessionRow => ({
-  id: session.id,
-  ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
-  title: session.title,
-  state: session.state,
-  createdAt: session.createdAt,
-  updatedAt: session.updatedAt,
-  driver: session.driver,
-  ...(session.model === undefined ? {} : { model: session.model }),
-  // Not a rail's field — the `sessions` toolkit's, which lists off this route
-  // from the out-of-process worker and names each row's workspace mode.
-  envMode: session.envMode,
-  // `baseRef` is the commit a checkout was cut from: one review surface's
-  // question, and 40 bytes on every row of every poll otherwise.
-  workspace:
-    session.workspace.mode === "worktree"
-      ? { mode: "worktree", path: session.workspace.path, branch: session.workspace.branch }
-      : session.workspace.mode === "none"
-        ? // A session with no directory says so on the row, rather than sending a
-          // path-shaped answer a rail would draw an "open in Finder" button from.
-          { mode: "none" }
-        : { mode: "local", path: session.workspace.path },
-  // ON THE ROW because it is a row's question: the rail is where a person
-  // watches a session they just opened, and "the checkout is still being made"
-  // is the only thing worth saying about it in those seconds. Absent on every
-  // ready session, which is almost all of them — see `SessionPreparation`.
-  ...(session.preparation === undefined ? {} : { preparation: session.preparation }),
-  ...(session.draft === undefined ? {} : { draft: session.draft }),
-  ...(session.usage === undefined ? {} : { usage: session.usage }),
-  activity: session.activity,
-  ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
-  ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
-  ...(session.lastTurnFailed === undefined ? {} : { lastTurnFailed: session.lastTurnFailed }),
-  ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
-  ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
-  ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
-  ...(session.settledOverride === undefined ? {} : { settledOverride: session.settledOverride }),
-  ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
-  ...(session.settledBy === undefined ? {} : { settledBy: session.settledBy }),
-  // A settled row's hover says why its terminals are gone (#883).
-  ...(session.terminalsClosed === undefined ? {} : { terminalsClosed: session.terminalsClosed }),
-  ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
-  ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
-  // ON THE WIRE DELIBERATELY, unlike `title`/`branch` on the index row: this is
-  // the one field a rail needs in order to draw the thing #490 asked for. A dot
-  // that says "this woke while you were away" cannot be derived from the other
-  // three — deriving it is what made every cockpit decide it separately.
-  ...(session.wokeAt === undefined ? {} : { wokeAt: session.wokeAt }),
-  ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
-});
 
 /**
  * One claim a Stop just killed — the same triple `cancellationsForWorker`
@@ -164,6 +95,7 @@ export class EngineStore {
   private readonly remounts: ProjectRemounts;
   readonly attachments: SessionAttachments;
   readonly queries: SessionQueries;
+  readonly live: LiveSessions;
   readonly intake: TurnIntake;
   readonly turnLifecycle: TurnLifecycle;
   readonly ingest: TurnIngest;
@@ -207,10 +139,6 @@ export class EngineStore {
   }
   private writeDocument(file: string, value: unknown, mode?: number): void {
     this.kernel.writeDocument(file, value, mode);
-  }
-
-  sessionsRevision(options: { all?: boolean } = {}): number {
-    return this.sessionIndex.revision(options.all === true);
   }
 
   /**
@@ -326,7 +254,7 @@ export class EngineStore {
       setupRunning: (id) => this.setups.isRunning(id),
       startSetup: (id, worktree) => this.startWorktreeSetup(id, worktree),
       openTerminals: (id) => this.sessionTerminals.openCount(id),
-      hasLiveBackgroundWork: (id) => this.hasLiveBackgroundWork(id),
+      hasLiveBackgroundWork: (id) => this.queries.hasLiveBackgroundWork(id),
       autoSettleAfterHours: () => this.settings.inbox().autoSettleAfterHours,
       archiveSession: (id, options) => this.lifecycle.archiveSession(id, options),
     });
@@ -514,13 +442,22 @@ export class EngineStore {
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
       activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes, attachments: this.attachments, queries: this.queries,
     } = createSessionModules(this.kernel, {
-      readQueue: (sessionId) => this.readQueue(sessionId),
-      readEvents: (sessionId) => this.readEvents(sessionId),
       subscriptionsOf: (sessionId) => this.subscriptions.subscriptionsOf(sessionId),
       nextWake: (sessionId) => this.schedules.nextWake(sessionId),
       autoSettleAfterHours: () => this.settings.inbox().autoSettleAfterHours,
       ...(options.onQueueChanged ? { onQueueChanged: options.onQueueChanged } : {}),
     }));
+    this.live = new LiveSessions(this.kernel, {
+      records: this.records,
+      activity: this.activity,
+      index: this.sessionIndex,
+      getProject: (id) => this.projectRegistry.get(id),
+      projects: () => this.projectRegistry.read().projects,
+      availability: (project) => this.projectProbes.availability(project),
+      inbox: () => this.settings.inbox(),
+      sidebarLayout: () => this.settings.sidebarLayout(),
+      terminalCounts: (ids) => this.sessionTerminals.countsFor(ids),
+    });
     this.subscriptions = this.createSubscriptions();
     this.lifecycle = this.createLifecycle();
     this.intake = this.createIntake();
@@ -590,7 +527,7 @@ export class EngineStore {
     this.worktrees = this.worktreeMaintenance();
     ({ dataScienceOps: this.dataScienceOps, latexOps: this.latexOps } = this.createPluginOps());
     this.dictation = new Dictation(this.paths.root, {
-      liveSessions: () => this.liveSessionRows().sessions,
+      liveSessions: () => this.live.rows().sessions,
       projects: () => this.projectRegistry.read().projects,
     });
     this.adoption = new ConversationAdoption(this.records, this.sessionItems, {
@@ -736,7 +673,7 @@ export class EngineStore {
       probes: projectProbes,
       volumes: this.volumes,
       sessionsOf: (projectId) => this.records.read().filter((session) => session.projectId === projectId).map((session) => session.id),
-      hasWorkInFlight: (sessionId) => this.sessionHasWorkInFlight(sessionId),
+      hasWorkInFlight: (sessionId) => this.queries.hasWorkInFlight(sessionId),
     });
     const catalogues = new ModelCatalogues(this.kernel, {
       readModels: options.models ?? readModelCatalogue,
@@ -832,27 +769,6 @@ export class EngineStore {
   }
 
   /**
-   * Whether a session still has something running, or something that might be.
-   *
-   * The turn states here are the NON-TERMINAL ones plus `ambiguous`; see
-   * `unregisterProject` for why "we do not know" is counted as busy. Live
-   * backgrounded tasks are checked separately because they are exactly the
-   * work a turn-state check misses: `TaskKind` says a backgrounded task
-   * continues after the turn that started it settles.
-   */
-  private sessionHasWorkInFlight(sessionId: string): boolean {
-    const unsettled: ReadonlySet<Turn["state"]> = new Set<Turn["state"]>(["queued", "claimed", "running", "steering", "ambiguous"]);
-    if (this.turns(sessionId).some((turn) => unsettled.has(turn.state))) return true;
-    return [...this.sessionTasks.read(sessionId).values()].some(isLiveTask);
-  }
-
-  /** Background work still moving: `livenessOf`'s "monitoring" half, asked of
-   *  the tasks directly by callers that must not trust a stale index row. */
-  private hasLiveBackgroundWork(sessionId: string): boolean {
-    return [...this.sessionTasks.read(sessionId).values()].some((task) => countsAsActivity(task) && isBackgroundWork(task));
-  }
-
-  /**
    * Refuses new work (a session, a turn or wake, a settings change) on a removed project or an unplugged
    * drive. Reads stay open, so a removed project's history still answers.
    */
@@ -873,57 +789,6 @@ export class EngineStore {
    * plugin with per-session state gives it back without the store naming it.
    */
   private pluginRelease: ((sessionId: string, reason: string) => void) | undefined;
-
-  /**
-   * Every assignment this session holds, folded over its WHOLE queue.
-   *
-   * Authoritative over what the engine STILL HOLDS: a client's transcript may be
-   * a page, and a fold over a page cannot tell "the joined run finished" from
-   * "the joined run is not in this window". The engine has every turn it has
-   * kept, so it answers once and the answer rides the snapshot.
-   *
-   * `unresolved` can still occur here, and saying otherwise would be a lie:
-   * journal retention or a deleted turn can remove a carrier the engine no
-   * longer has. That is genuinely unknown, and reporting it as unknown is the
-   * honest answer — not "running", and not a guess at an outcome.
-   */
-  sessionAssignments(sessionId: string): SessionAssignment[] {
-    // A PLAIN cast, not `as unknown as`: the structural type names fields a
-    // `Turn` really has, so a rename that breaks the fold is a type error here
-    // rather than an `undefined` on every assignment (issue #380).
-    return assignmentsOf(this.readQueue(sessionId).turns as AssignmentTurn[]);
-  }
-
-  /**
-   * CONTINUE INDEPENDENTLY. Stops PRESENTING an assignment as active without
-   * deleting anything: the task turn, its outcome and the session's
-   * `startedFrom` all remain, and nothing running is stopped.
-   *
-   * Marks every outstanding task turn rather than taking a run id, because
-   * "continue independently" is a statement about the session's relationship to
-   * its coordinators, not about one message.
-   */
-  detachAssignments(sessionId: string, runId?: string): Turn[] {
-    const session = this.records.get(sessionId);
-    const at = this.now();
-    const queue = this.readQueue(session.id);
-    const detached: Turn[] = [];
-    for (const turn of queue.turns) {
-      if (turn.origin !== "session" || turn.agentIntent !== "task") continue;
-      if (runId && turn.runId !== runId) continue;
-      if (turn.assignmentDetachedAt !== undefined) continue;
-      turn.assignmentDetachedAt = at;
-      turn.updatedAt = at;
-      detached.push(structuredClone(turn));
-    }
-    if (detached.length > 0) {
-      this.writeQueue(session.id, queue);
-      // No `turn.updated` kind exists; the cockpit refolds from the snapshot on
-      // `session.updated`, which is what a detach changes for a reader.
-      this.appendEvent(sessionId, { type: "session.updated", session });
-    }
-    return detached;
-  }
 
   attachPluginRelease(release: (sessionId: string, reason: string) => void): void {
     this.pluginRelease = release;
@@ -1056,95 +921,6 @@ export class EngineStore {
       // Refused by `work` below, in its own words.
     }
     return root === undefined ? work() : this.withPrefetchedGit(root, EngineStore.cutQuestions(baseRef), work);
-  }
-
-  listSessions(projectId: string): Session[] {
-    this.projectRegistry.get(projectId);
-    // By the (project_id, updated_at) index, so only this project's documents are parsed.
-    const rows = this.kernel.executionStore.projectSessionRows(projectId);
-    return this.records.read(new Set(rows.map((row) => row.id)));
-  }
-
-  /** Each project's latest activity, folded off the index rather than the documents. Active sessions only,
-   *  matching the list it replaced, so a project whose sessions are all archived scores nothing. */
-  projectActivity(): { projectId: string; updatedAt: number }[] {
-    return this.kernel.executionStore.projectActivity();
-  }
-
-  /**
-   * Every active session across projects in one read, with the registry and the sidebar
-   * layout beside it: every rail polls this, so a drag on one device reaches the others.
-   */
-  liveSessions(only?: Set<string>): {
-    sessions: Session[];
-    // The rail's "drive not connected" badge, so it needs no second fetch per pass.
-    projects: Array<{ id: string; name: string; availability?: ProjectAvailability }>;
-    assignments: Record<string, SessionAssignment[]>;
-    layout: SidebarLayout;
-  } {
-    const projects = this.projectRegistry.read().projects;
-    // One pass over the queues answers activity and assignments, not a history fetch per row.
-    const { sessions, assignments } = this.activity.foldLive(only);
-    return {
-      sessions,
-      projects: projects.map((project) => ({
-        id: project.id,
-        name: project.name,
-        // Removed projects are in `projects` here (it is the raw registry), and
-        // a put-away checkout is never probed — see `listProjects`.
-        ...(project.removedAt === undefined ? { availability: this.projectProbes.availability(project) } : {}),
-      })),
-      assignments,
-      layout: this.settings.sidebarLayout(),
-    };
-  }
-
-  /**
-   * `liveSessions` projected to what a rail draws (`LiveSessionRow`), with the settling window.
-   * Unsettled rows only unless `all`; the shelf rule is the clients' own `isShelved`.
-   */
-  liveSessionRows(options: { all?: boolean } = {}): {
-    sessions: LiveSessionRow[];
-    projects: Array<{ id: string; name: string }>;
-    assignments: Record<string, SessionAssignment[]>;
-    layout: SidebarLayout;
-    inbox: InboxPolicy;
-    revision: number;
-    settledCount: number;
-    /** Open terminals per session in this answer, whoever opened them (#883). */
-    terminals: Record<string, number>;
-  } {
-    // Read first, so a write that lands mid-fold is reported by the next read rather than swallowed.
-    const revision = this.sessionsRevision({ all: options.all === true });
-    const inbox = this.settings.inbox();
-    // Every conversation settles by the same rule; nothing is exempted.
-    const indexed = this.activity.shelf(inbox, options.all === true);
-    // Documents are read only for rows that survived the partition; activity is re-derived
-    // from them rather than trusted from a possibly stale row.
-    const full = this.liveSessions(indexed.chosen);
-    return {
-      ...full,
-      sessions: full.sessions.map(liveRow),
-      inbox,
-      revision,
-      settledCount: indexed.settledCount,
-      terminals: this.sessionTerminals.countsFor(full.sessions.map((session) => session.id)),
-    };
-  }
-
-  turns(sessionId: string): Turn[] {
-    this.records.require(sessionId);
-    return structuredClone(this.readQueue(sessionId).turns);
-  }
-
-  items(sessionId: string): Item[] {
-    this.records.require(sessionId);
-    return structuredClone([...this.sessionItems.read(sessionId).values()]);
-  }
-
-  tasks(sessionId: string): Task[] {
-    this.records.require(sessionId);
-    return structuredClone([...this.sessionTasks.read(sessionId).values()]);
   }
 
   private createClaims(): TurnClaims {
@@ -1292,35 +1068,6 @@ export class EngineStore {
 
   private discardQueuedWakes(subscriberId: string, targetSessionId?: string): number {
     return this.wakes.discardQueuedWakes(subscriberId, targetSessionId);
-  }
-
-  /**
-   * The journal above `after`, at most `limit` rows of it — issue #494.
-   *
-   * `limit` IS THE CALLER'S PAGE SIZE, and absent means the whole tail: the
-   * route bounds what it serialises over HTTP, while an in-process fold that
-   * genuinely needs the run (the export, `openItemPrefix`) asks without one and
-   * is unchanged. The cursor check stays here rather than at any caller's seam
-   * because this method owns it — see the sessions socket's capability.
-   *
-   * NO OFFSET, EVER. The window is keyed on the event id, so a page is the same
-   * page whether or not rows were appended while the caller was reading, and a
-   * client that resumes from the last id it saw can neither skip nor repeat.
-   */
-  readEvents(sessionId: string, after = 0, limit?: number): EngineEvent[] {
-    this.records.require(sessionId);
-    if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
-    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) throw new EngineStateError("invalid_request", "event limit is invalid");
-    return this.kernel.executionStore.events(sessionId, after, limit);
-  }
-
-  /**
-   * The id of the last event on the journal — "now", for a client that wants
-   * to tail from the snapshot it just read rather than replay from zero.
-   */
-  eventCursor(sessionId: string): number {
-    this.records.require(sessionId);
-    return this.kernel.executionStore.cursor(sessionId);
   }
 
   private scanQueue(sessionId: string): SessionQueue {

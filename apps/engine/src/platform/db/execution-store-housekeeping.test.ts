@@ -51,13 +51,13 @@ test("a restart retires the claim on a stopped turn without disturbing the sessi
   store.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
   store.claims.claimTurn("session_one", "worker_one");
   store.turnLifecycle.stopSession("session_one", "user");
-  expect(store.turns("session_one")[0]?.claim?.workerId).toBe("worker_one");
+  expect(store.queries.turns("session_one")[0]?.claim?.workerId).toBe("worker_one");
   const before = store.records.get("session_one").updatedAt;
   store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
 
   const reopened = new EngineStore(home, Date.now); stores.push(reopened);
   reopened.recovery.recover(); // what the daemon runs at boot
-  const turn = reopened.turns("session_one")[0]!;
+  const turn = reopened.queries.turns("session_one")[0]!;
   expect(turn.claim).toBeUndefined();
   // Only the token went. The turn still says what it was and how it ended,
   // and nothing about the session moved.

@@ -17,7 +17,7 @@ describe("sessions_read is bounded", () => {
       await call(tools, "sessions_send", { intent: "task", sessionId: id, input: `message ${lap}` });
       store.turnLifecycle.stopTurn(id);
     }
-    const whole = store.readEvents(id, 0);
+    const whole = store.queries.readEvents(id, 0);
     expect(whole.length).toBeGreaterThan(50);
 
     const first = await call(tools, "sessions_read", { sessionId: id, mode: "events", from: "start" });
@@ -51,7 +51,7 @@ describe("sessions_read is bounded", () => {
       await call(tools, "sessions_send", { intent: "task", sessionId: id, input: `message ${lap}` });
       store.turnLifecycle.stopTurn(id);
     }
-    const whole = store.readEvents(id, 0);
+    const whole = store.queries.readEvents(id, 0);
     const latest = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
     const page = latest.json!.events as Array<{ id: number }>;
     expect(page.length).toBeGreaterThan(0);
@@ -71,7 +71,7 @@ describe("sessions_read is bounded", () => {
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one" });
     const read = await call(tools, "sessions_read", { sessionId: id, mode: "events", verbose: true });
     expect(read.json!.earlier).toBe(false);
-    expect((read.json!.events as Array<{ id: number }>).map((event) => event.id)).toEqual(store.readEvents(id, 0).map((event) => event.id));
+    expect((read.json!.events as Array<{ id: number }>).map((event) => event.id)).toEqual(store.queries.readEvents(id, 0).map((event) => event.id));
   });
 
   test("meter rows and auto-approved requests are dropped, counted, and restored by verbose", async () => {
@@ -79,7 +79,7 @@ describe("sessions_read is bounded", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "work" });
-    const run = store.turns(id).at(-1)!.runId;
+    const run = store.queries.turns(id).at(-1)!.runId;
     const token = store.claims.claimTurn(id, "worker_budget")!.claim!.token;
     store.turnLifecycle.markRunning(id, run, token);
     store.ingest.ingestObservations(id, run, token, [
@@ -128,7 +128,7 @@ describe("sessions_read is bounded", () => {
         ...capabilityOver(store),
         status: async (sessionId, options) => {
           asked.push(options?.recent);
-          if (options?.recent === undefined) return { session: store.records.get(sessionId), turns: store.turns(sessionId) };
+          if (options?.recent === undefined) return { session: store.records.get(sessionId), turns: store.queries.turns(sessionId) };
           const window = store.queries.snapshotWindow(sessionId, { limit: options.recent });
           return { session: store.records.get(sessionId), turns: window.turns, turnCount: window.page.total, pendingNotifications: store.wakes.pendingNotifications(sessionId) };
         },
@@ -141,7 +141,7 @@ describe("sessions_read is bounded", () => {
       store.turnLifecycle.stopTurn(id);
     }
     await call(whole, "sessions_send", { intent: "task", sessionId: id, input: "still queued" });
-    const live = store.turns(id).at(-1)!.runId;
+    const live = store.queries.turns(id).at(-1)!.runId;
 
     for (const [name, args] of [
       ["sessions_status", { sessionId: id, turns: 3 }],
@@ -179,7 +179,7 @@ describe("sessions_read is bounded", () => {
     expect((raw.json!.events as unknown[]).length).toBeGreaterThan(0);
     expect(bare.text.length).toBeLessThan(raw.text.length);
 
-    const runId = store.turns(id).at(-1)!.runId;
+    const runId = store.queries.turns(id).at(-1)!.runId;
     const scoped = await call(tools, "sessions_read", { sessionId: id, runId });
     expect(scoped.json!.mode).toBeUndefined();
     expect(scoped.json!.runId).toBe(runId);
@@ -327,7 +327,7 @@ describe("sessions_read is bounded", () => {
     }
     expect(pages).toBeGreaterThan(1);
     expect(more).toBe(false);
-    const all = store.readEvents(id, 0).filter((event) => event.runId === busy);
+    const all = store.queries.readEvents(id, 0).filter((event) => event.runId === busy);
     expect(events).toBe(all.length);
   });
 

@@ -105,19 +105,19 @@ test("the cursor is read before the rows, and the journal after them", () => {
   };
   const session = { id: "session_one" } as never;
   const stub: SessionBootstrapStore = {
-    eventCursor: () => record("cursor", 7),
     records: { get: () => record("session", session) },
-    turns: () => record("turns", []),
-    items: () => record("items", []),
-    tasks: () => record("tasks", []),
     queries: {
+      eventCursor: () => record("cursor", 7),
+      turns: () => record("turns", []),
+      items: () => record("items", []),
+      tasks: () => record("tasks", []),
+      assignments: () => record("assignments", []),
+      readEvents: (_id, after) => record(`events@${after}`, []),
       snapshotRequests: () => record("requests", []),
       snapshotWindow: () => record("window", { turns: [], items: [], tasks: [], requests: [], page: { before: null, more: false } }),
     },
     prefixes: { get: () => undefined },
-    sessionAssignments: () => record("assignments", []),
     subscriptions: { subscriptionsFor: () => record("subscriptions", []) },
-    readEvents: (_id, after) => record(`events@${after}`, []),
   };
 
   const payload = sessionBootstrap(stub, "session_one");
@@ -132,12 +132,14 @@ test("an open item's prefix is stamped with the cursor the journal resumes from"
   const open = { id: "item_1", runId: "run_1", sessionId: "session_one", status: "inProgress", startedAt: 1, detail: { type: "assistant_message", text: "" } };
   let askedThrough: number | undefined;
   const stub: SessionBootstrapStore = {
-    eventCursor: () => 42,
     records: { get: () => ({ id: "session_one" }) as never },
-    turns: () => [],
-    items: () => [open as never],
-    tasks: () => [],
     queries: {
+      eventCursor: () => 42,
+      turns: () => [],
+      items: () => [open as never],
+      tasks: () => [],
+      assignments: () => [],
+      readEvents: () => [],
       snapshotRequests: () => [],
       snapshotWindow: () => ({ turns: [], items: [], tasks: [], requests: [], page: { before: null, more: false } }),
     },
@@ -147,9 +149,7 @@ test("an open item's prefix is stamped with the cursor the journal resumes from"
         return { streamed: "half a repl", streamedThrough: 40 };
       },
     },
-    sessionAssignments: () => [],
     subscriptions: { subscriptionsFor: () => [] },
-    readEvents: () => [],
   };
 
   const payload = sessionBootstrap(stub, "session_one");

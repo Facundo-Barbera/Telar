@@ -53,9 +53,9 @@ export function sessionReadRoutes(store: EngineStore): Route[] {
         const raw = Number(query.get("after") ?? "0");
         const after = Number.isSafeInteger(raw) ? raw : 0;
         const limit = eventPageLimit(query.get("limit"));
-        const etag = sessionEventsETag(store.eventCursor(sessionId!), after, limit);
+        const etag = sessionEventsETag(store.queries.eventCursor(sessionId!), after, limit);
         if (matchesETag(request.headers["if-none-match"], etag)) return notModified(etag);
-        const read = store.readEvents(sessionId!, raw, limit + 1);
+        const read = store.queries.readEvents(sessionId!, raw, limit + 1);
         const events = read.length > limit ? read.slice(0, limit) : read;
         const cursor = events.at(-1)?.id ?? after;
         const more = read.length > limit;

@@ -131,12 +131,12 @@ const get = async (route: string): Promise<{ status: number; bytes: number; body
 describe("the fixture the numbers are taken on", () => {
   test(`is ${SESSIONS} sessions with a ${BIG_JOURNAL}-event journal on the largest`, () => {
     const store = daemon.store;
-    expect(store.listSessions(PROJECT).length).toBe(SESSIONS + 1); // the 300, plus the control
-    expect(store.eventCursor(BIG_SESSION)).toBeGreaterThanOrEqual(BIG_JOURNAL);
-    expect(store.eventCursor(CONTROL_SESSION)).toBeGreaterThanOrEqual(SMALL_JOURNAL);
+    expect(store.live.list(PROJECT).length).toBe(SESSIONS + 1); // the 300, plus the control
+    expect(store.queries.eventCursor(BIG_SESSION)).toBeGreaterThanOrEqual(BIG_JOURNAL);
+    expect(store.queries.eventCursor(CONTROL_SESSION)).toBeGreaterThanOrEqual(SMALL_JOURNAL);
     // The control is the SHORT end and must stay that way, or the comparison
     // below is being read backwards.
-    expect(store.eventCursor(CONTROL_SESSION)).toBeLessThan(store.eventCursor(BIG_SESSION) / 5);
+    expect(store.queries.eventCursor(CONTROL_SESSION)).toBeLessThan(store.queries.eventCursor(BIG_SESSION) / 5);
     // Turn for turn identical, which is what makes the journal the only
     // variable between the two readings.
     expect(store.queries.turnOutline(BIG_SESSION, { limit: 200 }).total).toBe(MEASURED_TURNS + 1);
@@ -467,8 +467,8 @@ describe("outline does not fold the journal", () => {
         bigMs: measure(() => store.queries.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
       },
       fold: {
-        smallMs: measure(() => foldOutline(store.readEvents(CONTROL_SESSION, 0), OUTLINE_LIMIT)),
-        bigMs: measure(() => foldOutline(store.readEvents(BIG_SESSION, 0), OUTLINE_LIMIT)),
+        smallMs: measure(() => foldOutline(store.queries.readEvents(CONTROL_SESSION, 0), OUTLINE_LIMIT)),
+        bigMs: measure(() => foldOutline(store.queries.readEvents(BIG_SESSION, 0), OUTLINE_LIMIT)),
       },
     };
   };
@@ -482,7 +482,7 @@ describe("outline does not fold the journal", () => {
   test("the fold control returns the outline's own rows", () => {
     const store = daemon.store;
     const projected = store.queries.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }).turns;
-    const folded = foldOutline(store.readEvents(BIG_SESSION, 0), OUTLINE_LIMIT).slice(0, projected.length);
+    const folded = foldOutline(store.queries.readEvents(BIG_SESSION, 0), OUTLINE_LIMIT).slice(0, projected.length);
     expect(folded.length).toBe(projected.length);
     expect(folded.length).toBeGreaterThan(0);
     // `endedAt` is excluded and nothing else is: the projection stamps it from
@@ -565,7 +565,7 @@ describe("the instrument can report a bad result", () => {
     };
     const slowed = (sessionId: string) => {
       const answer = store.queries.turnOutline(sessionId, { limit: OUTLINE_LIMIT });
-      foldOutline(store.readEvents(sessionId, 0), OUTLINE_LIMIT);
+      foldOutline(store.queries.readEvents(sessionId, 0), OUTLINE_LIMIT);
       return answer;
     };
     const planted: Shape = {

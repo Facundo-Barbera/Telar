@@ -47,7 +47,7 @@ function reopen(home: string, now: number) {
 }
 
 /** Turns in the session, which is the number every assertion here is about. */
-const turnCount = (store: EngineStore, sessionId = "session_one"): number => store.turns(sessionId).length;
+const turnCount = (store: EngineStore, sessionId = "session_one"): number => store.queries.turns(sessionId).length;
 
 test("A THREE-DAY GAP PRODUCES EXACTLY ONE TURN (#543)", () => {
   /**
@@ -129,7 +129,7 @@ test("a fired turn is a SCHEDULE-origin turn that names its row (#543)", () => {
   clock.now = START + 2 * HOUR;
   store.schedules.sweep();
 
-  const turn = store.turns("session_one")[0]!;
+  const turn = store.queries.turns("session_one")[0]!;
   expect(turn.origin).toBe("schedule");
   expect(turn.scheduleOrigin).toMatchObject({ scheduleId: row.id });
   expect(turn.sender).toBeUndefined();
@@ -208,12 +208,12 @@ test("a session with an enabled schedule reads as scheduled, dated by its soones
   expect(store.records.get("session_one").activity).toBe("idle");
   const hourly = store.schedules.put({ sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
   store.schedules.put({ sessionId: "session_one", prompt: "digest", rule: { kind: "interval", everyMs: 3 * HOUR }, zone: "UTC" });
-  const revision = store.sessionsRevision();
+  const revision = store.live.revision();
   expect(store.records.get("session_one")).toMatchObject({ activity: "scheduled", activityDetail: { kind: "schedule", at: hourly.nextRunAt } });
 
   // A disabled or deleted row wakes nothing, and the rail is told.
   store.schedules.put({ id: hourly.id, sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC", enabled: false });
-  expect(store.sessionsRevision()).toBeGreaterThan(revision);
+  expect(store.live.revision()).toBeGreaterThan(revision);
   expect(store.records.get("session_one").activityDetail).toMatchObject({ kind: "schedule", at: START + 3 * HOUR });
   for (const row of store.schedules.list("session_one")) store.schedules.delete(row.id);
   expect(store.records.get("session_one").activity).toBe("idle");

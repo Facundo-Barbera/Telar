@@ -77,7 +77,7 @@ test("a provider turn is born running under a claim, and a human message sent me
   expect(turn).toMatchObject({ state: "running", origin: "provider", providerReason: { kind: "task_notification", taskId: "task_toolu_bg" } });
   expect(turn.claim?.workerId).toBe("worker_one");
   expect(store.records.get("session_one").activity).toBe("working");
-  expect(store.readEvents("session_one").slice(-3).map((event) => event.type)).toEqual(["turn.accepted", "turn.claimed", "turn.started"]);
+  expect(store.queries.readEvents("session_one").slice(-3).map((event) => event.type)).toEqual(["turn.accepted", "turn.claimed", "turn.started"]);
   // A second one cannot open while this runs — one turn per session.
   expect(() => store.claims.openProviderTurn("session_one", { workerId: "worker_one", input: "x", reason: { kind: "unknown" } })).toThrow("live turn");
   // The usual routes work under its claim.
@@ -88,7 +88,7 @@ test("a provider turn is born running under a claim, and a human message sent me
   // turn goes: straight into it.
   expect(store.intake.submitTurn("session_one", { runId: "run_human", input: "also check the docs" }).turn).toMatchObject({ state: "steering", steer: { intoRunId: turn.runId } });
   store.turnLifecycle.completeTurn("session_one", turn.runId, turn.claim!.token, { text: "merged" });
-  const turns = new Map(store.turns("session_one").map((candidate) => [candidate.runId, candidate]));
+  const turns = new Map(store.queries.turns("session_one").map((candidate) => [candidate.runId, candidate]));
   expect(turns.get(turn.runId)).toMatchObject({ state: "completed", resultText: "merged", origin: "provider" });
   // The steered message was not delivered before the turn settled: back to
   // the queue, where it runs as the next human turn.
@@ -108,7 +108,7 @@ test("a provider turn can open over a queued one, so a lower sequence can start 
   const claimed = store.claims.claimNextTurn("worker_one")!;
   expect(claimed.turn.runId).toBe("run_waiting");
   store.turnLifecycle.markRunning("session_one", "run_waiting", claimed.turn.claim!.token);
-  const turns = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
+  const turns = new Map(store.queries.turns("session_one").map((turn) => [turn.runId, turn]));
   expect(turns.get("run_waiting")!.startedAt!).toBeGreaterThan(turns.get(provider.runId)!.completedAt!);
 });
 
@@ -276,7 +276,7 @@ describe("a rate-limited turn resumes itself once the limit resets", () => {
     });
   }
 
-  const turnOf = (store: EngineStore, runId: string) => store.turns("session_one").find((candidate) => candidate.runId === runId)!;
+  const turnOf = (store: EngineStore, runId: string) => store.queries.turns("session_one").find((candidate) => candidate.runId === runId)!;
 
   test("the failure records when the limit lifts, and refuses to exist without it", () => {
     const { store } = limitedStore();
@@ -311,7 +311,7 @@ describe("a rate-limited turn resumes itself once the limit resets", () => {
     const claimed = store.claims.claimNextTurn("worker_one");
     expect(claimed?.turn.runId).toBe("run_one");
     expect(turnOf(store, "run_one")).toMatchObject({ resumedAfterRateLimit: 5_000 });
-    expect(store.readEvents("session_one").some((event) => event.type === "turn.requeued" && event.reason === "rate_limit_reset")).toBeTrue();
+    expect(store.queries.readEvents("session_one").some((event) => event.type === "turn.requeued" && event.reason === "rate_limit_reset")).toBeTrue();
   });
 
   test("with the setting off the turn stays failed, and is not reconsidered on every poll", () => {
@@ -327,7 +327,7 @@ describe("a rate-limited turn resumes itself once the limit resets", () => {
     // session would sit in the live index being re-examined for the life of the
     // daemon. The reset time SURVIVES, because the row still shows it.
     expect(settled.failure).toMatchObject({ code: "rate_limited", resumeAt: 5_000, resumeDecidedAt: 6_000 });
-    expect(store.readEvents("session_one").some((event) => event.type === "turn.requeued" && event.reason === "rate_limit_reset")).toBeFalse();
+    expect(store.queries.readEvents("session_one").some((event) => event.type === "turn.requeued" && event.reason === "rate_limit_reset")).toBeFalse();
   });
 
   test("the default is on for Claude and off for another provider, without writing either down", () => {
@@ -374,7 +374,7 @@ describe("a rate-limited turn resumes itself once the limit resets", () => {
     const rebooted = new EngineStore(stateRoot, () => now);
     expect(rebooted.claims.claimNextTurn("worker_two")?.turn.runId).toBe("run_one");
     now += 1;
-    expect(rebooted.turns("session_one").find((candidate) => candidate.runId === "run_one")).toMatchObject({ resumedAfterRateLimit: 9_000 });
+    expect(rebooted.queries.turns("session_one").find((candidate) => candidate.runId === "run_one")).toMatchObject({ resumedAfterRateLimit: 9_000 });
   });
 
   test("a resumed turn keeps its place, so a backlog still runs in the order it was typed", () => {

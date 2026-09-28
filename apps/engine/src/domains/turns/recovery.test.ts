@@ -44,7 +44,7 @@ test("a request left open on an already-ended turn is retired at boot; one on an
   reopened.recovery.recover();
   expect(reopened.requestGate.list("session_one")[0]).toMatchObject({ id: "req_stale", state: "resolved", resolvedBy: "cancelled", resolvedAt: 200 });
   expect(reopened.recovery.recover()).toEqual({ stopped: [] });
-  expect(reopened.readEvents("session_one").filter((event) => event.type === "request.resolved")).toHaveLength(1);
+  expect(reopened.queries.readEvents("session_one").filter((event) => event.type === "request.resolved")).toHaveLength(1);
 
   // A restart is a stop: the interrupted turn is terminal, and its question, which no answer can reach, is cancelled.
   const other = readyStore().store;
@@ -65,7 +65,7 @@ test("a request left open on an already-ended turn is retired at boot; one on an
   expect(other.records.get("session_one").activity).not.toBe("blocked");
   // AND THE TURN IS DONE — terminal, with why it ended, and asking nobody for
   // a decision. Its text and items stay exactly where they were.
-  expect(other.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart", input: "Hello" });
+  expect(other.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart", input: "Hello" });
   // Nothing to resume and nothing to discard: the next message just runs.
   expect(other.intake.submitTurn("session_one", { runId: "run_next", input: "carry on" }).turn.state).toBe("queued");
   expect(other.claims.claimTurn("session_one", "worker_two")?.runId).toBe("run_next");
@@ -83,7 +83,7 @@ test("a restart STOPS what it interrupted — claimed and running alike — and 
   expect(store.claims.claimTurn("session_one", "worker_one")?.state).toBe("claimed");
   expect(store.recovery.recover()).toEqual({ stopped: ["claimed_turn"] });
   // NOT requeued. Going back to `queued` is what made a restart re-run work.
-  expect(store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  expect(store.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
 
   // And the same for work that had actually started.
   const { store: second } = readyStore();
@@ -91,14 +91,14 @@ test("a restart STOPS what it interrupted — claimed and running alike — and 
   const claimed = second.claims.claimTurn("session_one", "worker_one")!;
   second.turnLifecycle.markRunning("session_one", "running_turn", claimed.claim!.token);
   expect(second.recovery.recover()).toEqual({ stopped: ["running_turn"] });
-  expect(second.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  expect(second.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
 
   // THE NEXT MESSAGE JUST RUNS. No decision gate, no discard first.
   expect(second.intake.submitTurn("session_one", { runId: "later_turn", input: "carry on from what you have" }).turn.state).toBe("queued");
   expect(second.claims.claimTurn("session_one", "worker_two")?.runId).toBe("later_turn");
   // Nothing is announced as ambiguous, because nothing is.
-  expect(second.readEvents("session_one").filter((event) => event.type === "turn.ambiguous")).toEqual([]);
-  expect(second.readEvents("session_one").filter((event) => event.type === "turn.stopped" && event.runId === "running_turn")).toHaveLength(1);
+  expect(second.queries.readEvents("session_one").filter((event) => event.type === "turn.ambiguous")).toEqual([]);
+  expect(second.queries.readEvents("session_one").filter((event) => event.type === "turn.stopped" && event.runId === "running_turn")).toHaveLength(1);
 });
 
 test("the boot sweep closes every terminal turn's leftovers in one pass over each document", () => {
@@ -135,20 +135,20 @@ test("the boot sweep closes every terminal turn's leftovers in one pass over eac
 
   // Every turn's item, task and request — not just the last one's.
   for (const runId of ["run_a", "run_b", "run_c"]) {
-    expect(reopened.items("session_one").find((item) => item.id === `item_${runId}`)).toMatchObject({ status: "failed", completedAt: 300 });
-    expect(reopened.tasks("session_one").find((task) => task.id === `task_${runId}`)).toMatchObject({ state: "failed" });
+    expect(reopened.queries.items("session_one").find((item) => item.id === `item_${runId}`)).toMatchObject({ status: "failed", completedAt: 300 });
+    expect(reopened.queries.tasks("session_one").find((task) => task.id === `task_${runId}`)).toMatchObject({ state: "failed" });
     expect(reopened.requestGate.list("session_one").find((request) => request.id === `req_${runId}`)).toMatchObject({ state: "resolved", resolvedBy: "cancelled", resolvedAt: 300 });
   }
   // One event each, and the run id on each event is the turn's own — a batched
   // sweep must not attribute one turn's closure to another.
   for (const runId of ["run_a", "run_b", "run_c"]) {
-    const closures = reopened.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === `item_${runId}`);
+    const closures = reopened.queries.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === `item_${runId}`);
     expect(closures).toHaveLength(1);
     expect(closures[0]!.runId).toBe(runId);
   }
   // Idempotent: a second boot finds nothing open.
   expect(reopened.recovery.recover()).toEqual({ stopped: [] });
-  expect(reopened.readEvents("session_one").filter((event) => event.type === "request.resolved")).toHaveLength(3);
+  expect(reopened.queries.readEvents("session_one").filter((event) => event.type === "request.resolved")).toHaveLength(3);
 });
 
 test("a fresh message needs no discard first — there is nothing to decide", () => {
@@ -160,7 +160,7 @@ test("a fresh message needs no discard first — there is nothing to decide", ()
   store.turnLifecycle.markRunning("session_one", "uncertain_run", claimed!.claim!.token);
   store.recovery.recover();
 
-  expect(store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  expect(store.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
   expect(() => store.turnLifecycle.discardAmbiguousTurn("session_one", "uncertain_run")).toThrow(EngineStateError);
 
   // The next message is accepted and claimable with no gesture in between.
@@ -168,7 +168,7 @@ test("a fresh message needs no discard first — there is nothing to decide", ()
     replayed: false,
     turn: { runId: "fresh_run", state: "queued" },
   });
-  expect(store.turns("session_one").map((turn) => [turn.runId, turn.state])).toEqual([
+  expect(store.queries.turns("session_one").map((turn) => [turn.runId, turn.state])).toEqual([
     ["uncertain_run", "stopped"],
     ["fresh_run", "queued"],
   ]);
@@ -228,18 +228,18 @@ test("work queued BEFORE the crash is STOPPED, not replayed and not held", () =>
   store.turnLifecycle.markRunning("session_one", "run_lost", claim.claim!.token);
   // One written while the turn ran (steered) and one plain queued behind it.
   store.intake.submitTurn("session_one", { runId: "run_steered", input: "and the tests" });
-  expect(store.turns("session_one").find((turn) => turn.runId === "run_steered")?.state).toBe("steering");
+  expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_steered")?.state).toBe("steering");
 
   const rebooted = new EngineStore(stateRoot, () => 200);
   expect(rebooted.recovery.recover().stopped.sort()).toEqual(["run_lost", "run_steered"]);
   for (const runId of ["run_lost", "run_steered"]) {
-    const turn = rebooted.turns("session_one").find((candidate) => candidate.runId === runId)!;
+    const turn = rebooted.queries.turns("session_one").find((candidate) => candidate.runId === runId)!;
     expect(turn).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
     // Not held: a hold is a question, and there is no question.
     expect(turn.held).toBeUndefined();
   }
   // THE TEXT SURVIVES. Nothing is deleted by being cancelled.
-  expect(rebooted.turns("session_one").find((turn) => turn.runId === "run_steered")?.input).toBe("and the tests");
+  expect(rebooted.queries.turns("session_one").find((turn) => turn.runId === "run_steered")?.input).toBe("and the tests");
   // Nothing dispatches on its own — there is nothing left to dispatch.
   expect(rebooted.claims.claimNextTurn("worker_two")).toBeUndefined();
 });
@@ -264,13 +264,13 @@ test("a restart settles ONLY the sessions that had work — others are untouched
   // Every session's pending work is settled, the idle one's too; isolation is about the journal:
   // each session records only its own runIds.
   expect(stopped.sort()).toEqual(["run_behind", "run_lost", "run_untouched"]);
-  expect(rebooted.turns("session_fine")[0]).toMatchObject({ runId: "run_untouched", state: "stopped", stopReason: "engine_restart" });
+  expect(rebooted.queries.turns("session_fine")[0]).toMatchObject({ runId: "run_untouched", state: "stopped", stopReason: "engine_restart" });
   // Nothing runs by itself afterwards, in either session.
   expect(rebooted.claims.claimNextTurn("worker_two")).toBeUndefined();
   // AND NEITHER SESSION CARRIES THE OTHER'S EVENTS. An earlier draft of this
   // sweep journalled a cross-session accumulator, which wrote the first
   // session's stops onto every session walked after it.
-  const stops = (id: string) => rebooted.readEvents(id).filter((event) => event.type === "turn.stopped").map((event) => event.runId).sort();
+  const stops = (id: string) => rebooted.queries.readEvents(id).filter((event) => event.type === "turn.stopped").map((event) => event.runId).sort();
   expect(stops("session_lost")).toEqual(["run_behind", "run_lost"]);
   expect(stops("session_fine")).toEqual(["run_untouched"]);
 });
@@ -297,8 +297,8 @@ test("a fresh message continues the conversation from the provider cursor, never
   expect(claimed?.turn.input).toBe("What did you find?");
   expect(claimed?.resumeCursor).toBe("provider-thread-abc");
   // The lost run stays in the record, and so does everything it streamed.
-  expect(rebooted.turns("session_one")[0]).toMatchObject({ runId: "run_lost", state: "stopped", stopReason: "engine_restart" });
-  expect(rebooted.items("session_one").map((item) => item.id)).toContain("msg_1");
+  expect(rebooted.queries.turns("session_one")[0]).toMatchObject({ runId: "run_lost", state: "stopped", stopReason: "engine_restart" });
+  expect(rebooted.queries.items("session_one").map((item) => item.id)).toContain("msg_1");
 });
 
 test("a vanished worker takes the session's background work with it — a task cannot outlive its process", () => {
@@ -317,13 +317,13 @@ test("a vanished worker takes the session's background work with it — a task c
   store.recovery.retireWorkerRegistration("worker_one");
 
   // THE TURN'S OWN AGENT DIES WITH THE WORKER that was running it.
-  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  const byId = new Map(store.queries.tasks("session_one").map((task) => [task.id, task]));
   expect(byId.get("task_a")).toMatchObject({ state: "failed", failure: "the worker running this agent disappeared" });
   // A retirement leaves background work alone: it outlives turns by definition, the engine
   // cannot see whether the process lives, and a broad sweep killed independent project services.
   expect(byId.get("task_b")?.state).toBe("running");
   // And the turn itself is terminal, so nothing replays and nothing blocks.
-  expect(store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
+  expect(store.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
 });
 
 test("an engine restart stops every session's background work — the idle-with-monitoring one too", () => {
@@ -355,17 +355,17 @@ test("an engine restart stops every session's background work — the idle-with-
   restarted.recovery.recover();
 
   for (const [sessionId, taskId] of [["session_one", "task_b"], ["session_two", "task_c"]] as const) {
-    expect(restarted.tasks(sessionId).find((task) => task.id === taskId)).toMatchObject({
+    expect(restarted.queries.tasks(sessionId).find((task) => task.id === taskId)).toMatchObject({
       state: "stopped",
       failure: "the process that owned this task is gone",
     });
   }
   expect(restarted.records.get("session_two").activity).toBe("idle");
   // Announced once. A second recover() finds nothing live and appends nothing.
-  const closes = restarted.readEvents("session_two").filter((event) => event.type === "task.completed");
+  const closes = restarted.queries.readEvents("session_two").filter((event) => event.type === "task.completed");
   expect(closes).toHaveLength(1);
   restarted.recovery.recover();
-  expect(restarted.readEvents("session_two").filter((event) => event.type === "task.completed")).toHaveLength(1);
+  expect(restarted.queries.readEvents("session_two").filter((event) => event.type === "task.completed")).toHaveLength(1);
 });
 
 test("a shutdown mid-turn settles the message it was carrying — not held, not replayed", () => {
@@ -379,16 +379,16 @@ test("a shutdown mid-turn settles the message it was carrying — not held, not 
   const claim = store.claims.claimTurn("session_one", "worker_one")!;
   store.turnLifecycle.markRunning("session_one", "run_lost", claim.claim!.token);
   store.intake.submitTurn("session_one", { runId: "run_steer", input: "also update the docs" });
-  expect(store.turns("session_one")[1]?.state).toBe("steering");
+  expect(store.queries.turns("session_one")[1]?.state).toBe("steering");
 
   store.turnLifecycle.failTurn("session_one", "run_lost", claim.claim!.token, { code: "interrupted", message: "Telar shut down while this turn was running." });
   // The undelivered steer comes back to the queue — never lost.
-  expect(store.turns("session_one")[1]).toMatchObject({ state: "queued" });
+  expect(store.queries.turns("session_one")[1]).toMatchObject({ state: "queued" });
 
   // The next boot settles it rather than holding it or running it.
   const rebooted = new EngineStore(stateRoot, () => 200);
   rebooted.recovery.recover();
-  expect(rebooted.turns("session_one")[1]).toMatchObject({ state: "stopped", stopReason: "engine_restart", input: "also update the docs" });
+  expect(rebooted.queries.turns("session_one")[1]).toMatchObject({ state: "stopped", stopReason: "engine_restart", input: "also update the docs" });
   expect(rebooted.claims.claimNextTurn("worker_two")).toBeUndefined();
   // And the person picks up by saying something, with no gesture first.
   rebooted.intake.submitTurn("session_one", { runId: "run_next", input: "carry on" });
@@ -405,7 +405,7 @@ test("a shutdown mid-turn settles the message it was carrying — not held, not 
   crashed.turnLifecycle.markRunning("session_one", "run_crash", crashClaim.claim!.token);
   crashed.intake.submitTurn("session_one", { runId: "run_after", input: "and the docs" });
   crashed.turnLifecycle.failTurn("session_one", "run_crash", crashClaim.claim!.token, { code: "driver_failed", message: "the CLI died" });
-  expect(crashed.turns("session_one")[1]).toMatchObject({ state: "queued" });
-  expect(crashed.turns("session_one")[1]?.held).toBeUndefined();
+  expect(crashed.queries.turns("session_one")[1]).toMatchObject({ state: "queued" });
+  expect(crashed.queries.turns("session_one")[1]?.held).toBeUndefined();
   expect(crashed.claims.claimNextTurn("worker_two")?.turn.runId).toBe("run_after");
 });

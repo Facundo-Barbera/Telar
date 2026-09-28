@@ -107,7 +107,7 @@ test("registering the same checkout again restores the SAME project", () => {
   expect(pluginBlock(back, "data-science")).toEqual({ enabled: true });
   expect(store.projectRegistry.list().map((project) => project.id)).toEqual(["project_one"]);
   // The session that ran here is its session again, not an orphan.
-  expect(store.listSessions("project_one").map((each) => each.id)).toEqual([session.id]);
+  expect(store.live.list("project_one").map((each) => each.id)).toEqual([session.id]);
 });
 
 test("restoreProject does the same thing without needing the path, and is idempotent", () => {
@@ -151,8 +151,8 @@ test("a removed project's sessions and history stay readable", () => {
   // The project still resolves for reads, which is what keeps the session's
   // past coherent instead of blank.
   expect(store.projectRegistry.get("project_one").removedAt).toBeDefined();
-  expect(store.listSessions("project_one").map((each) => each.id)).toEqual([session.id]);
-  expect(store.turns(session.id)).toEqual([]);
+  expect(store.live.list("project_one").map((each) => each.id)).toEqual([session.id]);
+  expect(store.queries.turns(session.id)).toEqual([]);
 });
 
 test("no new session, no new turn, no settings change while a project is away", () => {
@@ -198,7 +198,7 @@ test("a queued turn blocks the removal instead of being stopped", () => {
   expect(() => store.projectRegistry.unregister("project_one")).toThrow(EngineStateError);
   // Still registered, and the turn is untouched.
   expect(store.projectRegistry.get("project_one").removedAt).toBeUndefined();
-  expect(store.turns(session.id)).toHaveLength(1);
+  expect(store.queries.turns(session.id)).toHaveLength(1);
   expect(store.projectRegistry.list()).toHaveLength(1);
 });
 
@@ -225,8 +225,8 @@ test("a live BACKGROUNDED TASK blocks the removal even with every turn settled",
   ]);
   store.turnLifecycle.stopTurn(session.id, "run_one");
 
-  expect(store.turns(session.id).every((turn) => turn.state === "stopped")).toBe(true);
-  expect(store.tasks(session.id).find((task) => task.id === "task_bg")?.state).toBe("running");
+  expect(store.queries.turns(session.id).every((turn) => turn.state === "stopped")).toBe(true);
+  expect(store.queries.tasks(session.id).find((task) => task.id === "task_bg")?.state).toBe("running");
   expect(() => store.projectRegistry.unregister("project_one")).toThrow(EngineStateError);
 });
 
@@ -245,6 +245,6 @@ test("a backgrounded task that has ENDED does not block it", () => {
   ]);
   store.turnLifecycle.stopTurn(session.id, "run_one");
 
-  expect(store.tasks(session.id).find((task) => task.id === "task_bg")?.state).toBe("completed");
+  expect(store.queries.tasks(session.id).find((task) => task.id === "task_bg")?.state).toBe("completed");
   expect(store.projectRegistry.unregister("project_one").project.removedAt).toBeDefined();
 });

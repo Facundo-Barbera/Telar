@@ -12,7 +12,7 @@ test("settled_only is the default: a wake at a busy subscriber is held, not stee
   runTurn(store, "session_a", "run_a");
 
   // Not steered: a running turn is when a notice costs the most context.
-  expect(store.turns("session_host").find((turn) => turn.state === "steering")).toBeUndefined();
+  expect(store.queries.turns("session_host").find((turn) => turn.state === "steering")).toBeUndefined();
   expect(notifications(store)).toHaveLength(0);
   expect(store.wakes.pendingNotifications("session_host").map((each) => each.runId)).toEqual(["run_a"]);
 
@@ -33,11 +33,11 @@ test("completionWake: always queues its wake at once, but no longer steers into 
 
   runTurn(store, "session_a", "run_a");
 
-  expect(store.turns("session_host").find((turn) => turn.state === "steering")).toBeUndefined();
+  expect(store.queries.turns("session_host").find((turn) => turn.state === "steering")).toBeUndefined();
   expect(store.wakes.pendingNotifications("session_host")).toHaveLength(0);
-  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  const queued = store.queries.turns("session_host").filter((turn) => turn.state === "queued");
   expect(queued.map((turn) => turn.notification?.runId)).toEqual(["run_a"]);
-  expect(store.turns("session_host").find((turn) => turn.runId === host.runId)!.state).toBe("running");
+  expect(store.queries.turns("session_host").find((turn) => turn.runId === host.runId)!.state).toBe("running");
 });
 
 test("re-subscribing changes the policy and leaves what it does not name", () => {
@@ -81,7 +81,7 @@ test("everything held for one session arrives as ONE notification listing it", (
   expect(detail.body).toContain("None of this was typed by a person.");
 
   // And the transcript's row carries the same merged object.
-  const row = store.items("session_host").find((item) => item.runId === delivered[0]!.runId && item.detail.type === "notification")!;
+  const row = store.queries.items("session_host").find((item) => item.runId === delivered[0]!.runId && item.detail.type === "notification")!;
   expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(detail);
 });
 
@@ -129,27 +129,27 @@ test("a waiting notification is re-announced at most twice; the third stays pend
     });
 
   park("req_b");
-  const parked = store.turns("session_host").find((turn) => turn.notification?.runId === "run_b")!;
+  const parked = store.queries.turns("session_host").find((turn) => turn.notification?.runId === "run_b")!;
   expect(parked.notification!.deliveries).toBe(1);
   expect(parked.notification!.requestId).toBe("req_b");
 
   // The waiting turn is rewritten with the newer fact, keeping its place.
   park("req_c");
-  const rewritten = store.turns("session_host").find((turn) => turn.runId === parked.runId)!;
+  const rewritten = store.queries.turns("session_host").find((turn) => turn.runId === parked.runId)!;
   expect(rewritten.notification!.deliveries).toBe(MAX_DELIVERIES);
   expect(rewritten.notification!.requestId).toBe("req_c");
-  expect(store.turns("session_host").filter((turn) => turn.notification !== undefined)).toHaveLength(1);
+  expect(store.queries.turns("session_host").filter((turn) => turn.notification !== undefined)).toHaveLength(1);
 
   // A third goes to the mailbox, where `sessions_status` reports it.
   store.requestGate.resolve("session_a", "req_b", { decision: "accept", answers: { req_b: "a" } });
   store.requestGate.resolve("session_a", "req_c", { decision: "accept", answers: { req_c: "a" } });
   store.turnLifecycle.completeTurn("session_a", "run_b", token, { text: "done" });
 
-  const after = store.turns("session_host").find((turn) => turn.runId === parked.runId)!;
+  const after = store.queries.turns("session_host").find((turn) => turn.runId === parked.runId)!;
   expect(after.notification!.deliveries).toBe(MAX_DELIVERIES);
   expect(after.notification!.requestId).toBe("req_c");
   expect(store.wakes.pendingNotifications("session_host").map((each) => each.wakeKind)).toEqual(["turn_completed"]);
-  expect(store.turns("session_host").filter((turn) => turn.notification !== undefined)).toHaveLength(1);
+  expect(store.queries.turns("session_host").filter((turn) => turn.notification !== undefined)).toHaveLength(1);
 });
 
 test("a cohort already waiting takes a fresh wake with it rather than queueing a second turn", () => {
@@ -186,7 +186,7 @@ test("two children finishing a moment apart on an idle host make ONE queued turn
   ]);
   // The turn is stamped by the newest, and its row says what the turn says.
   expect(delivered[0]!.wakeReason).toMatchObject({ sessionId: "session_b", runId: "run_b" });
-  const row = store.items("session_host").find((item) => item.runId === delivered[0]!.runId && item.detail.type === "notification")!;
+  const row = store.queries.items("session_host").find((item) => item.runId === delivered[0]!.runId && item.detail.type === "notification")!;
   expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(detail);
 
   // Once claimed it is in front of a model, and the next wake is news of its own.
@@ -243,7 +243,7 @@ test("a peer's report to an idle host rides the wake already queued there, as a 
   expect(next.notes!.some((note) => note.startsWith("Held for you while you were busy") && note.includes("run_msg"))).toBe(true);
   expect(store.wakes.pendingNotifications("session_host")).toHaveLength(0);
   // The message itself is still on its own turn, whole, for sessions_read.
-  expect(store.turns("session_host").find((turn) => turn.runId === "run_msg")!.input).toBe("found the bug");
+  expect(store.queries.turns("session_host").find((turn) => turn.runId === "run_msg")!.input).toBe("found the bug");
 });
 
 test("a held notification survives a restart — it is a file, not a field on a live store", () => {
@@ -259,7 +259,7 @@ test("a held notification survives a restart — it is a file, not a field on a 
   expect(reopened.wakes.pendingNotifications("session_host").map((each) => each.runId)).toEqual(["run_a"]);
   // And the reopened store delivers it when the turn it was waiting on ends.
   reopened.turnLifecycle.completeTurn("session_host", host.runId, host.token, { text: "back" });
-  expect(reopened.turns("session_host").filter((turn) => turn.notification !== undefined)).toHaveLength(1);
+  expect(reopened.queries.turns("session_host").filter((turn) => turn.notification !== undefined)).toHaveLength(1);
 });
 
 test("a peer's message is NOT held — it was addressed to this session, not fired at it", () => {

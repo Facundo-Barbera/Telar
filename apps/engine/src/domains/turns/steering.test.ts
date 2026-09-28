@@ -39,7 +39,7 @@ function runningPlusSteered(store: EngineStore): { token: string } {
 }
 
 const turnState = (store: EngineStore, runId: string): string =>
-  store.turns("session_one").find((turn) => turn.runId === runId)!.state;
+  store.queries.turns("session_one").find((turn) => turn.runId === runId)!.state;
 
 test("submit → heartbeat → ack is the delivery path, and ack is idempotent", () => {
   const store = readyStore();
@@ -92,7 +92,7 @@ test("the running turn settling FIRST puts an undelivered message back in the qu
   store.turnLifecycle.completeTurn("session_one", "run_live", token, { text: "done" });
   // NOT-LOSING: the message is queued again, claimable as an ordinary turn.
   expect(turnState(store, "run_next")).toBe("queued");
-  const events = store.readEvents("session_one").filter((event) => event.type === "turn.requeued");
+  const events = store.queries.readEvents("session_one").filter((event) => event.type === "turn.requeued");
   expect(events).toHaveLength(1);
   expect(store.claims.claimTurn("session_one", "worker_one")?.runId).toBe("run_next");
 });
@@ -138,7 +138,7 @@ test("recover() SETTLES an orphaned steering turn instead of stranding or replay
   // and the message that never reached it is not requeued to run by itself —
   // "not lost" is satisfied by keeping it readable, not by running it.
   expect(recovered.stopped.sort()).toEqual(["run_live", "run_next"]);
-  expect(second.turns("session_one").find((turn) => turn.runId === "run_next")).toMatchObject({
+  expect(second.queries.turns("session_one").find((turn) => turn.runId === "run_next")).toMatchObject({
     state: "stopped",
     stopReason: "engine_restart",
     input: "Also this",

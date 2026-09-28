@@ -94,7 +94,7 @@ test("the authenticated API settles an interrupted run and takes a fresh one wit
     replayed: false,
     turn: { runId: "fresh_run", state: "queued" },
   });
-  expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  expect(daemon.store.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
   // And the vestigial verb refuses rather than pretending to settle something.
   await expect(client.discardAmbiguousTurn("session_one", "uncertain_run")).rejects.toMatchObject({
     code: "conflict",
@@ -147,8 +147,8 @@ test("lease expiry is pruned without another worker control request", async () =
   time = 10;
   // The retiring registration ENDS the claim it was holding. It used to go
   // back to `queued` and be replayed by the next worker.
-  for (let attempts = 0; attempts < 20 && daemon.store.turns("session_one")[0]?.state !== "stopped"; attempts += 1) await Bun.sleep(2);
-  expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
+  for (let attempts = 0; attempts < 20 && daemon.store.queries.turns("session_one")[0]?.state !== "stopped"; attempts += 1) await Bun.sleep(2);
+  expect(daemon.store.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
   await expect(client.health()).resolves.toMatchObject({ worker: { registered: false } });
 });
 

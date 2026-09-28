@@ -132,17 +132,17 @@ test("the live-list fold reads no requests document", () => {
   const store = readyStore();
   for (const n of [1, 2, 3]) runningSession(store, `session_${n}`, `run_${n}`);
   // Warm the index once, the way a booting daemon does.
-  store.liveSessions();
+  store.live.all();
 
   expect(requestDocumentReads(() => {
-    store.liveSessions();
-    store.liveSessions();
+    store.live.all();
+    store.live.all();
   })).toBe(0);
 
   // And it is still the RIGHT answer, not merely a cheap one.
   const token = store.claims.claimTurn("session_1", "worker_one") ?? undefined;
   expect(token).toBeUndefined(); // already claimed by `runningSession`
-  expect(store.liveSessions().sessions).toHaveLength(3);
+  expect(store.live.all().sessions).toHaveLength(3);
 });
 
 test("a heartbeat with N claimed sessions does no whole-document request read", () => {
@@ -187,13 +187,13 @@ test("an existence check folds no activity", () => {
   store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
 
   expect(documentReads(["queue.json", "requests.json", "tasks.json"], () => {
-    store.readEvents("session_one");
-    store.eventCursor("session_one");
-    store.items("session_one");
+    store.queries.readEvents("session_one");
+    store.queries.eventCursor("session_one");
+    store.queries.items("session_one");
   })).toBe(0);
 
   // And the check still fails on a session that is not there.
-  expect(() => store.readEvents("session_missing")).toThrow("session does not exist");
+  expect(() => store.queries.readEvents("session_missing")).toThrow("session does not exist");
 });
 
 test("a requests document that is not this store's is rejected rather than trusted", () => {

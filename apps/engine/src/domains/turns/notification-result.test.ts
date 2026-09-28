@@ -30,7 +30,7 @@ test("a result and its completion from one run reach the subscriber as ONE notif
   // One notice, and it is the one the model will be handed.
   expect(delivered[0]!.agentNotice).toBe(detail.body);
   // The transcript's row says what the turn says.
-  const row = store.items("session_host").find((item) => item.runId === delivered[0]!.runId && item.detail.type === "notification")!;
+  const row = store.queries.items("session_host").find((item) => item.runId === delivered[0]!.runId && item.detail.type === "notification")!;
   expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(detail);
 });
 
@@ -78,7 +78,7 @@ test("a result the host has CLAIMED is not rewritten, and its completion is reco
 
   worker.end();
 
-  expect(store.turns("session_host").find((turn) => turn.runId === sent.runId)!.notification!.entries).toBeUndefined();
+  expect(store.queries.turns("session_host").find((turn) => turn.runId === sent.runId)!.notification!.entries).toBeUndefined();
   expect(store.wakes.pendingNotifications("session_host")).toHaveLength(0);
   // Recorded as a passive turn, completed on arrival, with a transcript row.
   const record = recordOf(store, worker.runId)!;
@@ -90,13 +90,13 @@ test("a result the host has CLAIMED is not rewritten, and its completion is reco
   });
   expect(record.notification).toMatchObject({ kind: "wake", wakeKind: "turn_completed", runId: worker.runId });
   expect(record.notification!.body).toContain("[wake: completed]");
-  expect(store.items("session_host").some((item) => item.runId === record.runId && item.detail.type === "notification")).toBe(true);
+  expect(store.queries.items("session_host").some((item) => item.runId === record.runId && item.detail.type === "notification")).toBe(true);
   // The ending is what spends the one-shot, exactly as on the delivered path.
   expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(0);
 
   // And no second turn when the host settles.
   store.turnLifecycle.completeTurn("session_host", sent.runId, token, { text: "read it" });
-  expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
+  expect(store.queries.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
   expect(store.claims.claimTurn("session_host", "worker_host")).toBeUndefined();
 });
 
@@ -115,7 +115,7 @@ test("an awaited result to a BUSY host is queued, not steered, and its completio
   expect(recordOf(store, worker.runId)).toBeUndefined();
   expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(0);
   store.turnLifecycle.completeTurn("session_host", host.runId, host.token, { text: "done thinking" });
-  const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
+  const queued = store.queries.turns("session_host").filter((turn) => turn.state === "queued");
   expect(queued).toHaveLength(1);
   expect(queued[0]!.runId).toBe(worker.sent.runId);
   expect(queued[0]!.notification!.entries?.map((entry) => entry.kind)).toEqual(["peer_message", "wake"]);
@@ -134,7 +134,7 @@ test("a run that FAILS after sending its result still wakes the host — that is
   expect(store.wakes.pendingNotifications("session_host").map((each) => each.wakeKind)).toEqual(["turn_failed"]);
   expect(recordOf(store, worker.runId)).toBeUndefined();
   store.turnLifecycle.completeTurn("session_host", sent.runId, token, { text: "read it" });
-  const woken = store.turns("session_host").filter((turn) => turn.state === "queued");
+  const woken = store.queries.turns("session_host").filter((turn) => turn.state === "queued");
   expect(woken).toHaveLength(1);
   expect(woken[0]!.notification!.wakeKind).toBe("turn_failed");
 });
@@ -152,7 +152,7 @@ test("a completion from a run that sent NO result wakes exactly as before, even 
 
   // No result for this run, so the host is woken about it.
   runTurn(store, "session_a", "run_two");
-  const woken = store.turns("session_host").filter((turn) => turn.state === "queued");
+  const woken = store.queries.turns("session_host").filter((turn) => turn.state === "queued");
   expect(woken).toHaveLength(1);
   expect(woken[0]!.notification).toMatchObject({ wakeKind: "turn_completed", runId: "run_two" });
   expect(recordOf(store, "run_two")).toBeUndefined();
@@ -168,7 +168,7 @@ test("a completion after a sent result never interrupts, even under completionWa
 
   worker.end();
 
-  expect(store.turns("session_host").some((turn) => turn.state === "steering")).toBe(false);
+  expect(store.queries.turns("session_host").some((turn) => turn.state === "steering")).toBe(false);
   expect(recordOf(store, worker.runId)).toBeDefined();
 });
 
@@ -186,7 +186,7 @@ test("a result nobody was awaiting stays held for the next turn — the completi
   expect(recordOf(store, worker.runId)).toBeDefined();
   expect(store.wakes.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
   store.turnLifecycle.completeTurn("session_host", host.runId, host.token, { text: "done" });
-  expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
+  expect(store.queries.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
   expect(store.wakes.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
 });
 
@@ -232,7 +232,7 @@ test("an `always` subscriber that is BUSY still gets its interruption rather tha
   store.turnLifecycle.completeTurn("session_a", "run_src", child, { text: "done" });
 
   // The ending queued on its own rather than riding the unread result.
-  const rows = store.turns("session_slow").filter((each) => each.notification !== undefined);
+  const rows = store.queries.turns("session_slow").filter((each) => each.notification !== undefined);
   expect(rows).toHaveLength(2);
   expect(rows.find((each) => each.notification!.kind === "peer_message")!.notification!.entries).toBeUndefined();
   expect(rows.some((each) => each.notification!.wakeKind === "turn_completed")).toBe(true);

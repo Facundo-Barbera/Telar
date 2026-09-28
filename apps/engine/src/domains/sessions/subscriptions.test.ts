@@ -51,7 +51,7 @@ function runTurn(store: EngineStore, sessionId: string, runId: string, end: "com
     });
   }
 }
-const wakes = (store: EngineStore, sessionId: string) => store.turns(sessionId).filter((turn) => turn.origin === "session");
+const wakes = (store: EngineStore, sessionId: string) => store.queries.turns(sessionId).filter((turn) => turn.origin === "session");
 // A wake's words live in the notification's `body`; `input` is a machine label.
 const notice = (turn: Turn) => turn.notification?.body ?? turn.input;
 
@@ -81,16 +81,16 @@ test("a wake landing on a RUNNING subscriber is queued, never steered, and keeps
   // The running turn settles, and the wake is still a queued wake — it must
   // not come back as a human one.
   store.turnLifecycle.completeTurn("session_one", "run_busy", busy.claim!.token, { text: "done" });
-  const requeued = store.turns("session_one").find((turn) => turn.runId === wake!.runId)!;
+  const requeued = store.queries.turns("session_one").find((turn) => turn.runId === wake!.runId)!;
   expect(requeued).toMatchObject({ state: "queued", origin: "session", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
 
   // AND ACROSS A PAUSE. A held wake is still a wake when the human resumes.
   store.pauseSession("session_one");
-  const held = store.turns("session_one").find((turn) => turn.runId === wake!.runId)!;
+  const held = store.queries.turns("session_one").find((turn) => turn.runId === wake!.runId)!;
   expect(held.origin).toBe("session");
   expect(held.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_two" });
   // Read cold, from a second store instance over the same files.
-  const cold = new EngineStore(store.paths.root, () => 100).turns("session_one").find((turn) => turn.runId === wake!.runId)!;
+  const cold = new EngineStore(store.paths.root, () => 100).queries.turns("session_one").find((turn) => turn.runId === wake!.runId)!;
   expect(cold.origin).toBe("session");
   expect(cold.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_two", runId: "run_w" });
 });
@@ -122,11 +122,11 @@ test("a completed turn queues a wake with a BOUNDED excerpt of its answer, and t
   // The accept, then the notification's own row — written at accept rather
   // than when a provider gets round to it, so a queued wake is visible in the
   // transcript while the session is still busy. See `writeNotificationItem`.
-  expect(store.readEvents("session_one").filter((event) => event.type === "turn.accepted").at(-1)).toMatchObject({
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "turn.accepted").at(-1)).toMatchObject({
     type: "turn.accepted",
     turn: { origin: "session" },
   });
-  expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "item.completed", item: { detail: { type: "notification" } } });
+  expect(store.queries.readEvents("session_one").at(-1)).toMatchObject({ type: "item.completed", item: { detail: { type: "notification" } } });
   // The file is at the engine root and outlives the store instance.
   expect(new EngineStore(store.paths.root, () => 100).subscriptions.subscriptionsFor("session_one")).toHaveLength(1);
 });
@@ -167,7 +167,7 @@ test("failed, stopped and parked each wake with their own reason; a policy-resol
 
   // Under `auto`, a command resolves itself — nothing parked, nothing to wake for.
   store.lifecycle.updateSession("session_two", { runtimeMode: "auto" });
-  const token = store.turns("session_two").find((turn) => turn.runId === "run_p")!.claim!.token;
+  const token = store.queries.turns("session_two").find((turn) => turn.runId === "run_p")!.claim!.token;
   store.requestGate.open("session_two", "run_p", token, { requestId: "req_auto", kind: "file_read", detail: { kind: "file_read", read: { path: "/x" } } });
   expect(wakes(store, "session_one")).toHaveLength(3);
 });
@@ -220,7 +220,7 @@ test("a parked request's notice carries NO fields — only what it is, and the t
   // Captured before the first turn ends: finishing it REWRITES that wake in
   // place (the coalescing rule), and the string under comparison is this one.
   const captured = notice(parked!);
-  const first = store.turns("session_two").find((turn) => turn.runId === "run_many")!.claim!.token;
+  const first = store.queries.turns("session_two").find((turn) => turn.runId === "run_many")!.claim!.token;
   store.requestGate.resolve("session_two", "req_many", { decision: "accept" });
   store.turnLifecycle.completeTurn("session_two", "run_many", first, { text: "" });
   // Read, so the next request's wake is a turn of its own rather than a line
@@ -281,7 +281,7 @@ test("a second event from the same target REWRITES the waiting wake in place rat
   expect(parked!.wakeReason).toMatchObject({ kind: "request_opened", requestId: "req_q" });
 
   store.requestGate.resolve("session_two", "req_q", { decision: "accept", answers: { db: "postgres" } });
-  const token = store.turns("session_two").find((turn) => turn.runId === "run_p")!.claim!.token;
+  const token = store.queries.turns("session_two").find((turn) => turn.runId === "run_p")!.claim!.token;
   store.turnLifecycle.completeTurn("session_two", "run_p", token, { text: "done" });
 
   const after = wakes(store, "session_one");
@@ -291,12 +291,12 @@ test("a second event from the same target REWRITES the waiting wake in place rat
   // The ROW moved with the turn: a transcript showing the superseded line
   // beside a turn that announces something else is the same lie, drawn.
   expect(after[0]!.notification!.wakeKind).toBe("turn_completed");
-  const row = store.items("session_one").find((item) => item.runId === after[0]!.runId && item.detail.type === "notification")!;
+  const row = store.queries.items("session_one").find((item) => item.runId === after[0]!.runId && item.detail.type === "notification")!;
   expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(after[0]!.notification!);
   expect(after[0]!.wakeReason).toMatchObject({ kind: "turn_completed", runId: "run_p" });
   expect(after[0]!.wakeReason).not.toHaveProperty("requestId");
   // The rewrite is announced as a replay of the same run, so a client redraws the chip.
-  const events = store.readEvents("session_one").filter((event) => event.type === "turn.accepted" && event.runId === parked!.runId);
+  const events = store.queries.readEvents("session_one").filter((event) => event.type === "turn.accepted" && event.runId === parked!.runId);
   expect(events).toHaveLength(2);
   expect(events.at(-1)).toMatchObject({ replayed: true });
 
@@ -337,18 +337,18 @@ test("unsubscribe withdraws the wakes still waiting from that session, and leave
 
   // Unsubscribing takes session_two's line OUT of it and leaves the rest.
   expect(store.subscriptions.unsubscribe(two.id, "session_one")).toBe(true);
-  const turns = store.turns("session_one");
+  const turns = store.queries.turns("session_one");
   const kept = turns.find((turn) => turn.runId === joined!.runId)!;
   expect(kept.state).toBe("queued");
   expect(kept.notification!.entries?.map((entry) => entry.sessionId)).toEqual(["session_three"]);
   expect(kept.wakeReason).toMatchObject({ sessionId: "session_three", runId: "run_b" });
   expect(notice(kept)).not.toContain("session_two");
   expect(turns.find((turn) => turn.runId === "run_mine")!.state).toBe("queued");
-  expect(store.readEvents("session_one").filter((event) => event.type === "turn.discarded")).toHaveLength(0);
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "turn.discarded")).toHaveLength(0);
 
   // A turn with nothing but the unsubscribed session's news still goes whole.
   store.subscriptions.unsubscribe(store.subscriptions.subscriptionsFor("session_one")[0]!.id, "session_one");
-  expect(store.turns("session_one").find((turn) => turn.runId === joined!.runId)!.state).toBe("discarded");
+  expect(store.queries.turns("session_one").find((turn) => turn.runId === joined!.runId)!.state).toBe("discarded");
 });
 
 test("a wake's own ending wakes nobody, so two sessions subscribed to each other cannot ping-pong", () => {
@@ -377,10 +377,10 @@ test("an archived subscriber is dropped; a full backlog drops the wake with a wa
 
   for (let n = 0; n < 16; n++) store.intake.submitTurn("session_one", { runId: `run_fill_${n}`, input: "queued" });
   runTurn(store, "session_two", "run_w");
-  expect(store.turns("session_two").at(-1)!.state).toBe("completed");
+  expect(store.queries.turns("session_two").at(-1)!.state).toBe("completed");
   expect(wakes(store, "session_one")).toHaveLength(0);
-  expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "runtime.warning" });
-  expect(String((store.readEvents("session_one").at(-1) as { message: string }).message)).toContain("was dropped");
+  expect(store.queries.readEvents("session_one").at(-1)).toMatchObject({ type: "runtime.warning" });
+  expect(String((store.queries.readEvents("session_one").at(-1) as { message: string }).message)).toContain("was dropped");
 });
 
 test("the rules: no self-subscribe, no archived target, a wake must carry its reason, and origin cannot be forged through submitTurn alone", () => {
@@ -411,5 +411,5 @@ test("a request answered by a session is journaled as such", () => {
   runTurn(store, "session_two", "run_p", "park");
   const answered = store.requestGate.resolve("session_two", "req_q", { decision: "accept", resolvedBy: "session", answers: { db: "postgres" } });
   expect(answered.resolvedBy).toBe("session");
-  expect(store.readEvents("session_two").at(-1)).toMatchObject({ type: "request.resolved", resolvedBy: "session" });
+  expect(store.queries.readEvents("session_two").at(-1)).toMatchObject({ type: "request.resolved", resolvedBy: "session" });
 });

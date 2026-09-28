@@ -23,7 +23,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
       handle({ query }) {
         const projectId = query.get("projectId");
         if (!projectId) throw new HttpError(400, "invalid_request", "projectId is required");
-        return ok({ sessions: store.listSessions(projectId) });
+        return ok({ sessions: store.live.list(projectId) });
       },
     },
     {
@@ -32,19 +32,19 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
       auth: "engine",
       // The rail's poll. `?full=1` is the old whole answer; `?all=1` adds the settled rows and is never `?since=`-conditional.
       handle({ query, request }) {
-        if (query.get("full") === "1") return ok(store.liveSessions());
+        if (query.get("full") === "1") return ok(store.live.all());
         const all = query.get("all") === "1";
-        const etag = liveSessionsETag(store.sessionsRevision({ all }), all);
+        const etag = liveSessionsETag(store.live.revision({ all }), all);
         if (matchesETag(request.headers["if-none-match"], etag)) return notModified(etag);
         const since = Number(query.get("since"));
-        if (!all && Number.isSafeInteger(since) && since === store.sessionsRevision()) {
+        if (!all && Number.isSafeInteger(since) && since === store.live.revision()) {
           return { status: 200, body: { revision: since, unchanged: true, daemonId }, headers: { etag } };
         }
-        return { status: 200, body: { ...store.liveSessionRows({ all }), projects: store.projectRegistry.list(), daemonId }, headers: { etag } };
+        return { status: 200, body: { ...store.live.rows({ all }), projects: store.projectRegistry.list(), daemonId }, headers: { etag } };
       },
     },
     sessionsStreamRoute(store, openStreams),
-    { method: "GET", path: "/v2/sessions/activity", auth: "engine", handle: () => ok({ projects: store.projectActivity() }) },
+    { method: "GET", path: "/v2/sessions/activity", auth: "engine", handle: () => ok({ projects: store.live.projectActivity() }) },
     {
       method: "GET",
       path: "/v2/sessions/find",

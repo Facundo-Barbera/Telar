@@ -75,7 +75,7 @@ test("a person-resolved request older than the window is still readable from the
   churn(store, token, 140);
 
   expect(store.requestGate.list("session_one").some((request) => request.id === "req_0000")).toBe(false);
-  const events = store.readEvents("session_one");
+  const events = store.queries.readEvents("session_one");
   const opened = events.find((event) => event.type === "request.opened" && event.request.id === "req_0000");
   const resolved = events.find((event) => event.type === "request.resolved" && event.requestId === "req_0000");
   expect(opened).toBeDefined();

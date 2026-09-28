@@ -96,7 +96,7 @@ test("a turn of item events reads the projection once, not once each", () => {
   // What one whole read weighs, priced by a store of its own so the one under
   // test starts cold and nothing it is about to do has been paid for here.
   const measured = open(home);
-  expect(measured.items("session_one")).toHaveLength(SEEDED_ITEMS);
+  expect(measured.queries.items("session_one")).toHaveLength(SEEDED_ITEMS);
   expect(measured.readAccounting.itemParses).toBe(1);
   const wholeDocument = measured.readAccounting.documentBytes;
   expect(wholeDocument).toBeGreaterThan(SEEDED_ITEMS * BODY.length);
@@ -147,10 +147,10 @@ test("a turn of item events reads the projection once, not once each", () => {
   expect(store.readAccounting.documentBytes).toBeLessThan(wholeDocument * 5);
 
   // …and the projection the cache kept is the projection the store holds.
-  const every = store.items("session_one");
+  const every = store.queries.items("session_one");
   expect(every).toHaveLength(SEEDED_ITEMS + EVENTS);
   expect(every.filter((item) => item.runId === runId).map((item) => item.id))
     .toEqual(Array.from({ length: EVENTS }, (_, index) => `measured_item_${index}`));
   const reopened = open(home);
-  expect(reopened.items("session_one")).toEqual(every);
+  expect(reopened.queries.items("session_one")).toEqual(every);
 }, 60_000); // Seeding rewrites a growing projection 400 times.

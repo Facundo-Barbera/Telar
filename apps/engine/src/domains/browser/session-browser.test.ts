@@ -29,14 +29,14 @@ test("a hand-started browser journals its tabs exactly once, so the panel can sh
   // A plain read journals nothing: asking what the browser shows must never
   // become history. Only the explicit `start` gesture is an event.
   await store.browser.state("session_one");
-  const before = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
+  const before = store.queries.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
   expect(before).toHaveLength(0);
 
   const started = await store.browser.state("session_one", { start: true });
   expect(started.canStart).toBe(true);
   // A second press with the same tab set journals nothing new.
   await store.browser.state("session_one", { start: true });
-  const events = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
+  const events = store.queries.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
   expect(events).toHaveLength(1);
   expect((events[0] as { tabs: { url: string }[] }).tabs[0]?.url).toBe("http://x");
 });
@@ -84,7 +84,7 @@ test("browserOpen opens an http(s) page as the human on the session's browser an
     // one write that journals the tab set for the panel.
     { op: "bind", profileKey: "project_one" },
   ]);
-  const events = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
+  const events = store.queries.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
   expect(events).toHaveLength(1);
   await expect(store.browser.open("session_one", "file:///etc/passwd")).rejects.toThrow(/only http and https/);
   await expect(store.browser.open("session_one", "not a url")).rejects.toThrow(/not a URL/);
@@ -97,7 +97,7 @@ test("recordBrowserControl journals transitions once each and refuses unknown se
   store.browser.recordControl("session_one", "human"); // the shell re-reporting
   store.browser.recordControl("session_one", "agent");
   const rows = store
-    .readEvents("session_one")
+    .queries.readEvents("session_one")
     .filter((event) => event.type === "browser.control.changed")
     .map((event) => (event as { controller: string }).controller);
   expect(rows).toEqual(["agent", "human", "agent"]);

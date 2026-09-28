@@ -125,7 +125,7 @@ test("closing the daemon stops the worker BEFORE the server, so no claim outlive
   await daemon.close();
   const restarted = await startEngine({ models: stubModels, engineRoot: daemon.store.paths.root });
   daemons.push(restarted);
-  expect(restarted.store.turns("session_one")[0]?.state).toBe("completed");
+  expect(restarted.store.queries.turns("session_one")[0]?.state).toBe("completed");
 });
 
 test("a stalled daemon preserves its embedded worker and all active turns past the lease", async () => {
@@ -353,7 +353,7 @@ test("embedded execution does not depend on the HTTP lifecycle transport", async
     daemon.store.projectRegistry.register({ id: "project_direct", name: "Direct", root: "/tmp" });
     daemon.store.lifecycle.createSession({ id: "session_direct", projectId: "project_direct" });
     daemon.store.intake.submitTurn("session_direct", { runId: "run_direct", input: "go" });
-    await eventually(() => expect(daemon.store.turns("session_direct")[0]).toMatchObject({ state: "completed", resultText: "direct" }));
+    await eventually(() => expect(daemon.store.queries.turns("session_direct")[0]).toMatchObject({ state: "completed", resultText: "direct" }));
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
   } finally {
     for (const spy of spies) spy.mockRestore();
@@ -369,7 +369,7 @@ test("shutdown disposes the selected OpenCode adapter and its session-lived runt
   daemon.store.providers.save({ id: "opencode", driver: "opencode", enabled: true });
   daemon.store.lifecycle.createSession({ id: "session_dispose", projectId: "project_dispose", driver: "opencode" });
   daemon.store.intake.submitTurn("session_dispose", { runId: "run_dispose", input: "go" });
-  try { await eventually(() => expect(daemon.store.turns("session_dispose")[0]?.state).toBe("completed")); }
+  try { await eventually(() => expect(daemon.store.queries.turns("session_dispose")[0]?.state).toBe("completed")); }
   finally { await daemon.close(); }
   expect(disposed).toBe(1);
 });

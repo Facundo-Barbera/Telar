@@ -23,7 +23,7 @@ describe("creating a session", () => {
     expect(session.preparation).toMatchObject({ state: "preparing" });
     await worktreeReady(store, id);
     expect(fs.existsSync(path.join(workspacePath(session.workspace)!, "README.md"))).toBe(true);
-    expect(store.turns(id)).toEqual([]);
+    expect(store.queries.turns(id)).toEqual([]);
     expect(String(created.json!.note)).toContain("Nothing is queued and nothing has started");
   });
 
@@ -64,7 +64,7 @@ describe("there is no cap on creation", () => {
     for (let n = 0; n < 12; n++) {
       expect((await call(tools, "sessions_create", { projectId, envMode: "local", title: `worker ${n}` })).isError).toBe(false);
     }
-    expect(store.liveSessions().sessions.filter((session) => session.origin === "session")).toHaveLength(12);
+    expect(store.live.all().sessions.filter((session) => session.origin === "session")).toHaveLength(12);
     const create = tools.get("sessions_create")!.description;
     expect(create).not.toContain("cap");
     expect(TELAR_SKILL).toContain("There is no cap, so the discipline is");

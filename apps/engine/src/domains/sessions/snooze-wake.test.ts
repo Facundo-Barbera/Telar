@@ -62,7 +62,7 @@ function reopen(home: string, now: number) {
 }
 
 const wakes = (store: EngineStore, sessionId = "session_one") =>
-  store.readEvents(sessionId).filter((event) => event.type === "session.woke");
+  store.queries.readEvents(sessionId).filter((event) => event.type === "session.woke");
 
 test("a snooze that has run out wakes once, stamped at the DEADLINE and not at the tick", () => {
   const { store, clock } = setup();
@@ -126,7 +126,7 @@ test("a second reader, hours later and on its own clock, is handed the same mome
   expect(second.records.get("session_one").wokeAt).toBe(until);
   expect(second.records.get("session_one").wokeAt).not.toBe(later);
   // And it is on the wire the rail already reads, not only in the document.
-  const row = second.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_one");
+  const row = second.live.rows({ all: true }).sessions.find((session) => session.id === "session_one");
   expect(row?.wokeAt).toBe(until);
 });
 
@@ -172,7 +172,7 @@ test("the wake moves the revision the rail's conditional read is keyed on", () =
   const { store, clock } = setup();
   const until = START + HOUR;
   store.lifecycle.updateSession("session_one", { snoozedUntil: until });
-  const before = store.liveSessionRows().revision;
+  const before = store.live.rows().revision;
 
   clock.now = until + MINUTE;
   expect(store.settler.sweepSnoozeWakes()).toEqual(["session_one"]);
@@ -183,7 +183,7 @@ test("the wake moves the revision the rail's conditional read is keyed on", () =
   // which is the silent reappearance this whole change is about. This is the
   // sense in which the edge is delivered on the read the rail already makes —
   // #586's body is explicit that browser clients keep polling.
-  const after = store.liveSessionRows();
+  const after = store.live.rows();
   expect(after.revision).toBeGreaterThan(before);
   // On the DEFAULT answer, not only under `?all=1`: a live snooze is not
   // shelved (`isSettled` returns false for it deliberately), so the row was on
@@ -216,7 +216,7 @@ test("the event and the row the rail draws carry the SAME instant, from the one 
 
   const woke = wakes(store);
   expect(woke).toHaveLength(1);
-  const row = store.liveSessionRows().sessions.find((session) => session.id === "session_one");
+  const row = store.live.rows().sessions.find((session) => session.id === "session_one");
   expect(row?.wokeAt).toBe(woke[0]!.wokeAt);
   expect(row?.wokeAt).not.toBe(woke[0]!.at);
 });

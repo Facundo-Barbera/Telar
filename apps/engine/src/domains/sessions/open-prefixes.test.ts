@@ -21,7 +21,7 @@ describe("an open item's streamed prefix", () => {
 
   test("carries the text streamed so far, through the delta that last extended it", () => {
     const { store } = streaming();
-    const cursor = store.eventCursor("session_one");
+    const cursor = store.queries.eventCursor("session_one");
     const prefix = store.prefixes.get("session_one", "i1", cursor)!;
     expect(prefix.streamed).toBe("Once upon ");
     expect(prefix.streamedThrough).toBeLessThanOrEqual(cursor);
@@ -39,20 +39,20 @@ describe("an open item's streamed prefix", () => {
     store.ingest.ingestObservations("session_one", "run_one", token, [
       { kind: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" },
     ]);
-    const prefix = store.prefixes.get("session_one", "i1", store.eventCursor("session_one"))!;
+    const prefix = store.prefixes.get("session_one", "i1", store.queries.eventCursor("session_one"))!;
     expect(prefix.streamed).toBe("Once upon a time");
   });
 
   test("a cutoff behind the cache rebuilds the prefix exactly to it", () => {
     const { store, token } = streaming();
-    const behind = store.eventCursor("session_one");
+    const behind = store.queries.eventCursor("session_one");
     store.ingest.ingestObservations("session_one", "run_one", token, [
       { kind: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" },
     ]);
     // The cache now reaches further than the caller's cutoff, so the journal
     // decides — anything else would report text from the future.
     expect(store.prefixes.get("session_one", "i1", behind)!.streamed).toBe("Once upon ");
-    expect(store.prefixes.get("session_one", "i1", store.eventCursor("session_one"))!.streamed).toBe("Once upon a time");
+    expect(store.prefixes.get("session_one", "i1", store.queries.eventCursor("session_one"))!.streamed).toBe("Once upon a time");
   });
 
   test("an item left open by a stop keeps its text, cache or no cache", () => {
@@ -60,7 +60,7 @@ describe("an open item's streamed prefix", () => {
     // what the reader was shown — and it must outlive the process that held it.
     const { store } = streaming();
     forgetOpenPrefixes(store);
-    expect(store.prefixes.get("session_one", "i1", store.eventCursor("session_one"))!.streamed).toBe("Once upon ");
+    expect(store.prefixes.get("session_one", "i1", store.queries.eventCursor("session_one"))!.streamed).toBe("Once upon ");
   });
 
   test("two sessions' items with the same id do not share a prefix", () => {
@@ -73,8 +73,8 @@ describe("an open item's streamed prefix", () => {
       { kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } },
       { kind: "content.delta", itemId: "i1", stream: "assistant_text", text: "different" },
     ]);
-    expect(store.prefixes.get("session_one", "i1", store.eventCursor("session_one"))!.streamed).toBe("Once upon ");
-    expect(store.prefixes.get("session_two", "i1", store.eventCursor("session_two"))!.streamed).toBe("different");
+    expect(store.prefixes.get("session_one", "i1", store.queries.eventCursor("session_one"))!.streamed).toBe("Once upon ");
+    expect(store.prefixes.get("session_two", "i1", store.queries.eventCursor("session_two"))!.streamed).toBe("different");
     void token;
   });
 
@@ -85,7 +85,7 @@ describe("an open item's streamed prefix", () => {
     store.ingest.ingestObservations("session_one", "run_one", token, [
       { kind: "item.completed", itemId: "i1", status: "completed", detail: { type: "assistant_message", text: "Short." } },
     ]);
-    const item = store.items("session_one").find((row) => row.id === "i1")!;
+    const item = store.queries.items("session_one").find((row) => row.id === "i1")!;
     expect(item.status).toBe("completed");
     expect(item.detail).toMatchObject({ text: "Short." });
   });
@@ -116,6 +116,6 @@ test("#214 an item evicted from the prefix cache keeps streaming correctly", () 
   store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" },
   ]);
-  expect(store.prefixes.get("session_one", "i1", store.eventCursor("session_one"))!.streamed).toBe("Once upon a time");
+  expect(store.prefixes.get("session_one", "i1", store.queries.eventCursor("session_one"))!.streamed).toBe("Once upon a time");
   expect(openPrefixCount(store)).toBeLessThanOrEqual(64);
 });

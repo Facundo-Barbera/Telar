@@ -61,12 +61,12 @@ test("a session can be renamed, and a no-op update writes no journal row", () =>
   const { store } = readyStore();
   const renamed = store.lifecycle.updateSession("session_one", { title: "  Ship the parser  " });
   expect(renamed.title).toBe("Ship the parser");
-  expect(store.readEvents("session_one").filter((e) => e.type === "session.updated")).toHaveLength(1);
+  expect(store.queries.readEvents("session_one").filter((e) => e.type === "session.updated")).toHaveLength(1);
 
   // A client polling a save button must not fill the journal with rows saying
   // nothing happened.
   store.lifecycle.updateSession("session_one", { title: "Ship the parser" });
-  expect(store.readEvents("session_one").filter((e) => e.type === "session.updated")).toHaveLength(1);
+  expect(store.queries.readEvents("session_one").filter((e) => e.type === "session.updated")).toHaveLength(1);
 
   expect(() => store.lifecycle.updateSession("session_one", { title: "   " })).toThrow(/cannot be empty/);
   expect(() => store.lifecycle.updateSession("session_one", { runtimeMode: "yolo" as "auto" })).toThrow(/unknown runtime mode/);
@@ -105,7 +105,7 @@ test("a settled or snoozed session comes back on its own when a human queues wor
   expect(session.snoozedUntil).toBeUndefined();
   expect(session.snoozedAt).toBeUndefined();
   // The client is told, rather than having to poll for it.
-  expect(store.readEvents("session_one").filter((event) => event.type === "session.updated")).toHaveLength(2);
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "session.updated")).toHaveLength(2);
 });
 
 test("an effort can be set without naming a model, and clearing the model keeps it", () => {

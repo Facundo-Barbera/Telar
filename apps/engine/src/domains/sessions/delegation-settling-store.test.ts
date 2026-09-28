@@ -100,7 +100,7 @@ function deliver(fixture: Scene, runId: string, resultRunId = "run_result") {
 
 /** Run a turn on a session start to finish. */
 function runTurn(fixture: Scene, sessionId: string, runId: string, input = "…") {
-  const queued = fixture.store.turns(sessionId).some((turn) => turn.runId === runId);
+  const queued = fixture.store.queries.turns(sessionId).some((turn) => turn.runId === runId);
   if (!queued) fixture.store.intake.submitTurn(sessionId, { runId, input });
   const token = start(fixture, sessionId, runId);
   fixture.store.turnLifecycle.completeTurn(sessionId, runId, token, { text: "ok" });
@@ -130,7 +130,7 @@ test("DELIVERED → SETTLES AFTER THE GRACE, and the row says whose work it was"
   });
   // The reason is journalled once, for anything that wants to act on the
   // settling rather than re-derive it from two snapshots.
-  const events = fixture.store.readEvents("session_worker", 0);
+  const events = fixture.store.queries.readEvents("session_worker", 0);
   expect(events.filter((event) => event.type === "session.settled")).toHaveLength(1);
   // Idempotent: a second sweep finds a standing decision and leaves it alone.
   expect(fixture.store.settler.sweepDelegated()).toEqual([]);
@@ -218,7 +218,7 @@ test("DETACHED → SETTLES. A human already said this is nobody's errand", () =>
   // detach carve-out the row would wait for a delivery nobody is going to send.
   const token = start(fixture, "session_worker", "run_task");
   fixture.store.turnLifecycle.completeTurn("session_worker", "run_task", token, { text: "done" });
-  fixture.store.detachAssignments("session_worker");
+  fixture.store.lifecycle.detachAssignments("session_worker");
 
   fixture.advance(HOUR + 1);
   expect(fixture.store.settler.sweepDelegated()).toEqual(["session_worker"]);
@@ -279,7 +279,7 @@ test("A CONSUMED WAKE IS DELIVERY, and a wake that also re-tasked is not", () =>
   // The delegate finishes with no `result` — the wake is the only delivery.
   const token = start(fixture, "session_worker", "run_task");
   fixture.store.turnLifecycle.completeTurn("session_worker", "run_task", token, { text: "done" });
-  const wake = fixture.store.turns("session_coord").find((turn) => turn.wakeReason?.runId === "run_task");
+  const wake = fixture.store.queries.turns("session_coord").find((turn) => turn.wakeReason?.runId === "run_task");
   expect(wake).toBeDefined();
 
   // While the wake is still queued, nothing has been delivered.
@@ -296,7 +296,7 @@ test("A CONSUMED WAKE IS DELIVERY, and a wake that also re-tasked is not", () =>
   // Once THAT errand finishes and is delivered, the row settles on the wake.
   const second = start(fixture, "session_worker", "run_task_2");
   fixture.store.turnLifecycle.completeTurn("session_worker", "run_task_2", second, { text: "done" });
-  const secondWake = fixture.store.turns("session_coord").find((turn) => turn.wakeReason?.runId === "run_task_2");
+  const secondWake = fixture.store.queries.turns("session_coord").find((turn) => turn.wakeReason?.runId === "run_task_2");
   const secondToken = start(fixture, "session_coord", secondWake!.runId);
   fixture.store.turnLifecycle.completeTurn("session_coord", secondWake!.runId, secondToken, { text: "thanks" });
 

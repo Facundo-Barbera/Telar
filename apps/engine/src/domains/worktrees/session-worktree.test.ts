@@ -298,7 +298,7 @@ test("archiving frees the checkout and KEEPS the branch", async () => {
   // would be worse than one that never ran.
   const branches = execFileSync("git", ["branch", "--list", "telar/session_one"], { cwd: projectRoot, encoding: "utf8" });
   expect(branches.trim()).toContain("telar/session_one");
-  expect(store.readEvents("session_one").at(-1)?.type).toBe("session.archived");
+  expect(store.queries.readEvents("session_one").at(-1)?.type).toBe("session.archived");
 });
 
 test("archiving refuses while a turn is in flight", () => {
@@ -321,7 +321,7 @@ test("archiving is idempotent", () => {
   store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   expect(store.lifecycle.archiveSession("session_one").state).toBe("archived");
   expect(store.lifecycle.archiveSession("session_one").state).toBe("archived");
-  expect(store.readEvents("session_one").filter((event) => event.type === "session.archived")).toHaveLength(1);
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "session.archived")).toHaveLength(1);
 });
 
 test("a worktree cut from a NAMED base starts at that commit, not HEAD", async () => {

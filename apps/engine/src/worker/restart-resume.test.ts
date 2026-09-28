@@ -46,7 +46,7 @@ function writeMarker(store: EngineStore, marker: unknown): void {
   fs.writeFileSync(store.paths.plannedRestart, JSON.stringify(marker));
 }
 
-const continuations = (store: EngineStore, sessionId: string) => store.turns(sessionId).filter((turn) => turn.origin === "restart");
+const continuations = (store: EngineStore, sessionId: string) => store.queries.turns(sessionId).filter((turn) => turn.origin === "restart");
 
 test("a planned update restart with the setting on continues each interrupted session exactly once", () => {
   const { store } = home();
@@ -71,10 +71,10 @@ test("a planned update restart with the setting on continues each interrupted se
     // The engine's words, not the person's: no sender, no wake, nothing typed.
     expect(resumed[0]!.sender).toBeUndefined();
     // The cut-off turn itself stays stopped — never replayed.
-    expect(store.turns(sessionId).find((turn) => turn.runId === interrupted)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+    expect(store.queries.turns(sessionId).find((turn) => turn.runId === interrupted)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
   }
   // The pre-restart backlog is stopped as it always was; the continuation is the one thing queued.
-  expect(store.turns("session_one").filter((turn) => turn.state === "queued").map((turn) => turn.origin)).toEqual(["restart"]);
+  expect(store.queries.turns("session_one").filter((turn) => turn.state === "queued").map((turn) => turn.origin)).toEqual(["restart"]);
   expect(fs.existsSync(store.paths.plannedRestart)).toBe(false);
   // And it is claimable like any other turn.
   expect(store.claims.claimTurn("session_one", "worker_two")?.origin).toBe("restart");
@@ -84,7 +84,7 @@ test("a turn the worker settled as interrupted on the way out is continued too",
   const { store } = home();
   store.settings.setSessionDefaults({ resumeAfterRestart: true });
   runningTurn(store, "session_one", "run_one");
-  const token = store.turns("session_one")[0]!.claim!.token;
+  const token = store.queries.turns("session_one")[0]!.claim!.token;
   store.turnLifecycle.failTurn("session_one", "run_one", token, { code: "interrupted", message: "Telar shut down while this turn was running." });
   writeMarker(store, { version: 1, reason: "update", at: NOW - 1_000 });
 
@@ -99,7 +99,7 @@ test("a turn stopped because its worker was retired on the way out is continued 
   runningTurn(store, "session_one", "run_one");
   // A clean quit retires the embedded registration before the worker can say `interrupted`.
   store.recovery.retireWorkerRegistration("worker_one");
-  expect(store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
+  expect(store.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
   writeMarker(store, { version: 1, reason: "update", at: NOW - 1_000 });
 
   expect(store.recovery.recover()).toEqual({ stopped: [] });
@@ -131,7 +131,7 @@ test("an update restart that quits the real daemon mid-turn continues the sessio
 
   const second = await startEngine({ models: stubModels, engineRoot: root });
   daemons.push(second);
-  const turns = second.store.turns("session_one");
+  const turns = second.store.queries.turns("session_one");
   expect(turns.find((turn) => turn.runId === "run_one")?.state).toBe("stopped");
   expect(turns.filter((turn) => turn.origin === "restart").map((turn) => turn.restartOrigin?.interruptedRunId)).toEqual(["run_one"]);
 });
@@ -151,7 +151,7 @@ test("a crash leaves no marker, so nothing is continued", () => {
   runningTurn(store, "session_one", "run_one");
   store.recovery.recover();
   expect(continuations(store, "session_one")).toHaveLength(0);
-  expect(store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  expect(store.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
 });
 
 test("a stale or malformed marker continues nothing and is deleted", () => {
@@ -191,7 +191,7 @@ test("a turn the person stopped, and a settled or archived session, are not cont
   writeMarker(store, { version: 1, reason: "update", at: NOW - 60_000 });
 
   store.recovery.recover();
-  expect(store.turns("session_stopped")[0]).toMatchObject({ state: "stopped", stopReason: "user" });
+  expect(store.queries.turns("session_stopped")[0]).toMatchObject({ state: "stopped", stopReason: "user" });
   expect(continuations(store, "session_stopped")).toHaveLength(0);
   expect(continuations(store, "session_settled")).toHaveLength(0);
   expect(store.records.get("session_settled").settledOverride).toBe("settled");

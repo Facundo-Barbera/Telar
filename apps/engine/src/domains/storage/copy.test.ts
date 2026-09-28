@@ -76,8 +76,8 @@ test("the copy opens, and holds the conversation the original holds", () => {
   const opened = new EngineStore(destination, () => START);
   stores.push(opened);
   expect(opened.records.get("session_one").id).toBe("session_one");
-  expect(opened.turns("session_one")[0]?.input).toBe("what is in there");
-  expect(opened.readEvents("session_one").length).toBe(store.readEvents("session_one").length);
+  expect(opened.queries.turns("session_one")[0]?.input).toBe("what is in there");
+  expect(opened.queries.readEvents("session_one").length).toBe(store.queries.readEvents("session_one").length);
   expect(opened.projectRegistry.list().map((project) => project.id)).toEqual(["project_one"]);
 });
 
@@ -119,7 +119,7 @@ test("the reproducible tier is not carried, and neither is the live daemon's loc
 test("the original is not touched — no vacuum, no compaction, no watermark", () => {
   const { home, store } = scene();
   const file = path.join(home, "execution.sqlite");
-  const before = { size: fs.statSync(file).size, events: store.readEvents("session_one").length };
+  const before = { size: fs.statSync(file).size, events: store.queries.readEvents("session_one").length };
   const destination = path.join(home, "..", `telar-copy-readonly-${Date.now()}`);
   homes.push(destination);
   store.copyStoreTo(destination);
@@ -131,7 +131,7 @@ test("the original is not touched — no vacuum, no compaction, no watermark", (
    * size does not move.
    */
   expect(fs.statSync(file).size).toBe(before.size);
-  expect(store.readEvents("session_one").length).toBe(before.events);
+  expect(store.queries.readEvents("session_one").length).toBe(before.events);
 });
 
 test("a destination that already exists is refused rather than written into", () => {

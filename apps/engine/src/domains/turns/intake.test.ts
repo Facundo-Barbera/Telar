@@ -22,7 +22,7 @@ test("submitting a stable run id is idempotent and a session has only one active
   expect(initial.replayed).toBe(false);
   expect(store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" })).toEqual({ ...initial, replayed: true });
   expect(() => store.intake.submitTurn("session_one", { runId: "run_one", input: "Different" })).toThrow(EngineStateError);
-  expect(store.readEvents("session_one").map((event) => event.type)).toEqual(["session.created", "turn.accepted"]);
+  expect(store.queries.readEvents("session_one").map((event) => event.type)).toEqual(["session.created", "turn.accepted"]);
 
   // A SECOND SUBMISSION IS NOW ACCEPTED AND QUEUED, where it used to be a
   // conflict. What has NOT changed is that only one turn ever executes:
@@ -43,7 +43,7 @@ test("a message while a turn runs STEERS into it; one that cannot be delivered r
   // as it does in T3 Code and at any running CLI. Nothing waits for "Send now".
   const second = store.intake.submitTurn("session_one", { runId: "run_two", input: "Second" });
   expect(second.turn).toMatchObject({ state: "steering", steer: { intoRunId: "run_one" } });
-  expect(store.readEvents("session_one").slice(-2).map((event) => event.type)).toEqual(["turn.accepted", "turn.steering"]);
+  expect(store.queries.readEvents("session_one").slice(-2).map((event) => event.type)).toEqual(["turn.accepted", "turn.steering"]);
   store.intake.submitTurn("session_one", { runId: "run_three", input: "Third" });
 
   // Still exactly ONE turn executing: nothing may be claimed while one runs.
@@ -52,7 +52,7 @@ test("a message while a turn runs STEERS into it; one that cannot be delivered r
   // The worker delivers the first; the turn ends before the second lands.
   store.turnLifecycle.ackSteer("session_one", "run_two", claimed.claim!.token);
   store.turnLifecycle.completeTurn("session_one", "run_one", claimed.claim!.token, { text: "done" });
-  const turns = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
+  const turns = new Map(store.queries.turns("session_one").map((turn) => [turn.runId, turn]));
   expect(turns.get("run_two")?.state).toBe("steered");
   // NOT LOST: the undelivered one is back to queued and runs as its own turn.
   expect(turns.get("run_three")?.state).toBe("queued");
@@ -99,10 +99,10 @@ describe("a message typed into a session that had already been claimed", () => {
 
     store.intake.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
     // Still no provider to steer into, exactly as before.
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
 
     store.turnLifecycle.markRunning("session_one", "run_live", claim.claim!.token);
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")).toMatchObject({
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_typed")).toMatchObject({
       state: "steering",
       steer: { intoRunId: "run_live" },
     });
@@ -112,7 +112,7 @@ describe("a message typed into a session that had already been claimed", () => {
       text: "Hello?",
     });
     // And the journal says the turn began before anything was steered into it.
-    const events = store.readEvents("session_one");
+    const events = store.queries.readEvents("session_one");
     const started = events.findIndex((event) => event.type === "turn.started" && event.runId === "run_live");
     const steering = events.findIndex((event) => event.type === "turn.steering" && event.runId === "run_typed");
     expect(started).toBeGreaterThan(-1);
@@ -128,7 +128,7 @@ describe("a message typed into a session that had already been claimed", () => {
     store.intake.submitTurn("session_one", { runId: "run_backlog", input: "then this" });
     const claim = store.claims.claimTurn("session_one", "worker_one")!;
     store.turnLifecycle.markRunning("session_one", "run_first", claim.claim!.token);
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_backlog")!.state).toBe("queued");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_backlog")!.state).toBe("queued");
     expect(store.worker.steerForWorker("worker_one")).toEqual([]);
   });
 
@@ -143,7 +143,7 @@ describe("a message typed into a session that had already been claimed", () => {
     expect(() => store.turnLifecycle.markRunning("session_one", "run_live", claim.claim!.token)).toThrow(EngineStateError);
     // And the message written into the window is settled with it — not held
     // for a decision, and not left to run by itself later.
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_late")).toMatchObject({ state: "stopped", stopReason: "user" });
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_late")).toMatchObject({ state: "stopped", stopReason: "user" });
     expect(store.claims.claimTurn("session_one", "worker_two")).toBeUndefined();
   });
 
@@ -153,10 +153,10 @@ describe("a message typed into a session that had already been claimed", () => {
     const claim = store.claims.claimTurn("session_one", "worker_one")!;
     store.intake.submitTurn("session_one", { runId: "run_late", input: "typed late" });
     store.turnLifecycle.markRunning("session_one", "run_live", claim.claim!.token);
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_late")?.state).toBe("steering");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_late")?.state).toBe("steering");
 
     store.turnLifecycle.stopSession("session_one");
-    const late = store.turns("session_one").find((turn) => turn.runId === "run_late")!;
+    const late = store.queries.turns("session_one").find((turn) => turn.runId === "run_late")!;
     // Undelivered, so it ends here rather than going back to the queue to be
     // claimed a heartbeat later — which is what made Stop start the next thing.
     expect(late).toMatchObject({ state: "stopped", stopReason: "user", input: "typed late" });
@@ -173,7 +173,7 @@ describe("a message typed into a session that had already been claimed", () => {
     expect(claim.runId).toBe("run_squeeze");
     store.intake.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
     store.turnLifecycle.markRunning("session_one", "run_squeeze", claim.claim!.token);
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
     expect(store.worker.steerForWorker("worker_one")).toEqual([]);
   });
 
@@ -183,7 +183,7 @@ describe("a message typed into a session that had already been claimed", () => {
     const claim = store.claims.claimTurn("session_one", "worker_one")!;
     store.intake.submitTurn("session_one", { runId: "run_squeeze", input: "/compact", kind: "compact" });
     store.turnLifecycle.markRunning("session_one", "run_live", claim.claim!.token);
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_squeeze")!.state).toBe("queued");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_squeeze")!.state).toBe("queued");
   });
 
   test("a target REQUEUED and claimed again does not inherit the old window's messages", () => {
@@ -202,13 +202,13 @@ describe("a message typed into a session that had already been claimed", () => {
      * that no longer exists.
      */
     store.recovery.retireWorkerRegistration("worker_one");
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_live")).toMatchObject({
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_live")).toMatchObject({
       state: "stopped",
       stopReason: "worker_unavailable",
     });
     // The message written into the abandoned attempt's window is NOT swept up
     // with it — it was never that worker's, and the person still means it.
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
     // So it is what runs next, on its own terms rather than steered into a
     // turn that no longer exists.
     const second = store.claims.claimTurn("session_one", "worker_two")!;
@@ -230,7 +230,7 @@ describe("a message typed into a session that had already been claimed", () => {
     });
 
     store.turnLifecycle.markRunning("session_one", "run_live", claim.claim!.token);
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
   });
 });
 
@@ -254,7 +254,7 @@ describe("an agent's message is attributed, never the person's", () => {
     const { turn } = store.intake.submitAgentTurn("session_two", { intent: "task", runId: "run_sent", input: "please do X" }, { sessionId: "session_one", runId: "run_host", claimToken: token });
     expect(turn).toMatchObject({ origin: "session", sender: { sessionId: "session_one" }, state: "queued", input: "please do X" });
     expect(turn.wakeReason).toBeUndefined();
-    expect(store.readEvents("session_two").filter((event) => event.type === "turn.accepted").at(-1)).toMatchObject({
+    expect(store.queries.readEvents("session_two").filter((event) => event.type === "turn.accepted").at(-1)).toMatchObject({
       type: "turn.accepted",
       turn: { origin: "session", sender: { sessionId: "session_one" } },
     });
@@ -320,7 +320,7 @@ describe("an agent's message is attributed, never the person's", () => {
 
     const rebooted = new EngineStore(stateRoot, () => 200);
     expect(rebooted.recovery.recover().stopped).toContain("run_host");
-    const host = rebooted.turns("session_one").find((turn) => turn.runId === "run_host")!;
+    const host = rebooted.queries.turns("session_one").find((turn) => turn.runId === "run_host")!;
     expect(host).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
     expect(host.claim).toBeUndefined();
 
@@ -375,7 +375,7 @@ describe("an agent's message is attributed, never the person's", () => {
     const claimedDirect = store.claims.claimTurn("session_two", "worker_one")!;
     store.turnLifecycle.markRunning("session_two", "run_direct", claimedDirect.claim!.token);
     store.turnLifecycle.completeTurn("session_two", "run_direct", claimedDirect.claim!.token, { text: "finished the job" });
-    const wake = store.turns("session_one").find((turn) => turn.wakeReason);
+    const wake = store.queries.turns("session_one").find((turn) => turn.wakeReason);
     expect(wake?.wakeReason).toMatchObject({ kind: "turn_completed", runId: "run_direct" });
   });
 });

@@ -85,7 +85,7 @@ test("full-access resolves by policy with no human and nobody notified", () => {
   expect(opened).toMatchObject({ state: "resolved", decision: "accept", resolvedBy: "policy" });
   // Nothing parked, so nothing to notify about.
   expect(parked).toEqual([]);
-  const types = store.readEvents("session_one").map((event) => event.type);
+  const types = store.queries.readEvents("session_one").map((event) => event.type);
   expect(types.filter((type) => type.startsWith("request."))).toEqual(["request.opened", "request.resolved"]);
 });
 

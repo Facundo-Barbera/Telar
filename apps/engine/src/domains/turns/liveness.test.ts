@@ -118,7 +118,7 @@ test("a session whose checkout failed fails its queued turn instead of parking i
   expect(store.records.get(sessionId).preparation?.state).toBe("failed");
 
   store.intake.submitTurn(sessionId, { runId: "run_one", input: "start" });
-  expect(store.turns(sessionId).map((turn) => turn.state)).toEqual(["queued"]);
+  expect(store.queries.turns(sessionId).map((turn) => turn.state)).toEqual(["queued"]);
 
   // TEN SCAN TICKS, not one. The defect was a turn that waited FOREVER, so a
   // single tick would not tell a fix from a delay — and a scan that failed the
@@ -126,7 +126,7 @@ test("a session whose checkout failed fails its queued turn instead of parking i
   // failure rather than passing quietly.
   for (let tick = 0; tick < 10; tick += 1) expect(store.claims.claimNextTurn("worker_one")).toBeUndefined();
 
-  const turns = store.turns(sessionId);
+  const turns = store.queries.turns(sessionId);
   expect(turns).toHaveLength(1);
   expect(turns[0]!.state).toBe("failed");
   expect(turns[0]!.failure?.code).toBe("workspace_unavailable");
@@ -134,7 +134,7 @@ test("a session whose checkout failed fails its queued turn instead of parking i
   // say — not by grepping for words that both failure paths would produce.
   expect(turns[0]!.failure?.message).toContain(CUT_FAILURE);
   // And it ended once: one terminal record for one turn.
-  expect(store.readEvents(sessionId).filter((event) => event.type === "turn.failed")).toHaveLength(1);
+  expect(store.queries.readEvents(sessionId).filter((event) => event.type === "turn.failed")).toHaveLength(1);
 });
 
 test("a session whose checkout is still being cut keeps its turn queued across the same ticks", () => {
@@ -146,13 +146,13 @@ test("a session whose checkout is still being cut keeps its turn queued across t
   store.intake.submitTurn(sessionId, { runId: "run_one", input: "start" });
   for (let tick = 0; tick < 10; tick += 1) expect(store.claims.claimNextTurn("worker_one")).toBeUndefined();
 
-  const turns = store.turns(sessionId);
+  const turns = store.queries.turns(sessionId);
   expect(turns).toHaveLength(1);
   // STILL QUEUED — #496's behaviour, kept exactly. A message is not lost by
   // waiting for a checkout that is on its way.
   expect(turns[0]!.state).toBe("queued");
   expect(turns[0]!.failure).toBeUndefined();
-  expect(store.readEvents(sessionId).filter((event) => event.type === "turn.failed")).toHaveLength(0);
+  expect(store.queries.readEvents(sessionId).filter((event) => event.type === "turn.failed")).toHaveLength(0);
 });
 
 test("and a session with a checkout is unaffected: its turn is claimed like any other", async () => {
@@ -186,7 +186,7 @@ function runningTurn(now: () => number) {
 }
 
 const turnOf = (store: EngineStore, sessionId: string, runId: string): Turn => {
-  const turn = store.turns(sessionId).find((candidate) => candidate.runId === runId);
+  const turn = store.queries.turns(sessionId).find((candidate) => candidate.runId === runId);
   if (!turn) throw new Error(`no turn ${runId}`);
   return turn;
 };
@@ -216,8 +216,8 @@ test("a running turn that journals nothing for longer than the threshold is repo
   expect(turn.stalled!.noticedAt).toBe(time.at());
   expect(turn.lastProgressAt).toBe(turn.startedAt);
   // ADVISORY, NOT A KILL. Nothing was stopped, failed or requeued.
-  expect(store.turns(sessionId).filter((candidate) => candidate.state === "running")).toHaveLength(1);
-  expect(store.readEvents(sessionId).filter((event) => event.type === "turn.stopped" || event.type === "turn.failed")).toHaveLength(0);
+  expect(store.queries.turns(sessionId).filter((candidate) => candidate.state === "running")).toHaveLength(1);
+  expect(store.queries.readEvents(sessionId).filter((event) => event.type === "turn.stopped" || event.type === "turn.failed")).toHaveLength(0);
 });
 
 /**
@@ -314,8 +314,8 @@ test("the advisory is withdrawn the moment evidence arrives again, and the turn 
   expect(turn.state).toBe("running");
   // It tracks the present rather than accusing the turn of its history: one
   // turn, still running, and no terminal record anywhere in the journal.
-  expect(store.turns(sessionId)).toHaveLength(1);
-  expect(store.readEvents(sessionId).filter((event) => event.type === "turn.failed" || event.type === "turn.stopped")).toHaveLength(0);
+  expect(store.queries.turns(sessionId)).toHaveLength(1);
+  expect(store.queries.readEvents(sessionId).filter((event) => event.type === "turn.failed" || event.type === "turn.stopped")).toHaveLength(0);
 });
 
 test("a queued turn is never stalled, however long it waits", () => {

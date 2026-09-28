@@ -224,7 +224,7 @@ test("a pending session create, draft promotion, diff and overview leave the eve
 
   // …and a streaming session's event still lands while they wait.
   store.intake.submitTurn("session_live", { runId: "run_live", input: "still here" });
-  expect(store.turns("session_live").map((turn) => turn.runId)).toContain("run_live");
+  expect(store.queries.turns("session_live").map((turn) => turn.runId)).toContain("run_live");
 
   git.open();
   const [created, cut] = await pending;

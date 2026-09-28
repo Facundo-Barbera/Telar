@@ -41,7 +41,7 @@ function setup() {
 }
 
 type Proof = Parameters<EngineStore["intake"]["submitAgentTurn"]>[2];
-const queued = (store: EngineStore) => store.turns("session_host").filter((turn) => turn.state === "queued");
+const queued = (store: EngineStore) => store.queries.turns("session_host").filter((turn) => turn.state === "queued");
 const send = (store: EngineStore, proof: Proof, runId: string, intent: "report" | "result" | "blocker" | "task", input = "progress") =>
   store.intake.submitAgentTurn("session_host", { runId, input, intent }, proof);
 
@@ -135,7 +135,7 @@ test("a correction to a message still WAITING as a wake replaces it", () => {
   expect(send(store, proof, "run_wrong", "result").turn.state).toBe("queued");
   const fixed = correct(store, proof, "run_fixed", "run_wrong", "result");
   expect(queued(store).map((turn) => turn.runId)).toEqual(["run_fixed"]);
-  expect(store.turns("session_host").find((turn) => turn.runId === "run_wrong")).toMatchObject({ state: "discarded" });
+  expect(store.queries.turns("session_host").find((turn) => turn.runId === "run_wrong")).toMatchObject({ state: "discarded" });
   expect(fixed.turn).toMatchObject({ corrects: "run_wrong", agentDelivery: "wake" });
   expect(fixed.turn.agentNotice).toContain("It CORRECTS their earlier message (run run_wrong); disregard that one.");
 });

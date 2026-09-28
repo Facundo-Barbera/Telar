@@ -43,7 +43,7 @@ describe("read receipts", () => {
     store.records.markRead("session_one", "run_one");
     expect(store.records.get("session_one").updatedAt).toBe(before);
     // The change is still announced, so other surfaces stop calling it unread.
-    expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "session.updated" });
+    expect(store.queries.readEvents("session_one").at(-1)).toMatchObject({ type: "session.updated" });
   });
 
   test("a receipt for a turn that is not a result is refused", () => {
@@ -83,11 +83,11 @@ describe("read receipts", () => {
     store.turnLifecycle.ackSteer("session_one", "run_steer", token);
     store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "done" });
 
-    const steered = store.turns("session_one").find((turn) => turn.runId === "run_steer")!;
+    const steered = store.queries.turns("session_one").find((turn) => turn.runId === "run_steer")!;
     expect(steered.state).toBe("steered");
     // The steered turn has the HIGHER sequence and the LATER end, and neither
     // makes it the answer.
-    expect(steered.sequence).toBeGreaterThan(store.turns("session_one").find((turn) => turn.runId === "run_one")!.sequence);
+    expect(steered.sequence).toBeGreaterThan(store.queries.turns("session_one").find((turn) => turn.runId === "run_one")!.sequence);
     const session = store.records.get("session_one");
     expect(session.lastTurnSequence).toBe(1);
     // Which means the reader can actually clear it.

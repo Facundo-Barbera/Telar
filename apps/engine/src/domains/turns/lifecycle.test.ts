@@ -22,9 +22,9 @@ test("stop is durable and idempotent", () => {
   const { store } = readyStore();
   store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   expect(store.turnLifecycle.stopTurn("session_one", "run_one").stopped).toBe(true);
-  expect(store.turns("session_one")[0]?.state).toBe("stopped");
+  expect(store.queries.turns("session_one")[0]?.state).toBe("stopped");
   expect(store.turnLifecycle.stopTurn("session_one", "run_one").stopped).toBe(false);
-  expect(store.readEvents("session_one").at(-1)?.type).toBe("turn.stopped");
+  expect(store.queries.readEvents("session_one").at(-1)?.type).toBe("turn.stopped");
 });
 
 test("a stopped turn closes the tool row it was inside; a background task is left alone", () => {
@@ -40,23 +40,23 @@ test("a stopped turn closes the tool row it was inside; a background task is lef
   ]);
   expect(store.turnLifecycle.stopTurn("session_one", "run_one").stopped).toBe(true);
 
-  const byId = new Map(store.items("session_one").map((item) => [item.id, item]));
+  const byId = new Map(store.queries.items("session_one").map((item) => [item.id, item]));
   expect(byId.get("shell")).toMatchObject({ status: "failed", completedAt: 100 });
   expect(byId.get("done")?.status).toBe("completed");
-  expect(store.tasks("session_one").find((task) => task.id === "task_bg")?.state).toBe("running");
-  const closes = store.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell");
+  expect(store.queries.tasks("session_one").find((task) => task.id === "task_bg")?.state).toBe("running");
+  const closes = store.queries.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell");
   expect(closes).toHaveLength(1);
   // Idempotent: a second sweep finds nothing open.
   expect(store.recovery.recover()).toEqual({ stopped: [] });
-  expect(store.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell")).toHaveLength(1);
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell")).toHaveLength(1);
 });
 
 test("discard cannot alter a non-ambiguous turn", () => {
   const { store } = readyStore();
   store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   expect(() => store.turnLifecycle.discardAmbiguousTurn("session_one", "run_one")).toThrow(/only an ambiguous turn/);
-  expect(store.turns("session_one")[0]).toMatchObject({ runId: "run_one", state: "queued" });
-  expect(store.readEvents("session_one").map((event) => event.type)).toEqual(["session.created", "turn.accepted"]);
+  expect(store.queries.turns("session_one")[0]).toMatchObject({ runId: "run_one", state: "queued" });
+  expect(store.queries.readEvents("session_one").map((event) => event.type)).toEqual(["session.created", "turn.accepted"]);
 });
 
 test("stopping a turn sweeps its sub-agents but SPARES background work", () => {
@@ -75,13 +75,13 @@ test("stopping a turn sweeps its sub-agents but SPARES background work", () => {
 
   store.turnLifecycle.stopTurn("session_one", "run_one");
 
-  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  const byId = new Map(store.queries.tasks("session_one").map((task) => [task.id, task]));
   // The turn's own agent is swept — no process is running it any more.
   expect(byId.get("task_a")).toMatchObject({ state: "failed" });
   // The background task SURVIVES the turn Stop, exactly as it survives a normal
   // turn end — the interrupt spared it.
   expect(byId.get("task_b")).toMatchObject({ state: "running" });
-  expect(store.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
+  expect(store.queries.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
 });
 
 test("stop with nothing running settles lingering background work", () => {
@@ -104,7 +104,7 @@ test("stop with nothing running settles lingering background work", () => {
 
   const result = store.turnLifecycle.stopTurn("session_one");
   expect(result.stopped).toBe(true);
-  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  const byId = new Map(store.queries.tasks("session_one").map((task) => [task.id, task]));
   expect(byId.get("task_b")).toMatchObject({ state: "stopped", failure: "stopped from the cockpit" });
   expect(store.records.get("session_one").activity).toBe("idle");
   // A second press has nothing left to stop.
@@ -126,7 +126,7 @@ describe("stop is stop — there is no pause to resume", () => {
     const { store } = busy();
     store.intake.submitTurn("session_one", { runId: "run_steered", input: "also this" });
     store.pauseSession("session_one"); // the deprecated alias — same verb now
-    const states = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
+    const states = new Map(store.queries.turns("session_one").map((turn) => [turn.runId, turn]));
     expect(states.get("run_live")).toMatchObject({ state: "stopped", stopReason: "user" });
     expect(states.get("run_steered")).toMatchObject({ state: "stopped", stopReason: "user" });
     // NOT held, and not requeued — requeueing is what made stop start the
@@ -149,7 +149,7 @@ describe("stop is stop — there is no pause to resume", () => {
     const { store } = busy();
     store.intake.submitTurn("session_one", { runId: "run_queued", input: "the thing I typed" });
     store.turnLifecycle.stopSession("session_one");
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_queued")).toMatchObject({
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_queued")).toMatchObject({
       state: "stopped",
       input: "the thing I typed",
     });
@@ -161,7 +161,7 @@ describe("stop is stop — there is no pause to resume", () => {
     store.intake.submitTurn("session_one", { runId: "run_heard", input: "heard this" });
     store.turnLifecycle.ackSteer("session_one", "run_heard", token);
     store.turnLifecycle.stopSession("session_one");
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_heard")?.state).toBe("steered");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_heard")?.state).toBe("steered");
   });
 
   test("stopping wakes a subscriber once — for the live turn, not once per cancelled message", () => {
@@ -175,7 +175,7 @@ describe("stop is stop — there is no pause to resume", () => {
     store.intake.submitTurn("session_two", { runId: "run_q2", input: "two" });
 
     store.turnLifecycle.stopSession("session_two");
-    const wakes = store.turns("session_one").filter((turn) => turn.origin === "session");
+    const wakes = store.queries.turns("session_one").filter((turn) => turn.origin === "session");
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.wakeReason).toMatchObject({ kind: "turn_stopped", sessionId: "session_two", runId: "run_live" });
   });
@@ -187,7 +187,7 @@ describe("stop is stop — there is no pause to resume", () => {
     store.intake.submitTurn("session_one", { runId: "run_q", input: "queued" });
     store.turnLifecycle.stopSession("session_one");
     expect(store.records.get("session_one").paused).toBeUndefined();
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_q")?.state).toBe("stopped");
+    expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_q")?.state).toBe("stopped");
   });
 
   for (const foreground of [true, false]) {
@@ -206,15 +206,15 @@ describe("stop is stop — there is no pause to resume", () => {
       ]);
 
       store.turnLifecycle.stopSession("session_one");
-      expect(store.tasks("session_one")[0]?.state).toBe("stopped");
+      expect(store.queries.tasks("session_one")[0]?.state).toBe("stopped");
       const queued = store.sessionTasks.stopsForWorker("worker_one");
       expect(queued.map(({ sessionId, providerTaskId }) => ({ sessionId, providerTaskId }))).toEqual([{ sessionId: "session_one", providerTaskId: "provider_bg" }]);
       store.sessionTasks.stopsForWorker("worker_one", queued.map((stop) => stop.deliveryId!));
       store.ingest.reportSessionTasks("session_one", "worker_one", [
         { kind: "task.progress", task: { id: "task_bg", kind: "background", state: "running", title: "late report" } },
       ]);
-      expect(store.tasks("session_one")[0]?.state).toBe("stopped");
-      expect(store.tasks("session_other")[0]?.state).toBe("running");
+      expect(store.queries.tasks("session_one")[0]?.state).toBe("stopped");
+      expect(store.queries.tasks("session_other")[0]?.state).toBe("running");
       store.turnLifecycle.stopSession("session_one");
       expect(store.sessionTasks.stopsForWorker("worker_one")).toEqual([]);
       store.intake.submitTurn("session_one", { runId: "run_after", input: "continue" });
@@ -230,8 +230,8 @@ describe("stop is stop — there is no pause to resume", () => {
     store.closeExecutionStore();
     const legacy = new EngineStore(directory, () => 200);
     legacy.turnLifecycle.stopSession("session_one");
-    expect(legacy.turns("session_one")[0]).toMatchObject({ state: "stopped", input: "keep these words" });
-    expect(legacy.turns("session_one")[0]?.held).toBeUndefined();
+    expect(legacy.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", input: "keep these words" });
+    expect(legacy.queries.turns("session_one")[0]?.held).toBeUndefined();
     expect(legacy.records.get("session_one").paused).toBeUndefined();
     expect(legacy.claims.claimTurn("session_one", "worker_one")).toBeUndefined();
     legacy.intake.submitTurn("session_one", { runId: "run_after", input: "new instruction" });
@@ -249,7 +249,7 @@ describe("stop is stop — there is no pause to resume", () => {
     const { store, token } = busy();
     store.turnLifecycle.stopSession("session_one");
     expect(() => store.turnLifecycle.completeTurn("session_one", "run_live", token, { text: "done" })).toThrow(EngineStateError);
-    expect(store.turns("session_one")[0]?.state).toBe("stopped");
+    expect(store.queries.turns("session_one")[0]?.state).toBe("stopped");
   });
 
   test("resume is inert: there is no latch to lift", () => {
@@ -280,7 +280,7 @@ test("a turn that fails while parked on a question retires the question; the ses
   const request = store.requestGate.list("session_one").find((candidate) => candidate.id === "req_question");
   expect(request).toMatchObject({ state: "resolved", decision: "cancel", resolvedBy: "cancelled", resolvedAt: 100 });
   expect(store.records.get("session_one")).toMatchObject({ activity: "idle", lastTurnFailed: true });
-  expect(store.readEvents("session_one").filter((event) => event.type === "request.resolved" && event.requestId === "req_question")).toHaveLength(1);
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "request.resolved" && event.requestId === "req_question")).toHaveLength(1);
   // Nothing left for a human to answer — and answering again is refused.
   expect(() => store.requestGate.resolve("session_one", "req_question", { decision: "accept" })).toThrow(/already been resolved/);
   // The next human turn is accepted: the session is not stuck behind the question.
@@ -329,5 +329,5 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
   const awayBoot = new EngineStore(awayRoot, () => 300);
   expect(() => awayBoot.turnLifecycle.releaseHeldTurn("session_one", "run_held")).toThrow(/removed from Telar/);
   // ...and it is still held afterwards, rather than half-released by a throw.
-  expect(awayBoot.turns("session_one")[0]?.held).toBeDefined();
+  expect(awayBoot.queries.turns("session_one")[0]?.held).toBeDefined();
 });

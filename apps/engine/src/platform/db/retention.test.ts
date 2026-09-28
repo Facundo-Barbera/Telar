@@ -27,9 +27,9 @@ function build(plan: (engine: EngineStore, set: (at: number) => void) => void): 
   plan(engine, (at) => { clock = at; });
   const events: Record<string, number> = {};
   const cursors: Record<string, number> = {};
-  for (const session of engine.listSessions("project_one")) {
-    events[session.id] = engine.readEvents(session.id).length;
-    cursors[session.id] = engine.eventCursor(session.id);
+  for (const session of engine.live.list("project_one")) {
+    events[session.id] = engine.queries.readEvents(session.id).length;
+    cursors[session.id] = engine.queries.eventCursor(session.id);
   }
   engine.closeExecutionStore();
   return { home, exportTo: path.join(home, "exports"), events, cursors };
@@ -193,7 +193,7 @@ test("the rail survives: the row, its summaries and its search row outlive the j
 
   const engine = reopenEngine(built, START + 31 * DAY);
   expect(engine.records.get("session_one").id).toBe("session_one");
-  expect(engine.readEvents("session_one")).toHaveLength(0);
+  expect(engine.queries.readEvents("session_one")).toHaveLength(0);
   expect(engine.queries.turnOutline("session_one", { limit: 10 }).turns).toHaveLength(2);
 });
 
@@ -206,9 +206,9 @@ test("the id floor: emptying a journal does not restart the session's event ids"
   store.close();
 
   const engine = reopenEngine(built, START + 31 * DAY);
-  expect(engine.eventCursor("session_one")).toBe(highest);
+  expect(engine.queries.eventCursor("session_one")).toBe(highest);
   engine.intake.submitTurn("session_one", { runId: "run_after", input: "again" });
-  expect(engine.readEvents("session_one")[0]!.id).toBeGreaterThan(highest);
+  expect(engine.queries.readEvents("session_one")[0]!.id).toBeGreaterThan(highest);
 });
 
 test("a delete returns no bytes; only Reclaim does", () => {
@@ -309,10 +309,10 @@ test("with the default in place the sweep reads nothing and takes nothing", () =
   closers.push(() => engine.closeExecutionStore());
   engine.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
   conversation(engine, "session_one");
-  const before = engine.readEvents("session_one").length;
+  const before = engine.queries.readEvents("session_one").length;
   clock = START + 400 * DAY;
   expect(engine.settings.sweepRetention()).toEqual({ retired: 0, skipped: 0, events: 0 });
-  expect(engine.readEvents("session_one")).toHaveLength(before);
+  expect(engine.queries.readEvents("session_one")).toHaveLength(before);
   // And the preview still answers, because reading what a window WOULD take is
   // not the same act as taking it.
   expect(engine.settings.retentionPreview().map((bucket) => bucket.days)).toEqual([7, 14, 30, 60]);
@@ -327,11 +327,11 @@ test("the configured window sweeps through the policy, end to end", () => {
   closers.push(() => engine.closeExecutionStore());
   engine.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
   conversation(engine, "session_one");
-  const before = engine.readEvents("session_one").length;
+  const before = engine.queries.readEvents("session_one").length;
   clock = START + 30 * DAY;
   engine.settings.setRetention({ idleAfterDays: 7, exportTo: path.join(home, "exports") });
   expect(engine.settings.sweepRetention()).toEqual({ retired: 1, skipped: 0, events: before });
-  expect(engine.readEvents("session_one")).toHaveLength(0);
+  expect(engine.queries.readEvents("session_one")).toHaveLength(0);
   // The conversation is still a conversation: the rail row and the outline are
   // backed by documents and `turn_summaries`, neither of which this touched.
   expect(engine.records.get("session_one").id).toBe("session_one");

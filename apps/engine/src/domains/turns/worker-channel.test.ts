@@ -24,11 +24,11 @@ test("stopBackgroundTasks ends lingering background work and queues the real kil
   store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "started" });
 
   // The task lingers past its completed turn — this is the feature.
-  expect(store.tasks("session_one").find((t) => t.id === "task_b")).toMatchObject({ state: "running" });
+  expect(store.queries.tasks("session_one").find((t) => t.id === "task_b")).toMatchObject({ state: "running" });
 
   const stopped = store.worker.stopBackgroundTasks("session_one");
   expect(stopped).toBe(1);
-  expect(store.tasks("session_one").find((t) => t.id === "task_b")).toMatchObject({ state: "stopped" });
+  expect(store.queries.tasks("session_one").find((t) => t.id === "task_b")).toMatchObject({ state: "stopped" });
 
   // The real kill is queued for the worker — by PROVIDER id, the handle the
   // live CLI process knows the task by.

@@ -78,7 +78,7 @@ function repo(seeded = true): { root: string; git: (...args: string[]) => string
  * deadline loop returning a half-built turn could not.
  */
 async function anchored(store: EngineStore, sessionId: string, runId: string, side: "before" | "after"): Promise<Turn> {
-  const read = (): Turn | undefined => store.turns(sessionId).find((candidate) => candidate.runId === runId);
+  const read = (): Turn | undefined => store.queries.turns(sessionId).find((candidate) => candidate.runId === runId);
   await until(`the turn's \`${side}\` anchor to be stamped`, () => {
     const turn = read();
     return turn?.anchor?.[side] !== undefined || turn?.anchor?.read !== undefined;
@@ -198,7 +198,7 @@ test("a repository with no commits yet leaves the anchor ABSENT, not failed (#74
   // Nothing to wait for, so wait for the probe to have had its chance and
   // assert the absence rather than racing it.
   await new Promise((resolve) => setTimeout(resolve, 300));
-  const turn = store.turns("session_empty").find((candidate) => candidate.runId === "run_1")!;
+  const turn = store.queries.turns("session_empty").find((candidate) => candidate.runId === "run_1")!;
   expect(turn.anchor?.before).toBeUndefined();
   expect(turn.anchor?.after).toBeUndefined();
   // ...and NOT reported as a read that failed, which would send a reader

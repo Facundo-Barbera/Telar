@@ -51,13 +51,13 @@ export type Registered = {
 export function capabilityOver(store: EngineStore, self?: { sessionId: string }): SessionsCapability {
   return {
     ...(self ? { self } : {}),
-    list: async () => store.liveSessions(),
+    list: async () => store.live.all(),
     create: async (input) => store.createSessionAsync({ ...input, origin: "session" }),
     send: async (sessionId, input) => store.submitAgentTurnAsync(sessionId, input),
-    read: async (sessionId, after) => store.readEvents(sessionId, after),
+    read: async (sessionId, after) => store.queries.readEvents(sessionId, after),
     status: async (sessionId) => ({
       session: store.records.get(sessionId),
-      turns: store.turns(sessionId),
+      turns: store.queries.turns(sessionId),
       pendingNotifications: store.wakes.pendingNotifications(sessionId),
     }),
     stop: async (sessionId) => store.turnLifecycle.stopSession(sessionId, "agent"),

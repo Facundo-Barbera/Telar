@@ -91,14 +91,14 @@ test("a whole-queue read is accounted for, bytes and all", () => {
    * again, and it is deliberately the first in the file.
    */
   const store = seeded(open(root()), 4);
-  const turns = store.turns("session_one");
+  const turns = store.queries.turns("session_one");
 
   store.readAccounting.documentBytes = 0;
   store.readAccounting.documentReads = 0;
   store.readAccounting.queueParses = 0;
   // `turns()` is one `readQueue` and nothing else, which is what makes the
   // count below exactly one rather than "at least one".
-  expect(store.turns("session_one")).toEqual(turns);
+  expect(store.queries.turns("session_one")).toEqual(turns);
 
   expect(store.readAccounting.documentReads).toBe(1);
   expect(store.readAccounting.queueParses).toBe(1);
@@ -119,7 +119,7 @@ test("a session whose queue document is missing is not counted as a read", () =>
   const store = open(directory);
   store.readAccounting.documentReads = 0;
   store.readAccounting.queueParses = 0;
-  expect(store.turns("session_one")).toEqual([]);
+  expect(store.queries.turns("session_one")).toEqual([]);
   expect(store.readAccounting.documentReads).toBe(0);
   expect(store.readAccounting.queueParses).toBe(0);
 });
@@ -159,7 +159,7 @@ test("the carried queue is the one the command wrote, at every transition", () =
   const store = seeded(open(root(), () => clock), 3);
 
   const folded = (): unknown => {
-    const row = store.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_one")!;
+    const row = store.live.rows({ all: true }).sessions.find((session) => session.id === "session_one")!;
     return {
       activity: row.activity,
       activityAt: row.activityAt,
@@ -232,7 +232,7 @@ test("a malformed turn in the store is refused at the write, not let through", (
    */
   const directory = root();
   const first = seeded(open(directory), 2);
-  const seededTurns = first.turns("session_one");
+  const seededTurns = first.queries.turns("session_one");
   const queue = { version: 2, sessionId: "session_one", nextSequence: 9, turns: [...seededTurns, malformedTurn("session_one", 8)] };
   first.closeExecutionStore();
   stores.splice(stores.indexOf(first), 1);
@@ -241,11 +241,11 @@ test("a malformed turn in the store is refused at the write, not let through", (
 
   const store = open(directory);
   // READ: trusted, so the row reaches the caller rather than throwing.
-  expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
+  expect(store.queries.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
 
   // WRITE: refused, with the turn still on file rather than half-replaced.
   expect(() => store.intake.submitTurn("session_one", { runId: "run_next", input: "hello" })).toThrow(/invalid session queue/);
-  expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
+  expect(store.queries.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
 
   // …and a well-formed turn in the same position is accepted, so this is a
   // guard rather than a store that has stopped writing.
@@ -255,7 +255,7 @@ test("a malformed turn in the store is refused at the write, not let through", (
   injectQueue(directory, "session_one", clean);
   const healthy = open(directory);
   healthy.intake.submitTurn("session_one", { runId: "run_next", input: "hello" });
-  expect(healthy.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_next"]);
+  expect(healthy.queries.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_next"]);
 });
 
 test("a structurally broken turn is refused on read", () => {
@@ -264,7 +264,7 @@ test("a structurally broken turn is refused on read", () => {
   // rather than as an `undefined` on the rail.
   const directory = root();
   const first = seeded(open(directory), 2);
-  const turns = first.turns("session_one");
+  const turns = first.queries.turns("session_one");
   first.closeExecutionStore();
   stores.splice(stores.indexOf(first), 1);
 
@@ -276,7 +276,7 @@ test("a structurally broken turn is refused on read", () => {
   ]) {
     injectQueue(directory, "session_one", { version: 2, sessionId: "session_one", nextSequence: 3, turns: [broken] });
     const store = open(directory);
-    expect(() => store.turns("session_one")).toThrow(/invalid session queue/);
+    expect(() => store.queries.turns("session_one")).toThrow(/invalid session queue/);
     store.closeExecutionStore();
     stores.splice(stores.indexOf(store), 1);
   }
@@ -284,5 +284,5 @@ test("a structurally broken turn is refused on read", () => {
   // AND THE SAME ROW, INTACT, READS FINE — four refusals mean nothing without
   // this line.
   injectQueue(directory, "session_one", { version: 2, sessionId: "session_one", nextSequence: 3, turns: [turns[0]!] });
-  expect(open(directory).turns("session_one")).toEqual([turns[0]!]);
+  expect(open(directory).queries.turns("session_one")).toEqual([turns[0]!]);
 });

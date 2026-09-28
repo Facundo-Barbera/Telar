@@ -45,7 +45,7 @@ describe("driving a session", () => {
     expect(sent.isError).toBe(false);
     expect(sent.json!.state).toBe("queued");
     expect(String(sent.json!.note)).toContain("Accepted for execution, not answered");
-    expect(store.turns(id).map((turn) => turn.input)).toEqual(["read the parser and report"]);
+    expect(store.queries.turns(id).map((turn) => turn.input)).toEqual(["read the parser and report"]);
     expect(tools.get("sessions_send")!.shape).not.toHaveProperty("runId");
   });
 
@@ -132,7 +132,7 @@ describe("driving a session", () => {
     expect(String(stopped.json!.note)).toContain("stopping ends work, it never undoes it");
     expect(String(stopped.json!.note)).toContain("IDLE now, not paused");
     expect(store.records.get(id).paused).toBeUndefined();
-    const [first, second] = store.turns(id);
+    const [first, second] = store.queries.turns(id);
     expect(first!.state).toBe("stopped");
     expect(second).toMatchObject({ state: "stopped", stopReason: "agent", input: "and then this" });
     expect(second!.held).toBeUndefined();

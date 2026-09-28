@@ -176,7 +176,7 @@ test("the automatic settle's sweep closes a shell the person opened, which only 
   expect(await store.sessionTerminals.sweepSettled()).toEqual(["session_one"]);
   expect(host.terminals.has(shell)).toBe(false);
   expect(store.records.get("session_one").terminalsClosed).toMatchObject({ terminals: 1, reason: "grace" });
-  expect(store.liveSessionRows({ all: true }).terminals).toEqual({});
+  expect(store.live.rows({ all: true }).terminals).toEqual({});
 });
 
 test("the counts include the person's shells: what Settle would close, and what the rail is told", async () => {
@@ -184,16 +184,16 @@ test("the counts include the person's shells: what Settle would close, and what 
   await open("session_one");
   host.personShell("session_one");
   host.personShell("session_three");
-  const before = store.sessionsRevision();
+  const before = store.live.revision();
 
   expect(await store.sessionTerminals.countNow("session_one")).toBe(2);
   expect(await store.sessionTerminals.countNow("session_two")).toBe(0);
-  expect(store.liveSessionRows().terminals).toEqual({ session_one: 2, session_three: 1 });
-  expect(store.sessionsRevision()).toBeGreaterThan(before);
+  expect(store.live.rows().terminals).toEqual({ session_one: 2, session_three: 1 });
+  expect(store.live.revision()).toBeGreaterThan(before);
 
   store.lifecycle.updateSession("session_one", { settledOverride: "settled" });
   expect(await store.endSessionLeftovers("session_one")).toEqual({ terminals: 2, backgroundTasks: 0 });
-  expect(store.liveSessionRows({ all: true }).terminals).toEqual({ session_three: 1 });
+  expect(store.live.rows({ all: true }).terminals).toEqual({ session_three: 1 });
 });
 
 test("the person closing a settled session's terminals is recorded as the person's", async () => {
@@ -205,5 +205,5 @@ test("the person closing a settled session's terminals is recorded as the person
   expect(manager.run(run.terminalId)).toMatchObject({ status: "closed", closedBy: "person" });
   expect(closedByPerson.map((view) => view.terminalId)).toEqual([run.terminalId]);
   expect(store.records.get("session_one").terminalsClosed).toBeUndefined();
-  expect(store.liveSessionRows({ all: true }).terminals).toEqual({});
+  expect(store.live.rows({ all: true }).terminals).toEqual({});
 });

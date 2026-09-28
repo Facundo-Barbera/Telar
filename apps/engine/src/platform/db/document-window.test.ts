@@ -82,8 +82,8 @@ test("opening a 120-turn session reads its tail, not its history", () => {
   // What the whole projection weighs, read by a store of its own so the one
   // under test starts with nothing parsed and nothing cached.
   const measured = open(home);
-  const everyItem = measured.items("session_one");
-  const whole = JSON.stringify(everyItem).length + JSON.stringify(measured.turns("session_one")).length;
+  const everyItem = measured.queries.items("session_one");
+  const whole = JSON.stringify(everyItem).length + JSON.stringify(measured.queries.turns("session_one")).length;
 
   const cold = open(home);
   cold.readAccounting.documentBytes = 0;
@@ -114,7 +114,7 @@ test("a conversation migrated into SQLite reads correctly before it is indexed a
   const seeded = open(home);
   const before = seeded.queries.snapshotWindow("session_one", { limit: 8 });
   // Items live as rows, not documents, so the legacy home gets its blob by hand.
-  const items = seeded.items("session_one");
+  const items = seeded.queries.items("session_one");
   toLegacyHome(seeded, home);
   fs.writeFileSync(path.join(home, "sessions", "session_one", "items.json"), JSON.stringify({ items }));
 
@@ -272,7 +272,7 @@ test("a session with few requests carries all of them, open or settled", () => {
 test("a window carries every item its turns own", () => {
   const home = conversation(12, 8);
   const store = open(home);
-  const everyItem = store.items("session_one");
+  const everyItem = store.queries.items("session_one");
   expect(everyItem).toHaveLength(12 * 8);
   const window = open(home).queries.snapshotWindow("session_one", { limit: 2 });
   expect(window.items).toEqual(everyItem.filter((item) => ["run_10", "run_11"].includes(item.runId)));

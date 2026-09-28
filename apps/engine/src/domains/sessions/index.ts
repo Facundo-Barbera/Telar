@@ -24,5 +24,6 @@ export { sessionsSocketDoor } from "./socket-door";
 export { SessionSubscriptions, TERMINAL_WAKE_KINDS } from "./subscriptions";
 export { SessionLifecycle } from "./lifecycle-store";
 export { ACTIVE_TURN_STATES, SessionQueries } from "./queries";
+export { LiveSessions } from "./live-sessions";
 export { RequestGate, requestTitle } from "./request-gate";
 export { SessionSettler } from "./delegation-settler";

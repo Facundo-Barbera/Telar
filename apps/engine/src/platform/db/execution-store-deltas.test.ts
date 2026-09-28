@@ -22,7 +22,7 @@ test("deltas arriving in one tick are held, read back whole, and stored in a sin
     { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
   ]);
   const settledBefore = streamed(home).length;
-  const cursorBefore = store.eventCursor("session_one");
+  const cursorBefore = store.queries.eventCursor("session_one");
 
   // Twenty deltas, one call each, all inside this tick — the shape a driver
   // reporting a chunk at a time produces.
@@ -34,10 +34,10 @@ test("deltas arriving in one tick are held, read back whole, and stored in a sin
   // NOT ONE OF THEM IS ON DISK YET — that is the whole saving.
   expect(streamed(home)).toHaveLength(settledBefore);
   // …and no reader can tell. Every delta, in arrival order, contiguous ids.
-  const read = store.readEvents("session_one", cursorBefore);
+  const read = store.queries.readEvents("session_one", cursorBefore);
   expect(read.map((event) => (event as { text?: string }).text)).toEqual(chunks);
   expect(read.map((event) => event.id)).toEqual(chunks.map((_, n) => cursorBefore + 1 + n));
-  expect(store.eventCursor("session_one")).toBe(cursorBefore + chunks.length);
+  expect(store.queries.eventCursor("session_one")).toBe(cursorBefore + chunks.length);
 
   // The event that settles the item takes the batch to the disk with it, and
   // nothing may be stored ahead of the deltas it concludes.
@@ -63,7 +63,7 @@ test("a failed command does not take already-accepted deltas with it", () => {
   for (const text of ["held-one ", "held-two "]) {
     store.ingest.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
   }
-  const cursor = store.eventCursor("session_one");
+  const cursor = store.queries.eventCursor("session_one");
 
   expect(() => store.executeCommand("broken", () => {
     store.ingest.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "rolled-back " }]);
@@ -71,8 +71,8 @@ test("a failed command does not take already-accepted deltas with it", () => {
   })).toThrow("injected disk failure");
 
   // The rolled-back delta is gone; the two accepted before it are not.
-  expect(store.eventCursor("session_one")).toBe(cursor);
-  expect(store.readEvents("session_one").filter((event) => event.type === "content.delta")
+  expect(store.queries.eventCursor("session_one")).toBe(cursor);
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "content.delta")
     .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
 
   // And a clean close is what puts them on the disk, ids still contiguous.
@@ -80,7 +80,7 @@ test("a failed command does not take already-accepted deltas with it", () => {
   const stored = streamed(home);
   expect(stored.map((row) => Number(row.id))).toEqual(stored.map((_, n) => n + 1));
   const reopened = new EngineStore(home); stores.push(reopened);
-  expect(reopened.readEvents("session_one").filter((event) => event.type === "content.delta")
+  expect(reopened.queries.readEvents("session_one").filter((event) => event.type === "content.delta")
     .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
 });
 
@@ -96,7 +96,7 @@ function streaming(): { store: EngineStore; home: string; runId: string; token: 
   return { store, home, runId: turn.runId, token };
 }
 const deltas = (store: EngineStore): string[] =>
-  store.readEvents("session_one").filter((event) => event.type === "content.delta").map((event) => (event as { text: string }).text);
+  store.queries.readEvents("session_one").filter((event) => event.type === "content.delta").map((event) => (event as { text: string }).text);
 
 test("a stream cannot outlive its turn, even though the delta path reads a shared queue", () => {
   const { store, runId, token } = streaming();

@@ -39,8 +39,8 @@ test("streamed deltas journal without rewriting the item projection, and the clo
 
   // The deltas are still durable, and the projection carries the folded text —
   // read back through a path that does not share the writer's copy.
-  expect(store.readEvents("session_one").filter((event) => event.type === "content.delta")).toHaveLength(3);
-  expect(store.items("session_one").map((item) => item.detail)).toEqual([{ type: "assistant_message", text: "hello there" }]);
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "content.delta")).toHaveLength(3);
+  expect(store.queries.items("session_one").map((item) => item.detail)).toEqual([{ type: "assistant_message", text: "hello there" }]);
 });
 
 test("observations become durable items and deltas, and only under a live claim", () => {
@@ -69,10 +69,10 @@ test("observations become durable items and deltas, and only under a live claim"
     { kind: "item.completed", itemId: "i1", status: "completed" },
   ]);
 
-  const items = store.items("session_one");
+  const items = store.queries.items("session_one");
   expect(items).toHaveLength(1);
   expect(items[0]).toMatchObject({ id: "i1", runId: "run_one", sessionId: "session_one", status: "completed", title: "ls" });
-  expect(store.readEvents("session_one").map((event) => event.type)).toEqual([
+  expect(store.queries.readEvents("session_one").map((event) => event.type)).toEqual([
     "session.created",
     "turn.accepted",
     "turn.claimed",
@@ -106,7 +106,7 @@ test("a report against a SETTLED turn is a typed conflict that says the turn end
     expect((error as EngineStateError).code).toBe("conflict");
   }
   // Refused means refused: the settled turn's journal gained nothing.
-  expect(store.items("session_one").some((item) => item.id === "i_late")).toBe(false);
+  expect(store.queries.items("session_one").some((item) => item.id === "i_late")).toBe(false);
 
   // A WRONG token against the same settled turn stays the generic claim
   // refusal — "settled" is only claimed for the worker that really ran it.
@@ -122,7 +122,7 @@ test("a malformed observation rejects the WHOLE batch, leaving no half-written p
   store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   const claimed = store.claims.claimTurn("session_one", "worker_one")!;
   store.turnLifecycle.markRunning("session_one", "run_one", claimed.claim!.token);
-  const before = store.readEvents("session_one").length;
+  const before = store.queries.readEvents("session_one").length;
 
   expect(() =>
     store.ingest.ingestObservations("session_one", "run_one", claimed.claim!.token, [
@@ -131,8 +131,8 @@ test("a malformed observation rejects the WHOLE batch, leaving no half-written p
     ]),
   ).toThrow(/observations are invalid/);
 
-  expect(store.readEvents("session_one")).toHaveLength(before);
-  expect(store.items("session_one")).toEqual([]);
+  expect(store.queries.readEvents("session_one")).toHaveLength(before);
+  expect(store.queries.items("session_one")).toEqual([]);
 });
 
 test("a delta for an item that was never opened is dropped rather than journalled", () => {
@@ -143,5 +143,5 @@ test("a delta for an item that was never opened is dropped rather than journalle
   store.ingest.ingestObservations("session_one", "run_one", claimed.claim!.token, [
     { kind: "content.delta", itemId: "ghost", stream: "assistant_text", text: "x" },
   ]);
-  expect(store.readEvents("session_one").some((event) => event.type === "content.delta")).toBe(false);
+  expect(store.queries.readEvents("session_one").some((event) => event.type === "content.delta")).toBe(false);
 });

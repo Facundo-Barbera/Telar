@@ -86,7 +86,7 @@ test("an adopted session resumes the FORK, never the person's own conversation",
   const session = store.records.get("session_one");
   expect(session.resumeCursor).toBe(provenance.sessionId);
   expect(session.resumeCursor).not.toBe(sourceSessionId);
-  expect(store.turns("session_one")[0]?.providerSessionId).toBe(provenance.sessionId);
+  expect(store.queries.turns("session_one")[0]?.providerSessionId).toBe(provenance.sessionId);
 });
 
 test("the person's own transcript is byte-identical afterwards", async () => {
@@ -109,7 +109,7 @@ test("the history lands as rows on one turn, and the turn is not the person's wo
   expect(turn.kind).toBe("import");
   expect(turn.state).toBe("completed");
 
-  const items = store.items("session_one");
+  const items = store.queries.items("session_one");
   expect(items.every((item) => item.runId === turn.runId)).toBe(true);
   const history = items.filter((item) => item.imported);
   expect(history.length).toBeGreaterThan(0);
@@ -124,16 +124,16 @@ test("the head of the history says where it came from", async () => {
   const { store, sourceSessionId } = setup();
   const { turn } = await store.adoption.adopt("session_one", { sourceSessionId });
 
-  const stamp = store.items("session_one").find((item) => item.detail.type === "conversation_import");
+  const stamp = store.queries.items("session_one").find((item) => item.detail.type === "conversation_import");
   expect(stamp).toBeDefined();
-  expect(store.items("session_one")[0]?.id).toBe(stamp!.id);
+  expect(store.queries.items("session_one")[0]?.id).toBe(stamp!.id);
   if (stamp?.detail.type !== "conversation_import") throw new Error("unreachable");
   expect(stamp.detail.import.sourceSessionId).toBe(sourceSessionId);
   expect(stamp.detail.import.sourceCwd).toBe(SOURCE_CWD);
   expect(stamp.detail.import.firstPrompt).toContain("question 0");
   expect(stamp.detail.import.rows).toBeGreaterThan(0);
 
-  const events = store.readEvents("session_one");
+  const events = store.queries.readEvents("session_one");
   expect(events.some((event) => event.type === "item.completed" && event.item.detail.type === "conversation_import")).toBe(true);
   expect(turn.input).toContain(sourceSessionId);
 });

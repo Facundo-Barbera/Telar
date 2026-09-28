@@ -72,7 +72,7 @@ test("a report is stored whole and handed to the model as one line naming the fe
 test("a peer's message lands as a notification ITEM, not as the person's bubble", () => {
   const { store, proof } = setup();
   store.intake.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof);
-  const items = store.items("session_host").filter((item) => item.runId === "run_report");
+  const items = store.queries.items("session_host").filter((item) => item.runId === "run_report");
   const row = items.find((item) => item.detail.type === "notification")!;
   expect(row).toBeDefined();
   expect(items.some((item) => item.detail.type === "user_message")).toBe(false);
@@ -308,7 +308,7 @@ test("a wake arrives as a notification: the engine's prose leaves the person's s
   const { store, proof } = setup();
   store.subscriptions.subscribe("session_host", { targetSessionId: "session_worker", once: true });
   store.turnLifecycle.completeTurn("session_worker", "run_source", proof.claimToken, { text: "done" });
-  const wake = store.turns("session_host")[0]!;
+  const wake = store.queries.turns("session_host")[0]!;
   expect(wake.agentNotice).toBeUndefined();
   // `input` IS A MACHINE LABEL NOW, not engine prose in the slot a person's
   // words occupy — #550 clause 4. The prose is on the notification.
@@ -322,7 +322,7 @@ test("a wake arrives as a notification: the engine's prose leaves the person's s
   expect(framedTurnInput(wake)).toBe(wake.notification!.body);
   expect(framedTurnInput(wake)).not.toBe(frameWakeMessage(wake.notification!.body, wake.wakeReason!));
   // The transcript's row is the notification, drawn from the same object.
-  const row = store.items("session_host").find((item) => item.runId === wake.runId && item.detail.type === "notification")!;
+  const row = store.queries.items("session_host").find((item) => item.runId === wake.runId && item.detail.type === "notification")!;
   expect(row).toBeDefined();
   expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(wake.notification!);
 });
@@ -330,7 +330,7 @@ test("a wake arrives as a notification: the engine's prose leaves the person's s
 test("a human's message carries no notice and reaches the model as typed", () => {
   const { store } = setup();
   store.intake.submitTurn("session_host", { runId: "run_human", input: "please fix the editor" });
-  const turn = store.turns("session_host").find((candidate) => candidate.runId === "run_human")!;
+  const turn = store.queries.turns("session_host").find((candidate) => candidate.runId === "run_human")!;
   expect(turn.agentNotice).toBeUndefined();
   expect(turn.origin).toBeUndefined();
   expect(framedTurnInput(turn)).toBe("please fix the editor");
@@ -351,7 +351,7 @@ test("the notice survives a restart, because it is stored rather than derived", 
   store.closeExecutionStore();
   const reopened = new EngineStore(home);
   stores.push(reopened);
-  const turn = reopened.turns("session_host")[0]!;
+  const turn = reopened.queries.turns("session_host")[0]!;
   expect(turn.agentNotice).toBe(minted!);
   expect(turn.input).toBe(REPORT);
 });

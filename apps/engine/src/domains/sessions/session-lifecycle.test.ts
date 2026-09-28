@@ -42,7 +42,7 @@ describe("a pin survives everything that is not a decision", () => {
     // And a subscribed peer finishing queues a wake turn on the pinned one.
     store.subscriptions.subscribe("session_one", { targetSessionId: "session_two" });
     runTurn(store, "session_two", "run_peer");
-    expect(store.turns("session_one").some((turn) => turn.origin === "session")).toBe(true);
+    expect(store.queries.turns("session_one").some((turn) => turn.origin === "session")).toBe(true);
     expect(store.records.get("session_one").settledOverride).toBe("active");
   });
 
@@ -141,5 +141,5 @@ test("deleting a session removes everything it owns, and refuses mid-turn", () =
   expect(fs.existsSync(directory)).toBe(false);
   expect(() => store.records.get("session_one")).toThrow(EngineStateError);
   // And it is gone from the list rather than lingering as an unreadable entry.
-  expect(store.listSessions("project_one")).toEqual([]);
+  expect(store.live.list("project_one")).toEqual([]);
 });

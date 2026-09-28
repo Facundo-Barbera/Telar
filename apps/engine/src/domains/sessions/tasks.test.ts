@@ -23,7 +23,7 @@ test("tasks are journalled AND projected, so a cold session still knows a sub-ag
     { kind: "task.completed", task: { id: "task_a", kind: "agent", state: "completed", resultText: "found it" } },
   ]);
 
-  const tasks = store.tasks("session_one");
+  const tasks = store.queries.tasks("session_one");
   expect(tasks).toHaveLength(1);
   expect(tasks[0]).toMatchObject({
     id: "task_a",
@@ -38,8 +38,8 @@ test("tasks are journalled AND projected, so a cold session still knows a sub-ag
   });
   // The link survives into the stored item, which is the only way a client
   // opening this session LATER can file the row under its agent.
-  expect(store.items("session_one")[0]).toMatchObject({ id: "i1", taskId: "task_a" });
-  expect(store.readEvents("session_one").map((event) => event.type)).toEqual([
+  expect(store.queries.items("session_one")[0]).toMatchObject({ id: "i1", taskId: "task_a" });
+  expect(store.queries.readEvents("session_one").map((event) => event.type)).toEqual([
     "session.created",
     "turn.accepted",
     "turn.claimed",
@@ -70,7 +70,7 @@ test("a close the level signal inferred yields to the notification that says the
     { kind: "task.completed", task: { ...agent, state: "completed" } },
     { kind: "task.completed", task: { ...agent, state: "failed", resultText: "could not reach the API" } },
   ]);
-  expect(store.tasks("session_one")[0]).toMatchObject({ state: "failed", resultText: "could not reach the API" });
+  expect(store.queries.tasks("session_one")[0]).toMatchObject({ state: "failed", resultText: "could not reach the API" });
 
   // A STATED ending is never rewritten: a completion that carried its result
   // stays completed whatever arrives after it.
@@ -79,7 +79,7 @@ test("a close the level signal inferred yields to the notification that says the
     { kind: "task.completed", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "completed", resultText: "done" } },
     { kind: "task.completed", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "stopped" } },
   ]);
-  expect(store.tasks("session_one").find((task) => task.id === "task_other")?.state).toBe("completed");
+  expect(store.queries.tasks("session_one").find((task) => task.id === "task_other")?.state).toBe("completed");
 });
 
 test("task reports between turns fold onto the rows they name, and open nothing", () => {
@@ -101,10 +101,10 @@ test("task reports between turns fold onto the rows they name, and open nothing"
     { kind: "task.started", task: { id: "task_ghost", kind: "agent", state: "running" } },
   ]);
   expect(accepted).toEqual({ accepted: 1 });
-  expect(store.tasks("session_one")).toHaveLength(1);
-  expect(store.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "green", runId: "run_one" });
+  expect(store.queries.tasks("session_one")).toHaveLength(1);
+  expect(store.queries.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "green", runId: "run_one" });
   expect(store.records.get("session_one").activity).toBe("idle");
-  expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "task.completed", runId: "run_one" });
+  expect(store.queries.readEvents("session_one").at(-1)).toMatchObject({ type: "task.completed", runId: "run_one" });
 });
 
 test("a claim carries the session's live task rows, and only those, as seeds", () => {
@@ -150,7 +150,7 @@ test("a settled task is not re-announced by a report that adds nothing", () => {
     { kind: "task.completed", task: { id: "task_toolu_mon", providerTaskId: "b7ohaj89n", kind: "background", state: "stopped" } },
     { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "agent", state: "completed" } },
   ]);
-  const closes = () => store.readEvents("session_one").filter((event) => event.type === "task.completed");
+  const closes = () => store.queries.readEvents("session_one").filter((event) => event.type === "task.completed");
   expect(closes()).toHaveLength(1);
   // The summary the notification carries IS new — it lands on the row, but
   // a summary arriving a frame after the close is not a second close.
@@ -158,14 +158,14 @@ test("a settled task is not re-announced by a report that adds nothing", () => {
     { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "agent", state: "completed", resultText: "tick 2" } },
   ]);
   expect(closes()).toHaveLength(1);
-  expect(store.tasks("session_one")).toHaveLength(1);
-  expect(store.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "tick 2" });
+  expect(store.queries.tasks("session_one")).toHaveLength(1);
+  expect(store.queries.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "tick 2" });
   // The log path rides the same late notification, and is folded the same way.
   store.ingest.ingestObservations("session_one", "run_two", token2, [
     { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "background", state: "completed", outputFile: "/tmp/claude-501/p/s/tasks/b7ohaj89n.output" } },
   ]);
   expect(closes()).toHaveLength(1);
-  expect(store.tasks("session_one")[0]?.outputFile).toBe("/tmp/claude-501/p/s/tasks/b7ohaj89n.output");
+  expect(store.queries.tasks("session_one")[0]?.outputFile).toBe("/tmp/claude-501/p/s/tasks/b7ohaj89n.output");
 });
 
 test("a task's kind is decided once, and a later turn's partial report cannot downgrade it", () => {
@@ -180,7 +180,7 @@ test("a task's kind is decided once, and a later turn's partial report cannot do
     { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Start the dev server" } },
   ]);
   store.turnLifecycle.completeTurn("session_one", "run_one", firstToken, { text: "Started it" });
-  expect(store.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({ kind: "background" });
+  expect(store.queries.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({ kind: "background" });
 
   // The next turn. The seam has no memory of task_b and says "agent".
   store.intake.submitTurn("session_one", { runId: "run_two", input: "anything" });
@@ -192,7 +192,7 @@ test("a task's kind is decided once, and a later turn's partial report cannot do
   ]);
 
   // A shell does not become a delegate by being reported late.
-  expect(store.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({ kind: "background" });
+  expect(store.queries.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({ kind: "background" });
 });
 
 test("a backgrounded agent outlives its turn, and a later report cannot resurrect what was closed", () => {
@@ -209,7 +209,7 @@ test("a backgrounded agent outlives its turn, and a later report cannot resurrec
   ]);
   store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "Launched them" });
 
-  const after = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  const after = new Map(store.queries.tasks("session_one").map((task) => [task.id, task]));
   // The attached agent is swept — no process reports for it any more. The
   // detached one is spared exactly as a background shell would be — and, like
   // one, it reads as monitoring: the turn has ended, nothing is working in the
@@ -232,12 +232,12 @@ test("a backgrounded agent outlives its turn, and a later report cannot resurrec
     { kind: "task.progress", task: { id: "task_attached", kind: "agent", state: "running" }, message: "Reading a file" },
     { kind: "task.progress", task: { id: "task_detached", kind: "agent", backgrounded: true, state: "running" }, message: "Reading a file" },
   ]);
-  const later = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  const later = new Map(store.queries.tasks("session_one").map((task) => [task.id, task]));
   expect(later.get("task_attached")).toMatchObject({ state: "failed", failure: "the turn ended before this agent reported back" });
   expect(later.get("task_attached")?.completedAt).toBeDefined();
-  const closes = store.readEvents("session_one").filter((event) => event.type === "task.completed");
+  const closes = store.queries.readEvents("session_one").filter((event) => event.type === "task.completed");
   expect(closes).toHaveLength(1);
-  expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "task.progress", task: { id: "task_detached" } });
+  expect(store.queries.readEvents("session_one").at(-1)).toMatchObject({ type: "task.progress", task: { id: "task_detached" } });
   // The live one is live, still, with no failure riding along.
   expect(later.get("task_detached")).toMatchObject({ state: "running" });
   expect(later.get("task_detached")?.completedAt).toBeUndefined();
@@ -262,7 +262,7 @@ test("a later turn's report on a task it knows only by provider id folds onto th
   store.ingest.ingestObservations("session_one", "run_two", second.turn.claim!.token, [
     { kind: "task.completed", task: { id: "task_b7ohaj89n", kind: "agent", state: "completed", providerTaskId: "b7ohaj89n", resultText: "stream ended" } },
   ]);
-  const tasks = store.tasks("session_one");
+  const tasks = store.queries.tasks("session_one");
   expect(tasks).toHaveLength(1);
   // The stopped ending stands; the kind stands; the summary still folds in.
   expect(tasks[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "stream ended" });

@@ -98,7 +98,7 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     expect(plots[0]!.mediaType).toBe("image/png");
     expect(store.attachments.bytes("session_k", plots[0]!.id).data.byteLength).toBeGreaterThan(1000);
 
-    const events = store.readEvents("session_k");
+    const events = store.queries.readEvents("session_k");
     expect(events.some((e) => e.type === "kernel.state.changed")).toBe(true);
     const outputs = events.filter((e) => e.type === "notebook.cell.output");
     expect(outputs.length).toBeGreaterThanOrEqual(3);
@@ -120,7 +120,7 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     await ds.watch({ name: "rows", assert: "df.shape[0] > 10" });
     const watches = await ds.watches();
     expect(watches[0]!.lastResult?.ok).toBe(false);
-    expect(store.readEvents("session_k").some((e) => e.type === "ds.watch.violated")).toBe(true);
+    expect(store.queries.readEvents("session_k").some((e) => e.type === "ds.watch.violated")).toBe(true);
     await ds.watch({ name: "rows", remove: true });
   }, 60_000);
 

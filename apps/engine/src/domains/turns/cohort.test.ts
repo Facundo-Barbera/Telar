@@ -56,7 +56,7 @@ function start(store: EngineStore, sessionId: string, runId: string) {
 }
 
 /** Turns on the host that a model would be handed. */
-const woken = (store: EngineStore) => store.turns("session_host").filter((turn) => turn.origin === "session" && turn.agentDelivery !== "passive");
+const woken = (store: EngineStore) => store.queries.turns("session_host").filter((turn) => turn.origin === "session" && turn.agentDelivery !== "passive");
 
 test("the cohort delivers ONCE, after the last member, with a line per member", () => {
   const { store } = setup();
@@ -71,7 +71,7 @@ test("the cohort delivers ONCE, after the last member, with a line per member", 
   b.fail();
   // Two of three done, and nothing has woken the host: the result is held.
   expect(woken(store)).toHaveLength(0);
-  expect(store.turns("session_host").find((turn) => turn.runId === "run_msg_run_a_result")!.agentDelivery).toBe("passive");
+  expect(store.queries.turns("session_host").find((turn) => turn.runId === "run_msg_run_a_result")!.agentDelivery).toBe("passive");
   expect(store.wakes.pendingNotifications("session_host")).toHaveLength(0);
 
   c.complete("Refactored the parser.");
@@ -187,7 +187,7 @@ test("a cohort closing while the host is busy waits for it to settle, as its own
   store.turnLifecycle.markRunning("session_host", "run_host", host);
 
   a.complete("A finished.");
-  expect(store.turns("session_host").some((turn) => turn.notification?.cohortId)).toBe(false);
+  expect(store.queries.turns("session_host").some((turn) => turn.notification?.cohortId)).toBe(false);
   expect(store.subscriptions.cohortsFor("session_host")[0]!.ready).toBe("all");
 
   store.turnLifecycle.completeTurn("session_host", "run_host", host, { text: "thought" });
@@ -339,7 +339,7 @@ test("re-subscribing after a restart does not deliver the member's one result tw
   const first = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
   // Telar restarts: the member's turn is stopped by the boot, not by anyone.
   const after = restart();
-  expect(after.turns("session_a").at(-1)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  expect(after.queries.turns("session_a").at(-1)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
   // The coordinator re-tasks it and subscribes again.
   const proof = task(after, "session_a", "two");
   const second = after.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
@@ -381,7 +381,7 @@ test("a restart is not a stop: the cohort survives it, pending, with its origina
   const cohort = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"], timeoutMinutes: 60 });
   clock.advance(10 * 60_000);
   const after = restart();
-  expect(after.turns("session_a").at(-1)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  expect(after.queries.turns("session_a").at(-1)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
   expect(after.subscriptions.cohortsFor("session_host")).toEqual([cohort]);
   clock.advance(49 * 60_000);
   expect(after.subscriptions.sweepCohorts()).toEqual([]);

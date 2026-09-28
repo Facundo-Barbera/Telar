@@ -38,11 +38,11 @@ test("routine reports are durable activity, never a claimed run or a notificatio
   const report = store.intake.submitAgentTurn("session_host", { runId: "run_report", input: "routine progress" }, proof);
   expect(report.turn).toMatchObject({ state: "completed", agentIntent: "report", agentDelivery: "passive" });
   expect(store.claims.claimTurn("session_host", "worker_three")).toBeUndefined();
-  expect(store.turns("session_observer")).toHaveLength(0);
+  expect(store.queries.turns("session_observer")).toHaveLength(0);
   expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(1);
   store.closeExecutionStore();
   const reopened = new EngineStore(home); stores.push(reopened);
-  expect(reopened.turns("session_host").find((turn) => turn.runId === "run_report")?.agentDelivery).toBe("passive");
+  expect(reopened.queries.turns("session_host").find((turn) => turn.runId === "run_report")?.agentDelivery).toBe("passive");
 });
 
 /**
@@ -85,7 +85,7 @@ test("messages held during a long turn stay held when it ends, and arrive togeth
 
   store.turnLifecycle.completeTurn("session_host", "run_host", token, { text: "done" });
 
-  expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
+  expect(store.queries.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
   expect(store.wakes.pendingNotifications("session_host")).toHaveLength(3);
 
   store.intake.submitTurn("session_host", { runId: "run_person", input: "next" });
@@ -104,7 +104,7 @@ test("a single held message says it was held, and the message row itself is unto
   const notes = store.claims.claimNextTurn("worker_two")!.notes!;
   expect(notes.some((note) => note.startsWith("Held for you while you were busy; no reply needed."))).toBe(true);
   // The body it points at is still the message, untouched and unabridged.
-  expect(store.turns("session_host").find((turn) => turn.runId === "run_one")!.input).toBe("progress");
+  expect(store.queries.turns("session_host").find((turn) => turn.runId === "run_one")!.input).toBe("progress");
 });
 
 test("a shelved or snoozed session is not un-shelved by a peer's routine report", () => {
@@ -129,7 +129,7 @@ test("a routine report never steers an already running coordinator", () => {
   store.turnLifecycle.markRunning("session_host", "run_host", token);
   store.intake.submitAgentTurn("session_host", { runId: "run_report", input: "progress", intent: "report" }, proof);
   expect(store.worker.steerForWorker("worker_two")).toHaveLength(0);
-  expect(store.turns("session_host").find(t => t.runId === "run_host")?.state).toBe("running");
+  expect(store.queries.turns("session_host").find(t => t.runId === "run_host")?.state).toBe("running");
 });
 /**
  * #240, SEEN TWICE IN ONE DAY: a worker sends a result MID-TASK — "here is the
@@ -155,7 +155,7 @@ test("an interim result does not spend the one-shot, and the completion that fol
   store.turnLifecycle.completeTurn("session_worker", "run_source", proof.claimToken, { text: "finished" });
   // BOTH facts land, in order: what the worker produced, then that its run
   // ended — as one notification the coordinator is handed once.
-  const received = store.turns("session_host");
+  const received = store.queries.turns("session_host");
   expect(received).toHaveLength(1);
   expect(received[0]).toMatchObject({ runId: "run_result", agentIntent: "result" });
   const entries = received[0]!.notification!.entries!;
@@ -191,7 +191,7 @@ test("a result the coordinator has read is that run's last word: its completion 
 
   // Two turns, both over: the result it read, and the record that the run
   // ended. Nothing queued, nothing held, nothing for a worker to claim.
-  const turns = store.turns("session_host");
+  const turns = store.queries.turns("session_host");
   expect(turns.map((turn) => turn.state)).toEqual(["completed", "completed"]);
   expect(turns[1]).toMatchObject({
     agentDelivery: "passive",
@@ -212,11 +212,11 @@ test("a parked request does not spend a one-shot — the target is waiting, not 
     kind: "user_input",
     detail: { kind: "user_input", prompt: "Wait or continue?", fields: [{ key: "choice", label: "Choice", kind: "choice", choices: ["Wait", "Continue"] }] },
   });
-  expect(store.turns("session_host")[0]?.wakeReason).toMatchObject({ kind: "request_opened", requestId: "req_ask" });
+  expect(store.queries.turns("session_host")[0]?.wakeReason).toMatchObject({ kind: "request_opened", requestId: "req_ask" });
   expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(1);
   store.requestGate.resolve("session_worker", "req_ask", { decision: "accept" });
   store.turnLifecycle.completeTurn("session_worker", "run_source", proof.claimToken, { text: "done" });
-  expect(store.turns("session_host").at(-1)?.wakeReason).toMatchObject({ kind: "turn_completed" });
+  expect(store.queries.turns("session_host").at(-1)?.wakeReason).toMatchObject({ kind: "turn_completed" });
   expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(0);
 });
 test("an unawaited result is passive; a blocker wakes but never overrides human Stop", () => {
@@ -257,7 +257,7 @@ test("persistent monitoring hears the completion too, and keeps its subscription
   expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(1);
   // ONE row since #590, and it is still told the run ended: the ending merged
   // into the result the host had not read yet.
-  const received = store.turns("session_host");
+  const received = store.queries.turns("session_host");
   expect(received).toHaveLength(1);
   expect(received[0]!.notification!.entries?.at(-1)).toMatchObject({ wakeKind: "turn_completed", runId: "run_source" });
 });

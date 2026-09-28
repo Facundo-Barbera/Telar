@@ -24,7 +24,7 @@ export function sessionAttachmentRoutes(store: EngineStore): Route[] {
       path: sessionRoute("/tasks/([A-Za-z0-9_-]+)/output"),
       auth: "engine",
       async handle({ params: [sessionId, taskId], query }) {
-        const task = store.tasks(sessionId!).find((one) => one.id === taskId);
+        const task = store.queries.tasks(sessionId!).find((one) => one.id === taskId);
         if (!task) throw new HttpError(404, "not_found", "task not found");
         const file = task.kind === "background" && task.outputFile ? resolveTaskOutputFile(task.outputFile, task.providerTaskId) : undefined;
         if (!file) throw new HttpError(404, "not_found", "this task has no log");

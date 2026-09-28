@@ -160,10 +160,10 @@ test("a session subscribed to one that is still going reads as waiting on it —
    */
   const { store } = readyStore();
   store.lifecycle.createSession({ id: "session_two", projectId: "project_one", title: "Fix the parser" });
-  const before = store.sessionsRevision();
+  const before = store.live.revision();
   store.subscriptions.subscribe("session_one", { targetSessionId: "session_two" });
   // Subscribing must redraw the subscriber's row.
-  expect(store.sessionsRevision()).toBeGreaterThan(before);
+  expect(store.live.revision()).toBeGreaterThan(before);
   // The target is doing nothing: the subscription promises nothing yet.
   expect(store.records.get("session_one").activity).toBe("idle");
 
