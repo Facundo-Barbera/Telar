@@ -24,7 +24,8 @@ import { fileURLToPath } from "node:url";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { TERMINAL_IMAGE_OPTIONS, TerminalSurface } from "./terminal-surface";
+import { TERMINAL_IMAGE_OPTIONS } from "../emulator";
+import { TerminalSurface } from "./terminal-surface";
 import type { LiveTerminal, TerminalActivity, TerminalChunk, TerminalEnding, TerminalOpenRequest } from "../bridge";
 import type { RunView } from "../run/types";
 import {
