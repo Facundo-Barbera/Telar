@@ -12,10 +12,7 @@ import {
   autoResolution,
   deadlineResolution,
   defaultAllowed,
-  narrowerRuntimeMode,
   PROVIDER_CAPABILITIES,
-  DEFAULT_ATTENDED_RUNTIME_MODE,
-  DEFAULT_DETACHED_RUNTIME_MODE,
   defaultInstanceIdForDriver,
   countsAsActivity,
   isBackgroundWork,
@@ -109,9 +106,7 @@ import {
   type RequestKind,
   type RequestOpenResult,
   type RequestResolver,
-  type RuntimeMode,
   type Session,
-  type SessionOrigin,
   type SessionSettleEnded,
   type Subscription,
   type Cohort,
@@ -123,8 +118,6 @@ import {
   type WakeKind,
   type WakeReason,
   type UsageSnapshot,
-  type EnvMode,
-  type ModelSelection as ModelSelectionValue,
   type WorkerClaim,
   type WorkerStatus,
   type WorkspaceFile,
@@ -142,13 +135,13 @@ import {
 } from "@telar/engine-client";
 import { type ProjectPatch, ProjectProbes, ProjectRegistry, WorkspaceConfigStore } from "./domains/projects";
 import { assertId, EngineStateError, Kernel, type JournalEntry } from "./platform/kernel";
-import { RUNTIME_MODES, SettingsStore } from "./domains/settings";
+import { SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
 import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, type PendingMcpOAuth } from "./domains/agent-tools";
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { dataScienceBlock, latexBlock, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
+import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
@@ -162,9 +155,9 @@ import {  } from "zod";
 import { providerProcessEnv } from "./domains/providers";
 import { adoptClaudeConversation, type Adoption, type ClaudeConversation, describeAdoption, describeImport, type ForkCut, listAdoptableConversations } from "./drivers/claude";
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
-import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, listPackages, listTexPackages, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, removeTelarVenv, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, windowCsv } from "./domains/plugins";
+import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, listPackages, listTexPackages, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, windowCsv } from "./domains/plugins";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
-import { createSessionWorktreeAsync, createWorktreeQueue, defaultWorktreeGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, derivedBranchFor, type WorktreePlan, type WorktreeQueue, buildInventory, type InventoryProject, type InventorySession, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, moveCheckouts, type Checkout, type MoveOutcome } from "./domains/worktrees";
+import { createWorktreeQueue, defaultWorktreeGitRunner, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, derivedBranchFor, type WorktreePlan, type WorktreeQueue, buildInventory, type InventoryProject, type InventorySession, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, moveCheckouts, type Checkout, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { CheckoutSizes, CleanupStore, copyStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor } from "./domains/terminal";
@@ -827,6 +820,7 @@ export class EngineStore {
   private readonly sessionIndex: SessionIndex;
   private readonly activity: SessionActivity;
   private readonly subscriptions: SessionSubscriptions;
+  private readonly lifecycle: SessionLifecycle;
 
   private registerCacheHooks(): void {
     this.kernel.onRollback(() => this.kernel.runProgress.clear());
@@ -1731,6 +1725,7 @@ export class EngineStore {
       ...(options.onQueueChanged ? { onQueueChanged: options.onQueueChanged } : {}),
     }));
     this.subscriptions = this.createSubscriptions();
+    this.lifecycle = this.createLifecycle();
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
     this.sessionIndexBackfill = this.sessionIndex.backfill();
@@ -1739,6 +1734,50 @@ export class EngineStore {
     this.claudeLongWindowMigration = this.migrateBareClaudeIds();
     this.claudeCompactionMigration = this.migrateClaudeCompactionToLimits();
     this.pluginFieldMigration = this.migrateLegacyPluginFieldsOnOpen();
+  }
+
+  /**
+   * THE PROJECT'S `setup.command`, IN THE BACKGROUND — never inside the
+   * per-project queue, which would hold every other cut for as long as an
+   * install takes. Best-effort: a setup that cannot start is in its own log.
+   */
+  private async startWorktreeSetup(sessionId: string, worktree: string): Promise<void> {
+    try {
+      const session = this.records.get(sessionId);
+      if (!session.projectId) return;
+      const project = this.getProject(session.projectId);
+      const { effective } = await this.workspace.view(project);
+      await this.setups.start(sessionId, { worktree, config: effective, env: { TELAR_WORKTREE: worktree } });
+    } catch {
+      // A session deleted in the meantime has nothing to set up.
+    }
+  }
+
+  private createLifecycle(): SessionLifecycle {
+    return new SessionLifecycle(this.kernel, this.records, this.subscriptions, {
+      git: this.git,
+      worktreeGit: this.worktreeGit,
+      worktreeQueue: this.worktreeQueue,
+      getProject: (projectId) => this.getProject(projectId),
+      assertProjectAvailable: (projectId) => this.assertProjectAvailable(projectId),
+      projectAvailability: (project) => this.projectAvailability(project),
+      projectOfSession: (session) => this.projectOfSession(session),
+      sessionDefaults: () => this.getSessionDefaults(),
+      requireInstance: (instanceId) => this.providers.require(instanceId),
+      cachedModels: (driver) => this.catalogues.cachedRows(driver),
+      readQueue: (sessionId) => this.readQueue(sessionId),
+      writeQueue: (sessionId, queue) => this.writeQueue(sessionId, queue),
+      appendEvent: (sessionId, event, runId) => this.appendEvent(sessionId, event, runId),
+      settleWorktree: (sessionId, error) => this.settleWorktree(sessionId, error),
+      forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
+      startSetup: (sessionId, worktree) => this.startWorktreeSetup(sessionId, worktree),
+      releaseBrowser: (sessionId, reason) => this.browser.release(sessionId, reason),
+      releasePlugins: (sessionId, reason) => {
+        this.pluginRelease?.(sessionId, reason);
+        void this.kernels?.dispose(sessionId, reason);
+      },
+      releasesArchivedCheckouts: () => this.cleanup.policy().archived,
+    });
   }
 
   private createSubscriptions(): SessionSubscriptions {
@@ -2262,7 +2301,7 @@ export class EngineStore {
       // No recorded base is no commit to cut from, and inventing one would put
       // the session on a checkout nobody chose. The row keeps its failure.
       if (baseSha === undefined) continue;
-      this.prepareWorktree(session.id, projectRoot, plan, baseSha);
+      this.lifecycle.prepareWorktree(session.id, projectRoot, plan, baseSha);
     }
   }
 
@@ -3497,302 +3536,8 @@ export class EngineStore {
     return root === undefined ? work() : this.withPrefetchedGit(root, EngineStore.cutQuestions(baseRef), work);
   }
 
-  createSession(input: {
-    draft?: boolean;
-    id?: string;
-    /**
-     * WHICH PROJECT — and OPTIONAL since #526, which is the whole of what makes
-     * a project-less session creatable rather than merely expressible.
-     *
-     * ABSENT IS A POSITIVE STATEMENT, the rule `Session.projectId` already
-     * carries: this session belongs to no project, has no checkout, no branch
-     * and no working directory. It is not "the caller forgot" and it is not
-     * "the default project" — there is no such thing here.
-     *
-     * ONE THING FOLLOWS THAT CANNOT BE ASKED FOR: a worktree. A checkout is cut
-     * FROM a repository, so a stated `envMode: "worktree"` with no project is
-     * refused rather than quietly downgraded — the caller asked for something
-     * this session cannot have, and silently giving it something else is how a
-     * session ends up working in a directory nobody chose.
-     */
-    projectId?: string;
-    /**
-     * WHO STARTED THIS SESSION. Supplied by the daemon from the creating turn's
-     * CLAIM TOKEN, never from a tool argument — see `Session.startedFrom`.
-     * Permanent, and no lifetime or permission travels with it.
-     */
-    startedFrom?: { sessionId: string; runId?: string };
-    /**
-     * THE PRIVILEGE CEILING — a session id whose runtime mode this one may not
-     * exceed (#541 G1). The owner's decision, in his words: a session created by
-     * an agent must never have more permissions than its creator; if the creator
-     * has to ask, the child asks too.
-     *
-     * A SESSION ID AND NOT A MODE, so nothing on the wire can WIDEN anything.
-     * The engine reads the mode off the named session itself, and the ceiling is
-     * a minimum against the posture below — so the worst a caller naming the
-     * wrong session can do is give its new session LESS access than it meant to.
-     * A mode on the wire would have been a number a caller could raise.
-     *
-     * READ ONCE, STORED NOWHERE. This is not `startedFrom`, whose note says no
-     * permission travels with it, and that note stays true: there is no live
-     * link here to widen later, and the creator changing its own mode afterwards
-     * does nothing to a session already made.
-     *
-     * REFUSED RATHER THAN IGNORED when it names nothing readable. It is supplied
-     * by engine code from a verified claim, never by a model, so an id that does
-     * not resolve means something is wrong — and the failure mode of ignoring it
-     * is the widest possible session, which is the one outcome this exists to
-     * prevent.
-     */
-    ceilingFrom?: string;
-    title?: string;
-    detached?: boolean;
-    envMode?: EnvMode;
-    driver?: ProviderDriverKind;
-    /**
-     * WHICH CONFIGURED LOGIN runs this session, if the caller picked one.
-     *
-     * Naming an instance also names the driver — they cannot be chosen
-     * independently without inventing the contradiction the split exists to
-     * prevent — so `driver` is ignored when this is present rather than
-     * cross-checked and refused.
-     */
-    providerInstanceId?: string;
-    /**
-     * Caller-proposed branch for a worktree session, e.g.
-     * `loom/hito1-agosto/presupuestos`. Must live under `loom/` or `telar/`
-     * (enforced in worktree.ts). Absent, the branch derives from the title —
-     * `telar/<title-slug>-<id6>` — and only falls back to the session id when
-     * there is no usable title. Names should come from the work, not the
-     * machinery.
-     */
-    branchSlug?: string;
-    /**
-     * What the worktree is CUT FROM — any local or remote-tracking ref from
-     * `GitOverview.refs`, resolved to a sha at creation. Absent means HEAD.
-     * Validated conservatively here because it becomes a `git rev-parse`
-     * argument: a name that starts with `-` is an option, not a ref.
-     */
-    baseRef?: string;
-    /** A human's own name for the new branch — see `sanitizeBranchName`. */
-    branchName?: string;
-    workspace?: { path: string; branch: string; baseRef?: string };
-    /**
-     * WHO ASKED — provenance, not a link and not a count. `"session"` means
-     * this came through the `sessions` toolkit or its socket, so a list can
-     * say an agent asked for it; absent (or `"human"`) is a person's own
-     * click. NOTHING IS CAPPED ON IT: there used to be a live-session budget
-     * here, and it was removed when a session was allowed to orchestrate
-     * many — how many sessions an agent may hold open is a rule for the
-     * agent's own instructions, not a number in the store.
-     *
-     * DECLARED BY THE CALLER'S OWN CODE, never by a model argument — no tool
-     * shape on the wall carries it.
-     */
-    origin?: SessionOrigin;
-  }): Session {
-    return this.kernel.command("createSession", () => {
-      if (input.id !== undefined) assertId(input.id, "session id");
-      // Both reads are about a project, so both are skipped when there is none —
-      // never replaced by a guess at which project was meant.
-      const project = input.projectId === undefined ? undefined : this.getProject(input.projectId);
-      if (input.projectId !== undefined) this.assertProjectAvailable(input.projectId);
-      if (project === undefined && input.envMode === "worktree") {
-        throw new EngineStateError("invalid_request", "a worktree is cut from a project, and this session has none");
-      }
-      const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
-      const metadata = sessionMetadataFile(this.paths, id);
-      const existing = this.readDocument(metadata);
-      if (existing !== undefined) {
-        const session = parseSession(existing);
-        if (session.projectId === input.projectId) return structuredClone(session);
-        throw new EngineStateError("conflict", "session id is already owned by another project");
-      }
-      const at = this.now();
-      const detached = input.detached ?? true;
-      const ceiling = input.ceilingFrom === undefined ? undefined : this.records.get(input.ceilingFrom).runtimeMode;
-      const availability = project === undefined ? undefined : this.projectAvailability(project);
-      const preferred = project === undefined ? "local" : (project.envMode ?? this.getSessionDefaults().envMode);
-      const envMode =
-        project === undefined ? "local" : (input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local"));
-      if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
-        throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
-      }
-      const chosen = input.providerInstanceId === undefined ? undefined : this.providers.require(input.providerInstanceId);
-      const driver = chosen?.driver ?? input.driver ?? "claude";
-      if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
-        throw new EngineStateError("invalid_request", "unknown provider driver");
-      }
-      if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
-      const cut =
-        envMode === "worktree" && !input.draft && project !== undefined
-          ? (() => {
-              const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
-              return prepareSessionWorktree(this.git, {
-                engineRoot: this.paths.root,
-                projectRoot: project.root,
-                projectName: project.name,
-                sessionId: id,
-                ...(availability !== undefined ? { availability } : {}),
-                ...(branchSlug !== undefined ? { branchSlug } : {}),
-                ...(input.baseRef !== undefined ? { baseRef: input.baseRef } : {}),
-                ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
-              });
-            })()
-          : undefined;
-      const workspace: Session["workspace"] =
-        cut !== undefined
-          ? // `baseRef` is stored NOW rather than when the cut lands: it is the
-            // commit the checkout will start from, so a reader asking "what has
-            // this session done" has its anchor from the first instant.
-            { mode: "worktree" as const, path: cut.plan.path, branch: cut.plan.branch, baseRef: cut.baseSha }
-          : project === undefined
-            ? // NO PROJECT MEANS NO DIRECTORY — see `SessionWorkspace`'s `none`
-              // variant. There is nothing to resolve a base against either: a
-              // base is a commit, and there is no repository here.
-              { mode: "none" as const }
-            : (() => {
-              const head = this.git(project.root, ["rev-parse", "HEAD"]);
-              const baseRef = head.status === 0 ? head.stdout.trim() : "";
-              return { mode: "local" as const, path: project.root, ...(baseRef ? { baseRef } : {}) };
-            })();
-      const session: Session = {
-        id,
-        // Written only when there IS one. An explicit `undefined` would be a
-        // second spelling of absent on a field whose absence is the statement.
-        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
-        environmentId: "local",
-        title: input.title?.trim() || "New session",
-        state: "active",
-        // Only ever written when it is TRUE. An explicit `"human"` on every
-        // session document would be a second spelling of absent, and the two
-        // would drift the first time a reader forgot one of them.
-        ...(input.origin === "session" ? { origin: "session" as const } : {}),
-        ...(input.startedFrom
-          ? { startedFrom: { sessionId: input.startedFrom.sessionId, ...(input.startedFrom.runId ? { runId: input.startedFrom.runId } : {}) } }
-          : {}),
-        createdAt: at,
-        updatedAt: at,
-        providerInstanceId: chosen?.id ?? defaultInstanceIdForDriver(driver),
-        driver,
-        ...(() => {
-          if (!project?.defaultModel || project.defaultModel.instanceId !== (chosen?.id ?? defaultInstanceIdForDriver(driver))) return {};
-          const model = this.supportedOptions(driver, project.defaultModel);
-          return model ? { model } : {};
-        })(),
-        workspace,
-        // The directory is not there yet; `prepareWorktree` below clears this or
-        // flips it to `failed`. Absent means ready, which is every other session.
-        ...(cut !== undefined ? { preparation: { state: "preparing" as const, at } } : {}),
-        envMode,
-        ...(input.draft ? { draft: {
-          ...(input.baseRef ? { baseRef: input.baseRef } : {}),
-          ...(input.branchName ? { branchName: input.branchName } : {}),
-          ...(input.branchSlug ? { branchSlug: input.branchSlug } : {}),
-        } } : {}),
-        runtimeMode: (() => {
-          // The standing default replaces the detached posture only: an attended
-          // session is one somebody is watching, and it keeps asking.
-          const posture = detached ? (this.getSessionDefaults().runtimeMode ?? DEFAULT_DETACHED_RUNTIME_MODE) : DEFAULT_ATTENDED_RUNTIME_MODE;
-          return ceiling === undefined ? posture : narrowerRuntimeMode(posture, ceiling);
-        })(),
-        interactionMode: "default",
-        detached,
-        // Derived on every read (`withActivity`) and stripped before every write
-        // (`storedSession`); named here only because the wire shape requires it,
-        // and a session with no queue yet is genuinely idle.
-        activity: "idle",
-      };
-      this.writeDocument(metadata, storedSession(session));
-      // Through `writeQueue` like every other queue write: an id reused after a
-      // delete must not find the old session's cached queue waiting for it.
-      this.writeQueue(id, emptyQueue(id));
-      this.appendEvent(id, { type: "session.created", session });
-      // AFTER the document, never before: the flip this schedules writes the same
-      // record, and a cut that finished first would be overwritten by the row that
-      // said it had not started.
-      if (cut !== undefined && project !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
-      return structuredClone(session);
-    });
-  }
-
-  /**
-   * A STORED SELECTION WITHOUT THE OPTIONS ITS MODEL DOES NOT OFFER.
-   *
-   * A project's default was picked off the catalogue as it stood then, and a
-   * provider can withdraw a level or fast mode from a model since. An effort the
-   * model does not list fails the turn outright, so it is dropped here rather
-   * than carried into a session nobody chose that for.
-   *
-   * SYNCHRONOUS, so it reads the in-memory catalogue only. Cold, or a model the
-   * catalogue does not list (a hand-added one has no published options to check
-   * against), the selection is trusted as stored — it was picked off that list.
-   */
-  private supportedOptions(driver: ProviderDriverKind, selection: ModelSelection): ModelSelection | undefined {
-    const listed = this.catalogues.cachedRows(driver);
-    if (!listed) return selection;
-    const id = selection.model ?? listed.find((row) => row.isDefault)?.id;
-    const row = listed.find((candidate) => candidate.id === id || candidate.resolves === id);
-    if (!row || row.source === "user") return selection;
-    const { effort, fastMode, serviceTier, ultracode, ...rest } = selection;
-    const kept: ModelSelection = {
-      ...rest,
-      ...(effort !== undefined && row.efforts.includes(effort) ? { effort } : {}),
-      ...(fastMode !== undefined && row.fastMode ? { fastMode } : {}),
-      ...(serviceTier !== undefined && row.serviceTiers?.some((tier) => tier.id === serviceTier) ? { serviceTier } : {}),
-      // Ultracode runs at xhigh, so it needs a model that offers that level.
-      ...(ultracode !== undefined && row.efforts.includes("xhigh") ? { ultracode } : {}),
-    };
-    const named = [kept.model, kept.effort, kept.fastMode, kept.serviceTier, kept.ultracode].some((value) => value !== undefined);
-    return named ? kept : undefined;
-  }
-
-  /**
-   * Cut the checkout a `preparing` session is waiting for, then flip its row.
-   *
-   * NOT AWAITED BY ITS CALLER, which is the entire point of #496: `createSession`
-   * returns the moment the row exists, and this runs on the queue behind it.
-   * Every exit writes the row — there is no path that leaves a session
-   * `preparing` forever except the daemon dying mid-cut, and a restart re-reads
-   * a stale `preparing` it can see and act on.
-   *
-   * SERIALISED PER PROJECT by `worktreeQueue`, not by blocking. Two cuts at once
-   * on one repository fight over the same index lock, which is why the
-   * synchronous version was kept as long as it was; see `createWorktreeQueue`.
-   */
-  private prepareWorktree(sessionId: string, projectRoot: string, plan: WorktreePlan, baseSha: string): void {
-    void this.worktreeQueue(projectRoot, async () => {
-      try {
-        await createSessionWorktreeAsync(this.worktreeGit, { engineRoot: this.paths.root, projectRoot, plan, baseSha });
-        this.settleWorktree(sessionId, undefined);
-        void this.startWorktreeSetup(sessionId, plan.path);
-      } catch (error) {
-        // Git's own words, not ours — see `SessionPreparation.error`.
-        this.settleWorktree(sessionId, error instanceof Error ? error.message : String(error));
-      } finally {
-        // A cut adds a branch and a worktree the project's overview lists.
-        this.forgetGitReadsUnder(projectRoot);
-        this.forgetGitReadsUnder(plan.path);
-      }
-    });
-  }
-
-  /**
-   * THE PROJECT'S `setup.command`, IN THE BACKGROUND — never inside the
-   * per-project queue, which would hold every other cut for as long as an
-   * install takes. Best-effort: a setup that cannot start is in its own log.
-   */
-  private async startWorktreeSetup(sessionId: string, worktree: string): Promise<void> {
-    try {
-      const session = this.records.get(sessionId);
-      if (!session.projectId) return;
-      const project = this.getProject(session.projectId);
-      const { effective } = await this.workspace.view(project);
-      await this.setups.start(sessionId, { worktree, config: effective, env: { TELAR_WORKTREE: worktree } });
-    } catch {
-      // A session deleted in the meantime has nothing to set up.
-    }
+  createSession(input: Parameters<SessionLifecycle["createSession"]>[0]): Session {
+    return this.lifecycle.createSession(input);
   }
 
   /**
@@ -4021,167 +3766,12 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "session.updated", session: updated });
   }
 
-  /**
-   * Change what a session is and what it may do, mid-flight.
-   *
-   * `runtimeMode` IS THE ONE THAT MATTERS AND IT APPLIES IMMEDIATELY, including
-   * to a turn that is already running: `openRequest` reads the session document
-   * at the moment a tool asks, so tightening the mode stops the very next tool
-   * call rather than the next turn. That is the property that makes this usable
-   * as a brake — a human watching a detached session do something they did not
-   * expect can take the rope back without stopping the work.
-   *
-   * Loosening mid-turn does NOT retroactively resolve requests already parked.
-   * Those were opened under the old policy and a human answering them is the
-   * only thing that should settle them; auto-accepting a question somebody is
-   * already looking at would be a surprise in the dangerous direction.
-   */
-  updateSession(
-    sessionId: string,
-    /** `model: null` CLEARS the selection; absent leaves it alone. The two are
-     *  different requests and JSON cannot express the difference any other way. */
-    patch: {
-      title?: string;
-      runtimeMode?: RuntimeMode;
-      detached?: boolean;
-      model?: ModelSelectionValue | null;
-      /** `null` returns the session to the inactivity rule; the two strings pin
-       *  it out of or into the list. Three answers, so not a boolean. */
-      settledOverride?: "settled" | "active" | null;
-      /** `null` cancels a snooze. A time in the past is accepted and simply
-       *  reads as awake — a client's clock is not this engine's to police. */
-      snoozedUntil?: number | null;
-      /** `null` returns the session to the driver's default rather than storing
-       *  one — see `Session.resumeAfterRateLimit`. Three answers, so not a
-       *  boolean: "on", "off", and "whatever this provider does". */
-      resumeAfterRateLimit?: boolean | null;
-    },
-  ): Session {
-    return this.kernel.command("updateSession", () => {
-      const session = this.records.get(sessionId);
-      if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
-
-      const next: Session = { ...session };
-      if (patch.title !== undefined) {
-        const title = String(patch.title).trim();
-        if (!title) throw new EngineStateError("invalid_request", "session title cannot be empty");
-        next.title = title.slice(0, 200);
-      }
-      if (patch.runtimeMode !== undefined) {
-        if (!RUNTIME_MODES.has(patch.runtimeMode)) throw new EngineStateError("invalid_request", "unknown runtime mode");
-        next.runtimeMode = patch.runtimeMode;
-      }
-      if (patch.detached !== undefined) {
-        if (typeof patch.detached !== "boolean") throw new EngineStateError("invalid_request", "detached must be a boolean");
-        next.detached = patch.detached;
-      }
-      if (patch.model !== undefined) {
-        if (patch.model === null) {
-          delete next.model;
-        } else {
-          const parsed = ModelSelection.safeParse(patch.model);
-          if (!parsed.success) throw new EngineStateError("invalid_request", "model selection is malformed");
-          if (parsed.data.instanceId !== session.providerInstanceId) {
-            throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
-          }
-          next.model = parsed.data;
-        }
-      }
-      if (patch.settledOverride !== undefined) {
-        if (patch.settledOverride === null) {
-          delete next.settledOverride;
-          delete next.settledAt;
-          releaseDelegationSettle(next);
-        } else if (patch.settledOverride === "settled" || patch.settledOverride === "active") {
-          if (patch.settledOverride === "settled") delete next.settledBy;
-          else releaseDelegationSettle(next);
-          next.settledOverride = patch.settledOverride;
-          next.settledAt = this.now();
-        } else {
-          throw new EngineStateError("invalid_request", "settledOverride must be 'settled', 'active' or null");
-        }
-      }
-      if (patch.resumeAfterRateLimit !== undefined) {
-        if (patch.resumeAfterRateLimit === null) delete next.resumeAfterRateLimit;
-        else if (typeof patch.resumeAfterRateLimit === "boolean") next.resumeAfterRateLimit = patch.resumeAfterRateLimit;
-        else throw new EngineStateError("invalid_request", "resumeAfterRateLimit must be a boolean or null");
-      }
-      if (patch.snoozedUntil !== undefined) {
-        delete next.wokeAt;
-        if (patch.snoozedUntil === null) {
-          delete next.snoozedUntil;
-          delete next.snoozedAt;
-        } else {
-          if (!Number.isFinite(patch.snoozedUntil)) throw new EngineStateError("invalid_request", "snoozedUntil must be a timestamp");
-          next.snoozedUntil = Math.floor(patch.snoozedUntil);
-          // BOTH STAMPS, ALWAYS. A wake time with no "set at" cannot answer "has
-          // anything happened since?", which is the whole of the early-wake rule.
-          next.snoozedAt = this.now();
-        }
-      }
-      // Nothing changed: no write, no event. A client polling a "save" button
-      // should not fill the journal with rows that say nothing happened.
-      if (
-        next.title === session.title &&
-        next.runtimeMode === session.runtimeMode &&
-        next.detached === session.detached &&
-        next.settledOverride === session.settledOverride &&
-        next.snoozedUntil === session.snoozedUntil &&
-        // Or a cancel on an already-woken row would clear the recorded wake in
-        // `next` and then be dropped here as "nothing changed", leaving the stale
-        // stamp on disk with no event to say it went.
-        next.wokeAt === session.wokeAt &&
-        next.resumeAfterRateLimit === session.resumeAfterRateLimit &&
-        JSON.stringify(next.model ?? null) === JSON.stringify(session.model ?? null)
-      ) {
-        return structuredClone(session);
-      }
-      next.updatedAt = this.now();
-      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
-      this.appendEvent(sessionId, { type: "session.updated", session: next });
-      // A member settled before it reported ends its cohort's wait (`reviewCohorts`).
-      if (next.settledOverride === "settled" && session.settledOverride !== "settled") this.subscriptions.reviewCohorts();
-      return structuredClone(next);
-    });
+  updateSession(sessionId: string, patch: Parameters<SessionLifecycle["updateSession"]>[1]): Session {
+    return this.lifecycle.updateSession(sessionId, patch);
   }
 
-  /**
-   * Re-derive the worktree branch from the CURRENT title, after a generated
-   * title replaced the seed. Returns the new branch, or undefined for every
-   * way this can decline — and it declines rather than throws, because it runs
-   * behind a turn nobody should lose to a naming nicety.
-   *
-   * ONLY A `telar/` BRANCH IS TOUCHED. Human-named branches live outside the
-   * namespace by construction (`sanitizeBranchName` refuses it), and a loom's
-   * `loom/…` slugs encode the loom's own structure — both are names somebody
-   * or something else owns. `git branch -m` refusing a collision is the
-   * remaining guard, and its failure is a no-op here, not an error.
-   *
-   * The worktree DIRECTORY keeps its seed-derived name: it is an address the
-   * session document already holds, and moving a directory a provider process
-   * may be running in is how checkouts get corrupted.
-   */
-  async refreshWorktreeBranchFromTitle(sessionId: string): Promise<string | undefined> {
-    const session = this.records.get(sessionId);
-    if (session.state === "archived" || session.workspace.mode !== "worktree") return undefined;
-    const current = session.workspace.branch;
-    if (!current.startsWith("telar/")) return undefined;
-    const next = derivedBranchFor(session.title, sessionId);
-    if (next === undefined || next === current) return undefined;
-    // On the mutation pool, never the thread: this runs behind every first turn.
-    const renamed = await this.worktreeGit(session.workspace.path, ["branch", "-m", current, next]);
-    if (renamed.status !== 0) return undefined;
-    this.forgetGitReadsUnder(session.workspace.path);
-    const projectRoot = this.projectOfSession(session)?.root;
-    if (projectRoot) this.forgetGitReadsUnder(projectRoot);
-    // RE-READ after the await: the record moved on while git ran, and writing
-    // the copy from before it would undo whatever happened in between.
-    const latest = this.records.get(sessionId);
-    if (latest.workspace.mode !== "worktree" || latest.workspace.branch !== current) return undefined;
-    const updated: Session = { ...latest, workspace: { ...latest.workspace, branch: next }, updatedAt: this.now() };
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
-    this.appendEvent(sessionId, { type: "session.updated", session: updated });
-    return next;
+  refreshWorktreeBranchFromTitle(sessionId: string): Promise<string | undefined> {
+    return this.lifecycle.refreshWorktreeBranchFromTitle(sessionId);
   }
 
   getSession(sessionId: string): Session {
@@ -4975,7 +4565,7 @@ export class EngineStore {
         }
         delete session.draft;
         this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-        if (cut) this.prepareWorktree(sessionId, cut.projectRoot, cut.plan, cut.baseSha);
+        if (cut) this.lifecycle.prepareWorktree(sessionId, cut.projectRoot, cut.plan, cut.baseSha);
       }
       if (session.paused && !passive) turn.held = { at, reason: "session_paused" };
       if (input.origin !== "session" && input.origin !== "restart" && kind !== "compact" && session.agentMessagesBlocked) {
@@ -6633,123 +6223,8 @@ export class EngineStore {
     });
   }
 
-  /**
-   * End a session and free its checkout.
-   *
-   * THE BRANCH SURVIVES. Removing the worktree returns the disk and the git
-   * registration; the commits on `telar/<id>` are the session's OUTPUT and
-   * deleting them is a separate human decision. A detached run whose work
-   * vanished when it finished would be worse than one that never ran.
-   *
-   * Refuses while work is in flight: archiving under a running turn would
-   * pull the checkout out from under a live provider process.
-   */
   archiveSession(sessionId: string, options: { releaseCheckout?: boolean } = {}): Session {
-    const session = this.records.get(sessionId);
-    if (session.state === "archived") return session;
-    const active = this.readQueue(sessionId).turns.find(
-      (turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running",
-    );
-    if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before archiving");
-
-    // Free the session's browser. WITHOUT THIS, Chromium instances accumulate
-    // until the pool's LRU evicts them six sessions later — which is a leak
-    // measured in hundreds of megabytes on a machine running detached work.
-    void this.browser.release(sessionId, "session archived");
-    this.releaseDataScience(session, "session archived");
-
-    // A WORKTREE IMPLIES A PROJECT, and checking both is how that stays true
-    // rather than assumed: a project-less session is always
-    // `local`, because a worktree is cut from a project's repository and it has
-    // none. Reading the pair together means a future project-less session that
-    // somehow carried a worktree degrades to "leave the directory" instead of
-    // throwing on a lookup that cannot succeed.
-    // ONLY WHEN ASKED: Storage's "Delete worktrees of archived sessions", or
-    // a caller that is archiving precisely to give the checkout back. Off, the
-    // checkout stays, and the branch and directory are the person's to keep.
-    if (
-      session.workspace.mode === "worktree" &&
-      session.projectId &&
-      !session.workspace.released &&
-      (options.releaseCheckout ?? this.cleanup.policy().archived)
-    ) {
-      const project = this.getProject(session.projectId);
-      // Best-effort. A leaked directory is bounded inside the engine's own
-      // root and is reapable later; refusing to archive because git was
-      // unhappy would strand the session in a state a human cannot leave.
-      this.releaseWorktree(project, session.workspace.path);
-    }
-    const at = this.now();
-    session.state = "archived";
-    session.updatedAt = at;
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-    this.appendEvent(sessionId, { type: "session.archived" });
-    this.subscriptions.dropSubscriptionsOf(sessionId);
-    return structuredClone(session);
-  }
-
-  /**
-   * REMOVE A SESSION AND EVERYTHING IT OWNS. There is no undo.
-   *
-   * WHY THIS EXISTS AT ALL, given `archiveSession` beside it: archiving and
-   * settling were two names for "off my list", and a cockpit that offers both
-   * spends a chip, a menu item and a lifecycle field insisting they differ.
-   * Settling is now the only way to put a session down. So the other end of the
-   * lifecycle has to be real — you cannot retire a concept whose only exit was
-   * the thing you removed — and "delete" that leaves the record behind is the
-   * dishonest version of exactly that.
-   *
-   * WHAT IT TAKES WITH IT: the browser (or Chromium instances accumulate until
-   * the pool's LRU evicts them, hundreds of megabytes on a machine running
-   * detached work), the worktree, and the session's own directory — metadata,
-   * queue, journal, items, requests, attachments.
-   *
-   * WHAT IT REFUSES: a session with a turn in flight, for `archiveSession`'s
-   * reason and more sharply. Archiving under a running turn pulls the checkout
-   * out from under a live provider process; deleting under one also removes the
-   * journal that process is still appending to. Stop it first.
-   *
-   * THE WORKTREE REMOVAL IS BEST-EFFORT AND THE DIRECTORY REMOVAL IS NOT. A
-   * leaked worktree is bounded inside the engine's root and reapable later, so
-   * git being unhappy must not strand a session nobody can delete. A partly
-   * removed session directory is the opposite: it would parse as corruption on
-   * the next read, so it either goes or the call fails with it intact.
-   */
-  /** Kill the session's kernel, and for a worktree, its own Telar venv. Best-effort. */
-  /**
-   * A SESSION IS GOING AWAY. The store ANNOUNCES it and the host decides who
-   * cares — `attachPluginRelease` is what stops this method growing a line per
-   * feature. The venv removal stays here because it is the store's own file
-   * layout, not any plugin's.
-   */
-  /**
-   * Give a checkout back, on the queue, without waiting for it — #496's other
-   * half.
-   *
-   * NOT AWAITED, AND THAT LOSES NOTHING A CALLER HAD. `removeSessionWorktree`
-   * always returned whether the directory was actually gone, and neither caller
-   * ever read it: both are best-effort by their own comments, because a leaked
-   * worktree is bounded inside the engine's root and reapable later, while an
-   * archive that refused because git was unhappy would strand a session nobody
-   * can leave. What blocking bought here was not a decision — it was the wait.
-   *
-   * IT STILL GOES THROUGH THE QUEUE, so a removal and the next session's cut on
-   * the same project do not race on the index lock.
-   */
-  private releaseWorktree(project: Project, worktreePath: string): void {
-    /**
-     * READ ON THE QUEUE, NOT BEFORE IT — issue #534. The removal may wait behind
-     * another project's cut, and a cable can move while it waits; the question
-     * "is this repository readable" has to be asked at the moment git would
-     * actually be run. See `removeSessionWorktreeAsync` and `worktree.ts`'s
-     * header for why `prune` in particular must not run on a stale answer.
-     */
-    void this.worktreeQueue(project.root, () =>
-      removeSessionWorktreeAsync(this.worktreeGit, project.root, worktreePath, this.projectAvailability(project)).finally(() => {
-        this.forgetGitReadsUnder(project.root);
-        this.forgetGitReadsUnder(worktreePath);
-      }),
-    );
+    return this.lifecycle.archiveSession(sessionId, options);
   }
 
   /**
@@ -7118,37 +6593,8 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "session.updated", session: updated });
   }
 
-  private releaseDataScience(session: Session, reason: string): void {
-    this.pluginRelease?.(session.id, reason);
-    void this.kernels?.dispose(session.id, reason);
-    if (session.workspace.mode === "worktree" && session.projectId) {
-      removeTelarVenv(telarVenvDir(this.paths.root, session.projectId, path.basename(session.workspace.path)));
-    }
-  }
-
   deleteSession(sessionId: string): boolean {
-    const session = this.records.get(sessionId);
-    const active = this.readQueue(sessionId).turns.find(
-      (turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running",
-    );
-    if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before deleting");
-
-    void this.browser.release(sessionId, "session deleted");
-    this.releaseDataScience(session, "session deleted");
-
-    // See `archiveSession` for why the project is checked beside the mode.
-    if (session.workspace.mode === "worktree" && session.projectId) {
-      const project = this.getProject(session.projectId);
-      this.releaseWorktree(project, session.workspace.path);
-    }
-
-    // The event is appended BEFORE the directory goes, so a subscriber watching
-    // this session is told why its stream ended rather than simply losing it.
-    this.appendEvent(sessionId, { type: "session.archived" });
-    this.kernel.executionStore.deleteSession(sessionId);
-    fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
-    this.kernel.sessionDeleted(sessionId);
-    return true;
+    return this.lifecycle.deleteSession(sessionId);
   }
 
   /** Sessions already refused for running on the removed `telar` driver, so the
