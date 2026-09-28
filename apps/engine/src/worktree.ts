@@ -68,7 +68,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ProjectAvailability } from "./volumes";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "./worktrees-location";
-import { detectCacheDedup, type CacheDedupVerdict } from "./package-caches";
+import { detectCacheDedup, type CacheDedupVerdict } from "./domains/storage";
 import { mountRootsFor } from "./volumes";
 
 export type GitResult = {

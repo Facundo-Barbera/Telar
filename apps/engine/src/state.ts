@@ -281,10 +281,9 @@ import { buildInventory, type InventoryProject, type InventorySession } from "./
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
 import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./worktree-release";
 import { SETUP_STOP_GRACE_MS, WorktreeSetups } from "./worktree-setup";
-import { CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs } from "./cleanup";
+import { CheckoutSizes, CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher } from "./run/launcher";
 import { processGroupFor } from "./run/platform";
-import { CheckoutSizes, type CheckoutSizesOptions } from "./checkout-sizes";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
@@ -896,7 +895,7 @@ const FACET_CACHE_MS = 5 * 60_000;
  * change and 40 imports rewritten is 40 chances to rewrite one wrongly.
  */
 import { statePaths, type EngineStatePaths } from "./state-paths";
-import type { ReapCandidate } from "./node-modules-reap";
+import type { ReapCandidate } from "./domains/storage";
 export { statePaths, type EngineStatePaths };
 
 /** Every regular file's size under `root`, one at a time. Iterative for the

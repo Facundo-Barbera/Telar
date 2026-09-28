@@ -18,7 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildInventory, classifyCheckout, describeReclaim, type CheckoutFacts } from "../src/worktree-inventory";
 import { createAsyncGitRunner, removeUnregisteredCheckout } from "../src/worktree";
-import { measureDirectory } from "../src/storage";
+import { measureDirectory } from "../src/domains/storage";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {

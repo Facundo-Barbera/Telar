@@ -1,42 +1,9 @@
-/**
- * ══ HOW BIG EACH SESSION CHECKOUT IS, MEASURED OFF THE REQUEST PATH ══
- *
- * WHY THIS EXISTS. `/v2/storage` used to walk every checkout file by file
- * before answering: on the machine this was found on, ~140 checkouts of ~75k
- * files each on a busy HDD — millions of `lstat`s. Async did not save it: each
- * one is a job on libuv's thread pool (four threads by default), the same pool
- * every other `fs.promises` call in the engine queues on, so the whole engine
- * slowed behind a pane nobody could see finish. And the cockpit's two read
- * slots stayed pinned on requests that never returned, so the sidebar and every
- * conversation queued behind them until a reload.
- *
- * THE SHAPE, AND WHY EACH PART:
- *  - ONE WALKER, at most `concurrency` (default 2) filesystem calls in flight,
- *    so it can never occupy more than half the pool.
- *  - A BUDGET PER PASS — operations and milliseconds — then a yield to the
- *    event loop before the next pass. A walk is resumable: its frontier is kept,
- *    so a pass stops mid-directory and the next one carries on.
- *  - A FIGURE PER CHECKOUT, cached. Re-measured when the checkout directory's
- *    own mtime moves, when it is older than `ttlMs`, or when somebody presses
- *    refresh — and the old figure is served until the new one settles.
- *  - WORK ONLY WHILE SOMEBODY IS WAITING. Every read `demand`s; with no demand
- *    for `idleMs` the job stops where it stands (progress kept) and resumes on
- *    the next read. The pane polls while a row says `measuring`, which is what
- *    keeps it going — close the pane and the disk goes quiet.
- *
- * THE MEASUREMENT RULE IS `storage.ts`'s: allocated blocks, `lstat` so no
- * symlink is followed, hard links counted once — per checkout, the same as
- * `measureDirectory` did for the inventory rows.
- */
-
 import fs from "node:fs";
 import path from "node:path";
-import { bytesOf, type CheckoutFigure } from "./storage";
+import { bytesOf, type CheckoutFigure } from "./measure";
 
 export type SizingStat = Pick<fs.Stats, "blocks" | "size" | "nlink" | "dev" | "ino" | "mtimeMs"> & { isDirectory(): boolean };
 
-/** The two calls the walker makes. A seam so a test can hand it a tree of a
- *  million files that does not exist, and count what it was asked. */
 export type SizingFs = {
   lstat(target: string): Promise<SizingStat>;
   readdir(target: string): Promise<string[]>;
@@ -45,8 +12,6 @@ export type SizingFs = {
 export type CheckoutSizesOptions = {
   fs?: SizingFs;
   now?: () => number;
-  /** How the next pass is queued. Default: an unref'd timer `gapMs` out, so
-   *  other I/O gets the pool between passes. */
   schedule?: (next: () => void) => { cancel(): void };
   gapMs?: number;
   concurrency?: number;
@@ -54,7 +19,6 @@ export type CheckoutSizesOptions = {
   msPerPass?: number;
   idleMs?: number;
   ttlMs?: number;
-  /** How often the roots are re-listed for new, gone or touched checkouts. */
   relistMs?: number;
 };
 
@@ -79,7 +43,6 @@ export class CheckoutSizes {
   private readonly relistMs: number;
 
   private readonly checkouts = new Map<string, Checkout>();
-  /** The roots themselves and the loose files directly in them. */
   private loose = { bytes: 0, partial: false };
   private roots: string[] = [];
   private listedAt: number | undefined;
@@ -88,8 +51,6 @@ export class CheckoutSizes {
   private running = false;
   private stopped = false;
 
-  /** Observability for tests and diagnosis: filesystem calls made, passes
-   *  run, and times the job stopped because nobody was asking any more. */
   readonly stats = { ops: 0, passes: 0, idleStops: 0 };
 
   constructor(options: CheckoutSizesOptions = {}) {
@@ -111,10 +72,6 @@ export class CheckoutSizes {
     this.relistMs = options.relistMs ?? 30_000;
   }
 
-  /**
-   * THE CHECKOUTS ROW, FROM MEMORY — never a walk. Records that somebody is
-   * waiting and starts the job if there is anything to do.
-   */
   figure(roots: readonly string[]): CheckoutFigure {
     this.want(roots);
     let bytes = this.loose.bytes;
@@ -122,7 +79,6 @@ export class CheckoutSizes {
     let measured = 0;
     const counted = this.inRoots();
     for (const checkout of counted) {
-      // The last settled figure while a re-measure runs; a floor before one.
       const shown = checkout.settled ?? checkout.walk;
       bytes += shown?.bytes ?? 0;
       partial ||= shown?.partial ?? false;
@@ -133,10 +89,6 @@ export class CheckoutSizes {
     return { bytes, partial, measuring, measured, of };
   }
 
-  /**
-   * ONE CHECKOUT'S SETTLED SIZE, or no `bytes` while it has none. A checkout
-   * outside the roots (cut before a move) is adopted so it gets measured too.
-   */
   peek(target: string, roots: readonly string[]): { bytes?: number; partial: boolean } {
     const key = path.resolve(target);
     if (!this.checkouts.has(key)) this.checkouts.set(key, { stamp: 0, adopted: true });
@@ -145,19 +97,15 @@ export class CheckoutSizes {
     return settled ? { bytes: settled.bytes, partial: settled.partial } : { partial: false };
   }
 
-  /** Refresh: every figure is re-measured, and served until the new one settles. */
   invalidate(): void {
     for (const checkout of this.checkouts.values()) if (checkout.settled) checkout.settled.stale = true;
     this.listedAt = undefined;
   }
 
-  /** Checkouts were cut, moved or given back: re-list the roots on the next
-   *  pass, without re-measuring the ones that did not change. */
   relist(): void {
     this.listedAt = undefined;
   }
 
-  /** Stop for good — the daemon is closing. */
   stop(): void {
     this.stopped = true;
     this.pending?.cancel();
@@ -179,8 +127,6 @@ export class CheckoutSizes {
     }
   }
 
-  /** The checkouts the storage row counts: the roots' own children. One the
-   *  inventory adopted from elsewhere is sized for its row, not summed here. */
   private inRoots(): Checkout[] {
     return [...this.checkouts.entries()].filter(([key, checkout]) => !checkout.adopted && this.roots.includes(path.dirname(key))).map(([, checkout]) => checkout);
   }
@@ -198,8 +144,6 @@ export class CheckoutSizes {
 
   private async tick(): Promise<void> {
     this.pending = undefined;
-    // NOBODY WAITING: stop where we stand. The frontier is kept, so the next
-    // read resumes the walk instead of restarting it.
     if (this.stopped || this.now() - this.lastDemand > this.idleMs) {
       if (!this.stopped) this.stats.idleStops += 1;
       this.running = false;
@@ -209,8 +153,6 @@ export class CheckoutSizes {
     try {
       more = await this.pass();
     } catch {
-      // Every filesystem call above records its own failure as `partial`; a
-      // throw here is a bug, and it must not become an unhandled rejection.
       more = false;
     } finally {
       this.stats.passes += 1;
@@ -219,7 +161,6 @@ export class CheckoutSizes {
     }
   }
 
-  /** One budgeted pass. True when there is work left. */
   private async pass(): Promise<boolean> {
     let ops = this.opsPerPass;
     const until = this.now() + this.msPerPass;
@@ -237,11 +178,6 @@ export class CheckoutSizes {
     return this.needsListing() || [...this.checkouts.values()].some((checkout) => this.due(checkout));
   }
 
-  /**
-   * THE ROOTS, ONE `readdir` EACH AND ONE `lstat` PER CHILD — cuts are flat at
-   * `<root>/<name>-<8hex>`, so this is the whole scan. A child's mtime is its
-   * stamp; a checkout that has gone is forgotten.
-   */
   private async list(spend: () => void): Promise<void> {
     const present = new Set<string>();
     const loose = { bytes: 0, partial: false };
@@ -251,7 +187,7 @@ export class CheckoutSizes {
       try {
         names = await this.fs.readdir(root);
       } catch {
-        continue; // An absent root is zero checkouts, not a partial read.
+        continue;
       }
       try {
         spend();
@@ -298,14 +234,11 @@ export class CheckoutSizes {
     this.listedAt = this.now();
   }
 
-  /** Carry one checkout's walk forward until it settles or the budget runs out. */
   private async advance(key: string, checkout: Checkout, spend: () => void, exhausted: () => boolean, left: () => number): Promise<void> {
     checkout.walk ??= { bytes: 0, partial: false, dirs: [], pending: [key], seen: new Set(), stamp: checkout.stamp };
     const walk = checkout.walk;
     while (!exhausted()) {
       if (walk.pending.length > 0) {
-        // `pop`, not `shift`: order does not matter to a sum, and a directory
-        // of 50k entries would make `shift` quadratic.
         const batch = walk.pending.splice(Math.max(0, walk.pending.length - Math.min(this.concurrency, left())));
         const stats = await Promise.all(
           batch.map(async (target) => {

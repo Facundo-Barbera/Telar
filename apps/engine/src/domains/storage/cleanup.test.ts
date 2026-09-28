@@ -1,16 +1,13 @@
-/**
- * SETTINGS → STORAGE'S AUTOMATIC CLEANUP — `cleanup.ts` and `runCleanup`.
- */
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CLEANUP_POLICY } from "@telar/engine-client";
-import { isRotated, planWorktreeCleanup, sweepLogs } from "../src/cleanup";
-import { EngineStore } from "../src/state";
-import { until } from "./wait";
-import { worktreeReady } from "./worktree-ready";
+import { isRotated, planWorktreeCleanup, sweepLogs } from "./cleanup";
+import { EngineStore } from "../../state";
+import { until } from "../../../test/wait";
+import { worktreeReady } from "../../../test/worktree-ready";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
@@ -148,7 +145,6 @@ test("unchanged never releases a session that is not idle", async () => {
   expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
 });
 
-/** A turn that backgrounds one task and ends, leaving the task in `state`. */
 function backgroundTask(store: EngineStore, state: "running" | "waiting", options: { ambient?: boolean } = {}) {
   store.submitTurn("session_one", { runId: "run_bg", input: "Watch the build" });
   const claimed = store.claimNextTurn("worker_one")!;
@@ -169,7 +165,6 @@ test("live background work: the sweep leaves a monitoring session's checkout alo
   await store.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
   expect(store.cleanup.last()).toMatchObject({ released: 0 });
-  // Even archived: a shell running in there is using its `node_modules`.
   store.archiveSession("session_one");
   expect(store.reapableWorktrees()).toEqual([expect.objectContaining({ sessionId: "session_one", archived: true, live: true })]);
 });

@@ -1,25 +1,8 @@
-/**
- * ══ THE AUTOMATIC CLEANUP — Settings → Storage's four switches ══
- *
- * Worktrees are RELEASED, never deleted outright: `releaseSessionWorktree`
- * removes the directory and keeps the branch and the conversation, and its
- * refusals (uncommitted changes, unpushed commits, a turn in flight, a live
- * process, a checkout Telar did not create) are the fixed rules here too. The
- * sweep calls it in strict mode, so "could not tell" is a refusal.
- *
- * Logs: only rotated files (`name.1`, `name.2.gz`, …) and per-session setup
- * logs of sessions whose checkout is gone, older than the window. The file a
- * process is writing to right now is never one of them.
- *
- * NOTHING WALKS A TREE ON A REQUEST PATH (#937). The only size ever taken is
- * `du -sk` of a checkout about to be released, in a child process, for the
- * "freed" line.
- */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { CleanupPolicy, CleanupReport, DEFAULT_CLEANUP_POLICY } from "@telar/engine-client";
-import { atomicWrite } from "./platform/fs/atomic";
+import { atomicWrite } from "../../platform/fs/atomic";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -45,7 +28,6 @@ export class CleanupStore {
     return this.read().last;
   }
 
-  /** Validates a patch; `undefined` when it names nothing legal. */
   setPolicy(patch: unknown): CleanupPolicy | undefined {
     const next = CleanupPolicy.safeParse({ ...this.policy(), ...(patch && typeof patch === "object" ? patch : {}) });
     if (!next.success) return undefined;
@@ -62,11 +44,9 @@ export type CleanupCandidate = {
   sessionId: string;
   archived: boolean;
   released: boolean;
-  /** When anything last happened in the session. */
   lastActiveAt: number;
 };
 
-/** Which sessions' checkouts the switches ask for, before the git proofs. Pure. */
 export function planWorktreeCleanup(
   sessions: readonly CleanupCandidate[],
   policy: CleanupPolicy,
@@ -88,15 +68,10 @@ export function planWorktreeCleanup(
   return plan;
 }
 
-/** A rotated generation: `worker.jsonl.1`, `engine.log.2.gz`, `x.log.old`. */
 export function isRotated(name: string): boolean {
   return /\.(\d+|old)(\.gz)?$/.test(name);
 }
 
-/**
- * Delete the old logs: rotated files under `logDirectories`, and each given
- * setup log, when older than `days`. Returns how many went and their bytes.
- */
 export async function sweepLogs(input: {
   logDirectories: readonly string[];
   setupLogs: readonly string[];
@@ -124,13 +99,11 @@ export async function sweepLogs(input: {
       count += 1;
       bytes += stat.size;
     } catch {
-      // Gone already, or not ours to read: nothing to count.
     }
   }
   return { count, bytes };
 }
 
-/** `du -sk` in a child process; 0 when it cannot answer. Never walks in-process. */
 export function diskUsage(target: string): Promise<number> {
   return new Promise((resolve) => {
     if (process.platform === "win32") {

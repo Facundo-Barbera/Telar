@@ -2,20 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { measureStorage } from "../src/storage";
-
-/**
- * MEASURED AGAINST A FIXTURE STORE, never the live one. Every test here builds
- * its own root in a temp directory: the thing under test walks a filesystem,
- * and a test that walked the developer's real store would be slow, unrepeatable
- * and — the part that matters — would report figures that depend on whose Mac
- * ran it.
- *
- * THE FIGURES ARE COMPARED AS ORDERINGS AND PRESENCE, not as byte counts. A
- * file's allocated size is the filesystem's business (block size, compression,
- * APFS's own opinions), so a test asserting "this is exactly 4096 bytes" would
- * be pinning the disk rather than this module.
- */
+import { measureStorage } from "./measure";
 
 let root: string;
 
@@ -45,7 +32,6 @@ describe("what Telar is keeping", () => {
     write("projects.json", 4 * 1024);
     write("usage-scan-cache.json", 48 * 1024);
     write("worktrees/one/file.ts", 8 * 1024);
-    // Nothing this build knows about — the case the pane exists for.
     write("something-new.bin", 12 * 1024);
 
     const report = await measureStorage({ root, worktreesRoot: path.join(root, "worktrees") });
@@ -55,8 +41,6 @@ describe("what Telar is keeping", () => {
       ["journal", "other", "python", "sessions", "settings", "usage", "worktrees"].sort(),
     );
     expect(report.partial).toBe(false);
-    // The unknown file is counted rather than dropped — the figures have to add
-    // up even when this build has never heard of what it is looking at.
     expect(bytesOf(report, "other")).toBeGreaterThan(0);
   });
 
@@ -68,9 +52,6 @@ describe("what Telar is keeping", () => {
     const report = await measureStorage({ root, worktreesRoot: path.join(root, "worktrees") });
 
     expect(report.entries.map((entry) => entry.category)).toEqual(["journal"]);
-    // 993 MB of database with a 24 MB WAL beside it is ONE thing a reader is
-    // being told about, and splitting it across three rows would hide the size
-    // of the thing rather than report it (#642).
     expect(bytesOf(report, "journal")).toBeGreaterThanOrEqual(192 * 1024);
   });
 
@@ -100,12 +81,6 @@ describe("what Telar is keeping", () => {
   });
 
   test("a worktrees root OUTSIDE the store is measured and reported all the same", async () => {
-    /**
-     * #642 part 2 moves this root to another volume, and part 3 says a second
-     * relocatable category should be an addition rather than a rewrite. Both
-     * rest on the root being a PARAMETER rather than the child called
-     * `worktrees`, which is what this pins.
-     */
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "telar-checkouts-"));
     try {
       fs.mkdirSync(path.join(elsewhere, "one"), { recursive: true });
@@ -123,12 +98,6 @@ describe("what Telar is keeping", () => {
   });
 
   test("during a move, BOTH roots count as checkouts — the row is about disk, not bookkeeping", async () => {
-    /**
-     * #642 part 2: changing the root affects the next cut, so for a while
-     * there are checkouts under two roots. A row that counted only the
-     * configured one would under-report by exactly the gigabytes somebody
-     * changed the setting to get rid of.
-     */
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "telar-newroot-"));
     try {
       fs.mkdirSync(path.join(elsewhere, "new"), { recursive: true });
@@ -137,8 +106,6 @@ describe("what Telar is keeping", () => {
 
       const report = await measureStorage({ root, worktreesRoot: elsewhere, alsoWorktrees: [path.join(root, "worktrees")] });
 
-      // One row, both roots, and the leftovers are NOT filed under
-      // "Everything else" — they are checkouts, whatever the setting says.
       expect(report.entries.map((entry) => entry.category)).toEqual(["worktrees"]);
       expect(bytesOf(report, "worktrees")).toBeGreaterThanOrEqual(96 * 1024);
       expect(report.total).toBe(bytesOf(report, "worktrees"));
@@ -162,11 +129,6 @@ describe("what Telar is keeping", () => {
   });
 
   test("a symlink is never followed, so a link into a project never becomes Telar's footprint", async () => {
-    /**
-     * THE SCOPE RULE, ENFORCED RATHER THAN STATED (#642). Telar reports Telar's
-     * own footprint; a pane that counted somebody's repository because a link
-     * pointed at it would be reporting their disk, not ours.
-     */
     const foreign = fs.mkdtempSync(path.join(os.tmpdir(), "telar-foreign-"));
     try {
       fs.writeFileSync(path.join(foreign, "big.bin"), Buffer.alloc(1024 * 1024, 7));
@@ -200,21 +162,11 @@ describe("what Telar is keeping", () => {
     const missing = path.join(root, "gone");
     const report = await measureStorage({ root: missing, worktreesRoot: path.join(missing, "worktrees") });
     expect(report.total).toBe(0);
-    /**
-     * `partial`, BECAUSE THE DIFFERENCE MATTERS. An empty store measures a
-     * true zero; a store that could not be read measures zero because nothing
-     * was read, and a pane that drew the two identically would report "0 B" to
-     * somebody whose drive had gone away. A missing WORKTREES root is the
-     * opposite case and is NOT partial — a store that has cut no session yet
-     * legitimately has none.
-     */
     expect(report.partial).toBe(true);
   });
 
   test("the answer carries the moment it was taken, which is what the pane shows", async () => {
     write("projects.json", 1024);
-    // A held clock: the first reading is the start, every later one is 250 ms
-    // on. `>= 0` would pass on a frozen clock, a zero, or a swapped subtraction.
     let first = true;
     const clock = spyOn(Date, "now").mockImplementation(() => {
       const at = first ? 1_000 : 1_250;

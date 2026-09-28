@@ -1,71 +1,8 @@
-/**
- * ══ HOW BIG IS TELAR, AND WHERE — issue #642 ══
- *
- * WHY THIS EXISTS AT ALL, in one measurement. Sizing this Mac's store to write
- * #642 turned up `execution.sqlite` at 993 MB — the second largest thing Telar
- * owns, with a 24 MB WAL beside it — which had never come up in any
- * conversation about disk, including a whole day of work on moving the store.
- * Nothing here would have been learnt by discussing it. That is the argument
- * for a pane that reports, and it is the reason this module attributes EVERY
- * byte under the root to exactly one category: a figure that silently omits a
- * gigabyte is the bug, not a rounding choice.
- *
- * TELAR'S OWN FOOTPRINT AND NOTHING ELSE. The walk starts at the store root and
- * at the worktrees root, and it never follows a symlink — a link into somebody's
- * project would attribute their repository's bytes to Telar, which is how a
- * storage pane turns into a disk cleaner.
- *
- * IT MEASURES WHAT `du` MEASURES — allocated blocks — so the number agrees with
- * Finder's "on disk" and with the terminal somebody will check it against. Hard
- * links are counted once; a file whose blocks are zero but whose size is not
- * (macOS stores a compressed file's data in an extended attribute) falls back
- * to its size rather than reporting nothing.
- *
- * THAT MAKES IT AN APPARENT FIGURE, NOT A PHYSICAL ONE, and #633 is the reason
- * that sentence is here rather than implied. `du` and `stat.blocks` are both
- * blind to APFS block sharing, so a copy-on-write clone — which is what `bun
- * install` makes by default on macOS — is counted at full size. A deduplicated
- * `node_modules` and a fully duplicated one weigh the same in this pane. See
- * `bytesOf`, which carries the measurement, and `package-caches.ts`, which
- * answers the deduplication question from `st_dev` because this cannot.
- *
- * NOTHING HERE CACHES, POLLS, OR SCHEDULES. This is a function that walks a
- * tree and returns a number with a timestamp on it; when it runs is the
- * daemon's decision (see `readStorage` in daemon.ts) and it is driven by a
- * person opening a pane or pressing refresh, never by a timer.
- *
- * EXCEPT THE CHECKOUTS, WHICH THE DAEMON NEVER WALKS HERE. On a real machine
- * they are ~140 trees of ~75k files each, and walking them on the request path
- * was millions of `lstat`s queued on libuv's four-thread pool — every other
- * `fs.promises` call in the engine waited behind them, and the pane never
- * finished. The daemon asks `measureStore` for the store's own categories and
- * folds in `checkout-sizes.ts`'s background figure with `withCheckouts`.
- * `measureStorage` still walks everything, for a caller that wants one number.
- *
- * AND IT WRITES NOTHING. The pane it feeds is read-only in this pass — no
- * delete, no "clean up" — so there is no call here that could remove a byte.
- */
-
 import fs from "node:fs";
 import path from "node:path";
 import type { StorageCategory, StorageEntry, StorageReport } from "@telar/engine-client";
 import { detectCacheDedup } from "./package-caches";
 
-/**
- * The store root's own subdirectories, each one a category.
- *
- * `worktrees` IS DELIBERATELY ABSENT from this table. Its root is passed in
- * rather than derived from a name, because #642 part 2 makes it relocatable and
- * a table keyed on "the child called worktrees" would stop finding it the day
- * it moved off this volume. Everything else here is a child of the root by
- * construction.
- */
-/**
- * EXPORTED SO THE INVARIANT TEST DERIVES ITS ALLOWLIST RATHER THAN RESTATING IT
- * (#665). "Sanctioned" has to be a list the PRODUCT owns — `statePaths` plus
- * these — or the test is asserting against names it invented, and a directory
- * added without being declared passes by omission.
- */
 export const DIRECTORY_CATEGORIES: Readonly<Record<string, StorageCategory>> = {
   sessions: "sessions",
   python: "python",
@@ -74,118 +11,40 @@ export const DIRECTORY_CATEGORIES: Readonly<Record<string, StorageCategory>> = {
   dictation: "dictation",
   run: "run",
   diagnostics: "diagnostics",
-  // A decommissioned feature's data, set aside rather than deleted (#908 moved
-  // the built-in Agent's `agent/` here). Nothing reads it, so it is `other`.
   retired: "other",
-  // Configuration that outgrew a single file, so it reads under the same
-  // heading as the JSON beside it rather than as a row of its own.
   orientation: "settings",
 };
 
-/**
- * The folder a category opens, for the categories that ARE one folder.
- *
- * NOT THE INVERSE OF THE TABLE ABOVE, deliberately: `settings` is mostly loose
- * files at the root and only incidentally the `orientation/` directory, so
- * reversing the map would send a reader to the one subdirectory that holds
- * almost none of the bytes the row is reporting.
- */
-const CATEGORY_DIRECTORIES: Readonly<Partial<Record<StorageCategory, string>>> = {
-  sessions: "sessions",
-  python: "python",
-  "browser-profiles": "browser-profiles",
-  notes: "notes",
-  dictation: "dictation",
-  run: "run",
-  diagnostics: "diagnostics",
-};
-
-/** The journal, by every name it writes under: the database, its WAL and shared
- *  memory, and the JSON file the sqlite import replaced (execution-store.ts). */
 function isJournalFile(name: string): boolean {
   return name === "execution.sqlite" || name.startsWith("execution.sqlite-") || name === "execution-store.json";
 }
 
-/**
- * Which category a loose file at the root belongs to.
- *
- * THE TWO USAGE CACHES ARE NAMED, not matched by prefix. `usage-limit-sources`
- * and `usage-limit-secrets` are configuration a person typed — kilobytes, and
- * the same kind of thing as `projects.json` — while the scan cache and the rate
- * list are derived data measured in tens of megabytes. Folding all four under
- * one heading would put a hub's URL in a row called "Spend history".
- */
 function categoryOfFile(name: string): StorageCategory {
   if (isJournalFile(name)) return "journal";
   if (name === "usage-scan-cache.json" || name === "usage-model-rates.json") return "usage";
-  // `.json.bak-telar-<stamp>` is what a migration leaves beside the file it
-  // rewrote; it is the same configuration and belongs in the same row.
   if (name.endsWith(".json") || name.includes(".json.bak") || name === "engine.lock") return "settings";
   return "other";
 }
 
-/** A directory whose bytes are one category's, and the file that stands for it
- *  when a reader presses Reveal. */
 type Target = { path: string; kind: "directory" | "file" };
 
-/**
- * A single walk's running total.
- *
- * `seen` SPANS THE WHOLE REPORT rather than one subtree: two categories could
- * in principle share an inode, and a hard link counted in both would make the
- * rows add up to more disk than the volume holds.
- */
 type Walk = { bytes: number; partial: boolean };
 
-/** How many entries are stat'd at once. Bounded because a store holds hundreds
- *  of thousands of files and an unbounded `Promise.all` over them would open as
- *  many descriptors as the tree is wide. */
 const STAT_BATCH = 64;
 
-/**
- * ONE FILE'S BYTES — APPARENT, NOT PHYSICAL, AND THE DIFFERENCE MATTERS (#633).
- *
- * `stat.blocks` is what the filesystem ALLOCATED to this file, and on APFS that
- * is not what the file COSTS. A copy-on-write clone — which is what `cp -c`
- * makes, and what `bun install` makes by default on macOS, since its default
- * backend is `clonefile` — shares its blocks with the original and reports the
- * full count anyway. So a deduplicated `node_modules` and a fully duplicated one
- * weigh exactly the same here.
- *
- * Measured, deliberately, on a file the measurement was allowed to move: a real
- * 256 MB write consumed 257 MB of free space, `cp -c` of it consumed −1 MB, and
- * a plain `cp` consumed 256 MB. `du` read 262144 KB for all three and
- * `stat.blocks` read 524288 for all three. **Only a `df` delta separated the
- * free clone from the paid copy.**
- *
- * THIS IS NOT A BUG TO FIX HERE. Physical usage is not a per-file quantity on a
- * filesystem with block sharing — the honest per-file answer IS the apparent
- * size, and the pane's copy now says so rather than implying a number it cannot
- * produce. What must not happen is somebody using this figure to decide whether
- * deduplication is working: it reads the same either way. `package-caches.ts`
- * answers that question, and it answers it from `st_dev` rather than from bytes.
- */
+function firstLink(stat: fs.Stats, seen: Set<string>): boolean {
+  if (stat.nlink <= 1) return true;
+  const inode = `${stat.dev}:${stat.ino}`;
+  if (seen.has(inode)) return false;
+  seen.add(inode);
+  return true;
+}
+
 export function bytesOf(stat: Pick<fs.Stats, "blocks" | "size">): number {
   const allocated = stat.blocks * 512;
-  // macOS keeps a compressed file's data in an extended attribute and reports
-  // no blocks for it. Reporting zero for a file that plainly holds bytes is
-  // worse than reporting its apparent size.
   return allocated > 0 || stat.size === 0 ? allocated : stat.size;
 }
 
-/**
- * Every byte under `root`, following nothing out of it.
- *
- * ITERATIVE, NOT RECURSIVE, and the reason is the tree being walked: a store
- * holds a checkout per session and a `node_modules` inside several of them, and
- * a recursive walk over that is a stack the depth of the deepest dependency
- * chain somebody happened to install.
- *
- * A FAILURE IS RECORDED, NEVER THROWN. A directory that cannot be read — a
- * permission, a drive pulled mid-walk — makes the answer a floor rather than a
- * figure, which the report says with `partial`. Throwing would trade a slightly
- * low number for no pane at all.
- */
 async function walk(root: string, seen: Set<string>): Promise<Walk> {
   let bytes = 0;
   let partial = false;
@@ -194,7 +53,7 @@ async function walk(root: string, seen: Set<string>): Promise<Walk> {
   try {
     rootStat = await fs.promises.lstat(root);
   } catch {
-    return { bytes: 0, partial: false }; // Absent is not partial: it is zero.
+    return { bytes: 0, partial: false };
   }
   if (!rootStat.isDirectory()) return { bytes: bytesOf(rootStat), partial: false };
   bytes += bytesOf(rootStat);
@@ -215,8 +74,6 @@ async function walk(root: string, seen: Set<string>): Promise<Walk> {
         batch.map(async (entry) => {
           const target = path.join(dir, entry.name);
           try {
-            // `lstat`, so a symlink is counted as the link it is and never
-            // followed: out of the store, and into a cycle.
             return { target, stat: await fs.promises.lstat(target) };
           } catch {
             return { target, stat: undefined };
@@ -233,79 +90,38 @@ async function walk(root: string, seen: Set<string>): Promise<Walk> {
           bytes += bytesOf(stat);
           continue;
         }
-        if (stat.nlink > 1) {
-          const inode = `${stat.dev}:${stat.ino}`;
-          if (seen.has(inode)) continue;
-          seen.add(inode);
-        }
-        bytes += bytesOf(stat);
+        if (firstLink(stat, seen)) bytes += bytesOf(stat);
       }
     }
   }
   return { bytes, partial };
 }
 
-/**
- * ONE DIRECTORY'S SIZE, BY THE SAME RULE THE PANE IS MEASURED WITH — issue
- * #671's per-checkout figure.
- *
- * EXPORTED RATHER THAN REIMPLEMENTED, and that is the entire point. The
- * checkout listing sits under the "Session checkouts" row and offers to reclaim
- * what that row is counting; if the two used different walkers they would
- * disagree — on allocated blocks versus apparent size, on a symlink, on a hard
- * link — and a listing that disagrees with the number beside it by a gigabyte
- * is worse than no listing at all.
- *
- * ITS OWN `seen` SET, because these are separate questions asked at separate
- * times. Sharing one across calls would make a checkout's size depend on which
- * checkout was measured first.
- */
 export async function measureDirectory(target: string): Promise<{ bytes: number; partial: boolean }> {
   return walk(target, new Set<string>());
 }
 
-/** Where a category's Reveal lands. Directory categories open themselves; a
- *  category made of loose files opens the folder they sit in, except the
- *  journal, which is one file worth selecting by name. */
 function targetOf(category: StorageCategory, root: string): Target {
   if (category === "journal") {
     const database = path.join(root, "execution.sqlite");
     return fs.existsSync(database) ? { path: database, kind: "file" } : { path: root, kind: "directory" };
   }
-  const directory = CATEGORY_DIRECTORIES[category];
+  const directory = DIRECTORY_CATEGORIES[category] === category ? category : undefined;
   return { path: directory ? path.join(root, directory) : root, kind: "directory" };
 }
-
 
 type StorageInput = {
   root: string;
   worktreesRoot: string;
-  /**
-   * Roots that ALSO hold checkouts — a location the setting has moved away
-   * from, whose worktrees have not been moved yet (#642 part 2).
-   *
-   * They are summed into the same row rather than given rows of their own: a
-   * person reading "Session checkouts" wants to know what their checkouts cost
-   * them, and splitting that across two rows because of an in-progress move
-   * would make the pane report Telar's bookkeeping instead of their disk.
-   */
   alsoWorktrees?: readonly string[];
   now?: number;
 };
 
-/** The checkout roots an input names, resolved and without duplicates. */
 export function checkoutRootsOf(input: Pick<StorageInput, "worktreesRoot" | "alsoWorktrees">): string[] {
   const worktrees = path.resolve(input.worktreesRoot);
   return [worktrees, ...(input.alsoWorktrees ?? []).map((extra) => path.resolve(extra)).filter((extra) => extra !== worktrees)];
 }
 
-/**
- * What the "Session checkouts" row says, however it was measured.
- *
- * `measuring` WHILE THE BACKGROUND JOB IS STILL WALKING: `bytes` is then the
- * last settled figure where there is one and a floor where there is not, and
- * `measured`/`of` say how far it has got.
- */
 export type CheckoutFigure = {
   bytes: number;
   partial: boolean;
@@ -314,21 +130,6 @@ export type CheckoutFigure = {
   of?: number;
 };
 
-/**
- * WHAT TELAR IS KEEPING, measured once.
- *
- * `worktreesRoot` IS A PARAMETER, and that is the whole of what #642 part 3
- * asked for structurally: a relocated category is a root passed in, walked
- * wherever it is, and reported under its own row — so a second relocatable
- * category is an addition here rather than a rewrite. It may sit inside the
- * store root (where it is today) or outside it (once it can be moved); the
- * inside case is skipped during the root's own walk so its bytes are counted in
- * its own row and not twice.
- *
- * THE WHOLE TREE, CHECKOUTS INCLUDED, in one call — which is why the daemon
- * does not use it (see the header). It stays for a caller that wants a single
- * settled number and can afford the walk.
- */
 export async function measureStorage(input: StorageInput): Promise<StorageReport> {
   const started = Date.now();
   const seen = new Set<string>();
@@ -343,11 +144,6 @@ export async function measureStorage(input: StorageInput): Promise<StorageReport
   return { ...withCheckouts(store, { bytes, partial, measuring: false }, input.worktreesRoot), tookMs: Date.now() - started };
 }
 
-/**
- * THE STORE'S OWN CATEGORIES, WITHOUT THE CHECKOUTS — what the request path
- * can afford. The checkout roots are skipped wherever they sit, so a root
- * inside the store is neither walked here nor filed under "Everything else".
- */
 export async function measureStore(input: StorageInput, seen = new Set<string>()): Promise<StorageReport> {
   const started = Date.now();
   const root = path.resolve(input.root);
@@ -366,7 +162,7 @@ export async function measureStore(input: StorageInput, seen = new Set<string>()
   const checkoutRoots = new Set(checkoutRootsOf(input));
   for (const child of children) {
     const target = path.join(root, child.name);
-    if (checkoutRoots.has(target)) continue; // Counted in its own row, wherever it is.
+    if (checkoutRoots.has(target)) continue;
     if (child.isDirectory()) {
       const measured = await walk(target, seen);
       add(DIRECTORY_CATEGORIES[child.name] ?? "other", measured.bytes);
@@ -375,12 +171,7 @@ export async function measureStore(input: StorageInput, seen = new Set<string>()
     }
     try {
       const stat = await fs.promises.lstat(target);
-      if (stat.nlink > 1) {
-        const inode = `${stat.dev}:${stat.ino}`;
-        if (seen.has(inode)) continue;
-        seen.add(inode);
-      }
-      add(categoryOfFile(child.name), bytesOf(stat));
+      if (firstLink(stat, seen)) add(categoryOfFile(child.name), bytesOf(stat));
     } catch {
       partial = true;
     }
@@ -392,28 +183,8 @@ export async function measureStore(input: StorageInput, seen = new Set<string>()
       const target = targetOf(category, root);
       return { category, bytes: amount, path: target.path, kind: target.kind };
     })
-    // Largest first: the row somebody needs to see is the one they did not know
-    // about, and that is almost always the big one.
     .sort((left, right) => right.bytes - left.bytes);
 
-  /**
-   * WHETHER AN INSTALL INTO A CHECKOUT CAN CLONE FROM THE CACHE — issue #633.
-   *
-   * IT BELONGS ON THIS REPORT AND NOWHERE ELSE, because this is the pane where
-   * somebody reads "Session checkouts — 7.3 GB" and asks why. The answer is
-   * often that the checkouts and the package cache are on different
-   * filesystems, so every install pays a full copy that the same install on one
-   * disk would have got for free.
-   *
-   * AND THE FIGURES ABOVE CANNOT SHOW IT. `bytesOf` is `stat.blocks`, which
-   * counts a copy-on-write clone at its full apparent size — see that function.
-   * So the row that would make somebody look is precisely the row that reads
-   * identically whether deduplication is working or not. This is the answer
-   * from `st_dev`, which is the only place it can be read from.
-   *
-   * ONLY THE ONES WORTH SAYING. A cache on the same device is the single-disk
-   * case, which is most people, and their whole entitlement is silence.
-   */
   const caches = detectCacheDedup(worktrees)
     .filter((verdict): verdict is typeof verdict & { dedup: "different-device" | "unreachable" } => verdict.dedup !== "same-device")
     .map(({ name, path: cache, dedup }) => ({ name, path: cache, dedup }));
@@ -429,14 +200,6 @@ export async function measureStore(input: StorageInput, seen = new Set<string>()
   };
 }
 
-/**
- * THE STORE'S REPORT WITH THE CHECKOUTS ROW FOLDED IN — cheap and pure, so the
- * daemon can do it on every poll against a store report it measured once.
- *
- * A ROW WHILE MEASURING EVEN AT ZERO BYTES: a pane that dropped the row until
- * the first checkout settled would say the checkouts cost nothing, which is the
- * one answer this pane may never give by omission.
- */
 export function withCheckouts(report: StorageReport, checkouts: CheckoutFigure, worktreesRoot: string): StorageReport {
   const entries = report.entries.filter((entry) => entry.category !== "worktrees");
   if (checkouts.bytes > 0 || checkouts.measuring) {
