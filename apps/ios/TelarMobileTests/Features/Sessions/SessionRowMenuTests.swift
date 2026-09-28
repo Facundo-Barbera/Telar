@@ -42,9 +42,9 @@ import Testing
 
     @Test func theOrderAndTheLabelsAreTheMacs() throws {
         let menu = items(try session())
-        #expect(menu.map(\.id) == ["new-session", "pin", "settle", "snooze", "rename", "copy", "delete"])
+        #expect(menu.map(\.id) == ["new-session", "pin", "settle", "snooze", "rename", "regenerate-title", "copy", "delete"])
         #expect(menu.map(\.label) == [
-            "New session in Telar", "Pin to the list", "Settle", "Snooze", "Rename", "Copy", "Delete session",
+            "New session in Telar", "Pin to the list", "Settle", "Snooze", "Rename", "Regenerate title", "Copy", "Delete session",
         ])
         #expect(menu.filter(\.destructive).map(\.id) == ["delete"])
         #expect(menu.allSatisfy { $0.disabled == nil })
@@ -128,8 +128,9 @@ import Testing
 
     @Test func theInboxVerbsAreAbsentOnAnArchivedSession() throws {
         let menu = items(try session(archived: true))
-        #expect(menu.map(\.id) == ["new-session", "rename", "copy", "delete"])
+        #expect(menu.map(\.id) == ["new-session", "rename", "regenerate-title", "copy", "delete"])
         #expect(menu.first { $0.id == "rename" }?.disabled == SessionRowMenu.archived)
+        #expect(menu.first { $0.id == "regenerate-title" }?.disabled == SessionRowMenu.archived)
     }
 
     @Test func theWakeCountdownRoundsUpAndBottomsOutAtNow() {

@@ -9,6 +9,7 @@ protocol SessionsAPI: Sendable {
     func stopSession(_ id: EngineID) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
     func deleteSession(_ id: EngineID) async throws
+    func regenerateSessionTitle(_ id: EngineID) async throws
     func markSessionRead(_ id: EngineID, runId: String) async throws -> Session
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session
     func inboxPolicy() async throws -> InboxPolicy
@@ -18,6 +19,8 @@ protocol SessionsAPI: Sendable {
 
 extension SessionsAPI {
     func sidebarLayout() async throws -> SidebarLayout { SidebarLayout() }
+
+    func regenerateSessionTitle(_ id: EngineID) async throws {}
 
     func deleteSession(_ id: EngineID) async throws {}
 
@@ -146,6 +149,10 @@ extension HTTPEngineAPI: SessionsAPI {
 
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {
         let _: IgnoredBody = try await send("PATCH", "api/sessions/\(escape(id))", body: patch)
+    }
+
+    func regenerateSessionTitle(_ id: EngineID) async throws {
+        let _: IgnoredBody = try await post("api/sessions/\(escape(id))/regenerate-title", body: [:])
     }
 
     func deleteSession(_ id: EngineID) async throws {
