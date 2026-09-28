@@ -11,12 +11,14 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ClaudeConversation, ConversationImportDetail } from "@telar/engine-client";
 import type { JournalItem } from "@/lib/engine/journal";
-import { ConversationRow } from "./resume-picker";
+import { installTestDom, mount, flush } from "@/lib/testing/dom";
+import { ConversationRow, ResumePicker } from "./resume-picker";
 import { TranscriptItem } from "../transcript";
+
+installTestDom();
 
 /** Two conversations the CLI named identically — the case that matters. */
 const SAME_TITLE: ClaudeConversation[] = [
@@ -86,22 +88,19 @@ test("a renamed conversation leads with the name the CLI's /resume shows", () =>
   expect(html.indexOf("triage-2")).toBeLessThan(html.indexOf("/clear"));
 });
 
-test("the dialog says the conversation is copied rather than continued", () => {
-  /**
-   * PINNED AGAINST SOURCE, like the command palette's suite and for the same
-   * reason: the dialog renders through a portal, so a static render produces no
-   * markup to assert on.
-   *
-   * NOT A DETAIL. Telar forks so it never writes into somebody's own Claude
-   * Code history, and "your own copy is untouched" is exactly the kind of thing
-   * a person should be told rather than left to discover.
-   */
-  const source = readFileSync(new URL("./resume-picker.tsx", import.meta.url), "utf8");
-  expect(source).toContain("forks the conversation");
-  expect(source).toContain("Claude Code history is left");
-  // "No conversations" and "the store could not be read" must not look the same.
-  expect(source).toContain("Reading your conversations…");
-  expect(source).toContain("could not be read");
+test("the dialog says the conversation is copied, and says it is still reading", async () => {
+  await mount(<ResumePicker open onOpenChange={() => {}} onPick={() => {}} api={{ claudeConversations: () => new Promise(() => {}) }} />);
+  const text = document.body.textContent ?? "";
+  expect(text).toContain("Telar forks the conversation; your Claude Code history is left as it is.");
+  expect(text).toContain("Reading your conversations…");
+});
+
+test("a store that could not be read says so, rather than looking empty", async () => {
+  await mount(<ResumePicker open onOpenChange={() => {}} onPick={() => {}} api={{ claudeConversations: () => Promise.reject("gone") }} />);
+  await flush(() => document.querySelector('[role="alert"]') !== null);
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe("Your Claude Code conversations could not be read.");
+  expect(document.body.textContent).not.toContain("Reading your conversations…");
+  expect(document.body.textContent).not.toContain("No Claude Code conversations");
 });
 
 test("the transcript's head row says where an adopted conversation came from", () => {

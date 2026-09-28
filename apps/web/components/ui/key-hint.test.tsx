@@ -12,13 +12,16 @@
  * component reads through `useSyncExternalStore` rather than a prop.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { restoreDefaultKeymap, setChord } from "@/lib/commands";
+import type { PanelTabItem } from "@/components/right-panel";
+import type { SidebarSession } from "@/lib/session-list";
 import { KeyHint, KeyHintOverlay } from "./key-hint";
+
+const navigation = await import("next/navigation");
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -65,10 +68,11 @@ async function mount(node: React.ReactNode): Promise<HTMLElement> {
   return host;
 }
 
-/** Hold the command modifier over the page, or let it go. */
+/** Hold the command modifier over the page, or let it go. Both flags, because
+ *  the held store caches the platform the first file in the process saw. */
 async function hold(down: boolean) {
   await act(async () => {
-    document.dispatchEvent(new KeyboardEvent(down ? "keydown" : "keyup", { key: "Meta", metaKey: down, bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent(down ? "keydown" : "keyup", { key: "Meta", metaKey: down, ctrlKey: down, bubbles: true }));
   });
 }
 
@@ -130,35 +134,69 @@ describe("the always-on form", () => {
   });
 });
 
-/**
- * EVERY CONTROL THE ISSUE NAMES ACTUALLY CARRIES ONE. Pinned against source
- * because these are call sites in four files that render inside a router, a
- * sidebar provider and a desktop bridge — the claim is "the hint is wired
- * there", and a harness that approximated those would be testing itself.
- */
 describe("the call sites #401 lists", () => {
-  const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    globalThis.fetch = (async () => Response.json({}, { status: 404 })) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  const installNavigation = () =>
+    mock.module("next/navigation", () => ({
+      ...navigation,
+      usePathname: () => "/",
+      useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {}, back: () => {}, forward: () => {}, prefetch: () => {} }),
+      useSearchParams: () => new URLSearchParams(),
+      redirect: navigation.redirect,
+    }));
 
-  test("the rail: its search field, its collapse trigger, and its first nine rows", () => {
-    const sidebar = read("../app-sidebar.tsx");
-    expect(sidebar).toContain('<KeyHint command="search-sessions" always />');
-    expect(sidebar).toContain('<KeyHint command="toggle-rail" />');
-    // The numbers come off the same array the keys are handed — see
-    // `railJumpSlots` and lib/command-keys.test.ts.
-    expect(sidebar).toContain("const jumpSlots = railJumpSlots(jumpRows);");
-    expect(sidebar).toContain("useCommandKeys(jumpRows, {");
-    expect(read("../session/session-row.tsx")).toContain("<KeyHintOverlay command={`jump-${jumpSlot}`}>");
+  test("a rail row wears its jump number while the modifier is held", async () => {
+    installNavigation();
+    const { SessionRow } = await import("../session/session-row");
+    const { SidebarProvider } = await import("./sidebar");
+    const session = { id: "session_1", title: "Exoplanets", projectId: "p1", activity: "idle", createdAt: 1, updatedAt: 1 } as SidebarSession;
+    const host = await mount(
+      <SidebarProvider>
+        <SessionRow session={session} active={false} showProject={false} variant="card" jumpSlot={1} renderedAt={1} onRowChanged={() => {}} />
+      </SidebarProvider>,
+    );
+    expect(caps(host)).toEqual([]);
+    await hold(true);
+    expect(caps(host)).toEqual(["⌘", "1"]);
   });
 
-  test("the Open menu's reveal row, which is the row ⌘O acts on", () => {
-    expect(read("../session/open-workspace-button.tsx")).toContain('entry.kind === "reveal" && canReveal && <KeyHint command="reveal-in-finder" />');
+  test("the Open menu's reveal row, which is the row ⌘O acts on", async () => {
+    const bridge = {
+      openers: async () => ({ openers: [] }),
+      open: async () => ({ ok: true }),
+      reveal: async () => ({ ok: true }),
+    };
+    (window as { telarDesktop?: unknown }).telarDesktop = { workspace: bridge };
+    try {
+      const { OpenWorkspaceButton } = await import("../session/open-workspace-button");
+      const host = await mount(<OpenWorkspaceButton path="/work/telar" />);
+      await act(async () => (host.querySelector('[aria-label="Choose an app to open this folder with"]') as HTMLElement).click());
+      await hold(true);
+      const reveal = [...document.querySelectorAll("button")].find((button) => button.textContent?.startsWith("Reveal in Finder"));
+      expect(caps(reveal as HTMLElement)).toEqual(["⌘", "O"]);
+    } finally {
+      delete (window as { telarDesktop?: unknown }).telarDesktop;
+    }
   });
 
-  test("the panel's tab strip: both arrows and the toggle", () => {
-    const panel = read("../right-panel.tsx");
-    expect(panel).toContain('<KeyHint command="panel-previous-tab" />');
-    expect(panel).toContain('<KeyHint command="panel-next-tab" />');
-    expect(panel).toContain('<KeyHint command="toggle-panel" />');
+  test("the panel's tab strip: both arrows while there is a tab to step to, and the toggle always", async () => {
+    const { RightPanel } = await import("../right-panel");
+    const panel = (tabs: PanelTabItem[]) =>
+      mount(
+        <RightPanel sessionId="session_a" tabs={tabs} tab={tabs[0]!.id} onTabChange={() => {}} onOpenTab={() => {}} onCloseTab={() => {}} onClose={() => {}} />,
+      );
+    const hints = (host: HTMLElement) => host.querySelectorAll("[data-slot=key-hint]").length;
+    const one = await panel([{ id: "agents", kind: "agents", params: {} } as PanelTabItem]);
+    const two = await panel([{ id: "agents", kind: "agents", params: {} } as PanelTabItem, { id: "processes", kind: "processes", params: {} } as PanelTabItem]);
+    await hold(true);
+    expect(hints(one)).toBe(1);
+    expect(hints(two)).toBe(3);
   });
 });
 
