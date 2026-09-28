@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HEARING_DB, METER_FLOOR_DB, METER_STEPS, hearing, meterLevel, quantise, rms } from "./level";
+import { HEARING_DB, METER_FLOOR_DB, METER_STEPS, glowLevel, hearing, meterLevel, quantise, rms } from "./level";
 
 /** One window of a sine at a given amplitude, in −1..1 like `getFloatTimeDomainData`. */
 function tone(amplitude: number, samples = 1024): Float32Array {
@@ -66,5 +66,38 @@ describe("the steps, which are what keep a 60 Hz loop from re-rendering a pane 6
   test("and never leaves 0..1, whatever it is handed", () => {
     expect(quantise(-5)).toBe(0);
     expect(quantise(12)).toBe(1);
+  });
+});
+
+describe("the glow's level", () => {
+  test("room noise stays at rest and loud speech reaches the top", () => {
+    let calm = 0;
+    let loud = 0;
+    for (let frame = 0; frame < 60; frame += 1) {
+      calm = glowLevel(calm, meterLevel(0.001));
+      loud = glowLevel(loud, meterLevel(0.5));
+    }
+    expect(calm).toBe(0);
+    expect(loud).toBeCloseTo(1, 3);
+  });
+
+  test("rises faster than it settles", () => {
+    const up = glowLevel(0, 1);
+    const down = 1 - glowLevel(1, 0);
+    expect(up).toBeGreaterThan(down);
+    expect(up).toBeLessThan(1);
+  });
+
+  test("clamps whatever it is handed to 0..1", () => {
+    for (const [previous, meter] of [
+      [5, 5],
+      [-3, -3],
+      [Number.NaN, Number.NaN],
+      [0.5, Number.POSITIVE_INFINITY],
+    ] as const) {
+      const out = glowLevel(previous, meter);
+      expect(out).toBeGreaterThanOrEqual(0);
+      expect(out).toBeLessThanOrEqual(1);
+    }
   });
 });

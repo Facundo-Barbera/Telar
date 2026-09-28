@@ -1271,9 +1271,7 @@ html:not(.dark)[data-telar-shell][data-translucent] {
    unregistered one would step instead of turning. Opacity is a TRANSITION, not
    a keyframe — the WebKit crash above is about keyframed fades — and the layers
    are absolute, never fixed. The spin pauses while idle rather than stopping,
-   so a fade-out does not snap the colours back to 0deg on its way out.
-
-   The palette is Apple Intelligence's: violet, pink, blue, coral, amber. */
+   so a fade-out does not snap the colours back to 0deg on its way out. */
 @property --dictation-glow-angle {
   syntax: "<angle>";
   inherits: false;
@@ -1319,8 +1317,11 @@ html:not(.dark)[data-telar-shell][data-translucent] {
 .dictation-glow-halo[data-phase="starting"] {
   opacity: 0.3;
 }
+/* --dictation-level (0..1) follows the voice; its fallbacks are the static reduced-motion glow. */
 .dictation-glow-halo[data-phase="listening"] {
-  opacity: 0.75;
+  inset: calc(-3px - 8px * var(--dictation-level, 0));
+  opacity: calc(0.4 + 0.6 * var(--dictation-level, 0.6));
+  transition: opacity 90ms linear;
 }
 
 /* Only the border band is painted: the content box is masked out, so the
@@ -1340,7 +1341,8 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   opacity: 0.45;
 }
 .dictation-glow-ring[data-phase="listening"] {
-  opacity: 1;
+  opacity: calc(0.6 + 0.4 * var(--dictation-level, 1));
+  transition: opacity 90ms linear;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { MicIcon } from "lucide-react";
+import { AudioLinesIcon, MicIcon } from "lucide-react";
 import type { ComposerDictation } from "../hooks/use-composer-dictation";
 import { keyCapText, useKeyCapPlatform, useKeymap } from "@/features/commands";
 import { DictationCaretPill } from "./dictation-caret-pill";
@@ -33,16 +33,13 @@ export function DictationButton({ dictation, className }: { dictation: ComposerD
         onMouseDown={(event) => event.preventDefault()}
         onClick={toggle}
         className={cn(
-          "flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 transition-colors",
-          listening
-            ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          "flex size-8 shrink-0 items-center justify-center rounded-full transition-colors",
+          listening ? "bg-foreground text-background hover:bg-foreground/85" : "text-muted-foreground hover:bg-accent hover:text-foreground",
           busy && "bg-accent text-foreground",
           unavailable && "opacity-50",
         )}
       >
-        <MicIcon className={cn("size-4", listening && "animate-pulse")} />
-        {listening && <span className="text-xs">Listening</span>}
+        {listening ? <AudioLinesIcon className="size-4 motion-safe:animate-pulse" /> : <MicIcon className="size-4" />}
       </button>
       {listening && caret && <DictationCaretPill rect={caret.rect} language={caret.language} />}
       <DictationNotice error={error} />
