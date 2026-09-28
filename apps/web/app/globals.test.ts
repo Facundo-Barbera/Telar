@@ -145,13 +145,13 @@ describe("the design token palette", () => {
 
   test("bridges every colour token into @theme, so a utility exists for it", () => {
     // The state vocabulary is the part that regressed historically: --info,
-    // --verify, --success and --warning were declared and unreachable.
+    // --success and --warning were declared and unreachable.
     //
     // `var(--x-wash, var(--x))` counts as bridged: the wash indirection (see
     // @theme's note on --color-sidebar) is how a token the translucency rules
     // have to move reaches a utility, and the FALLBACK is still the themed
     // token. --muted-foreground wears it since #434.
-    for (const token of ["info", "verify", "success", "warning", "destructive", "primary", "muted-foreground", "border"]) {
+    for (const token of ["info", "success", "warning", "destructive", "primary", "muted-foreground", "border"]) {
       const bridge = new RegExp(`--color-${token}:\\s*var\\(--${token}\\)|--color-${token}:\\s*var\\(--${token}-wash,\\s*var\\(--${token}\\)\\)`);
       expect(theme, `--color-${token} is not bridged in @theme`).toMatch(bridge);
     }
@@ -638,7 +638,7 @@ describe("cards must paint", () => {
     // what it sits on, which an opaque `.tint-*` cannot. Forcing the class onto
     // a hover state would make the interaction worse, not safer. A resting fill
     // is the thing this guard is about.
-    const alpha = /(?<!:)\bbg-(success|destructive|warning|info|verify)\/\d+\b/g;
+    const alpha = /(?<!:)\bbg-(success|destructive|warning|info)\/\d+\b/g;
     const offenders: string[] = [];
     for (const { file, source } of readingSurfaces) {
       for (const hit of source.matchAll(alpha)) offenders.push(`${file}: ${hit[0]} → tint-${hit[1]}`);
@@ -659,9 +659,9 @@ describe("cards must paint", () => {
     // The two #691 introduced; a regex matching nothing would make this vacuous.
     expect(tints.length).toBeGreaterThanOrEqual(2);
     for (const { tone, body } of tints) {
-      // The tone has to BE one of the five state colours. `.tint-lavender` would
+      // The tone has to BE one of the four state colours. `.tint-lavender` would
       // be a sixth ramp by another route — see "the state vocabulary" below.
-      expect(["success", "destructive", "warning", "info", "verify"], `.tint-${tone} is not on the state vocabulary`).toContain(tone);
+      expect(["success", "destructive", "warning", "info"], `.tint-${tone} is not on the state vocabulary`).toContain(tone);
       expect(body, `.tint-${tone} must mix the token into --card at the floor`).toBe(
         `background-color: color-mix(in oklab, var(--${tone}) var(--tint-floor), var(--card));`,
       );
