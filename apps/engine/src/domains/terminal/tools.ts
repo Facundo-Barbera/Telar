@@ -37,7 +37,7 @@ const SIGNAL = z
 
 const signalOf = (value: unknown): RunStopSignal | undefined => (value === "SIGTERM" || value === "SIGINT" || value === "SIGKILL" ? value : undefined);
 
-export function runTools(tool: ToolFactory, capability: RunCapability): unknown[] {
+function runToolsContext(tool: ToolFactory, capability: RunCapability) {
   const personClosed = async (terminalId: string | undefined): Promise<string | undefined> => {
     if (!terminalId) return undefined;
     try {
@@ -47,10 +47,8 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       return undefined;
     }
   };
-
   const idOf = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
   const target = (terminalId: string | undefined): RunTarget => (terminalId ? { terminalId } : {});
-
   const list = async (only?: "run") => {
     try {
       const status = await capability.status();
@@ -62,10 +60,8 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       return err(`Could not list the terminals: ${failure(error)}`);
     }
   };
-
   const opened = (run: RunView) =>
     ok(`Opened ${describe(run)}\nterminalId: ${run.terminalId}. Read it with terminal_output; wait on it with terminal_wait.`);
-
   const openFromConfig = async (configId: string) => {
     try {
       return opened(await capability.start({ configId, openedBy: "agent" }));
@@ -73,7 +69,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       return err(`Did not open: ${failure(error)}`);
     }
   };
-
   const kill = async (terminalId: string | undefined, signal: unknown) => {
     const first = signalOf(signal);
     try {
@@ -83,7 +78,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       return err(`Did not close: ${failure(error)}`);
     }
   };
-
   const output = async (terminalId: string | undefined, args: Record<string, unknown>) => {
     try {
       const result = await capability.output({
@@ -103,7 +97,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       return err(`Could not read the output: ${failure(error)}`);
     }
   };
-
   const wait = async (terminalId: string | undefined, args: Record<string, unknown>) => {
     if (args.pattern === undefined && args.ready !== true && args.exit !== true) {
       return err("Give something to wait FOR: pattern, ready or exit. Waiting for nothing is a sleep, which is what this tool replaces.");
@@ -132,7 +125,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       return err(`Could not wait on that terminal: ${failure(error)}`);
     }
   };
-
   const OUTPUT_SHAPE = {
     after: z.number().int().min(0).optional().describe("A cursor from an earlier call; only newer lines come back."),
     tail: z.number().int().min(1).max(1000).optional().describe("Only the last N lines. The end is usually where it says what went wrong."),
@@ -146,7 +138,20 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
     timeoutMs: z.number().int().min(0).max(60_000).describe("How long to wait, at most 60000. Pick a budget and handle a timeout."),
   };
   const RUN_ID = z.string().min(1).optional().describe("The terminalId. Default: this session's one open terminal.");
+  return { personClosed, idOf, target, list, opened, openFromConfig, kill, output, wait, OUTPUT_SHAPE, WAIT_SHAPE, RUN_ID };
+}
 
+export function runTools(tool: ToolFactory, capability: RunCapability): unknown[] {
+  const h = runToolsContext(tool, capability);
+  return [
+    ...terminalTools(tool, capability, h),
+    ...configTools(tool, capability),
+    ...processTools(tool, capability, h),
+  ];
+}
+
+function terminalTools(tool: ToolFactory, capability: RunCapability, h: ReturnType<typeof runToolsContext>): unknown[] {
+  const { idOf, list, opened, openFromConfig, kill, output, wait, OUTPUT_SHAPE, WAIT_SHAPE } = h;
   return [
     tool(
       "terminal_open",
@@ -212,7 +217,11 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       { terminalId: z.string().min(1).describe("Which terminal (see terminal_list)."), signal: SIGNAL },
       async (args) => await kill(idOf(args.terminalId), args.signal),
     ),
+  ];
+}
 
+function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
+  return [
     tool(
       "run_configs",
       "The project's saved run configurations: name, icon, command, working directory and which environment variables are set. Secret values are never returned. A project usually already has the recipe you want; open one with terminal_open({configId}).",
@@ -283,7 +292,12 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
         }
       },
     ),
+  ];
+}
 
+function processTools(tool: ToolFactory, capability: RunCapability, h: ReturnType<typeof runToolsContext>): unknown[] {
+  const { idOf, target, list, opened, openFromConfig, kill, output, wait, OUTPUT_SHAPE, WAIT_SHAPE, RUN_ID } = h;
+  return [
     tool(
       "run_start",
       "Deprecated: use terminal_open({configId}). Opens a new terminal from a saved configuration; replace is ignored.",
@@ -344,3 +358,4 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
     ),
   ];
 }
+
