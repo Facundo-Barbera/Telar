@@ -51,7 +51,6 @@ import {
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, type ComputerUseGate } from "./domains/computer-use";
 import { bearerIsValid } from "./http-auth";
-import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
 import { BUNDLED_SKILLS } from "./orchestrate-skill";
@@ -84,6 +83,7 @@ import {
   isAppearanceId,
   listImages,
   putImage,
+  readProjectIconBytes,
   readImage,
   readLooks,
   readSettings,
@@ -92,7 +92,7 @@ import {
   writeLook,
   writeSettings,
   writeTheme,
-} from "./appearance-home";
+} from "./domains/appearance";
 import { readUsageReport, warmUsageScanCache } from "./usage";
 import { readUsageLimitSource } from "./domains/usage";
 import type { SocketTool } from "./mcp-socket";

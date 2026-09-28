@@ -16,7 +16,7 @@ import {
   writeLook,
   writeSettings,
   writeTheme,
-} from "../src/appearance-home";
+} from "./home";
 
 const roots: string[] = [];
 
@@ -40,7 +40,6 @@ describe("the appearance home", () => {
       expect(fs.statSync(dir).isDirectory()).toBe(true);
     }
     const readme = fs.readFileSync(paths.readme, "utf8");
-    // The map's whole job is telling a hand — or an agent — where things go.
     expect(readme).toContain("themes/<id>.json");
     expect(readme).toContain("images/<id>.<ext>");
   });
@@ -75,7 +74,6 @@ describe("the appearance home", () => {
     writeTheme(root, "good", { label: "Good" });
     fs.writeFileSync(path.join(paths.themes, "broken.json"), "{ not json");
     fs.writeFileSync(path.join(paths.themes, "wrong-shape.json"), JSON.stringify([1, 2, 3]));
-    // An editor swapfile, which is exactly what a hand-edited directory grows.
     fs.writeFileSync(path.join(paths.themes, ".dusk.json.swp"), "binary junk");
 
     const read = readThemes(root);
@@ -124,7 +122,6 @@ describe("the appearance home", () => {
     expect(imageExtension(new Uint8Array([0xff, 0xd8, 0xff, 0x00]))).toBe("jpg");
     expect(imageExtension(new Uint8Array([0x47, 0x49, 0x46, 0x38]))).toBe("gif");
     expect(imageExtension(new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]))).toBe("webp");
-    // A shell script named .png is still a shell script.
     expect(imageExtension(new Uint8Array([0x23, 0x21, 0x2f, 0x62]))).toBeUndefined();
     expect(putImage(home(), new Uint8Array([0x23, 0x21]))).toBeUndefined();
   });
@@ -132,16 +129,11 @@ describe("the appearance home", () => {
   test("an image name cannot climb out of the images directory", () => {
     const root = home();
     const paths = ensureAppearanceHome(root);
-    // Where `../secret.png` from images/ would actually land, so the decoy is
-    // reachable if the guard is absent and unreachable if it is not.
     fs.writeFileSync(path.join(paths.root, "secret.png"), PNG);
-    // The path is built from a caller-supplied string, so this check IS the
-    // boundary rather than a tidiness rule.
     expect(readImage(root, "../secret.png")).toBeUndefined();
     expect(readImage(root, "../../etc/passwd")).toBeUndefined();
     expect(readImage(root, "nope.exe")).toBeUndefined();
     expect(fs.existsSync(path.join(paths.images, "..", "secret.png"))).toBe(true);
-    // And it is genuinely readable by a path that does not go through the guard.
     expect(fs.readFileSync(path.join(paths.root, "secret.png"))).toEqual(Buffer.from(PNG));
   });
 });
@@ -151,7 +143,6 @@ describe("what a session in this directory reads first", () => {
     const root = home();
     ensureAppearanceHome(root);
     const agents = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8");
-    // The facts a config session cannot work without.
     expect(agents).toContain("appearance/themes/<id>.json");
     expect(agents).toContain("Settings → Appearance");
     expect(agents).toContain("provider-secrets.json");
