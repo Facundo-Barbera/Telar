@@ -909,55 +909,8 @@ jobs:
               | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
-      # THE 562 TESTS CI HAD NEVER RUN (#755, and #675 is why they exist; 661
-      # until #908 removed the integrated Agent's iOS suites).
-      # `apps/ios/TelarMobileTests` has been green only as often as someone
-      # remembered to run it by hand: `nightly-ios-tests.yml` carried the only
-      # `xcodebuild test` in this repository and its scheduler window was 8½
-      # hours wide around a cron that never came due, so GitHub's run count for
-      # it was 0 for its whole life. Deleted in this change; its reasoning is
-      # in apps/ios/README.md, and this is where the tests run now.
-      #
-      # STEPS ON THE EXISTING JOB, NOT A SECOND JOB. The checkout and the three
-      # remote SPM resolutions are already paid here, and `ios` already picks a
-      # Mac exactly when an iOS path changed — so the same
-      # `needs.ios-changes.outputs.ios == 'true'` guard inherits all of #818's
-      # wiring and adds nothing to the ~95% of pull requests that touch no iOS
-      # file. `verify-passed`'s "only success passes" rule is untouched. The
-      # cost is failure attribution: an archive break and a test failure land in
-      # one job, which the step names disambiguate.
-      #
-      # AFTER THE TYPE-CHECK REPORT, DELIBERATELY. That step is the instrument
-      # #764 reads its floor-10 map from; running the tests first would mean a
-      # red suite hides the measurement that the next refactor depends on.
-      #
-      # A SIMULATOR, NOT THE PHONE, AND THE SUITE DOES NOT CARE. All 64 files
-      # are `import Testing`; the census is 59 Foundation, 5 SwiftUI, 1 UIKit,
-      # 1 UniformTypeIdentifiers, and zero occurrences of `UIScreen`,
-      # `UIDevice`, `UIApplication` or `Bundle.main`. Nothing in the suite
-      # asserts anything only hardware can produce — the device destination was
-      # never about what the tests check, it was that the phone was the only
-      # iOS runtime on the maintainer's Mac. `macos-26-arm64` ships iOS 26.2 /
-      # 26.4 / 26.5 runtimes preinstalled against a deployment target of 18.0,
-      # so nothing is downloaded and nothing persists: the runner is destroyed
-      # after the job. apps/ios/README.md's "no simulators" rule is about that
-      # one Mac's disk and it stays exactly as it is.
-      #
-      # `name=iPhone 17` WITHOUT AN OS PIN — the device is present in all three
-      # preinstalled runtimes, so an image update that retires one of them does
-      # not invalidate this line. Debug because `test` needs a test bundle; the
-      # Release archive above is the configuration the type-check numbers come
-      # from and the two must not share a derived-data path.
-      #
-      # `-only-testing:TelarMobileTests` IS A FENCE, NOT A FILTER. The scheme's
-      # TestAction holds nothing else today, but `TelarMobileUITests` drives the
-      # app against apps/ios/scripts/preview-server.py and would hang here with
-      # no server running. Adding that target to the scheme must not silently
-      # change what this executes.
-      #
-      # NO SIGNING, same posture as the archive: simulator builds are ad-hoc
-      # signed, so this needs no certificate, no profile and no App Store
-      # Connect key. A red here is a compile or a test, never an expired cert.
+      # `-only-testing` fences out TelarMobileUITests, which would hang here
+      # without apps/ios/scripts/preview-server.py running.
       - name: Run TelarMobileTests on a simulator
         if: needs.ios-changes.outputs.ios == 'true'
         env:

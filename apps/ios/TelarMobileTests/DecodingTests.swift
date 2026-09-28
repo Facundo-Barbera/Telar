@@ -14,8 +14,7 @@ func fixture(_ name: String) throws -> Data {
     return try Data(contentsOf: url)
 }
 
-/// The fixtures are REAL responses captured from a live cockpit (see
-/// apps/ios/README.md). Shapes, not content, are what they pin.
+/// The fixtures are real cockpit responses; they pin shapes, not content.
 @Suite struct DecodingTests {
     @Test func healthDecodes() throws {
         let health = try JSONDecoder().decode(EngineHealth.self, from: fixture("health"))
