@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 /** A drive the store sits on. Absent when it is on this machine's own disk. */
-export type StoreVolume = { mount: string; uuid?: string; label?: string };
+type StoreVolume = { mount: string; uuid?: string; label?: string };
 
 export type StoreStatus = {
   /** Where the running engine's store actually is. */
@@ -25,7 +25,7 @@ export type StoreStatus = {
 
 export type StoreProgress = { phase: "copying" | "verifying"; bytesDone: number; bytesTotal: number };
 
-export type StoreOutcome =
+type StoreOutcome =
   | { ok: true; restartRequired?: boolean; bytes?: number; path?: string; removed?: number }
   | { ok: false; step?: string; message: string; detail?: string };
 

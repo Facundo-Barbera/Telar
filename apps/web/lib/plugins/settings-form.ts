@@ -19,7 +19,7 @@
 import type { PluginStatus } from "@telar/engine-client";
 import { foldForSearch, settingsRowId, type SettingsSearchEntry } from "@/lib/settings-search";
 
-export type SettingsFieldKind = "toggle" | "select" | "text" | "path" | "number";
+type SettingsFieldKind = "toggle" | "select" | "text" | "path" | "number";
 
 export type SettingsField = {
   key: string;

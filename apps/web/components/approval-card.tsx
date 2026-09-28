@@ -50,7 +50,7 @@ const KIND_ICON = {
   secret_access: KeyRoundIcon,
 } as const;
 
-export function describeRequest(detail: EngineRequest["detail"]): { eyebrow: string; verb: string; argument?: string } {
+function describeRequest(detail: EngineRequest["detail"]): { eyebrow: string; verb: string; argument?: string } {
   switch (detail.kind) {
     case "command_execution":
       return { eyebrow: "command", verb: "Run", argument: detail.command.command };

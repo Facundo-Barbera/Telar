@@ -12,7 +12,7 @@
 
 import type { SidebarSession } from "./session-list";
 
-export const SIDEBAR_CACHE_KEY = "telar-sidebar-cache";
+const SIDEBAR_CACHE_KEY = "telar-sidebar-cache";
 export const ROWS_PER_HOST = 200;
 
 export type SidebarCache = Record<string, { savedAt: number; sessions: SidebarSession[] }>;

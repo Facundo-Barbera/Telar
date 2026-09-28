@@ -23,7 +23,7 @@ export type PluginSurface = { id: string; label: string; icon: LucideIcon; blurb
  * one: a document renders wherever it is opened from (the tree, the display
  * tool, a compile), so it is core and needs no plugin on.
  */
-export type PluginViewer = "notebook" | "table";
+type PluginViewer = "notebook" | "table";
 
 export type PluginWebContribution = {
   surfaces?: readonly PluginSurface[];
@@ -58,7 +58,7 @@ export const PLUGIN_WEB = {
  * Installed plugins are not in `PLUGIN_WEB`: they bring blocks, not
  * components, so they need no entry — only a place to be drawn.
  */
-export const PLUGIN_PANELS_SURFACE = {
+const PLUGIN_PANELS_SURFACE = {
   id: "plugin-panels",
   label: "Plugins",
   icon: PuzzleIcon,

@@ -41,7 +41,7 @@ const CLOSE_STREAM = JSON.stringify({ type: "CloseStream" });
 /** Module-level so `useSyncExternalStore` doesn't resubscribe every render. */
 const neverChanges = () => () => {};
 
-export const canRecord = (): boolean => typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined;
+const canRecord = (): boolean => typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined;
 
 /**
  * Why this page can't record, or `undefined` (also the server answer, avoiding a

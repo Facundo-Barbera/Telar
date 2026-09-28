@@ -175,7 +175,7 @@ export type SessionActionTarget = {
   updatedAt: number;
 };
 
-export type SessionActionCapabilities = {
+type SessionActionCapabilities = {
   /** On another Mac. Per-project settings are a local-only route. */
   remote?: boolean;
   /**

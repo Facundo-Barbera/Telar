@@ -24,7 +24,7 @@
 
 import type { SessionSnapshot } from "@telar/engine-client";
 
-export type CachedSession = SessionSnapshot & { savedAt: number };
+type CachedSession = SessionSnapshot & { savedAt: number };
 
 export interface SnapshotStore {
   read(key: string): Promise<CachedSession | undefined>;

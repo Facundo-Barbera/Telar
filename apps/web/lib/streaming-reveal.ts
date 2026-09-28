@@ -61,7 +61,7 @@ export const REVEAL = {
 export type RevealConfig = typeof REVEAL;
 
 /** Text through `end` characters, which arrived at `at`. */
-export type Pending = { end: number; at: number };
+type Pending = { end: number; at: number };
 
 export type RevealState = {
   /** FRACTIONAL: a whole-character floor per frame is 60 chars/s at 60Hz,
@@ -91,7 +91,7 @@ const carry = (state: RevealState) => ({
  * belongs to the text that was waiting through it, never to a chunk that has
  * not arrived yet.
  */
-export function advanceReveal(state: RevealState, now: number, config: RevealConfig = REVEAL): RevealState {
+function advanceReveal(state: RevealState, now: number, config: RevealConfig = REVEAL): RevealState {
   const elapsed = Math.max(0, now - state.last);
   const pending = state.pending.filter((chunk) => chunk.end > state.shown);
   if (pending.length === 0) return { shown: state.target, target: state.target, pending: [], last: now, ...carry(state) };
@@ -125,7 +125,7 @@ export function advanceReveal(state: RevealState, now: number, config: RevealCon
 
 /** Record text that has just arrived. Separate from pacing so the interval
  *  before it is not charged against it. */
-export function ingestReveal(state: RevealState, target: number, now: number, config: RevealConfig = REVEAL): RevealState {
+function ingestReveal(state: RevealState, target: number, now: number, config: RevealConfig = REVEAL): RevealState {
   if (target < state.shown) return revealState(target, now);
   if (target <= state.target) return state;
   // Sampled over the real interval between arrivals, so it reflects the source

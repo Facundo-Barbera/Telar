@@ -9,7 +9,7 @@ import type { SaveOutcome } from "./save-coordinator";
 export type FileWriteAnswer = { written: true; sha256: string } | { written: false; refusal: string };
 
 /** Both facts come from the same read, so they are adopted together. */
-export type FileRead = {
+type FileRead = {
   sha256: string | undefined;
   /** The editor works in LF (a textarea cannot hold a CR); the write restores this. Defaults to LF. */
   newline?: Newline;

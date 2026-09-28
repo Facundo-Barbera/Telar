@@ -400,7 +400,7 @@ const createdNewestFirst = (a: SidebarSession, b: SidebarSession) =>
   b.createdAt - a.createdAt || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
 /** When a row last did anything — the flat rail's sort key. */
-export function lastActivityAt(session: Pick<SidebarSession, "updatedAt" | "activityAt" | "lastTurnEndedAt">): number {
+function lastActivityAt(session: Pick<SidebarSession, "updatedAt" | "activityAt" | "lastTurnEndedAt">): number {
   return Math.max(session.updatedAt, session.activityAt ?? 0, session.lastTurnEndedAt ?? 0);
 }
 

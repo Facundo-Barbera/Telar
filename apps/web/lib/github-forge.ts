@@ -252,7 +252,7 @@ export function activeFilterCount(filter: { milestone?: string; assignee?: strin
 }
 
 /** Body first, then comments and reviews interleaved by time. */
-export type ForgeEntryKind = "body" | "comment" | "review";
+type ForgeEntryKind = "body" | "comment" | "review";
 
 export type ForgeEntry = {
   /** Stable within one thread; for React keys only. */
@@ -346,7 +346,6 @@ export const REACTIONS = [
   { content: "EYES", glyph: "👀", label: "eyes" },
 ] as const;
 
-export type ReactionContent = GitHubReactionContent;
 
 /** Unknown contents are dropped rather than drawn as a bare word. */
 export function reactionPills(reactions: readonly GitHubReaction[]): (GitHubReaction & { glyph: string; label: string })[] {

@@ -125,7 +125,7 @@ function safeStorage(): Storage | undefined {
 }
 
 /** Total parse: a corrupt record reads as a first run. */
-export function readOverrides(storage: Pick<Storage, "getItem"> | undefined = safeStorage()): Partial<Keymap> {
+function readOverrides(storage: Pick<Storage, "getItem"> | undefined = safeStorage()): Partial<Keymap> {
   try {
     const raw = storage?.getItem(STORAGE_KEY);
     if (!raw) return {};

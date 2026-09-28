@@ -5,7 +5,7 @@
  */
 import { resolveCommandForEvent, type CommandId, type CommandKeyEventLike, type Keymap } from "@/lib/commands";
 
-export type { CommandId, CommandKeyEventLike };
+export type { CommandId };
 
 /** `unknown`, not `Element`, so tests can pass plain objects; TS's weak-type
  *  check would reject a real `EventTarget` against an all-optional shape. */

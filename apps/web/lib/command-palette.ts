@@ -134,7 +134,7 @@ export type PaletteSessionLike = {
   updatedAt: number;
 };
 
-export type PaletteSectionId = "actions" | "quick" | "projects" | "sessions";
+type PaletteSectionId = "actions" | "quick" | "projects" | "sessions";
 
 export type PaletteRow<S extends PaletteSessionLike> =
   | ({ kind: "action"; key: string } & PaletteAction)

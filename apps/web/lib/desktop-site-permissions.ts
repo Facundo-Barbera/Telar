@@ -6,10 +6,10 @@
 
 export const PERMISSION_KINDS = ["camera", "microphone", "notifications", "geolocation", "clipboard-read", "display-capture"] as const;
 export type SitePermissionKind = (typeof PERMISSION_KINDS)[number];
-export type SitePermissionDecision = "allow" | "block";
+type SitePermissionDecision = "allow" | "block";
 
 export type SitePermissionRecord = { kind: SitePermissionKind; decision: SitePermissionDecision; at: number };
-export type SitePermissionOrigin = { origin: string; kinds: SitePermissionRecord[] };
+type SitePermissionOrigin = { origin: string; kinds: SitePermissionRecord[] };
 /** `profileId` is null when the profile record is gone; still listed so it can be revoked. */
 export type SitePermissionProfile = { partition: string; profileId: string | null; label: string; origins: SitePermissionOrigin[] };
 
@@ -32,7 +32,7 @@ export type PermissionPrompt = {
 };
 
 /** macOS refused the device after the site was allowed; the page only sees NotAllowedError. */
-export type PermissionDenial = { origin: string; kinds: SitePermissionKind[]; reason: string };
+type PermissionDenial = { origin: string; kinds: SitePermissionKind[]; reason: string };
 
 export type SitePermissionsBridge = {
   onPermissionRequest?(listener: (prompt: PermissionPrompt) => void): () => void;

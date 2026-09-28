@@ -13,7 +13,6 @@ export {
   MAX_GRADIENT_STOPS,
   MIN_GRADIENT_STOPS,
   parseGradientCss,
-  parseGradientSpec,
   type CustomGradientSpec,
   type GradientStop,
   type GradientType,

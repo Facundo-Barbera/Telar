@@ -24,7 +24,7 @@ import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
  * owning its process (a close is SIGTERM then SIGKILL, and an ignored signal
  * leaves the terminal open and closable), the host never produces it.
  */
-export type TerminalFate = "exited" | "failed";
+type TerminalFate = "exited" | "failed";
 
 /** The `telar:terminal:exit` payload. `pid` is absent only on `failed`. */
 export type TerminalEnding = {
@@ -102,7 +102,7 @@ export type TerminalActivity = { id: string; active: boolean; processes: number;
 /** `open` answers the id it minted — plus `ending` in the one case where there
  *  is no process to answer about, so a caller never has to wait for an event to
  *  learn the spawn threw. */
-export type TerminalOpened = { id: string; pid?: number; ending?: TerminalEnding };
+type TerminalOpened = { id: string; pid?: number; ending?: TerminalEnding };
 
 export type KittyFileAnswer = { ok: true; bytes: Uint8Array } | { ok: false; code: string };
 

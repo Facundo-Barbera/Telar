@@ -28,7 +28,7 @@ import { LatexDistributionSettings } from "@/components/settings/latex-machine-s
 import { LatexSection } from "@/components/settings/latex-section";
 
 export type ProjectSettingsPane = ComponentType<{ project: Project; onChange: (project: Project) => void }>;
-export type MachineSettingsBlock = ComponentType<{ machine?: ProjectPlugins; onChange: (machine: ProjectPlugins) => void }>;
+type MachineSettingsBlock = ComponentType<{ machine?: ProjectPlugins; onChange: (machine: ProjectPlugins) => void }>;
 
 export type PluginSettingsPanes = {
   project?: ProjectSettingsPane;

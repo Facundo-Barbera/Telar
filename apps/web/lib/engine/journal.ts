@@ -1,5 +1,5 @@
 import { pluginJournalRow } from "@/lib/plugins/journal";
-import { displayToolName, type EngineEvent, type Item, type RateLimitType, type Session, type Task, type Turn, type TurnAttachment, type TurnFailureCode, type TurnState, type UsageSnapshot } from "@telar/engine-client";
+import { displayToolName, type EngineEvent, type Item, type RateLimitType, type Task, type Turn, type TurnAttachment, type TurnFailureCode, type TurnState, type UsageSnapshot } from "@telar/engine-client";
 
 /**
  * The client-side fold over protocol v2's journal.
@@ -762,8 +762,6 @@ export function toolOutput(item: JournalItem): string | undefined {
   }
   return undefined;
 }
-
-export type { Session };
 
 // ── the memoised projection ────────────────────────────────────────────────
 

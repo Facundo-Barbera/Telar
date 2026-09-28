@@ -32,8 +32,7 @@ export type AnnotatedPage = {
   fullPage?: boolean;
 };
 
-export const ANNOTATION_TOOLS = ["rect", "arrow", "freehand", "text", "pick"] as const;
-export type AnnotationTool = (typeof ANNOTATION_TOOLS)[number];
+export type AnnotationTool = "rect" | "arrow" | "freehand" | "text" | "pick";
 
 const MIN_DRAG_PX = 4;
 

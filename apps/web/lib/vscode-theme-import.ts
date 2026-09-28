@@ -64,7 +64,7 @@ export function parseVsCodeColor(value: unknown): Rgba | null {
   };
 }
 
-export function toHex(color: Rgb): string {
+function toHex(color: Rgb): string {
   const channel = (value: number) =>
     Math.max(0, Math.min(255, Math.round(value)))
       .toString(16)

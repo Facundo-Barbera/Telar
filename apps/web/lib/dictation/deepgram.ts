@@ -1,4 +1,4 @@
-export const DEEPGRAM_LISTEN_URL = "wss://api.deepgram.com/v1/listen";
+const DEEPGRAM_LISTEN_URL = "wss://api.deepgram.com/v1/listen";
 
 /**
  * No encoding or sample_rate is sent: MediaRecorder hands over a container and

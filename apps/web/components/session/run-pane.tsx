@@ -75,7 +75,7 @@ function bytePollInterval(live: boolean): number {
  * until (or for ever after) the id exists, which is the same answer as a remote
  * host's and needs no second code path.
  */
-export function runFeedKind(terminalId: string | undefined, bridge: { adopt?: unknown } | undefined): "stream" | "poll" {
+function runFeedKind(terminalId: string | undefined, bridge: { adopt?: unknown } | undefined): "stream" | "poll" {
   return terminalId && bridge?.adopt ? "stream" : "poll";
 }
 

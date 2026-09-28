@@ -1,19 +1,5 @@
-/**
- * The cockpit's door to a project's deployment.
- *
- * SEPARATE FROM `createEngineApi` ON PURPOSE, FOR NOW. Run belongs on that
- * singleton like every other capability, and it will land there in the change
- * that lifts the protocol types (`lib/run/types.ts` says the same). Until then a
- * second author inside a 900-line shared module costs more than this small
- * module does — and because every caller imports `runApi` rather than
- * constructing anything, moving it later is a re-export, not a rewrite.
- *
- * ERRORS ARE `EngineApiError`, deliberately, and not a local class: a run
- * refusal is the same kind of fact as any other engine refusal. There is no
- * "already deployed" conflict any more — every start opens a new terminal —
- * so `conflict` now means the terminal host could not be reached or a
- * terminal has already ended.
- */
+// Run refusals are EngineApiError; `conflict` means the terminal host is
+// unreachable or the terminal has already ended.
 
 import { EngineApiError } from "@/lib/engine/client";
 import { pathnameFetcher } from "@/lib/hosts/client";
@@ -116,5 +102,3 @@ export function createRunApi(fetcher: Fetcher = pathnameFetcher) {
 }
 
 export type RunApi = ReturnType<typeof createRunApi>;
-
-export const runApi: RunApi = createRunApi();

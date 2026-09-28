@@ -17,7 +17,7 @@ import { defaultInstanceIdForDriver, type ModelSelection, type ProviderDriverKin
 
 /** Effort levels, where the provider has the concept. Absent means the model
  *  chooses — which is not the same as any level named here. */
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 const EFFORT_LABEL: Record<Effort, string> = {
   low: "Low",

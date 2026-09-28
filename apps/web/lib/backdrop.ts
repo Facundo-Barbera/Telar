@@ -11,9 +11,6 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 export {
   isGradientValue,
   isSceneValue,
-  MAX_BACKDROP_BLUR,
-  MAX_BACKDROP_DIM,
-  type BackdropLayers,
 } from "@telar/engine-client";
 
 export const BACKDROP_CSS_KEY = "telar-backdrop-compiled";

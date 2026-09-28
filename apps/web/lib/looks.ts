@@ -12,7 +12,7 @@ import { parseAppearance, type Appearance } from "./appearance";
 import { currentComposition, strandedTones, writeComposition } from "./composition";
 import { SCENE_PRESETS } from "./scene-composer";
 
-export { parseThemeHalf, type Look, type LookBackdrop } from "@telar/engine-client";
+export { parseThemeHalf, type Look } from "@telar/engine-client";
 
 const LOOKS_KEY = "telar-looks";
 

@@ -12,7 +12,7 @@ import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport } from "@
  * — a zero would claim the work was free.
  */
 
-export type UsageTotals = {
+type UsageTotals = {
   tokens: TokenUsage;
   processed: number;
   costUsd: number;
@@ -21,9 +21,9 @@ export type UsageTotals = {
   turns: number;
 };
 
-export type ProviderSlice = UsageTotals & { driver: ProviderDriverKind; share: number };
-export type ModelSlice = UsageTotals & { driver: ProviderDriverKind; model: string; share: number };
-export type PeriodSlice = {
+type ProviderSlice = UsageTotals & { driver: ProviderDriverKind; share: number };
+type ModelSlice = UsageTotals & { driver: ProviderDriverKind; model: string; share: number };
+type PeriodSlice = {
   period: string;
   byDriver: Partial<Record<ProviderDriverKind, UsageTotals>>;
   total: UsageTotals;
@@ -44,13 +44,13 @@ export type UsageFold = {
  *
  * `telar` WAS A FOURTH until #531 removed the driver.
  */
-export const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
+const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
 export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 
 const zeroTokens = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
 const zeroTotals = (): UsageTotals => ({ tokens: zeroTokens(), processed: 0, costUsd: 0, priced: true, turns: 0 });
 
-export function processedTokens(tokens: TokenUsage): number {
+function processedTokens(tokens: TokenUsage): number {
   return tokens.input + tokens.output + tokens.cacheRead + tokens.cacheCreate;
 }
 

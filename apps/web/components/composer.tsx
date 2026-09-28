@@ -57,7 +57,6 @@ import {
 import { ComposerQuestionDrawer } from "./composer-question-drawer";
 import { choiceOf, type ModelChoice } from "@/lib/models";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
-export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
 import { Spinner } from "@/components/ui/spinner";
 import {
   AccessControl,

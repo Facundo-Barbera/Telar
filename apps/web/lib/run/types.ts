@@ -15,11 +15,9 @@
 export type {
   RunConfigurationDraft,
   RunConfigurationView,
-  RunEnvView,
   RunIcon,
   RunBytesAnswer,
   RunOutputAnswer,
-  RunOutputLine,
   RunResizeAnswer,
   RunWriteAnswer,
   RunReadiness,

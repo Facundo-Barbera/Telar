@@ -208,7 +208,7 @@ export function newSessionId(): string {
  * whatever the row says — which is a 404 at best, and at worst settles a local
  * session that happens to share the id.
  */
-export function sessionFetch(session: Pick<SidebarSession, "hostId">, path: string, init?: RequestInit): Promise<Response> {
+function sessionFetch(session: Pick<SidebarSession, "hostId">, path: string, init?: RequestInit): Promise<Response> {
   return hostFetcher(session.hostId ?? LOCAL_HOST_ID)(path, init);
 }
 

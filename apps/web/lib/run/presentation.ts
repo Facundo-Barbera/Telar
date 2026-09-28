@@ -23,7 +23,7 @@ import type {
 /** Mirrors `MIN_SECRET_CHARS` in `apps/engine/src/run/types.ts`. The engine
  *  refuses a shorter secret at save time; this refuses it before the round trip
  *  so the editor can point at the field. The engine remains the authority. */
-export const MIN_SECRET_CHARS = 4;
+const MIN_SECRET_CHARS = 4;
 
 export type RunTone = "idle" | "working" | "good" | "bad";
 
