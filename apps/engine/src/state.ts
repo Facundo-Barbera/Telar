@@ -182,7 +182,8 @@ import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCata
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
-import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, type GitResult, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { createSessionWorktreeAsync, createWorktreeQueue, defaultWorktreeGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, derivedBranchFor, type WorktreePlan, type WorktreeQueue } from "./domains/worktrees";
+import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";
 import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./worktree-release";
@@ -728,25 +729,6 @@ function canonicalPath(input: string): string {
 
 
 
-
-/**
- * The engine-cut branch a title implies: `telar/<title-slug>-<id6>`, or
- * undefined when the title yields no usable slug (worktree creation then falls
- * back to `telar/<sessionId>`). One function because TWO callers must agree on
- * it exactly: `createSession` names the branch from the seed title, and
- * `refreshWorktreeBranchFromTitle` may only rename a branch it can prove the
- * engine derived — which it proves by re-deriving.
- */
-export function derivedBranchFor(title: string, sessionId: string): string | undefined {
-  const slug = title
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-  return slug ? `telar/${slug}-${sessionId.replace(/^session_/, "").slice(0, 6)}` : undefined;
-}
 
 function assertText(value: unknown): asserts value is string {
   if (typeof value !== "string" || value.trim() === "" || value.length > MAX_TEXT_LENGTH) {

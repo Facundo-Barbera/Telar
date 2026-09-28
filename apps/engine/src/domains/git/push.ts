@@ -1,6 +1,6 @@
 import type { GitCommitEntry, GitPushRefusal, GitPushResult } from "@telar/engine-client";
 import { GIT_LOG_FORMAT, parseGitLog } from "../../platform/git/parse";
-import type { AsyncGitRunner, GitResult } from "../../worktree";
+import type { AsyncGitRunner, GitResult } from "../../platform/git/runner";
 
 export async function commitSessionWork(
   git: AsyncGitRunner,

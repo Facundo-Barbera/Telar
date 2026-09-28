@@ -39,7 +39,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { lockSessionWorktree, unlockWorktree, type AsyncGitRunner } from "./worktree";
+import { lockSessionWorktree, unlockWorktree } from "./domains/worktrees";
+import { type AsyncGitRunner } from "./platform/git/runner";
 
 /** One checkout this engine knows about, as the caller sees it. */
 export type Checkout = {

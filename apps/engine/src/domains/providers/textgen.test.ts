@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_TEXT_GEN_POLICY, type TextGenPolicy } from "@telar/engine-client";
-import { derivedBranchFor, EngineStateError, EngineStore } from "../../state";
+import { EngineStateError, EngineStore } from "../../state";
 import { buildTitlePrompt, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "./textgen";
 import { worktreeReady } from "../../../test/worktree-ready";
 
@@ -68,15 +68,6 @@ test("the prompt carries the message, bounded", () => {
   const prompt = buildTitlePrompt("m".repeat(20_000));
   expect(prompt).toContain("Return JSON with exactly one key: title.");
   expect(prompt.length).toBeLessThan(10_000);
-});
-
-describe("derivedBranchFor", () => {
-  test("slugs the title into the telar namespace with the id suffix", () => {
-    expect(derivedBranchFor("Fix the Login Flow!", "session_abcdef123456")).toBe("telar/fix-the-login-flow-abcdef");
-  });
-  test("no usable slug means no derived branch", () => {
-    expect(derivedBranchFor("¡¡¡", "session_abcdef123456")).toBeUndefined();
-  });
 });
 
 describe("text generation policy", () => {

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AsyncGitRunner, GitRunner } from "../../worktree";
+import type { AsyncGitRunner, GitRunner } from "../../platform/git/runner";
 
 export const CLONE_TIMEOUT_MS = 10 * 60_000;
 

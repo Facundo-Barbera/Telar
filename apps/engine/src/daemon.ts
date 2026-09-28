@@ -62,7 +62,7 @@ import {
 import { PreparedPromptsError, promptsRoutes } from "./domains/prompts";
 import { githubRoutes, sessionGitHubRoutes, type GhRunner } from "./domains/github";
 import { createStorageMeter, reapNodeModules, storageRoutes, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, type CheckoutSizesOptions } from "./domains/storage";
-import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
+import { type AsyncGitRunner, type GitRunner } from "./platform/git/runner";
 import { readWorktreesRoot } from "./worktrees-location";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
@@ -73,7 +73,7 @@ import { projectCheckoutRoutes, projectRoutes } from "./domains/projects";
 import { installedPlugins, pluginRoutes, pluginScopedRoutes, pluginSessionRoutes } from "./domains/plugins";
 import { settingsRoutes } from "./domains/settings";
 import { dictationRoutes } from "./domains/dictation";
-import { worktreesRoutes } from "./domains/worktrees";
+import { WorktreeError, worktreesRoutes } from "./domains/worktrees";
 import { usageRoutes } from "./domains/usage";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
 import { createHostsStore, hostsRoutes } from "./domains/hosts";

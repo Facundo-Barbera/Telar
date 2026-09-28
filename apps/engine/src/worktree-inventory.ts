@@ -93,7 +93,7 @@ import type {
   WorktreeRow,
   WorktreeVerdict,
 } from "@telar/engine-client";
-import type { AsyncGitRunner } from "./worktree";
+import type { AsyncGitRunner } from "./platform/git/runner";
 
 /**
  * EVERYTHING THE LADDER NEEDS, AND NOTHING ELSE.
