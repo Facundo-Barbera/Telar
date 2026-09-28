@@ -345,8 +345,8 @@ export type SessionSnapshot = {
   tasks: Task[];
 };
 
-/** What `GET /v2/sessions/:id/report-window` answers with: peer notifications waiting for the next turn. */
-export type ReportWindowStatus = { held: number };
+/** What `GET /v2/sessions/:id/held-reports` answers with: peer notifications waiting for the next turn. */
+export type HeldReports = { held: number };
 
 /**
  * ══ THE FIVE QUERY ROUTES — issue #516 ══
@@ -2408,8 +2408,8 @@ export class EngineClient {
   }
 
   /** How many peer notifications are waiting for this session's next turn. */
-  sessionReportWindow(sessionId: string): Promise<ReportWindowStatus> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/report-window`);
+  sessionHeldReports(sessionId: string): Promise<HeldReports> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/held-reports`);
   }
 
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot> {

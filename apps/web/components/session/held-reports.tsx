@@ -38,7 +38,7 @@ function useHeld(sessionId: string | undefined, hostId: string | undefined, visi
     let live = true;
     const api = createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
     const tick = async () => {
-      const status = await api.sessionReportWindow(sessionId).then(
+      const status = await api.sessionHeldReports(sessionId).then(
         (value) => value,
         () => undefined,
       );

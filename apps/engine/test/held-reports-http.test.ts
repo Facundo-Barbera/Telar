@@ -10,7 +10,7 @@ import { stubModels } from "./stub-models";
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-window-http-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-held-reports-"));
   roots.push(directory);
   return directory;
 };
@@ -40,8 +40,8 @@ const report = (store: EngineDaemon["store"], proof: Parameters<EngineDaemon["st
 
 test("the route counts what is waiting for the next turn", async () => {
   const { client, store, proof } = await ready();
-  expect(await client.sessionReportWindow("session_coord")).toEqual({ held: 0 });
+  expect(await client.sessionHeldReports("session_coord")).toEqual({ held: 0 });
   report(store, proof, "run_one");
   report(store, proof, "run_two");
-  expect(await client.sessionReportWindow("session_coord")).toEqual({ held: 2 });
+  expect(await client.sessionHeldReports("session_coord")).toEqual({ held: 2 });
 });

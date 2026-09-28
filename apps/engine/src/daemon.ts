@@ -5139,7 +5139,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         // How many peer notifications are waiting for this session's next turn.
-        if (request.method === "GET" && session.tail === "/report-window") {
+        if (request.method === "GET" && session.tail === "/held-reports") {
           writeJson(response, 200, {
             held: store.pendingNotifications(session.sessionId).length,
           });
