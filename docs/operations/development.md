@@ -86,7 +86,7 @@ bun run test:desktop:e2e
 bun run --cwd apps/desktop build:app && bun run test:desktop:smoke
 ```
 
-The smoke boots the bundled engine and the standalone cockpit, so it needs `build:app` first. The [desktop testing notes](../../apps/desktop/TESTING.md) describe each layer.
+The smoke boots the bundled engine and the standalone cockpit, so it needs `build:app` first. Use the smallest layer that proves the change; `test:desktop:e2e` is a final integration pass. The `extension`, `extension-boot` and `webauthn` tests need the 1Password extension: set `TELAR_1P_CRX` to a packaged one or `TELAR_1P_UNPACKED` to an unpacked one.
 
 ## Checks
 
