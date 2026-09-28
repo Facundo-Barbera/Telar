@@ -1,5 +1,5 @@
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { markComposerActive, registerComposer, type ComposerEntry } from "@/lib/composer-registry";
 import { activeDictation, registerDictation, toggleActiveDictation } from "./registry";
 
@@ -34,7 +34,7 @@ function mount(token: string): { unmount: () => void; pressed: () => number; unr
 
 const live: (() => void)[] = [];
 
-beforeEach(() => {
+afterEach(() => {
   for (const unmount of live.splice(0)) unmount();
 });
 
