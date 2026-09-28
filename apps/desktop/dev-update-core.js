@@ -150,7 +150,6 @@ module.exports = {
   DEV_BUNDLE_ID,
   cleanBuildEnv,
   resolveBunDir,
-  runGit,
   readSourceInfo,
   configuredRepo,
   runningBundlePath,

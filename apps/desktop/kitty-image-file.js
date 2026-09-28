@@ -80,4 +80,4 @@ async function readKittyImageFile(requested, { limit = KITTY_FILE_LIMIT, fsp = f
   }
 }
 
-module.exports = { readKittyImageFile, isForbiddenLocation, KITTY_FILE_LIMIT };
+module.exports = { readKittyImageFile, isForbiddenLocation };

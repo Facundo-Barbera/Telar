@@ -257,7 +257,6 @@ function menuCommands(keymap, menu) {
 module.exports = {
   COMMANDS,
   chordForEvent,
-  chordsForEvent,
   claimedCommandIds,
   defaultKeymap,
   keymapConflicts,
@@ -265,6 +264,5 @@ module.exports = {
   menuCommands,
   mergeKeymap,
   normalizeChord,
-  normalizeKeyToken,
   resolveCommandForEvent,
 };

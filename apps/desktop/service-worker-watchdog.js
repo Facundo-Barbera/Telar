@@ -145,9 +145,6 @@ function createServiceWorkerWatchdog({
 
 module.exports = {
   HOT_CPU_PERCENT,
-  HOT_POLLS_TO_KILL,
-  POLL_INTERVAL_MS,
-  RENDERER_TYPES,
   originOfScope,
   decideTerminations,
   createServiceWorkerWatchdog,

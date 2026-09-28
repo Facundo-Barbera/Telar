@@ -187,10 +187,6 @@ function createProcessMetricsReader({
 
 module.exports = {
   BUSIEST_LIMIT,
-  HISTORY_MS,
-  MIN_SAMPLE_INTERVAL_MS,
-  PROCESS_TYPE_LABEL,
-  RENDERER_TYPES,
   cpuRates,
   createProcessMetricsReader,
   labelForType,

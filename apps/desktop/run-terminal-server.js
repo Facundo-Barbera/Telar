@@ -215,4 +215,4 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
   });
 }
 
-module.exports = { startRunTerminalServer, MAX_BODY_BYTES, HEARTBEAT_MS };
+module.exports = { startRunTerminalServer, MAX_BODY_BYTES };

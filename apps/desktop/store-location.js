@@ -334,15 +334,11 @@ function archiveActive(userData, deps = {}) {
 
 module.exports = {
   volumesResolvableOn,
-  MARKER_VERSION,
-  STAMP_VERSION,
-  MARKER_NAME,
   STAMP_NAME,
   STORE_SUBTREES,
   markerPath,
   stampPath,
   readMarker,
-  writeMarker,
   readStamp,
   writeStamp,
   initialiseStore,
@@ -353,5 +349,4 @@ module.exports = {
   clearPending,
   clearRetired,
   archiveActive,
-  describeVolume,
 };

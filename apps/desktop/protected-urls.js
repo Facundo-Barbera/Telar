@@ -16,4 +16,4 @@ function isProtectedUrl(url) {
   }
 }
 
-module.exports = { isProtectedUrl, EXTENSION_SCHEMES };
+module.exports = { isProtectedUrl };

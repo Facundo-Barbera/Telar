@@ -95,7 +95,6 @@ function orient(size, orientation) {
 module.exports = {
   VIEWPORT_PRESETS,
   VIEWPORT_PRESET_GROUPS,
-  VIEWPORT_PRESET_ALIASES,
   VIEWPORT_PRESET_KEYS,
   viewportPreset,
   presetOf,

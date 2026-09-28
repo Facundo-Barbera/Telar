@@ -105,4 +105,4 @@ async function listLoginCandidates(origin, exec = defaultOpExec) {
   return { ok: true, candidates };
 }
 
-module.exports = { listLoginCandidates, registrableDomain, registrableDomainOfUrl, OP_NOT_INSTALLED, OP_LOCKED };
+module.exports = { listLoginCandidates, registrableDomain, OP_NOT_INSTALLED, OP_LOCKED };

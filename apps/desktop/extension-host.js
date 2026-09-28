@@ -420,4 +420,4 @@ function extensionsEnabled({ dev, packaged, version, override }) {
   return override === "1" || dev || !packaged || /^\d+\.\d+\.\d+-nightly\./.test(version);
 }
 
-module.exports = { extensionsEnabled, ExtensionHost, ONE_PASSWORD, download, MAX_DOWNLOAD_BYTES, DOWNLOAD_TIMEOUT_MS, classifyWorkerError, WORKER_ERROR_CLASSES, clampRect, popupRegion, readIconDataUrl, roundPopupCorners, POPUP_CORNER_RADIUS };
+module.exports = { extensionsEnabled, ExtensionHost, ONE_PASSWORD, download, MAX_DOWNLOAD_BYTES, classifyWorkerError, clampRect, popupRegion, readIconDataUrl, roundPopupCorners, POPUP_CORNER_RADIUS };

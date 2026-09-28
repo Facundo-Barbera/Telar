@@ -140,4 +140,4 @@ function browserContextMenuTemplate(params = {}, context = {}) {
     .flatMap((section, index) => (index === 0 ? section : [SEPARATOR, ...section]));
 }
 
-module.exports = { browserContextMenuTemplate, SPELLING_SUGGESTION_LIMIT, SELECTION_LABEL_LIMIT };
+module.exports = { browserContextMenuTemplate, SPELLING_SUGGESTION_LIMIT };

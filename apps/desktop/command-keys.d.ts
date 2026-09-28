@@ -42,12 +42,10 @@ export type Keymap = Record<string, string>;
 export const COMMANDS: Command[];
 
 export function normalizeChord(chord: string): string;
-export function normalizeKeyToken(token: string): string;
 export function defaultKeymap(): Keymap;
 export function mergeKeymap(overrides: Readonly<Keymap> | undefined | null): Keymap;
 export function keymapOverrides(keymap: Readonly<Keymap>): Keymap;
 export function keymapConflicts(keymap: Readonly<Keymap>): Record<string, string[]>;
-export function chordsForEvent(event: CommandKeyEventLike): string[];
 export function chordForEvent(event: CommandKeyEventLike): string;
 export function resolveCommandForEvent(keymap: Readonly<Keymap>, event: CommandKeyEventLike): string | null;
 /** Which commands a surface's chord claim suppresses under this keymap (#656).

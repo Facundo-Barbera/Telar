@@ -82,4 +82,4 @@ async function removeUserData(
   );
 }
 
-module.exports = { removeUserData, DEFAULT_ATTEMPTS, DEFAULT_DELAY_MS };
+module.exports = { removeUserData };
