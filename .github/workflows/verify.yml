@@ -608,7 +608,7 @@ jobs:
             fi
           }
 
-          check 'apps/ios/TelarMobile/Views/SessionView.swift'   yes
+          check 'apps/ios/TelarMobile/Features/Sessions/SessionView.swift'   yes
           check 'apps/ios/TelarMobile.xcodeproj/project.pbxproj' yes
           check 'apps/ios/nightly.sh'                            yes
           check 'apps/ios/Config/ActivityInfo.plist'             yes
