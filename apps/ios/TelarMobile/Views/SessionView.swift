@@ -583,7 +583,7 @@ struct SessionView: View {
         }
     }
 
-    /// Which tabs this session gets: the project's two opt-ins, read once
+    /// Which tabs this session gets: the project's enabled plugins, read once
     /// through the engine's own rule — the plugin map when the project carries
     /// its marker, the legacy blocks only when it never has. Off until known.
     private func readPlugins() async {
@@ -593,7 +593,7 @@ struct SessionView: View {
             projectId = (try? await api.session(sessionId, window: SnapshotWindow(turns: 1)))?.session.projectId
         }
         guard let projectId, let projects = try? await panelAPI.projects(), let project = projects.first(where: { $0.id == projectId }) else { return }
-        panel.setPlugins(dataScience: project.pluginEnabled(.dataScience), latex: project.pluginEnabled(.latex))
+        panel.setPlugins(project.enabledPlugins)
     }
 
     /// The agent asked the cockpit to show a file. Only events newer than

@@ -109,15 +109,11 @@ struct PanelView: View {
             } else {
                 unavailable
             }
-        case .data:
+        // A PLUGIN'S SURFACE, whichever it is (`PluginSurfaceView`). Every
+        // plugin surface reads the Mac's panel routes, hence the gate.
+        default:
             if let panelAPI {
-                DataSurface(api: panelAPI, sessionId: sessionId, hostId: hostId, active: active)
-            } else {
-                unavailable
-            }
-        case .latex:
-            if let panelAPI {
-                LatexSurface(api: panelAPI, sessionId: sessionId, active: active, panel: panel)
+                PluginSurfaceView(tab: panel.active, api: panelAPI, sessionId: sessionId, hostId: hostId, active: active, panel: panel)
             } else {
                 unavailable
             }

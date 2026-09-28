@@ -24,9 +24,18 @@ struct LatexConfig: Decodable, Equatable {
 /// tool prefix. Data Science is one plugin (`data-science`) that owns two tool
 /// prefixes (`ds_`, `notebook_`), which is why the two namespaces are kept
 /// apart in `packages/engine-client/src/protocol/plugins.ts`.
-enum PluginID: String {
-    case dataScience = "data-science"
-    case latex
+///
+/// AN OPEN SET. A Mac may run a plugin this build has never heard of; its id is
+/// carried like any other and simply finds nothing in `PluginUI` — no tab, no
+/// viewer, no crash. The two bundled ids are named for the call sites that
+/// mean them.
+struct PluginID: RawRepresentable, Hashable, Codable, Sendable {
+    let rawValue: String
+    init(rawValue: String) { self.rawValue = rawValue }
+    init(_ rawValue: String) { self.rawValue = rawValue }
+
+    static let dataScience = PluginID("data-science")
+    static let latex = PluginID("latex")
 }
 
 /// One plugin's per-project state — that file's `PluginConfig`. `settings` is
@@ -145,12 +154,16 @@ struct Project: Decodable, Identifiable, Equatable {
     /// Whether a plugin is on for this project — the engine's one read path
     /// (`readProjectPlugins`), stated here because the phone reads the same
     /// record and must not disagree about it.
-    func pluginEnabled(_ id: PluginID) -> Bool {
-        if let plugins { return plugins.entries[id.rawValue]?.enabled == true }
-        switch id {
-        case .dataScience: return dataScience?.enabled == true
-        case .latex: return latex?.enabled == true
-        }
+    func pluginEnabled(_ id: PluginID) -> Bool { enabledPlugins.contains(id) }
+
+    /// Every plugin this project has on, known to this build or not. The map
+    /// when there is one; otherwise the two legacy blocks an older engine sends.
+    var enabledPlugins: Set<PluginID> {
+        if let plugins { return Set(plugins.entries.filter { $0.value.enabled }.keys.map { PluginID($0) }) }
+        var legacy = Set<PluginID>()
+        if dataScience?.enabled == true { legacy.insert(.dataScience) }
+        if latex?.enabled == true { legacy.insert(.latex) }
+        return legacy
     }
 }
 

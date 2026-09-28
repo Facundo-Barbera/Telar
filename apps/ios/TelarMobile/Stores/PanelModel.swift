@@ -2,8 +2,12 @@ import Foundation
 import Observation
 import SwiftUI
 
-/// Which surface the panel shows — the desktop's fixed tabs, the five the
-/// phone carries. Data and LaTeX exist only when the project opted in.
+/// Which surface the panel shows — the three the phone always carries, plus
+/// whatever an enabled plugin contributes (`PluginUI`: Data, LaTeX).
+///
+/// A STRING, NOT A CLOSED ENUM, so a plugin tab is a registry entry rather than
+/// a case here. It encodes as its raw value, so a saved arrangement written when
+/// this was an enum ("data", "latex") restores unchanged.
 ///
 /// AGENTS IS NOT ONE OF THOSE TWO — issue #390. Who is working for this
 /// conversation is a fact about the conversation, not about a plugin, so the
@@ -11,17 +15,27 @@ import SwiftUI
 /// after the other two unconditional surfaces rather than first (where the
 /// desktop puts it) so that the tabs a reader always has stay together, and
 /// the strip does not reorder itself when a project turns a plugin on.
-enum PanelTab: String, Codable, CaseIterable, Identifiable {
-    case diff, files, agents, data, latex
+struct PanelTab: RawRepresentable, Codable, Hashable, Identifiable, Sendable {
+    let rawValue: String
+    init(rawValue: String) { self.rawValue = rawValue }
     var id: String { rawValue }
+
+    static let diff = PanelTab(rawValue: "diff")
+    static let files = PanelTab(rawValue: "files")
+    static let agents = PanelTab(rawValue: "agents")
+    /// The bundled plugins' tabs, named for `PluginUI` and the views that mean them.
+    static let data = PanelTab(rawValue: "data")
+    static let latex = PanelTab(rawValue: "latex")
+
+    /// The tabs every session has, in strip order.
+    static let always: [PanelTab] = [.diff, .files, .agents]
 
     var label: String {
         switch self {
         case .diff: "Diff"
         case .files: "Files"
         case .agents: "Agents"
-        case .data: "Data"
-        case .latex: "LaTeX"
+        default: PluginUI.surface(for: self)?.label ?? rawValue
         }
     }
 
@@ -30,14 +44,13 @@ enum PanelTab: String, Codable, CaseIterable, Identifiable {
         case .diff: "plus.forwardslash.minus"
         case .files: "folder"
         case .agents: "person.2"
-        case .data: "flask"
-        case .latex: "function"
+        default: PluginUI.surface(for: self)?.icon ?? "puzzlepiece"
         }
     }
 }
 
 /// How a file is looked at — the web's `EditorView`. Decided once by
-/// `panelView(for:dataScience:)` when the file is opened, the way the
+/// `panelView(for:enabled:)` when the file is opened, the way the
 /// desktop's `editorFileForPath` decides it.
 enum FileView: String, Codable {
     case code, notebook, table, pdf
@@ -128,18 +141,18 @@ struct EditorState: Codable, Equatable {
 /// the ability to read what is on disk. Routing it to the code view meant a
 /// 730 KB `.ipynb` opened as raw nbformat, which is the one thing a notebook
 /// is not.
-func panelView(for path: String, dataScience: Bool) -> FileView {
+func panelView(for path: String, enabled: Set<PluginID>) -> FileView {
     let ext = (path as NSString).pathExtension.lowercased()
     switch ext {
-    case "ipynb": return dataScience ? .notebook : .notebookReadOnly
-    case "csv", "tsv", "parquet": return dataScience ? .table : .code
+    case "ipynb": return PluginUI.viewerAvailable(.notebook, enabled: enabled) ? .notebook : .notebookReadOnly
+    case "csv", "tsv", "parquet": return PluginUI.viewerAvailable(.table, enabled: enabled) ? .table : .code
     case "pdf": return .pdf
     default: return .code
     }
 }
 
 /// THE PANEL, for one session on one Mac. Which tab is up, which files are
-/// open, whether it is showing — and the two plugin flags that decide which
+/// open, whether it is showing — and the enabled plugins that decide which
 /// tabs exist. Persisted per host AND session, which the web does not do;
 /// two Macs can mint the same session id.
 ///
@@ -156,8 +169,7 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
     private(set) var editor = EditorState()
     /// Off until the project record has been read — the same rule the web
     /// applies, so no tab is offered that would 404.
-    private(set) var dataScience = false
-    private(set) var latex = false
+    private(set) var enabledPlugins: Set<PluginID> = []
     private(set) var pluginsRead = false
     /// A file the transcript asked for while the panel was closed on a
     /// compact width: the push happens once the view is on screen.
@@ -196,28 +208,21 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
     }
 
     var tabs: [PanelTab] {
-        PanelTab.allCases.filter { tab in
-            switch tab {
-            case .data: dataScience
-            case .latex: latex
-            default: true
-            }
-        }
+        PanelTab.always + PluginUI.surfaces(enabled: enabledPlugins).map(\.tab)
     }
 
-    func setPlugins(dataScience: Bool, latex: Bool) {
-        self.dataScience = dataScience
-        self.latex = latex
+    func setPlugins(_ enabled: Set<PluginID>) {
+        enabledPlugins = enabled
         pluginsRead = true
         // A restored tab the project no longer offers falls back to Diff.
         if !tabs.contains(active) { active = .diff }
         // A FILE OPENED BEFORE THE PROJECT RECORD LANDED was typed against
-        // `dataScience: false` — the read-only notebook rather than the live
+        // no plugins on — the read-only notebook rather than the live
         // one, the code view rather than the grid. The desktop re-decides on
         // every render; here the view is decided once, at open, so the arrival
         // of the record is the moment to decide it again.
         for index in editor.files.indices {
-            editor.files[index].view = panelView(for: editor.files[index].path, dataScience: dataScience)
+            editor.files[index].view = panelView(for: editor.files[index].path, enabled: enabledPlugins)
         }
         persist()
     }
@@ -273,7 +278,7 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
     /// every open, which is what a view watches to re-raise a presentation
     /// against a panel the model already calls open.
     func openFile(_ path: String, pin: Bool = true) {
-        editor.open(path, view: panelView(for: path, dataScience: dataScience), pin: pin)
+        editor.open(path, view: panelView(for: path, enabled: enabledPlugins), pin: pin)
         open(.files)
     }
 
