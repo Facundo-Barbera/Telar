@@ -87,11 +87,7 @@ export const APP_FONTS = [
   "custom",
 ] as const;
 
-export const SANS_FONTS = APP_FONTS;
-export type SansFont = (typeof SANS_FONTS)[number];
-
-export const MONO_FONTS = APP_FONTS;
-export type MonoFont = (typeof MONO_FONTS)[number];
+export type AppFont = (typeof APP_FONTS)[number];
 
 export const MONOSPACED_FONTS: ReadonlySet<string> = new Set([
   "jetbrains",
@@ -118,8 +114,8 @@ export type Depth = (typeof DEPTHS)[number];
 export const DEFAULT_DEPTH: Depth = "soft";
 
 export const DEFAULT_ACCENT: Accent = "indigo";
-export const DEFAULT_SANS_FONT: SansFont = "geist";
-export const DEFAULT_MONO_FONT: MonoFont = "geist";
+export const DEFAULT_SANS_FONT: AppFont = "geist";
+export const DEFAULT_MONO_FONT: AppFont = "geist";
 export const DEFAULT_FONT_SIZE = 16;
 export const DEFAULT_TRANSLUCENCY_LEVEL = 50;
 
@@ -541,8 +537,8 @@ export type Look = {
   composition: Composition;
   images: Record<string, string>;
   accent: Accent;
-  fontSans: SansFont;
-  fontMono: MonoFont;
+  fontSans: AppFont;
+  fontMono: AppFont;
   fontSansCustom: string;
   fontMonoCustom: string;
   fontSize: number;
@@ -702,8 +698,8 @@ export function parseLook(value: unknown, presets: ScenePresets = DEFAULT_SCENE_
     composition: fromV1 ? fromV1.composition : parseComposition(value.composition, presets),
     images: fromV1 ? fromV1.images : parseImages(value.images),
     accent: oneOf<Accent>(value.accent, ACCENTS, DEFAULT_ACCENT),
-    fontSans: oneOf<SansFont>(value.fontSans, SANS_FONTS, DEFAULT_SANS_FONT),
-    fontMono: oneOf<MonoFont>(value.fontMono, MONO_FONTS, DEFAULT_MONO_FONT),
+    fontSans: oneOf<AppFont>(value.fontSans, APP_FONTS, DEFAULT_SANS_FONT),
+    fontMono: oneOf<AppFont>(value.fontMono, APP_FONTS, DEFAULT_MONO_FONT),
     fontSansCustom: typeof value.fontSansCustom === "string" ? value.fontSansCustom : "",
     fontMonoCustom: typeof value.fontMonoCustom === "string" ? value.fontMonoCustom : "",
     fontSize: clampInt(value.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE, DEFAULT_FONT_SIZE),

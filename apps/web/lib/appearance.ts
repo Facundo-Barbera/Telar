@@ -24,8 +24,7 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 import {
   ACCENTS,
   DEPTHS,
-  MONO_FONTS,
-  SANS_FONTS,
+  APP_FONTS,
   DEFAULT_ACCENT,
   DEFAULT_DEPTH,
   DEFAULT_FONT_SIZE,
@@ -41,8 +40,7 @@ import {
   MIN_TRANSLUCENCY,
   type Accent,
   type Depth,
-  type MonoFont,
-  type SansFont,
+  type AppFont,
 } from "@telar/engine-client";
 
 /**
@@ -63,13 +61,11 @@ export {
   MIN_FONT_SIZE,
   MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
-  MONO_FONTS,
+  APP_FONTS,
   MONOSPACED_FONTS,
-  SANS_FONTS,
   type Accent,
   type Depth,
-  type MonoFont,
-  type SansFont,
+  type AppFont,
 } from "@telar/engine-client";
 
 /** Fallbacks appended after a custom family, so glyph coverage never regresses
@@ -102,8 +98,8 @@ export function cssFontFamilies(input: string): string | null {
 
 export type Appearance = {
   accent: Accent;
-  fontSans: SansFont;
-  fontMono: MonoFont;
+  fontSans: AppFont;
+  fontMono: AppFont;
   /** Only consulted when the matching choice is "custom"; kept across a switch
    *  away and back so trying System does not cost the reader their typing. */
   fontSansCustom: string;
@@ -174,7 +170,7 @@ const STORAGE_KEY = "telar-appearance";
  * default values are OMITTED rather than written, so the base tokens in
  * globals.css stay the single source of the default look.
  */
-export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var css=localStorage.getItem('telar-theme-css');if(css){var s=document.createElement('style');s.id='telar-theme';s.textContent=css;document.head.appendChild(s);}var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});set('data-depth',a.depth,${JSON.stringify([...DEPTHS])});var ff=function(v){if(typeof v!=='string')return null;var o=[];v.split(',').forEach(function(n){n=n.trim();if(!n)return;if(/^['"].*['"]$/.test(n)||/^[a-zA-Z][a-zA-Z0-9-]*$/.test(n))o.push(n);else o.push('"'+n.replace(/"/g,'')+'"');});return o.length?o.join(', '):null;};var fam=function(p,mode,raw,fb){var l=mode==='custom'?ff(raw):null;if(l)d.style.setProperty(p,l+', '+fb);else d.style.removeProperty(p);};fam('--app-font-sans',a.fontSans,a.fontSansCustom,'${CUSTOM_SANS_FALLBACK}');fam('--app-font-mono',a.fontMono,a.fontMonoCustom,'${CUSTOM_MONO_FALLBACK}');var fs=typeof a.fontSize==='number'&&isFinite(a.fontSize)?Math.min(${MAX_FONT_SIZE},Math.max(${MIN_FONT_SIZE},Math.round(a.fontSize))):${DEFAULT_APPEARANCE.fontSize};if(fs!==${DEFAULT_APPEARANCE.fontSize})d.style.fontSize=fs+'px';else d.style.removeProperty('font-size');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};var ms=typeof a.fontMonoSize==='number'&&isFinite(a.fontMonoSize)?Math.min(${MAX_MONO_FONT_SIZE},Math.max(${MIN_MONO_FONT_SIZE},Math.round(a.fontMonoSize))):${DEFAULT_APPEARANCE.fontMonoSize};d.style.setProperty('--app-font-mono-size',ms+'px');d.style.setProperty('--translucency',Math.round(l*0.9)+'%');if(a.translucent===true)d.setAttribute('data-translucent','');else d.removeAttribute('data-translucent');}catch(e){}})();`;
+export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var css=localStorage.getItem('telar-theme-css');if(css){var s=document.createElement('style');s.id='telar-theme';s.textContent=css;document.head.appendChild(s);}var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...APP_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...APP_FONTS])});set('data-depth',a.depth,${JSON.stringify([...DEPTHS])});var ff=function(v){if(typeof v!=='string')return null;var o=[];v.split(',').forEach(function(n){n=n.trim();if(!n)return;if(/^['"].*['"]$/.test(n)||/^[a-zA-Z][a-zA-Z0-9-]*$/.test(n))o.push(n);else o.push('"'+n.replace(/"/g,'')+'"');});return o.length?o.join(', '):null;};var fam=function(p,mode,raw,fb){var l=mode==='custom'?ff(raw):null;if(l)d.style.setProperty(p,l+', '+fb);else d.style.removeProperty(p);};fam('--app-font-sans',a.fontSans,a.fontSansCustom,'${CUSTOM_SANS_FALLBACK}');fam('--app-font-mono',a.fontMono,a.fontMonoCustom,'${CUSTOM_MONO_FALLBACK}');var fs=typeof a.fontSize==='number'&&isFinite(a.fontSize)?Math.min(${MAX_FONT_SIZE},Math.max(${MIN_FONT_SIZE},Math.round(a.fontSize))):${DEFAULT_APPEARANCE.fontSize};if(fs!==${DEFAULT_APPEARANCE.fontSize})d.style.fontSize=fs+'px';else d.style.removeProperty('font-size');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};var ms=typeof a.fontMonoSize==='number'&&isFinite(a.fontMonoSize)?Math.min(${MAX_MONO_FONT_SIZE},Math.max(${MIN_MONO_FONT_SIZE},Math.round(a.fontMonoSize))):${DEFAULT_APPEARANCE.fontMonoSize};d.style.setProperty('--app-font-mono-size',ms+'px');d.style.setProperty('--translucency',Math.round(l*0.9)+'%');if(a.translucent===true)d.setAttribute('data-translucent','');else d.removeAttribute('data-translucent');}catch(e){}})();`;
 
 const listeners = new Set<() => void>();
 
@@ -199,8 +195,8 @@ export function parseAppearance(raw: string | null): Appearance {
     const record = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
     return {
       accent: oneOf(record.accent, ACCENTS) ?? DEFAULT_APPEARANCE.accent,
-      fontSans: oneOf(record.fontSans, SANS_FONTS) ?? DEFAULT_APPEARANCE.fontSans,
-      fontMono: oneOf(record.fontMono, MONO_FONTS) ?? DEFAULT_APPEARANCE.fontMono,
+      fontSans: oneOf(record.fontSans, APP_FONTS) ?? DEFAULT_APPEARANCE.fontSans,
+      fontMono: oneOf(record.fontMono, APP_FONTS) ?? DEFAULT_APPEARANCE.fontMono,
       fontSansCustom: typeof record.fontSansCustom === "string" ? record.fontSansCustom : DEFAULT_APPEARANCE.fontSansCustom,
       fontMonoCustom: typeof record.fontMonoCustom === "string" ? record.fontMonoCustom : DEFAULT_APPEARANCE.fontMonoCustom,
       fontSize:

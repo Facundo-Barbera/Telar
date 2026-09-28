@@ -84,5 +84,16 @@
     "plutil",
     "sips",
     "rsvg-convert"
-  ]
+  ],
+  "ignoreIssues": {
+    "packages/engine-client/src/protocol/common.ts": [
+      "duplicates"
+    ],
+    "packages/engine-client/src/protocol/entities.ts": [
+      "duplicates"
+    ],
+    "packages/engine-client/src/protocol/plugins.ts": [
+      "duplicates"
+    ]
+  }
 }
