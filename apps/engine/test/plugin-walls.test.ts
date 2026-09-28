@@ -23,7 +23,7 @@ import type { DriverRun, TurnDriver } from "../src/provider-contract";
 import { bundledPluginToolModules, pluginBriefings, setPluginToolModules } from "../src/plugins/bundled";
 import { dataScienceMeta } from "../src/plugins/data-science";
 import { latexMeta } from "../src/plugins/latex";
-import { openCodeBriefings } from "../src/opencode/runtime";
+import { openCodeBriefings } from "../src/drivers/opencode";
 import { dsTools } from "../src/ds/ds-tools";
 import { notebookTools } from "../src/ds/notebook-tools";
 import { latexTools } from "../src/latex/latex-tools";

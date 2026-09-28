@@ -1,19 +1,7 @@
 import { expect, test } from "bun:test";
-import { openCodeFailure, openCodeFailureText } from "../src/opencode/errors";
-
-/**
- * Shapes taken from the SDK's own union (`@opencode-ai/sdk` 1.18.30,
- * `gen/types.gen.d.ts`): ProviderAuthError | UnknownError |
- * MessageOutputLengthError | MessageAbortedError | ApiError.
- */
+import { openCodeFailure, openCodeFailureText } from "./errors";
 
 test("THE LIVE FAILURE: a token-refresh 401 says what happened and what to do", () => {
-  /**
-   * Measured on a real Dev session whose export carried
-   * `{name: "UnknownError", data: {message: "Token refresh failed: 401"}}`
-   * with zero tokens. The driver threw the NAME alone, so the session read as
-   * "OpenCode: UnknownError" — a dead end for the person looking at it.
-   */
   const failure = openCodeFailure({ name: "UnknownError", data: { message: "Token refresh failed: 401" } });
   expect(failure).toEqual({
     name: "UnknownError",
@@ -36,11 +24,6 @@ test("ProviderAuthError keeps the connection id — which provider failed, when 
 });
 
 test("an APIError NEVER carries response headers or body — the allow-list, not a redactor", () => {
-  /**
-   * `ApiError.data` holds `responseHeaders` and `responseBody` verbatim from
-   * the provider: bearer tokens, cookies, whole payloads. Only the named
-   * fields can reach a transcript.
-   */
   const failure = openCodeFailure({
     name: "APIError",
     data: {
@@ -56,16 +39,11 @@ test("an APIError NEVER carries response headers or body — the allow-list, not
   expect(rendered).not.toContain("set-cookie");
   expect(rendered).not.toContain("responseBody");
   expect(rendered).not.toContain("Bearer");
-  // …while still saying the useful part.
   expect(failure?.statusCode).toBe(429);
   expect(failure?.hint).toBe("Rate limited. Wait and try again, or switch model.");
 });
 
 test("a secret embedded in the MESSAGE itself is redacted — the second lock", () => {
-  /**
-   * The allow-list keeps bodies and headers out; a provider is still free to
-   * put a key in the sentence, and some do.
-   */
   const failure = openCodeFailure({
     name: "UnknownError",
     data: { message: "Auth failed for key sk-live-ABCDEFGHIJKLMNOPQRST and Bearer eyJhbGciOi.eyJzdWIiOi.QQQQQQQQ" },
@@ -78,13 +56,11 @@ test("a secret embedded in the MESSAGE itself is redacted — the second lock", 
 test("an unavailable model reads as one, from the status and from the sentence", () => {
   const byStatus = openCodeFailure({ name: "APIError", data: { message: "not found", statusCode: 404, isRetryable: false } });
   expect(byStatus?.hint).toBe("This model is not available on the connection. Pick another in the model picker.");
-  // Providers often answer 400 with the reason in prose instead.
   const bySentence = openCodeFailure({ name: "UnknownError", data: { message: "unknown model: openai/gpt-6-astra" } });
   expect(bySentence?.hint).toBe("This model is not available on the connection. Pick another in the model picker.");
 });
 
 test("MessageOutputLengthError has no message field at all and still reports usefully", () => {
-  // Its `data` is `{[key: string]: unknown}` — the SDK promises no message.
   const failure = openCodeFailure({ name: "MessageOutputLengthError", data: {} });
   expect(failure?.message).toBeUndefined();
   expect(failure?.hint).toBe("The reply hit the model's output limit. Ask for a shorter answer, or split the task.");
@@ -99,9 +75,7 @@ test("a STOP is not offered a remedy — nothing went wrong", () => {
 });
 
 test("an unrecognised shape falls back without inventing anything", () => {
-  // A future SDK member, or a malformed payload.
   expect(openCodeFailure({ name: "SomeNewError", data: {} })).toEqual({ name: "SomeNewError" });
-  // A name that is not a name cannot become one.
   expect(openCodeFailure({ name: { evil: true }, data: { message: "x" } })?.name).toBe("UnknownError");
   expect(openCodeFailure(undefined)).toBeUndefined();
 });
@@ -110,7 +84,6 @@ test("the message is BOUNDED, and truncation cannot expose the front of a secret
   const long = `${"a".repeat(500)} sk-live-ABCDEFGHIJKLMNOPQRST`;
   const failure = openCodeFailure({ name: "UnknownError", data: { message: long } });
   expect(failure!.message!.length).toBeLessThanOrEqual(300);
-  // Redaction runs BEFORE the cut, so no prefix of the token survives.
   expect(failure?.message).not.toContain("sk-live-A");
 });
 

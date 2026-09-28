@@ -1,4 +1,4 @@
-import { OPENCODE_VERSION, openCodeVersionMessage, openCodeVersionVerdict } from "./opencode/version";
+import { OPENCODE_VERSION, openCodeVersionMessage, openCodeVersionVerdict } from "./drivers/opencode";
 /**
  * WHERE THE CLIs ACTUALLY ARE, AND WHETHER WE CAN TALK TO THEM.
  *

@@ -4,16 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { createOpencodeClient, type QuestionInfo } from "@opencode-ai/sdk/v2";
 import { TurnObservation, type TurnObservation as Observation } from "@telar/engine-client";
-import { createOpenCodeDriver } from "../src/opencode/driver";
-import type { DriverRun } from "../src/provider-contract";
+import { createOpenCodeDriver } from "./driver";
+import type { DriverRun } from "../../provider-contract";
 
-/**
- * The raw question payload the server parks, typed as OPENCODE'S OWN
- * `QuestionInfo` so the compiler checks these against the SDK's generated
- * shape. There is no captured multi-select sample to copy from — the opencode
- * binary is not installed here — so these are constructed, and the SDK type is
- * what keeps them honest.
- */
 const BRANCH_OPTIONS = [{ label: "main", description: "Main branch" }, { label: "dev", description: "Development" }];
 const MULTI_QUESTION: QuestionInfo = { question: "Which branches?", header: "Branches", options: BRANCH_OPTIONS, multiple: true };
 
@@ -115,7 +108,6 @@ test("Stop during admission aborts upstream and closes the owned server to fence
   expect(f.closed()).toBe(true);
 });
 
-
 test("unconfirmed admission fails without replay and fences the owned runtime", async () => {
   const f = fixture({ lostAck: true, missingAdmission: true });
   await expect(f.driver.run(f.input)).rejects.toThrow("admission could not be confirmed");
@@ -130,11 +122,6 @@ test("a provider failure is terminal rather than retried as a snapshot transport
 });
 
 test("the turn fails with WHAT WENT WRONG, not just the error's name", async () => {
-  /**
-   * The reported failure, end to end: a real Dev session died as
-   * "OpenCode: UnknownError" while the SDK was holding "Token refresh failed:
-   * 401". The driver threw the name and dropped the sentence.
-   */
   const f = fixture({
     providerError: true,
     providerErrorShape: { name: "UnknownError", data: { message: "Token refresh failed: 401" } },
@@ -166,14 +153,7 @@ test("an APIError's response headers and body never reach the turn's failure", a
   expect(error?.message).toContain("Rate limited");
 });
 
-
 test("the connection and model ids survive to the prompt, split at the FIRST slash", async () => {
-  /**
-   * `openai/gpt-6-astra` — the pairing on the reported session. The provider is
-   * the first segment and the model is everything after it, so a routed id like
-   * `openrouter/anthropic/claude` keeps its inner slash instead of losing half
-   * the model name.
-   */
   const f = fixture({});
   await f.driver.run({ ...f.input, model: "openai/gpt-6-astra" });
   const prompt = f.calls.find((call) => call.path.endsWith("/prompt_async"));
@@ -186,15 +166,11 @@ test("the connection and model ids survive to the prompt, split at the FIRST sla
 });
 
 test("a model id with no connection prefix is REFUSED, not silently defaulted", async () => {
-  // Better than falling back to the server's choice: a session that asked for
-  // one model and quietly got another is the harder bug to see.
   const f = fixture({});
   await expect(f.driver.run({ ...f.input, model: "gpt-6-astra" })).rejects.toThrow("provider/model");
   expect(f.calls.some((call) => call.path.endsWith("/prompt_async"))).toBe(false);
 });
 
-/** Telar's computer-use server, exactly as a claim carries it (see
- *  computer-use.ts — `mac`, because Claude Code reserves `computer-use`). */
 const macServer = {
   id: "mac",
   label: "Computer Use (Mac)",
@@ -205,9 +181,6 @@ const macServer = {
 };
 
 test("the computer-use server is registered with the running OpenCode server, not just configured", async () => {
-  // #368: OpenCode takes MCP servers as a RUNTIME registration against the
-  // session's own server, so "the claim carried it" is not the same claim as
-  // "the session has the tools". This is the call that makes it true.
   const f = fixture();
   await f.driver.run({ ...f.input, mcpServers: [macServer] });
   expect(f.calls.find((call) => call.path === "/mcp")?.body).toEqual({
@@ -218,28 +191,14 @@ test("the computer-use server is registered with the running OpenCode server, no
 });
 
 test("a server that will not register costs its tools, not the turn", async () => {
-  /**
-   * The reported failure: a session with cua-driver installed could not run at
-   * all on OpenCode. `mcp.add` CONNECTS the server, against OpenCode's own 30s
-   * budget, and this driver waited 10s and threw — so merely HAVING computer
-   * use installed killed every turn. The Claude driver has always let a bad
-   * server cost only its own tools.
-   */
   const f = fixture({ mcpAddFails: true });
   expect((await f.driver.run({ ...f.input, mcpServers: [macServer] })).text).toBe("Hello");
-  // Never remembered as connected, so the next turn TRIES AGAIN rather than
-  // skipping it — or, worse, disconnecting a name that never was.
   await f.driver.run({ ...f.input, runId: "run_two", mcpServers: [macServer] });
   expect(f.calls.filter((call) => call.path === "/mcp")).toHaveLength(2);
   f.driver.dispose?.();
 });
 
 test("a multi-select question is ONE checklist field, not one boolean per option", async () => {
-  /**
-   * #242. Exploded into N `boolean` fields the request was no longer
-   * all-choice, so neither drawer would render it — the human got a stack of
-   * switches on a form card instead of the one question that was asked.
-   */
   const f = fixture({ question: true, questions: [MULTI_QUESTION] });
   f.input.onRequest = async (request) => {
     expect(request.detail).toEqual({ kind: "user_input",
@@ -253,10 +212,6 @@ test("a multi-select question is ONE checklist field, not one boolean per option
 });
 
 test("a multi-select question the human typed an answer to sends the typed answer", async () => {
-  // The drawer's composer is the free-text affordance for a choice field, and
-  // it answers with a one-element list — the shape the field asked for. It must
-  // reach OpenCode as the answer rather than being dropped for not being an
-  // offered label.
   const f = fixture({ question: true, questions: [MULTI_QUESTION] });
   f.input.onRequest = async () => ({ decision: "accept" as const, answers: { "0": ["release/2026-09"] } });
   await f.driver.run(f.input);
@@ -265,7 +220,6 @@ test("a multi-select question the human typed an answer to sends the typed answe
 });
 
 test("a multi-select question with no options at all stays a text field", async () => {
-  // A checklist of nothing is not a question; the flag alone does not make one.
   const f = fixture({ question: true, questions: [{ question: "Which branches?", header: "Branches", options: [], multiple: true }] });
   f.input.onRequest = async (request) => {
     expect(request.detail).toMatchObject({ fields: [{ key: "0", kind: "text", required: true }] });
@@ -277,11 +231,6 @@ test("a multi-select question with no options at all stays a text field", async 
 });
 
 test("a single-select question takes the FIRST pick of an array, never all of them", async () => {
-  /**
-   * An array on a field that never said `multiple` is a client bug. Joining it
-   * would answer a one-pick question with several and the model would act on
-   * it — the same guard the Claude and Codex arms carry.
-   */
   const f = fixture({ question: true, questions: [{ question: "Which branch?", header: "Branch", options: BRANCH_OPTIONS, custom: false }] });
   f.input.onRequest = async (request) => {
     expect(request.detail).toMatchObject({ fields: [{ key: "0", kind: "choice", choices: ["main", "dev"], required: true }] });
@@ -294,8 +243,6 @@ test("a single-select question takes the FIRST pick of an array, never all of th
 });
 
 test("two questions answer positionally, one list each", async () => {
-  // `QuestionAnswer` is per question BY POSITION, so a mixed pair is where a
-  // 1:1 field mapping stops being a detail and starts being the contract.
   const f = fixture({ question: true, questions: [MULTI_QUESTION, { question: "Which remote?", header: "Remote", options: [{ label: "origin", description: "Default" }], custom: false }] });
   f.input.onRequest = async () => ({ decision: "accept" as const, answers: { "0": ["dev"], "1": "origin" } });
   await f.driver.run(f.input);
@@ -303,14 +250,6 @@ test("two questions answer positionally, one list each", async () => {
   f.driver.dispose?.();
 });
 
-/**
- * #550 — A NOTIFICATION REACHES OPENCODE AS A SYNTHETIC PART.
- *
- * OpenCode has no developer or system role on `session.prompt`, but its
- * `TextPartInput` carries `synthetic` — the SDK's own word for "generated, not
- * typed" — and that is exactly the distinction. It is the structural half the
- * prose frames used to stand in for.
- */
 const NOTIFICATION = {
   kind: "peer_message" as const,
   sessionId: "session_peer",
@@ -322,8 +261,6 @@ const NOTIFICATION = {
 };
 
 test("an image-only message sends the file part and no text part", async () => {
-  // Verified against OpenCode 1.18.31: a prompt of one file part is admitted
-  // and the model describes the image.
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-oc-")), "shot.png");
   fs.writeFileSync(file, Buffer.from([137, 80, 78, 71]));
   const f = fixture();
@@ -340,8 +277,6 @@ test("a notification's part is marked synthetic; a person's is not", async () =>
   expect(parts[0]).toEqual({ type: "text", text: NOTIFICATION.body, synthetic: true });
   f.driver.dispose?.();
 
-  // ANTI-VACUITY. A person's words carry no flag at all — absent is not a role,
-  // and inventing one for the human would make the distinction meaningless.
   const human = fixture();
   await human.driver.run(human.input);
   const typed = human.calls.find((c) => c.path.endsWith("/prompt_async"))?.body.parts as Array<Record<string, unknown>>;

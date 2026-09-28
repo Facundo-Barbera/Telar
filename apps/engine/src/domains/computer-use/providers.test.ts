@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { COMPUTER_USE_DRIVERS, driverTakesComputerUse, type McpServer, type ProviderDriverKind } from "@telar/engine-client";
 import { codexMcpServers } from "../../codex-driver";
 import { claimHasComputerUse, COMPUTER_USE_SERVER_ID, createComputerUseGate, resolveComputerUse, withComputerUse, type ComputerUseProbe } from "./gate";
-import { mcpConfiguration } from "../../opencode/driver";
+import { mcpConfiguration } from "../../drivers/opencode";
 import type { DriverRun } from "../../provider-contract";
 
 const DRIVERS: readonly ProviderDriverKind[] = ["claude", "codex", "opencode"];

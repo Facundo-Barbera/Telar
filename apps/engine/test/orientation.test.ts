@@ -35,7 +35,7 @@ import {
 } from "../src/orientation";
 import { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "../src/orchestrate-skill";
 import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/provider-skills";
-import { openCodeBriefings, openCodeConfigContent } from "../src/opencode/runtime";
+import { openCodeBriefings, openCodeConfigContent } from "../src/drivers/opencode";
 import { sessionsTools } from "../src/sessions-tools/tools";
 import { notesTools } from "../src/domains/notes";
 import { displayTools } from "../src/display/tools";

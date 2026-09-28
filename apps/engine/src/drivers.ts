@@ -1,4 +1,4 @@
-import { createOpenCodeDriver } from "./opencode/driver";
+import { createOpenCodeDriver } from "./drivers/opencode";
 /**
  * The one place that says which provider driver serves which session.
  *
