@@ -1,9 +1,9 @@
-export { parseSession, releaseDelegationSettle, sessionDir, sessionMetadataFile, storedSession, workspaceRootOf } from "./metadata";
+export { parseSession, sessionDir, sessionMetadataFile, storedSession, workspaceRootOf } from "./metadata";
 export { latestProviderSessionId, SessionRecords } from "./records";
 export { OpenPrefixes, SessionItems } from "./items";
 export { SessionRequests } from "./requests";
 export { SessionTasks } from "./tasks";
-export { awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, type SessionQueue } from "./queue";
+export { awaitsRateLimitSweep, sessionQueueFile, sessionQueueIndexFile, SessionQueues, type SessionQueue } from "./queue";
 export { isPeerMail, SessionMailbox } from "./mailbox";
 export { sessionsCapability, windowedReads } from "./capability";
 export { indexRow, rowIsShelved, SessionIndex } from "./session-index";
@@ -23,3 +23,4 @@ export { sessionAttachmentRoutes } from "./attachments";
 export { SessionAttachments, type AttachmentInput } from "./attachment-store";
 export { sessionsSocketDoor } from "./socket-door";
 export { SessionSubscriptions, TERMINAL_WAKE_KINDS } from "./subscriptions";
+export { SessionLifecycle } from "./lifecycle-store";
