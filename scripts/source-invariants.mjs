@@ -214,7 +214,7 @@ const SWEPT_FILES = [
   ["apps/ios/TelarMobile/Views/DiffView.swift", ""],
   ["apps/ios/TelarMobile/Views/Panel/FilesSurface.swift", ""],
   ["apps/ios/TelarMobile/Views/SessionSidebar.swift", ""],
-  ["apps/ios/TelarMobile/Views/InboxView.swift", ""],
+  ["apps/ios/TelarMobile/Views/RowStyles.swift", ""],
   ["apps/ios/TelarMobile/Views/RequestViews.swift", ""],
   ["apps/ios/TelarMobile/Views/Panel/LatexSurface.swift", ""],
   ["apps/ios/TelarMobile/Views/Panel/DataSurface.swift", ""],
