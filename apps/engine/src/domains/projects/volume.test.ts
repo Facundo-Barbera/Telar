@@ -14,10 +14,10 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fakeMounts, type FakeMounts } from "./fake-mount";
-import { EngineStore } from "../src/state";
-import { assertProjectRoot } from "../src/worker";
-import { prepareSessionWorktree } from "../src/domains/worktrees";
+import { fakeMounts, type FakeMounts } from "../../../test/fake-mount";
+import { EngineStore } from "../../state";
+import { assertProjectRoot } from "../../worker";
+import { prepareSessionWorktree } from "../worktrees";
 
 const drives: FakeMounts[] = [];
 const homes: string[] = [];

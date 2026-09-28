@@ -3,10 +3,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStateError, EngineStore } from "../src/state";
-import { probeAvailability, volumeForRoot } from "../src/volumes";
-import { createAsyncGitRunner, defaultGitRunner } from "../src/platform/git/runner";
-import { createSessionWorktreeAsync, defaultWorktreesRoot, isGitWorkTree, prepareSessionWorktree } from "../src/domains/worktrees";
+import { EngineStateError, EngineStore } from "../../state";
+import { probeAvailability, volumeForRoot } from "../../volumes";
+import { createAsyncGitRunner, defaultGitRunner } from "../../platform/git/runner";
+import { createSessionWorktreeAsync, defaultWorktreesRoot, isGitWorkTree, prepareSessionWorktree } from "../worktrees";
 
 /**
  * A REPOSITORY INSIDE A CLOUD DRIVE'S LOCAL MIRROR, end to end — the reported

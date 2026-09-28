@@ -8,8 +8,8 @@ import {
   describeAdoption,
   listAdoptableConversations,
   withClaudeConfigDir,
-} from "../src/claude-adopt";
-import { claudeProjectSlug, forkClaudeConversation } from "../src/drivers/claude";
+} from "./claude-adopt";
+import { claudeProjectSlug, forkClaudeConversation } from "./drivers/claude";
 
 /**
  * THE ADOPT STEP, against a REAL Claude store in a temp directory.

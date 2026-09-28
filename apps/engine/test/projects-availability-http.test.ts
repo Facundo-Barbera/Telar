@@ -1,7 +1,7 @@
 /**
  * WHAT THE WIRE SAYS ABOUT A PROJECT'S DISK — issue #534.
  *
- * `project-volume.test.ts` pins what the store decides; this file is about what
+ * `domains/projects/volume.test.ts` pins what the store decides; this file is about what
  * a client can see and do: the re-probe the desktop shell posts when it notices
  * a mount, the `availability` a rail draws its badge from, and the two refusals
  * that keep work from starting on a drive that is not here.

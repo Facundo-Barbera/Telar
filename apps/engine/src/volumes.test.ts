@@ -13,8 +13,8 @@
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { fakeMounts, type FakeMounts } from "./fake-mount";
-import { findVolumeMount, isMountPoint, mountPointForRoot, mountRootsFor, parseVolumeUuid, probeAvailability, volumeForRoot } from "../src/volumes";
+import { fakeMounts, type FakeMounts } from "../test/fake-mount";
+import { findVolumeMount, isMountPoint, mountPointForRoot, mountRootsFor, parseVolumeUuid, probeAvailability, volumeForRoot } from "./volumes";
 
 const drives: FakeMounts[] = [];
 const fixture = (): FakeMounts => {

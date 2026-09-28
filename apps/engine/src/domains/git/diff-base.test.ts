@@ -22,8 +22,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { worktreeReady } from "./worktree-ready";
+import { EngineStore } from "../../state";
+import { worktreeReady } from "../../../test/worktree-ready";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {

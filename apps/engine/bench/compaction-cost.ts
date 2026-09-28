@@ -32,7 +32,7 @@
  *
  * ── WHAT WOULD MAKE THIS LIE ───────────────────────────────────────────────
  * A pricing function that returns zero, or a model in which the two thresholds
- * do the same work. Both are checked in `test/compaction-cost.test.ts` — one of
+ * do the same work. Both are checked in `src/domains/usage/compaction-cost.test.ts` — one of
  * them by freezing the rate table to all-zero and asserting the comparison goes
  * red, which is this repository's own rule after six performance tests passed
  * while measuring a frozen clock.

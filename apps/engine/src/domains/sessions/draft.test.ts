@@ -2,9 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { worktreeReady } from "./worktree-ready";
-import type { GitRunner } from "../src/platform/git/runner";
+import { EngineStore } from "../../state";
+import { worktreeReady } from "../../../test/worktree-ready";
+import type { GitRunner } from "../../platform/git/runner";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });

@@ -25,8 +25,8 @@ import {
   multipliers,
   simulate,
   sweep,
-} from "../bench/compaction-cost";
-import { priceTokens, type RatesTable } from "../src/domains/usage";
+} from "../../../bench/compaction-cost";
+import { priceTokens, type RatesTable } from ".";
 
 test("a frozen rate table takes the whole comparison to zero, so the bench can fail", () => {
   /**

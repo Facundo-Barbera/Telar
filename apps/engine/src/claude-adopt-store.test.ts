@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { claudeProjectSlug } from "../src/drivers/claude";
+import { EngineStore } from "./state";
+import { claudeProjectSlug } from "./drivers/claude";
 
 /**
  * THE ADOPT WIRING, THROUGH THE STORE — what `/resume` actually does to a

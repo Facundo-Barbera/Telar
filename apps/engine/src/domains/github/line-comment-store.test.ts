@@ -5,15 +5,15 @@
  * looked up again from the record, and the commit the surface anchored to must
  * still be the checkout's HEAD and the pull request's head. Real repositories in
  * temp directories; `gh` is a spy that answers from fixtures and never reaches
- * GitHub. Harness as `git-push-store.test.ts`.
+ * GitHub. Harness as `domains/git/push-store.test.ts`.
  */
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import type { GhResult } from "../src/domains/github/gh";
+import { EngineStore } from "../../state";
+import type { GhResult } from "./gh";
 
 const made: string[] = [];
 const stores: EngineStore[] = [];

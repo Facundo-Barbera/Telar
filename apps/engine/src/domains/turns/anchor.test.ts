@@ -2,7 +2,7 @@
  * WHERE THE REPOSITORY STOOD WHEN A TURN RAN — issue #741.
  *
  * ────────────────────────────────────────────────────────────────────────────
- * A FILE OF ITS OWN, for `diff-base.test.ts`'s reason: this cuts a real
+ * A FILE OF ITS OWN, for `domains/git/diff-base.test.ts`'s reason: this cuts a real
  * worktree and makes real commits, which is the most expensive thing a test in
  * this suite can do, and the pool tests elsewhere own budgets measured in tens
  * of milliseconds.
@@ -72,7 +72,7 @@ function repo(seeded = true): { root: string; git: (...args: string[]) => string
  * true on an idle machine and false in the suite: run under the full engine
  * shard the same probe took longer, and the guard failed in COMPOSITION while
  * passing alone — the exact shape `wait.ts`'s header describes and the exact
- * shape `diff-base.test.ts` was split out to avoid.
+ * shape `domains/git/diff-base.test.ts` was split out to avoid.
  *
  * `until` also says what never happened when it times out, which a bare
  * deadline loop returning a half-built turn could not.

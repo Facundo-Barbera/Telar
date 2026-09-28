@@ -3,9 +3,9 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { defaultAsyncGitRunner, type GitResult } from "../src/platform/git/runner";
-import { stubModels } from "./stub-models";
+import { EngineStore } from "../../state";
+import { defaultAsyncGitRunner, type GitResult } from "./runner";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 function root() {
@@ -87,7 +87,7 @@ test("async patch reads retain the project path fence", () => {
 
 
 test("HTTP health and sidebar requests respond while review Git remains pending", async () => {
-  const { startEngine } = await import("../src/daemon");
+  const { startEngine } = await import("../../daemon");
   let release!: (result: GitResult) => void;
   const stalled = new Promise<GitResult>((resolve) => { release = resolve; });
   const daemon = await startEngine({ models: stubModels, engineRoot: root(), asyncGit: async () => stalled });
@@ -124,7 +124,7 @@ test("HTTP health and sidebar requests respond while review Git remains pending"
  * the health and sidebar reads behind it.
  */
 test("a stalled worktree add delays neither its own route nor an unrelated one", async () => {
-  const { startEngine } = await import("../src/daemon");
+  const { startEngine } = await import("../../daemon");
   const projectRoot = repo();
   let released!: (result: GitResult) => void;
   const stalled = new Promise<GitResult>((resolve) => { released = resolve; });

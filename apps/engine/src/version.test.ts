@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { TELAR_ENGINE_VERSION } from "../src/version";
+import { TELAR_ENGINE_VERSION } from "./version";
 
 describe("engine version", () => {
   test("matches the package it ships as", () => {

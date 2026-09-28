@@ -8,7 +8,7 @@
  * saves a file afterwards. That is the property under test here, and it is the
  * reason the fixture writes to the disk AFTER the range has closed.
  *
- * A FILE OF ITS OWN, for `diff-base.test.ts`'s reason: a real worktree and real
+ * A FILE OF ITS OWN, for `domains/git/diff-base.test.ts`'s reason: a real worktree and real
  * commits are the most expensive thing a test in this suite can do.
  * ────────────────────────────────────────────────────────────────────────────
  */
@@ -17,8 +17,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { worktreeReady } from "./worktree-ready";
+import { EngineStore } from "../../state";
+import { worktreeReady } from "../../../test/worktree-ready";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
