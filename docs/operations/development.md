@@ -109,7 +109,7 @@ bun run knip            # unused files, exports and dependencies; fails CI on an
 
 ### check:source
 
-`scripts/source-invariants.mjs` checks the source text without running any app. Each failure names the check and says what to change. It includes the comment ratchet.
+`scripts/source-invariants.mjs` checks the source text without running any app. Each failure names the check and says what to change. It includes the comment and size ratchets.
 
 ### Comment ratchet
 
@@ -121,6 +121,15 @@ It fails when:
 It needs the merge base, so fetch first (`git fetch origin main`). To compare against another branch, set `COMMENT_RATCHET_BASE=origin/<branch>`.
 
 There is no baseline file to update: the merge base is the baseline.
+
+### Size ratchet
+
+Against the same merge base, for TS/JS files (Swift: file size only), it fails when:
+
+- a new file is over 800 lines, or an existing file grows past `max(800, its size at the merge base)`;
+- a function over 150 lines is new (more than half its lines added) or grew. Untouched long functions pass.
+
+Moves are followed down to 30% similarity, so moving a file keeps its history.
 
 ## Local desktop install (unsigned)
 
