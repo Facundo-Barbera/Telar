@@ -1,4 +1,6 @@
 import type { ProviderDriverKind } from "../protocol/common";
+import type { ClaudeConversation, ProviderSkills, Session, Turn } from "../protocol/entities";
+import type { ConversationImportDetail } from "../protocol/items";
 import type { EngineTransport } from "../platform/transport";
 import type { AutoCompact, CustomProviderModel, ModelCatalogue, ModelOverlay, ProviderInstance, ProviderInstanceEnvVar, ProviderProbe, ProviderUpdateRun } from "./schema";
 
@@ -63,5 +65,28 @@ export const providersClient = {
     patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[]; default?: string | null },
   ): Promise<{ overlay: ModelOverlay }> {
     return this.request("PATCH", `${instancePath(instanceId)}/models`, patch);
+  },
+
+  sessionSkills(this: EngineTransport, sessionId: string): Promise<ProviderSkills> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/skills`);
+  },
+
+  projectSkills(this: EngineTransport, projectId: string, driver?: ProviderDriverKind): Promise<ProviderSkills> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/skills${driver ? `?${new URLSearchParams({ driver }).toString()}` : ""}`);
+  },
+
+  claudeConversations(this: EngineTransport, options: { instanceId?: string; cwd?: string } = {}): Promise<{ conversations: ClaudeConversation[] }> {
+    const query = new URLSearchParams();
+    if (options.instanceId) query.set("instanceId", options.instanceId);
+    if (options.cwd) query.set("cwd", options.cwd);
+    return this.request("GET", `/v2/claude/conversations${query.size > 0 ? `?${query.toString()}` : ""}`);
+  },
+
+  adoptClaudeConversation(
+    this: EngineTransport,
+    sessionId: string,
+    input: { sourceSessionId: string; cut?: "whole" | "since_compact_boundary"; sourceCwd?: string },
+  ): Promise<{ session: Session; turn: Turn; provenance: ConversationImportDetail }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/adopt`, input);
   },
 };

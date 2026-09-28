@@ -6,8 +6,6 @@ export * from "./requests";
 export * from "./tasks";
 export * from "./tools";
 export * from "./assignments";
-export * from "./plugins";
 export * from "./run";
 export * from "./events";
 export * from "./observations";
-export * from "./workspace";

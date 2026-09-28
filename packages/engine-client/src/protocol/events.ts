@@ -1,4 +1,4 @@
-import { PluginStatus } from "./plugins";
+import { PluginStatus } from "../plugins/schema";
 import { z } from "zod";
 import { BrowserProvider, BrowserTab, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
