@@ -35,9 +35,7 @@ import {
   type EngineHealth,
   type ModelSelection,
   type RuntimeMode,
-  type StorageReport,
   type TurnSubmissionResult,
-  type UsageLimits,
   type WorkerClaim,
   pluginEnabled,
   machineAllows,
@@ -48,12 +46,12 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./domains/providers";
-import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, type ComputerUseGate } from "./domains/computer-use";
+import { computerUseRoutes, createComputerUseGate, type ComputerUseGate } from "./domains/computer-use";
 import { bearerIsValid } from "./platform/http/auth";
 import { createProviderProber, readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS } from "./orchestrate-skill";
-import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
-import { createLoginGrantStore } from "./domains/browser";
+import { syncTelarSkill } from "./orientation";
+import { browserRoutes, createLoginGrantStore } from "./domains/browser";
 import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
 import {
   acquireDaemonLock,
@@ -91,8 +89,7 @@ import {
   writeSettings,
   writeTheme,
 } from "./domains/appearance";
-import { readUsageReport, warmUsageScanCache } from "./usage";
-import { readUsageLimitSource } from "./domains/usage";
+import { warmUsageScanCache } from "./usage";
 import type { SocketTool } from "./mcp-socket";
 import {
   collectSessionsWallTools,
@@ -109,20 +106,21 @@ import {
   ProjectNotesError,
   type NotesCapability,
 } from "./domains/notes";
-import { DICTATION_OFF, DictationError, dictationProvider } from "./domains/dictation";
 import * as notebook from "./domains/notes";
 import * as shelf from "./domains/prompts";
 import { PreparedPromptsError } from "./domains/prompts";
 import type { GhRunner } from "./domains/github";
-import { checkoutRootsOf, measureStore, reapNodeModules, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, withCheckouts, type CheckoutSizesOptions } from "./domains/storage";
+import { createStorageMeter, reapNodeModules, storageRoutes, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, type CheckoutSizesOptions } from "./domains/storage";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
-import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
-import { describeOutcome } from "./worktrees-move";
-import { describeReclaim } from "./worktree-inventory";
+import { readWorktreesRoot } from "./worktrees-location";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 import { readTaskOutput, resolveTaskOutputFile } from "./task-output";
 import { filesRoutes } from "./domains/files";
+import { settingsRoutes } from "./domains/settings";
+import { dictationRoutes } from "./domains/dictation";
+import { worktreesRoutes } from "./domains/worktrees";
+import { usageRoutes } from "./domains/usage";
 import { createIconPng } from "./domains/projects";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
 import { createHostsStore, hostsRoutes } from "./domains/hosts";
@@ -416,11 +414,6 @@ function sessionEventsETag(cursor: number, after: number, limit: number): string
  *  an in-process caller must not be able to walk past a check that only ever
  *  ran on the socket. */
 const MAX_ATTACHMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
-
-/** How long a hub's quota answer is served without going back for another —
- *  five minutes, t3's provider-health cadence. Windows this gates move on the
- *  scale of hours; a shorter TTL would spend requests to redraw the same bar. */
-const USAGE_LIMITS_TTL_MS = 5 * 60_000;
 
 /**
  * A backdrop picture's ceiling. Generous next to the 3.5MB the browser store
@@ -934,105 +927,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       ? Promise.all(BUNDLED_SKILLS.map((skill) => syncTelarSkill({ install: policy.skill, roots: skillRoots, ...skill }))).catch(() => [])
       : Promise.resolve([]);
   void syncOrientationSkill();
-  /** The per-transcript parse cache behind /v2/usage — beside the rates
-   *  snapshot it prices with. See usage.ts. */
-  const usageScanCachePath = store.paths.usageScanCache;
-  /**
-   * THE LAST THING THE HUBS SAID, and when.
-   *
-   * IN MEMORY, NEVER ON DISK. A quota figure is true for minutes; one restored
-   * from a file after a restart would be wrong by exactly as long as the engine
-   * was down, and would look identical to a fresh one.
-   *
-   * STALE-WHILE-REVALIDATE RATHER THAN A TIMER. A background sweep would poll
-   * hubs every five minutes for a page nobody has open; this refreshes on the
-   * read that finds the snapshot old, serving the cached answer immediately and
-   * fetching behind it. A cold read waits, `?refresh=1` waits, and a settings
-   * change clears the cache so the next read is a fresh one — which is what
-   * "refreshed on a settings change" has to mean when the alternative is
-   * blocking the PUT on a hub round trip.
-   */
-  const usageLimitsCache: { snapshot?: UsageLimits; inFlight?: Promise<UsageLimits> } = {};
-  const readUsageLimits = async (): Promise<UsageLimits> => {
-    const sources = store.resolveUsageLimitSources();
-    const snapshots = await Promise.all(sources.map((source) => readUsageLimitSource(source)));
-    const snapshot: UsageLimits = { sources: snapshots, readAt: Date.now() };
-    usageLimitsCache.snapshot = snapshot;
-    return snapshot;
-  };
-  /** One read at a time: two page loads a second apart must not become two
-   *  rounds of outbound requests to every configured hub. */
-  const refreshUsageLimits = (): Promise<UsageLimits> => {
-    usageLimitsCache.inFlight ??= readUsageLimits().finally(() => {
-      usageLimitsCache.inFlight = undefined;
-    });
-    return usageLimitsCache.inFlight;
-  };
-  /**
-   * HOW BIG THE STORE IS, as of the last time anybody asked — issue #642.
-   *
-   * IN MEMORY AND MEASURED LAZILY. A snapshot on disk would add a file to the
-   * very thing being measured, and there is no figure worth restoring across a
-   * restart: the walk is what makes it true, and the walk is cheap enough to
-   * repeat once per engine life.
-   *
-   * NOTHING SCHEDULES THIS. It runs when a reader first opens the pane and
-   * again when one presses refresh (the checkouts' background sizer runs only
-   * while a reader keeps asking — see `checkout-sizes.ts`) — #629 is open because four timers in the
-   * rail cost ~97,000 requests a day, and a directory's size does not change by
-   * the second. The stale-while-revalidate the limits cache above uses would be
-   * the wrong shape here for the same reason: there is nothing to revalidate
-   * against but another full walk.
-   *
-   * ONE WALK AT A TIME. Two settings windows opening together must not put two
-   * traversals of a 13 GB tree on the same disk; the second joins the first.
-   */
-  const storageCache: { report?: StorageReport; inFlight?: Promise<StorageReport> } = {};
-  /**
-   * BOTH ROOTS WHILE A SPLIT LASTS — #642 part 2.
-   *
-   * Changing where checkouts go affects the NEXT cut; the ones already cut
-   * stay where they are until they are moved or their sessions end. So for a
-   * while there are checkouts under two roots, and a "Session checkouts" row
-   * that counted only the configured one would under-report by exactly the
-   * gigabytes somebody changed the setting to get rid of.
-   */
-  const storageRoots = () => {
-    const configured = rootOf(readWorktreesRoot(store.paths.root)) ?? defaultWorktreesRoot(store.paths.root);
-    const fallback = defaultWorktreesRoot(store.paths.root);
-    return { configured, also: configured === fallback ? [] : [fallback] };
-  };
-  /**
-   * THE CHECKOUTS ARE NEVER WALKED HERE. The store's own categories are
-   * measured (and cached) as before; the checkouts row is folded in on every
-   * read from `store.checkoutSizes`, which sizes them in the background and
-   * says `measuring` until it has. See `checkout-sizes.ts` for why walking
-   * them on this path took the whole engine down with it.
-   */
-  const readStorage = async (refresh: boolean): Promise<StorageReport> => {
-    const { configured, also } = storageRoots();
-    if (refresh) store.checkoutSizes.invalidate();
-    let report = storageCache.report;
-    if (refresh || !report) {
-      storageCache.inFlight ??= measureStore({ root: store.paths.root, worktreesRoot: configured, alsoWorktrees: also })
-        .then((measured) => {
-          storageCache.report = measured;
-          return measured;
-        })
-        .finally(() => {
-          storageCache.inFlight = undefined;
-        });
-      report = await storageCache.inFlight;
-    }
-    const figure = store.checkoutSizes.figure(checkoutRootsOf({ worktreesRoot: configured, alsoWorktrees: also }));
-    return withCheckouts(report, figure, configured);
-  };
-  /** Checkouts were cut, moved or given back: the store figure is stale and the
-   *  sizer must look at the roots again (unchanged checkouts keep their size). */
-  const checkoutsChanged = () => {
-    storageCache.report = undefined;
-    store.checkoutSizes.relist();
-  };
+  const storageMeter = createStorageMeter(store);
   const daemonId = crypto.randomUUID();
   /**
    * WHAT ONE SESSION SEES OF A PLUGIN, resolved generically — the same question
@@ -1111,7 +1006,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const iconPng = createIconPng(path.join(store.paths.root, "icon-png"));
   const remoteStore = createRemoteStore(remoteDir), openStreams = new Set<(() => void) & { end?: () => void }>();
   const push = createPushService({ remoteDir, pairedDevices: () => remoteStore.read().devices, openStreams });
-  const domainRoutes = [...filesRoutes(), ...remoteRoutes(remoteStore), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)()), ...aboutRoutes(root), ...push.routes];
+  const domainRoutes = [...filesRoutes(), ...remoteRoutes(remoteStore), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)()), ...aboutRoutes(root), ...push.routes,
+    ...settingsRoutes(store, syncOrientationSkill), ...dictationRoutes(store, options.dictationFetch), ...browserRoutes(store.paths.root),
+    ...computerUseRoutes(computerUseGate, { ...(options.grantComputerUse ? { grant: options.grantComputerUse } : {}), ...(options.resetComputerUse ? { reset: options.resetComputerUse } : {}) }),
+    ...storageRoutes(store, storageMeter), ...worktreesRoutes(store, storageMeter.checkoutsChanged), ...usageRoutes(store)];
   const external = loadInstalledPlugins(pluginsDir);
   const externalModule = (loaded: LoadedExternalPlugin) =>
     externalPlugin(loaded, {
@@ -1386,7 +1284,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     void store
       .runCleanup()
       .then(() => {
-        storageCache.report = undefined;
+        storageMeter.forget();
       })
       .catch(() => {
         /* the next tick tries again */
@@ -1841,648 +1739,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, store.reprobeProjects());
         return;
       }
-      /**
-       * The inbox's standing rule. Not under a session, because it is not about
-       * one: it decides how EVERY session bands, which is why it is a document
-       * of the environment rather than a field on each record.
-       */
-      if (url.pathname === "/v2/inbox" && (request.method === "GET" || request.method === "PATCH")) {
-        if (request.method === "GET") {
-          writeJson(response, 200, { inbox: store.getInboxPolicy() });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 200, {
-          inbox: store.setInboxPolicy({
-            // PRESENT-BUT-NULL IS THE OFF SWITCH, so `in` rather than a
-            // truthiness test: `null` and "not mentioned" are different
-            // requests and JSON can only tell them apart by the key.
-            ...("autoSettleAfterHours" in input ? { autoSettleAfterHours: input.autoSettleAfterHours } : {}),
-            // The delegation grace, by the same present-but-null rule — see
-            // `InboxPolicy`. Its own key because it is its own question: one
-            // window guesses from silence, the other counts from a delivery.
-            ...("settleDelegatedAfterHours" in input ? { settleDelegatedAfterHours: input.settleDelegatedAfterHours } : {}),
-            ...("settledTerminalLimit" in input ? { settledTerminalLimit: input.settledTerminalLimit } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * WHETHER TELAR MAY TELL AN AGENT WHERE IT IS — see `AgentOrientation`.
-       * A document of the environment, like the inbox rule above and for the
-       * sharper version of its reason: this decides what every session on the
-       * machine is told, so it cannot live in one client's storage.
-       *
-       * THE PATCH RE-SYNCS THE SKILL BEFORE IT ANSWERS. "Off" has to mean the
-       * file is GONE, not that it stops being refreshed — someone switching
-       * this off is saying they want nothing of Telar's in their agent's
-       * context, and a stale `SKILL.md` would still be read.
-       */
-      if (url.pathname === "/v2/orientation" && (request.method === "GET" || request.method === "PATCH")) {
-        // THE WORDS RIDE THE ANSWER. "Show the text" in Settings has to show
-        // what THIS engine injects, not a second copy of the paragraph kept in
-        // the cockpit — a paired Mac may be running a different release, and a
-        // disclosure that could disagree with the injection is worse than none.
-        if (request.method === "GET") {
-          writeJson(response, 200, { orientation: store.getAgentOrientation(), text: TELAR_ORIENTATION });
-          return;
-        }
-        const input = await body(request);
-        const orientation = store.setAgentOrientation({
-          ...("preamble" in input ? { preamble: input.preamble } : {}),
-          ...("skill" in input ? { skill: input.skill } : {}),
-        });
-        await syncOrientationSkill(orientation);
-        writeJson(response, 200, { orientation, text: TELAR_ORIENTATION });
-        return;
-      }
-      /**
-       * What a session is created with when the caller didn't say. A document
-       * of the environment, like the inbox rule above — and read on the create
-       * path, so every client that stays quiet builds the same thing.
-       */
-      if (url.pathname === "/v2/session-defaults" && (request.method === "GET" || request.method === "PATCH")) {
-        if (request.method === "GET") {
-          writeJson(response, 200, { sessionDefaults: store.getSessionDefaults() });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 200, {
-          sessionDefaults: store.setSessionDefaults({
-            ...("envMode" in input ? { envMode: input.envMode } : {}),
-            ...("resumeAfterRestart" in input ? { resumeAfterRestart: input.resumeAfterRestart } : {}),
-            ...("runtimeMode" in input ? { runtimeMode: input.runtimeMode } : {}),
-            ...("resumeAfterRateLimit" in input ? { resumeAfterRateLimit: input.resumeAfterRateLimit } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * HOW A PROJECT'S WORKTREES ARE PREPARED — `workspace-config.ts`. The
-       * machine layer here; each project's overrides under its own id below.
-       * PUT, not PATCH: the pane sends the whole layer it edited, and a merge
-       * could not tell "remove this field" from "leave it alone".
-       */
-      if (url.pathname === "/v2/workspace" && (request.method === "GET" || request.method === "PUT")) {
-        if (request.method === "GET") {
-          writeJson(response, 200, { machine: store.workspace.machine() });
-          return;
-        }
-        const input = await body(request);
-        const saved = store.workspace.setMachine(input.machine);
-        if (!saved.ok) throw new EngineStateError("invalid_request", saved.message);
-        writeJson(response, 200, { machine: saved.value });
-        return;
-      }
-      const projectWorkspace = /^\/v2\/projects\/([^/]+)\/workspace$/.exec(url.pathname);
-      if (projectWorkspace && (request.method === "GET" || request.method === "PUT")) {
-        const project = store.getProject(decodeURIComponent(projectWorkspace[1]!));
-        if (request.method === "PUT") {
-          const input = await body(request);
-          const saved = store.workspace.setOverrides(project.id, input.overrides);
-          if (!saved.ok) throw new EngineStateError("invalid_request", saved.message);
-        }
-        writeJson(response, 200, { workspace: await store.workspace.view(project) });
-        return;
-      }
-      /**
-       * ══ DICTATION — issue #544, first step ══
-       *
-       * TWO ROUTES, AND NEITHER OF THEM CARRIES AUDIO. The microphone is in the
-       * client on every surface Telar has, so the engine does the one thing only
-       * it can: it holds the long-lived Deepgram key, and mints a token that
-       * expires in minutes for a client to open its own socket with. Relaying
-       * frames through a Mac that has no reason to see them is the second step's
-       * problem, and may never be one — see `dictation/token.ts`.
-       *
-       * MACHINE-SCOPED, like the session defaults beside it: the
-       * desktop shell, a browser tab and a paired phone read one engine, and a
-       * per-client key would be a key pasted once per device.
-       */
-      if (url.pathname === "/v2/dictation" && (request.method === "GET" || request.method === "PATCH")) {
-        /**
-         * THE KEY IS WRITE-ONLY AND THERE IS NO SETTINGS DOCUMENT FOR IT TO
-         * RIDE ON. Stored 0600 under `dictation/`, for `agentKeyFile`'s reason:
-         * anything handed to every client that opens the pane is one redaction
-         * away from being echoed back to a browser. There is no redacted round
-         * trip to preserve either — the only field is one a person retypes, and
-         * an empty string clears it.
-         */
-        if (request.method === "PATCH") {
-          const input = await body(request);
-          // BY PRESENCE, both of them. A client that sent no key must not be
-          // read as clearing one, and a client that sent no provider must not
-          // be read as switching dictation off.
-          if ("provider" in input) store.setDictationProvider(input.provider);
-          if ("language" in input) store.setDictationLanguage(input.language);
-          // AN EMPTY LIST IS A REAL VALUE HERE — it is what emptying the box
-          // means — so this is by presence like the rest and not by truthiness.
-          if ("vocabulary" in input) store.setDictationVocabulary(input.vocabulary);
-          if ("apiKey" in input) store.setDictationKey(input.apiKey);
-        }
-        // `provider` IS A SETTING NOW, not a constant riding the answer. `off`
-        // is the default and means there is no mic button anywhere — see
-        // `dictation/provider.ts` for why that is the honest default rather
-        // than a feature switched off. `configured` is still the whole of what
-        // may be said about the key, and it is answered even when the provider
-        // is off so the pane can say a key is already there.
-        //
-        // `language` AND `languages` TRAVEL TOGETHER (#560): the code that is
-        // stored, and the vocabulary it is written in, so a picker can be drawn
-        // from one answer without a second route and without a client holding a
-        // copy of a vendor's language table.
-        writeJson(response, 200, { dictation: store.dictationState() });
-        return;
-      }
-      /**
-       * A TOKEN, SPENT ONCE, WORTH LITTLE IF CAUGHT.
-       *
-       * POST rather than GET because it MINTS something: it is a call to
-       * Deepgram that costs a round trip and produces a new credential every
-       * time, and a GET that did that would be cached by something eventually.
-       *
-       * THE REFUSALS ARE THREE DIFFERENT FACTS. Dictation being off is a
-       * `conflict` naming the pane that turns it on — and it is the ordinary
-       * default rather than a misconfiguration; no key is a `conflict` naming
-       * the pane to paste one on; Deepgram refusing is `provider_unavailable`
-       * carrying Deepgram's own words, because "401" alone cannot tell a person
-       * whether the key is wrong or the account is out of credit. All three are
-       * sentences — a client's only move is to show one to a person.
-       *
-       * THE PROVIDER DECIDES, AND IT DECIDES BY NOT HAVING A `mintToken`. That
-       * is what keeps "off spends nothing" true for the next provider too,
-       * rather than being an `if` somebody has to remember to write again.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/dictation/token") {
-        try {
-          const state = store.dictationState();
-          const chosen = dictationProvider(state.provider);
-          if (!chosen.mintToken) throw new DictationError("off", DICTATION_OFF);
-          // THE LANGUAGE GOES DOWN WITH THE TOKEN (#560). Both clients ask for
-          // one on every press of the mic button and neither reads the settings
-          // route on that path, so putting it here is what makes a single round
-          // trip answer "with what credential" and "in which language" at once.
-          //
-          // AND WITH IT, THE GLOSSARY (#581). The same argument one step
-          // further: the words worth priming a recogniser with are this Mac's
-          // unsettled conversations, its projects and the terms somebody typed
-          // into the box, and no browser tab or phone can see any of them. The
-          // route hands the provider the RAW NAMES — `keyterm` is Deepgram's
-          // word and is spoken in `provider.ts`, not here.
-          writeJson(
-            response,
-            200,
-            await chosen.mintToken({
-              key: store.dictationKey(),
-              language: state.language,
-              vocabulary: state.vocabulary,
-              context: store.dictationContext(),
-              ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}),
-            }),
-          );
-        } catch (error) {
-          if (error instanceof DictationError) {
-            const conflict = error.kind === "off" || error.kind === "unconfigured";
-            throw new HttpError(conflict ? 409 : 502, conflict ? "conflict" : "provider_unavailable", error.message);
-          }
-          throw error;
-        }
-        return;
-      }
-      /**
-       * WHY THE LAST DICTATION FAILED — asked once, for every surface (#711).
-       *
-       * NO CLIENT CAN ANSWER THIS AND NONE EVER WILL. A browser's `WebSocket`
-       * error event carries no reason BY DESIGN — surfacing the status of a
-       * failed cross-origin handshake would be an oracle — so a tab sees a bare
-       * `onerror`, the phone sees a bare read failure, and the headset sees a
-       * third version of the same nothing. Deepgram DOES send a reason; it is
-       * thrown away on the way to all three. That is how a `400 Bad Request —
-       * Keyterm limit exceeded` reached the owner as "the connection failed"
-       * and sent him to replace a key that was fine.
-       *
-       * SO THE ENGINE ASKS. It holds the long-lived key and already opens this
-       * endpoint to fit the glossary, which makes it the one place that can —
-       * and one place rather than three clients each rediscovering that they
-       * cannot.
-       *
-       * POST, AND AFTER THE FAILURE RATHER THAN BEFORE EVERY PRESS. It spends a
-       * handshake against Deepgram, so it is not a GET something would cache;
-       * and it is paid by somebody whose dictation has already stopped rather
-       * than by somebody about to speak. See `dictation/diagnose.ts` for the
-       * shapes weighed and why this one.
-       *
-       * THE REFUSALS ARE THE TOKEN ROUTE'S, DELIBERATELY. Off is a `conflict`,
-       * no key is a `conflict` naming the pane to paste one on, and the
-       * provider's own trouble is `provider_unavailable` — the same three facts
-       * a client already knows how to show, rather than a second vocabulary for
-       * the same route's worth of problems.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/dictation/diagnose") {
-        try {
-          const state = store.dictationState();
-          const chosen = dictationProvider(state.provider);
-          if (!chosen.diagnose) throw new DictationError("off", DICTATION_OFF);
-          writeJson(
-            response,
-            200,
-            await chosen.diagnose({
-              key: store.dictationKey(),
-              language: state.language,
-              vocabulary: state.vocabulary,
-              context: store.dictationContext(),
-              ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}),
-            }),
-          );
-        } catch (error) {
-          if (error instanceof DictationError) {
-            const conflict = error.kind === "off" || error.kind === "unconfigured";
-            throw new HttpError(conflict ? 409 : 502, conflict ? "conflict" : "provider_unavailable", error.message);
-          }
-          throw error;
-        }
-        return;
-      }
-      /**
-       * Where each project group sits in the rail. A document of the
-       * environment, like the two above: one arrangement for every client that
-       * reads this engine, so a drag on the desktop is where the phone finds
-       * the group too.
-       */
-      if (url.pathname === "/v2/sidebar-layout" && (request.method === "GET" || request.method === "PATCH")) {
-        if (request.method === "GET") {
-          writeJson(response, 200, { layout: store.getSidebarLayout() });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 200, {
-          layout: store.setSidebarLayout({
-            // Present-key rather than defined-value, so each of the three
-            // arrangements is patched only by a client that meant to patch it.
-            ...("projectOrder" in input ? { projectOrder: input.projectOrder } : {}),
-            ...("sessionOrder" in input ? { sessionOrder: input.sessionOrder } : {}),
-            ...("pinnedOrder" in input ? { pinnedOrder: input.pinnedOrder } : {}),
-            ...("mode" in input ? { mode: input.mode } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * COMPUTER USE, MEASURED. The GET runs one real read-only `list_apps`
-       * through cua-driver, because that is the only honest answer to "does
-       * computer use work here" — and the gate KEEPS the answer, so this is
-       * also how a fresh grant reaches sessions: only a last answer of
-       * `granted` puts the `mac` server into a claim.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/computer-use") {
-        writeJson(response, 200, { computerUse: await computerUseGate.measure() });
-        return;
-      }
-      // Ask macOS for the grants — the bundled helper asks for itself, an
-      // external install through cua's own flow — and open the Settings list
-      // to finish in, answering what each step did. The grant reaches sessions
-      // at the next GET above, not here.
-      if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
-        writeJson(response, 200, await (options.grantComputerUse ?? grantComputerUseAccess)());
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/computer-use/reveal") {
-        writeJson(response, 200, await revealComputerUseHelper());
-        return;
-      }
-      // "Remove permissions": the bundled helper's grants only. Re-measured at
-      // once so the gate stops handing sessions tools that now fail.
-      if (request.method === "POST" && url.pathname === "/v2/computer-use/reset") {
-        const outcome = await (options.resetComputerUse ?? resetComputerUseAccess)();
-        if (outcome.reset) await computerUseGate.measure();
-        writeJson(response, 200, outcome);
-        return;
-      }
-      /**
-       * REMEMBERED LOGINS — what a person allowed agents to fill without being
-       * asked again, and the one place to take it back. READ AND DELETE ONLY:
-       * a grant can be created in exactly one way, by ticking an unchecked box
-       * on an approval card the person was already answering, so there is no
-       * route here that could mint one.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/browser/logins") {
-        writeJson(response, 200, { logins: createLoginGrantStore(store.paths.root).list() });
-        return;
-      }
-      if (request.method === "DELETE" && url.pathname.startsWith("/v2/browser/logins/")) {
-        const id = decodeURIComponent(url.pathname.slice("/v2/browser/logins/".length));
-        if (!createLoginGrantStore(store.paths.root).revoke(id)) throw new HttpError(404, "not_found", "no such remembered login");
-        writeJson(response, 200, { ok: true });
-        return;
-      }
-      /**
-       * WHAT TELAR IS KEEPING AND WHERE — issue #642. Read-only: there is no
-       * route here that removes a byte, because the pane this feeds has no
-       * delete and no "clean up" in this pass.
-       *
-       * `?refresh=1` RE-WALKS; without it the cached measurement comes back
-       * with the timestamp it was taken at, and the pane shows the figure as of
-       * that moment. The first read of an engine's life waits for the store's
-       * own walk — never the checkouts', whose row says `measuring` and fills
-       * in as the background sizer settles. The cockpit re-asks only while a
-       * row says `measuring`, and that asking is what keeps the sizer going.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/storage") {
-        writeJson(response, 200, { storage: await readStorage(url.searchParams.get("refresh") === "1") });
-        return;
-      }
-      /**
-       * GIVE THE JOURNAL'S FREED PAGES BACK — issue #646.
-       *
-       * THE ONLY WRITE THE STORAGE PANE HAS, and it is a POST because it is one:
-       * #642 was deliberately read-and-reveal, on the argument that a pane
-       * should not invite somebody to delete history they have just met. This
-       * does not delete history. It drops journal rows whose own
-       * `item.completed` already carries what they say, and then vacuums — so
-       * what it removes is a second copy and a high-water mark, and the pane
-       * can say so in those words.
-       *
-       * IT BLOCKS FOR SECONDS, DELIBERATELY. The VACUUM holds an exclusive lock
-       * for the rewrite (7 s on the owner's gigabyte) and there is no honest way
-       * to report a before-and-after without waiting for it. That is the whole
-       * reason it is a button rather than something the engine does at startup.
-       *
-       * AND THE CACHED MEASUREMENT GOES WITH IT: the figures the pane is showing
-       * describe a file this just changed the size of, and serving them
-       * afterwards would tell somebody the press did nothing.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/storage/journal/reclaim") {
-        const reclaimed = store.reclaimExecutionStore();
-        if (!reclaimed) {
-          writeJson(response, 409, { error: "this engine is not running on SQLite, so there is nothing to vacuum" });
-          return;
-        }
-        storageCache.report = undefined;
-        writeJson(response, 200, { reclaimed });
-        return;
-      }
-      /**
-       * A SAFE COPY OF THIS STORE — issue #665.
-       *
-       * THE ROUTE WHOSE ABSENCE WAS THE FINDING. There was no sanctioned way to
-       * look at a store without opening the live one, so every "what is
-       * actually in there" became a hand-run query against the one
-       * irreplaceable artifact — which is how #646's figures came to be
-       * corrected twice.
-       *
-       * SLOW, AND A POST BECAUSE IT WRITES — to a destination that must not
-       * already exist, which is the one refusal that matters here. It does not
-       * touch this store: `VACUUM INTO` takes a read transaction and writes
-       * elsewhere, with no compaction and no watermark.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/storage/copy") {
-        const input = (await body(request)) as { destination?: unknown };
-        if (typeof input.destination !== "string" || !input.destination.trim())
-          throw new HttpError(400, "invalid_request", "name a folder for Telar to create the copy in");
-        writeJson(response, 200, { copy: store.copyStoreTo(input.destination.trim()) });
-        return;
-      }
-      /**
-       * WHAT A RETENTION WINDOW WOULD TAKE, AND THE WINDOW ITSELF — #542, #646.
-       *
-       * READ-ONLY, AND THE NUMBERS ARE THE READER'S OWN. That is the whole
-       * point of the preview: a fixed default window is what destroys the store
-       * whose oldest session is a week old, and "1 session, 340 events, 2.1 MiB"
-       * in front of somebody is the defence no cleverer default provides.
-       *
-       * `?bytes=1` COSTS A SCAN. Session and event counts are index ranges; the
-       * byte sum reads every row's text. Like `?refresh=1` next door it is an
-       * explicit ask, and like everything on this surface it is never polled
-       * (#629).
-       */
-      if (request.method === "GET" && url.pathname === "/v2/storage/retention") {
-        writeJson(response, 200, {
-          retention: store.getRetentionPolicy(),
-          buckets: store.retentionPreview(url.searchParams.get("bytes") === "1" ? { bytes: true } : {}),
-        });
-        return;
-      }
-      if (request.method === "PUT" && url.pathname === "/v2/storage/retention") {
-        const input = (await body(request)) as { idleAfterDays?: unknown; exportTo?: unknown };
-        // Validated in `setRetentionPolicy`, beside the schema that states the
-        // bound — including the refusal of a window with nowhere to export to,
-        // which is the approved design's export-before-delete written as a
-        // precondition rather than as a hope.
-        writeJson(response, 200, { retention: store.setRetentionPolicy(input) });
-        return;
-      }
-      /**
-       * RUN IT NOW — the distinct visible act #542 asks for.
-       *
-       * The first sweep after somebody enables a window is the whole backlog,
-       * and the approved design is explicit that it must not be something the
-       * next startup does quietly. So there is a button, it reports counts, and
-       * the timer picks up the steady state afterwards.
-       *
-       * IT DROPS THE CACHED MEASUREMENT for the same reason Reclaim does: the
-       * figures the pane is showing describe a store this just changed.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/storage/retention/sweep") {
-        const swept = store.sweepRetention();
-        storageCache.report = undefined;
-        writeJson(response, 200, { swept });
-        return;
-      }
-      /**
-       * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
-       *
-       * NO `restartRequired`, and that is a finding rather than an omission.
-       * The root is consulted at exactly one moment — planning where a new
-       * checkout lands — and everything afterwards addresses a worktree by the
-       * absolute path recorded on its session. So a new root takes effect on
-       * the next cut, and printing a restart out of symmetry with #630 would
-       * cost somebody a restart they do not need.
-       *
-       * AND NOTHING IS MOVED BY THIS. Checkouts already cut keep working where
-       * they are; moving them is a separate, explicit operation with its own
-       * refusals. A PUT here cannot lose anybody's work.
-       */
-      if (url.pathname === "/v2/worktrees-root" && (request.method === "GET" || request.method === "PUT")) {
-        if (request.method === "PUT") {
-          const input = (await body(request)) as { root?: unknown };
-          // PRESENT-BUT-NULL IS "put it back beside the store", the same shape
-          // every other nullable setting here uses to mean the default.
-          if (input.root === null) clearWorktreesRoot(store.paths.root);
-          else if (typeof input.root === "string" && input.root.trim()) {
-            if (!path.isAbsolute(input.root.trim())) throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path");
-            try {
-              writeWorktreesRoot(store.paths.root, input.root.trim());
-            } catch (cause) {
-              throw new HttpError(400, "invalid_request", cause instanceof Error ? cause.message : "that folder could not be used for session checkouts");
-            }
-          } else throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path, or null for the default");
-          // The figures are about to be wrong in the one way that matters, so
-          // the next read measures rather than serving the old split.
-          checkoutsChanged();
-        }
-        const state = readWorktreesRoot(store.paths.root);
-        writeJson(response, 200, {
-          worktreesRoot: {
-            ...state,
-            default: defaultWorktreesRoot(store.paths.root),
-            ...(worktreesRootBlocker(state) ? { blocker: worktreesRootBlocker(state) } : {}),
-          },
-        });
-        return;
-      }
-      /**
-       * MOVE THE CHECKOUTS ALREADY CUT — issue #642 part 2, and the one
-       * destructive thing on this pane.
-       *
-       * IT RE-CUTS RATHER THAN COPIES, so `git worktree remove` — never with
-       * `--force` — is what refuses a checkout holding uncommitted work, and
-       * the branch is verified to still exist before anything is removed. See
-       * `worktrees-move.ts` for why copy-and-repair is unsafe rather than
-       * merely slower.
-       *
-       * REFUSED WHOLESALE WHILE ANYTHING IS WORKING, before a single checkout
-       * is touched: a turn in flight is holding that directory right now.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/worktrees-root/move") {
-        const state = readWorktreesRoot(store.paths.root);
-        const destination = rootOf(state);
-        if (!destination) throw new HttpError(409, "conflict", worktreesRootBlocker(state) ?? "Telar does not know where session checkouts belong.");
-        let outcome;
-        try {
-          outcome = await store.moveWorktrees(destination);
-        } catch (cause) {
-          throw new HttpError(409, "conflict", cause instanceof Error ? cause.message : "the checkouts could not be moved");
-        }
-        // The figures moved by exactly this much, so the next read measures.
-        checkoutsChanged();
-        writeJson(response, 200, { move: { ...outcome, summary: describeOutcome(outcome) } });
-        return;
-      }
-      /**
-       * WHAT IS BEING KEPT — issue #671, and the screen that did not exist.
-       *
-       * NOT CACHED, UNLIKE THE STORAGE REPORT BESIDE IT, and the difference is
-       * what each answer is for. Storage answers "how big is Telar", which does
-       * not change by the second and is expensive to re-walk whole. This
-       * answers "which of these may I delete", and every rung of that is live:
-       * a session starts working, a drive is unplugged, a PR merges. A cached
-       * verdict is a verdict that was true earlier, and this one is acted on.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/worktrees") {
-        writeJson(response, 200, { inventory: await store.worktreeInventory() });
-        return;
-      }
-      /**
-       * GIVE CHECKOUTS BACK — the other half of #671, and the second
-       * destructive thing this daemon offers.
-       *
-       * IT ARCHIVES SESSIONS. A checkout held by a settled session is released
-       * by putting that session down, which is the only supported way (see
-       * `reclaimWorktrees`), so this endpoint ends conversations as well as
-       * freeing disk. The client's confirm says so in those words.
-       *
-       * PARTIAL IS SUCCESS AND REFUSALS ARE THE PAYLOAD, not an error status:
-       * a press over six checkouts where one is being worked in is four
-       * removals, one archive and one honest refusal, and a 409 would throw
-       * away the five that worked.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/worktrees/reclaim") {
-        const input = (await body(request)) as { items?: unknown };
-        if (!Array.isArray(input.items)) throw new HttpError(400, "invalid_request", "items must be an array of checkouts to give back");
-        const items = input.items.map((entry) => {
-          const item = entry as { path?: unknown; confirm?: unknown };
-          if (typeof item.path !== "string" || !item.path.trim()) {
-            throw new HttpError(400, "invalid_request", "each item needs the checkout's path");
-          }
-          return {
-            path: item.path,
-            ...(typeof item.confirm === "string" ? { confirm: item.confirm } : {}),
-            ...((item as { settled?: unknown }).settled === "archive" || (item as { settled?: unknown }).settled === "release"
-              ? { settled: (item as { settled: "archive" | "release" }).settled }
-              : {}),
-          };
-        });
-        const results = await store.reclaimWorktrees(items);
-        // Gigabytes just moved, so the pane above this one must measure rather
-        // than serve the split it read before the press.
-        checkoutsChanged();
-        writeJson(response, 200, { reclaim: { results, summary: describeReclaim(results) } });
-        return;
-      }
-      /**
-       * Spend over time, folded from the journals on demand. The window is the
-       * client's (epoch ms), the zone names how days are cut; both validated
-       * here because a NaN window would silently bucket nothing.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/usage") {
-        const sinceMs = Number(url.searchParams.get("since"));
-        const untilMs = Number(url.searchParams.get("until"));
-        if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || sinceMs >= untilMs) {
-          throw new HttpError(400, "invalid_request", "usage needs a since/until window in epoch milliseconds");
-        }
-        const resolution = url.searchParams.get("resolution") === "hour" ? "hour" : "day";
-        const timeZone = url.searchParams.get("tz")?.trim() || "UTC";
-        writeJson(response, 200, {
-          usage: await readUsageReport(
-            { sinceMs, untilMs, resolution, timeZone },
-            { ratesCachePath: store.paths.usageModelRates, scanCachePath: usageScanCachePath },
-          ),
-        });
-        return;
-      }
-      /**
-       * THE HUBS QUOTA IS READ FROM — configuration, not the quota itself.
-       *
-       * MANAGEMENT KEYS NEVER COME BACK. `listUsageLimitSources` is the
-       * redacting read; the store keeps the only unredacting one and it is not
-       * reachable from here. A key arrives on the PUT and is never echoed.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/usage/sources") {
-        writeJson(response, 200, { sources: store.listUsageLimitSources() });
-        return;
-      }
-      const usageLimitSource = /^\/v2\/usage\/sources\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);
-      if (usageLimitSource && (request.method === "PUT" || request.method === "DELETE")) {
-        const id = decodeURIComponent(usageLimitSource[1]!);
-        // Either edit invalidates the snapshot: the next read contacts what is
-        // configured NOW rather than serving a row for a hub just removed.
-        usageLimitsCache.snapshot = undefined;
-        if (request.method === "DELETE") {
-          writeJson(response, 200, { removed: store.removeUsageLimitSource(id) });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 200, {
-          source: store.saveUsageLimitSource({
-            id,
-            ...(input.kind === undefined ? {} : { kind: input.kind }),
-            // `null` clears the label, absent leaves it — the three-state rule
-            // the provider-instance PUT above follows, for the same reason.
-            ...(input.label === undefined ? {} : { label: input.label as string | null }),
-            ...(input.url === undefined ? {} : { url: input.url }),
-            // Empty KEEPS the stored key; the store owns that rule so a client
-            // can save a row it read back redacted.
-            ...(input.managementKey === undefined ? {} : { managementKey: input.managementKey }),
-            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * WHAT THE HUBS CURRENTLY REPORT. Cached in memory and served stale while
-       * it refreshes behind the answer; `?refresh=1` waits for a fresh read.
-       * A source that failed keeps its row with `error` set — see usage-limits.ts.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/usage/limits") {
-        const cached = usageLimitsCache.snapshot;
-        if (url.searchParams.get("refresh") === "1" || !cached) {
-          writeJson(response, 200, { limits: await refreshUsageLimits() });
-          return;
-        }
-        if (Date.now() - cached.readAt >= USAGE_LIMITS_TTL_MS) void refreshUsageLimits().catch(() => undefined);
-        writeJson(response, 200, { limits: cached });
-        return;
-      }
       /** Who writes generated titles and branch names — a document of the
        *  environment, like the inbox rule above and for the same reason. */
       if (url.pathname === "/v2/textgen" && (request.method === "GET" || request.method === "PATCH")) {
@@ -2749,43 +2005,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectGit = /^\/v2\/projects\/([^/]+)\/git$/.exec(url.pathname);
       if (request.method === "GET" && projectGit) {
         writeJson(response, 200, { git: await store.projectGitAsync(decodeURIComponent(projectGit[1])) });
-        return;
-      }
-      /**
-       * A SESSION'S CHECKOUT: release it (delete the directory, keep the branch
-       * and the conversation), bring it back, or read its setup's log — see
-       * `worktree-release.ts` and `worktree-setup.ts`.
-       */
-      /**
-       * SETTINGS → STORAGE'S AUTOMATIC CLEANUP — `cleanup.ts`. GET reads a small
-       * document and never measures anything (#937); `run` sweeps now.
-       */
-      if (url.pathname === "/v2/cleanup" && (request.method === "GET" || request.method === "PUT")) {
-        if (request.method === "PUT") {
-          const saved = store.cleanup.setPolicy(await body(request));
-          if (!saved) throw new HttpError(400, "invalid_request", "inactive days must be 3, 7, 14 or 30; log days 7 or 30; the others true or false");
-        }
-        writeJson(response, 200, { cleanup: { policy: store.cleanup.policy(), ...(store.cleanup.last() ? { last: store.cleanup.last() } : {}), running: store.isCleanupRunning() } });
-        return;
-      }
-      if (url.pathname === "/v2/cleanup/run" && request.method === "POST") {
-        await store.runCleanup();
-        storageCache.report = undefined;
-        writeJson(response, 200, { cleanup: { policy: store.cleanup.policy(), ...(store.cleanup.last() ? { last: store.cleanup.last() } : {}), running: store.isCleanupRunning() } });
-        return;
-      }
-      const sessionWorktree = /^\/v2\/sessions\/([^/]+)\/worktree\/(release|restore)$/.exec(url.pathname);
-      if (sessionWorktree && request.method === "POST") {
-        const sessionId = decodeURIComponent(sessionWorktree[1]!);
-        if (sessionWorktree[2] === "restore") {
-          writeJson(response, 200, { session: store.restoreSessionWorktree(sessionId) });
-          return;
-        }
-        const released = await store.releaseSessionWorktree(sessionId, "manual");
-        if (!released.ok) {
-          throw new HttpError(409, "conflict", `the checkout was not released: ${released.refusal}${released.detail ? ` (${released.detail})` : ""}`);
-        }
-        writeJson(response, 200, { session: store.getSession(sessionId) });
         return;
       }
       const sessionSetup = /^\/v2\/sessions\/([^/]+)\/setup$/.exec(url.pathname);
@@ -5271,7 +4490,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     if (options.warmUsageCacheAfterMs !== undefined && options.warmUsageCacheAfterMs !== false) {
       warmUp = setTimeout(() => {
         warmUp = undefined;
-        void warmUsageScanCache({ scanCachePath: usageScanCachePath }).catch(() => undefined);
+        void warmUsageScanCache({ scanCachePath: store.paths.usageScanCache }).catch(() => undefined);
       }, options.warmUsageCacheAfterMs);
       warmUp.unref();
     }
