@@ -82,8 +82,8 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, ReportCadence, Session, SessionDiff, SessionSettleEnded, Subscription, Cohort, SubscribedCohort, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
-import { HOLD_REPORTS, MAX_REPORT_WINDOW_MINUTES, MIN_REPORT_WINDOW_MINUTES, STALLED_AFTER_MS } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, Session, SessionDiff, SessionSettleEnded, Subscription, Cohort, SubscribedCohort, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
+import { STALLED_AFTER_MS } from "@telar/engine-client";
 
 /**
  * What the toolkit may do.
@@ -201,16 +201,6 @@ export type SessionsCapability = {
    * the engine said.
    */
   settle(sessionId: string, settled: boolean): Promise<Session & { ended?: SessionSettleEnded }>;
-  /**
-   * HOW OFTEN THIS SESSION IS TOLD ABOUT ROUTINE PEER REPORTS — issue #723.
-   *
-   * THE CALLER'S OWN SESSION, ALWAYS. It takes an id because the store does,
-   * and `sessions_report_window` passes `self` and nothing else: a session
-   * setting ANOTHER session's cadence would be one peer deciding how another is
-   * allowed to be interrupted, which is a relationship conferring behaviour —
-   * exactly what #199 spent a milestone refusing.
-   */
-  setReportWindow(sessionId: string, minutes: ReportCadence | null): Promise<Session>;
   /** #543. Absent on an engine with no sqlite execution store, which the tool
    *  reports rather than throwing. */
   putSchedule?(input: { sessionId: string; prompt: string; rule: unknown; zone: string }): Promise<{ id: string; nextRunAt: number; zone: string }>;
@@ -306,22 +296,6 @@ const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
 
 /**
- * WHEN THE WAITING MAIL WILL MOVE, in one clause — the three cadences (#723,
- * #784), spelled once because `sessions_status` and `sessions_report_window`
- * both say it and a reader must not get two accounts of one setting.
- *
- * THE HOLD CLAUSE SAYS WHERE THE MAIL IS AND HOW TO SEE IT. "Never delivered"
- * on its own is the sentence that makes a held report read as a lost one.
- */
-function cadencePhrase(cadence: Session["reportWindowMinutes"]): string {
-  if (cadence === undefined) return "";
-  if (cadence === HOLD_REPORTS) {
-    return ", and they are being HELD — this session asked to keep routine reports as mail rather than take them as turns, so they stay here until somebody reads them and no turn is ever started for them";
-  }
-  return `, at most every ${cadence} minute${cadence === 1 ? "" : "s"}`;
-}
-
-/**
  * A CALLER THAT IS NOT A SESSION CANNOT SCHEDULE — issue #543, and it is the
  * guard rather than a politeness.
  *
@@ -339,10 +313,6 @@ const NO_SESSION_TO_SCHEDULE =
   "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
 const SUBSCRIBE = `Be woken ONCE when the session(s) you tasked are done: each sent its result, or a turn failed or was stopped, or it was settled. Pass sessionIds — one id or many, the same call. Blockers and parked requests still arrive at once. Send the tasks first, subscribe, then end your turn.`;
-
-/** Said when a caller still passes a knob `sessions_subscribe` no longer has. */
-const SUBSCRIBE_DEPRECATED =
-  "events, once and completionWake are deprecated and were ignored: every subscription now wakes once, when the errand is done, and never mid-turn. They go away in a later release.";
 
 const UNSUBSCRIBE = `Stop being woken by a session or a cohort, by the id sessions_subscribe returned. Queued wakes are withdrawn. One that is not yours answers removed: false — not an error.`;
 
@@ -407,11 +377,6 @@ function endedNote(ended: SessionSettleEnded | undefined): string {
   ];
   return parts.length ? ` Settling ended what it left running: ${parts.join(" and ")}.` : "";
 }
-
-const REPORT_WINDOW = `Deprecated, and does nothing: reports never open a turn now. They are held and handed over with your next turn, whatever starts it. A task, a blocker and a result you subscribed to still arrive at once.`;
-
-const REPORT_WINDOW_RETIRED =
-  "Nothing changed: reports never open a turn now. They are held, and handed over with your next turn — a wake, or the person's next message. sessions_status lists what is held. This tool goes away in a later release.";
 
 /**
  * THE `filesIncomplete` CLAUSE COSTS 45 OF THE 47 CHARACTERS the wide tool wall
@@ -1560,16 +1525,6 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
            */
           ...(pending.length > 0 ? { pendingNotifications: pending.map((detail) => detail.summary) } : {}),
           /**
-           * AND WHETHER IT ASKED TO BE TOLD ON A CLOCK — issue #723.
-           *
-           * Reported wherever the held list is, because the two facts only mean
-           * anything together: mail waiting on a session with a window is mail
-           * that will arrive, and the whole risk of this feature is a held report
-           * being indistinguishable from a lost one. That was #631 part 2's bug
-           * and it must not be reintroduced by the cure.
-           */
-          ...(session.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: session.reportWindowMinutes }),
-          /**
            * THE FACTS BEHIND `activity` — the same ones the rail labels: how
            * much background work, which session it waits on, when a schedule
            * wakes it, what a running turn is only waiting for. A coordinator
@@ -1604,7 +1559,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               : live.length > 0
                 ? `${session.activityDetail?.kind === "tool" ? `A turn is in flight, but it is only waiting ${WAITING_PHRASE[session.activityDetail.waitingOn]}.` : "A turn is in flight."} Read it with sessions_read, or stop it with sessions_stop.${pending.length > 0 ? ` ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting for it to finish.` : ""}`
                 : pending.length > 0
-                  ? `Nothing is running, and ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting to be delivered${cadencePhrase(session.reportWindowMinutes)}.`
+                  ? `Nothing is running, and ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting to be delivered.`
                   : quietNote(session),
         });
       },
@@ -1796,36 +1751,22 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_subscribe",
       SUBSCRIBE,
       {
-        sessionId: z.string().min(1).optional().describe("Deprecated alias for sessionIds: [id]."),
         sessionIds: z
           .array(z.string().min(1))
           .min(1)
           .max(20)
-          .optional()
           .describe("A cohort: one notification when ALL of these are done — each sent its result, or a turn failed or was stopped, or it was settled or archived. A turn that merely ends is not done."),
         timeoutMinutes: z.number().int().min(1).max(10_080).optional().describe("Cohort only. Default 240: past it you get what arrived and who is still pending."),
-        events: z
-          .array(z.enum(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]))
-          .optional()
-          .describe("Deprecated; ignored."),
-        once: z.boolean().optional().describe("Deprecated; ignored."),
-        completionWake: z.enum(["settled_only", "always"]).optional().describe("Deprecated; ignored."),
       },
       async (args) => {
         if (!capability.self) return err(NO_SELF);
-        /**
-         * ONE SUBSCRIPTION, NO KNOBS — the session-tools audit. One session or
-         * many is the same cohort: woken once when the errand is done, never
-         * mid-turn. `sessionId` and the old knobs are accepted for one release.
-         */
-        const sessionIds = Array.isArray(args.sessionIds) && args.sessionIds.length > 0 ? args.sessionIds.map(String) : args.sessionId ? [String(args.sessionId)] : [];
+        const sessionIds = Array.isArray(args.sessionIds) ? args.sessionIds.map(String) : [];
         if (sessionIds.length === 0) return err("Name the sessions to be woken by: sessionIds.");
-        const deprecated = args.events !== undefined || args.once !== undefined || args.completionWake !== undefined;
         if (!capability.subscribeCohort) {
           // A door with no cohorts: one plain, one-shot subscription each.
           try {
             const subscriptions = await Promise.all(sessionIds.map((targetSessionId) => capability.subscribe(capability.self!.sessionId, { targetSessionId, once: true })));
-            return json({ subscriptions, ...(deprecated ? { deprecated: SUBSCRIBE_DEPRECATED } : {}), note: "You will be woken once per session when it ends a turn. End your turn now." });
+            return json({ subscriptions, note: "You will be woken once per session when it ends a turn. End your turn now." });
           } catch (error) {
             return err(`Could not subscribe: ${failure(error)}`);
           }
@@ -1844,7 +1785,6 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               : "";
           return json({
             ...cohort,
-            ...(deprecated ? { deprecated: SUBSCRIBE_DEPRECATED } : {}),
             note: already + (pending === 0
               ? "Every session was already done, so the notification is on its way now."
               : cohort.members.length === 1
@@ -1975,37 +1915,8 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       },
     ),
     /**
-     * THE CADENCE — issue #723. Appended last, after the subscription tools, so
-     * the pinned name list in the tests grows rather than reorders.
-     *
-     * IT TAKES NO `sessionId`, AND THAT IS THE DESIGN RATHER THAN A SHORTCUT. A
-     * session setting another session's cadence would be one peer deciding how
-     * another may be interrupted — a relationship conferring behaviour, which is
-     * the thing #199 spent a milestone refusing. `self` is the only session this
-     * can name, so there is nothing here to point at somebody else.
-     */
-    tool(
-      "sessions_report_window",
-      REPORT_WINDOW,
-      {
-        minutes: z
-          .union([
-            z.number().int().min(MIN_REPORT_WINDOW_MINUTES).max(MAX_REPORT_WINDOW_MINUTES),
-            z.literal(HOLD_REPORTS),
-          ])
-          .nullable()
-          .describe(
-            `Minutes to hold routine reports for, "${HOLD_REPORTS}" to keep them as mail and never take them as turns, or null to be told as each one arrives.`,
-          ),
-      },
-      async () => {
-        if (!capability.self) return err(NO_SELF);
-        return json({ sessionId: capability.self.sessionId, deprecated: true, note: REPORT_WINDOW_RETIRED });
-      },
-    ),
-    /**
      * THE QUERY READS — issue #516, appended last for the reason the
-     * subscription tools and the cadence were: the pinned name lists in the
+     * subscription tools were: the pinned name lists in the
      * tests GROW rather than reorder, so a change that adds a tool cannot also
      * silently move one.
      *
@@ -2022,27 +1933,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
      * to compose the tools is a read at registration time. See its note.
      */
     ...sessionQueryTools(tool, deferredQuery(() => capability.query)),
-    /**
-     * A PROMPT ON A CLOCK — issue #543. Appended after the cadence for the same
-     * reason it was: the pinned name lists in the tests GROW rather than
-     * reorder.
-     *
-     * IT TAKES NO `sessionId`, exactly as the cadence above does not, and for
-     * the same argument: a session scheduling work into ANOTHER session would
-     * be one peer deciding when another must run, which is the relationship
-     * #199 spent a milestone refusing. `self` is the only session this can aim
-     * at.
-     *
-     * THE RULE THAT USED TO NAME A DENY-LIST HERE still holds, and now holds by
-     * construction. #543 landed against a `WARP_CHILD_DISALLOWED_TOOLS` whose
-     * rule was "a child may not create work that outlives the run" — a schedule
-     * being the purest instance of it — and recorded a known gap: a fan-out
-     * child inherited the parent's own telar server, so its capability carried
-     * the parent's `self` and this call would have succeeded against the parent
-     * session. #877 retired the fan-out entirely, so there is no such child to
-     * deny. What guards the rule now is one step earlier and does not depend on
-     * a list: a caller with no `self` is refused outright.
-     */
+    // Takes no `sessionId`: `self` is the only session a schedule can aim at.
     tool(
       "sessions_schedule",
       "Run a prompt in THIS session on a clock — every N minutes, or at a fixed local time on chosen weekdays. A missed run is re-aimed rather than fired late, and nothing fires while Telar is closed.",

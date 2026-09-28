@@ -495,9 +495,9 @@ describe("every tool description is short enough to carry", () => {
    * with no capability at all still paid for it. The count and the absence are
    * asserted together so a re-add cannot pass by replacing something else.
    */
-  test("`warp` is not on the wall, and the wall is twenty-six tools", () => {
+  test("`warp` is not on the wall, and the wall is twenty-five tools", () => {
     const names = wall().registered.map((entry) => entry.name);
-    expect(names.length).toBe(26);
+    expect(names.length).toBe(25);
     expect(names).not.toContain("warp");
     expect(names.every((name) => name.startsWith("sessions_") || name.startsWith("notes_"))).toBe(true);
   });

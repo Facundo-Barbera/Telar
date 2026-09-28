@@ -1603,26 +1603,6 @@ export class ExecutionStore {
     return folded;
   }
 
-  /** What one turn's `usage.updated` rows added up to, for a caller that wants
-   *  the number without the rows. `undefined` until the fold has been here. */
-  turnUsage(sessionId: string, runId: string): TurnUsageAggregate | undefined {
-    const columns = this.statement(
-      `SELECT usage_input, usage_output, usage_cache_read, usage_cache_create, usage_reasoning, usage_rows
-         FROM turn_summaries WHERE session_id=? AND run_id=?`,
-    ).get(sessionId, runId);
-    if (!columns || columns.usage_rows === null || columns.usage_rows === undefined) return undefined;
-    return {
-      tokens: {
-        input: Number(columns.usage_input ?? 0),
-        output: Number(columns.usage_output ?? 0),
-        cacheRead: Number(columns.usage_cache_read ?? 0),
-        cacheCreate: Number(columns.usage_cache_create ?? 0),
-        reasoning: Number(columns.usage_reasoning ?? 0),
-      },
-      rows: Number(columns.usage_rows),
-    };
-  }
-
   /**
    * SLIM A SETTLED TURN'S `item.completed` ROWS TO A REFERENCE — issue #858.
    *
@@ -1906,13 +1886,6 @@ export class ExecutionStore {
       this.pruneMode = modeRead ? { sessionId, at: high, mode } : undefined;
     });
     return pruned;
-  }
-
-  /** How many requests the policy resolved in one turn, once their pairs have
-   *  been pruned. `undefined` until the prune has removed one. */
-  turnPolicyRequests(sessionId: string, runId: string): TurnPolicyRequests | undefined {
-    const row = this.statement("SELECT policy_requests FROM turn_summaries WHERE session_id=? AND run_id=?").get(sessionId, runId);
-    return row?.policy_requests ? JSON.parse(String(row.policy_requests)) : undefined;
   }
 
   /** A stored row as every reader sees it: a slimmed `item.completed` gets its
@@ -3159,34 +3132,6 @@ export class ExecutionStore {
     this.onDurabilityBarrier?.(due);
   }
 
-  /**
-   * THE DURABILITY PRAGMAS IN EFFECT ON THIS CONNECTION, READ BACK — #632.
-   *
-   * A pragma is per connection, so nothing outside this object can observe the
-   * ones it set: a test that opened the same file would be asserting about its
-   * own connection's defaults. This is the only honest way to hold the
-   * constructor to what its comment says, and it answers with VALUES because
-   * the alternative — grepping the source for the pragma text — passes on a
-   * line that was never executed.
-   *
-   * NOTE WHAT IT CANNOT PROVE. Under `bun:sqlite` `checkpoint_fullfsync` is
-   * already 1 before anything sets it, so an assertion here is vacuous for the
-   * packaged app, which runs `node:sqlite` where the default is 0. That gap is
-   * what `scripts/durability-pragmas.mjs` exists to close.
-   */
-  durabilityPragmas(): { synchronous: number; checkpointFullfsync: number; fullfsync: number } {
-    const read = (name: string): number => Number(Object.values(this.db.prepare(`PRAGMA ${name}`).get() ?? {})[0] ?? 0);
-    return { synchronous: read("synchronous"), checkpointFullfsync: read("checkpoint_fullfsync"), fullfsync: read("fullfsync") };
-  }
-
-  /** `<sessionId>:<eventId>` of the last turn a device barrier persisted, or
-   *  `undefined` on a store no turn has ended on. See `DURABILITY_BARRIER_KEY`:
-   *  it is the barrier's own write, so its presence is the evidence that the
-   *  barrier's commit produced a WAL frame to sync rather than nothing. */
-  barrierWatermark(): string | undefined {
-    const row = this.statement("SELECT value FROM metadata WHERE key=?").get(DURABILITY_BARRIER_KEY);
-    return row ? String(row.value) : undefined;
-  }
   /** Store what is held, in a transaction of its own — or, inside one already,
    *  as part of it. `transaction` flushes what is settled before it begins. */
   private flush(): void {

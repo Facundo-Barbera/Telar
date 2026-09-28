@@ -14,6 +14,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import type { TurnDriver } from "../src/driver";
 import { EngineStore } from "../src/state";
 import { stubModels } from "./stub-models";
+import { forgetOpenPrefixes } from "./store-internals";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -326,7 +327,7 @@ test("a real event-loop stall preserves the embedded generation and streamed sna
   expect(daemon.worker!.workerId).toBe(generation);
   expect(aborted).toBe(false);
   expect(runs).toBe(1);
-  daemon.store.forgetOpenPrefixesForTest();
+  forgetOpenPrefixes(daemon.store);
   const remounted = await client.session("session_one");
   expect(remounted.turns[0]?.state).toBe("running");
   expect(remounted.items.find(i => i.id === "partial")?.streamed).toBe("Preserve this prefix");

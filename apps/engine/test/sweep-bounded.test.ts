@@ -19,6 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ExecutionStore } from "../src/execution-store";
+import { turnPolicyRequests } from "./store-internals";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -120,7 +121,7 @@ test("a long session is swept in turn-bounded steps, and a read is served betwee
     expect(store.housekeeping.requests).toEqual({ pairs: 150 * PAIRS_PER_TURN, turns: 150, sessions: 1, refused: 0 });
     expect(store.housekeeping.slimmed).toEqual({ rows: 150 * ITEMS_PER_TURN, sessions: 1 });
     expect(store.housekeeping.journal).toEqual({ deltas: 0, starts: 150 * ITEMS_PER_TURN, sessions: 1 });
-    expect(store.turnPolicyRequests("session_long", "run_149")).toEqual({ command_execution: { accept: PAIRS_PER_TURN } });
+    expect(turnPolicyRequests(store, "session_long", "run_149")).toEqual({ command_execution: { accept: PAIRS_PER_TURN } });
   } finally { store.close(); }
 });
 

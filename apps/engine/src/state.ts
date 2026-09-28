@@ -46,13 +46,10 @@ import {
   workspacePath,
   TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
-  HOLD_REPORTS,
   MAX_AUTO_SETTLE_HOURS,
-  MAX_REPORT_WINDOW_MINUTES,
   MAX_SETTLED_TERMINAL_LIMIT,
   STALLED_AFTER_MS,
   MIN_AUTO_SETTLE_HOURS,
-  MIN_REPORT_WINDOW_MINUTES,
   McpServer as McpServerSchema,
   McpServerSpec as McpServerSpecSchema,
   ModelSelection,
@@ -165,7 +162,6 @@ import {
   type RequestDetail,
   type RequestKind,
   type RequestOpenResult,
-  type ReportCadence,
   type RequestResolver,
   type RuntimeMode,
   type Session,
@@ -8748,13 +8744,6 @@ export class EngineStore {
        *  one — see `Session.resumeAfterRateLimit`. Three answers, so not a
        *  boolean: "on", "off", and "whatever this provider does". */
       resumeAfterRateLimit?: boolean | null;
-      /**
-       * HOW OFTEN ROUTINE PEER REPORTS ARE DELIVERED — issue #723. `null` turns
-       * the window off and returns the session to arrival delivery; a number of
-       * minutes turns it on. Two answers plus "leave it alone", so not a
-       * boolean and not a bare number.
-       */
-      reportWindowMinutes?: ReportCadence | null;
     },
   ): Session {
     const session = this.getSession(sessionId);
@@ -8866,38 +8855,6 @@ export class EngineStore {
         next.snoozedAt = this.now();
       }
     }
-    /**
-     * THE REPORT WINDOW — issue #723.
-     *
-     * TURNING IT OFF DOES NOT DELIVER WHAT IS HELD, and that is deliberate
-     * rather than an omission. The mailbox already has four drains and a sweep;
-     * flushing here would mean a person adjusting a cadence setting hands the
-     * session a turn it did not ask for, at the moment they were configuring it.
-     * What was held stays held and goes out at the next drain — which, with the
-     * window off, is the very next turn boundary.
-     */
-    if (patch.reportWindowMinutes !== undefined) {
-      if (patch.reportWindowMinutes === null) {
-        delete next.reportWindowMinutes;
-      } else if (patch.reportWindowMinutes === HOLD_REPORTS) {
-        /**
-         * THE WINDOW THAT NEVER CLOSES — issue #784, step 2. Taken by value
-         * rather than by a flag beside the number, so the three cadences stay
-         * three answers to one question. See `ReportCadence` in the contract.
-         */
-        next.reportWindowMinutes = HOLD_REPORTS;
-      } else {
-        const minutes = Number(patch.reportWindowMinutes);
-        if (!Number.isInteger(minutes) || minutes < MIN_REPORT_WINDOW_MINUTES || minutes > MAX_REPORT_WINDOW_MINUTES) {
-          throw new EngineStateError(
-            "invalid_request",
-            `reportWindowMinutes must be "${HOLD_REPORTS}", or a whole number of minutes between ${MIN_REPORT_WINDOW_MINUTES} and ${MAX_REPORT_WINDOW_MINUTES}`,
-          );
-        }
-        next.reportWindowMinutes = minutes;
-      }
-    }
-
     // Nothing changed: no write, no event. A client polling a "save" button
     // should not fill the journal with rows that say nothing happened.
     if (
@@ -8911,7 +8868,6 @@ export class EngineStore {
       // stamp on disk with no event to say it went.
       next.wokeAt === session.wokeAt &&
       next.resumeAfterRateLimit === session.resumeAfterRateLimit &&
-      next.reportWindowMinutes === session.reportWindowMinutes &&
       // COMPARED WHOLE, not field by field. The hand-written version listed
       // `model` and `effort`, so when the selection grew a context window and a
       // fast-mode switch, a patch that changed only those looked like a no-op
@@ -13652,8 +13608,7 @@ export class EngineStore {
   }
 
   /**
-   * EVERY COHORT PAST ITS EXPIRY, delivered with what it has — the tick, as
-   * `sweepReportWindows` is. Also where a member put away without an event this
+   * EVERY COHORT PAST ITS EXPIRY, delivered with what it has. Also where a member put away without an event this
    * engine saw is noticed. Returns the cohorts it closed.
    */
   sweepCohorts(): string[] {
@@ -14215,13 +14170,6 @@ export class EngineStore {
       }
     }
     return settled;
-  }
-
-  /** Delivered what a report window had held — see the body. */
-  sweepReportWindows(): string[] {
-    // Deprecated with `sessions_report_window`: peer mail never opens a turn,
-    // so no cadence has anything to deliver. Kept for one release as a no-op.
-    return [];
   }
 
   /**
@@ -15506,19 +15454,6 @@ export class EngineStore {
       if (oldest.done) break;
       this.openPrefixes.delete(oldest.value);
     }
-  }
-
-  /** Drop every cached prefix, as a restart would. The rebuild path is the
-   *  thing worth testing and it is unreachable while the cache is warm. */
-  forgetOpenPrefixesForTest(): void {
-    this.openPrefixes.clear();
-  }
-
-  /** How many prefixes are resident. Asserted against the bound, because the
-   *  TEXT stays correct whether or not eviction runs — so nothing else can
-   *  tell the difference between a bound that holds and one that does not. */
-  openPrefixCountForTest(): number {
-    return this.openPrefixes.size;
   }
 
   /** An item that closed carries its text in `detail` from then on, so the

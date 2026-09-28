@@ -27,6 +27,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ExecutionStore } from "../src/execution-store";
+import { barrierWatermark, durabilityPragmas } from "./store-internals";
 
 const roots: string[] = [];
 const stores: ExecutionStore[] = [];
@@ -50,7 +51,7 @@ test("the durability pragmas are the ones in effect on the live connection, read
   // entering WAL otherwise takes the build's own default — 1 under `bun:sqlite`
   // and 2 under `node:sqlite`, which is the divergence #632 found: the shipped
   // app was paying an fsync per commit nobody chose.
-  expect(store.durabilityPragmas()).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0 });
+  expect(durabilityPragmas(store)).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0 });
 });
 
 test("checkpoint_fullfsync moves in both directions on a raw connection, so the pragma is what sets it", () => {
@@ -156,7 +157,7 @@ test("the barrier leaves the connection exactly as it found it", () => {
   // would pass every count above while quietly paying an fsync per commit
   // forever after the first turn ended — the exact regression this asserts is
   // absent, in values rather than in a promise.
-  expect(store.durabilityPragmas()).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0 });
+  expect(durabilityPragmas(store)).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0 });
 });
 
 test("the barrier records where durability reached, and the row survives a reopen", () => {
@@ -170,5 +171,5 @@ test("the barrier records where durability reached, and the row survives a reope
   // sqlite: the row is the barrier's write, and its value is the event it
   // persisted. A barrier that wrote nothing would produce no WAL frame and
   // therefore no sync at all, so this is also how the mechanism is held up.
-  expect(reopened.barrierWatermark()).toBe("session_one:7");
+  expect(barrierWatermark(reopened)).toBe("session_one:7");
 });

@@ -17,6 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ExecutionStore, type ExecutionStoreOptions } from "../src/execution-store";
+import { turnPolicyRequests } from "./store-internals";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -101,7 +102,7 @@ test("policy pairs go, and every request somebody resolved or left open stays", 
       "opened:req_cancelled", "resolved:req_cancelled",
       "opened:req_open",
     ]);
-    expect(store.turnPolicyRequests("session_one", "run_one")).toEqual({
+    expect(turnPolicyRequests(store, "session_one", "run_one")).toEqual({
       command_execution: { accept: 2 },
       file_read: { accept: 1 },
     });
@@ -159,7 +160,7 @@ test("an unsettled turn keeps its pairs, and one with no summary row is refused"
 
     expect(store.pruneJournalRequests()).toEqual({ pairs: 0, turns: 0, sessions: 0, refused: 1 });
     expect(requestRows(store)).toHaveLength(4);
-    expect(store.turnPolicyRequests("session_one", "run_unsummarised")).toBeUndefined();
+    expect(turnPolicyRequests(store, "session_one", "run_unsummarised")).toBeUndefined();
   } finally { store.close(); }
 });
 
@@ -189,8 +190,8 @@ test("it is idempotent, finds its pairs after compaction and the usage fold, and
     summarise(store, "run_two");
     expect(store.pruneJournalRequests()).toEqual({ pairs: 2, turns: 1, sessions: 1, refused: 0 });
     expect(requestRows(store)).toEqual([]);
-    expect(store.turnPolicyRequests("session_one", "run_one")).toEqual({ command_execution: { accept: 1 } });
-    expect(store.turnPolicyRequests("session_one", "run_two")).toEqual({ command_execution: { accept: 2 } });
+    expect(turnPolicyRequests(store, "session_one", "run_one")).toEqual({ command_execution: { accept: 1 } });
+    expect(turnPolicyRequests(store, "session_one", "run_two")).toEqual({ command_execution: { accept: 2 } });
   } finally { store.close(); }
 });
 
