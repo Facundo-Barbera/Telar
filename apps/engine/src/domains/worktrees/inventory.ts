@@ -203,23 +203,17 @@ async function defaultBaseOf(git: AsyncGitRunner, projectRoot: string): Promise<
   return undefined;
 }
 
-// Unions git's list, session records and a readdir of each root: a pruned checkout is only on disk.
-// Unreadable roots are not scanned, or every recorded checkout would look orphaned.
-export async function buildInventory(deps: InventoryDeps, input: InventoryInput): Promise<WorktreeInventory> {
-  const at = input.now ?? Date.now();
-  const roots = [...new Set(input.roots.map((root) => path.resolve(root)))];
-  const engineTree = input.engineRoot ? canonical(input.engineRoot) : undefined;
-  let partial = false;
-  let measuring = false;
+type Draft = {
+  path: string;
+  canonical: string;
+  session?: InventorySession;
+  project?: InventoryProject;
+  registration?: Registration;
+  onDisk: boolean;
+};
 
-  type Draft = {
-    path: string;
-    canonical: string;
-    session?: InventorySession;
-    project?: InventoryProject;
-    registration?: Registration;
-    onDisk: boolean;
-  };
+async function collectDrafts(deps: InventoryDeps, input: InventoryInput, roots: string[]) {
+  let partial = false;
   const drafts = new Map<string, Draft>();
   const draftFor = (target: string): Draft => {
     const key = canonical(target);
@@ -289,10 +283,47 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
     // disk, so it is asked about directly rather than left off the list.
     if (!draft.onDisk && input.rootsReadable) draft.onDisk = fs.existsSync(draft.path);
   }
+  return { drafts, bases, partial };
+}
 
-  // ── The proofs, per row ─────────────────────────────────────────────────
+// Nothing here runs on an unreadable or protected row: each answer would be about a disk nobody can read.
+async function proveDraft(deps: InventoryDeps, draft: Draft, branch: string | undefined, base: string | undefined) {
+  const status = await proveClean(deps.git, draft.path);
+  let incomplete: GitReadFailure | undefined = status.incomplete;
+  let merged: boolean | undefined;
+  let mergedInto: string | undefined;
+  const project = draft.project;
+  if (branch && base && project) {
+    const proof = await proveMerged(deps.git, project.root, branch, base);
+    merged = proof.merged;
+    if (proof.merged !== undefined) mergedInto = base;
+    incomplete ??= proof.incomplete;
+  }
+  // No `bytes` is "not sized yet" — the engine sizes checkouts in the
+  // background — and the inventory says so rather than showing a zero.
+  const measured = await deps.measure(draft.path);
+  let updatedAt: number | undefined;
+  // The directory's mtime, not the session's updatedAt, which a settle or rename bumps.
+  try {
+    updatedAt = fs.statSync(draft.path).mtimeMs;
+  } catch {
+    // A directory that vanished between the scan and here has no age.
+  }
+  return { clean: status.clean, merged, mergedInto, incomplete, bytes: measured.bytes, partial: measured.partial, updatedAt };
+}
+
+// Unions git's list, session records and a readdir of each root: a pruned checkout is only on disk.
+// Unreadable roots are not scanned, or every recorded checkout would look orphaned.
+export async function buildInventory(deps: InventoryDeps, input: InventoryInput): Promise<WorktreeInventory> {
+  const at = input.now ?? Date.now();
+  const roots = [...new Set(input.roots.map((root) => path.resolve(root)))];
+  const engineTree = input.engineRoot ? canonical(input.engineRoot) : undefined;
+  const collected = await collectDrafts(deps, input, roots);
+  let partial = collected.partial;
+  let measuring = false;
+
   const rows: WorktreeRow[] = [];
-  for (const draft of drafts.values()) {
+  for (const draft of collected.drafts.values()) {
     const project = draft.project;
     const readable = input.rootsReadable && (project?.available ?? true);
     const branch = draft.session?.branch ?? draft.registration?.branch;
@@ -306,44 +337,11 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
       : { kind: "none" };
 
     const protectedTree = draft.registration?.isMainCheckout === true || (engineTree !== undefined && engineTree === draft.canonical);
-
-    let clean: boolean | undefined;
-    let merged: boolean | undefined;
-    let mergedInto: string | undefined;
-    let incomplete: GitReadFailure | undefined;
-    let bytes: number | undefined;
-    let updatedAt: number | undefined;
-
-    // NOTHING BELOW RUNS ON AN UNREADABLE ROW, which is rung 0 enforced rather
-    // than described: no status, no merge-base, no walk. Each would answer
-    // about a disk nobody can read, and each answer would be believed.
-    if (readable && draft.onDisk && !protectedTree) {
-      const status = await proveClean(deps.git, draft.path);
-      clean = status.clean;
-      incomplete ??= status.incomplete;
-
-      const base = project ? bases.get(project.id) : undefined;
-      if (branch && base && project) {
-        const proof = await proveMerged(deps.git, project.root, branch, base);
-        merged = proof.merged;
-        if (proof.merged !== undefined) mergedInto = base;
-        incomplete ??= proof.incomplete;
-      }
-
-      // No `bytes` is "not sized yet" — the engine sizes checkouts in the
-      // background — and the inventory says so rather than showing a zero.
-      const measured = await deps.measure(draft.path);
-      bytes = measured.bytes;
+    const proof = readable && draft.onDisk && !protectedTree ? await proveDraft(deps, draft, branch, project ? collected.bases.get(project.id) : undefined) : undefined;
+    const { clean, merged, mergedInto, incomplete, bytes, updatedAt } = proof ?? {};
+    if (proof) {
       measuring ||= bytes === undefined;
-      partial ||= measured.partial;
-
-      // The directory's mtime, not the session's updatedAt, which a settle or rename bumps.
-      try {
-        updatedAt = fs.statSync(draft.path).mtimeMs;
-      } catch {
-        // A directory that vanished between the scan and here has no age, and
-        // the row says nothing rather than inventing one.
-      }
+      partial ||= proof.partial;
     }
 
     const verdict = classifyCheckout({
