@@ -2,10 +2,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { installClipboardShim } from "./clipboard";
 
-const saved = { window: globalThis.window, navigator: globalThis.navigator, document: globalThis.document };
+const GLOBALS = ["window", "navigator", "document"] as const;
+const saved = GLOBALS.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
 
 afterEach(() => {
-  Object.assign(globalThis, saved);
+  for (const [name, descriptor] of saved) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else Reflect.deleteProperty(globalThis, name);
+  }
 });
 
 function insecureOrigin(): { copied: string[] } {

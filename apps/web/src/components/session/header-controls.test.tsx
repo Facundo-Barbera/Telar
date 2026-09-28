@@ -39,14 +39,15 @@ const runApi = {
 
 /** The desktop bridge lives on `window`, and the Open button renders its
  *  unavailable shape without one. Installed for this file only. */
-const hadWindow = "window" in globalThis;
+const original = Object.getOwnPropertyDescriptor(globalThis, "window");
 beforeAll(() => {
   (globalThis as { window?: unknown }).window = {
     telarDesktop: { workspace: { open: async () => ({ ok: true }), reveal: async () => ({ ok: true }) } },
   };
 });
 afterAll(() => {
-  if (!hadWindow) delete (globalThis as { window?: unknown }).window;
+  if (original) Object.defineProperty(globalThis, "window", original);
+  else delete (globalThis as { window?: unknown }).window;
 });
 
 const cluster = () => ({
