@@ -1,15 +1,15 @@
 "use client";
 
-import { useContext,useMemo,useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import {
 BookOpenIcon,ChevronRightIcon
 } from "lucide-react";
-import { type JournalItem,type JournalTask } from "@/platform/engine";
+import { type JournalItem, type JournalTask } from "@/platform/engine";
 import { foldHarnessRows } from "../harness-paths";
-import { ROW,StepFold } from "./transcript-fold";
+import { ROW, StepFold } from "./transcript-fold";
 import { cn } from "@/lib/utils";
-import { RowGestures,WorkspaceContext } from "./tool-row";
-import { cutAroundLiveAgents,itemFailed,renderable,segmentActivity,tallyParts } from "../model";
+import { RowGestures, WorkspaceContext } from "./tool-row";
+import { cutAroundLiveAgents, itemFailed, renderable, segmentActivity, tallyParts } from "../model";
 import { TranscriptItem } from "./transcript-item";
 
 export function LiveActivity({

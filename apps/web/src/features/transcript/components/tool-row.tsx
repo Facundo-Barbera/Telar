@@ -1,22 +1,22 @@
 "use client";
 
-import { createContext,useState } from "react";
+import { createContext, useState } from "react";
 import {
 ChevronRightIcon,FileTextIcon,
 GlobeIcon,PencilIcon,
 SearchIcon,
 TerminalIcon,WrenchIcon
 } from "lucide-react";
-import { isKnownPath,type Item } from "@telar/engine-client";
-import { toolOutput,type JournalItem } from "@/platform/engine";
+import { isKnownPath, type Item } from "@telar/engine-client";
+import { toolOutput, type JournalItem } from "@/platform/engine";
 import { fileReference } from "@/lib/drag-reference";
-import { ContextMenu,ContextMenuContent,ContextMenuItem,ContextMenuSeparator,ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Shimmer } from "@/components/ui/shimmer";
-import { CODE_SURFACE_FRAME,CODE_SURFACE_LINES,CODE_SURFACE_TEXT,CodeSurface,CopyButton,foldLines } from "@/components/ui/code-surface";
+import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface, CopyButton, foldLines } from "@/components/ui/code-surface";
 import { Badge } from "@/components/ui/badge";
 import { ROW } from "./transcript-fold";
 import { cn } from "@/lib/utils";
-import { actionLabel,failed,liveActionLabel,preview,running } from "../model";
+import { actionLabel, failed, liveActionLabel, preview, running } from "../model";
 
 /** Deliberately small and literal. The lane is meant to be uniform and boring:
  *  an icon per tool would turn a long turn into a sticker album. The icon says

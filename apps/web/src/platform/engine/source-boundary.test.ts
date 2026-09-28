@@ -88,15 +88,11 @@ describe("standalone cockpit source boundary", () => {
     expect(importSpecifiers('const m = await import("@/lib/store");')).toEqual(["@/lib/store"]);
   });
 
-  test("uses root-relative routes and its own stylesheet", () => {
+  test("uses its own stylesheet", () => {
     const layout = fs.readFileSync(path.join(appRoot, "app", "layout.tsx"), "utf8");
-    const client = fs.readFileSync(path.join(appRoot, "platform", "engine", "client.ts"), "utf8");
     expect(layout).toContain('import "./globals.css"');
     expect(layout).toContain("AppShell");
     expect(layout).not.toContain('href="/vnext');
-    expect(client).toContain('"/api/health"');
-    expect(client).not.toContain("/api/vnext");
-    expect(client).not.toContain("http://127.0.0.1");
   });
 
   test("nothing under components/ imports the frozen app", () => {

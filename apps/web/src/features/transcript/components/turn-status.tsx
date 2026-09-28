@@ -4,7 +4,7 @@ import { useNow } from "@/ui/hooks/use-now";
 import {
 HourglassIcon,TriangleAlertIcon
 } from "lucide-react";
-import { type RateLimitType,type TurnFailureCode } from "@telar/engine-client";
+import { type RateLimitType, type TurnFailureCode } from "@telar/engine-client";
 import { Shimmer } from "@/components/ui/shimmer";
 import { cn } from "@/lib/utils";
 
