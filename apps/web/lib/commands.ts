@@ -39,7 +39,7 @@ import {
   type Command as RawCommand,
   type CommandKeyEventLike,
   type Keymap as RawKeymap,
-} from "../../desktop/command-keys.js";
+} from "../../desktop/src/main/command-keys.js";
 
 export { normalizeChord, resolveCommandForEvent };
 export type { CommandKeyEventLike };

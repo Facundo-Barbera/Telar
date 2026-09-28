@@ -27,7 +27,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { discoverOpeners, FINDER_BUNDLE } from "./workspace-openers.js";
+import { discoverOpeners, FINDER_BUNDLE } from "./src/main/workspace-openers.js";
 
 const SIZES = [14, 16, 20];
 /** Mirrors `SQUIRCLE` in components/session/opener-icon.tsx. */

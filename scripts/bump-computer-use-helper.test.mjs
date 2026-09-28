@@ -113,7 +113,7 @@ describe("checksums.txt parsing", () => {
 });
 
 describe("pin rewrite", () => {
-  // Shaped exactly like apps/desktop/computer-use-helper.json.
+  // Shaped exactly like apps/desktop/src/main/computer-use-helper.json.
   const PIN = {
     "//": "THE cua-driver TELAR SHIPS, pinned.",
     tag: "cua-driver-rs-v0.28.2",

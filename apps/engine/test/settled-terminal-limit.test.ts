@@ -23,7 +23,7 @@ import { RunTerminalClient } from "../src/run/terminal-client";
 import type { RunView } from "../src/run/types";
 import { EngineStore, SETTLED_TERMINAL_GRACE_MS } from "../src/state";
 
-const desktopServer = path.join(import.meta.dir, "..", "..", "desktop", "run-terminal-server.js");
+const desktopServer = path.join(import.meta.dir, "..", "..", "desktop", "src", "terminal", "run-terminal-server.js");
 type StartServer = (options: {
   port: number;
   token: string;

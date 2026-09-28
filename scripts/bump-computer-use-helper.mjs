@@ -23,7 +23,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-export const DEFAULT_PIN = path.resolve(import.meta.dirname, "..", "apps", "desktop", "computer-use-helper.json");
+export const DEFAULT_PIN = path.resolve(import.meta.dirname, "..", "apps", "desktop", "src", "main", "computer-use-helper.json");
 const OWNER_REPO = "trycua/cua";
 const STABLE_TAG_RE = /^cua-driver-rs-v(\d+)\.(\d+)\.(\d+)$/;
 

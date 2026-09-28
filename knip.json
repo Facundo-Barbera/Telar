@@ -42,18 +42,14 @@
     },
     "apps/desktop": {
       "entry": [
-        "main.js",
-        "*preload*.js",
-        "*.electron-test.js",
-        "desktop-e2e*.js",
+        "src/preload/*.js",
+        "src/**/*.electron-test.js",
+        "test/electron/desktop-e2e*.js",
         "after-pack.js",
         "render-opener-icons.mjs"
       ],
       "project": [
         "**/*.{js,mjs,cjs}"
-      ],
-      "ignore": [
-        "test-fixtures/**"
       ],
       "ignoreDependencies": [
         "electron-builder",

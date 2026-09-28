@@ -5,7 +5,7 @@
  *   bun scripts/computer-use-helper.mjs [--out DIR] [--sign auto|adhoc|<identity>]
  *                                       [--keychain PATH] [--tarball PATH] [--pin PATH]
  *
- * Downloads the release pinned in apps/desktop/computer-use-helper.json, REFUSES
+ * Downloads the release pinned in apps/desktop/src/main/computer-use-helper.json, REFUSES
  * it unless its sha256 matches the pin, and turns cua's CuaDriver.app into
  * `<out>/<appName>.app`: Telar's bundle id and name, cua's MIT notice inside,
  * cua's provisioning profile and notarization ticket removed (both belong to
@@ -36,7 +36,7 @@ import path from "node:path";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 const DESKTOP = path.join(REPO, "apps", "desktop");
-export const DEFAULT_PIN = path.join(DESKTOP, "computer-use-helper.json");
+export const DEFAULT_PIN = path.join(DESKTOP, "src", "main", "computer-use-helper.json");
 export const DEFAULT_OUT = path.join(DESKTOP, "vendor", "computer-use");
 export const ENTITLEMENTS = path.join(DESKTOP, "build", "computer-use", "entitlements.plist");
 export const LICENSE = path.join(DESKTOP, "build", "computer-use", "LICENSE-cua.txt");

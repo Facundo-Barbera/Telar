@@ -36,7 +36,7 @@ import type { RunConfiguration } from "../src/run/types";
  * a sibling workspace to resolve a literal one; a computed path is `any` to the
  * compiler and the real module to bun, which is what this test needs.
  */
-const desktopServer = path.join(import.meta.dir, "..", "..", "desktop", "run-terminal-server.js");
+const desktopServer = path.join(import.meta.dir, "..", "..", "desktop", "src", "terminal", "run-terminal-server.js");
 type StartServer = (options: {
   port: number;
   token: string;
