@@ -10,4 +10,4 @@ export { type StoppedClaim, TurnLifecycle } from "./lifecycle";
 export { TurnIngest } from "./ingest";
 export { isLiveTask, TurnClaims } from "./claims";
 export { TurnRecovery } from "./recovery";
-export { requestTitle, TIMEOUT_REASON, TurnWakes } from "./wakes";
+export { TurnWakes } from "./wakes";

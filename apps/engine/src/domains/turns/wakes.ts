@@ -3,7 +3,6 @@ import {
   type EngineRequest,
   type Item,
   type NotificationDetail,
-  type RequestDetail,
   type Session,
   type Subscription,
   type Turn,
@@ -11,7 +10,7 @@ import {
   type WakeReason,
 } from "@telar/engine-client";
 import { EngineStateError, type Kernel } from "../../platform/kernel";
-import { isPeerMail, TERMINAL_WAKE_KINDS, type SessionItems, type SessionMailbox, type SessionQueue, type SessionRecords, type SessionSubscriptions } from "../sessions";
+import { isPeerMail, requestTitle, TERMINAL_WAKE_KINDS, type SessionItems, type SessionMailbox, type SessionQueue, type SessionRecords, type SessionSubscriptions } from "../sessions";
 import { quotedExcerpt } from "./agent-notice";
 import { RELAY_RULE } from "./attribution";
 import { FOLDING_INTENTS, type TurnSubmission } from "./intake";
@@ -66,9 +65,6 @@ function wakeMessage(
   return lines.join("\n");
 }
 
-export const TIMEOUT_REASON =
-  "Nobody answered before this request's deadline, so the default stated when it was opened was taken. A person did not decide this. Do not re-open the same request — say what happened and carry on, or ask something the person can answer later.";
-
 function clampWake(text: string): string {
   const trimmed = text.trim();
   return trimmed.length <= MAX_WAKE_LINE_CHARS
@@ -76,24 +72,6 @@ function clampWake(text: string): string {
     : `${trimmed.slice(0, MAX_WAKE_LINE_CHARS)}… [${trimmed.length - MAX_WAKE_LINE_CHARS} more characters — sessions_read has the rest]`;
 }
 
-export function requestTitle(detail: RequestDetail): string {
-  switch (detail.kind) {
-    case "command_execution":
-      return detail.command.command;
-    case "file_change":
-      return `${detail.change.kind} ${detail.change.path}`;
-    case "file_read":
-      return detail.read.path;
-    case "tool_call":
-      return detail.call.name;
-    case "user_input":
-      return detail.prompt;
-    case "secret_access":
-      // Origin and nothing else: the notification body may land on a lock
-      // screen, and even item TITLES are more than a passer-by should read.
-      return `Fill login from 1Password — ${detail.secret.origin}`;
-  }
-}
 
 const MAX_WAKE_LINE_CHARS = 240;
 
