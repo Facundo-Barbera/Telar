@@ -1,6 +1,7 @@
 import type { EngineEvent, Subscription } from "@telar/engine-client";
 import type { Kernel } from "../../platform/kernel";
 import { SessionActivity } from "./activity";
+import { SessionAttachments } from "./attachment-store";
 import { OpenPrefixes, SessionItems } from "./items";
 import { SessionMailbox } from "./mailbox";
 import { SessionQueues, type SessionQueue } from "./queue";
@@ -50,5 +51,6 @@ export function createSessionModules(kernel: Kernel, host: SessionHost) {
     ...(host.onQueueChanged ? { onChanged: host.onQueueChanged } : {}),
   });
   const prefixes = new OpenPrefixes(kernel, host.readEvents);
-  return { records, items, requests, tasks, mailbox, activity, index, queues, prefixes };
+  const attachments = new SessionAttachments(kernel, (sessionId) => void records.require(sessionId));
+  return { records, items, requests, tasks, mailbox, activity, index, queues, prefixes, attachments };
 }

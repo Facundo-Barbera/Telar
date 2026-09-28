@@ -30,21 +30,10 @@ import {
   type UsageLimitSource,
   resolveMcpServers,
   EngineRequest as RequestSchema,
-  Project as ProjectSchema,
-  DataScienceConfig as DataScienceConfigSchema,
-  type DataScienceConfig,
-  LatexConfig as LatexConfigSchema,
-  applyPluginPatch,
   machineAllows,
   machineSettings,
-  pluginEffectivelyEnabled,
-  PROJECT_PLUGINS_VERSION,
-  ProjectPlugins as ProjectPluginsSchema,
   type ProjectPlugins,
   migrateLegacyPluginFields,
-  pluginBlock,
-  pluginConfigFromLegacy,
-  readProjectPlugins,
   assignmentsOf,
   // THE CLIENTS' OWN SETTLING RULE, imported rather than re-implemented: the
   // live list drops the rows a rail would shelve (#457), so an engine that
@@ -65,12 +54,9 @@ import {
   Subscription as SubscriptionSchema,
   Cohort as CohortSchema,
   Turn as TurnSchema,
-  TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
   WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
-  type BrowserProvider,
   type BrowserSnapshot,
-  type BrowserTab,
   type GitCommitEntry,
   type GitHubCheckLog,
   type GitHubCommentResult,
@@ -158,34 +144,37 @@ import {
   type DictationProviderId,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
-import { assertId, assertStateVersion, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
+import { assertId, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
 import { RUNTIME_MODES, SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
 import { McpOAuthStore, McpServers, type PendingMcpOAuth } from "./domains/agent-tools";
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
+import { ProjectProbes, ProjectRegistry, type ProjectPatch } from "./domains/projects";
+import { dataScienceBlock, latexBlock, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { awaitsRateLimitSweep, createSessionModules, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
+import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
 import { boundedOutline, cohortNotification, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, inlineExcerpt, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
-import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./domains/appearance";
-import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./domains/files";
+import { type ProjectIcon } from "./domains/appearance";
+import { listWorkspaceFilesAsync, readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
 import { type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
-import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
+import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
-import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER, defaultGhRunner, mergePull, openPullRequest, reactOn, readCheckLog, readForgeFacets, readGitHub, readIssue, readPull, readPullFiles, readPullForBranch, replyToThread, resolveThread, type GhRunner } from "./domains/github";
+import { type AttachedBrowser, SessionBrowser } from "./domains/browser";
+import { GitHubStore, commentOnPullLine, defaultGhRunner, openPullRequest, readPullFiles, readPullForBranch, type GhRunner } from "./domains/github";
 import {  } from "zod";
 import { providerProcessEnv } from "./domains/providers";
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import { describeImport, type ClaudeConversation, type ForkCut } from "./drivers/claude";
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
-import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, LatexMachineSettings as LatexMachineSettingsSchema, type LatexPackagesAnswer, type LatexToolchain, latexToolchainStatus, listPackages, listTexPackages, ManagedTectonic, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, removeTelarVenv, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, toolchainStatus, windowCsv } from "./domains/plugins";
+import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, listPackages, listTexPackages, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, removeTelarVenv, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, windowCsv } from "./domains/plugins";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultWorktreeGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, derivedBranchFor, type WorktreePlan, type WorktreeQueue, buildInventory, type InventoryProject, type InventorySession, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, moveCheckouts, type Checkout, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
-import { CheckoutSizes, CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
+import { CheckoutSizes, CleanupStore, copyStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor } from "./domains/terminal";
-import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
+import { findVolumeMount, mountSignature, type ProjectAvailability, type VolumeDeps } from "./volumes";
 
 /** The first line with anything on it, clamped for a cohort's member line. */
 /** A cohort member's `excerpt` and `chars` — see `CohortMember`. */
@@ -552,27 +541,9 @@ function planWindow(
  */
 export const ENGINE_EXIT_LOCK_HELD = 3;
 
-/**
- * How large one attached file may be.
- *
- * 20 MB is above every screenshot and design mock and below the point where
- * holding the bytes in memory to write them matters. It is a guard on the HTTP
- * edge rather than a product limit: the cost of a too-large attachment lands on
- * the provider's context, and refusing it here with a clear message beats
- * discovering it three layers down as a token overflow.
- */
-const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 /** Per turn, so one message cannot smuggle 16 × 20 MB past the per-file cap. */
 const MAX_TURN_ATTACHMENTS = 16;
-
-/** How long a GitHub read stays fresh. Longer than a glance, shorter than the
- *  time it takes to file an issue and come back for it. */
-const GITHUB_CACHE_MS = 30_000;
-
-
-
-
 
 /**
  * How far the DURABLE `Turn.lastProgressAt` may drift behind the in-memory
@@ -584,12 +555,6 @@ const GITHUB_CACHE_MS = 30_000;
  * `STALLED_AFTER_MS`, so the lag can never be what decides a verdict.
  */
 const PROGRESS_STAMP_MS = 60_000;
-
-
-
-/** Milestones and labels change on the timescale of a sprint, not of a page view,
- *  so what there is to FILTER BY is held far longer than the rows themselves. */
-const FACET_CACHE_MS = 5 * 60_000;
 
 /**
  * THE STORE ROOT'S FILE LIST, RE-EXPORTED — it moved to `./state-paths` in #665
@@ -603,23 +568,6 @@ import type { ReapCandidate } from "./domains/storage";
 export { statePaths, type EngineStatePaths };
 export { EngineStateError };
 
-/** Every regular file's size under `root`, one at a time. Iterative for the
- *  reason `storage.ts`'s walk is: a store holds a checkout per session and a
- *  `node_modules` inside several of them, and a recursive walk over that is a
- *  stack as deep as the worst dependency chain somebody installed. */
-function* walkFiles(root: string): Generator<number> {
-  const frontier = [root];
-  while (frontier.length > 0) {
-    const at = frontier.pop()!;
-    let stat: fs.Stats;
-    try { stat = fs.lstatSync(at); } catch { continue; }
-    if (stat.isDirectory()) {
-      try { for (const name of fs.readdirSync(at)) frontier.push(path.join(at, name)); } catch { /* unreadable: counted as nothing */ }
-      continue;
-    }
-    yield stat.size;
-  }
-}
 
 export function engineRootFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.TELAR_HOME?.trim();
@@ -690,37 +638,11 @@ function canonicalPath(input: string): string {
   return canonical;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 function assertText(value: unknown): asserts value is string {
   if (typeof value !== "string" || value.trim() === "" || value.length > MAX_TEXT_LENGTH) {
     throw new EngineStateError("invalid_request", "turn text must be non-empty and within the allowed size");
   }
 }
-
-function assertAbsolutePath(value: unknown, label: string): asserts value is string {
-  if (typeof value !== "string" || !path.isAbsolute(value)) {
-    throw new EngineStateError("invalid_request", `${label} must be an absolute path`);
-  }
-}
-
-type ProjectRegistry = { version: typeof STATE_VERSION; projects: Project[] };
-
-const emptyRegistry = (): ProjectRegistry => ({ version: STATE_VERSION, projects: [] });
-
 
 /**
  * THE SESSION'S DIRECTORY, OR A REFUSAL — every store call that needs a real
@@ -749,11 +671,6 @@ const emptyRegistry = (): ProjectRegistry => ({ version: STATE_VERSION, projects
  */
 const REF_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
-function workspaceRootOf(session: Pick<Session, "workspace">): string {
-  const root = workspacePath(session.workspace);
-  if (root === undefined) throw new EngineStateError("invalid_request", "this session has no working directory");
-  return root;
-}
 
 /**
  * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
@@ -815,41 +732,6 @@ const liveRow = (session: Session): LiveSessionRow => ({
   ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
 });
 
-
-
-
-
-/**
- * A PROJECT'S DATA SCIENCE / LATEX ENTRY, in the flat `{enabled, ...settings}`
- * shape their resolvers read. Read from the plugin map only — the legacy
- * `Project.dataScience` / `Project.latex` keys are folded into it when the
- * registry opens and never read here. `undefined` means off. Settings that no
- * longer parse are dropped rather than half-trusted; the switch survives.
- */
-function typedPluginBlock<T>(project: Project, id: string, schema: { safeParse(value: unknown): { success: boolean; data?: T } }): T | undefined {
-  const block = pluginBlock(project, id);
-  if (!block) return undefined;
-  const parsed = schema.safeParse(block);
-  return parsed.success ? parsed.data : schema.safeParse({ enabled: block.enabled === true }).data;
-}
-const dataScienceBlock = (project: Project): DataScienceConfig | undefined =>
-  typedPluginBlock(project, "data-science", DataScienceConfigSchema);
-const latexBlock = (project: Project): LatexConfig | undefined => typedPluginBlock(project, "latex", LatexConfigSchema);
-
-/**
- * PARSING IS THE SCHEMAS' JOB NOW. v1 hand-rolled every one of these checks and
- * each was a place the type and the validator could drift; the whole reason
- * `packages/engine-client` took a zod dependency is that there is exactly one
- * definition per shape and the TypeScript type is derived from it.
- */
-function parseRegistry(value: unknown): ProjectRegistry {
-  assertStateVersion(value, "project registry");
-  const projects = ProjectSchema.array().safeParse((value as { projects?: unknown }).projects);
-  if (!projects.success) throw new EngineStateError("invalid_request", "invalid project registry");
-  for (const project of projects.data) assertAbsolutePath(project.root, "project root");
-  return { version: STATE_VERSION, projects: projects.data };
-}
-
 /**
  * The most recently FINISHED turn, whatever it finished as.
  *
@@ -891,67 +773,6 @@ function taskSeedOf(task: Task): TaskSeed {
   const { sessionId: _sessionId, runId: _runId, startedAt: _startedAt, updatedAt: _updatedAt, completedAt: _completedAt, ...seed } = task;
   return seed;
 }
-
-
-
-
-
-
-
-
-
-
-/** The id → metadata index for a session's uploaded files. */
-function attachmentsFile(paths: EngineStatePaths, sessionId: string): string {
-  return path.join(sessionDir(paths, sessionId), "attachments.json");
-}
-
-/**
- * Where an attachment's bytes land.
- *
- * THE FILENAME IS MINTED HERE AND IS NOT THE HUMAN'S. `attachment.name` is
- * whatever the client sent — `../../.ssh/id_rsa`, a newline, 4 KB of unicode —
- * and it is kept only for display. The path is `<id><ext>` where the id is one
- * the engine generated, so no user-supplied byte reaches the filesystem. The
- * extension is the one part that follows the name, sanitised down to a short
- * alphanumeric run, because a provider and a human both read files by suffix.
- */
-function attachmentFile(paths: EngineStatePaths, sessionId: string, attachmentId: string, name: string): string {
-  assertId(attachmentId, "attachment id");
-  const extension = /\.([A-Za-z0-9]{1,12})$/.exec(name)?.[1]?.toLowerCase();
-  return path.join(sessionDir(paths, sessionId), "attachments", `${attachmentId}${extension ? `.${extension}` : ""}`);
-}
-
-/**
- * Told when a request parks with nobody watching.
- *
- * IT RETURNS WHETHER A HUMAN WAS ACTUALLY REACHED, and that boolean is stored
- * on the request. With no notifier configured the answer is `false` — which
- * records the honest state "this session is stuck and nobody was told" rather
- * than implying someone was. The contract comment on `EngineRequest.notified` exists
- * for exactly this: it must be detectable, not inferred from absence.
- */
-/**
- * The browser as the STORE is allowed to see it.
- *
- * Narrow on purpose, and `state` is optional: every test constructs an
- * `EngineStore` directly, and requiring the full runtime here would drag
- * Chromium's transport into all of them. A store with no browser answers
- * `provider: "none"`, which is the same thing a session that never browsed
- * answers — one code path, not two.
- */
-export type AttachedBrowser = {
-  release(scopeKey: string, reason?: string): Promise<boolean>;
-  state?(
-    scopeKey: string,
-    options: { screenshot?: boolean; start?: boolean },
-  ): Promise<{ provider: BrowserProvider; running: boolean; tabs: BrowserTab[]; screenshot?: string | null; error?: string | null }>;
-  /** Bind a scope to its project's browser profile before a human-started
-   *  read opens a tab (the desktop host refuses an unbound scope). */
-  bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
-  /** One browser tool call on a scope — what `browserOpen` uses to open a tab. */
-  call?(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<{ isError?: boolean; content: Array<{ type: string; text?: string }> }>;
-};
 
 /**
  * The session's terminals as the STORE is allowed to see them — the run
@@ -1058,6 +879,12 @@ export class EngineStore {
   private readonly mcpServers: McpServers;
   private readonly providers: ProviderRegistry;
   private readonly usageSources: UsageLimitSources;
+  private readonly projectProbes: ProjectProbes;
+  private readonly projectRegistry: ProjectRegistry;
+  private readonly toolchains: PluginToolchains;
+  private readonly github: GitHubStore;
+  private readonly browser: SessionBrowser;
+  private readonly attachments: SessionAttachments;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1180,55 +1007,14 @@ export class EngineStore {
   /** What a provider process would inherit from this engine — read to say what
    *  a newly-configured login is about to stop inheriting (#594). */
   private readonly ambientEnv: Record<string, string | undefined>;
-  /** In memory and never persisted: it is a cache of somebody else's state, and
-   *  a stale one surviving a restart would be worse than a slow first read. */
-  private readonly githubCache = new Map<string, GitHubSnapshot>();
-  /**
-   * One issue or one pull request, keyed `<projectId>:issue:<number>`.
-   *
-   * SEPARATE FROM THE SNAPSHOT CACHE rather than folded into it, because the two
-   * expire independently: reopening a detail tab must not have to re-read the
-   * whole list, and a list refresh must not silently answer a detail read with
-   * rows that have no body. Only successful reads are cached — caching "gh is not
-   * signed in" for thirty seconds would outlive the `gh auth login` that fixes it.
-   */
-  private readonly githubDetailCache = new Map<string, GitHubIssueRead | GitHubPullRead>();
-  /**
-   * Whether this machine's `gh` token has told us it cannot read Projects.
-   *
-   * IN MEMORY AND NOT PERSISTED, like the caches beside it: it describes a token
-   * that the user can re-scope at any moment, and a "no" that survived a restart
-   * would outlive the `gh auth refresh` that fixed it. Cleared by any forced read,
-   * so the refresh button is the way back.
-   */
-  private noProjectScope = false;
-  /** What there is to filter by, per project. In memory like every cache here: it
-   *  describes somebody else's repository settings. */
-  private readonly facetCache = new Map<string, GitHubFacets>();
-  /**
-   * Set by the daemon when it owns a browser. ATTACHED RATHER THAN CONSTRUCTED
-   * so the store keeps no provider dependency — every test builds an
-   * EngineStore directly and must not pull Chromium in to do it.
-   */
-  private browser?: AttachedBrowser;
-  /** The last tab set journalled from a HAND-STARTED browser read, per session.
-   *  In memory like the caches above: it only exists to stop repeated `start`
-   *  reads writing identical `browser.state.changed` rows. */
-  private readonly browserJournalSignature = new Map<string, string>();
-  /** The last journalled controller per session — same dedupe job as the
-   *  signature above, for `browser.control.changed`. In memory: a duplicate
-   *  row after a restart is noise, not a lie. */
-  private readonly browserControlLast = new Map<string, string>();
 
 
   noteForNextTurn(sessionId: string, note: string): void {
     this.mailbox.noteForNextTurn(sessionId, note);
   }
 
-
-
   attachBrowser(browser: AttachedBrowser): void {
-    this.browser = browser;
+    this.browser.attach(browser);
   }
 
   /**
@@ -1409,8 +1195,8 @@ export class EngineStore {
       files: new DsFiles(path.join(sessionDir(this.paths, sessionId), "ds")),
       // A notebook with plots in it passes the editor's 512 KB ceiling in one
       // cell; both fences take the notebook-sized cap instead.
-      readFile: (target) => this.readFenced(workspaceRootOf(session), target, "session workspace", NOTEBOOK_MAX_BYTES),
-      writeFile: (target, text, expected) => this.writeFenced(workspaceRootOf(session), target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
+      readFile: (target) => readFenced(workspaceRootOf(session), target, "session workspace", NOTEBOOK_MAX_BYTES),
+      writeFile: (target, text, expected) => writeFenced(workspaceRootOf(session), target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
       putAttachment: (input) => this.putAttachment(sessionId, input),
       attachmentBytes: (id) => this.attachmentBytes(sessionId, id).data,
       appendEvent: (event) => { this.appendEvent(sessionId, event); },
@@ -1425,38 +1211,8 @@ export class EngineStore {
     });
   }
 
-  /**
-   * Which interpreter a session runs on, or nothing. THE WORKTREE RULE LIVES
-   * HERE AND NOWHERE ELSE: a relative path resolves against the session's own
-   * tree, and a worktree missing it gets nothing — never the project root's.
-   */
   resolveDataScience(session: Session): { pythonPath: string } | undefined {
-    if (!session.projectId) return undefined;
-    let project: Project;
-    try { project = this.getProject(session.projectId); } catch { return undefined; }
-    const config = dataScienceBlock(project);
-    if (!config?.enabled) return undefined;
-    // The machine ceiling, same rule as LaTeX's: off here means unavailable
-    // everywhere, and every project keeps what it chose.
-    if (!machineAllows(this.machinePlugins(), "data-science")) return undefined;
-    /**
-     * THE MAC'S DEFAULT INTERPRETER IS A REAL FALLBACK, exactly as its TeX
-     * install is — a project that has not chosen one runs on it rather than
-     * having no kernel at all.
-     *
-     * THE MACHINE DEFAULT IS NEVER RESOLVED AGAINST THE WORKTREE. A project's
-     * own `python.path` may be relative so a worktree session runs ITS `.venv`;
-     * a Mac-wide default is absolute by schema, because "the same interpreter
-     * wherever you are" is the only thing it could honestly mean. Passing it
-     * through `resolvePythonPath` anyway is harmless for an absolute path and
-     * keeps one code path.
-     */
-    const machineDefault = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "data-science"));
-    const chosen = config.python?.path ?? (machineDefault.success ? machineDefault.data.python : undefined);
-    if (!chosen) return undefined;
-    const pythonPath = resolvePythonPath(workspaceRootOf(session), chosen);
-    if (!fs.existsSync(pythonPath)) return undefined;
-    return { pythonPath };
+    return this.toolchains.resolveDataScience(session);
   }
 
   /** Compile and tlmgr jobs — a SIBLING runner, not `dsJobs`, so a thesis
@@ -1501,91 +1257,16 @@ export class EngineStore {
     });
   }
 
-  /**
-   * Which TeX toolchain a session compiles with, or nothing. The binary is a
-   * MACHINE-level fact (absolute path, checked on disk); `mainFile` is the
-   * per-tree fact and follows the worktree rule — it resolves against the
-   * session's own tree when the capability compiles, never the project root's.
-   */
   resolveLatex(session: Session): ResolvedLatex | undefined {
-    if (!session.projectId) return undefined;
-    let project: Project;
-    try { project = this.getProject(session.projectId); } catch { return undefined; }
-    const config = latexBlock(project);
-    if (!config?.enabled) return undefined;
-    // THE MACHINE CEILING. Turning LaTeX off for this Mac makes it unavailable
-    // everywhere without touching what any project chose.
-    if (!machineAllows(this.machinePlugins(), "latex")) return undefined;
-    /**
-     * ── THE FALLBACK CHAIN, MOST SPECIFIC FIRST ──────────────────────────────
-     *
-     *   1. the project's own distribution — a per-checkout choice is the most
-     *      specific thing anyone said, and it always wins;
-     *   2. this Mac's default, from the Plugins pane;
-     *   3. TELAR'S OWN TECTONIC, when it has been fetched.
-     *
-     * STEP 3 IS THE POINT OF THE MANAGED INSTALL. Before it, a project moved to
-     * a Mac with no TeX on it did not compile and had no way to, short of the
-     * person installing MacTeX; now the same checkout compiles anywhere Telar
-     * has downloaded its Tectonic. It is LAST because it is the weakest signal:
-     * nobody chose it, it is what is left when nobody has.
-     *
-     * Each step still has to EXIST on disk. A machine default naming a TeX Live
-     * that was deleted falls through to the managed copy rather than resolving
-     * onto a path that is not there — which is the difference between "your
-     * document compiled" and "latexmk: command not found".
-     */
-    const machine = LatexMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "latex"));
-    const machineDefaults = machine.success ? machine.data : {};
-    for (const choice of [config.toolchain, machineDefaults.toolchain]) {
-      if (!choice) continue;
-      // `managed` names an INTENT, not a place — resolve it to today's binary.
-      const binPath = choice.kind === "managed" ? this.managed().found()?.path : choice.path;
-      if (!binPath || !fs.existsSync(binPath)) continue;
-      const engine = choice.engine ?? machineDefaults.engine;
-      return {
-        kind: choice.kind === "managed" ? "tectonic" : (choice.kind as ResolvedLatex["kind"]),
-        binPath,
-        ...(engine ? { engine: engine as ResolvedLatex["engine"] } : {}),
-        ...(config.mainFile ? { mainFile: config.mainFile } : {}),
-        ...(machineDefaults.autoInstallPackages ? { autoInstallPackages: true } : {}),
-      };
-    }
-    const managed = this.managed().found();
-    if (!managed) return undefined;
-    return {
-      kind: "tectonic",
-      binPath: managed.path,
-      ...(config.mainFile ? { mainFile: config.mainFile } : {}),
-    };
+    return this.toolchains.resolveLatex(session);
   }
 
-  /**
-   * TELAR'S OWN TECTONIC, for this engine root. One instance, because the
-   * single-flight install and the last error are state two HTTP requests have
-   * to share — see `latex/managed.ts`.
-   */
-  private managedTectonicInstall?: ManagedTectonic;
-
-  private managed(): ManagedTectonic {
-    this.managedTectonicInstall ??= new ManagedTectonic({ root: this.paths.root });
-    return this.managedTectonicInstall;
-  }
-
-  /** What `GET /v2/latex/managed` answers, and what the toolchain carries. */
   managedTectonic(): ManagedTectonicStatus {
-    return this.managed().status();
+    return this.toolchains.managedStatus();
   }
 
-  /**
-   * Fetch it, or answer immediately when it is already here. Idempotent and
-   * serialised in the installer; the toolchain cache is dropped afterwards so
-   * the next probe reports the binary rather than a five-second-old absence.
-   */
-  async installManagedTectonic(): Promise<ManagedTectonicStatus> {
-    const status = await this.managed().install();
-    this.latexToolchainCache = undefined;
-    return status;
+  installManagedTectonic(): Promise<ManagedTectonicStatus> {
+    return this.toolchains.installManaged();
   }
 
   /** The kernel host reporting a state change; journaled so the panel's pill follows it. */
@@ -1615,153 +1296,33 @@ export class EngineStore {
       const parsed = JSON.parse(line.text.slice(line.text.indexOf("__TELAR_TABLE__") + 15)) as Omit<TableWindow, "offset" | "path">;
       return { path: target, offset: options.offset, ...parsed };
     }
-    const file = this.readFenced(workspaceRootOf(session), target, "session workspace");
+    const file = readFenced(workspaceRootOf(session), target, "session workspace");
     if (file.binary) throw new EngineStateError("invalid_request", "that file is not text");
     return { path: target, ...windowCsv(file.text, /\.tsv$/i.test(target) ? "\t" : ",", options), ...(file.truncated ? { truncated: true } : {}) };
   }
 
-  /** The attachment index, for the plots gallery. Newest first. */
   listAttachments(sessionId: string, options: { tag?: string } = {}): TurnAttachment[] {
-    this.records.require(sessionId);
-    const all = [...this.readAttachments(sessionId).values()];
-    const filtered = options.tag ? all.filter((a) => a.tags?.includes(options.tag!)) : all;
-    return structuredClone(filtered.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)));
+    return this.attachments.list(sessionId, options);
   }
 
   attachmentBytes(sessionId: string, attachmentId: string): { attachment: TurnAttachment; data: Uint8Array } {
-    this.records.require(sessionId);
-    const attachment = this.readAttachments(sessionId).get(attachmentId);
-    if (!attachment) throw new EngineStateError("not_found", "attachment does not exist");
-    return { attachment: structuredClone(attachment), data: new Uint8Array(fs.readFileSync(attachment.path)) };
+    return this.attachments.bytes(sessionId, attachmentId);
   }
 
-  /** Replace an attachment's tags — how a plot is pinned and unpinned. */
   tagAttachment(sessionId: string, attachmentId: string, tags: string[]): TurnAttachment {
-    this.records.require(sessionId);
-    const index = this.readAttachments(sessionId);
-    const attachment = index.get(attachmentId);
-    if (!attachment) throw new EngineStateError("not_found", "attachment does not exist");
-    const cleaned = [...new Set(tags.map((t) => t.trim()).filter(Boolean))].slice(0, 16);
-    const next = { ...attachment, ...(cleaned.length ? { tags: cleaned } : {}) };
-    if (!cleaned.length) delete next.tags;
-    index.set(attachmentId, next);
-    this.writeDocument(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
-    return structuredClone(next);
+    return this.attachments.tag(sessionId, attachmentId, tags);
   }
 
-  /**
-   * Record whose hands are on the session's shared browser (§6). Reported by
-   * the DESKTOP SHELL — the only process that can see a human's click land in
-   * the native view — over the engine's own HTTP API, and deduped here so a
-   * shell that re-reports the standing state journals nothing new.
-   */
   recordBrowserControl(sessionId: string, controller: "agent" | "human" | "idle", tabId?: string, interrupted = false): void {
-    this.records.require(sessionId);
-    // Control is PER TAB (§6): the dedupe key carries the tab so tab 1
-    // changing hands is never mistaken for a re-report about tab 0.
-    const key = `${sessionId}:${tabId ?? ""}`;
-    if (this.browserControlLast.get(key) === controller) return;
-    this.browserControlLast.set(key, controller);
-    // Stamped with the RUNNING turn when there is one, so the transcript can
-    // put "You interacted with the browser" inside the turn whose action it explains.
-    // Between turns the row is session-level — the panel badge is live state.
-    const running = this.readQueue(sessionId).turns.find((turn) => turn.state === "running");
-    this.appendEvent(
-      sessionId,
-      { type: "browser.control.changed", controller, ...(tabId ? { tabId } : {}), ...(interrupted ? { interrupted: true } : {}) },
-      running?.runId,
-    );
+    this.browser.recordControl(sessionId, controller, tabId, interrupted);
   }
 
-  /**
-   * What the session's browser is looking at, for a human.
-   *
-   * ANSWERED FROM THE DAEMON'S OWN RUNTIME, which is a real limitation and is
-   * stated rather than hidden: the out-of-process worker owns a DIFFERENT
-   * `BrowserRuntime` that this process cannot reach (see worker-main.ts), so a
-   * deployment running its worker separately reports `provider: "none"` here
-   * even while that worker is driving a page. The journalled
-   * `browser.state.changed` observation still shows the tabs in that case,
-   * because the party that drove them reported them. Only the pixels are
-   * daemon-local.
-   *
-   * `provider: "none"` with no error is also the ordinary answer for a session
-   * that has never browsed, and asking must never be what starts a browser.
-   */
-  async browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
-    const session = this.records.get(sessionId);
-    if (!this.browser?.state) {
-      return { scopeKey: sessionId, provider: "none", running: false, tabs: [], canStart: false };
-    }
-    // BIND THE PROJECT PROFILE ON THE HUMAN ENTRY PATH. "Open a browser" from
-    // the cockpit reaches here with `start:true` BEFORE the browser surface
-    // mounts, so its own bind effect cannot run first; a fresh human-only
-    // session after a restart would otherwise hit an unbound scope and the
-    // host would refuse to open. Idempotent with the worker's per-turn bind.
-    // Projectless sessions bind the explicit `none`.
-    if (options.start && this.browser.bindProfile) {
-      await this.browser.bindProfile(sessionId, session.projectId ?? "none");
-    }
-    const state = await this.browser.state(sessionId, {
-      ...(options.screenshot === undefined ? {} : { screenshot: options.screenshot }),
-      ...(options.start === undefined ? {} : { start: options.start }),
-    });
-    /**
-     * A browser opened BY HAND has no worker to report it. The socket journals
-     * `browser.state.changed` for agent-driven navigation; a human pressing
-     * "open a browser" goes through this read with `start`, and without this
-     * write the launched page would exist with no tab in the panel — the panel
-     * folds the journal, not this snapshot. Deduped by signature so repeated
-     * presses (or a poll that someone hands `start` to) journal nothing new.
-     */
-    if (options.start && !state.error && state.running) {
-      const signature = `${state.provider}:${JSON.stringify(state.tabs)}`;
-      if (this.browserJournalSignature.get(sessionId) !== signature) {
-        this.browserJournalSignature.set(sessionId, signature);
-        this.appendEvent(sessionId, { type: "browser.state.changed", provider: state.provider, tabs: state.tabs });
-      }
-    }
-    return {
-      scopeKey: sessionId,
-      provider: state.provider,
-      running: state.running,
-      tabs: state.tabs,
-      ...(state.screenshot ? { screenshot: state.screenshot } : {}),
-      ...(state.error ? { error: state.error } : {}),
-      canStart: true,
-    };
+  browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
+    return this.browser.state(sessionId, options);
   }
 
-  /**
-   * OPEN A URL IN THE SESSION'S BROWSER, AS THE HUMAN — the engine-side twin
-   * of the desktop shell's "new tab" action, for the clients that have no
-   * shell: a phone, or this cockpit reading a paired Mac. The tab opens on
-   * whichever browser that engine routes to (the desktop's when its shell is
-   * up, headless otherwise), and the resulting tab set is journalled exactly
-   * as a hand-started browser's is, so the panel learns of it.
-   *
-   * http(s) only: a browser tool is not a way to hand `file:` or a custom
-   * scheme to whatever handles it on that machine.
-   */
-  async browserOpen(sessionId: string, url: string): Promise<BrowserSnapshot> {
-    const session = this.records.get(sessionId);
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new EngineStateError("invalid_request", "that is not a URL");
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new EngineStateError("invalid_request", "only http and https pages can be opened");
-    if (!this.browser?.call || !this.browser.state) throw new EngineStateError("invalid_request", "this engine has no browser to open pages in");
-    if (this.browser.bindProfile) await this.browser.bindProfile(sessionId, session.projectId ?? "none");
-    const result = await this.browser.call(sessionId, "browser_tabs", { action: "new", url: parsed.href });
-    if (result.isError) {
-      const text = result.content.find((part) => part.type === "text")?.text;
-      throw new EngineStateError("invalid_request", text || "the browser could not open that page");
-    }
-    // The same dedupe-by-signature journal write as a hand-started browser:
-    // the panel folds the journal, not this snapshot.
-    return this.browserState(sessionId, { start: true });
+  browserOpen(sessionId: string, url: string): Promise<BrowserSnapshot> {
+    return this.browser.open(sessionId, url);
   }
 
   listMcpServers(scope?: { projectId: string | null }): McpServer[] {
@@ -1789,65 +1350,9 @@ export class EngineStore {
     return next;
   }
 
-  /**
-   * A SAFE COPY OF THIS STORE — issue #665, and the thing whose absence made
-   * "do not touch the live store" a rule with no alternative behind it.
-   *
-   * Every question of the form "what is actually in there" used to become
-   * either a hand-run query against the one irreplaceable artifact or an
-   * estimate. #646's figures had to be corrected twice for exactly that reason.
-   * This is the sanctioned answer: a store a person — or an agent — can open,
-   * grep, query and throw away.
-   *
-   * ══ WHAT IT CARRIES, AND WHAT IT DELIBERATELY DOES NOT ══
-   *
-   * Tier 1 and tier 1′: the database, through
-   * `VACUUM INTO` so it is consistent rather than a `cp` of pages from
-   * different moments, and every other file and directory at the store root.
-   *
-   * NOT THE REPRODUCIBLE TIER. `worktrees/`, `python/` and `tools/` are
-   * re-makeable from a recorded sha or a re-install, and on this machine the
-   * first of them is 59 checkouts and tens of gigabytes — a "safe copy" that
-   * took minutes and filled a disk would be a button nobody presses. Named
-   * here rather than guessed at by size.
-   *
-   * NOT `engine.lock` EITHER, which names a live daemon on a live host: copying
-   * it would hand a second engine a lock record that looks like a crash.
-   *
-   * AND NOT THE `-wal`/`-shm`. `VACUUM INTO` produces a self-contained
-   * database; carrying the log beside it would be carrying a log that describes
-   * a different file.
-   *
-   * THE DESTINATION MUST NOT EXIST. The one operation here that could destroy
-   * something is writing over a directory somebody named by mistake, and a
-   * refusal costs them one retry.
-   */
+  /** A consistent copy of this store, without the reproducible tier, to open instead of the live one. */
   copyStoreTo(destination: string): { root: string; files: number; bytes: number } {
-    if (!path.isAbsolute(destination)) throw new EngineStateError("invalid_request", "a copy destination must be an absolute path");
-    if (fs.existsSync(destination)) throw new EngineStateError("invalid_request", "that folder already exists — choose one Telar can create");
-    fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
-    this.kernel.executionStore.vacuumInto(path.join(destination, "execution.sqlite"));
-    let files = 1;
-    let bytes = fs.statSync(path.join(destination, "execution.sqlite")).size;
-    /** Reproducible (tier 3), the live daemon's lock, and the database's own
-     *  files — each skipped for the reason the header gives. */
-    const skip = new Set(["worktrees", "python", "tools", "engine.lock", "execution.sqlite", "execution.sqlite-wal", "execution.sqlite-shm"]);
-    for (const entry of fs.readdirSync(this.paths.root, { withFileTypes: true })) {
-      if (skip.has(entry.name)) continue;
-      const from = path.join(this.paths.root, entry.name);
-      const to = path.join(destination, entry.name);
-      try {
-        fs.cpSync(from, to, { recursive: true, errorOnExist: true, force: false, dereference: false });
-      } catch {
-        // ONE UNREADABLE SUBTREE IS NOT A FAILED COPY. A permission, a socket,
-        // a file that vanished under the walk: the copy is worth having
-        // without it, and refusing the whole thing would put somebody back on
-        // the live store, which is what this exists to keep them off.
-        continue;
-      }
-      for (const measured of walkFiles(to)) { files += 1; bytes += measured; }
-    }
-    return { root: destination, files, bytes };
+    return copyStore(this.paths.root, this.kernel.executionStore, destination);
   }
 
   getRetentionPolicy(): RetentionPolicy {
@@ -2006,8 +1511,7 @@ export class EngineStore {
     // THE RAW REGISTRY, not `listProjects`: that probes every checkout for a
     // branch and an icon, and this wants a name. Several `git` calls per project
     // to prime a recogniser would be the cost of the feature.
-    const registry = this.readDocument(this.paths.projects);
-    const projects = registry === undefined ? [] : parseRegistry(registry).projects;
+    const projects = this.projectRegistry.read().projects;
     return {
       sessionTitles: sessions.flatMap((session) => (session.title ? [session.title] : [])),
       // A REMOVED PROJECT IS NOT ONE ANYBODY IS TALKING ABOUT — the same filter
@@ -2070,10 +1574,6 @@ export class EngineStore {
     this.appearance.clear();
   }
 
-
-
-
-
   getMcpOAuthRecord(serverId: string, projectId?: string): McpOAuthRecord | undefined {
     return this.mcpOAuth.get(serverId, projectId);
   }
@@ -2097,8 +1597,6 @@ export class EngineStore {
   takePendingMcpOAuth(state: string): PendingMcpOAuth | undefined {
     return this.mcpOAuth.takePending(state);
   }
-
-
 
   async resolveMcpOAuthToken(serverId: string, projectId: string | undefined, fetchImpl?: typeof fetch): Promise<string | undefined> {
     return this.mcpOAuth.resolveToken(serverId, projectId, fetchImpl);
@@ -2155,12 +1653,6 @@ export class EngineStore {
     return this.providers.resolve(instanceId, driver);
   }
 
-
-
-
-
-
-
   listUsageLimitSources(): UsageLimitSource[] {
     return this.usageSources.list();
   }
@@ -2176,8 +1668,6 @@ export class EngineStore {
   resolveUsageLimitSources(): ResolvedUsageLimitSource[] {
     return this.usageSources.resolve();
   }
-
-
 
   constructor(
     root: string,
@@ -2293,20 +1783,13 @@ export class EngineStore {
       onRetentionSweep: () => { this.sweepRetention(); },
     });
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
-    this.settings = new SettingsStore(this.kernel);
-    this.appearance = new AppearanceStore(this.kernel);
-    this.mcpOAuth = new McpOAuthStore(this.kernel);
-    this.mcpServers = new McpServers(this.kernel, { requireProject: (id) => void this.getProject(id), forgetGrant: (id, projectId) => this.mcpOAuth.delete(id, projectId) });
-    this.usageSources = new UsageLimitSources(this.kernel);
-    this.catalogues = new ModelCatalogues(this.kernel, {
-      readModels: options.models ?? readModelCatalogue,
-      cliVersion: options.cliVersion ?? installedCli,
-      manifest: options.manifest ?? BUNDLED_MANIFEST,
-    });
-    this.providers = new ProviderRegistry(this.kernel, this.ambientEnv);
+    ({
+      settings: this.settings, appearance: this.appearance, mcpOAuth: this.mcpOAuth, mcpServers: this.mcpServers, usageSources: this.usageSources,
+      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers, toolchains: this.toolchains, github: this.github, browser: this.browser,
+    } = this.leafStores(options));
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
-      activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes,
+      activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes, attachments: this.attachments,
     } = createSessionModules(this.kernel, {
       readQueue: (sessionId) => this.readQueue(sessionId),
       readEvents: (sessionId) => this.readEvents(sessionId),
@@ -2323,6 +1806,41 @@ export class EngineStore {
     this.claudeLongWindowMigration = this.migrateBareClaudeIds();
     this.claudeCompactionMigration = this.migrateClaudeCompactionToLimits();
     this.pluginFieldMigration = this.migrateLegacyPluginFieldsOnOpen();
+  }
+
+  /** The per-document stores that sit beside the sessions modules, built on the kernel. */
+  private leafStores(options: { models?: typeof readModelCatalogue; cliVersion?: (driver: ProviderDriverKind) => Promise<InstalledCli>; manifest?: ModelManifest }) {
+    const settings = new SettingsStore(this.kernel);
+    const appearance = new AppearanceStore(this.kernel);
+    const mcpOAuth = new McpOAuthStore(this.kernel);
+    const mcpServers = new McpServers(this.kernel, { requireProject: (id) => void this.getProject(id), forgetGrant: (id, projectId) => mcpOAuth.delete(id, projectId) });
+    const usageSources = new UsageLimitSources(this.kernel);
+    const projectProbes = new ProjectProbes(this.kernel, {
+      asyncGit: this.asyncGit,
+      volumes: this.volumes,
+      forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
+      onUnavailable: (project) => void this.recoverRemountedProject(project),
+    });
+    const projectRegistry = new ProjectRegistry(this.kernel, {
+      probes: projectProbes,
+      volumes: this.volumes,
+      sessionsOf: (projectId) => this.records.read().filter((session) => session.projectId === projectId).map((session) => session.id),
+      hasWorkInFlight: (sessionId) => this.sessionHasWorkInFlight(sessionId),
+    });
+    const catalogues = new ModelCatalogues(this.kernel, {
+      readModels: options.models ?? readModelCatalogue,
+      cliVersion: options.cliVersion ?? installedCli,
+      manifest: options.manifest ?? BUNDLED_MANIFEST,
+    });
+    const providers = new ProviderRegistry(this.kernel, this.ambientEnv);
+    const toolchains = new PluginToolchains(this.kernel, { getProject: (id) => projectRegistry.get(id) });
+    const github = new GitHubStore(this.kernel, { gh: this.gh, getProject: (id) => projectRegistry.get(id), requireSenderClaim: (proof) => this.requireSenderClaim(proof) });
+    const browser = new SessionBrowser(this.kernel, {
+      require: (id) => void this.records.require(id),
+      getSession: (id) => this.records.get(id),
+      runningRunId: (id) => this.readQueue(id).turns.find((turn) => turn.state === "running")?.runId,
+    });
+    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers, toolchains, github, browser };
   }
 
   /** How many projects the legacy-field fold changed on this open (0 on most). */
@@ -2579,144 +2097,19 @@ export class EngineStore {
     return { sessions, turns };
   }
 
-  /**
-   * The project's icon, found in its checkout and cached.
-   *
-   * A CACHE, BECAUSE THE FIND IS NOT FREE. `listProjects` is on the sidebar's
-   * poll path and the metadata refresh below runs every ten seconds per
-   * project; resolving from scratch each time meant a hundred-odd `stat`s per
-   * project per poll, forever, to re-learn an answer that almost never
-   * changes.
-   *
-   * TWO TTLs, BECAUSE THE TWO ANSWERS AGE DIFFERENTLY. "This file is the
-   * icon" stays true for as long as the file does, and a HIT IS CONFIRMED
-   * WITH ONE `stat` rather than trusted — which is what makes a REPLACED icon
-   * visible on the very next poll (the etag is derived from mtime and size, so
-   * the confirmation re-derives it) and a DELETED one fall back at once
-   * instead of leaving the serve route reading a path that is gone. "This
-   * project has no icon" is the answer a person is most likely to be in the
-   * middle of falsifying — they just added `public/favicon.ico` and are
-   * waiting to see it — so it is held for seconds, not minutes.
-   *
-   * `resolvedAt` IS NOT `at`, AND CONFIRMING NEVER MOVES IT. A confirmation
-   * proves the file it already knows about is still there; it cannot see a
-   * NEW file that now outranks it — a `.telar/icon.svg` added beside the
-   * `favicon.ico` currently winning, or an `index.html` whose href moved to a
-   * different file. If a confirmed hit refreshed the discovery clock, the
-   * sidebar's ten-second poll would keep resetting a five-minute TTL and the
-   * full search would never run again: the higher-priority icon would stay
-   * invisible for as long as the old one existed. So the discovery deadline is
-   * measured from the last FULL resolution and nothing else touches it.
-   *
-   * Bounded, because it is keyed by project id and nothing evicts on
-   * unregistration alone; oldest-first, which for a poll-driven map is close
-   * enough to least-recently-used and costs no bookkeeping.
-   */
-  private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; resolvedAt: number }>();
-  private static readonly ICON_TTL_FOUND = 300_000;
-  private static readonly ICON_TTL_MISSING = 15_000;
-  private static readonly ICON_CACHE_CAPACITY = 512;
-
-  /** Record a FULL resolution. Starts the discovery clock. */
-  private rememberProjectIcon(projectId: string, icon: ProjectIcon | undefined): ProjectIcon | undefined {
-    this.projectIconCache.delete(projectId);
-    this.projectIconCache.set(projectId, { ...(icon ? { icon } : {}), resolvedAt: this.now() });
-    while (this.projectIconCache.size > EngineStore.ICON_CACHE_CAPACITY) {
-      const oldest = this.projectIconCache.keys().next();
-      if (oldest.done) break;
-      this.projectIconCache.delete(oldest.value);
-    }
-    return icon;
-  }
-
-  /** Record a CONFIRMATION of the icon already known. Deliberately leaves
-   *  `resolvedAt` alone — see the note above. */
-  private refreshProjectIcon(projectId: string, icon: ProjectIcon): ProjectIcon {
-    const cached = this.projectIconCache.get(projectId);
-    if (cached) cached.icon = icon;
-    return icon;
-  }
-
-  /** The cached answer, or `undefined` when the cache cannot speak — which is
-   *  NOT the same as "no icon" and is why this returns a wrapper. */
-  private cachedProjectIcon(projectId: string): { icon?: ProjectIcon } | undefined {
-    const cached = this.projectIconCache.get(projectId);
-    if (!cached) return undefined;
-    const age = this.now() - cached.resolvedAt;
-    if (cached.icon) return age < EngineStore.ICON_TTL_FOUND ? { icon: cached.icon } : undefined;
-    return age < EngineStore.ICON_TTL_MISSING ? {} : undefined;
-  }
-
-  private async projectIconAsync(project: Pick<Project, "id" | "root">): Promise<ProjectIcon | undefined> {
-    const cached = this.cachedProjectIcon(project.id);
-    if (cached) {
-      if (!cached.icon) return undefined;
-      const confirmed = await confirmProjectIcon(cached.icon);
-      if (confirmed) return this.refreshProjectIcon(project.id, confirmed);
-    }
-    return this.rememberProjectIcon(project.id, await findProjectIconAsync(project.root));
-  }
-
-  /** Forget what was found for a project, so the next read resolves afresh.
-   *  Called wherever the engine's own idea of the project changes under it. */
-  private forgetProjectIcon(projectId: string): void {
-    this.projectIconCache.delete(projectId);
-  }
-
   /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
    *  project has none rather than guessing. */
   async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
     const project = this.getProject(projectId);
-    const icon = await this.projectIconAsync(project);
+    const icon = await this.projectProbes.icon(project);
     if (!icon) throw new EngineStateError("not_found", "this project has no icon");
     return icon;
   }
 
-  /**
-   * The registered projects.
-   *
-   * REMOVED ONES ARE NOT REGISTERED. Their records stay in the file so a
-   * restore can give back the same id and settings, but they are absent from
-   * this list — which is the list every picker, the sidebar and the
-   * new-session surfaces read, so removal is complete without a single one of
-   * them learning a new concept. `includeRemoved` exists for the one screen
-   * that has to name a removed project in order to offer to put it back.
-   */
   listProjects(options: { includeRemoved?: boolean } = {}): Project[] {
-    const registry = this.readDocument(this.paths.projects);
-    if (registry === undefined) return [];
-    return structuredClone(parseRegistry(registry).projects)
-      .filter((project) => options.includeRemoved || project.removedAt === undefined)
-      .map((project) => {
-        // A removed project's checkout is not polled: it is not on any surface
-        // that shows a branch or an icon, and a removed row must not keep a
-        // `git rev-parse` running against somebody's disk every ten seconds.
-        // Its availability is absent for the same reason — nothing probed it,
-        // so there is no answer to publish.
-        if (project.removedAt !== undefined) return project;
-        // THE METADATA READ IS WHAT PROBES (see `projectMetadata`), so the
-        // availability is asked for AFTER it rather than beside it: two probes
-        // in one listing would be two `stat`s per project for one answer.
-        const metadata = this.projectMetadata(project);
-        return { ...project, ...metadata, availability: this.projectAvailability(project) };
-      });
+    return this.projectRegistry.list(options);
   }
 
-  /**
-   * WHAT EACH PROJECT'S AVAILABILITY WAS THE LAST TIME ANYBODY LOOKED.
-   *
-   * NOT A TTL CACHE, and that distinction is the whole design. The value is
-   * never served in place of a probe — `projectAvailability` probes every time,
-   * because three `stat`s are cheaper than any bookkeeping that would avoid
-   * them. What this remembers is the PREVIOUS answer, so a CHANGE can be
-   * noticed: a drive coming back is the moment the branch, the icon, the diff
-   * and the file tree cached while it was away all became lies, and they are
-   * dropped then rather than at the end of somebody's TTL.
-   *
-   * In memory, like every other cache here: it is a fact about a cable, and a
-   * stale one surviving a restart would be worse than probing once on open.
-   */
-  private readonly projectAvailabilityCache = new Map<string, ProjectAvailability>();
 
   /**
    * WHICH MOUNT CONFIGURATION EACH AWAY PROJECT HAS ALREADY BEEN SEARCHED FOR.
@@ -2728,151 +2121,16 @@ export class EngineStore {
    */
   private readonly remountAttempts = new Map<string, string>();
 
-  /**
-   * IS THIS PROJECT'S DISK HERE — the one answer every surface reads.
-   *
-   * ONE OWNER, on purpose. A rail deciding for itself whether a folder is
-   * readable, a composer deciding again, and `assertProjectAvailable` deciding a
-   * third time is three chances to disagree about a cable, in three places a
-   * person would have to reconcile by hand. See `probeAvailability` for what it
-   * costs and why the mount is asked before the root.
-   *
-   * ALWAYS FRESH. The tick in `projectMetadata` decides how often anyone ASKS;
-   * it does not make this answer older than the question.
-   */
   projectAvailability(project: Pick<Project, "id" | "root"> & { volume?: Project["volume"] }): ProjectAvailability {
-    const availability = probeAvailability(project, this.volumes);
-    const previous = this.projectAvailabilityCache.get(project.id);
-    if (previous === availability) return availability;
-    this.projectAvailabilityCache.set(project.id, availability);
-    /**
-     * THE FIRST ANSWER IS NOT A TRANSITION. On a cold store every project moves
-     * from "nobody has looked" to something, and dropping every cache for each
-     * of them would make the first read of every surface the slow one.
-     */
-    if (previous !== undefined) this.forgetProjectReads(project);
-    return availability;
+    return this.projectProbes.availability(project);
   }
 
-  /**
-   * DROP WHAT WAS READ OFF A DISK THAT HAS SINCE CHANGED UNDER US.
-   *
-   * Called on an availability TRANSITION in either direction. Going away, the
-   * branch and icon in hand were read from a disk nobody can see any more;
-   * coming back, they are whatever the failing reads left behind — a blank
-   * branch, a "no icon", a diff that said `repository: false`. Neither is worth
-   * the ten seconds a TTL would keep it.
-   */
-  private forgetProjectReads(project: Pick<Project, "id" | "root">): void {
-    this.projectMetadataCache.delete(project.id);
-    this.forgetProjectIcon(project.id);
-    // `gitReadCache` is keyed by PATH rather than by project — the overview, the
-    // diff and every file patch under this root — so the root is what identifies
-    // the entries to drop.
-    this.forgetGitReadsUnder(project.root);
-  }
 
   /** Every cached git read that names `root` — see `forgetProjectReads`. */
   private forgetGitReadsUnder(root: string): void {
     for (const key of this.gitReadCache.keys()) {
       if (key.includes(root)) this.gitReadCache.delete(key);
     }
-  }
-
-  /** Sidebar metadata refreshes off the request path. Cold rows appear immediately;
-   * branch/icon labels arrive on the next poll without blocking worker heartbeats. */
-  private readonly projectMetadataCache = new Map<string, {
-    root: string; at: number; value: Pick<Project, "branch" | "icon" | "remoteUrl">; pending?: Promise<void>;
-  }>();
-
-  private projectMetadata(project: Project): Pick<Project, "branch" | "icon" | "remoteUrl"> {
-    /**
-     * THE DISK IS ASKED ABOUT FIRST, AND BEFORE THE CACHE IS READ — issue #534.
-     *
-     * NO NEW TIMER. This is the call every listing already makes, so the probe
-     * rides it rather than earning a ticker of its own; `reprobeProjects` and
-     * the sweep at daemon start are the same probe at other moments, never a
-     * second opinion.
-     *
-     * ON EVERY CALL RATHER THAN ON THE TEN-SECOND TICK BELOW, because the two
-     * costs are not comparable: the tick exists to bound three `git` children
-     * and a directory walk, and this is three `stat`s. Putting it on the tick
-     * would have made "how long after I plug the drive back in does the rail
-     * say so" up to ten seconds for no saving worth having.
-     *
-     * BEFORE THE LOOKUP, not after, and that ordering is load-bearing: a
-     * transition DELETES this very entry, so an `entry` read first would be
-     * written back over the invalidation and keep the branch that was read off a
-     * disk nobody can see.
-     */
-    const availability = this.projectAvailability(project);
-    let entry = this.projectMetadataCache.get(project.id);
-    if (!entry || entry.root !== project.root) {
-      entry = { root: project.root, at: -Infinity, value: {} };
-      this.projectMetadataCache.set(project.id, entry);
-    }
-    /**
-     * NOTHING IS SPAWNED AGAINST A DISK THAT IS NOT THERE.
-     *
-     * This is the churn #534 is named for: three `git` children per project
-     * every ten seconds, each failing into an unplugged drive, each turning
-     * ENOENT into a status 1 that nothing reported — about 18 children a minute
-     * for one away project, forever. The icon read is skipped for the same
-     * reason and a worse one: it WALKS the checkout.
-     *
-     * AND THE LABELS GO WITH THEM. A branch name left over from before the
-     * unplug is a claim about a disk nobody can read; the row says the drive is
-     * away instead, which is the true thing and a shorter sentence.
-     */
-    if (availability !== "available") {
-      entry.value = {};
-      /**
-       * AND THE POLL IS ALSO WHERE A DRIVE COMES BACK UNDER A NEW NAME — step 7.
-       *
-       * `POST /v2/projects/reprobe` is the fast path and does this within a
-       * quarter-second of a mount; this is the floor under it, for a cockpit
-       * running without the desktop shell, a shell whose watcher died, and a
-       * drive swapped while the Mac was off. Bounded twice over: only for a
-       * project that cannot be read, and only once per distinct mount
-       * configuration — see `recoverRemountedProject`.
-       *
-       * `at` IS STAMPED FIRST because the recovery DELETES this entry on
-       * success, and writing to it afterwards would resurrect a detached one.
-       */
-      entry.at = this.now();
-      this.recoverRemountedProject(project);
-      return entry.value;
-    }
-    if (!entry.pending && this.now() - entry.at >= 10_000) {
-      const current = entry;
-      current.pending = Promise.all([
-        this.asyncGit(project.root, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 5_000 }),
-        // THROUGH THE CACHE, not around it. This runs every ten seconds per
-        // project; resolving from scratch here made the cache above dead
-        // weight and re-walked every checkout on the poll path.
-        this.projectIconAsync(project),
-        // WHICH REPOSITORY THIS CHECKOUT IS OF, on the same refresh as the
-        // branch — a `git config` read of a file git has already cached, beside
-        // a `rev-parse` that costs strictly more. Derived rather than stored so
-        // adding an origin, or moving the repository, is visible on the next
-        // poll instead of at the next re-registration.
-        projectRemoteAsync(this.asyncGit, project.root),
-      ]).then(([head, icon, remoteUrl]) => {
-        if (this.projectMetadataCache.get(project.id) !== current) return;
-        const branch = head.status === 0 ? head.stdout.trim() : "";
-        current.value = {
-          ...(branch && branch !== "HEAD" ? { branch } : {}),
-          ...(icon ? { icon: icon.etag } : {}),
-          ...(remoteUrl ? { remoteUrl } : {}),
-        };
-      }).catch(() => {
-        // A stalled checkout must not hold up the registry or lose its row.
-      }).finally(() => {
-        current.at = this.now();
-        current.pending = undefined;
-      });
-    }
-    return entry.value;
   }
 
   /**
@@ -2890,12 +2148,11 @@ export class EngineStore {
    * is drawing.
    */
   reprobeProjects(): { projects: number; changed: number; recovered: number } {
-    const registry = this.readDocument(this.paths.projects);
-    const projects = registry === undefined ? [] : parseRegistry(registry).projects.filter((project) => project.removedAt === undefined);
+    const projects = this.projectRegistry.read().projects.filter((project) => project.removedAt === undefined);
     let changed = 0;
     let recovered = 0;
     for (const project of projects) {
-      const before = this.projectAvailabilityCache.get(project.id);
+      const before = this.projectProbes.lastAvailability(project.id);
       let availability = this.projectAvailability(project);
       /**
        * A DRIVE MOUNTED SOMEWHERE ELSE IS STILL THIS DRIVE — see
@@ -2970,8 +2227,7 @@ export class EngineStore {
       return undefined;
     }
 
-    const registryDocument = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registryDocument);
+    const parsed = this.projectRegistry.read();
     const stored = parsed.projects.find((candidate) => candidate.id === project.id);
     if (stored === undefined) return undefined;
     const previousRoot = stored.root;
@@ -3011,9 +2267,9 @@ export class EngineStore {
 
     // The reads in hand were taken off a disk that has since come back at
     // another address; none of them describes anything that exists now.
-    this.forgetProjectReads({ id: project.id, root: previousRoot });
-    this.forgetProjectReads({ id: project.id, root });
-    this.projectAvailabilityCache.delete(project.id);
+    this.projectProbes.forgetReads({ id: project.id, root: previousRoot });
+    this.projectProbes.forgetReads({ id: project.id, root });
+    this.projectProbes.forgetAvailability(project.id);
 
     /**
      * ONE LINE, because a record the engine rewrote on its own is exactly the
@@ -3060,170 +2316,15 @@ export class EngineStore {
   }
 
   registerProject(input: { id?: string; name: string; root: string }): Project {
-    if (input.id !== undefined) assertId(input.id, "project id");
-    if (typeof input.name !== "string" || input.name.trim() === "") {
-      throw new EngineStateError("invalid_request", "project name must be non-empty");
-    }
-    assertAbsolutePath(input.root, "project root");
-    /**
-     * "MUST BE AN EXISTING DIRECTORY" ONLY WHEN IT IS NOT ONE. A folder that is
-     * there and cannot be read — a privacy permission macOS has not granted, a
-     * cloud-synced folder whose sync app is not answering — used to get the
-     * same sentence, which sends somebody looking for a folder they can see.
-     * And `statSync` was unguarded, so its failure left as a bare 500.
-     */
-    let projectRoot: string;
-    let directory: boolean;
-    try {
-      projectRoot = fs.realpathSync.native(input.root);
-      directory = fs.statSync(projectRoot).isDirectory();
-    } catch (cause) {
-      const code = (cause as NodeJS.ErrnoException | null)?.code;
-      if (code === "ENOENT" || code === "ENOTDIR") throw new EngineStateError("invalid_request", "project root must be an existing directory");
-      throw new EngineStateError(
-        "invalid_request",
-        `project root could not be read${code ? ` (${code})` : ""}: check that Telar is allowed into that folder, and for a cloud folder that its sync app is running`,
-      );
-    }
-    if (!directory) throw new EngineStateError("invalid_request", "project root must be an existing directory");
-    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registry);
-    const id = input.id ?? `project_${crypto.randomUUID().replaceAll("-", "")}`;
-    /**
-     * REGISTERING A REMOVED PROJECT'S CHECKOUT RESTORES IT, rather than minting
-     * a stranger with the same path.
-     *
-     * The match is on the canonical root, because that is what the person is
-     * actually doing: pointing Telar at this folder again. Giving them a new id
-     * would leave every session that ran here bound to an id nothing resolves,
-     * their MCP servers scoped to it, and their browser profile keyed to it —
-     * three silent losses from an action that reads like an undo. So the record
-     * comes back whole: same id, same name unless a new one was typed, same
-     * data-science and LaTeX blocks.
-     */
-    /**
-     * WHICH DISK THIS IS ON, asked once, here — see `volumes.ts`.
-     *
-     * REGISTRATION IS THE ONLY AFFORDABLE MOMENT for the `diskutil` child this
-     * costs: it is a request somebody is waiting on, it happens once per
-     * project, and every later question about the drive is answered by three
-     * `stat`s against what it records. A project on this Mac's own disk gets
-     * nothing and is unchanged in every respect.
-     */
-    const volume = volumeForRoot(projectRoot, this.volumes);
-    const tombstone = parsed.projects.find((project) => project.root === projectRoot && project.removedAt !== undefined);
-    if (tombstone && (input.id === undefined || input.id === tombstone.id)) {
-      delete tombstone.removedAt;
-      tombstone.name = input.name.trim();
-      tombstone.updatedAt = this.now();
-      // RE-READ ON THE WAY BACK IN, because a project put away before this
-      // existed carries no volume at all, and one put away on a drive that has
-      // since been reformatted carries the wrong uuid. Restoring is the person
-      // pointing at this folder again, so what the disk says now wins.
-      if (volume === undefined) delete tombstone.volume;
-      else tombstone.volume = volume;
-      this.writeDocument(this.paths.projects, parsed);
-      this.forgetProjectIcon(tombstone.id);
-      this.projectMetadataCache.delete(tombstone.id);
-      return structuredClone(tombstone);
-    }
-    const existing = parsed.projects.find((project) => project.id === id || project.root === projectRoot);
-    if (existing) {
-      if (existing.id === id && existing.root === projectRoot && existing.removedAt === undefined) return structuredClone(existing);
-      throw new EngineStateError("conflict", "project id or root is already registered");
-    }
-    const at = this.now();
-    const project: Project = {
-      id,
-      environmentId: "local",
-      name: input.name.trim(),
-      root: projectRoot,
-      createdAt: at,
-      updatedAt: at,
-      ...(volume === undefined ? {} : { volume }),
-    };
-    parsed.projects.push(project);
-    this.writeDocument(this.paths.projects, parsed);
-    // A fresh registration must not inherit a stale "no icon" answer cached
-    // for a project that briefly shared this id.
-    this.forgetProjectIcon(id);
-    this.projectMetadataCache.delete(id);
-    return structuredClone(project);
+    return this.projectRegistry.register(input);
   }
 
-  /**
-   * PUT A PROJECT AWAY. Nothing on disk is touched, and nothing is thrown out.
-   *
-   * WHAT THIS IS: the reversible inverse of `registerProject`. The repository,
-   * its git metadata, every worktree cut from it, the journal of every session
-   * that ran on it and the browser profiles those sessions used all stay
-   * exactly where they are — and so does the REGISTRATION RECORD, marked with
-   * `removedAt`. Telar stops offering the project; it does not forget it.
-   *
-   * WHY A TOMBSTONE RATHER THAN A SPLICE. Three things in this engine are
-   * keyed by a project id and outlive any one registration: a session's
-   * `projectId`, an MCP server's scope, and a browser profile's binding.
-   * Deleting the row and minting a new id on the way back in would silently
-   * strand all three — the person would point at the same folder, get a different
-   * project, and find their logged-in browser profile and their servers gone.
-   * Keeping the record makes restoring an actual undo.
-   *
-   * WHY IT REFUSES WITH WORK IN FLIGHT. A worker resolves its project by id on
-   * every step, so putting the registration away under a running turn turns a
-   * live conversation into a stream of refusals — silently, in a surface the
-   * person is not looking at. The ONLY alternatives are stopping their work or
-   * letting it break, and neither is something a settings row should do
-   * without being asked.
-   *
-   * WHAT COUNTS AS IN FLIGHT, stated rather than guessed at: every turn state
-   * that is not terminal (`queued`, `claimed`, `running`, `steering`), plus
-   * `ambiguous` — whose whole meaning is that the engine does not know whether
-   * a provider run is still out there, and a "maybe" is not a green light —
-   * plus any live backgrounded task, which by contract OUTLIVES the turn that
-   * started it and would otherwise walk straight past a turns-only check.
-   *
-   * Idle sessions keep working as READS while the project is away: their
-   * history, diffs and files all still resolve. What they cannot do is start
-   * new work — see `assertProjectAvailable`.
-   */
   unregisterProject(projectId: string): { project: Project; sessions: number } {
-    assertId(projectId, "project id");
-    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registry);
-    const project = parsed.projects.find((candidate) => candidate.id === projectId);
-    if (!project) throw new EngineStateError("not_found", "project does not exist");
-    if (project.removedAt !== undefined) throw new EngineStateError("conflict", "this project is already removed");
-    const sessions = this.records.read().filter((session) => session.projectId === projectId);
-    const busy = sessions.filter((session) => this.sessionHasWorkInFlight(session.id));
-    if (busy.length > 0) {
-      throw new EngineStateError(
-        "conflict",
-        `this project has ${busy.length === 1 ? "a session with work in flight" : `${busy.length} sessions with work in flight`} — let them finish or stop them first`,
-      );
-    }
-    project.removedAt = this.now();
-    project.updatedAt = project.removedAt;
-    this.writeDocument(this.paths.projects, parsed);
-    this.forgetProjectIcon(projectId);
-    this.projectMetadataCache.delete(projectId);
-    return { project: structuredClone(project), sessions: sessions.length };
+    return this.projectRegistry.unregister(projectId);
   }
 
-  /** Put a removed project back without needing its path — the settings page's
-   *  Restore. Registering its checkout again does the same thing. */
   restoreProject(projectId: string): Project {
-    assertId(projectId, "project id");
-    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registry);
-    const project = parsed.projects.find((candidate) => candidate.id === projectId);
-    if (!project) throw new EngineStateError("not_found", "project does not exist");
-    if (project.removedAt === undefined) return structuredClone(project);
-    delete project.removedAt;
-    project.updatedAt = this.now();
-    this.writeDocument(this.paths.projects, parsed);
-    this.forgetProjectIcon(projectId);
-    this.projectMetadataCache.delete(projectId);
-    return structuredClone(project);
+    return this.projectRegistry.restore(projectId);
   }
 
   /**
@@ -3248,195 +2349,27 @@ export class EngineStore {
   }
 
   /**
-   * REFUSE TO START NEW WORK ON A PUT-AWAY PROJECT.
-   *
-   * Reading stays open — history, diffs, files and the session's own record all
-   * still answer, which is what keeps a removed project's past coherent instead
-   * of blank. This guards the three places where new work BEGINS: a new
-   * session, a new turn (which is also how a peer's wake arrives, so a
-   * subscription firing later cannot quietly resume a provider on a project
-   * the person put away), and a settings change (frozen, so what comes back on
-   * restore is what was put away).
+   * Refuses new work (a session, a turn or wake, a settings change) on a removed project or an unplugged
+   * drive. Reads stay open, so a removed project's history still answers.
    */
   private assertProjectAvailable(projectId: string): void {
     const project = this.getProject(projectId);
     if (project.removedAt !== undefined) {
       throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
     }
-    /**
-     * AND THE DISK HAS TO BE THERE — issue #534.
-     *
-     * The same three places, and the same argument: reading stays open, starting
-     * work does not. What differs is WHY it is refused and therefore what the
-     * sentence has to say. A removed project needs a decision (restore it); an
-     * unplugged drive needs a cable, and telling somebody to re-register would
-     * be actively harmful — re-registering a different path mints a new project
-     * id and strands the sessions they are trying to get back to.
-     *
-     * PROBED FRESH RATHER THAN READ OFF THE LAST LISTING. This is the moment a
-     * provider would be spawned in the folder, and a ten-second-old answer about
-     * a cable is exactly old enough to be wrong.
-     *
-     * `unmounted` ONLY, AND `missing` DELIBERATELY NOT. A deleted folder already
-     * has a good answer and it is a BETTER-PLACED one: the turn is accepted, the
-     * worker's `assertProjectRoot` refuses to spawn, and the sentence naming the
-     * folder lands in the conversation the person is looking at rather than as a
-     * dialog on a button. Nothing about an external drive changes that, and
-     * moving the refusal earlier would only make it harder to read.
-     */
+    // Probed fresh, and `unmounted` only: a missing folder is refused by the worker, in the conversation,
+    // and an unplugged drive needs a cable rather than a re-registration that would mint a new project id.
     if (this.projectAvailability(project) === "unmounted") {
       throw new EngineStateError("conflict", `The drive holding ${project.name} is not connected. Plug it back in and this will work again.`);
     }
   }
 
   getProject(projectId: string): Project {
-    assertId(projectId, "project id");
-    const registry = this.readDocument(this.paths.projects);
-    const project = registry === undefined ? undefined : parseRegistry(registry).projects.find((candidate) => candidate.id === projectId);
-    if (!project) throw new EngineStateError("not_found", "project does not exist");
-    return structuredClone(project);
+    return this.projectRegistry.get(projectId);
   }
 
-  /**
-   * Change what a project IS CALLED, what it OPENS ON, and what it OPTS INTO.
-   *
-   * THE ROOT IS STILL NOT PATCHABLE, and that is the line this method keeps:
-   * moving a project means registering the new folder, because the root is what
-   * every session, worktree and browser profile on it resolves against. A NAME
-   * IS NOT THAT. It was refused here only because nothing had asked yet, and a
-   * registry whose only rename was "register the same folder again, typing the
-   * name differently" made a rename look like a re-registration in every log
-   * that watched one.
-   *
-   * `null` REMOVES A STORED ANSWER rather than storing a neutral one — for
-   * `dataScience` and `latex` that is how "off" is spelled, so the registry
-   * does not grow a `{enabled: false}` for every project that tried a feature
-   * once; for `iconName`, `iconEmoji`, `defaultModel` and `envMode` it is how
-   * "go back to following this Mac" is spelled, which is a different sentence
-   * from any value they could hold.
-   *
-   * This method still refuses any key it does not know rather than storing it.
-   */
-  updateProject(
-    projectId: string,
-    patch: {
-      name?: string;
-      iconName?: string | null;
-      iconEmoji?: string | null;
-      defaultModel?: ModelSelectionValue | null;
-      envMode?: EnvMode | null;
-      dataScience?: DataScienceConfig | null;
-      latex?: LatexConfig | null;
-      plugins?: PluginPatch;
-    },
-  ): Project {
-    assertId(projectId, "project id");
-    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
-    const parsed = parseRegistry(registry);
-    const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
-    if (index < 0) throw new EngineStateError("not_found", "project does not exist");
-    const current = parsed.projects[index]!;
-    // A removed project's settings are FROZEN, so what comes back on restore is
-    // exactly what was put away.
-    if (current.removedAt !== undefined) {
-      throw new EngineStateError("conflict", "this project was removed from Telar; restore it to change its settings");
-    }
-    const next: Project = { ...current, updatedAt: this.now() };
-    /**
-     * IDENTITY FIRST, AND BEFORE THE PLUGIN MAP BELOW — these four are plain
-     * scalars on the record and none of them participates in the mirroring
-     * dance, so they are applied and then forgotten about.
-     *
-     * EVERY ONE OF THEM IS VALIDATED AGAINST THE CONTRACT'S OWN SCHEMA rather
-     * than against a rule re-typed here. A second spelling of "what a model
-     * selection is" would be a second thing to forget when the contract moves.
-     */
-    if (patch.name !== undefined) {
-      const name = typeof patch.name === "string" ? patch.name.trim() : "";
-      if (name === "") throw new EngineStateError("invalid_request", "project name must be non-empty");
-      if (name.length > 200) throw new EngineStateError("invalid_request", "project name is too long");
-      next.name = name;
-    }
-    /**
-     * ONE PICKED ANSWER, NOT TWO. `iconName` and `iconEmoji` answer the same
-     * question — "what did somebody choose for this project" — and a record
-     * carrying both would leave the rail's preference order deciding which of
-     * two deliberate picks wins. So naming either CLEARS the other, which also
-     * makes the picker's Auto-detect one write rather than two.
-     */
-    if (patch.iconName === null) {
-      delete next.iconName;
-    } else if (patch.iconName !== undefined) {
-      const glyph = ProjectSchema.shape.iconName.safeParse(
-        typeof patch.iconName === "string" ? patch.iconName.trim() : patch.iconName,
-      );
-      if (!glyph.success || glyph.data === undefined) throw new EngineStateError("invalid_request", "project icon must be an icon name");
-      next.iconName = glyph.data;
-      delete next.iconEmoji;
-    }
-    if (patch.iconEmoji === null) {
-      delete next.iconEmoji;
-    } else if (patch.iconEmoji !== undefined) {
-      const mark = ProjectSchema.shape.iconEmoji.safeParse(
-        typeof patch.iconEmoji === "string" ? patch.iconEmoji.trim() : patch.iconEmoji,
-      );
-      if (!mark.success || mark.data === undefined) throw new EngineStateError("invalid_request", "project icon must be a short mark");
-      next.iconEmoji = mark.data;
-      delete next.iconName;
-    }
-    if (patch.defaultModel === null) {
-      delete next.defaultModel;
-    } else if (patch.defaultModel !== undefined) {
-      const model = ProjectSchema.shape.defaultModel.safeParse(patch.defaultModel);
-      if (!model.success || model.data === undefined) throw new EngineStateError("invalid_request", "default model selection is invalid");
-      next.defaultModel = model.data;
-    }
-    if (patch.envMode === null) {
-      delete next.envMode;
-    } else if (patch.envMode !== undefined) {
-      const mode = ProjectSchema.shape.envMode.safeParse(patch.envMode);
-      if (!mode.success || mode.data === undefined) throw new EngineStateError("invalid_request", "workspace mode must be local or worktree");
-      next.envMode = mode.data;
-    }
-    /**
-     * THE MAP IS THE ONLY WRITE. `dataScience` and `latex` are DEPRECATED INPUT
-     * ALIASES, kept one more release for a released cockpit: each is validated
-     * against its legacy schema and translated into a plugin patch, and neither
-     * key is ever stored — the record carries `plugins` alone.
-     */
-    const fromLegacy: PluginPatch = {};
-    if (patch.dataScience !== undefined) {
-      if (patch.dataScience === null) fromLegacy["data-science"] = null;
-      else {
-        const config = DataScienceConfigSchema.safeParse(patch.dataScience);
-        if (!config.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
-        fromLegacy["data-science"] = pluginConfigFromLegacy(config.data);
-      }
-    }
-    if (patch.latex !== undefined) {
-      if (patch.latex === null) fromLegacy.latex = null;
-      else {
-        const config = LatexConfigSchema.safeParse(patch.latex);
-        if (!config.success) throw new EngineStateError("invalid_request", "LaTeX configuration is invalid");
-        fromLegacy.latex = pluginConfigFromLegacy(config.data);
-      }
-    }
-    const pluginPatch: PluginPatch = { ...fromLegacy, ...patch.plugins };
-    if (Object.keys(pluginPatch).length > 0) {
-      next.plugins = applyPluginPatch(readProjectPlugins(next).plugins, pluginPatch);
-      // Compiles leave aux files under `.telar/latex/`; a project turning LaTeX
-      // on gets them ignored, through either arm.
-      if (pluginPatch.latex?.enabled) {
-        try {
-          ensureTelarGitignore(next.root, [{ rule: ".telar/latex/", alreadyCovered: [".telar/", ".telar", "/.telar/", ".telar/latex/"], why: "LaTeX aux files from Telar's compiles" }]);
-        } catch { /* not a repo, or unwritable — compiles still work */ }
-      }
-    }
-    delete (next as Record<string, unknown>).dataScience;
-    delete (next as Record<string, unknown>).latex;
-    parsed.projects[index] = next;
-    this.writeDocument(this.paths.projects, parsed);
-    return structuredClone(next);
+  updateProject(projectId: string, patch: ProjectPatch): Project {
+    return this.projectRegistry.update(projectId, patch);
   }
 
   /**
@@ -3496,66 +2429,29 @@ export class EngineStore {
     return detached;
   }
 
-  /**
-   * WHAT THIS MACHINE ALLOWS. Absent file means everything is allowed — a Mac
-   * that predates this must not have its working plugins silently switched off.
-   */
   machinePlugins(): ProjectPlugins {
-    const parsed = ProjectPluginsSchema.safeParse(this.readDocument(this.paths.machinePlugins));
-    return parsed.success ? parsed.data : { version: PROJECT_PLUGINS_VERSION, entries: {} };
+    return this.toolchains.machine();
   }
 
-  /**
-   * Turn a plugin on or off for this Mac, or change its machine settings.
-   *
-   * PROJECT CONFIGURATION IS NEVER TOUCHED. Disabling globally is a ceiling: a
-   * project that had the plugin on still has it on, and re-enabling here
-   * restores exactly what each project had rather than a blank slate.
-   */
   updateMachinePlugins(patch: PluginPatch): ProjectPlugins {
-    const next = applyPluginPatch(this.machinePlugins(), patch);
-    this.writeDocument(this.paths.machinePlugins, next);
-    return structuredClone(next);
+    return this.toolchains.updateMachine(patch);
   }
 
-  /** Does this plugin actually run for this project: machine AND project. */
   pluginRuns(project: Project, id: string): boolean {
-    return pluginEffectivelyEnabled(this.machinePlugins(), readProjectPlugins(project).plugins, id);
+    return this.toolchains.runs(project, id);
   }
 
   attachPluginRelease(release: (sessionId: string, reason: string) => void): void {
     this.pluginRelease = release;
   }
 
-  /** WHICH PLUGINS A SESSION'S PROJECT HAS TURNED ON, as ids, under the Mac's ceiling. */
   enabledPluginIds(session: Session): string[] {
-    if (!session.projectId) return [];
-    let project: Project;
-    try { project = this.getProject(session.projectId); } catch { return []; }
-    const { plugins } = readProjectPlugins(project);
-    const machine = this.machinePlugins();
-    return Object.entries(plugins.entries)
-      // THE MACHINE CEILING APPLIES TO THE CLAIM TOO. A worker builds walls from
-      // this list, so a globally disabled plugin must not reach a turn — the
-      // frontend hiding it would not be enforcement.
-      .filter(([id, config]) => config.enabled && machineAllows(machine, id))
-      .map(([id]) => id)
-      .sort();
+    return this.toolchains.enabledIds(session);
   }
 
-  /**
-   * THE TOOLCHAIN, MEASURED. uv, conda and Homebrew where they are, and the
-   * Pythons uv can see or fetch. Cached for a few seconds because the page
-   * asks for it beside every environment list and each answer is four spawns.
-   */
-  private toolchainCache?: { until: number; value: Promise<Toolchain> };
 
   dataScienceToolchain(fresh = false): Promise<Toolchain> {
-    if (!fresh && this.toolchainCache && this.now() < this.toolchainCache.until) return this.toolchainCache.value;
-    const value = toolchainStatus();
-    this.toolchainCache = { until: this.now() + 5_000, value };
-    void value.catch(() => { this.toolchainCache = undefined; });
-    return value;
+    return this.toolchains.dataScienceToolchain(fresh);
   }
 
   /**
@@ -3755,7 +2651,7 @@ export class EngineStore {
       lock: `bootstrap:${request.what}`,
       steps: plan.steps,
       onDone: () => {
-        this.toolchainCache = undefined;
+        this.toolchains.forgetDataScienceToolchain();
         if (!expect) return {};
         const found = findBinary(expect);
         if (!found) throw new Error(`${expect} was installed but cannot be found — open a new terminal, check your PATH, then detect again`);
@@ -3794,38 +2690,8 @@ export class EngineStore {
     };
   }
 
-  /**
-   * THE TEX TOOLCHAIN, MEASURED — Tectonic and every TeX Live root. Cached
-   * like the Python one and for the same reason: the settings page asks
-   * beside every list, and each answer is a fistful of `--version` spawns.
-   */
-  private latexToolchainCache?: { until: number; value: Promise<LatexToolchain> };
-
-  /**
-   * THE MANAGED COPY IS ADDED HERE, NOT DISCOVERED IN THE PROBE.
-   * `latexToolchainStatus` looks at PATH and the places installers use; Telar's
-   * own Tectonic lives under the engine's state root, which that function has no
-   * business knowing about.
-   *
-   * IT IS OUTSIDE THE CACHE, deliberately, and the cached branch goes through
-   * this too. The probe is cached for five seconds because each answer is a
-   * fistful of `--version` spawns; the managed status is one `stat`. Letting it
-   * ride the cache would leave a pane showing "not installed" for five seconds
-   * beside a binary that had just finished downloading — which is exactly the
-   * window a person is looking at the pane.
-   */
-  private withManagedTectonic(probe: Promise<LatexToolchain>): Promise<LatexToolchain> {
-    return probe.then((toolchain) => ({ ...toolchain, managed: this.managedTectonic() }));
-  }
-
   latexToolchain(fresh = false): Promise<LatexToolchain> {
-    if (!fresh && this.latexToolchainCache && this.now() < this.latexToolchainCache.until) {
-      return this.withManagedTectonic(this.latexToolchainCache.value);
-    }
-    const value = latexToolchainStatus();
-    this.latexToolchainCache = { until: this.now() + 5_000, value };
-    void value.catch(() => { this.latexToolchainCache = undefined; });
-    return this.withManagedTectonic(value);
+    return this.toolchains.latexToolchain(fresh);
   }
 
   /**
@@ -3881,7 +2747,7 @@ export class EngineStore {
       lock: `bootstrap:${request.what}`,
       steps: plan.steps,
       onDone: () => {
-        this.latexToolchainCache = undefined;
+        this.toolchains.forgetLatexToolchain();
         const found = findLatexBinary(expect);
         if (!found) throw new Error(`${expect} was installed but cannot be found — open a new terminal, check your PATH, then detect again`);
         adoptBinaryDir(found);
@@ -4249,13 +3115,9 @@ export class EngineStore {
     return this.catalogues.catalogue(driver, options);
   }
 
-
-
   prefetchModelCatalogues(drivers?: readonly ProviderDriverKind[]): Promise<void> {
     return this.catalogues.prefetch(drivers);
   }
-
-
 
   getModelOverlay(instanceId: string): ModelOverlay {
     return this.catalogues.overlay(instanceId);
@@ -4265,108 +3127,16 @@ export class EngineStore {
     return this.catalogues.setOverlay(instanceId, patch);
   }
 
-  /**
-   * WHICH ROWS, IN THE CACHE KEY.
-   *
-   * Without the states in the key, switching the Pull requests surface from open
-   * to all would be answered instantly from a cache of open ones — a filter that
-   * silently does nothing for thirty seconds, which is worse than a slow one.
-   */
-  private githubKey(projectId: string, issues: GitHubIssueFilter, pulls: GitHubPullFilter): string {
-    /**
-     * NORMALISED, so two spellings of the same question share one cache entry —
-     * labels chosen in a different order are the same filter, and `gh` ANDs them
-     * regardless. Without the sort, picking `bug` then `web` and `web` then `bug`
-     * would spend two network reads to get the same rows.
-     */
-    const shape = (filter: GitHubIssueFilter | GitHubPullFilter) => ({
-      state: filter.state,
-      milestone: (filter as GitHubIssueFilter).milestone ?? "",
-      assignee: filter.assignee ?? "",
-      author: filter.author ?? "",
-      labels: [...filter.labels].sort(),
-    });
-    return `${projectId}:${JSON.stringify([shape(issues), shape(pulls)])}`;
+  projectGitHub(projectId: string, options: { force?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {}): Promise<GitHubSnapshot> {
+    return this.github.list(projectId, options);
   }
 
-  /**
-   * Drop EVERY cached list for a project, whichever filter it was read under.
-   *
-   * A project id cannot contain a colon (`ID` above), so the prefix is unambiguous.
-   * Deleting one key would leave the others stale, which is precisely the bug the
-   * merge invalidation exists to prevent — and precisely the bug that appeared the
-   * moment the filter joined the key, because the old invalidation deleted a key
-   * shape that no longer existed. Caught by the merge test, not by reasoning.
-   */
-  private forgetGitHub(projectId: string): void {
-    for (const key of this.githubCache.keys()) {
-      if (key === projectId || key.startsWith(`${projectId}:`)) this.githubCache.delete(key);
-    }
+  projectForgeFacets(projectId: string, options: { force?: boolean } = {}): Promise<GitHubFacets> {
+    return this.github.facetsOf(projectId, options);
   }
 
-  async projectGitHub(
-    projectId: string,
-    options: { force?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {},
-  ): Promise<GitHubSnapshot> {
-    const project = this.getProject(projectId);
-    const issues = options.issues ?? DEFAULT_ISSUE_FILTER;
-    const pulls = options.pulls ?? DEFAULT_PULL_FILTER;
-    const key = this.githubKey(project.id, issues, pulls);
-    const cached = this.githubCache.get(key);
-    if (cached && !options.force && this.now() - cached.readAt < GITHUB_CACHE_MS) return structuredClone(cached);
-    // Once a token has said it has no `read:project`, stop paying two network calls
-    // per read to be told again. A forced read clears the verdict, so adding the
-    // scope and pressing refresh is all it takes to get boards back.
-    const skipProjects = this.noProjectScope && !options.force;
-    const snapshot = await readGitHub(this.gh, project.root, this.now, { issues, pulls, ...(skipProjects ? { skipProjects: true } : {}) });
-    if (snapshot.projectsUnavailable === "scope") this.noProjectScope = true;
-    else if (snapshot.projectsUnavailable === undefined && options.force) this.noProjectScope = false;
-    /**
-     * THE REASON SURVIVES THE SKIP.
-     *
-     * Found by driving it: the cockpit's own first read consumed the scope failure,
-     * so every read after it reported no reason at all — and a panel opened a minute
-     * later showed every row on no boards with nothing to explain it. "Nothing was
-     * attempted so there is nothing to report" sounded principled and produced a
-     * surface that cannot account for itself. What is true is that boards ARE
-     * unavailable, for a reason we already know; not re-asking does not unlearn it.
-     */
-    const answer = skipProjects && this.noProjectScope ? { ...snapshot, projectsUnavailable: "scope" as const } : snapshot;
-    this.githubCache.set(key, answer);
-    return structuredClone(answer);
-  }
-
-  /**
-   * What there is to filter by in a project's repository.
-   *
-   * CACHED FIVE TIMES LONGER THAN A LIST READ, because milestones and labels change
-   * on the timescale of a sprint rather than of a page view — the same reason the
-   * model catalogue gets five minutes. Only asked when a client opens a filter menu,
-   * so a reader who never filters never pays for this at all.
-   */
-  async projectForgeFacets(projectId: string, options: { force?: boolean } = {}): Promise<GitHubFacets> {
-    const project = this.getProject(projectId);
-    const cached = this.facetCache.get(project.id);
-    if (cached && !options.force && this.now() - cached.readAt < FACET_CACHE_MS) return structuredClone(cached);
-    const facets = await readForgeFacets(this.gh, project.root, this.now);
-    this.facetCache.set(project.id, facets);
-    return structuredClone(facets);
-  }
-
-  /**
-   * One failing check's log.
-   *
-   * NOT CACHED. A job's log is immutable once the job has finished, so a cache would
-   * only ever save a repeat of a request nobody makes twice — and while a job is
-   * still running the log is exactly the thing that must not be stale.
-   *
-   * The job id comes from a check this engine already handed out, so it is a number
-   * we produced; it is still validated, because a client is a client.
-   */
   projectCheckLog(projectId: string, jobId: string): Promise<GitHubCheckLog> {
-    const project = this.getProject(projectId);
-    if (!/^\d+$/.test(jobId)) throw new EngineStateError("invalid_request", "a job id is a number");
-    return readCheckLog(this.gh, project.root, jobId);
+    return this.github.checkLog(projectId, jobId);
   }
 
   /**
@@ -4419,167 +3189,39 @@ export class EngineStore {
     return this.registerProject({ name: input.name?.trim() || folder, root: outcome.root });
   }
 
-  /** A positive whole number, because it is going into an argv and a URL. */
-  private forgeNumber(value: number): number {
-    if (!Number.isInteger(value) || value <= 0) throw new EngineStateError("invalid_request", "an issue or pull request number is required");
-    return value;
-  }
-
-  /**
-   * One issue or one pull request, opened.
-   *
-   * CACHED LIKE THE LIST AND FOR THE SAME THIRTY SECONDS — it is the same rate
-   * limit — but only when the read WORKED. A failure is not cached: the four
-   * reasons a detail read fails are all things a person fixes in less than thirty
-   * seconds, and a cached "not signed in" would tell them their fix did not work.
-   */
-  private async forgeDetail<T extends GitHubIssueRead | GitHubPullRead>(
-    projectId: string,
-    kind: "issue" | "pull",
-    number: number,
-    read: (root: string) => Promise<T>,
-    options: { force?: boolean },
-  ): Promise<T> {
-    const project = this.getProject(projectId);
-    const key = `${project.id}:${kind}:${this.forgeNumber(number)}`;
-    const cached = this.githubDetailCache.get(key) as T | undefined;
-    const readAt = cached && "issue" in cached ? cached.issue.readAt : cached && "pull" in cached ? cached.pull.readAt : undefined;
-    if (readAt !== undefined && !options.force && this.now() - readAt < GITHUB_CACHE_MS) return structuredClone(cached!);
-    const answer = await read(project.root);
-    if ("issue" in answer || "pull" in answer) this.githubDetailCache.set(key, answer);
-    return structuredClone(answer);
-  }
-
   projectIssue(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubIssueRead> {
-    return this.forgeDetail(projectId, "issue", number, (root) => readIssue(this.gh, root, number, this.now), options);
+    return this.github.issue(projectId, number, options);
   }
 
   projectPull(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubPullRead> {
-    return this.forgeDetail(projectId, "pull", number, (root) => readPull(this.gh, root, number, this.now), options);
+    return this.github.pull(projectId, number, options);
   }
 
-  /**
-   * Merge a pull request.
-   *
-   * NOT CACHED — obviously — AND IT DROPS TWO CACHES ON THE WAY OUT. A merged
-   * pull request that goes on reporting itself as open for the next thirty
-   * seconds, in the panel that just merged it, is the worst possible moment for
-   * this cache to be right about a stale answer. The LIST goes too: the row this
-   * merge just closed is in it.
-   *
-   * `expectedHeadOid` is the reader's precondition and is required. There is no
-   * "merge whatever is there now" path, because that is the merge nobody meant.
-   */
-  async projectPullMerge(
-    projectId: string,
-    number: number,
-    input: { method: GitHubMergeMethod; expectedHeadOid: string },
-  ): Promise<GitHubMergeResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(number);
-    if (!input.expectedHeadOid.trim()) throw new EngineStateError("invalid_request", "the head commit this merge was reviewed against is required");
-    const result = await mergePull(this.gh, project.root, { number: target, method: input.method, expectedHeadOid: input.expectedHeadOid }, this.now);
-    this.githubDetailCache.delete(`${project.id}:pull:${target}`);
-    if (result.merged) {
-      this.forgetGitHub(project.id);
-      // The merge's own re-read is fresher than anything a cache could hold, so
-      // it becomes the cached answer rather than being thrown away.
-      this.githubDetailCache.set(`${project.id}:pull:${target}`, { pull: result.pull });
-    }
-    return structuredClone(result);
+  projectPullMerge(projectId: string, number: number, input: { method: GitHubMergeMethod; expectedHeadOid: string }): Promise<GitHubMergeResult> {
+    return this.github.merge(projectId, number, input);
   }
 
-  /**
-   * Post one comment, attributed to the session that wrote it — issue #791.
-   *
-   * ── THE SESSION ID IS READ OFF A CLAIM, NEVER OFF AN ARGUMENT ───────────────
-   * This is the whole reason the write lives here rather than in a tool. `proof`
-   * is the CLAIM of the turn doing the commenting — a session id, a run id and
-   * the token this engine minted for that claim — and `requireSenderClaim` looks
-   * it up and refuses unless it is live. The id that reaches the comment body is
-   * the one the STORE found, not the one the caller named, so a model cannot
-   * attribute its words to a session it is not. Identical in mechanism to
-   * `submitAgentTurn`'s sender and to `Session.startedFrom`, deliberately: a
-   * second way to prove who is speaking would be a second way to get it wrong.
-   *
-   * ── AND WHAT THIS DOES NOT PROVE ────────────────────────────────────────────
-   * It binds the marker on comments that come through HERE. It cannot bind a
-   * comment an agent posts by running `gh issue comment` in its own worktree,
-   * which is how every agent comment in this repository is written today: that
-   * body is typed by the model, and a model can type any marker, including one
-   * it read off a public comment belonging to another session. The attribution
-   * is therefore a CLAIM that is ordinarily true rather than a signature, and
-   * `GitHubComment.attribution` says so to every reader. Nothing authorises on it.
-   *
-   * ── NO CACHE TO DROP, AND ONE TO ─────────────────────────────────────────────
-   * The detail read carries the thread, so a comment that posted while the panel
-   * holds a thirty-second-old copy would be invisible for the rest of that
-   * window — the same staleness `projectPullMerge` refuses. The LIST is left
-   * alone: a comment changes `updatedAt` and nothing a row renders.
-   */
-  async projectGitHubComment(
+  projectGitHubComment(
     projectId: string,
     input: { kind: "issue" | "pull"; number: number; body: string },
     proof: { sessionId: string; runId: string; claimToken: string },
   ): Promise<GitHubCommentResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(input.number);
-    assertId(proof.sessionId, "sender session id");
-    // Throws unless the claim is live and really is this session's. The id below
-    // is the store's finding, not the caller's claim.
-    const claimed = this.requireSenderClaim(proof);
-    const result = await commentOn(this.gh, project.root, {
-      kind: input.kind,
-      number: target,
-      body: input.body,
-      sessionId: claimed.sessionId,
-    });
-    if (result.posted) this.githubDetailCache.delete(`${project.id}:${input.kind}:${target}`);
-    return structuredClone(result);
+    return this.github.comment(projectId, input, proof);
   }
 
-  /**
-   * Add or remove one reaction — #842.
-   *
-   * A PERSON'S GESTURE, NOT AN AGENT'S, so unlike `projectGitHubComment` there is
-   * no claim to check: a reaction carries no body to attribute and lands under
-   * whoever `gh` is signed in as, which is the person pressing the pill.
-   *
-   * THE DETAIL IT BELONGS TO IS DROPPED ON SUCCESS, for the staleness reason the
-   * comment write gives: a refresh within thirty seconds would otherwise redraw
-   * the count the person just changed.
-   */
-  async projectGitHubReaction(
+  projectGitHubReaction(
     projectId: string,
     input: { kind: "issue" | "pull"; number: number; subjectId: string; content: GitHubReactionContent; react: boolean },
   ): Promise<GitHubReactionResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(input.number);
-    const result = await reactOn(this.gh, project.root, { subjectId: input.subjectId, content: input.content, react: input.react });
-    if (result.reacted) this.githubDetailCache.delete(`${project.id}:${input.kind}:${target}`);
-    return structuredClone(result);
+    return this.github.react(projectId, input);
   }
 
-  /**
-   * Reply to, resolve or unresolve one review thread on a pull request — #842.
-   *
-   * Person-driven like a reaction, so no claim is checked; the detail is dropped
-   * on success for the same staleness reason.
-   */
-  async projectThreadReply(projectId: string, number: number, input: { threadId: string; body: string }): Promise<GitHubThreadReplyResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(number);
-    const result = await replyToThread(this.gh, project.root, input);
-    if (result.replied) this.githubDetailCache.delete(`${project.id}:pull:${target}`);
-    return structuredClone(result);
+  projectThreadReply(projectId: string, number: number, input: { threadId: string; body: string }): Promise<GitHubThreadReplyResult> {
+    return this.github.threadReply(projectId, number, input);
   }
 
-  async projectThreadResolve(projectId: string, number: number, input: { threadId: string; resolved: boolean }): Promise<GitHubThreadResolveResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(number);
-    const result = await resolveThread(this.gh, project.root, input);
-    if (result.changed) this.githubDetailCache.delete(`${project.id}:pull:${target}`);
-    return structuredClone(result);
+  projectThreadResolve(projectId: string, number: number, input: { threadId: string; resolved: boolean }): Promise<GitHubThreadResolveResult> {
+    return this.github.threadResolve(projectId, number, input);
   }
 
   /**
@@ -4705,7 +3347,7 @@ export class EngineStore {
     // A new pull request belongs in the project's next forge read; the cached
     // list would otherwise not have it for the rest of its window — the same
     // staleness `projectPullMerge` refuses.
-    if (result.opened) this.forgetGitHub(project.id);
+    if (result.opened) this.github.forgetLists(project.id);
     return structuredClone(result);
   }
 
@@ -4749,7 +3391,7 @@ export class EngineStore {
       return { commented: false, refusal: "stale", message: "The branch moved after this diff was read. Refresh and select the lines again." };
     }
     const result = await commentOnPullLine(this.gh, cwd, pull.number, input);
-    if (result.commented && session.projectId !== undefined) this.githubDetailCache.delete(`${session.projectId}:pull:${pull.number}`);
+    if (result.commented && session.projectId !== undefined) this.github.forgetDetail(session.projectId, "pull", pull.number);
     return structuredClone(result);
   }
 
@@ -4791,127 +3433,30 @@ export class EngineStore {
   }
 
   projectFileAsync(projectId: string, target: string): Promise<WorkspaceFile> {
-    return this.readFencedAsync(this.getProject(projectId).root, target, "project");
+    return readFencedAsync(this.getProject(projectId).root, target, "project");
   }
 
   sessionFileAsync(sessionId: string, target: string): Promise<WorkspaceFile> {
-    return this.readFencedAsync(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
+    return readFencedAsync(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
   }
 
-  /**
-   * One file's BYTES — what the cockpit's media viewers (image, PDF, video)
-   * render. The same fence as the text read, because the same client can name
-   * the same paths; only the answer differs: content and a media type instead
-   * of decoded text. Refused past `MAX_RAW_FILE_BYTES` — see files.ts.
-   */
   projectFileBytesAsync(projectId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return this.readFencedBytes(this.getProject(projectId).root, target, "project");
+    return readFencedBytes(this.getProject(projectId).root, target, "project");
   }
 
   sessionFileBytesAsync(sessionId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return this.readFencedBytes(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
+    return readFencedBytes(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
   }
 
-  /**
-   * SAVE A FILE A HUMAN EDITED IN THE COCKPIT.
-   *
-   * `expected` is the hash the editor read. Everything about why this endpoint
-   * takes one — and what it refuses — is in `writeWorkspaceFile`; the store's job
-   * is the fence, which is the same fence as the read and for the same reason.
-   */
+  /** `expected` is the hash the editor read; a stale one is refused rather than overwritten. */
   projectFileWrite(projectId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
     const project = this.getProject(projectId);
-    return this.writeFenced(project.root, target, text, expected, "project");
+    return writeFenced(project.root, target, text, expected, "project");
   }
 
   sessionFileWrite(sessionId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
     const session = this.records.get(sessionId);
-    return this.writeFenced(workspaceRootOf(session), target, text, expected, "session workspace");
-  }
-
-  /**
-   * READ A FILE, INSIDE ONE DIRECTORY AND NOWHERE ELSE.
-   *
-   * The fence is the whole method. A client that can name a path can name
-   * `../../../.ssh/id_ed25519`, and this engine listens on a port with no login
-   * — so the check is here, at the store boundary, rather than at the route: an
-   * in-process caller must not be able to walk past a check that only ran on the
-   * socket. Same rule, same shape, as the patch reads above.
-   *
-   * A DIRECTORY IS NOT A FILE, and saying so beats letting `readFileSync` throw
-   * EISDIR at a surface that would render the errno.
-   */
-  private readFenced(root: string, target: string, label: string, maxBytes?: number): WorkspaceFile {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    const resolved = path.resolve(root, target);
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    let stats: fs.Stats;
-    try {
-      stats = fs.statSync(resolved);
-    } catch {
-      throw new EngineStateError("not_found", "no such file in this workspace");
-    }
-    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
-    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
-    return readWorkspaceFile({ cwd: root, path: path.relative(root, resolved), ...(maxBytes ? { maxBytes } : {}) });
-  }
-
-  private async readFencedAsync(root: string, target: string, label: string): Promise<WorkspaceFile> {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    const resolved = path.resolve(root, target);
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    let stats: fs.Stats;
-    try {
-      stats = await fs.promises.stat(resolved);
-    } catch {
-      throw new EngineStateError("not_found", "no such file in this workspace");
-    }
-    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
-    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
-    return readWorkspaceFileAsync({ cwd: root, path: path.relative(root, resolved) });
-  }
-
-  /** The bytes twin of `readFencedAsync` — same fence, same refusals, whole
-   *  content instead of decoded text. Size errors become `invalid_request` so
-   *  the route answers with the sentence rather than a 500. */
-  private async readFencedBytes(root: string, target: string, label: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    const resolved = path.resolve(root, target);
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    let stats: fs.Stats;
-    try {
-      stats = await fs.promises.stat(resolved);
-    } catch {
-      throw new EngineStateError("not_found", "no such file in this workspace");
-    }
-    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
-    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
-    try {
-      return await readWorkspaceFileBytes({ cwd: root, path: path.relative(root, resolved) });
-    } catch (error) {
-      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : "the file could not be read");
-    }
-  }
-
-  /**
-   * The same fence, for the one write.
-   *
-   * DELIBERATELY NOT SHARED WITH `readFenced` beyond the check itself: a read that
-   * cannot find a file is a 404, while a write that cannot is a REFUSAL the editor
-   * renders inline (`not_found`), so the two disagree about what a missing file
-   * means and merging them would have to invent a third answer.
-   */
-  private writeFenced(root: string, target: string, text: string, expected: string, label: string, maxBytes?: number): WorkspaceWriteResult {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    if (!expected.trim()) throw new EngineStateError("invalid_request", "a write must carry the hash it expects on disk");
-    if (text.length > (maxBytes ?? MAX_TEXT_LENGTH * 10)) throw new EngineStateError("invalid_request", "that file is too large to save");
-    const resolved = path.resolve(root, target);
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    return writeWorkspaceFile({ cwd: root, path: path.relative(root, resolved), text, expected, ...(maxBytes ? { maxBytes } : {}) });
+    return writeFenced(workspaceRootOf(session), target, text, expected, "session workspace");
   }
 
   /**
@@ -5696,12 +4241,6 @@ export class EngineStore {
     return this.records.markRead(sessionId, runId);
   }
 
-
-
-
-
-
-
   listSessions(projectId: string): Session[] {
     this.getProject(projectId);
     /**
@@ -5778,8 +4317,7 @@ export class EngineStore {
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
   } {
-    const registry = this.readDocument(this.paths.projects);
-    const projects = registry === undefined ? [] : parseRegistry(registry).projects;
+    const projects = this.projectRegistry.read().projects;
     /**
      * ASSIGNMENTS RIDE THE LIST, not a fetch per row.
      *
@@ -6300,49 +4838,10 @@ export class EngineStore {
     return structuredClone([...this.sessionTasks.read(sessionId).values()]);
   }
 
-  /**
-   * Store one attached file and hand back its handle.
-   *
-   * WRITTEN BEFORE THE MESSAGE THAT REFERS TO IT, and independent of any turn:
-   * a human picks three files, changes their mind about one, then types. Binding
-   * bytes to a turn at upload time would mean either inventing a turn that does
-   * not exist yet or holding megabytes in memory until they send.
-   *
-   * The index is what makes an id resolvable. Without it `submitTurn` would have
-   * to take the whole attachment from the client — including its PATH — and a
-   * client-supplied path is a client-supplied file read.
-   */
-  putAttachment(sessionId: string, input: { name: string; mediaType: string; data: Uint8Array; tags?: string[]; producer?: string; title?: string }): TurnAttachment {
-    this.records.require(sessionId);
-    if (input.data.byteLength === 0) throw new EngineStateError("invalid_request", "attachment is empty");
-    if (input.data.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new EngineStateError("invalid_request", "attachment is larger than the engine accepts");
-    }
-    const name = input.name.trim().slice(0, 200) || "attachment";
-    const mediaType = input.mediaType.trim().slice(0, 120) || "application/octet-stream";
-    const id = `att_${crypto.randomUUID().replaceAll("-", "")}`;
-    const file = attachmentFile(this.paths, sessionId, id, name);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, input.data, { mode: 0o600 });
-    const attachment: TurnAttachment = {
-      id, name, mediaType, bytes: input.data.byteLength, path: file, createdAt: this.now(),
-      ...(input.tags?.length ? { tags: input.tags } : {}),
-      ...(input.producer ? { producer: input.producer } : {}),
-      ...(input.title?.trim() ? { title: input.title.trim().slice(0, 200) } : {}),
-    };
-    const index = this.readAttachments(sessionId);
-    index.set(id, attachment);
-    this.writeDocument(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
-    return structuredClone(attachment);
+  putAttachment(sessionId: string, input: AttachmentInput): TurnAttachment {
+    return this.attachments.put(sessionId, input);
   }
 
-  private readAttachments(sessionId: string): Map<string, TurnAttachment> {
-    const stored = this.readDocument(attachmentsFile(this.paths, sessionId)) as { attachments?: unknown } | undefined;
-    const parsed = TurnAttachmentSchema.array().safeParse(stored?.attachments ?? []);
-    // A corrupt index costs the ABILITY TO REFERENCE old attachments, not the
-    // session. Throwing here would make one bad record unopenable forever.
-    return new Map((parsed.success ? parsed.data : []).map((attachment) => [attachment.id, attachment]));
-  }
 
   submitTurn(
     sessionId: string,
@@ -6471,7 +4970,7 @@ export class EngineStore {
           const ids = input.attachments ?? [];
           if (ids.length === 0) return {};
           if (ids.length > MAX_TURN_ATTACHMENTS) throw new EngineStateError("invalid_request", "too many attachments on one turn");
-          const index = this.readAttachments(sessionId);
+          const index = this.attachments.index(sessionId);
           const attachments = ids.map((id) => {
             const found = index.get(id);
             // Loud rather than silent: a message that says "look at this" and
@@ -7529,9 +6028,6 @@ export class EngineStore {
     });
   }
 
-
-
-
   /**
    * WHAT THE WORKER IS ACTUALLY HANDED, model-wise.
    *
@@ -8208,7 +6704,7 @@ export class EngineStore {
     // Free the session's browser. WITHOUT THIS, Chromium instances accumulate
     // until the pool's LRU evicts them six sessions later — which is a leak
     // measured in hundreds of megabytes on a machine running detached work.
-    void this.browser?.release(sessionId, "session archived");
+    void this.browser.release(sessionId, "session archived");
     this.releaseDataScience(session, "session archived");
 
     // A WORKTREE IMPLIES A PROJECT, and checking both is how that stays true
@@ -8686,7 +7182,7 @@ export class EngineStore {
     );
     if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before deleting");
 
-    void this.browser?.release(sessionId, "session deleted");
+    void this.browser.release(sessionId, "session deleted");
     this.releaseDataScience(session, "session deleted");
 
     // See `archiveSession` for why the project is checked beside the mode.
@@ -9642,7 +8138,7 @@ export class EngineStore {
     } catch {
       // A session that cannot be read has no tasks this can stop.
     }
-    void this.browser?.release(sessionId, "The session was settled.").catch(() => undefined);
+    void this.browser.release(sessionId, "The session was settled.")?.catch(() => undefined);
     let terminals = 0;
     try {
       terminals = (await this.terminals?.closeSession(sessionId)) ?? 0;
@@ -10426,9 +8922,6 @@ export class EngineStore {
     );
   }
 
-
-
-
   /** Is a turn of this session's actually in front of a provider right now? The
    *  question `settled_only` turns on — and `queued` is deliberately NOT busy:
    *  a queued wake is already waiting its turn, which is what holding is for. */
@@ -11196,8 +9689,6 @@ export class EngineStore {
     );
   }
 
-
-
   private scanQueue(sessionId: string): SessionQueue {
     return this.sessionQueues.scan(sessionId);
   }
@@ -11213,10 +9704,6 @@ export class EngineStore {
   private writeQueue(sessionId: string, queue: SessionQueue): void {
     this.sessionQueues.write(sessionId, queue);
   }
-
-
-
-
 
   /**
    * AFTER THE COMMIT, FOR THE SAME REASON `announceQueueChange` DEFERS: telling
