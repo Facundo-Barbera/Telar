@@ -21,7 +21,7 @@ import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepas
 import type { LoginGrantStore } from "./secrets/login-grants";
 import { providerProcessEnv } from "./provider-instances";
 import { SteerMailbox } from "./steering";
-import { framedTurnInput, withTurnNotes } from "./attribution";
+import { framedTurnInput, withTurnNotes } from "./domains/turns";
 
 type WorkerClient = Pick<
   EngineClient,

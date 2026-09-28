@@ -241,7 +241,7 @@ import {
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
 import { inlineExcerpt, quotedExcerpt } from "./agent-notice";
-import { RELAY_RULE } from "./attribution";
+import { RELAY_RULE } from "./domains/turns";
 import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import {
   commentOn,

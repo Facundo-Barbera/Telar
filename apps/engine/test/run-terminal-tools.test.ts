@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, type FetchLike } from "@telar/engine-client";
-import { withTurnNotes } from "../src/attribution";
+import { withTurnNotes } from "../src/domains/turns";
 import { clientRunCapability } from "../src/run/client-capability";
 import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "../src/run/launcher";
 import { RunManager } from "../src/run/manager";
