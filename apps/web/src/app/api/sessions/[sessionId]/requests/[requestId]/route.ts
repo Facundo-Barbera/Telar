@@ -3,7 +3,7 @@ import {
   requiredString,
   engineClient,
   engineErrorResponse,
-} from "@/lib/engine/engine-server";
+} from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

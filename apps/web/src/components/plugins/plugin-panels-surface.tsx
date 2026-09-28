@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCwIcon } from "lucide-react";
 import { parsePluginPanelView, type PluginPanelBlock, type TurnState } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { panelSourceKey, type PluginPanelSource } from "@/lib/plugins/panels";
 import { cn } from "@/lib/utils";
 import { PluginBlocks } from "./panel-blocks";

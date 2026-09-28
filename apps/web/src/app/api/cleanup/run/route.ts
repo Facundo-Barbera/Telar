@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /** Sweep now with the current switches. Answers when the sweep is done. */
 export const dynamic = "force-dynamic";

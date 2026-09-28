@@ -1,7 +1,7 @@
 import { cockpitPort, listEndpoints } from "@/lib/remote/endpoints";
 import { encodeQr, type QrMatrix } from "@/lib/remote/qr";
-import { engineErrorResponse } from "@/lib/engine/engine-server";
-import { engineCall, engineForward } from "@/lib/engine/forward";
+import { engineErrorResponse } from "@/platform/engine/server";
+import { engineCall, engineForward } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

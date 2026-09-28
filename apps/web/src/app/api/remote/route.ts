@@ -6,8 +6,8 @@ import { describeDevice, type DeviceIdentity } from "@/lib/remote/identity";
 import { machineName, observeIdentity } from "@/lib/remote/observe";
 import { HOST_TOKEN_ENV, readHostHeader } from "@/lib/remote/host-token";
 import { readServeError } from "@/lib/remote/tailscale-serve";
-import { engineErrorResponse } from "@/lib/engine/engine-server";
-import { engineCall } from "@/lib/engine/forward";
+import { engineErrorResponse } from "@/platform/engine/server";
+import { engineCall } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

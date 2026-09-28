@@ -22,7 +22,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { CustomProviderModel, ModelCatalogue, ModelOverlay, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { familyKey } from "@/lib/model-families";
 import { readFavorites } from "@/lib/model-favorites";
 

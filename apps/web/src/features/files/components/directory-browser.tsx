@@ -10,7 +10,7 @@ import {
   rememberedDirectoryKey,
   type DirectoryBrowserState,
 } from "../directory-keys";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { workspaceOpener } from "@/lib/workspace-open";
 import { cn } from "@/lib/utils";

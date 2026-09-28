@@ -1,5 +1,5 @@
 import type { DictationProviderId } from "@telar/engine-client";
-import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * WHETHER THIS MAC CAN DICTATE, AND WHOSE SERVICE IT WOULD USE (#544).

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { DiffBaseOption, SessionDiff, TurnState } from "@telar/engine-client";
-import { EngineApiError } from "@/lib/engine/client";
+import { EngineApiError } from "@/platform/engine";
 import { api } from "../api";
 
 const REFRESH_MS = 15_000;

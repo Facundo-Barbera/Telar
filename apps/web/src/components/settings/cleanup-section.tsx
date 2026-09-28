@@ -14,7 +14,7 @@
 import { useEffect, useState } from "react";
 import { CLEANUP_INACTIVE_DAYS, CLEANUP_LOG_DAYS, type CleanupPolicy, type CleanupReport, type CleanupState, type RetentionPolicy } from "@telar/engine-client";
 import { ArchiveIcon, ClockIcon, GitBranchIcon, HistoryIcon, ScrollTextIcon } from "lucide-react";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { fmtAgo, formatBytes } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Dropdown, Row, SettingsGroup, ToggleRow } from "./settings-shell";

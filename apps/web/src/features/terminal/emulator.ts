@@ -2,7 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon, type IImageAddonOptions } from "@xterm/addon-image";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import type { TerminalBridge } from "./bridge";
 import { domImageBackend, KittyGraphicsAddon } from "./kitty/addon";
 import { terminalKeyHandler } from "./session";

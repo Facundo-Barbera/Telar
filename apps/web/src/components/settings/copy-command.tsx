@@ -13,7 +13,7 @@
 //   · CLIPBOARD ACCESS IS NOT GUARANTEED HERE. `navigator.clipboard` exists
 //     only in a secure context, and this cockpit is served over plain HTTP the
 //     moment it is bound to anything other than localhost — the same trap that
-//     took out `crypto.randomUUID` (see lib/engine/client.ts). So the absence is
+//     took out `crypto.randomUUID` (see platform/engine/client.ts). So the absence is
 //     handled rather than caught: the command stays on screen and selectable,
 //     which is the fallback that always works.
 

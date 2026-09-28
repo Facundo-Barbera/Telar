@@ -1,6 +1,6 @@
 import { parseFilePatchQuery } from "@telar/engine-client";
 
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * A project's uncommitted work.

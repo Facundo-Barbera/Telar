@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { buildForgeTimeline, issueStatus, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeStatus } from "@/lib/github-forge";
 import { cn } from "@/lib/utils";
 import { useForgeDetail } from "../hooks/use-forge-detail";

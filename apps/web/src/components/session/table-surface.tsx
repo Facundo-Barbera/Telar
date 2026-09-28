@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, TableIcon } from "lucide-react";
 import type { TurnState } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import type { TableWindow } from "@/lib/ds";
 import { EditorAddressRow } from "@/components/session/editor-chrome";
 import {

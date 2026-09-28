@@ -69,7 +69,7 @@ import type { EnvMode, PluginStatus, Project, ProjectPlugins, ProviderDriverKind
 import { defaultInstanceIdForDriver, machineAllows, pluginEnabled, readProjectPlugins } from "@telar/engine-client";
 import type { PublicHost } from "@telar/engine-client";
 import { choiceNamesAnything, choiceOf, sessionModelSelection, type ModelChoice } from "@/lib/models";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/lib/hosts/client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { enablePatch, projectPluginSections } from "@/lib/plugins/sections";

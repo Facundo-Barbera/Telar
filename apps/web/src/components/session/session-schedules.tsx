@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Schedule } from "@telar/engine-client";
 import { AlarmClockIcon, InfoIcon, Trash2Icon } from "lucide-react";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/lib/hosts/client";
 import { inZone, lastRunSentence, ruleLabel } from "@/lib/schedules";
 import { Button } from "@/components/ui/button";

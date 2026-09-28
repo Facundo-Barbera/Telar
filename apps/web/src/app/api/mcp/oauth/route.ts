@@ -1,4 +1,4 @@
-import { optionalString, requestObject, requiredString, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { optionalString, requestObject, requiredString, engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * Sign-in state for the MCP servers in one scope, and the two writes that

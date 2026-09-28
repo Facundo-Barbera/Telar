@@ -2,8 +2,8 @@ import { describeDevice } from "@/lib/remote/identity";
 import { observeIdentity } from "@/lib/remote/observe";
 import { deviceCookieHeader } from "@/lib/remote/cookie";
 import { dialableAddresses } from "@/lib/remote/endpoints";
-import { engineErrorResponse } from "@/lib/engine/engine-server";
-import { engineCall } from "@/lib/engine/forward";
+import { engineErrorResponse } from "@/platform/engine/server";
+import { engineCall } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

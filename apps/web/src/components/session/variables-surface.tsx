@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { BracesIcon, RotateCwIcon } from "lucide-react";
 import type { TurnState } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { humanBytes, type KernelState, type VarRow } from "@/lib/ds";
 import { PanelEmpty, PanelHeader } from "@/components/ui/panel";
 import { KernelPill } from "./kernel-pill";

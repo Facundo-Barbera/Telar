@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { DEFAULT_AGENT_ORIENTATION, type AgentOrientation } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { Switch } from "@/components/ui/switch";
 import { Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { EngineApiError } from "@/lib/engine/client";
+import { EngineApiError } from "@/platform/engine";
 import type { RunApi } from "../run/api";
 import { gridMeasurer, ptyByteWriter, terminalKeyHandler } from "../session";
 import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "../theme";

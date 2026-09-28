@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
 import type { UsageLimitSource } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

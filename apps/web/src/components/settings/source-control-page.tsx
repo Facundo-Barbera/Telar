@@ -42,7 +42,7 @@ import { useCallback, useEffect, useState } from "react";
 // the one icon in the app nobody could restyle with the rest.
 import { GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
 import type { GitHubUnavailable } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { UNAVAILABLE } from "@/lib/github-forge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

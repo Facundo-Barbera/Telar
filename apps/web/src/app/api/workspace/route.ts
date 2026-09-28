@@ -1,4 +1,4 @@
-import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
 import type { WorkspaceConfig } from "@telar/engine-client";
 
 /**

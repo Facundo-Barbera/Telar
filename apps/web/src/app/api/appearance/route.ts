@@ -1,5 +1,5 @@
 import { parsePublishedAppearance } from "@telar/engine-client";
-import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * The host cockpit's resolved look, published to the engine and read back by

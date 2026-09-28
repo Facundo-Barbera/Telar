@@ -12,7 +12,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { NotificationDetail } from "@telar/engine-client";
-import type { JournalItem, JournalTurn } from "@/lib/engine/journal";
+import type { JournalItem, JournalTurn } from "@/platform/engine";
 import { SessionTurn } from "../session-cockpit";
 import { CohortFold, cohortFoldSummary, foldCohortTurns, type TranscriptSegment } from "./cohort-fold";
 

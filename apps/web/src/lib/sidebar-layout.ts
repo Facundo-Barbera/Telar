@@ -33,7 +33,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_SIDEBAR_LAYOUT, type SidebarLayout, type SidebarMode } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 
 const api = createEngineApi(hostFetcher(LOCAL_HOST_ID));

@@ -26,7 +26,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/lib/hosts/client";
 import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
 import {

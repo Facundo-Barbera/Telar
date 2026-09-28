@@ -3,7 +3,7 @@
 import {
 TriangleAlertIcon
 } from "lucide-react";
-import { isToolItem,itemLabel,itemText,type JournalItem,type JournalTask } from "@/lib/engine/journal";
+import { isToolItem,itemLabel,itemText,type JournalItem,type JournalTask } from "@/platform/engine";
 import { MessageMenu,MessageResponse } from "@/components/ui/message";
 import { type OpenTab } from "@/components/session/conversation-message";
 import { RowGestures,ToolRow } from "./tool-row";

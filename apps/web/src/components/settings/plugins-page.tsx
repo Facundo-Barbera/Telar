@@ -41,7 +41,7 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import { BlocksIcon, CircleAlertIcon, FolderPlusIcon } from "lucide-react";
 import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
 import { machineAllows } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { chooseDirectory } from "@/lib/choose-directory";

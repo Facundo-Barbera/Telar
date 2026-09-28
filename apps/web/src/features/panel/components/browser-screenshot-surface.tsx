@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { GlobeIcon } from "lucide-react";
 import type { BrowserProvider, BrowserSnapshot } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";

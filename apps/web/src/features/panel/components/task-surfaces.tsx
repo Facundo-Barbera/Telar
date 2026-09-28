@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { BotIcon, ChevronRightIcon, TerminalIcon } from "lucide-react";
 import type { TaskState } from "@telar/engine-client";
-import type { JournalTask } from "@/lib/engine/journal";
+import type { JournalTask } from "@/platform/engine";
 import { startReferenceDrag, taskReference } from "@/lib/drag-reference";
 import { TranscriptItem } from "@/features/transcript";
 import { PanelDivider, PanelEmpty, PanelRow } from "@/components/ui/panel";

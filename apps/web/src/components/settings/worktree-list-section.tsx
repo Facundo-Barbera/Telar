@@ -52,7 +52,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorktreeInventory, WorktreeReclaimResult, WorktreeRow } from "@telar/engine-client";
 import { FolderGitIcon, LockIcon, TriangleAlertIcon } from "lucide-react";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 // The cockpit's one byte formatter (#630) and its one relative clock — two of
 // either on one screen disagree about a gigabyte the first time somebody
 // rounds differently.

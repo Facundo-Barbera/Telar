@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import type { Project } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
 import { hostFetcher, hostFromPathname, LOCAL_HOST_ID } from "./client";
 

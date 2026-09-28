@@ -19,7 +19,7 @@
 import { useState, type ReactNode } from "react";
 import { CircleAlertIcon, PlugIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { enablePatch, type PluginSectionEntry } from "@/lib/plugins/sections";
 import { pluginEnabled, pluginSettings, readProjectPlugins } from "@telar/engine-client";
 import { Badge } from "@/components/ui/badge";

@@ -1,6 +1,6 @@
 import { parseDiffBaseQuery, parseFilePatchQuery } from "@telar/engine-client";
 
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * The session's review — what it has done to the repository since it started.

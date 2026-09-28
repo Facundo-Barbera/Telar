@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { rememberedDirectoryKey } from "../directory-keys";
-import { EngineApiError } from "@/lib/engine/client";
+import { EngineApiError } from "@/platform/engine";
 import type { DirectoryListing } from "@telar/engine-client";
 import { buttonLabelled, click, flush, installTestDom, mount } from "@/lib/testing/dom";
 import { DirectoryBrowser, type DirectoryLister } from "./directory-browser";

@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon, FileTextIcon, Loader2Icon, PlayIcon, TriangleAlertIcon } from "lucide-react";
 import type { LatexCompileStatus, LatexDiagnostic, TurnState } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 

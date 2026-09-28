@@ -30,9 +30,9 @@
  * a cap that could evict it would be spending its budget on the one row whose
  * data is already in hand.
  */
-import { createEngineApi } from "@/lib/engine/client";
-import { sessionConnection } from "@/lib/engine/session-connection";
-import { INITIAL_TURNS } from "@/lib/engine/session-sync";
+import { createEngineApi } from "@/platform/engine";
+import { sessionConnection } from "@/platform/engine";
+import { INITIAL_TURNS } from "@/platform/engine";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { LOCAL_HOST } from "@/lib/snapshot-cache";
 

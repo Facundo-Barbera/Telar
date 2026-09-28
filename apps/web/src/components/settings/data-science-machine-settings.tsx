@@ -18,7 +18,7 @@ import { useState } from "react";
 import { PackageIcon } from "lucide-react";
 import type { ProjectPlugins } from "@telar/engine-client";
 import { dataScienceMachineSettings } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { machineSettingsPatch } from "@/lib/plugins/sections";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

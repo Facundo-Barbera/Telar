@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { DownloadIcon, PackageIcon, RotateCwIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import type { DataScienceInstallCommand, DataScienceManager, DataSciencePackage, DataScienceRequirementsSource } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

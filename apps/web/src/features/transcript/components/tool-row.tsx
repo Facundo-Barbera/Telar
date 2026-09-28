@@ -8,7 +8,7 @@ SearchIcon,
 TerminalIcon,WrenchIcon
 } from "lucide-react";
 import { isKnownPath,type Item } from "@telar/engine-client";
-import { toolOutput,type JournalItem } from "@/lib/engine/journal";
+import { toolOutput,type JournalItem } from "@/platform/engine";
 import { fileReference } from "@/lib/drag-reference";
 import { ContextMenu,ContextMenuContent,ContextMenuItem,ContextMenuSeparator,ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Shimmer } from "@/components/ui/shimmer";

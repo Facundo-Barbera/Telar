@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Loader2Icon, PinIcon, PinOffIcon, Trash2Icon } from "lucide-react";
 import type { ProjectNote } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { announceProjectNotesChanged } from "../project-notes";
 import { cn } from "@/lib/utils";
 

@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { filePatchQuery, parseFilePatchQuery } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { DEFAULT_DIFF_VIEW, type DiffView } from "../hooks/use-diff-view";
 import { patchRequestFor } from "../model";
 import { DiffToolbar } from "./diff-toolbar";

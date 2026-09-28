@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { DictationAnswer, DictationLanguage, DictationProviderId } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 
 const CHANGED = "telar:dictation";
 

@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { engineClient } from "@/lib/engine/engine-server";
+import { engineClient } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

@@ -36,7 +36,7 @@ import type {
 } from "@telar/engine-client";
 import { pluginBlock } from "@telar/engine-client";
 import { blockPatch } from "@/lib/plugins/sections";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

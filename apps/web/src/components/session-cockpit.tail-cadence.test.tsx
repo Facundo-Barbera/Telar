@@ -85,7 +85,7 @@ mockNavigation();
 const { SessionCockpit } = await import("./session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
 const { clearTranscriptCache } = await import("@/lib/transcript-cache");
-const { TAIL_LIVE_MS, TAIL_SETTLED_MS } = await import("@/lib/engine/session-sync");
+const { TAIL_LIVE_MS, TAIL_SETTLED_MS } = await import("@/platform/engine");
 
 const STARTED = 1_700_000_000_000;
 

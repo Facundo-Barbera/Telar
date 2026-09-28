@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { DEFAULT_INBOX_POLICY, type InboxPolicy } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { hostFetcher, hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
 
 /** Bounds staleness for changes made elsewhere; changes made here arrive by event. */

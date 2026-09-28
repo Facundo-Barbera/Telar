@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { useAppearance } from "../appearance";
 import { decideFollow, readAppliedStamp, useFollowHost, wearPublication, writeAppliedStamp } from "../host-follow";
 import { isHostWindow } from "@/lib/host-window";

@@ -2,7 +2,7 @@ import { readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller } from "@/lib/remote/gate";
 import { remoteErrorResponse } from "@/lib/remote/http";
 import { readRemote } from "@/lib/remote/store";
-import { engineForward } from "@/lib/engine/forward";
+import { engineForward } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

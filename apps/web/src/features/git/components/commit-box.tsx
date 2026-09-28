@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { GitCommitHorizontalIcon } from "lucide-react";
-import { EngineApiError } from "@/lib/engine/client";
+import { EngineApiError } from "@/platform/engine";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";

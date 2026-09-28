@@ -1,4 +1,4 @@
-import { requestObject, requiredString, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, requiredString, engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * The user's own MCP servers.

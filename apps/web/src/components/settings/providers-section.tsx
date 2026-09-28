@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PlusIcon, RotateCwIcon } from "lucide-react";
 import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderUpdateRun } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { cn } from "@/lib/utils";
 import { displayNameOf, DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, signInCommand, sortInstances, suggestInstanceId } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";

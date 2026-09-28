@@ -1,5 +1,5 @@
 import type { DataScienceBootstrap } from "@telar/engine-client";
-import { engineClient, engineErrorResponse, requestObject } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse, requestObject } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

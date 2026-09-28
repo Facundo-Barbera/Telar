@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckIcon, CircleXIcon, XIcon } from "lucide-react";
 import type { DataScienceJob } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";

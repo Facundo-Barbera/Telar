@@ -1,4 +1,4 @@
-import { engineForward } from "@/lib/engine/forward";
+import { engineForward } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
