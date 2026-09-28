@@ -14,8 +14,6 @@ import {
   type RetentionPolicy,
   type RetentionBucket,
   type JournalRetirement,
-  workspaceBaseRef,
-  workspacePath,
   type UsageLimitSource,
   machineAllows,
   type ProjectPlugins,
@@ -109,8 +107,8 @@ import { TurnWakes, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type Stopp
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
-import { listWorkspaceFilesAsync, readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
-import { cloneRepository, commitSessionWork, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, pushSessionBranch, removeTelarGitignore, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
+import { readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
+import { WorkspaceReads, cloneRepository, commitSessionWork, ensureTelarGitignore, isCloneFailure, pushSessionBranch, removeTelarGitignore, type GitOverview } from "./domains/git";
 import {  } from "./platform/git/parse";
 import { type AttachedBrowser, SessionBrowser } from "./domains/browser";
 import { GitHubStore, defaultGhRunner, SessionPulls, type GhRunner } from "./domains/github";
@@ -340,12 +338,6 @@ export type EngineNotifier = (input: {
  */
 import type { DiffBaseOption, FilePatchOptions } from "@telar/engine-client";
 
-/** Absent keeps the recorded base; `null` drops it; a string replaces it. */
-function resolveRequestedBase(options: DiffBaseOption, recorded: string | undefined): string | undefined {
-  if (options.base === undefined) return recorded;
-  return options.base === null ? undefined : options.base;
-}
-
 /** One git question, as `EngineStore.prefetchedGit` keys it. */
 const prefetchKey = (cwd: string, args: string[]): string => JSON.stringify([cwd, args]);
 
@@ -391,6 +383,7 @@ export class EngineStore {
   private readonly subscriptions: SessionSubscriptions;
   private readonly lifecycle: SessionLifecycle;
   private readonly schedules: ScheduleBook;
+  private readonly workspaceReads: WorkspaceReads;
   private readonly requestGate: RequestGate;
   private readonly sessionTerminals: SessionTerminals;
   private readonly sessionPulls: SessionPulls;
@@ -1042,6 +1035,12 @@ export class EngineStore {
     this.computerUse = options.computerUse;
     this.syncGit = options.git ?? defaultGitRunner;
     this.asyncGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultAsyncGitRunner);
+    this.workspaceReads = new WorkspaceReads(this.asyncGit, {
+      now: () => this.now(),
+      getSession: (sessionId) => this.records.get(sessionId),
+      getProject: (projectId) => this.getProject(projectId),
+      availability: (project) => this.projectAvailability(project),
+    });
     // A POOL OF ITS OWN FOR THE CUTS, so the slowest git child cannot hold a
     // slot the rail's polls need — see `defaultWorktreeGitRunner`. An INJECTED
     // runner still wins, and wins for both: a test that fakes git is faking the
@@ -1199,7 +1198,7 @@ export class EngineStore {
       getProject: (projectId) => this.getProject(projectId),
       assertProjectAvailable: (projectId) => this.assertProjectAvailable(projectId),
       projectAvailability: (project) => this.projectAvailability(project),
-      projectOfSession: (session) => this.projectOfSession(session),
+      projectOfSession: (session) => this.workspaceReads.projectOf(session),
       sessionDefaults: () => this.getSessionDefaults(),
       requireInstance: (instanceId) => this.providers.require(instanceId),
       cachedModels: (driver) => this.catalogues.cachedRows(driver),
@@ -1317,11 +1316,8 @@ export class EngineStore {
   }
 
 
-  /** Every cached git read that names `root` — see `forgetProjectReads`. */
   private forgetGitReadsUnder(root: string): void {
-    for (const key of this.gitReadCache.keys()) {
-      if (key.includes(root)) this.gitReadCache.delete(key);
-    }
+    this.workspaceReads.forgetUnder(root);
   }
 
   /**
@@ -1579,95 +1575,6 @@ export class EngineStore {
     };
   }
 
-  /** Coalesce polling reads and keep results briefly. Bounded so browsing patches
-   * cannot retain every file's contents for the lifetime of the engine. */
-  private readonly gitReadCache = new Map<string, { until: number; value: Promise<unknown> }>();
-
-  private cachedGitRead<T>(key: string, read: () => Promise<T>): Promise<T> {
-    for (const [oldKey, entry] of this.gitReadCache) {
-      if (this.now() >= entry.until) this.gitReadCache.delete(oldKey);
-    }
-    const cached = this.gitReadCache.get(key);
-    if (cached && this.now() < cached.until) return cached.value as Promise<T>;
-    const entry = { until: Infinity, value: Promise.resolve().then(read) as Promise<unknown> };
-    while (this.gitReadCache.size >= 64) this.gitReadCache.delete(this.gitReadCache.keys().next().value!);
-    this.gitReadCache.set(key, entry);
-    void entry.value.then(() => { entry.until = this.now() + 2_000; }, () => { if (this.gitReadCache.get(key) === entry) this.gitReadCache.delete(key); });
-    return entry.value as Promise<T>;
-  }
-
-  /**
-   * WHAT THE DISK WAS DOING, STAMPED ON A READ TAKEN OFF IT — issue #534.
-   *
-   * WHY THE REVIEW SURFACES NEED IT. `git` reports `repository: false` for a
-   * path it cannot read and a file walk of a path that is not there returns no
-   * files, so an unplugged drive produced a diff that said "not a repository, no
-   * changes" and a tree that said "no files" — both of which read as CLEAN when
-   * the truth is that nobody looked. The fields already there cannot tell those
-   * apart; this one can.
-   *
-   * OUTSIDE THE CACHE, DELIBERATELY. `cachedGitRead` holds the answer for two
-   * seconds, and a cable can move inside two seconds — stamping within the
-   * cached read would preserve an availability from before the unplug on a diff
-   * served after it. The expensive half is cached; this is three `stat`s and is
-   * taken fresh every time.
-   *
-   * ABSENT WHEN THERE IS NO PROJECT TO ASK ABOUT — a session with no checkout —
-   * rather than guessed at from the workspace path.
-   */
-  private async withAvailability<T extends object>(answer: Promise<T>, project: Project | undefined): Promise<T> {
-    const value = await answer;
-    return project === undefined ? value : { ...value, availability: this.projectAvailability(project) };
-  }
-
-  /**
-   * WHOSE CHECKOUT THIS DIFF DESCRIBES — issue #690.
-   *
-   * A `local` session shares the project checkout with the editor and with every
-   * other local session, so `base…worktree` there is the checkout's difference
-   * and not the session's work. Only the session record knows which kind it is;
-   * `git.ts` is handed a directory and cannot tell a worktree from a project
-   * root. See `SessionDiff.shared` for what the flag licenses.
-   *
-   * STAMPED, NOT COMPUTED FROM THE PATH: a `local` session's checkout IS the
-   * project root, and guessing from the directory would make this a heuristic
-   * about a fact the store already holds.
-   */
-  private static sharedCheckout<T extends object>(value: T, session: Pick<Session, "workspace">): T {
-    return session.workspace.mode === "local" ? { ...value, shared: true } : value;
-  }
-
-  /** The project a session's work belongs to, when it has one. */
-  private projectOfSession(session: Session): Project | undefined {
-    if (session.projectId === undefined) return undefined;
-    try {
-      return this.getProject(session.projectId);
-    } catch {
-      // A session whose project id resolves to nothing is not this method's
-      // problem to report — the read it is decorating still answers.
-      return undefined;
-    }
-  }
-
-  /**
-   * WHERE A TURN'S ANCHOR IS READ — issue #741.
-   *
-   * THE SESSION'S OWN CHECKOUT, OR THE PROJECT ROOT WHEN IT IS GONE. A commit
-   * made inside a worktree stays readable from the project root after
-   * `git worktree remove --force` and even after `git branch -D` — worktrees
-   * share one object database — so an anchored turn OUTLIVES its checkout,
-   * which the working-tree comparison it replaces never could. The one thing
-   * that has to be true is that the read runs somewhere that still exists.
-   *
-   * Absent when there is neither: a session with no workspace and no project
-   * has nothing to anchor to, which is a fact rather than a failure.
-   */
-  private anchorReadRoot(session: Session): string | undefined {
-    const workspace = workspacePath(session.workspace);
-    if (workspace !== undefined && fs.existsSync(workspace)) return workspace;
-    return this.projectOfSession(session)?.root;
-  }
-
   /**
    * Stamp where the repository stands, OFF THE LOCK — issue #741.
    *
@@ -1702,7 +1609,7 @@ export class EngineStore {
        * parses each — so the fold turned `markRunning`'s 2 into 3. All this
        * wants is the workspace and the project id.
        */
-      cwd = this.anchorReadRoot(this.records.require(sessionId));
+      cwd = this.workspaceReads.anchorReadRoot(this.records.require(sessionId));
     } catch {
       // A session that vanished between the transition and this line has
       // nothing to anchor; the turn's own record is already written.
@@ -1779,108 +1686,23 @@ export class EngineStore {
   }
 
   projectGitAsync(projectId: string): Promise<GitOverview> {
-    const project = this.getProject(projectId);
-    return this.withAvailability(this.cachedGitRead(`git:${project.root}`, () => gitOverviewAsync(this.asyncGit, project.root)), project);
+    return this.workspaceReads.projectOverview(projectId);
   }
 
   projectDiffAsync(projectId: string): Promise<SessionDiff> {
-    const project = this.getProject(projectId);
-    return this.withAvailability(this.cachedGitRead(`diff:${project.root}`, () => sessionDiffAsync(this.asyncGit, { cwd: project.root })), project);
+    return this.workspaceReads.projectDiff(projectId);
   }
 
-  /** NOT `async`, so a session with no directory is refused BEFORE the first
-   *  await — see the projectless-session test, which asserts exactly that. */
   sessionDiffAsync(sessionId: string, options: DiffBaseOption = {}): Promise<SessionDiff> {
-    const session = this.records.get(sessionId);
-    const base = resolveRequestedBase(options, workspaceBaseRef(session.workspace));
-    /**
-     * A RANGE IS READ WHERE IT STILL RESOLVES — issue #741.
-     *
-     * An anchored turn outlives its checkout, because worktrees share one
-     * object database. So a comparison of two commits runs in the session's
-     * directory when it is there and in the PROJECT ROOT when it is not,
-     * rather than failing on a `.git` pointer into a worktree somebody removed.
-     * The working-tree reads keep the checkout: there is no working tree to
-     * read anywhere else.
-     */
-    const cwd = options.to ? this.anchorReadRoot(session) ?? workspaceRootOf(session) : workspaceRootOf(session);
-    return this.withAvailability(
-      this.cachedGitRead(`diff:${cwd}:${base ?? ""}:${options.to ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
-        cwd,
-        ...(base ? { baseRef: base } : {}),
-        ...(options.to ? { to: options.to } : {}),
-      })),
-      this.projectOfSession(session),
-      // Outside the cached read, like the availability above it: two local
-      // sessions on one checkout share that entry, and this is a fact about the
-      // session rather than about the read.
-    ).then((value) => EngineStore.sharedCheckout(value, session));
+    return this.workspaceReads.sessionDiff(sessionId, options);
   }
 
   projectFilePatchAsync(projectId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
-    const project = this.getProject(projectId);
-    return this.readFilePatchAsync(project.root, target, options);
+    return this.workspaceReads.projectFilePatch(projectId, target, options);
   }
 
   sessionFilePatchAsync(sessionId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
-    const session = this.records.get(sessionId);
-    /**
-     * THE ROW'S PATCH IS READ AGAINST THE SAME BASE THE LIST WAS (#694).
-     *
-     * They are one answer shown at two depths: a list built from `unstaged`
-     * over a row's patch built from the session's base would put hunks under a
-     * row whose ± counts came from a different comparison, and neither figure
-     * would be wrong on its own.
-     */
-    const cwd = options.to ? this.anchorReadRoot(session) ?? workspaceRootOf(session) : workspaceRootOf(session);
-    return this.readFilePatchAsync(cwd, target, options, resolveRequestedBase(options, workspaceBaseRef(session.workspace)));
-  }
-
-  private readFilePatchAsync(cwd: string, target: string, options: FilePatchOptions, baseRef?: string): Promise<GitFilePatch> {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    const resolved = path.resolve(cwd, target);
-    const prefix = cwd.endsWith(path.sep) ? cwd : `${cwd}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the workspace");
-    /**
-     * THE OLD PATH IS FENCED EXACTLY AS THE NEW ONE IS (#694). It reaches the
-     * same pathspec on the same command line, so a `renamedFrom` of `../../`
-     * would be the same escape by a second door — and a door that was added
-     * later is exactly the one a fence written for one parameter misses.
-     */
-    const renamedFrom = EngineStore.insideWorkspace(cwd, prefix, options.renamedFrom);
-    // `ignoreWhitespace` IS PART OF THE KEY, not a variation on one answer: the
-    // two reads run different git commands and return different hunks for the
-    // same path, so sharing a cache entry would serve whichever the reader
-    // happened to ask for first and go on serving it after they flipped the
-    // toggle — a toolbar control that works once per file per cache window.
-    // `renamedFrom` IS PART OF THE KEY for the reason `ignoreWhitespace` is: it
-    // changes the git command, so the two reads return different patches for
-    // the same path — one of them saying the file is new.
-    // `to` IS PART OF THE KEY for the reason every other option here is: it
-    // changes the git command, so one path answers two different comparisons.
-    const key = `patch:${cwd}:${baseRef ?? ""}:${options.to ?? ""}:${resolved}:${!!options.untracked}:${!!options.ignoreWhitespace}:${renamedFrom ?? ""}`;
-    return this.cachedGitRead(key, () => sessionFilePatchAsync(this.asyncGit, {
-      cwd,
-      path: path.relative(cwd, resolved),
-      ...(baseRef ? { baseRef } : {}),
-      ...(options.to ? { to: options.to } : {}),
-      ...(options.untracked ? { untracked: true } : {}),
-      ...(options.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-      ...(renamedFrom ? { renamedFrom } : {}),
-    }));
-  }
-
-  /**
-   * A second path on the same command line, fenced inside the same checkout —
-   * or nothing. Refuses rather than dropping: a rename read with the old path
-   * silently discarded is the very answer #694 is about, and it would then look
-   * like the engine had simply not fixed it.
-   */
-  private static insideWorkspace(cwd: string, prefix: string, candidate?: string): string | undefined {
-    if (!candidate?.trim()) return undefined;
-    const resolved = path.resolve(cwd, candidate);
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the workspace");
-    return path.relative(cwd, resolved);
+    return this.workspaceReads.sessionFilePatch(sessionId, target, options);
   }
 
   modelCatalogue(driver: ProviderDriverKind, options: { force?: boolean; instanceId?: string } = {}): Promise<ModelCatalogue> {
@@ -2067,25 +1889,12 @@ export class EngineStore {
     return this.sessionPulls.lineComment(sessionId, input);
   }
 
-  /**
-   * Every file in a project's own checkout, for the Files tree.
-   *
-   * PROJECT-SCOPED because a tree is a view of a place: the new-conversation
-   * canvas has a project and no session, and the tree there is the same tree.
-   */
   projectFilesAsync(projectId: string): Promise<WorkspaceListing> {
-    const project = this.getProject(projectId);
-    const cwd = project.root;
-    return this.withAvailability(this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() })), project);
+    return this.workspaceReads.projectFiles(projectId);
   }
 
   sessionFilesAsync(sessionId: string): Promise<WorkspaceListing> {
-    const session = this.records.get(sessionId);
-    const cwd = workspaceRootOf(session);
-    return this.withAvailability(
-      this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() })),
-      this.projectOfSession(session),
-    );
+    return this.workspaceReads.sessionFiles(sessionId);
   }
 
   projectFileAsync(projectId: string, target: string): Promise<WorkspaceFile> {

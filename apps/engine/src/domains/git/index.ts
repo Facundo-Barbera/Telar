@@ -5,3 +5,4 @@ export { commitSessionWork, pullRequestBlockedBy, pushSessionBranch, sessionBran
 export { defaultRemoteBaseAsync, gitOverviewAsync, listGitRefsAsync, projectRemoteAsync, sessionDiffAsync, sessionFilePatchAsync } from "./session";
 export type { GitOverview } from "@telar/engine-client";
 export { sessionGitRoutes } from "./session-routes";
+export { WorkspaceReads } from "./workspace-reads";
