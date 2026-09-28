@@ -90,7 +90,7 @@ function modelRoutes(store: EngineStore): Route[] {
       method: "PATCH",
       path: "/v2/textgen",
       auth: "engine",
-      handle: ({ body }) => ok({ textGen: store.settings.setTextGen(only(body, ["titles", "renameBranches", "driver", "model"])) }),
+      handle: ({ body }) => ok({ textGen: store.settings.setTextGen(only(body, ["titles", "renameBranches", "driver", "model", "effort"])) }),
     },
     textGenComplete(store),
   ];

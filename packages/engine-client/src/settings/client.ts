@@ -1,6 +1,6 @@
 import type { ProviderDriverKind } from "../protocol/common";
 import type { EngineTransport } from "../platform/transport";
-import type { AgentOrientation, InboxPolicy, SessionDefaults, SessionDefaultsPatch, SidebarLayout, SidebarMode, TextGenPolicy } from "./schema";
+import type { AgentOrientation, InboxPolicy, SessionDefaults, SessionDefaultsPatch, SidebarLayout, SidebarMode, TextGenEffort, TextGenPolicy } from "./schema";
 
 type OrientationAnswer = { orientation: AgentOrientation; text: string };
 
@@ -53,7 +53,7 @@ export const settingsClient = {
   /** `model: null` returns to the driver's default; an absent field is left alone. */
   setTextGenPolicy(
     this: EngineTransport,
-    patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null },
+    patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null; effort?: TextGenEffort | null },
   ): Promise<{ textGen: TextGenPolicy }> {
     return this.request("PATCH", "/v2/textgen", patch);
   },

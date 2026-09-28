@@ -268,13 +268,13 @@ export class SettingsStore {
   }
 
   /** A driver change drops the model: model ids mean nothing across harnesses. */
-  setTextGen(patch: { titles?: unknown; renameBranches?: unknown; driver?: unknown; model?: unknown }): TextGenPolicy {
+  setTextGen(patch: { titles?: unknown; renameBranches?: unknown; driver?: unknown; model?: unknown; effort?: unknown }): TextGenPolicy {
     const next: TextGenPolicy = { ...this.textGen() };
     if (patch.titles !== undefined) next.titles = boolean(patch.titles, "titles must be a boolean");
     if (patch.renameBranches !== undefined) next.renameBranches = boolean(patch.renameBranches, "renameBranches must be a boolean");
     if (patch.driver !== undefined) {
-      if (patch.driver !== "claude" && patch.driver !== "codex") {
-        throw new EngineStateError("invalid_request", "text generation driver must be claude or codex");
+      if (patch.driver !== "claude" && patch.driver !== "codex" && patch.driver !== "opencode") {
+        throw new EngineStateError("invalid_request", "text generation driver must be claude, codex or opencode");
       }
       if (patch.driver !== next.driver) delete next.model;
       next.driver = patch.driver;
@@ -287,6 +287,14 @@ export class SettingsStore {
           throw new EngineStateError("invalid_request", "text generation model must be a short model id, or null for the driver's default");
         }
         next.model = parsed.data;
+      }
+    }
+    if (patch.effort !== undefined) {
+      if (patch.effort === null) delete next.effort;
+      else {
+        const parsed = TextGenPolicySchema.shape.effort.safeParse(patch.effort);
+        if (!parsed.success || parsed.data === undefined) throw new EngineStateError("invalid_request", "text generation effort must be low, medium or high, or null for low");
+        next.effort = parsed.data;
       }
     }
     this.kernel.writeDocument(this.kernel.paths.textGen, { version: STATE_VERSION, ...next });

@@ -1,8 +1,10 @@
 import { workspacePath } from "@telar/engine-client";
 import { stringValue } from "../../platform/http/params";
+import { HttpError } from "../../platform/http/http";
 import { ok, sessionRoute, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./skills";
+import { regenerateSessionTitle } from "./textgen";
 
 export type ProviderSkillsOptions = { env?: NodeJS.ProcessEnv; loadProviderCommands?: LoadProviderCommands };
 
@@ -26,6 +28,16 @@ export function sessionProviderRoutes(store: EngineStore, skills: ProviderSkills
             ...(skills.loadProviderCommands ? { loadProviderCommands: skills.loadProviderCommands } : {}),
           }),
         );
+      },
+    },
+    {
+      method: "POST",
+      path: sessionRoute("/regenerate-title"),
+      auth: "engine",
+      async handle({ params: [sessionId] }) {
+        const regenerated = await regenerateSessionTitle(store, sessionId!);
+        if (regenerated === undefined) throw new HttpError(502, "textgen_failed", "the provider did not answer with a title");
+        return ok({ session: store.records.get(sessionId!), changed: regenerated.changed });
       },
     },
     {

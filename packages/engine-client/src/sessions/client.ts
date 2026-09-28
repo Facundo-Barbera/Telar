@@ -89,6 +89,10 @@ export const sessionsClient = {
     return this.request("PATCH", sessionPath(sessionId), patch);
   },
 
+  regenerateSessionTitle(this: EngineTransport, sessionId: string): Promise<{ session: Session; changed: boolean }> {
+    return this.request("POST", `${sessionPath(sessionId)}/regenerate-title`, {});
+  },
+
   settleSession(this: EngineTransport, sessionId: string, settled: boolean): Settled {
     return this.request("PATCH", sessionPath(sessionId), { settledOverride: settled ? "settled" : "active" });
   },

@@ -70,12 +70,16 @@ export type SidebarLayout = z.infer<typeof SidebarLayout>;
 
 export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" };
 
+export const TextGenEffort = z.enum(["low", "medium", "high"]);
+export type TextGenEffort = z.infer<typeof TextGenEffort>;
+
 export const TextGenPolicy = z.object({
   titles: z.boolean(),
   /** Renames only engine-cut `telar/…` branches, never one a human named. */
   renameBranches: z.boolean(),
   driver: ProviderDriverKind,
   model: z.string().min(1).max(120).optional(),
+  effort: TextGenEffort.optional(),
 });
 export type TextGenPolicy = z.infer<typeof TextGenPolicy>;
 
