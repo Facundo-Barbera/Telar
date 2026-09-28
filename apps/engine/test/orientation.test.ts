@@ -37,7 +37,7 @@ import { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "../sr
 import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/provider-skills";
 import { openCodeBriefings, openCodeConfigContent } from "../src/opencode/runtime";
 import { sessionsTools } from "../src/sessions-tools/tools";
-import { notesTools } from "../src/notes-tools/tools";
+import { notesTools } from "../src/domains/notes";
 import { displayTools } from "../src/display/tools";
 import { runTools } from "../src/run/tools";
 import { BROWSER_BRIEFING } from "../src/browser/briefing";

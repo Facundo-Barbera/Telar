@@ -19,7 +19,7 @@ import { bearerIsValid } from "./http-auth";
 import { collectTools, handleSocketMessage, readSocketBody, type SocketTool } from "./mcp-socket";
 import type { ToolFactory } from "./tool-kit";
 import { displayTools } from "./display/tools";
-import { notesTools } from "./notes-tools/tools";
+import { notesTools } from "./domains/notes";
 import { pluginToolModules } from "./plugins/bundled";
 import { promptsTools } from "./prompts-tools/tools";
 import { runTools } from "./run/tools";

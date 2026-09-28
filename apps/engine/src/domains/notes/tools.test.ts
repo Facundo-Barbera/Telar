@@ -1,15 +1,6 @@
-/**
- * The `notes` toolkit — what it does with the project nobody named.
- *
- * `notes-socket.test.ts` drives the wall end to end over HTTP, where `self` is
- * deliberately ABSENT. This file drives the other half: inside a session the
- * project is implied, and an agent asked "what does the deploy note say?" must
- * not have to guess an id first. That defaulting is the difference between the
- * two doors, so it is asserted rather than described.
- */
 import { describe, expect, test } from "bun:test";
 import type { ProjectNote } from "@telar/engine-client";
-import { notesTools, type NotesCapability } from "../src/notes-tools/tools";
+import { notesTools, type NotesCapability } from "./tools";
 
 type Registered = {
   name: string;
@@ -69,23 +60,12 @@ describe("whose project is meant", () => {
   });
 
   test("with no session and no argument it asks for one by name rather than guessing", async () => {
-    // The outward socket's case. A wall that picked a project here would write
-    // a note into whichever notebook happened to sort first.
     const answer = await build().call("notes_list");
     expect(answer.isError).toBe(true);
     expect(answer.text).toContain("notes_projects");
   });
 });
 
-/**
- * ── A LISTING IS NOT A DOWNLOAD (#515) ──────────────────────────────────────
- *
- * `notes_list` used to hand over every body, and its own description said so:
- * "Bodies ride along, so this is usually the only call you need." True of three
- * notes and false of thirty, with no way for a caller to tell which it had —
- * the answer looked complete because it was. A preview plus a character count
- * makes the abridgement legible, and `notes_read` is one call away.
- */
 describe("listing does not carry bodies", () => {
   test("a long body becomes a marked preview with its real length beside it", async () => {
     const body = "The deploy incantation is long. ".repeat(40);
@@ -95,10 +75,8 @@ describe("listing does not carry bodies", () => {
     expect(listed.count).toBe(1);
     expect(listed.notes[0]!.title).toBe("Deploy");
     expect(listed.notes[0]!.bodyChars).toBe(body.length);
-    // 120 characters and a marker — never the body, and never a silent cut.
     expect(listed.notes[0]!.preview).toBe(`${body.slice(0, 120)}…`);
     expect(answer.text).not.toContain(body);
-    // And the caller is told the call that gets the rest.
     expect(answer.text).toContain("notes_read");
   });
 
@@ -150,8 +128,6 @@ describe("the delete fence", () => {
   });
 
   test("the fence is checked BEFORE the remove, not after", async () => {
-    // The whole point: a delete that happened and then apologised would be the
-    // same delete. The capability must never be reached for a human's note.
     let called = false;
     const wall = build({
       read: async () => ({ note: note({ author: "you" }), projectId: "p1" }),
