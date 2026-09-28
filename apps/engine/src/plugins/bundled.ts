@@ -1,11 +1,10 @@
 /**
  * WHICH PLUGINS THE DAEMON REGISTERS. One list, one place, one decision.
  *
- * This is the file that would change on the day plugins are installed from a
- * folder: the loader would append to what this returns, and nothing downstream
- * would know the difference — the host takes a list of modules and does not care
- * where they came from. Everything else about that day is unsolved (see the
- * NOT A SANDBOX header in `contract.ts`); the SHAPE is not.
+ * Plugins installed from a folder (`external/`) are appended to what this
+ * returns, and nothing downstream knows the difference — the host takes a list
+ * of modules and does not care where they came from. They may not take a name
+ * this list uses: see `BUNDLED_PLUGIN_IDS`.
  */
 import { helloPlugin, helloToolModule, type HelloSession } from "./hello";
 import { latexPlugin, latexToolModule, type LatexPluginDeps } from "./latex";
@@ -35,6 +34,9 @@ export type BundledPluginDeps = {
  * developer's shell and in the test that drives the generic path end to end.
  */
 export const HELLO_GATE = "TELAR_PLUGIN_HELLO";
+
+/** Every id shipped here, gated or not — reserved against installed plugins. */
+export const BUNDLED_PLUGIN_IDS = ["latex", "data-science", "hello"] as const;
 
 export function bundledPlugins(deps: BundledPluginDeps, env: NodeJS.ProcessEnv = process.env): PluginEngineModule[] {
   const modules: PluginEngineModule[] = [];

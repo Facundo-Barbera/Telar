@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { URL } from "node:url";
 import {
+  BUNDLED_PLUGIN_TOOL_PREFIXES,
   ENGINE_PROTOCOL_VERSION,
   EngineClientError,
   GitHubLineCommentInput,
@@ -70,7 +71,9 @@ import {
   type FilePatchOptions,
   type StoppedClaim,
 } from "./state";
-import { bundledPlugins } from "./plugins/bundled";
+import { bundledPlugins, pluginToolModules, setPluginToolModules } from "./plugins/bundled";
+import { externalPluginsDir, loadInstalledPlugins } from "./plugins/external/manifest";
+import { externalPlugin, externalToolModule } from "./plugins/external/module";
 import { PluginHost } from "./plugins/host";
 import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type PluginScopedRoute } from "./plugins/routes";
 import { setPluginReadTools } from "./driver";
@@ -154,6 +157,8 @@ export type EngineDaemonOptions = {
   /** The background checkout sizer's seams (`checkout-sizes.ts`). Tests only. */
   checkoutSizing?: CheckoutSizesOptions;
   engineRoot?: string;
+  /** Where external plugins are installed. Defaults to `<TELAR_HOME>/plugins`. */
+  pluginsDir?: string;
   port?: number;
   now?: () => number;
   /**
@@ -1222,52 +1227,76 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
     return { projectId: project.id, sessionId };
   };
-  const pluginHost = new PluginHost(
-    bundledPlugins({
-      resolveHello: (sessionId) => resolvePluginProject("hello", sessionId),
-      // The SAME capabilities the aliases and the tool walls already use —
-      // migrating a door must not change what is behind it. Each gate is the
-      // store's own, which reads the plugin map.
-      latex: { resolve: (sessionId) => store.latex(sessionId), jobs: store.latexJobs, settings: store },
-      dataScience: {
-        resolve: (sessionId) => store.dataScience(sessionId),
-        settings: store,
-        /**
-         * THE KERNEL HOST, built by the plugin's `init` — and only on a daemon
-         * that runs turns, as it always was. Outputs are journaled by the
-         * store's capability; the host only persists images.
-         */
-        ...(options.embeddedWorker
-          ? {
-              kernelHost: {
-                options: {
-                  engineRoot: store.paths.root,
-                  sessionDir: (sessionId: string) => path.join(store.paths.sessions, sessionId),
-                  events: {
-                    onState: (sessionId, state, reason) => store.recordKernelState(sessionId, state, reason),
-                    persistImage: (sessionId, input) =>
-                      store.putAttachment(sessionId, {
-                        name: `${input.producer}.${input.mediaType === "image/svg+xml" ? "svg" : "png"}`,
-                        mediaType: input.mediaType,
-                        data: input.data,
-                        tags: ["plot"],
-                        producer: input.producer,
-                        ...(input.title ? { title: input.title } : {}),
-                      }).id,
-                  },
+  const bundledModules = bundledPlugins({
+    resolveHello: (sessionId) => resolvePluginProject("hello", sessionId),
+    // The SAME capabilities the aliases and the tool walls already use —
+    // migrating a door must not change what is behind it. Each gate is the
+    // store's own, which reads the plugin map.
+    latex: { resolve: (sessionId) => store.latex(sessionId), jobs: store.latexJobs, settings: store },
+    dataScience: {
+      resolve: (sessionId) => store.dataScience(sessionId),
+      settings: store,
+      /**
+       * THE KERNEL HOST, built by the plugin's `init` — and only on a daemon
+       * that runs turns, as it always was. Outputs are journaled by the
+       * store's capability; the host only persists images.
+       */
+      ...(options.embeddedWorker
+        ? {
+            kernelHost: {
+              options: {
+                engineRoot: store.paths.root,
+                sessionDir: (sessionId: string) => path.join(store.paths.sessions, sessionId),
+                events: {
+                  onState: (sessionId, state, reason) => store.recordKernelState(sessionId, state, reason),
+                  persistImage: (sessionId, input) =>
+                    store.putAttachment(sessionId, {
+                      name: `${input.producer}.${input.mediaType === "image/svg+xml" ? "svg" : "png"}`,
+                      mediaType: input.mediaType,
+                      data: input.data,
+                      tags: ["plot"],
+                      producer: input.producer,
+                      ...(input.title ? { title: input.title } : {}),
+                    }).id,
                 },
-                attach: (host) => store.attachKernels(host),
               },
-            }
-          : {}),
-        projectOf: (sessionId) => {
-          try { return store.getSession(sessionId).projectId; } catch { return undefined; }
-        },
+              attach: (host) => store.attachKernels(host),
+            },
+          }
+        : {}),
+      projectOf: (sessionId) => {
+        try { return store.getSession(sessionId).projectId; } catch { return undefined; }
       },
+    },
+  });
+  /**
+   * EXTERNAL PLUGINS, from `<TELAR_HOME>/plugins/<id>/plugin.json`. Loaded once
+   * at start; a manifest that does not validate is listed as failed with its
+   * reason and never runs (plugins/external/manifest.ts). The bundled ids and
+   * prefixes are reserved, so an installed folder cannot shadow a shipped
+   * feature.
+   */
+  const external = loadInstalledPlugins(options.pluginsDir ?? externalPluginsDir(root));
+  const externalModules = external.loaded.map((loaded) =>
+    externalPlugin(loaded, {
+      resolve: (sessionId) => resolvePluginProject(loaded.manifest.id, sessionId),
+      enabledAnywhere: () => store.listProjects().some((project) => store.pluginRuns(project, loaded.manifest.id)),
     }),
+  );
+  // The embedded worker registers tools from this list; the out-of-process
+  // worker loads the same manifests itself (worker-main.ts).
+  const externalIds = new Set(external.loaded.map((loaded) => loaded.manifest.id));
+  setPluginToolModules([
+    ...pluginToolModules().filter((module) => !externalIds.has(module.meta.id)),
+    ...external.loaded.map(externalToolModule),
+  ]);
+  const pluginHost = new PluginHost(
+    [...bundledModules, ...externalModules],
     {
       daemonId,
       stateDir: store.paths.root,
+      declaredPrefixes: [...BUNDLED_PLUGIN_TOOL_PREFIXES, ...external.loaded.flatMap((loaded) => (loaded.manifest.toolPrefix ? [loaded.manifest.toolPrefix] : []))],
+      refused: external.refused.map(({ meta, error }) => ({ meta, error })),
       log: (message, detail) => console.warn(`[telar] ${message}${detail ? ` ${JSON.stringify(detail)}` : ""}`),
     },
   );

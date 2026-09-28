@@ -137,11 +137,22 @@ requires?: { id; label; probe: verb; install?: verb }[]
 
 |  | Bundled (today) | External (P4) |
 | --- | --- | --- |
-| Manifest | `PluginMeta` literal in TS | `plugin.json` = `PluginMeta` |
-| Engine code | in-process `PluginEngineModule` | supervised child process, speaking MCP for tools and HTTP/stdio for routes |
-| Tools | `PluginToolModule` on the `telar` key | the host proxies the child's MCP tools onto the `telar` key under the plugin's prefixes |
+| Manifest | `PluginMeta` literal in TS | `plugin.json` (`ExternalPluginManifest`), mapped to `PluginMeta` |
+| Engine code | in-process `PluginEngineModule` | supervised child process; MCP tools and routes share one stdio channel |
+| Tools | `PluginToolModule` on the `telar` key | declared in the manifest, walled on the `telar` key under the plugin's prefix, each call forwarded to the child |
 | UI | React components in the web registry | declarative UI only |
 | Trust | same as the daemon (**not a sandbox**) | owner-authored at first; third-party sandboxing is a later, separate design |
+
+### External plugins (P4)
+
+- **Folder.** `<TELAR_HOME>/plugins/<id>/plugin.json`, read once when the engine starts (`plugins/external/manifest.ts`). The daemon and an out-of-process worker read the same folder with the same reservations.
+- **Manifest.** `ExternalPluginManifest` in engine-client, strict: `id` (must equal the folder name), `api`, `name`, `version`, `command` (argv; a `./` program is resolved in the folder), `toolPrefix`, `tools` (name, description, JSON Schema input), `briefing`, `settingsSchema` / `machineSettingsSchema` (JSON Schema, published as written for the P3 renderer), and `routes` (`session` verbs, `project` / `machine` `"METHOD path"` keys).
+- **Refusal.** Bad JSON, a schema issue, an id that is not the folder's, a bundled id, a prefix someone owns, or a missing program: the plugin is listed as `failed` with a `plugin.json: …` reason and contributes nothing. The engine always starts.
+- **Wire.** Newline-delimited JSON-RPC 2.0 on stdio. MCP `initialize` + `notifications/initialized` on each start, MCP `tools/call` for tools, and `telar/route {scope, verb, input, query?, params?, sessionId?, projectId?}` for every route. stderr is the log (a 200-line tail in memory, appended to `<engineRoot>/plugins/<id>/log.txt`).
+- **Lifecycle** (`plugins/external/process.ts`). Nothing is spawned at engine start; the child starts on first use. It restarts with backoff (1s doubling to 30s, reset after a minute up) while wanted, stops when the last project turns the plugin off (`releaseProject`), and on dispose. In-flight requests are refused when it dies.
+- **Tools.** The wall comes from the manifest, so it exists without the child running. A call goes through the generic session door as the reserved verb `tool`, so the host's gate (Mac, then project) applies, and only a declared name passes.
+- **Approval.** An external manifest has no `readTools` key, `externalMeta` always publishes `[]`, and `HOST_RATIFIED_READ_TOOLS` names no external id. Every external tool parks an approval card.
+- **Trust.** Owner-authored. The child gets a minimal environment (`PATH`, `HOME`, `TELAR_PLUGIN_ID`/`_DIR`/`_STATE`) with no engine token or provider keys, but it is **not a sandbox**.
 
 ## Migration order
 
