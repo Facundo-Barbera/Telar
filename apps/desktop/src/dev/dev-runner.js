@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const { resolveTelarHome } = require("../../scripts/dev-lifecycle.mjs");
 
 const desktopDir = path.join(__dirname, "..", "..");
 const repoDir = path.resolve(desktopDir, "../..");
@@ -156,6 +157,8 @@ async function stop(exitCode) {
 }
 
 async function main() {
+  process.env.TELAR_HOME = resolveTelarHome();
+  console.log(`[telar-desktop] TELAR_HOME=${process.env.TELAR_HOME}`);
   const configuredPort = Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
   const controlPort = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : await firstFreePort(19223);
   const controlToken = process.env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN?.trim() || randomUUID();
@@ -195,6 +198,6 @@ async function main() {
 process.once("SIGINT", () => void stop(130));
 process.once("SIGTERM", () => void stop(143));
 void main().catch((error) => {
-  console.error("[telar-desktop] dev runner failed:", error);
+  console.error(`[telar-desktop] dev runner failed: ${error instanceof Error ? error.message : String(error)}`);
   void stop(1);
 });

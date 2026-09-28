@@ -11,6 +11,7 @@ import {
   ownedChildrenForShutdown,
   isLoopbackHost,
   resolveWebHost,
+  resolveTelarHome,
   resolveWebPort,
   shouldLaunchDesktop,
   cockpitUrl,
@@ -141,4 +142,23 @@ test("a wildcard bind is not an address anything can dial", () => {
   // Real addresses are left exactly as given.
   expect(cockpitUrl(3100, "100.110.136.102")).toBe("http://100.110.136.102:3100/");
   expect(cockpitUrl(3100, "127.0.0.1")).toBe("http://127.0.0.1:3100/");
+});
+
+describe("resolveTelarHome", () => {
+  const home = "/Users/dev";
+
+  test("defaults to the dogfood home when TELAR_HOME is unset or blank", () => {
+    expect(resolveTelarHome({}, home)).toBe("/Users/dev/.telar-dogfood");
+    expect(resolveTelarHome({ TELAR_HOME: "  " }, home)).toBe("/Users/dev/.telar-dogfood");
+  });
+
+  test("uses an explicit absolute TELAR_HOME", () => {
+    expect(resolveTelarHome({ TELAR_HOME: "/tmp/telar-scratch/" }, home)).toBe("/tmp/telar-scratch");
+  });
+
+  test("refuses relative and legacy homes", () => {
+    expect(() => resolveTelarHome({ TELAR_HOME: "relative" }, home)).toThrow("absolute");
+    expect(() => resolveTelarHome({ TELAR_HOME: "/Users/dev/.telar-dev" }, home)).toThrow("legacy");
+    expect(() => resolveTelarHome({ TELAR_HOME: "/Users/dev/.telar" }, home)).toThrow("legacy");
+  });
 });
