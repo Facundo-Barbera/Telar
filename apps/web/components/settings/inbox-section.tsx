@@ -32,7 +32,7 @@ import {
 import { usePathname } from "next/navigation";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { hostFromPathname } from "@/lib/hosts/client";
-import { LOCAL_HOST_ID } from "@/lib/hosts/book";
+import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";

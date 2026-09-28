@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { defaultHostName, normalizeBaseUrl, parsePairingUrl, recordDaemonId, removeHost, renameHost, upsertHost, type Host } from "./book";
 
@@ -41,7 +40,6 @@ describe("parsePairingUrl", () => {
     });
   });
 
-  // A token in the query would reach a server log.
   test("a token in the query string is refused", () => {
     expect(parsePairingUrl("http://mini:3000/pair?token=tlr_abc")).toBeUndefined();
   });
@@ -83,7 +81,6 @@ describe("recordDaemonId", () => {
     expect(hosts[0]).toMatchObject({ id: "new", daemonId: "d9" });
   });
 
-  // The older row owns everything keyed on its id; the newer address works now.
   test("merges a twin into the older record and keeps the newer address", () => {
     const { hosts, merged } = recordDaemonId(two(), "new", "d1");
     expect(merged).toBe(true);

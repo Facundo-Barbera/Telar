@@ -21,7 +21,7 @@
  * call sites answer differently.
  */
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { LOCAL_HOST_ID } from "@/lib/hosts/book";
+import { LOCAL_HOST_ID } from "@telar/engine-client";
 import {
   preferredOpenerSnapshot,
   serverPreferredOpenerSnapshot,

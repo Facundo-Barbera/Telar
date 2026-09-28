@@ -133,6 +133,7 @@ import type { DriverSelector } from "./worker";
 import { readTaskOutput, resolveTaskOutputFile } from "./task-output";
 import { filesRoutes } from "./domains/files";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
+import { createHostsStore, hostsRoutes } from "./domains/hosts";
 import { matchRoute } from "./platform/http/route";
 
 /**
@@ -1259,7 +1260,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * feature.
    */
   const pluginsDir = options.pluginsDir ?? externalPluginsDir(root);
-  const domainRoutes = [...filesRoutes(), ...remoteRoutes(createRemoteStore(options.remoteDir ?? remoteDirFor(root)))];
+  const remoteDir = options.remoteDir ?? remoteDirFor(root);
+  const domainRoutes = [...filesRoutes(), ...remoteRoutes(createRemoteStore(remoteDir)), ...hostsRoutes(createHostsStore(remoteDir))];
   const external = loadInstalledPlugins(pluginsDir);
   const externalModule = (loaded: LoadedExternalPlugin) =>
     externalPlugin(loaded, {
@@ -1919,7 +1921,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const domainRoute = matchRoute(domainRoutes, request.method ?? "GET", url.pathname);
       if (domainRoute) {
         const input = { body: request.method === "GET" ? {} : await body(request), params: domainRoute.params, query: url.searchParams };
-        const answer = domainRoute.route.handle(input);
+        const answer = await domainRoute.route.handle(input);
         writeJson(response, answer.status, answer.body);
         return;
       }

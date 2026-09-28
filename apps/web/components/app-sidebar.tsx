@@ -119,8 +119,8 @@ import {
 import { applyRowChange, type SessionRowChange, type SessionRowChanged } from "@/lib/session-mutations";
 import { hostFetcher } from "@/lib/hosts/client";
 import { projectPlaces } from "@/lib/hosts/project-places";
-import { LOCAL_HOST_ID } from "@/lib/hosts/book";
-import type { PublicHost } from "@/lib/hosts/store";
+import { LOCAL_HOST_ID } from "@telar/engine-client";
+import type { PublicHost } from "@telar/engine-client";
 import { readSidebarCache, rememberRows, staleRows, writeSidebarCache } from "@/lib/sidebar-cache";
 import { LOCAL_HOST } from "@/lib/snapshot-cache";
 import {
