@@ -25,8 +25,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderSignIn, ProviderUpdate } from "@telar/engine-client";
-import { cliUsable, resolveCliAsync, type CliId } from "./cli-resolution";
-import { cliUpdateFor } from "./cli-updates";
+import { cliUpdateFor, cliUsable, resolveCliAsync, type CliId } from "./domains/providers";
 import { TELAR_ENGINE_VERSION } from "./version";
 
 /**

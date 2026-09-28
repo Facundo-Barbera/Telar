@@ -43,7 +43,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderDriverKind, ProviderSkill, ProviderSkillSource, ProviderSkills } from "@telar/engine-client";
-import { refuseCliSpawnUnderTest, requireCli } from "./cli-resolution";
+import { refuseCliSpawnUnderTest, requireCli } from "./domains/providers";
 
 /**
  * How long to wait for the provider to list its own commands.

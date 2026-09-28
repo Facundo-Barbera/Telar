@@ -21,7 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { defaultInstanceIdForDriver, workspacePath, type SessionWorkspace, type TextGenPolicy } from "@telar/engine-client";
-import { requireCli } from "./cli-resolution";
+import { requireCli } from "./domains/providers";
 
 export type TextGenEffort = "low" | "medium" | "high";
 

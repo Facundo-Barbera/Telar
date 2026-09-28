@@ -20,7 +20,7 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { requireCli } from "../cli-resolution";
+import { requireCli } from "../domains/providers";
 import { ProviderUnavailableError } from "../driver";
 
 /** A notification: a method with no id, so nothing is owed in reply. */
