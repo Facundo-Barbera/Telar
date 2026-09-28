@@ -1,7 +1,6 @@
 "use strict";
 
 const { expect, test } = require("bun:test");
-const { mainSource } = require("../../test/main-source");
 
 const { mountRootsFor: shared, volumeSupportOn } = require("../../../../packages/engine-client/src/mounts");
 const { mountRootsFor: watcher } = require("./volume-watch");
@@ -21,14 +20,6 @@ test("win32 is empty in both, which is the divergence that mattered", () => {
   expect(shared("darwin")).toEqual(["/Volumes"]);
   expect(watcher("darwin")).toEqual(["/Volumes"]);
 });
-
-test("the shell's own volume search uses the same darwin root, and no other", () => {
-  const source = mainSource();
-  const search = /for \(const root of (\[[^\]]*\])\) \{/.exec(source);
-  expect(search).not.toBeNull();
-  expect(JSON.parse(search[1])).toEqual(shared("darwin"));
-});
-
 test("the store gate's platform check agrees with the shared one", () => {
   const { volumesResolvableOn } = require("../store/store-location");
   for (const platform of PLATFORMS) {

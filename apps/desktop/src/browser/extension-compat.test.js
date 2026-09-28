@@ -38,7 +38,6 @@ describe("the library preload is sanitized before it runs", () => {
     expect(() => new Function(written)).not.toThrow();
   });
 });
-
 describe("the extension preloads are gated to chrome-extension: contexts (#487)", () => {
   test("a site's frame and a site's service worker are refused", () => {
     expect(isExtensionPreloadContext({ protocol: "https:" })).toBe(false);

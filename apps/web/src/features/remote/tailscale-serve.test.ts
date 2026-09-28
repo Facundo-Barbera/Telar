@@ -1,8 +1,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { describeServeError, readServeError, TAILSCALE_SERVE_ERROR_ENV, type TailscaleServeError } from "./tailscale-serve";
 
 describe("reading the label the shell reported", () => {
@@ -52,20 +52,37 @@ describe("every label says what to do about it", () => {
 });
 
 describe("the shell and the pane name the same failures", () => {
-  // Same contract-across-two-languages problem as host-header.test.js: the
-  // shell classifies in CommonJS, this types the union in TypeScript, and a
-  // label added on one side is not a type error on the other — it is the pane
-  // silently saying "unknown" about something we could have explained.
-  test("every label tailscale.js can return is in this union", () => {
-    // `fileURLToPath`, not `.pathname` — a repo under "Application Support"
-    // percent-encodes its space, and the decoded path is the one fs takes.
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const source = fs.readFileSync(path.join(here, "..", "..", "..", "..", "desktop", "src", "main", "tailscale.js"), "utf8");
-    const returned = [...source.matchAll(/return "([a-z-]+)"/g)].map((match) => match[1]!);
-    const classified = returned.filter((label) => label !== "none");
-    expect(classified.length).toBeGreaterThan(0);
-    for (const label of classified) {
-      expect(describeServeError(label as TailscaleServeError)).toBeString();
+  test("every failure the shell reports reaches the pane as a label it explains", async () => {
+    const shell = await import("../../../../desktop/src/main/tailscale.js");
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "telar-tailscale-bin-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-tailscale-home-"));
+    fs.mkdirSync(path.join(home, "remote"));
+    fs.writeFileSync(path.join(home, "remote", "remote.json"), JSON.stringify({ version: 1, requireAuth: true, exposure: "network-accessible", tailscaleServe: true, devices: [] }));
+    const fake = (status: string, serveStderr: string) =>
+      fs.writeFileSync(path.join(bin, "tailscale"), `#!/bin/sh\nif [ "$1" = status ]; then echo '${status}'; exit 0; fi\necho '${serveStderr}' >&2\nexit 1\n`, { mode: 0o755 });
+    const domain = JSON.stringify({ CertDomains: ["mac.tailnet.ts.net"] });
+    const scenarios: [string, () => void][] = [
+      ["no-cert-domain", () => fake("{}", "")],
+      ["https-disabled", () => fake(domain, "HTTPS is not enabled for this tailnet")],
+      ["not-logged-in", () => fake(domain, "You are logged out")],
+      ["permission-denied", () => fake(domain, "permission denied")],
+      ["unknown", () => fake(domain, "something new")],
+      ["not-installed", () => fs.writeFileSync(path.join(bin, "tailscale"), `#!/bin/sh\necho '${domain}'\n/bin/rm "$0"\n`, { mode: 0o755 })],
+    ];
+    const savedPath = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      for (const [expected, arrange] of scenarios) {
+        arrange();
+        await shell.publishTailscaleServe(home, 42731);
+        const label = readServeError(shell.serveEnv());
+        expect({ expected, label }).toEqual({ expected, label: expected as TailscaleServeError });
+        expect(describeServeError(label!)).toBeString();
+      }
+    } finally {
+      process.env.PATH = savedPath;
+      fs.rmSync(bin, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });

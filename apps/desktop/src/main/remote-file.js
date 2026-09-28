@@ -49,7 +49,6 @@ function gateWillRequireAuth(home, readFile) {
 }
 
 module.exports = {
-  REMOTE_FILE_VERSION,
   readRemotePosture,
   serverBindHost,
   tailscaleServeRequested,

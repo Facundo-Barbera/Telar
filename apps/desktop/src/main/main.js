@@ -2,17 +2,13 @@ const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
-const { app, BrowserWindow, dialog, nativeTheme, Notification, powerMonitor, shell } = require("electron");
-const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy } = require("../browser/browser-manager");
-const { createLinkRouting } = require("./link-routing");
+const { app, BrowserWindow, dialog, Notification, powerMonitor } = require("electron");
+const { DesktopBrowserManager, managerForScope } = require("../browser/browser-manager");
 const { startBrowserControlServer } = require("../browser/browser-control-server");
 const { startRunTerminalServer } = require("../terminal/run-terminal-server");
 const { publishTailscaleServe, serveEnv, unpublishTailscaleServe } = require("./tailscale");
-const { macWindowChrome } = require("./window-chrome");
-const { backdropWindowOptions } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
-const { watchWindowVisibility } = require("./window-visibility");
-const { ACTIVE_IDLE_SECONDS, createDesktopNotifier, createPresenceReporter, routeOf } = require("./desktop-notifications");
+const { createDesktopNotifier } = require("./desktop-notifications");
 const { watchVolumes } = require("./volume-watch");
 const { awaitStore } = require("../store/store-gate");
 const { createStoreGateWindow } = require("../store/store-gate-window");
@@ -24,37 +20,26 @@ const { bundledHelperDaemon, stopHelperDaemon } = require("./computer-use-stop")
 const desktopHandoff = require("../handoff/desktop-handoff");
 const { wireLoginOffer } = require("../login/login-offer-window");
 const uiServer = require("./ui-server");
-const { findFreePort, getStablePort, seatHostCookie, seatHostHeader, waitForServer } = uiServer;
+const { findFreePort, getStablePort, seatHostCookie, waitForServer } = uiServer;
 const engineNotices = require("./engine-notices").createEngineNotices({ onMessage: (message) => desktopNotifier.handleServerMessage(message) });
 const { DEV_BUILD, E2E_USER_DATA, OVERRIDE_URL, SMOKE } = require("./flags");
-const { applyDevelopmentAppIcon, bundledAgentSdkEntry, bundledPlaywrightMcpCli, computerUseHelperPath, developmentIconPath, nodeExecPath, windowTitle } = require("./bundle-paths");
+const { applyDevelopmentAppIcon, bundledAgentSdkEntry, bundledPlaywrightMcpCli, computerUseHelperPath, nodeExecPath, windowTitle } = require("./bundle-paths");
 const { captureLoginShellEnv } = require("./login-shell-env");
 const { findVolumeMount } = require("./volumes");
-const { logShell, shellLogPath, startHeapLog, watchForUnpairing } = require("./shell-log");
+const { logShell, shellLogPath, startHeapLog } = require("./shell-log");
 const { processMetricsReader, startServiceWorkerWatchdog } = require("./renderer-watch");
 const { engineDiscoveryFile, markMainWindowShown, postToEngine, rememberEngine, reportStartupFailure, startEngineChild, stopEngineChild, waitForEngine } = require("./engine-child");
-const { readUiPrefs, supportsTranslucency, watchSchemeForVibrancy } = require("./appearance");
-const { buildApplicationMenu, chords, setBrowserChordScope } = require("./app-menu");
+const { keepOccludedWindowsPainting, watchSchemeForVibrancy } = require("./appearance");
+const { buildApplicationMenu } = require("./app-menu");
 const { startExtensionHost } = require("./cockpit-extensions");
 const { adoptLegacyUpdatePrefs } = require("./update-prefs");
+const { browserManagers, currentHost, lastWindowUrl, persistAllHosts } = require("./browser-hosts");
+const { createCockpitWindow } = require("./cockpit-window");
+const { cockpitFocus, createPresence } = require("./presence");
+const { pinUserData } = require("./user-data");
 
+pinUserData();
 
-if (E2E_USER_DATA) {
-  app.setPath("userData", E2E_USER_DATA);
-} else if (SMOKE) {
-  app.setPath(
-    "userData",
-    fs.mkdtempSync(path.join(os.tmpdir(), "telar-electron-smoke-")),
-  );
-} else if (DEV_BUILD) {
-  app.setPath("userData", path.join(app.getPath("appData"), "Telar Dev"));
-} else if (!app.isPackaged) {
-  app.setName("Telar (dev)");
-  app.setPath("userData", path.join(app.getPath("appData"), "Telar (dev)"));
-}
-
-let browserManager = null;
-const browserManagers = new Set();
 let browserSuggestions;
 function requireBrowserSuggestions() {
   return browserSuggestions ||= createBrowserSuggestions(app.getPath("userData"));
@@ -112,7 +97,7 @@ function wireShellDiagnostics() {
       `child-process-gone type=${details.type} reason=${details.reason} exitCode=${details.exitCode} service=${details.serviceName ?? ""}`,
     );
 
-    if (lastWindowUrl) void seatHostCookie(lastWindowUrl);
+    if (lastWindowUrl()) void seatHostCookie(lastWindowUrl());
   });
 }
 
@@ -148,7 +133,7 @@ function startServer(port, home) {
       ...serveEnv(),
     },
     onExit: (code, signal) => {
-      presenceReporter.stop();
+      presence.stop();
       if (!SMOKE && !app.isQuitting) {
         console.error(`[telar-desktop] server exited (code=${code} signal=${signal})`);
         app.quit();
@@ -156,39 +141,17 @@ function startServer(port, home) {
     },
   });
   engineNotices.start(engineDiscoveryFile(home));
-  watchPresence();
+  presence.watch();
   return child;
 }
 
-function cockpitFocus() {
-  const focused = BrowserWindow.getFocusedWindow();
-  const cockpit = focused && [...browserManagers].some((manager) => manager.window === focused);
-  return { focused: Boolean(cockpit), viewingPath: cockpit ? routeOf(focused.webContents.getURL()) : null };
-}
 const desktopNotifier = createDesktopNotifier({ Notification, send: engineNotices.send, context: cockpitFocus, open: openNotificationPath });
-
-let screenLocked = false;
-const presenceReporter = createPresenceReporter({
-  sample: () => ({ idleState: powerMonitor.getSystemIdleState(ACTIVE_IDLE_SECONDS), locked: screenLocked, ...cockpitFocus() }),
-  send: engineNotices.send,
-});
-let presenceWatched = false;
-function watchPresence() {
-  if (!presenceWatched) {
-    presenceWatched = true;
-    const report = () => presenceReporter.report();
-    powerMonitor.on("lock-screen", () => { screenLocked = true; report(); });
-    powerMonitor.on("unlock-screen", () => { screenLocked = false; report(); });
-    app.on("browser-window-focus", report);
-    app.on("browser-window-blur", report);
-  }
-  presenceReporter.start();
-}
+const presence = createPresence({ send: engineNotices.send });
 
 function openNotificationPath(route) {
-  const win = [browserManager, ...browserManagers].map((manager) => manager?.window).find((w) => w && !w.isDestroyed());
+  const win = [currentHost(), ...browserManagers].map((manager) => manager?.window).find((w) => w && !w.isDestroyed());
   if (!win) {
-    const target = windowTargetUrl(lastWindowUrl, route);
+    const target = windowTargetUrl(lastWindowUrl(), route);
     if (target) createWindow(target);
     return;
   }
@@ -198,174 +161,31 @@ function openNotificationPath(route) {
   win.webContents.send("telar:notifications:open", route);
 }
 
-function openInSystemBrowser(url) {
-  shell.openExternal(url).catch((err) => {
-    console.error("[telar-desktop] failed to open externally:", url, err?.message || err);
-  });
-}
-
-const linkRouting = createLinkRouting();
-
-function actOnLinkDecision(decision, webContents) {
-  if (decision.openExternal) linkRouting.handOff(webContents, decision.openExternal, openInSystemBrowser);
-
-  else if (decision.duplicateOf) {
-    console.log("[telar-desktop] suppressed duplicate external open:", decision.duplicateOf);
-  }
-}
-
-function applyExternalLinkPolicy(webContents, createPolicy) {
-  const policy = createPolicy();
-  webContents.setWindowOpenHandler(({ url }) => {
-    const decision = policy.decide(url);
-    actOnLinkDecision(decision, webContents);
-    return decision.action === "allow" ? { action: "allow" } : { action: "deny" };
-  });
-
-  webContents.on("will-navigate", (event, url) => {
-    const decision = policy.decide(url);
-    if (decision.action === "allow") return;
-    event.preventDefault();
-    actOnLinkDecision(decision, webContents);
-  });
-
-  webContents.on("did-create-window", (childWindow) => {
-    applyExternalLinkPolicy(childWindow.webContents, createPolicy);
-  });
-}
-
 function createWindow(url) {
-  const title = windowTitle();
-  const icon = developmentIconPath();
-  lastWindowUrl = url;
+  return createCockpitWindow(url, {
+    createManager: (win, { onChordScope }) => {
+      const manager = new DesktopBrowserManager(win, {
+        onControlChanged: reportBrowserControl,
 
-  const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    ...backdropWindowOptions({ ...readUiPrefs(), dark: nativeTheme.shouldUseDarkColors, supported: supportsTranslucency() }),
-    show: false,
-    title,
-    ...macWindowChrome(),
-    ...(icon ? { icon } : {}),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      preload: path.join(__dirname, "..", "preload", "preload.js"),
+        onLoginEntryFinished: (capture) => requireLoginOffer().entryFinished(capture),
 
-      plugins: true,
+        onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.activeProfile(scopeKey)?.id, url),
+        profiles: readProfileRegistry(app.getPath("userData")),
 
-      backgroundThrottling: false,
+        onProfileMigrated: (from, to) => requireBrowserSuggestions().adopt(from, to),
+
+        tabStore: createTabStore(app.getPath("userData")),
+
+        sitePermissions: createSitePermissionStore(app.getPath("userData")),
+
+        createExtensionHost: (partition) => startExtensionHost(win, manager, partition),
+
+        onChordScope,
+      });
+      return manager;
     },
+    onInPageNavigation: () => presence.report(),
   });
-
-  watchWindowVisibility(win);
-
-  const profiles = readProfileRegistry(app.getPath("userData"));
-  const manager = new DesktopBrowserManager(win, {
-    onControlChanged: reportBrowserControl,
-
-    onLoginEntryFinished: (capture) => requireLoginOffer().entryFinished(capture),
-
-    onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.activeProfile(scopeKey)?.id, url),
-    profiles,
-
-    onProfileMigrated: (from, to) => requireBrowserSuggestions().adopt(from, to),
-
-    tabStore: createTabStore(app.getPath("userData")),
-
-    sitePermissions: createSitePermissionStore(app.getPath("userData")),
-
-    createExtensionHost: (partition) => startExtensionHost(win, manager, partition),
-
-    onChordScope: (chords) => setBrowserChordScope(manager, chords),
-  });
-  browserManagers.add(manager);
-  browserManager = manager;
-
-  win.on("focus", () => {
-    browserManager = manager;
-  });
-
-  applyExternalLinkPolicy(win.webContents, () => createExternalLinkPolicy({ appUrl: url }));
-
-  win.webContents.on("did-start-loading", () => {
-    manager.hideVisibleScope();
-
-    linkRouting.set(win.webContents, false);
-
-    if (!chords.scopes.empty || chords.capturing) {
-      chords.scopes.setRenderer([]);
-      chords.capturing = false;
-      buildApplicationMenu();
-    }
-  });
-
-  win.webContents.on("did-navigate-in-page", () => presenceReporter.report());
-  win.webContents.on("did-finish-load", () => {
-    if (win.isDestroyed()) return;
-
-    for (const [partition, host] of manager.extensionHosts) win.webContents.send("telar:browser:extension", { partition, ...host.status() });
-  });
-  win.on("closed", () => {
-    manager.destroy();
-    browserManagers.delete(manager);
-
-    if (chords.scopes.forget(manager)) buildApplicationMenu();
-
-    if (browserManager === manager) browserManager = browserManagers.values().next().value ?? null;
-  });
-
-  win.on("page-title-updated", (e) => {
-    e.preventDefault();
-    win.setTitle(title);
-  });
-
-  watchForUnpairing(win.webContents);
-
-  let retryTimer = null;
-  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, failedUrl, isMainFrame) => {
-    if (!isMainFrame || errorCode === -3 || win.isDestroyed()) return;
-    console.error(`[telar-desktop] load failed (${errorCode} ${errorDescription}): ${failedUrl} — retrying`);
-    clearTimeout(retryTimer);
-    retryTimer = setTimeout(() => {
-      if (!win.isDestroyed()) win.loadURL(url);
-    }, 1_000);
-  });
-  win.on("closed", () => clearTimeout(retryTimer));
-
-  win.once("ready-to-show", () => win.show());
-  win.setTitle(title);
-
-  seatHostHeader(url);
-  seatHostCookie(url).finally(() => {
-    if (!win.isDestroyed()) win.loadURL(url);
-  });
-  return win;
-}
-
-function managerForEvent(event) {
-  const sender = event?.sender;
-  if (!sender) return null;
-  for (const manager of browserManagers) {
-    if (!manager.window.isDestroyed() && manager.window.webContents === sender) return manager;
-  }
-  return null;
-}
-
-function requireCockpitSender(event, what) {
-  const manager = requireBrowserManager(event);
-  const cockpit = manager.window;
-  if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
-    throw new Error(`Only the Telar window may ${what}.`);
-  }
-  return manager;
-}
-
-function requireBrowserManager(event) {
-  const manager = managerForEvent(event) || browserManager;
-  if (!manager) throw new Error("The Telar desktop browser host is not ready.");
-  return manager;
 }
 
 let loginOffer = null;
@@ -375,7 +195,7 @@ function requireLoginOffer() {
 }
 
 function reportBrowserControl(change) {
-  postToEngine(`/v2/sessions/${encodeURIComponent(change.scopeKey)}/browser/control`, {
+  postToEngine(telarHome(), `/v2/sessions/${encodeURIComponent(change.scopeKey)}/browser/control`, {
     controller: change.controller,
     ...(change.tabId ? { tabId: change.tabId } : {}),
     ...(change.interrupted ? { interrupted: true } : {}),
@@ -383,7 +203,7 @@ function reportBrowserControl(change) {
 }
 
 function reportVolumesChanged() {
-  postToEngine("/v2/projects/reprobe");
+  postToEngine(telarHome(), "/v2/projects/reprobe");
 }
 
 let terminalHost = null;
@@ -418,8 +238,6 @@ function requireTerminalHost() {
 }
 
 const RENDERER = TerminalOwner.RENDERER;
-
-let lastWindowUrl = null;
 
 let updaterWindow = null;
 
@@ -477,7 +295,7 @@ async function closeTerminalsThenQuit() {
 }
 
 app.on("will-quit", () => {
-  for (const manager of browserManagers) { try { manager.persistSync(); } catch {} }
+  persistAllHosts();
 
   if (terminalHost) { try { void terminalHost.dispose(); } catch {} }
   if (runTerminalChannel) { try { void runTerminalChannel.close(); } catch {} runTerminalChannel = null; }
@@ -565,17 +383,9 @@ async function runSmoke() {
   }
 }
 
-require("./ipc-browser").registerBrowserIpc({
-  requireCockpitSender,
-  browserManagers,
-  openInSystemBrowser,
-  requireBrowserManager,
-  requireBrowserSuggestions,
-  requireLoginOffer,
-});
+require("./ipc-browser").registerBrowserIpc({ requireBrowserSuggestions, requireLoginOffer });
 
 require("./ipc-terminal").registerTerminalIpc({
-  requireCockpitSender,
   RENDERER,
   requireTerminalHost,
   terminalReaders,
@@ -585,16 +395,9 @@ require("./ipc-store").registerWorkspaceAndStoreIpc({ telarHome });
 
 require("./ipc-prefs").registerPrefsIpc();
 
-require("./ipc-app").registerAppIpc({
-  createWindow,
-  linkRouting,
-  get lastWindowUrl() {
-    return lastWindowUrl;
-  },
-});
+require("./ipc-app").registerAppIpc({ createWindow });
 
 const { configureAutoUpdater } = require("./updates").registerUpdates({
-  requireCockpitSender,
   telarHome,
   get updaterWindow() {
     return updaterWindow;
@@ -610,9 +413,7 @@ const { configureAutoUpdater } = require("./updates").registerUpdates({
   },
 });
 
-if (supportsTranslucency()) {
-  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
-}
+keepOccludedWindowsPainting();
 
 if (SMOKE) {
   app.on("window-all-closed", () => {});
@@ -637,7 +438,7 @@ if (SMOKE) {
       try {
         wireShellDiagnostics();
 
-        startHeapLog(() => (browserManager ? browserManager.diagnostics() : null));
+        startHeapLog(() => currentHost()?.diagnostics() ?? null);
 
         startServiceWorkerWatchdog(browserManagers);
         applyDevelopmentAppIcon();
@@ -657,7 +458,7 @@ if (SMOKE) {
         browserControl = await startBrowserControlServer({
           ...browserControlConfig,
 
-          getBrowserManager: (scopeKey) => managerForScope(browserManagers, scopeKey, browserManager),
+          getBrowserManager: (scopeKey) => managerForScope(browserManagers, scopeKey, currentHost()),
 
           readProcessMetrics: () => processMetricsReader().summary(),
         });

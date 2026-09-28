@@ -1,4 +1,4 @@
-const { BrowserWindow, nativeTheme } = require("electron");
+const { app, BrowserWindow, nativeTheme } = require("electron");
 const { jsonPrefs } = require("./prefs");
 const { vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 
@@ -44,4 +44,8 @@ function watchSchemeForVibrancy() {
   nativeTheme.on("updated", reapplyVibrancy);
 }
 
-module.exports = { applyTranslucency, readUiPrefs, supportsTranslucency, watchSchemeForVibrancy, writeUiPrefs };
+function keepOccludedWindowsPainting() {
+  if (supportsTranslucency()) app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+}
+
+module.exports = { applyTranslucency, keepOccludedWindowsPainting, readUiPrefs, supportsTranslucency, watchSchemeForVibrancy, writeUiPrefs };

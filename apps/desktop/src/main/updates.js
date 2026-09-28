@@ -7,6 +7,7 @@ const path = require("node:path");
 const devUpdate = require("../dev/dev-update");
 const { DEV_BUILD } = require("./flags");
 const { logShell } = require("./shell-log");
+const { requireCockpitSender } = require("./browser-hosts");
 const { readUpdatePrefs, UPDATE_CHANNELS, updateLogPath, updateProxyKey, writeUpdatePrefs } = require("./update-prefs");
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -174,7 +175,7 @@ function createUpdater(main) {
 }
 
 function registerUpdates(main) {
-  const { requireCockpitSender, telarHome } = main;
+  const { telarHome } = main;
   const updater = createUpdater(main);
   const { abandonDownload, applyUpdatePrefs, broadcastUpdateStatus, checkForUpdates, configureAutoUpdater, downloadWatch, updatesConfigured } = updater;
 

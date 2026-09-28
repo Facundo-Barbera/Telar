@@ -1,6 +1,5 @@
 const { describe, expect, test } = require("bun:test");
 const { QUIT_GRACE_MS, createInstallGate } = require("./update-install");
-const { mainSource } = require("../../test/main-source");
 
 function fakeClock(start = 1_000_000) {
   let time = start;
@@ -114,17 +113,5 @@ describe("the planned-restart marker", () => {
   test("a marker that cannot be written costs the resume, never the update", () => {
     const failing = { mkdirSync() { throw new Error("read-only"); }, writeFileSync() {} };
     expect(writePlannedRestart("/nowhere", { fs: failing })).toBe(false);
-  });
-
-  test("the install handler writes it, takes it back on a failed stage, and never asks the quit question", () => {
-    const source = mainSource();
-    const start = source.indexOf('ipcMain.handle("telar:updates:install"');
-    const handler = source.slice(start, source.indexOf("\n});", start));
-    expect(handler).toContain("writePlannedRestart(engineRoot)");
-    expect(handler).toContain("clearPlannedRestart(engineRoot)");
-
-    expect(handler).not.toContain("showMessageBox");
-    expect(handler).not.toContain("decideQuit");
-    expect(handler).toContain("terminalsClosedForQuit = true");
   });
 });

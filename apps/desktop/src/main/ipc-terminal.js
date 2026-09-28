@@ -1,9 +1,10 @@
 const { ipcMain } = require("electron");
 const { readKittyImageFile } = require("../terminal/kitty-image-file");
 const { TerminalOwner } = require("../terminal/terminal-host");
+const { requireCockpitSender } = require("./browser-hosts");
 
 function registerTerminalIpc(main) {
-  const { RENDERER, requireCockpitSender, requireTerminalHost, terminalReaders } = main;
+  const { RENDERER, requireTerminalHost, terminalReaders } = main;
   ipcMain.handle("telar:terminal:open", (event, input) => {
     requireCockpitSender(event, "open a terminal");
     const host = requireTerminalHost();

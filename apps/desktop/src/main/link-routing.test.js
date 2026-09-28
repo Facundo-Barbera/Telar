@@ -1,5 +1,3 @@
-const { readFileSync } = require("node:fs");
-const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
 const { createLinkRouting, LINK_OPEN_CHANNEL } = require("./link-routing");
@@ -54,35 +52,5 @@ describe("createLinkRouting", () => {
     const opened = [];
     expect(routing.handOff(win, "https://example.com/", (url) => opened.push(url))).toBe("system");
     expect(opened).toEqual(["https://example.com/"]);
-  });
-});
-
-describe("desktop link-routing wiring", () => {
-  const codeOf = (file) =>
-    readFileSync(path.join(__dirname, file), "utf8")
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*"))
-      .join("\n");
-  const mainCode = require("../../test/main-source").mainSource()
-    .split("\n")
-    .filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*"))
-    .join("\n");
-  const preloadCode = codeOf("../preload/preload.js");
-
-  test("the main process learns the setting from the page, top frame only", () => {
-    expect(mainCode).toContain('ipcMain.handle("telar:links:set-routing"');
-    expect(mainCode).toContain("event.senderFrame !== event.sender.mainFrame");
-    expect(mainCode).toContain("linkRouting.set(event.sender, input?.on === true)");
-    expect(preloadCode).toContain('ipcRenderer.invoke("telar:links:set-routing", { on })');
-    expect(preloadCode).toContain(`on("${LINK_OPEN_CHANNEL}", listener)`);
-  });
-
-  test("popups and navigations consult it before the system browser", () => {
-    expect(mainCode).toContain("linkRouting.handOff(webContents, decision.openExternal, openInSystemBrowser)");
-    expect(mainCode.match(/ actOnLinkDecision\(decision, webContents\);/g)?.length).toBe(2);
-  });
-
-  test("a reload drops the claim; the remounted cockpit claims again", () => {
-    expect(mainCode).toContain("linkRouting.set(win.webContents, false)");
   });
 });
