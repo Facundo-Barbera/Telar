@@ -28,7 +28,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver } from "../src/driver";
 import { type SessionsCapability, type TurnDriver } from "../src/drivers";
 import { TelarToolSocket } from "../src/telar-socket";
-import { reportBack } from "../src/agent-notice";
+import { reportBack } from "../src/domains/turns/agent-notice";
 import { EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";
 

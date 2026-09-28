@@ -5,7 +5,7 @@ import path from "node:path";
 import type { Turn } from "@telar/engine-client";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv } from "../src/state";
 import type { ExecutionStore } from "../src/platform/db/execution-store";
-import { INLINE_CHARS } from "../src/agent-notice";
+import { INLINE_CHARS } from "../src/domains/turns/agent-notice";
 import { RELAY_RULE } from "../src/domains/turns";
 import { summariseTurn } from "../src/domains/turns";
 import { forgetOpenPrefixes, openPrefixCount } from "./store-internals";

@@ -194,7 +194,7 @@ import {
 import { WorkspaceConfigStore } from "./workspace-config";
 import { assertId, assertStateVersion, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
 import { createSessionModules, latestProviderSessionId, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, SessionQueues, SessionMailbox, isPeerMail, SessionIndex, SessionActivity, indexRow, rowIsShelved, awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, type SessionQueue, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
-import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "./domains/turns";
+import { boundedOutline, cohortNotification, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, inlineExcerpt, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { TELAR_ORIENTATION } from "./orientation";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
@@ -204,8 +204,6 @@ import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, rea
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
-import { inlineExcerpt, quotedExcerpt } from "./agent-notice";
-import { cohortNotification, heldDelivery, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER, defaultGhRunner, mergePull, openPullRequest, reactOn, readCheckLog, readForgeFacets, readGitHub, readIssue, readPull, readPullFiles, readPullForBranch, replyToThread, resolveThread, type GhRunner } from "./domains/github";
 import { z } from "zod";
 import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerProcessEnv, stoppedInheriting } from "./domains/providers";

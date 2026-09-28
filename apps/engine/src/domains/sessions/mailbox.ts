@@ -1,6 +1,6 @@
 import path from "node:path";
 import { NotificationDetail } from "@telar/engine-client";
-import { MAX_COHORT_ENTRIES, mergeNotifications } from "../../notification";
+import { MAX_COHORT_ENTRIES, mergeNotifications } from "../turns";
 import { STATE_VERSION, type Kernel } from "../../platform/kernel";
 import type { EngineStatePaths } from "../../state-paths";
 import { sessionDir } from "./metadata";
