@@ -14,6 +14,7 @@ export type DriverRequest = {
   toolUseId: string;
   deadlineMs?: number;
   default?: RequestDefault;
+  signal?: AbortSignal;
 };
 
 export type DriverRequestOutcome = { decision: RequestDecision; answers?: Record<string, unknown> };

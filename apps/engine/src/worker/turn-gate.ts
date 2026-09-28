@@ -4,13 +4,15 @@ import { runSecretFill } from "../domains/browser";
 import type { DriverRequest, DriverRequestOutcome } from "../drivers";
 import type { BrowserRefs, TurnHost } from "./host";
 
-export type TurnGate = BrowserRefs & { askEngine: (request: DriverRequest) => Promise<DriverRequestOutcome> };
+const WITHDRAWN_REASON = "the agent withdrew this request before it was answered";
+
+export type TurnGate =BrowserRefs & { askEngine: (request: DriverRequest) => Promise<DriverRequestOutcome> };
 
 /** Everything a claim binds: the engine gate and the browser's gate, navigation sink and secret fill on top of it. */
 export function bindTurn(host: TurnHost, sessionId: string, runId: string, claimToken: string, controller: AbortController): TurnGate {
   const { client } = host.options;
   let lateRefusalLogged = false;
-  const askEngine = async ({ kind, detail, toolUseId, deadlineMs, default: fallback }: DriverRequest): Promise<DriverRequestOutcome> => {
+  const askEngine = async ({ kind, detail, toolUseId, deadlineMs, default: fallback, signal }: DriverRequest): Promise<DriverRequestOutcome> => {
     const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
     const opened = await client.openRequest(sessionId, runId, claimToken, {
       requestId,
@@ -43,6 +45,13 @@ export function bindTurn(host: TurnHost, sessionId: string, runId: string, claim
       };
       if (controller.signal.aborted) onAbort();
       else controller.signal.addEventListener("abort", onAbort, { once: true });
+      const onWithdrawn = () => {
+        if (!host.awaiting.delete(`${runId}:${requestId}`)) return;
+        resolve({ decision: "cancel" });
+        void client.resolveRequest(sessionId, requestId, { decision: "cancel", resolvedBy: "cancelled", reason: WITHDRAWN_REASON }).catch(() => undefined);
+      };
+      if (signal?.aborted) onWithdrawn();
+      else signal?.addEventListener("abort", onWithdrawn, { once: true });
     });
   };
   const gate: BrowserRefs["gate"] = async ({ name, args, readOnly }) => {

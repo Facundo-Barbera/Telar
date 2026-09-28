@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { createClaudeDriver, run } from "../../../test/claude-harness";
+import type { DriverRequest } from "../contract";
+import { gateFor } from "./permission-gate";
 
 // ── AskUserQuestion ──────────────────────────────────────────────────────────
 
@@ -122,4 +124,15 @@ test("a DECLINED question lets the tool dismiss itself rather than inventing an 
   const cancelled: { permission?: unknown } = {};
   await run(createClaudeDriver(sdkAskingQuestion(cancelled)), { onRequest: async () => "cancel" }).result;
   expect(cancelled.permission).toEqual({ behavior: "deny", message: "The human cancelled this turn.", interrupt: true });
+});
+
+test("the gate hands the SDK's abort signal to the request, so a withdrawn prompt can be cancelled", async () => {
+  const withdraw = new AbortController();
+  let asked: DriverRequest | undefined;
+  const gate = gateFor(async (request) => {
+    asked = request;
+    return "accept";
+  });
+  await gate("Bash", { command: "ls" }, { signal: withdraw.signal, toolUseID: "toolu_b1" });
+  expect(asked?.signal).toBe(withdraw.signal);
 });

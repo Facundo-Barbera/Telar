@@ -104,7 +104,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
             decision: decision as (typeof DECISIONS)[number],
             reason: stringValue(body.reason, "reason", true),
             ...(body.answers && typeof body.answers === "object" ? { answers: body.answers as Record<string, unknown> } : {}),
-            ...(body.resolvedBy === "session" ? { resolvedBy: "session" as const } : {}),
+            ...(body.resolvedBy === "session" || body.resolvedBy === "cancelled" ? { resolvedBy: body.resolvedBy } : {}),
           }),
         });
       },

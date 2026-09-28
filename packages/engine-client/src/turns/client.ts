@@ -124,12 +124,12 @@ export const turnsClient = {
     return this.request("POST", `${turnPath(sessionId, runId)}/request`, { claimToken, ...input });
   },
 
-  /** `resolvedBy: "session"` is the only resolver a caller may name; anything else is recorded as a person's. */
+  /** A caller may name only `session` or `cancelled` (a worker withdrawing its own ask); anything else is recorded as a person's. */
   resolveRequest(
     this: EngineTransport,
     sessionId: string,
     requestId: string,
-    input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown>; resolvedBy?: "session" },
+    input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown>; resolvedBy?: "session" | "cancelled" },
   ): Promise<{ request: EngineRequest }> {
     return this.request("POST", `${sessionPath(sessionId)}/requests/${encodeURIComponent(requestId)}`, input);
   },
