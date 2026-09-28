@@ -1,13 +1,3 @@
-/**
- * WHAT A SESSION IS WORKING ON BEHALF OF, and the cases where a simpler model
- * would have got it wrong.
- *
- * The fold replaced a proposed "active assignment" field plus a pending queue.
- * Each case here is one of the reasons that model was rejected: two senders at
- * once, a steer that is terminal for the message but not for the work, a stop
- * that must not leave a session looking busy, and a detach that must not delete
- * the history a reviewer needs.
- */
 import { expect, test } from "bun:test";
 import { activeAssignments, assignmentsOf, reviewableAssignments, unresolvedAssignments, type AssignmentTurn } from "../src/protocol/assignments";
 import { Turn } from "../src/protocol/entities";
@@ -23,15 +13,6 @@ const task = (runId: string, from: string, extra: Partial<AssignmentTurn> = {}):
   ...extra,
 });
 
-/**
- * A REAL `Turn`, NOT A HAND-WRITTEN SHAPE — issue #380.
- *
- * The fold read `turn.createdAt`, which no `Turn` has ever had. Every test above
- * passed because they all wrote the field the fold expected, and every caller in
- * the app passed a real turn and got `receivedAt: undefined` on an assignment
- * whose schema declares it required. Only a turn the SCHEMA produced can catch
- * that, so this one is parsed rather than typed.
- */
 test("folding a real Turn gives an assignment a NUMBER for receivedAt", () => {
   const turn = Turn.parse({
     runId: "run_task",
@@ -86,7 +67,6 @@ test("the sender's run and the recipient's task are DIFFERENT ids, and both are 
 });
 
 test("a STEERED task follows the run it joined — delivery is not completion", () => {
-  // `steered` is terminal for the MESSAGE and says nothing about the work.
   const turns: AssignmentTurn[] = [
     task("run_task", "session_coord", { state: "steered", steer: { intoRunId: "run_live" } }),
     { runId: "run_live", state: "running", acceptedAt: 0 },
@@ -95,12 +75,10 @@ test("a STEERED task follows the run it joined — delivery is not completion", 
   expect(active).toHaveLength(1);
   expect(active[0]).toMatchObject({ taskRunId: "run_task", runId: "run_live" });
 
-  // …and it ends when the JOINED run ends, not when the steer landed.
   const ended: AssignmentTurn[] = [turns[0]!, { runId: "run_live", state: "completed", acceptedAt: 0, completedAt: 9 }];
   expect(activeAssignments(ended)).toEqual([]);
   expect(reviewableAssignments(ended)[0]).toMatchObject({ outcome: "completed", endedAt: 9 });
 });
-
 
 test("completion, failure and stop each end the assignment with their own outcome", () => {
   for (const [state, outcome] of [["completed", "completed"], ["failed", "failed"], ["stopped", "stopped"]] as const) {
@@ -111,8 +89,6 @@ test("completion, failure and stop each end the assignment with their own outcom
 });
 
 test("a stopped assignment leaves NO fake busy state", () => {
-  // The failure this prevents: a session that was stopped still reporting that
-  // it is working on someone's behalf.
   const turns = [task("run_task", "session_coord", { state: "stopped", completedAt: 5 })];
   expect(activeAssignments(turns)).toEqual([]);
 });
@@ -153,15 +129,10 @@ test("a task with no engine-stamped sender is ignored", () => {
 });
 
 test("a PAGED window cannot prove a carrier is running — it reports unknown", () => {
-  // The correctness gap this replaced: falling back to the task turn both
-  // renamed the run and asserted it was still going, so a completed carrier
-  // that had paged out looked busy forever.
   const paged = [task("run_task", "session_coord", { state: "steered", steer: { intoRunId: "run_gone" } })];
   expect(activeAssignments(paged)).toEqual([]);
   const [assignment] = unresolvedAssignments(paged);
   expect(assignment).toMatchObject({ taskRunId: "run_task", runId: "run_gone", unresolved: true });
-  // The joined id SURVIVES even though the run is absent — losing it would
-  // rename the work.
   expect(assignment?.outcome).toBeUndefined();
 });
 

@@ -72,17 +72,6 @@ test("a windowed session read carries the window as query parameters", async () 
 });
 
 test("the root export is browser-safe: no node builtins reachable from it", async () => {
-  /**
-   * THE REGRESSION THIS PINS, and it shipped: `discoverEngine` sat in
-   * `./index.ts` with a top-level `node:fs/promises` import. That was harmless
-   * until a client component imported ANY value from the package — a tool-name
-   * helper was enough — at which point Turbopack refused to build the browser
-   * chunk and the whole cockpit 500'd. Nothing in the test suite noticed,
-   * because nothing in the test suite bundles for a browser.
-   *
-   * Node-only code lives in `./node`, which is exempt by construction: it is a
-   * separate entry point that browser code never imports.
-   */
   const dir = path.join(import.meta.dir, "..", "src");
   const files = fs
     .readdirSync(dir, { recursive: true, encoding: "utf8" })

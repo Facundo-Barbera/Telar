@@ -1,11 +1,3 @@
-/**
- * AN INSTALLED PLUGIN'S DECLARATIVE UI, AND ITS TOOL ROWS.
- *
- *   panels   declared in the manifest against a declared session verb
- *   blocks   parsed one by one: a block this build does not know is dropped,
- *            the rest still draw
- *   prefixes an installed prefix, once registered, types its tool rows
- */
 import { afterEach, describe, expect, test } from "bun:test";
 import { ExternalPluginManifest, parsePluginPanelView } from "../src/protocol/plugins";
 import { parseToolName, registerPluginToolPrefixes } from "../src/protocol/tools";
