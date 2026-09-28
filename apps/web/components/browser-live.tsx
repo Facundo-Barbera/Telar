@@ -69,7 +69,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { axesOf, describeViewport, fitViewport, groupedViewportPresets, keepRatio, ratioOf, resizeByKey, resizeToEdge, sizeFromFields, stageOf, stepField, viewportPreset, VIEWPORT_RAIL, VIEWPORT_ZOOMS, zoomFits, type ResizeDirection, type StageRect, type ViewportMode, type ViewportPresetKey, type ViewportZoom } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
-import { createOverlayFreezer, onNativeViewOverlay, useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
+import { useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
+import { useFrozenOverlay } from "@/src/features/browser";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { claimChords } from "@/lib/commands";
 import { makeScopeGuard } from "@/lib/scope-guard";
@@ -1246,49 +1247,7 @@ export function DesktopBrowserSurface({
    * viewport hook, which must not re-show the view under an open menu.
    */
   const overlayRef = useRef(false);
-  /**
-   * AND THE PAGE STAYS PUT WHILE IT IS DOWN (#475) — the shell's last frame of
-   * it, painted into the host at the view's own rect. `rect` arrives in THIS
-   * PAGE'S CSS PIXELS — the rect the panel published, not the window pixels
-   * `setBounds` is finally given (those carry the cockpit's zoom, #895) — so
-   * the host's own rect comes off it, the way `DeviceFrame` does.
-   */
-  const [frozenFrame, setFrozenFrame] = useState<{ src: string; left: number; top: number; width: number; height: number }>();
-  useEffect(() => {
-    const swap = createOverlayFreezer({
-      freeze: async () => {
-        // An older shell has no handler: the plain hide is what it always did.
-        if (!bridge.freezeView) {
-          await bridge.setVisible(scopeKey, false);
-          return null;
-        }
-        return bridge.freezeView(scopeKey);
-      },
-      // Showing restores the scope's own remembered rect (see setVisible), so
-      // nothing has to be republished here.
-      show: () => bridge.setVisible(scopeKey, true),
-      paint: (frame) => {
-        const host = hostRef.current;
-        if (!frame || !host) {
-          setFrozenFrame(undefined);
-          return;
-        }
-        const rect = host.getBoundingClientRect();
-        setFrozenFrame({
-          src: `data:${frame.mimeType};base64,${frame.data}`,
-          left: frame.rect.x - rect.left,
-          top: frame.rect.y - rect.top,
-          width: frame.rect.width,
-          height: frame.rect.height,
-        });
-      },
-    });
-    return onNativeViewOverlay((hidden) => {
-      if (overlayRef.current === hidden) return;
-      overlayRef.current = hidden;
-      void swap(hidden);
-    });
-  }, [bridge, scopeKey]);
+  const frozenFrame = useFrozenOverlay(bridge, scopeKey, hostRef, overlayRef);
 
   const refresh = useCallback(async () => {
     const gen = scope.capture();

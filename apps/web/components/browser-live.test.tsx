@@ -25,7 +25,7 @@ import {
   type DesktopBrowserPanelState,
   type DesktopBrowserTab,
 } from "./browser-live";
-import { nativeViewOverlayHidden } from "@/lib/native-view-overlay";
+import { claimNativeView, nativeViewOverlayHidden } from "@/lib/native-view-overlay";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -163,7 +163,7 @@ async function mount(
     host.remove();
   };
   mounted = unmount;
-  return { ...recorded, host, unmount };
+  return { ...recorded, host, root, unmount };
 }
 
 /** The `⋯` at the right end of the address row. */
@@ -469,6 +469,23 @@ describe("the frozen frame a menu opens over", () => {
 
     await mouseClick(optionsTrigger(host));
     expect(visibility.at(-1)).toBe(true);
+  });
+
+  test("a panel menu that closes as the surface unmounts leaves the view down", async () => {
+    const { root, visibility } = await mount(panelState(), { freezeView: async () => null });
+    const release = claimNativeView();
+    await act(async () => {});
+
+    // Picking another panel tab from a menu: the claim is released in the same
+    // commit that unmounts the browser surface.
+    await act(async () => {
+      release();
+      root.unmount();
+    });
+    await act(async () => {});
+
+    expect(nativeViewOverlayHidden()).toBe(false);
+    expect(visibility.at(-1)).toBe(false);
   });
 });
 
