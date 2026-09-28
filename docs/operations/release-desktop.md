@@ -55,7 +55,7 @@ Pick tag numbers that sort above the version currently on the channel. Clients c
 3. Writes the App Store Connect API key, and installs the `aws` CLI if it is missing.
 4. Runs `scripts/build-desktop.sh`:
    - takes a clean `git worktree` snapshot of the ref, so local changes never ship;
-   - runs a frozen install and builds the pinned computer-use helper (`apps/desktop/computer-use-helper.json`);
+   - runs a frozen install and builds the pinned computer-use helper (`apps/desktop/src/main/computer-use-helper.json`);
    - builds the standalone web server and stamps `build-info.json` (sha, ref, channel);
    - sets the version, then runs `electron-builder --mac`. The app is signed from the keychain and notarized when `APPLE_API_KEY*` are set;
    - verifies the signature, checks that the helper has Telar's team ID, and runs `spctl --assess`;
@@ -101,7 +101,7 @@ Squirrel installs only updates that carry the running app's bundle id, so `com.t
 2. downloads the zip it names and checks size, sha512, bundle id, team and Gatekeeper;
 3. swaps the new app in with a detached helper, which restores the old app if the new one doesn't confirm a boot within 180 seconds.
 
-The logic is in `apps/desktop/desktop-handoff-core.js` and `desktop-handoff.js`. Nothing happens until the manifest exists.
+The logic is in `apps/desktop/src/handoff/desktop-handoff-core.js` and `desktop-handoff.js`. Nothing happens until the manifest exists.
 
 Publish a manifest one channel at a time, after that channel's new-id build has been installed and tried. Do nightly first, then beta:
 
