@@ -57,7 +57,7 @@ import {
   fieldDigest,
   fieldDigests,
   resolveChildEnv,
-} from "./claude-identity";
+} from "./drivers/claude";
 import {
   ClaudeRuntimeStore,
   MessageFeed,
@@ -66,7 +66,7 @@ import {
   type RuntimeBindings,
   type RuntimeQuery,
   taskMemoryFrom,
-} from "./claude-runtime";
+} from "./drivers/claude";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./domains/git";
 import type { DisplayCapability } from "./display/tools";
 import { framedSteerText, RELAY_RULE, type SteerMessage, steerRowTitle } from "./domains/turns";

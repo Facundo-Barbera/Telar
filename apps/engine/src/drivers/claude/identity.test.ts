@@ -6,14 +6,10 @@ import {
   changedFields,
   fieldDigests,
   resolveChildEnv,
-} from "../src/claude-identity";
+} from "./identity";
 
 describe("canonical identity", () => {
   test("key order is NOT identity — the defect that spawned a second CLI per reordered env", () => {
-    // Measured in the #201 fixtures: two turns whose env patch and MCP headers
-    // were assembled in a different order hashed differently under
-    // JSON.stringify and produced two queries, killing the background work the
-    // runtime pool exists to keep alive.
     const a = { env: { A: "1", B: "2" }, headers: { X: "x", Y: "y" } };
     const b = { headers: { Y: "y", X: "x" }, env: { B: "2", A: "1" } };
     expect(JSON.stringify(a)).not.toBe(JSON.stringify(b));
@@ -21,12 +17,8 @@ describe("canonical identity", () => {
   });
 
   test("an explicit deletion is not an absence", () => {
-    // `{}` says "inherit the worker's environment"; `{ KEY: undefined }` says
-    // "delete that variable so this login stops inheriting a credential".
-    // JSON.stringify renders both as `{}`.
     expect(JSON.stringify({})).toBe(JSON.stringify({ ANTHROPIC_API_KEY: undefined }));
     expect(canonicalJson({})).not.toBe(canonicalJson({ ANTHROPIC_API_KEY: undefined }));
-    // And a deletion is still not the same as setting it to the empty string.
     expect(canonicalJson({ K: undefined })).not.toBe(canonicalJson({ K: "" }));
   });
 
@@ -35,10 +27,6 @@ describe("canonical identity", () => {
   });
 
   test("servers are deduplicated last-wins then sorted, matching what the record downstream keeps", () => {
-    // `claudeMcpServers` folds the list into `out[server.id] = …`, so an
-    // earlier duplicate never reaches the child and the list's own order
-    // cannot either. Hashing them would cold-start for a difference that does
-    // not exist.
     const listed = canonicalServers([
       { id: "b", enabled: true, spec: { transport: "stdio", command: "b" } },
       { id: "a", enabled: true, spec: { transport: "stdio", command: "first" } },
@@ -46,8 +34,6 @@ describe("canonical identity", () => {
     ]);
     expect(listed?.map((server) => server.id)).toEqual(["a", "b"]);
     expect(listed?.[0]?.spec).toMatchObject({ command: "last" });
-    // Absent stays distinguishable from empty: no servers configured at all is
-    // not the same identity as a list that resolved to nothing.
     expect(canonicalServers(undefined)).toBeNull();
     expect(canonicalServers([])).toEqual([]);
   });
@@ -59,8 +45,6 @@ describe("canonical identity", () => {
   });
 
   test("no patch at all leaves the SDK's own inheritance alone", () => {
-    // "when omitted the subprocess inherits process.env" — supplying one
-    // replaces it, so `undefined` here must stay distinguishable from `{}`.
     expect(resolveChildEnv({ PATH: "/bin" })).toBeUndefined();
     expect(resolveChildEnv({ PATH: "/bin" }, {})).toEqual({ PATH: "/bin" });
   });
@@ -74,7 +58,6 @@ describe("canonical identity", () => {
     const before = fieldDigests({ cwd: "/a", env: { KEY: "secret-one" } });
     const after = fieldDigests({ cwd: "/a", env: { KEY: "secret-two" } });
     expect(changedFields(before, after)).toEqual(["env"]);
-    // The digest is what gets logged; it must not carry the value.
     expect(JSON.stringify(after)).not.toContain("secret-two");
   });
 });
