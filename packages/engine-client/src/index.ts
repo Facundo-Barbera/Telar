@@ -17,6 +17,7 @@ export * from "./prompts/schema";
 export * from "./providers/compaction";
 export * from "./providers/schema";
 export * from "./push/schema";
+export * from "./remote/schema";
 export * from "./schedules/schema";
 export * from "./sessions/schema";
 export * from "./settings/schema";

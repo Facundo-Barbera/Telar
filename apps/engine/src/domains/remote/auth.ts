@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { fail, ok, type Route } from "../../platform/http/route";
-import { matchDevice, type DeviceRole, type PairedDevice, type RemoteFile, type RemoteStore } from "./store";
+import type { DeviceRole } from "@telar/engine-client";
+import { matchDevice, type PairedDevice, type RemoteFile, type RemoteStore } from "./store";
 
 export const EXEMPT_PATHS = new Set(["/api/ping", "/api/pair"]);
 const OBSERVER_METHODS = new Set(["GET", "HEAD"]);

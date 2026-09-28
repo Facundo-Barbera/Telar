@@ -5,6 +5,7 @@ import { TerminalIcon, ServerIcon, GlobeIcon, CircleHelpIcon, CheckIcon, CopyIco
 import { Badge } from "@/ui/badge";
 import { Button } from "@/ui/button";
 import { Input } from "@/ui/input";
+import type { DeviceIdentity, DeviceRole, RemoteDevice, RemoteState } from "@telar/engine-client";
 import type { QrMatrix } from "../qr";
 import { describeServeError, type TailscaleServeError } from "../tailscale-serve";
 import { fmtAgo } from "@/ui/format";
@@ -16,34 +17,13 @@ import { CopyCommand } from "@/ui/copy-command";
 import { PushNotificationsGroup } from "@/features/push";
 import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/features/settings";
 
-interface RemoteDevice {
-  id: string;
-  name: string;
-  createdAt: number;
-  lastSeenAt?: number;
-  role: "full" | "observer";
-  platform?: "ios" | "browser";
-  identity?: { kind?: string; client?: string; machine?: string; os?: string; address?: string; origin?: string };
-}
-
-interface RemoteHost {
-  name: string;
-  identity?: RemoteDevice["identity"];
-  isCaller?: boolean;
-}
-
-interface RemoteStatus {
-  requireAuth: boolean;
-  exposure?: "local-only" | "network-accessible";
-  tailscaleServe?: boolean;
+type RemoteStatus = RemoteState & {
   tailscaleServeError?: TailscaleServeError;
-  host?: RemoteHost;
-  devices: RemoteDevice[];
+  host?: { name: string; identity?: DeviceIdentity; isCaller?: boolean };
   callerDeviceId?: string;
-  callerRole?: "full" | "observer";
-  pairing?: { expiresAt: number };
+  callerRole?: DeviceRole;
   endpoints: Array<{ kind: string; label: string; url: string; qrSafe: boolean }>;
-}
+};
 
 const KIND_ICONS: Record<string, typeof MonitorIcon> = {
   browser: GlobeIcon,
