@@ -921,8 +921,7 @@ const PUSH_ARGV_SAMPLES = [
  * WHAT THIS DELIBERATELY DOES NOT MATCH IS A BARE `warp`, and that is the whole
  * care in the pattern. Telar is a loom; `warp` and `weft` are its threads, and
  * `apps/ios/Shared/TelarMark.swift` draws the app icon with a `warp` path
- * variable while `apps/desktop/icon-candidates/` describes warp strands in
- * prose. Those are the BRAND. A grep-and-delete by name would have stripped
+ * variable. That is the BRAND. A grep-and-delete by name would have stripped
  * them, so one of five suffixes is REQUIRED: `…warpScript`, `…warpRunner`,
  * `…warpSpawn`, `…warpSandbox`, `…warpSurface`, in any case.
  *

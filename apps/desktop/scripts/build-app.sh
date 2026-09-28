@@ -19,7 +19,7 @@
 # Next does NOT copy static assets or public/ into standalone — we do it here.
 set -euo pipefail
 
-DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WEB_DIR="$(cd "$DESKTOP_DIR/../web" && pwd)"
 ENGINE_DIR="$(cd "$DESKTOP_DIR/../engine" && pwd)"
 DIST="$WEB_DIR/.next-desktop"

@@ -38,8 +38,8 @@ const REPO = path.resolve(import.meta.dirname, "..");
 const DESKTOP = path.join(REPO, "apps", "desktop");
 export const DEFAULT_PIN = path.join(DESKTOP, "src", "main", "computer-use-helper.json");
 export const DEFAULT_OUT = path.join(DESKTOP, "vendor", "computer-use");
-export const ENTITLEMENTS = path.join(DESKTOP, "build", "computer-use", "entitlements.plist");
-export const LICENSE = path.join(DESKTOP, "build", "computer-use", "LICENSE-cua.txt");
+export const ENTITLEMENTS = path.join(DESKTOP, "assets", "computer-use", "entitlements.plist");
+export const LICENSE = path.join(DESKTOP, "assets", "computer-use", "LICENSE-cua.txt");
 /** Files that only make sense under cua's own signature. */
 export const CUA_ONLY = ["embedded.provisionprofile", "_CodeSignature", "CodeResources"];
 

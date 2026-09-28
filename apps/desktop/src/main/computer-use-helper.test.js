@@ -52,7 +52,7 @@ describe("electron-builder carries the helper without re-signing it", () => {
   });
 
   test("the helper is signed with cua's two public entitlements and not Telar's inherit plist", () => {
-    const plist = fs.readFileSync(path.join(__dirname, "..", "..", "build", "computer-use", "entitlements.plist"), "utf8");
+    const plist = fs.readFileSync(path.join(__dirname, "..", "..", "assets", "computer-use", "entitlements.plist"), "utf8");
     const keys = [...plist.matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1]).sort();
     expect(keys).toEqual(["com.apple.security.automation.apple-events", "com.apple.security.device.screen-capture"]);
   });
@@ -148,7 +148,7 @@ describe.skipIf(process.platform !== "darwin")("building from a (fake) release a
     expect(spawnSync("codesign", ["--verify", "--strict", app]).status).toBe(0);
 
     // And the after-pack check accepts it where electron-builder puts it.
-    const { verifyPackagedComputerUse } = require("../../after-pack.js");
+    const { verifyPackagedComputerUse } = require("../../scripts/after-pack.js");
     const telar = path.join(scratch, "Telar.app");
     fs.mkdirSync(path.join(telar, "Contents", "Helpers"), { recursive: true });
     expect(spawnSync("ditto", [app, path.join(telar, "Contents", "Helpers", `${pin.appName}.app`)]).status).toBe(0);
@@ -164,7 +164,7 @@ describe.skipIf(process.platform !== "darwin")("building from a (fake) release a
 });
 
 describe("after-pack: the helper is required in a release and optional in a local package", () => {
-  const { verifyPackagedComputerUse } = require("../../after-pack.js");
+  const { verifyPackagedComputerUse } = require("../../scripts/after-pack.js");
   const empty = () => fs.mkdtempSync(path.join(os.tmpdir(), "telar-no-helper-"));
 
   test("absent and required fails the package; absent and optional passes quietly", () => {

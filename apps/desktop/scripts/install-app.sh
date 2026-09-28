@@ -3,7 +3,7 @@
 # The default destination is ~/Applications; pass --system for /Applications.
 set -euo pipefail
 
-DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DESKTOP_DIR"
 
 APP=release/mac-arm64/Telar.app

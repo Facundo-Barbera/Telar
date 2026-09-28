@@ -61,9 +61,9 @@ describe("extraResources carries the node_modules its trees need", () => {
   test("the shell's PNG icons are copied where the web tier can serve them", () => {
     const branding = entries.find((entry) => entry.to === "branding");
     expect(branding).toBeDefined();
-    expect(branding.from).toBe("build");
+    expect(branding.from).toBe("assets");
     expect(branding.filter).toEqual(["*.png"]);
-    expect(fs.existsSync(path.join(__dirname, "..", "..", "build", "icon.png"))).toBe(true);
+    expect(fs.existsSync(path.join(__dirname, "..", "..", "assets", "icon.png"))).toBe(true);
   });
 
   test("every companion entry names a real subpath of the tree it repairs", () => {
@@ -147,7 +147,7 @@ describe("a --dev package is a separate app that cannot collide with the install
       const dest = path.join(scratch, "dest");
       const result = spawnSync(
         "bash",
-        [path.join(__dirname, "..", "..", "install-app.sh"), "--app", fake, "--verified", "--destination", path.join(dest, "Telar Dev.app")],
+        [path.join(__dirname, "..", "..", "scripts", "install-app.sh"), "--app", fake, "--verified", "--destination", path.join(dest, "Telar Dev.app")],
         { encoding: "utf8", timeout: 15_000 },
       );
       expect(result.status).toBe(0);
@@ -158,7 +158,7 @@ describe("a --dev package is a separate app that cannot collide with the install
       fs.mkdirSync(home, { recursive: true });
       const byDefault = spawnSync(
         "bash",
-        [path.join(__dirname, "..", "..", "install-app.sh"), "--app", fake, "--verified"],
+        [path.join(__dirname, "..", "..", "scripts", "install-app.sh"), "--app", fake, "--verified"],
         { encoding: "utf8", timeout: 15_000, env: { ...process.env, HOME: home } },
       );
       expect(byDefault.status).toBe(0);
@@ -228,7 +228,7 @@ describe("a --dev package is a separate app that cannot collide with the install
 });
 
 describe("the packaged app can be granted the camera and the microphone", () => {
-  const plist = (name) => fs.readFileSync(path.join(__dirname, "..", "..", "build", name), "utf8");
+  const plist = (name) => fs.readFileSync(path.join(__dirname, "..", "..", "assets", name), "utf8");
   const info = manifest.build.mac.extendInfo;
 
   test("Info.plist carries a usage string for each device, in words a person is asked to agree to", () => {

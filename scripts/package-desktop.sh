@@ -89,7 +89,7 @@ if [ "$DEV" -eq 1 ] && [ "$INSTALL" -eq 1 ]; then
 fi
 
 echo "==> build standalone web app"
-NODE_OPTIONS= bash "$DESKTOP_DIR/build-app.sh"
+NODE_OPTIONS= bash "$DESKTOP_DIR/scripts/build-app.sh"
 
 if git -C "$REPO_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
   FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
@@ -128,12 +128,12 @@ if [ "$DEV" -eq 1 ]; then
   #                    the WINDOW at runtime; without this the BUNDLE (Finder,
   #                    Dock at launch, Spotlight) still wore the blue icon and
   #                    the two apps were indistinguishable at a glance.
-  test -f "$DESKTOP_DIR/build/icon-dev.icns" \
-    || { echo "!! build/icon-dev.icns is missing — regenerate it from build/icon-dev.png with iconutil" >&2; exit 1; }
+  test -f "$DESKTOP_DIR/assets/icon-dev.icns" \
+    || { echo "!! assets/icon-dev.icns is missing — regenerate it from assets/icon-dev.png with iconutil" >&2; exit 1; }
   CONFIG_OVERRIDES=(
     "-c.productName=Telar Dev"
     "-c.appId=io.github.novarix.telar.dev"
-    "-c.mac.icon=build/icon-dev.icns"
+    "-c.mac.icon=assets/icon-dev.icns"
     "-c.extraMetadata.productName=Telar Dev"
     "-c.extraMetadata.telarDev=true"
     "-c.mac.hardenedRuntime=false"
@@ -237,5 +237,5 @@ if [ "$INSTALL" -eq 1 ]; then
   # Guarded for the same reason as the electron-builder line above (#808):
   # `install:local` passes --install and nothing else, so INSTALL_ARGS is empty
   # on exactly the path that reaches here most often.
-  bash "$DESKTOP_DIR/install-app.sh" --app "$APP" --verified ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
+  bash "$DESKTOP_DIR/scripts/install-app.sh" --app "$APP" --verified ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 fi

@@ -117,9 +117,9 @@ const CASES = [
     scope: ['DESKTOP_DIR=/tmp/desktop', 'APP="/tmp/desktop/release/mac-arm64/Telar.app"'],
     emptyState: "INSTALL_ARGS=()",
     filledState: 'INSTALL_ARGS=("--destination" "/Applications" "--open")',
-    whenEmpty: ["/tmp/desktop/install-app.sh", "--app", "/tmp/desktop/release/mac-arm64/Telar.app", "--verified"],
+    whenEmpty: ["/tmp/desktop/scripts/install-app.sh", "--app", "/tmp/desktop/release/mac-arm64/Telar.app", "--verified"],
     whenFilled: [
-      "/tmp/desktop/install-app.sh",
+      "/tmp/desktop/scripts/install-app.sh",
       "--app",
       "/tmp/desktop/release/mac-arm64/Telar.app",
       "--verified",

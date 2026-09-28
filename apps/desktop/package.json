@@ -13,7 +13,7 @@
   "author": "Facundo Barbera <facundo.barbera@gmail.com>",
   "main": "src/main/main.js",
   "scripts": {
-    "build:app": "bash ./build-app.sh",
+    "build:app": "bash ./scripts/build-app.sh",
     "dev": "bun ./src/dev/dev-runner.js",
     "test": "bun run test:desktop:unit",
     "test:desktop": "bun run test:desktop:unit",
@@ -39,7 +39,7 @@
     "pack": "bash ../../scripts/package-desktop.sh",
     "package:local": "bash ../../scripts/package-desktop.sh",
     "package:dev": "bash ../../scripts/package-desktop.sh --dev",
-    "install:app": "bash ./install-app.sh",
+    "install:app": "bash ./scripts/install-app.sh",
     "install:local": "bash ../../scripts/package-desktop.sh --install"
   },
   "trustedDependencies": [
@@ -52,7 +52,7 @@
     "asarUnpack": [
       "**/node_modules/node-pty/**"
     ],
-    "afterPack": "./after-pack.js",
+    "afterPack": "./scripts/after-pack.js",
     "files": [
       "src/**/*",
       "!**/*.test.js",
@@ -79,7 +79,7 @@
         "to": "engine/node_modules"
       },
       {
-        "from": "build",
+        "from": "assets",
         "to": "branding",
         "filter": [
           "*.png"
@@ -87,7 +87,8 @@
       }
     ],
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "assets"
     },
     "mac": {
       "target": [
@@ -106,8 +107,8 @@
       "signIgnore": [
         "/Contents/Helpers/"
       ],
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.inherit.plist",
       "extendInfo": {
         "//NSAppleEventsUsageDescription": "The string macOS shows in the Automation consent dialog when Telar first drives Codex's Computer Use client. Without it the prompt cannot appear and every computer-use call fails silently with -1743.",
         "NSAppleEventsUsageDescription": "Telar uses Computer Use to control Mac apps on your behalf — taking screenshots and performing clicks and keystrokes — through Codex's Computer Use client.",

@@ -164,8 +164,8 @@ NODE_OPTIONS= bun scripts/computer-use-helper.mjs --out "$SNAP/apps/desktop/vend
 export TELAR_REQUIRE_COMPUTER_USE_HELPER=1
 
 # --- standalone web build ----------------------------------------------------
-log "build-app.sh (standalone Next server)"
-NODE_OPTIONS= bash apps/desktop/build-app.sh
+log "scripts/build-app.sh (standalone Next server)"
+NODE_OPTIONS= bash apps/desktop/scripts/build-app.sh
 
 # --- stamp build-info.json into the desktop resources (BEFORE packaging) -----
 # It lands at the root of the standalone tree, which electron-builder copies to

@@ -809,10 +809,10 @@ describe("desktop shell development contracts", () => {
     const source = mainSource();
 
     expect(source).toContain('["icon-dev.png", "icon.png"]');
-    expect(source).toContain('path.join(__dirname, "..", "..", "build", name)');
+    expect(source).toContain('path.join(__dirname, "..", "..", "assets", name)');
     expect(source).toContain("app.dock.setIcon(icon)");
     expect(source).toContain("...(icon ? { icon } : {})");
-    expect(existsSync(path.join(__dirname, "..", "..", "build", "icon.png"))).toBe(true);
+    expect(existsSync(path.join(__dirname, "..", "..", "assets", "icon.png"))).toBe(true);
   });
 
   test("shares the normal web development state unless explicitly overridden", () => {
