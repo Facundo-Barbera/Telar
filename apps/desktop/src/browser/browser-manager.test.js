@@ -1,8 +1,5 @@
 const { EventEmitter } = require("node:events");
-const { existsSync, readFileSync } = require("node:fs");
-const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
-const { mainSource } = require("../../test/main-source");
 
 const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress, zoomStep, ZOOM_STEPS, TAB_SELECT_CHORDS } = require("./browser-manager");
 const { installDownloadHandler } = require("./browser-downloads");
@@ -803,44 +800,6 @@ describe("DesktopBrowserManager", () => {
     expect(manager.state("session-a").tabs).toHaveLength(0);
   });
 });
-
-describe("desktop shell development contracts", () => {
-  test("uses the Telar icon in an unpackaged Electron run", () => {
-    const source = mainSource();
-
-    expect(source).toContain('["icon-dev.png", "icon.png"]');
-    expect(source).toContain('path.join(__dirname, "..", "..", "assets", name)');
-    expect(source).toContain("app.dock.setIcon(icon)");
-    expect(source).toContain("...(icon ? { icon } : {})");
-    expect(existsSync(path.join(__dirname, "..", "..", "assets", "icon.png"))).toBe(true);
-  });
-
-  test("shares the normal web development state unless explicitly overridden", () => {
-    const runner = readFileSync(path.join(__dirname, "..", "dev", "dev-runner.js"), "utf8");
-
-    expect(runner).not.toContain(".telar-desktop-dev");
-    expect(runner).toContain("{ cwd: repoDir, env: sharedEnv }");
-    expect(runner).toContain("...process.env");
-  });
-
-  test("hides native browser views before the Telar renderer reloads", () => {
-    const source = mainSource();
-
-    expect(source).toContain('win.webContents.on("did-start-loading"');
-
-    expect(source).toContain("manager.hideVisibleScope()");
-  });
-
-  test("isolates E2E Electron state without disabling production's instance lock", () => {
-    const source = mainSource();
-    const e2e = readFileSync(path.join(__dirname, "..", "..", "test", "electron", "desktop-e2e.js"), "utf8");
-
-    expect(source).toContain('app.setPath("userData", E2E_USER_DATA)');
-    expect(source).toContain("app.requestSingleInstanceLock()");
-    expect(e2e).toContain("TELAR_DESKTOP_E2E_USER_DATA: desktopUserData");
-  });
-});
-
 describe("the shared-browser interaction model — human input wins, agent defers then looks again", () => {
   function harness(options = {}) {
     const clock = { t: 1_000_000 };

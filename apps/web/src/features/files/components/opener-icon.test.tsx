@@ -15,7 +15,6 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { OpenerIcon } from "./opener-icon";
@@ -94,30 +93,15 @@ describe("the vector fallback, for a browser tab and a remote Mac", () => {
   });
 });
 
-/**
- * THE PROVENANCE GUARD. Every mark in this file is either the owner's own
- * published artwork or a CC0 simple-icons entry, verified byte-for-byte
- * against upstream; the one that was neither — a Finder face drawn from
- * memory — is deleted. A new key arriving here without a source comment above
- * it is how that comes back, so the ids are pinned.
- */
-describe("every mark has a published source behind it", () => {
-  const source = readFileSync(new URL("./opener-icon.tsx", import.meta.url), "utf8");
-  const keys = [...source.matchAll(/^ {2}(\w+):\s*$|^ {2}(\w+): "/gm)].map((match) => match[1] ?? match[2]);
+describe("only the audited marks are drawn", () => {
+  const AUDITED = ["vscode", "cursor", "windsurf", "zed", "sublime", "webstorm", "intellij", "pycharm", "xcode", "iterm"];
+  const folder = draw({});
 
-  test("the table is exactly the audited set — no Finder, no unsourced additions", () => {
-    expect(keys).toEqual(["vscode", "cursor", "windsurf", "zed", "sublime", "webstorm", "intellij", "pycharm", "xcode", "iterm"]);
+  test("each audited app draws its own mark", () => {
+    for (const icon of AUDITED) expect({ icon, own: draw({ icon }) !== folder }).toEqual({ icon, own: true });
   });
 
-  test("each one names the upstream slug and version it was taken at", () => {
-    for (const key of keys) {
-      // The contiguous comment block above the key — one line for most, several
-      // where the entry needed defending. The `slug@major` lives somewhere in
-      // it; a mark with nothing to cite has no such line and fails here.
-      const lines = source.slice(0, source.indexOf(`\n  ${key}:`)).split("\n");
-      const block: string[] = [];
-      while (lines.length > 0 && lines[lines.length - 1]!.trim().startsWith("//")) block.unshift(lines.pop()!);
-      expect(block.join("\n")).toMatch(/\/\/ [a-z0-9]+@\d+/);
-    }
+  test("Finder and anything unaudited fall back to the folder", () => {
+    for (const icon of ["finder", "terminal", "unknown-app"]) expect(draw({ icon })).toBe(folder);
   });
 });

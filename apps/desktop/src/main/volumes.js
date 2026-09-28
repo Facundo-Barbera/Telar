@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { mountRootsFor } = require("./volume-watch");
 
 function volumeUuid(mount) {
   const plist = execFileSync("diskutil", ["info", "-plist", mount], {
@@ -13,7 +14,7 @@ function volumeUuid(mount) {
 
 function findVolumeMount(uuid) {
   if (process.platform !== "darwin") return undefined;
-  for (const root of ["/Volumes"]) {
+  for (const root of mountRootsFor(process.platform)) {
     let names;
     try {
       names = fs.readdirSync(root);

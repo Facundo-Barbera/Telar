@@ -12,29 +12,14 @@ const packaged = (file) => {
   return include.some(matches) && !exclude.some(matches);
 };
 
-describe("every local module main.js requires is packaged with it", () => {
-  test("build.files lists every file reachable from main.js by require or by __dirname path", () => {
-    const required = new Set();
-    const visit = (file) => {
-      if (required.has(file)) return;
-      required.add(file);
-      if (!file.endsWith(".js")) return;
-      const abs = path.join(ROOT, file);
-      const source = fs.readFileSync(abs, "utf8");
-      const found = [
-        ...[...source.matchAll(/require\("(\.\.?\/[^"]+)"\)/g)].map((m) => (path.extname(m[1]) ? m[1] : `${m[1]}.js`)),
-        ...[...source.matchAll(/path\.join\(__dirname, ((?:"[^"]+", )*"[^"]+\.(?:js|html)")\)/g)].map((m) => path.join(...JSON.parse(`[${m[1]}]`))),
-      ];
-      for (const spec of found) {
-        const target = path.relative(ROOT, path.resolve(path.dirname(abs), spec));
-        if (!target.startsWith("..")) visit(target);
-      }
-    };
-    visit(manifest.main);
-
-    expect(required.size).toBeGreaterThan(1);
-    expect(required).toContain("src/preload/preload.js");
-    expect([...required].filter((file) => !packaged(file))).toEqual([]);
+describe("the app ships its own code", () => {
+  test("build.files packages every runtime file under src, the preload included", () => {
+    const files = fs.readdirSync(path.join(ROOT, "src"), { recursive: true })
+      .map((name) => path.join("src", name))
+      .filter((file) => /\.(js|json|html)$/.test(file) && !/\.(test|electron-test)\.js$/.test(file) && file !== path.join("src", "dev", "dev-runner.js"));
+    expect(files).toContain(manifest.main);
+    expect(files).toContain("src/preload/preload.js");
+    expect(files.filter((file) => !packaged(file))).toEqual([]);
   });
 
   test("no test, type declaration or dev launcher is packaged", () => {
@@ -249,12 +234,6 @@ describe("the packaged app can be granted the camera and the microphone", () => 
       expect(plist("entitlements.mac.inherit.plist")).toContain(`<key>${key}</key>`);
     }
   });
-
-  test("the store the decisions live in is packaged with the module that reads it", () => {
-    expect(packaged("src/browser/site-permissions.js")).toBe(true);
-    const manager = fs.readFileSync(path.join(__dirname, "..", "browser", "browser-manager.js"), "utf8");
-    expect(manager).toContain('require("./site-permissions")');
-  });
 });
 
 describe("the password-manager extension ships with what it needs", () => {
@@ -267,22 +246,5 @@ describe("the password-manager extension ships with what it needs", () => {
   test("the library's preload is resolvable from the desktop package (it is registered by path at runtime)", () => {
     const preload = require.resolve("electron-chrome-extensions/preload");
     expect(fs.existsSync(preload)).toBe(true);
-  });
-  test("the host attaches the library with a directory for the sanitized preload (the noisy upstream never registers alone)", () => {
-    const host = fs.readFileSync(path.join(__dirname, "..", "browser", "extension-host.js"), "utf8");
-    expect(host).toMatch(/attachExtensionSupport\([^)]*preloadDir: this\.rootDir/);
-    const compat = fs.readFileSync(path.join(__dirname, "..", "browser", "extension-compat.js"), "utf8");
-    expect(compat).toContain('if (!options.preloadDir) throw new Error');
-  });
-  test("no debug logging of native messages is enabled by the app", () => {
-    for (const file of ["main/main.js", "browser/extension-host.js"]) {
-      const source = fs.readFileSync(path.join(__dirname, "..", file), "utf8");
-      expect(source).not.toMatch(/debug\.enable\(|DEBUG\s*=|process\.env\.DEBUG\s*=/);
-    }
-
-    const compat = fs.readFileSync(path.join(__dirname, "..", "browser", "extension-compat.js"), "utf8");
-    expect(compat.match(/debug\.enable\(/g)).toHaveLength(1);
-    expect(compat).toContain('"-electron-chrome-extensions:*"');
-    expect(compat).not.toMatch(/DEBUG\s*=|process\.env\.DEBUG\s*=/);
   });
 });

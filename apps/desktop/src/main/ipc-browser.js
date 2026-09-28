@@ -1,8 +1,9 @@
 const { ipcMain, BrowserWindow } = require("electron");
 const { externalOpenTarget } = require("../browser/browser-manager");
+const { browserManagers, requireBrowserManager, requireCockpitSender } = require("./browser-hosts");
+const { openInSystemBrowser } = require("./window-links");
 
-function registerBrowserIpc(main) {
-  const { browserManagers, openInSystemBrowser, requireBrowserManager, requireBrowserSuggestions, requireCockpitSender, requireLoginOffer } = main;
+function registerViewIpc({ requireBrowserSuggestions }) {
   ipcMain.handle("telar:browser:suggestions", async (event, scopeKey) => {
     const manager = requireBrowserManager(event);
     manager.partitionOf(scopeKey);
@@ -41,6 +42,9 @@ function registerBrowserIpc(main) {
     return host.openPopup(win, tab.view.webContents, input?.anchorRect || { x: 0, y: 0, width: 24, height: 24 });
   });
 
+}
+
+function registerProfileIpc() {
   ipcMain.handle("telar:browser:bind-profile", (event, input) =>
     requireBrowserManager(event).declareProfile(input?.scopeKey, input?.profileKey),
   );
@@ -135,16 +139,15 @@ function registerBrowserIpc(main) {
     }),
   );
 
+}
+
+function registerTabIpc({ requireLoginOffer }) {
   ipcMain.handle("telar:browser:action", (event, input) =>
     requireBrowserManager(event).action(input?.scopeKey, input?.action),
   );
 
   ipcMain.handle("telar:browser:open-external", (event, input) => {
-    const manager = requireBrowserManager(event);
-    const cockpit = manager.window;
-    if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
-      throw new Error("Only the Telar window may open a page in the system browser.");
-    }
+    requireCockpitSender(event, "open a page in the system browser");
     const target = externalOpenTarget(input?.url);
     if (!target) return { ok: false, error: "Only http and https pages open in the system browser." };
     openInSystemBrowser(target);
@@ -152,20 +155,12 @@ function registerBrowserIpc(main) {
   });
 
   ipcMain.handle("telar:browser:clear-data", (event, input) => {
-    const manager = requireBrowserManager(event);
-    const cockpit = manager.window;
-    if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
-      throw new Error("Only the Telar window may clear this browser's cookies or cache.");
-    }
+    const manager = requireCockpitSender(event, "clear this browser's cookies or cache");
     return manager.clearBrowsingData(input?.scopeKey, input?.kind);
   });
 
   ipcMain.handle("telar:browser:capture", (event, input) => {
-    const manager = requireBrowserManager(event);
-    const cockpit = manager.window;
-    if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
-      throw new Error("Only the Telar window may capture this browser.");
-    }
+    const manager = requireCockpitSender(event, "capture this browser");
     return manager.capture(input?.scopeKey, {
       fullPage: Boolean(input?.fullPage),
       elements: Boolean(input?.elements),
@@ -202,11 +197,7 @@ function registerBrowserIpc(main) {
   );
 
   ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
-    const manager = requireBrowserManager(event);
-    const cockpit = manager.window;
-    if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
-      throw new Error("Only the Telar window may open the login offer.");
-    }
+    const manager = requireCockpitSender(event, "open the login offer");
     const capture = manager.loginCaptureForScope(scopeKey);
     if (!capture) return { ok: false, error: "This page cannot carry a remembered login (open an http(s) page first)." };
     return requireLoginOffer().explicitOffer(capture);
@@ -225,6 +216,12 @@ function registerBrowserIpc(main) {
     } catch {
     }
   });
+}
+
+function registerBrowserIpc(deps) {
+  registerViewIpc(deps);
+  registerProfileIpc();
+  registerTabIpc(deps);
 }
 
 module.exports = { registerBrowserIpc };

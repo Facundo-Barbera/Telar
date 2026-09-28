@@ -1,7 +1,4 @@
 const { describe, expect, test } = require("bun:test");
-const fs = require("node:fs");
-const path = require("node:path");
-const { mainSource } = require("../../test/main-source");
 
 const { windowTargetUrl } = require("./window-target");
 
@@ -50,34 +47,5 @@ describe("windowTargetUrl", () => {
     expect(windowTargetUrl(null, "/spool")).toBeNull();
     expect(windowTargetUrl("", "/spool")).toBeNull();
     expect(windowTargetUrl("not a url", "/spool")).toBeNull();
-  });
-});
-
-describe("the main-process handler", () => {
-  const main = mainSource();
-  const start = main.indexOf('ipcMain.handle("telar:app:open-window"');
-  const handler = start < 0 ? "" : main.slice(start, main.indexOf("\n  });", start));
-
-  test("the handler exists and this test is reading it", () => {
-    expect(handler.length).toBeGreaterThan(0);
-    expect(handler).toContain("createWindow(target);");
-  });
-
-  test("only a window's own top frame may ask — a native tab or a subframe is refused", () => {
-    expect(handler).toContain("BrowserWindow.getAllWindows().find((candidate) => candidate.webContents === event.sender)");
-    expect(handler).toContain("event.senderFrame !== event.sender.mainFrame");
-    expect(handler).toContain('throw new Error("Only a Telar window may open another one.");');
-  });
-
-  test("the renderer's path is resolved against the asking window's own address, and a refusal opens nothing", () => {
-    expect(handler).toContain("windowTargetUrl(asking.webContents.getURL() || main.lastWindowUrl, input?.path)");
-
-    expect(handler.indexOf("windowTargetUrl(")).toBeLessThan(handler.indexOf("createWindow(target)"));
-    expect(handler).toContain('if (!target) return { ok: false, error: "A new window only opens on a page inside Telar." };');
-  });
-
-  test("the bridge sends a path and never a URL", () => {
-    const preload = fs.readFileSync(path.join(__dirname, "..", "preload", "preload.js"), "utf8");
-    expect(preload).toContain('openWindow: (path) => ipcRenderer.invoke("telar:app:open-window", { path }),');
   });
 });

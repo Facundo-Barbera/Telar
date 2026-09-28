@@ -205,6 +205,7 @@ function postToEngine(home, routePath, body) {
 module.exports = {
   engineDiscoveryFile,
   markMainWindowShown,
+  onEngineExit,
   postToEngine,
   rememberEngine,
   reportStartupFailure,
