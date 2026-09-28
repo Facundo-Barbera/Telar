@@ -54,7 +54,8 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
-import { AgentControl, searchScope } from "./composer-controls";
+import { searchScope } from "../model-options";
+import { AgentControl } from "./agent-control";
 import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
 import { typeInto } from "@/lib/testing/type-into";
 

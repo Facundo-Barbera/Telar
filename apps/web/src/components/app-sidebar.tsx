@@ -100,7 +100,7 @@ import {
   useProjectFilter,
 } from "@/lib/project-filter";
 import { DraftRow } from "@/components/session/draft-row";
-import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
+import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/features/composer";
 import {
   activeSessionFromPathname,
   bandOf,

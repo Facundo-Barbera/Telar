@@ -30,7 +30,7 @@ import {
 import { splitImages } from "@/lib/prompt-stash";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
-import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
+import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { actionableRequests } from "@/lib/failed-turn-recovery";
@@ -48,8 +48,6 @@ import { useInboxPolicy } from "@/lib/inbox-policy";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
-import { isCompactDraft } from "@/lib/composer-completions";
-import { readDraft, writeDraft } from "@/lib/composer-draft";
 import { normaliseContextNoticePercent } from "@/lib/context-notice";
 import { useProviderInstance } from "@/lib/provider-instance-cache";
 import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
@@ -61,7 +59,7 @@ import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snap
 import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";
 import { processToReveal, stillWorking } from "@/lib/background-presence";
-import { Composer, MAX_ATTACHMENTS } from "./composer";
+import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./session/cohort-fold";
 // `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
 // and the import only runs one way (cockpit → transcript). A wake that landed

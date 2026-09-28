@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { composerProject } from "./composer-project";
+import { composerProject } from "./project";
 
 const project = (id: string, createdAt: number) => ({ id, createdAt });
 const session = (projectId: string | undefined, updatedAt: number) => (projectId === undefined ? { updatedAt } : { projectId, updatedAt });

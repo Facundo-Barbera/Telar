@@ -15,7 +15,7 @@ import { NotebookSurface } from "./session/notebook-surface";
 import { TableSurface } from "./session/table-surface";
 import { DiffSurface, ReviewFileRow } from "@/features/git";
 import { TranscriptItem } from "./transcript";
-import { Composer } from "./composer";
+import { Composer } from "@/features/composer";
 import { DesktopBrowserSurface, type DesktopBrowserBridge, type DesktopBrowserPanelState, type DesktopBrowserTab } from "./browser-live";
 import { appendToDraft } from "./session-cockpit";
 

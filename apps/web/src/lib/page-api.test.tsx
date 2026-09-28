@@ -19,7 +19,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { useState } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Composer } from "@/components/composer";
+import { Composer } from "@/features/composer";
 import { installPageApi, type TelarPageApi } from "./page-api";
 
 GlobalRegistrator.register({ url: "http://localhost/" });

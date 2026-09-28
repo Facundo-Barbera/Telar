@@ -1,25 +1,10 @@
 "use client";
 
-/**
- * THE LIST THAT OPENS WHEN YOU TYPE `@` OR `/`.
- *
- * It sits ABOVE the composer, not beside the caret. Anchoring to the caret is
- * what a code editor does because its viewport is the document; here the box is
- * five lines tall at the bottom of the screen, so a caret-anchored panel spends
- * its life either clipped by the window or covering the sentence being written.
- * Above the box it is always the same size in the same place, which is the
- * property that lets somebody use it without looking at it.
- *
- * KEYBOARD ONLY, AS FAR AS THIS COMPONENT IS CONCERNED. Arrow keys and Enter
- * are handled by the composer, because they are the composer's keys — this draws
- * what is highlighted and reports what was clicked. `onMouseDown` is prevented
- * on every row so a click never blurs the editor: losing focus mid-pick would
- * close the menu before the pick landed.
- */
+// Keys are the composer's; every row prevents mousedown so a click never blurs the editor mid-pick.
 
 import { Fragment } from "react";
 import { BotIcon, DownloadIcon, FolderIcon, GaugeIcon, GitBranchIcon, Minimize2Icon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon, WandSparklesIcon } from "lucide-react";
-import type { Completion, CompletionGlyph } from "@/lib/composer-completions";
+import type { Completion, CompletionGlyph } from "../completions";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { cn } from "@/lib/utils";
 

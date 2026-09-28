@@ -1,9 +1,3 @@
-/**
- * Which composer an outside caller (`lib/page-api.ts`) means: the most recently focused one,
- * or the only one mounted. Kept free of React so every route that installs the page API
- * can import it without pulling in the composer.
- */
-
 export type ComposerKind = "session";
 
 /** A sentence, because an external client can only show it to a person. */
@@ -23,7 +17,7 @@ export type ComposerEntry = {
   insert: (text: string) => ComposerWrite;
   /**
    * Swap a run of the draft by draft offsets. App-internal only, never exposed on the page API.
-   * The caller owns the offsets and must check they are still valid (`features/dictation/interim.ts`).
+   * The caller must check the offsets are still valid.
    */
   replace: (start: number, end: number, text: string) => ComposerWrite;
   /**
@@ -56,11 +50,8 @@ export function markComposerActive(token: string): void {
   if (mounted.has(token)) active = token;
 }
 
-/**
- * The most recently focused composer wins, even after a blur. With none focused, the only
- * mounted composer; with several and no focus, none.
- */
-function activeToken(): string | undefined {
+/** The most recently focused composer, even after a blur; else the only one mounted; else none. */
+export function activeComposerToken(): string | undefined {
   if (active !== undefined && mounted.has(active)) return active;
   if (mounted.size !== 1) return undefined;
   return mounted.keys().next().value;
@@ -68,11 +59,6 @@ function activeToken(): string | undefined {
 
 /** The composer an outside caller means. */
 export function activeComposer(): ComposerEntry | undefined {
-  const token = activeToken();
+  const token = activeComposerToken();
   return token === undefined ? undefined : mounted.get(token);
-}
-
-/** For sibling registries (`features/dictation/registry.ts`) that must resolve the same active composer. */
-export function activeComposerToken(): string | undefined {
-  return activeToken();
 }

@@ -5,7 +5,7 @@ import { buttonLabelled, click, flush, installTestDom, mount, press } from "@/li
 import { liveRow, loadRail, mountRail, project, pushes, stubRail } from "@/lib/testing/rail";
 import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
-import { writeDraft } from "@/lib/composer-draft";
+import { writeDraft } from "@/features/composer";
 import { projectFilterKey } from "@/lib/project-filter";
 import { canvasHref } from "@/lib/session-list";
 

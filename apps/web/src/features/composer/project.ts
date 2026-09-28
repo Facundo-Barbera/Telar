@@ -28,7 +28,7 @@ export function canvasHrefFor(projectId: string): string {
  */
 const CACHE_KEY = "telar.front-door.v1";
 
-export type FrontDoorNote = {
+type FrontDoorNote = {
   projects: { id: string; createdAt: number; name?: string }[];
   /** The project last visited; outranks the fold. */
   composer?: string;

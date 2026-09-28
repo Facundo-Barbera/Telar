@@ -73,7 +73,7 @@ const DELIBERATE = new Set([
   "apps/engine/src/platform/git/parse.ts", // U+001E/U+001F — git --format record and field separators
   "apps/engine/src/domains/github/detail.ts", // U+FEFF — strips a BOM off `gh` output
   "apps/engine/src/domains/github/detail.test.ts", // U+FEFF — the fixture that proves it
-  "apps/web/src/lib/composer-completions.ts", // U+0000 — tie-breaker key join
+  "apps/web/src/features/composer/completions.ts", // U+0000 — tie-breaker key join
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {

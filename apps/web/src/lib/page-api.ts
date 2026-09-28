@@ -35,7 +35,7 @@
  * (`data-slot="composer-editor"`, `data-composer`) are a contract; changing their shape is changing an external client's build.
  */
 
-import { activeComposer, type ComposerKind } from "./composer-registry";
+import { activeComposer, type ComposerKind } from "@/features/composer";
 
 type DictateResult =
   | {
