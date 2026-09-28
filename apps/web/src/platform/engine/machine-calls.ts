@@ -25,7 +25,7 @@ InboxPolicy,EnvMode,
 DictationAnswer,
 DictationProviderId,SidebarLayout,
 SidebarMode,RetentionBucket,
-RetentionPolicy,TextGenPolicy,UsageReport,
+RetentionPolicy,TextGenEffort,TextGenPolicy,UsageReport,
 UsageResolution,UsageLimitSource,
 ModelCatalogue,
 ModelOverlay,
@@ -203,7 +203,7 @@ export function settingsCalls(fetcher: Fetcher) {
       request<{ schedule: Schedule }>(fetcher, "POST", "/api/schedules", input),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
-    setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
+    setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null; effort?: TextGenEffort | null }) =>
       request<{ textGen: TextGenPolicy }>(fetcher, "PATCH", "/api/textgen", patch),
     /** One structured completion from the policy's harness. SLOW (a cold CLI
      *  start plus a completion) and fallible — a harness that does not answer

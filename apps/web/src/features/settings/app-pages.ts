@@ -99,13 +99,19 @@ export const APP_PAGES: SettingsPageSpec[] = [
           {
             title: "Written by",
             hint: "Which provider writes the session title and branch name.",
-            keywords: ["claude", "codex", "driver"],
+            keywords: ["claude", "codex", "opencode", "driver"],
             icon: SparklesIcon,
           },
           {
             title: "Model",
             hint: "The small model that writes titles and branch names.",
             keywords: ["title model", "textgen"],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Effort",
+            hint: "How hard the model thinks before it names a session.",
+            keywords: ["reasoning", "thinking", "textgen"],
             icon: SparklesIcon,
           },
           {

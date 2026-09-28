@@ -50,6 +50,7 @@ function spies(over: { shell?: boolean } = {}) {
     settle: record("settle"),
     snooze: record("snooze"),
     rename: record("rename"),
+    regenerateTitle: record("regenerateTitle"),
     copy: record("copy"),
     projectSettings: record("projectSettings"),
     remove: record("remove"),
@@ -79,6 +80,7 @@ describe("ordering", () => {
       "settle",
       "snooze",
       "rename",
+      "regenerate-title",
       "copy",
       "project-settings",
       "delete",
@@ -94,6 +96,7 @@ describe("ordering", () => {
       "settle",
       "snooze",
       "rename",
+      "regenerate-title",
       "copy",
       "project-settings",
       "delete",
@@ -112,6 +115,7 @@ describe("ordering", () => {
       "open",
       "new-session",
       "rename",
+      "regenerate-title",
       "copy",
       "project-settings",
       "delete",
@@ -357,6 +361,15 @@ describe("gating: disabled with a reason beats failing later", () => {
     expect(byId(build({ session: target({ archived: true }) }), "rename").disabled).toBe("This conversation is over.");
   });
 
+  test("Regenerate title sits under Rename, asks for a new title, and is refused on an archived session", () => {
+    const { calls, handlers } = spies();
+    const items = build({}, handlers);
+    expect(ids(items).indexOf("regenerate-title")).toBe(ids(items).indexOf("rename") + 1);
+    byId(items, "regenerate-title").run!();
+    expect(calls).toEqual([["regenerateTitle", undefined]]);
+    expect(byId(build({ session: target({ archived: true }) }), "regenerate-title").disabled).toBe("This conversation is over.");
+  });
+
   test("a session with no project cannot start a sibling or open settings", () => {
     const items = build({ session: target({ projectId: undefined }) });
     expect(byId(items, "new-session").disabled).toBe("This session belongs to no project.");
@@ -441,10 +454,6 @@ describe("what is deliberately not here", () => {
     const labels = everything.map((item) => item.label.toLowerCase());
     expect(labels.some((label) => label.includes("archive"))).toBe(false);
     expect(labels.some((label) => label.includes("unread"))).toBe(false);
-  });
-
-  test("no regenerate-title: the engine exposes no route to ask for one", () => {
-    expect(ids(build())).not.toContain("regenerate-title");
   });
 });
 
