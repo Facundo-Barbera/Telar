@@ -1,13 +1,9 @@
+import type { LatexPackagesAnswer } from "@telar/engine-client";
 import type { JobStep } from "../data-science/jobs";
 import { defaultExec, type Exec } from "../data-science/python-env";
 import type { TexliveDistribution } from "./toolchain";
 
 export type TexPackage = { name: string; revision?: string; description?: string };
-
-export type LatexPackagesAnswer =
-  | { mode: "automatic"; note: string }
-  | { mode: "managed"; packages: TexPackage[] }
-  | { mode: "unavailable"; reason: string };
 
 export const TECTONIC_PACKAGES_NOTE =
   "This project compiles with Tectonic, which downloads packages automatically the first time a document uses them — just \\usepackage and compile.";

@@ -1,7 +1,7 @@
+import { type LatexDiagnostic } from "@telar/engine-client";
 import { z } from "zod";
 import { err, failure, json, ok, type ToolFactory } from "../../agent-tools";
 import type { LatexCapability } from "./capability";
-import type { LatexDiagnostic } from "./log-parser";
 
 function describeDiagnostics(diagnostics: LatexDiagnostic[]): string {
   if (!diagnostics.length) return "";

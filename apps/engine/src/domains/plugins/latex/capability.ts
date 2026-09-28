@@ -1,5 +1,4 @@
-import type { LatexDiagnostic } from "./log-parser";
-import type { LatexPackagesAnswer } from "./packages";
+import { type LatexDiagnostic, type LatexPackagesAnswer } from "@telar/engine-client";
 import type { LatexToolchain } from "./toolchain";
 
 export type CompileStatus = {

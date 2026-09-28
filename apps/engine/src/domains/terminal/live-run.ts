@@ -1,7 +1,8 @@
+import { type RunClosedBy, type RunOrigin, type RunOutputLine, type RunReadiness, type RunStatus, type RunView } from "@telar/engine-client";
 import type { RunJournal } from "./journal";
 import type { RunHandle, RunLauncher } from "./launcher";
 import type { RunKill, RunProcessGroup } from "./platform";
-import { type RunClosedBy, type RunConfiguration, RunError, type RunOrigin, type RunOutputLine, type RunProbe, type RunReadiness, type RunStatus, type RunView } from "./types";
+import { type RunConfiguration, RunError, type RunProbe } from "./types";
 
 export const MAX_LINES = 2000;
 export const MAX_LINE_CHARS = 4000;
@@ -11,14 +12,6 @@ export const CLOSE_SETTLE_MS = 2000;
 export const READY_POLL_MS = 500;
 export const KEEP_FINISHED = 10;
 export const WAIT_TICK_MS = 50;
-
-export type RunOutputFilter = {
-  tail?: number;
-  grep?: string;
-  stream?: "stdout" | "stderr";
-};
-
-export type RunWaitOutcome = { fired: "pattern" | "ready" | "exit" | "timeout"; cursor: number; lines: RunOutputLine[] };
 
 export function compile(source: string, field: string): RegExp {
   try {
@@ -109,9 +102,3 @@ export function portOf(url: string): string {
   }
 }
 
-export type RunStatusEvent = {
-  type: "run.status";
-  projectId: string;
-  sessionId: string;
-  run: RunView;
-};

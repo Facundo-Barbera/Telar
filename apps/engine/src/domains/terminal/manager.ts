@@ -1,3 +1,4 @@
+import { type RunClosedBy, type RunOutputFilter, type RunOutputLine, type RunStatusEvent, type RunView, type RunWaitAnswer } from "@telar/engine-client";
 import fs from "node:fs";
 import path from "node:path";
 import { nullRunJournal, type RunJournal, type RunRecord } from "./journal";
@@ -7,8 +8,8 @@ import { createPtyRedactor, safeCutBack } from "./pty-stream";
 import { resolveShell } from "./shell";
 import { createOutputSplitter } from "./stream";
 import type { TerminalFacts } from "./terminal-client";
-import { isTerminal, type RunClosedBy, type RunConfiguration, RunError, type RunOutputLine, type RunProbe, type RunView, redactText, secretValues, unhideableSecrets } from "./types";
-import { CLOSE_SETTLE_MS, compile, defaultProbe, KEEP_FINISHED, type LiveRun, MAX_BYTE_CHARS, MAX_BYTE_CHUNKS, MAX_LINE_CHARS, MAX_LINES, portOf, READY_POLL_MS, type RunManagerOptions, type RunOutputFilter, type RunStatusEvent, type RunWaitOutcome, type StartRunInput, WAIT_TICK_MS } from "./live-run";
+import { isTerminal, type RunConfiguration, RunError, type RunProbe, redactText, secretValues, unhideableSecrets } from "./types";
+import { CLOSE_SETTLE_MS, compile, defaultProbe, KEEP_FINISHED, type LiveRun, MAX_BYTE_CHARS, MAX_BYTE_CHUNKS, MAX_LINE_CHARS, MAX_LINES, portOf, READY_POLL_MS, type RunManagerOptions, type StartRunInput, WAIT_TICK_MS } from "./live-run";
 
 export class RunManager {
   private readonly runs = new Map<string, LiveRun>();
@@ -153,7 +154,7 @@ export class RunManager {
     return { lines, cursor: run.dropped + run.lines.length, dropped: run.dropped };
   }
 
-  async wait(terminalId: string, options: { pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitOutcome> {
+  async wait(terminalId: string, options: { pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitAnswer> {
     const run = this.require(terminalId);
     const pattern = options.pattern === undefined ? undefined : compile(options.pattern, "pattern");
     run.agentWatching = true;
@@ -165,7 +166,7 @@ export class RunManager {
     }
     const from = run.dropped + run.lines.length;
     const since = () => this.output(terminalId, from).lines;
-    const answer = (fired: RunWaitOutcome["fired"], lines: RunOutputLine[]): RunWaitOutcome => ({ fired, cursor: from + lines.length, lines });
+    const answer = (fired: RunWaitAnswer["fired"], lines: RunOutputLine[]): RunWaitAnswer => ({ fired, cursor: from + lines.length, lines });
     const deadline = Date.now() + options.timeoutMs;
 
     for (;;) {

@@ -1,14 +1,13 @@
+import { type RunStatusEvent, type RunView } from "@telar/engine-client";
 import fs from "node:fs";
 import path from "node:path";
 import { RunJournalFile } from "./journal";
 import { terminalLauncher } from "./launcher";
 import { RunManager } from "./manager";
-import { type RunStatusEvent } from "./live-run";
 import { matchRunRoute } from "./routes";
 import { RunStore } from "./store";
 import { storeRunCapability, type RunSessionContext } from "./store-capability";
 import { RunTerminalClient, terminalChannelFromEnv } from "./terminal-client";
-import type { RunView } from "./types";
 
 export type RunMount = {
   store: RunStore;

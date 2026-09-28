@@ -1,3 +1,4 @@
+import { type RunView } from "@telar/engine-client";
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -6,7 +7,6 @@ import { terminalLauncher } from "./launcher";
 import { RunManager } from "./manager";
 import { type StartRunInput } from "./live-run";
 import { RunTerminalClient } from "./terminal-client";
-import type { RunView } from "./types";
 import { EngineStore, SETTLED_TERMINAL_GRACE_MS } from "../../state";
 import { desktopTerminalServer } from "../../../test/desktop-terminal";
 

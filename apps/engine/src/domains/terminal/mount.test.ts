@@ -1,10 +1,11 @@
+import { type RunOutputLine, type RunView } from "@telar/engine-client";
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRunMount, type RunMount } from "./mount";
 import type { RunSessionContext } from "./store-capability";
-import type { RunConfigurationView, RunOutputLine, RunView } from "./types";
+import type { RunConfigurationView } from "./types";
 
 const track = (dir: string): string => (tempDirs.push(dir), dir);
 const temp = (label: string) => track(fs.mkdtempSync(path.join(os.tmpdir(), `telar-run-${label}-`)));

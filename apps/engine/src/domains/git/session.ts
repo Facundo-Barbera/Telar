@@ -1,14 +1,6 @@
-import type { GitChangeStatus, GitFileChange, GitFilePatch, ProjectAvailability, SessionDiff } from "@telar/engine-client";
-import { countDirty, GIT_LOG_FORMAT, parseAheadBehind, parseGitLog, parseNameStatus, parseNumstat, parseUntracked, parseWorktreeList, type GitWorktreeEntry } from "../../platform/git/parse";
+import type { GitChangeStatus, GitFileChange, GitFilePatch, GitOverview, GitReadFailure, GitRefEntry, SessionDiff } from "@telar/engine-client";
+import { countDirty, GIT_LOG_FORMAT, parseAheadBehind, parseGitLog, parseNameStatus, parseNumstat, parseUntracked, parseWorktreeList } from "../../platform/git/parse";
 import type { AsyncGitRunner, GitResult } from "../../platform/git/runner";
-
-type GitRefEntry = {
-  name: string;
-  kind: "local" | "remote";
-  head?: boolean;
-};
-
-type GitReadFailure = "timeout" | "failed";
 
 function failureOf(result: { status: number; timedOut?: true }): GitReadFailure | undefined {
   if (result.timedOut) return "timeout";
@@ -23,18 +15,6 @@ function worseFailure(...failures: (GitReadFailure | undefined)[]): GitReadFailu
 export type GitRefListing = {
   refs: GitRefEntry[];
   incomplete?: GitReadFailure;
-};
-
-export type GitOverview = {
-  repository: boolean;
-  branch?: string;
-  dirtyFiles?: number;
-  ahead?: number;
-  behind?: number;
-  worktrees?: GitWorktreeEntry[];
-  refs?: GitRefEntry[];
-  refsIncomplete?: GitReadFailure;
-  availability?: ProjectAvailability;
 };
 
 const MAX_REVIEW_FILES = 300;

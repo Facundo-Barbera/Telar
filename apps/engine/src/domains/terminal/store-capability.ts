@@ -1,7 +1,8 @@
-import type { RunCapability, RunStatusAnswer, RunTarget } from "./capability";
+import { type RunStatusAnswer, type RunView } from "@telar/engine-client";
+import type { RunCapability, RunTarget } from "./capability";
 import type { RunManager } from "./manager";
 import type { RunStore } from "./store";
-import { isTerminal, redactConfiguration, RunConfigurationInput, RunError, type RunView } from "./types";
+import { isTerminal, redactConfiguration, RunConfigurationInput, RunError } from "./types";
 
 export type RunSessionContext = {
   sessionId: string;

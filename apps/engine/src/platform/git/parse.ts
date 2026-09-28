@@ -1,11 +1,5 @@
-import type { GitChangeStatus, GitCommitEntry } from "@telar/engine-client";
+import type { GitChangeStatus, GitCommitEntry, GitWorktreeEntry } from "@telar/engine-client";
 
-export type GitWorktreeEntry = {
-  path: string;
-  basename: string;
-  branch?: string;
-  isMainCheckout: boolean;
-};
 
 function basenameOf(target: string): string {
   const parts = target.split(/[\\/]/).filter(Boolean);
