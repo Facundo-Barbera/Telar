@@ -1765,10 +1765,8 @@ export class EngineClient {
     return this.request("POST", "/v2/mcp-oauth/connect", input);
   }
 
-  /** Finish a flow: hand back the `code` and `state` the authorization server
-   *  put on the callback URL. Single-use — a replayed callback finds nothing. */
-  completeMcpOAuth(input: { state: string; code: string }): Promise<{ serverId: string; projectId?: string }> {
-    return this.request("POST", "/v2/mcp-oauth/callback", input);
+  mcpOAuthCallback(query: string): Promise<{ redirect: string }> {
+    return this.request("GET", `/v2/mcp-oauth/callback?${query}`);
   }
 
   /** Forget a stored grant. Idempotent; `removed` says whether one existed. */

@@ -1,0 +1,1 @@
+export { mcpOAuthRoutes } from "./routes";
