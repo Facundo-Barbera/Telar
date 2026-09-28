@@ -189,21 +189,18 @@ export function useCockpitPanel({ panelKey, enabledPlugins, hostId, sessionId }:
 
   const stepPanelTab = useCallback(
     (delta: number) => {
-      const current = panelNow.current;
-      if (current.tabs.length === 0) return;
-      const count = current.tabs.length;
-      const at = Math.max(current.tabs.findIndex((entry) => entry.id === current.activeTab), 0);
-      const next = current.tabs[(at + delta + count) % count];
+      const { tabs, activeTab } = panelNow.current;
+      const at = Math.max(tabs.findIndex((entry) => entry.id === activeTab), 0);
+      const next = tabs[(at + delta + tabs.length) % tabs.length];
       if (next) updatePanel((state) => ({ ...state, activeTab: next.id, open: true }));
     },
     [updatePanel],
   );
 
-  const openPanel = () => {
-    makeRoomForPanel();
-    updatePanel((current) => ({ ...current, open: true }));
+  const setOpen = (open: boolean) => {
+    if (open) makeRoomForPanel();
+    updatePanel((current) => ({ ...current, open }));
   };
-  const togglePanel = () => (panelNow.current.open ? updatePanel((current) => ({ ...current, open: false })) : openPanel());
 
   const showSessionBrowser = useCallback(() => {
     makeRoomForPanel();
@@ -215,11 +212,11 @@ export function useCockpitPanel({ panelKey, enabledPlugins, hostId, sessionId }:
     onCloseTab: (id: string) => closeTab(panel, id, { hostId, sessionId, updatePanel }),
     onTabParams: (id: string, params: PanelTabParams) => updatePanel((current) => setPanelTabParams(current, id, params)),
     onMoveTab: (id: string, toIndex: number) => updatePanel((current) => movePanelTab(current, id, toIndex)),
-    onClose: () => updatePanel((current) => ({ ...current, open: false })),
+    onClose: () => setOpen(false),
   };
 
   return {
-    panel, editors, updatePanel, updateEditor, makeRoomForPanel, showPanelTab, openFileInNewPanelTab, showNewPanelTab,
-    stepPanelTab, openPanel, togglePanel, showSessionBrowser, tabHandlers,
+    panel, editors, updatePanel, updateEditor, showPanelTab, openFileInNewPanelTab, showNewPanelTab, stepPanelTab,
+    openPanel: () => setOpen(true), togglePanel: () => setOpen(!panelNow.current.open), showSessionBrowser, tabHandlers,
   };
 }

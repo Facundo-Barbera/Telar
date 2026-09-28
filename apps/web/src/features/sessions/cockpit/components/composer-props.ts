@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import type { ClaudeConversation, Session } from "@telar/engine-client";
+import type { Session } from "@telar/engine-client";
 import type { Composer } from "@/features/composer";
 import type { PanelTab } from "@/features/panel";
 import { wakeLabel } from "../../session-settling";
@@ -7,10 +7,10 @@ import type { useComposerDraft } from "../hooks/use-composer-draft";
 import type { useDraftConfig } from "../hooks/use-draft-config";
 import type { useSessionActions } from "../hooks/use-session-actions";
 import type { useSettling } from "../hooks/use-settling";
+import type { useSubmit } from "../hooks/use-submit";
 import type { useTranscriptModel } from "../hooks/use-transcript-model";
 
-/** Everything the cockpit hands its composer, gathered from the hooks that own each piece. */
-export function composerProps({ fresh, solo, session, projectId, projectName, compact, contextNoticePercent, composer, draft, actions, settling, model, submit, adoptConversation, showPanelTab }: {
+export function composerProps({ fresh, solo, session, projectId, projectName, compact, contextNoticePercent, composer, draft, actions, settling, model, submit, showPanelTab }: {
   fresh: boolean;
   solo: boolean;
   session: Session | undefined;
@@ -23,8 +23,7 @@ export function composerProps({ fresh, solo, session, projectId, projectName, co
   actions: ReturnType<typeof useSessionActions>;
   settling: ReturnType<typeof useSettling>;
   model: ReturnType<typeof useTranscriptModel>;
-  submit: () => Promise<void>;
-  adoptConversation: (conversation: ClaudeConversation) => Promise<void>;
+  submit: ReturnType<typeof useSubmit>;
   showPanelTab: (tab: PanelTab) => void;
 }): ComponentProps<typeof Composer> {
   const { composerQuestion, newestUsage } = model;
@@ -46,7 +45,7 @@ export function composerProps({ fresh, solo, session, projectId, projectName, co
           onEnvMode: draft.chooseEnvMode,
           pendingBase: draft.base,
           onBase: draft.chooseBase,
-          ...(draft.driver === "claude" ? { onAdopt: adoptConversation } : {}),
+          ...(draft.driver === "claude" ? { onAdopt: submit.adoptConversation } : {}),
         }
       : {}),
     busy: Boolean(model.active),
@@ -73,7 +72,7 @@ export function composerProps({ fresh, solo, session, projectId, projectName, co
         }
       : {}),
     onDraftChange: composer.changeDraft,
-    onSubmit: () => void submit(),
+    onSubmit: () => void submit.submit(),
     onStop: () => void actions.stop(),
     onStopBackground: () => void actions.stopBackground(),
     ...(solo ? {} : { onViewBackground: model.showProcesses }),

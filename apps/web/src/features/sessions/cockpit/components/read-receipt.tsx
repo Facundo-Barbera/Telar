@@ -1,15 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/platform/engine/host-client";
 import { hostVisible, subscribeHostVisibility } from "@/platform/desktop/host-visibility";
-import {
-  ReadReceiptCourier,
-  type ReceiptAnswer,
-  type ReceiptIdentity,
-  type ResultTurn,
-} from "../session-read-receipt";
+import { newestResultTurn, ReadReceiptCourier, type ReceiptAnswer, type ReceiptIdentity } from "../session-read-receipt";
+import type { useSessionSync } from "../hooks/use-session-sync";
 
 function useForeground(): boolean {
   const [foreground, setForeground] = useState(false);
@@ -28,31 +24,25 @@ function useForeground(): boolean {
   return foreground;
 }
 
-export function useReadReceipt({
-  sessionId,
-  hostId,
-  candidate,
-  readSequence,
-  loading,
-  onRead,
-}: {
-  sessionId?: string;
-  hostId: string;
-  candidate?: ResultTurn;
-  readSequence?: number;
-  loading: boolean;
-  onRead: (identity: ReceiptIdentity, answer: ReceiptAnswer) => void;
-}): (runId: string) => (node: HTMLElement | null) => void {
+/** The newest answer's read marker, and the read sequence it advances when the reader reaches it. */
+export function useReadReceipt(hostId: string, sessionId: string | undefined, { session, turns, loading, setSession }: ReturnType<typeof useSessionSync>) {
+  const candidate = useMemo(() => (session?.id === sessionId ? newestResultTurn(turns) : undefined), [session, sessionId, turns]);
+  const readSequence = session?.lastReadTurnSequence;
   const foreground = useForeground();
-  /** which answer's marker is on screen — not whether one is. See the header. */
   const [visibleRunId, setVisibleRunId] = useState<string>();
-  /** The callback the courier reaches out through, kept current without
-   *  rebuilding the courier — which would lose what is in flight. Written in
-   *  an effect, never during render. */
-  const report = useRef(onRead);
+  // Kept current without rebuilding the courier, which would lose what is in flight.
+  const report = useRef<(identity: ReceiptIdentity, answer: ReceiptAnswer) => void>(() => undefined);
   useEffect(() => {
-    report.current = onRead;
-  }, [onRead]);
+    report.current = (identity, answer) => {
+      if (identity.sessionId !== sessionId || identity.hostId !== hostId) return;
+      setSession((current) => {
+        if (!current || current.id !== identity.sessionId) return current;
+        const next = answer.lastReadTurnSequence;
+        if (next === undefined || next <= (current.lastReadTurnSequence ?? 0)) return current;
+        return { ...current, lastReadTurnSequence: next, ...(answer.readAt === undefined ? {} : { readAt: answer.readAt }) };
+      });
+    };
+  });
 
   const courier = useRef<ReadReceiptCourier | undefined>(undefined);
   useEffect(() => {
@@ -107,7 +97,7 @@ export function useReadReceipt({
     });
   }, [sessionId, hostId, candidate, readSequence, foreground, visibleRunId, loading]);
 
-  return markerRefFor;
+  return { newestResult: candidate, markerRefFor };
 }
 
 export function ReadReceiptMarker({ markerRef }: { markerRef: (node: HTMLElement | null) => void }) {

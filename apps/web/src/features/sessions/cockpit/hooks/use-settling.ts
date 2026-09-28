@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import type { Session } from "@telar/engine-client";
-import { asEngineError, createEngineApi, type EngineApiError } from "@/platform/engine";
+import { asEngineError, createEngineApi } from "@/platform/engine";
 import { useNow } from "@/ui/hooks/use-now";
 import { hostFetcher } from "@/platform/engine/host-client";
 import { useInboxPolicy } from "../../inbox-policy";
 import { withSnooze } from "../../session-mutations";
 import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, type SettleableSession } from "../../session-settling";
+import type { useSessionSync } from "./use-session-sync";
 
 const api = createEngineApi();
 
@@ -26,23 +27,12 @@ function settleableOf(session: Session): SettleableSession {
 }
 
 /** Whether this session is settled or snoozed, on the rail's own rules, and the gestures that change it. */
-export function useSettling({ hostId, sessionId, session, setSession, setError }: {
-  hostId: string;
-  sessionId: string | undefined;
-  session: Session | undefined;
-  setSession: (session: Session) => void;
-  setError: (error: EngineApiError | undefined) => void;
-}) {
+export function useSettling(hostId: string, sessionId: string | undefined, { session, setSession, setError }: ReturnType<typeof useSessionSync>) {
   const now = useNow(30_000);
   const { policy: inboxPolicy } = useInboxPolicy();
   const settleable = session && settleableOf(session);
   const activity = settlingActivityOf(session ?? {});
-  const settled = Boolean(
-    session &&
-      settleable &&
-      session.state !== "archived" &&
-      isSettled(settleable, activity, { now, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours }),
-  );
+  const settled = Boolean(session && settleable && session.state !== "archived" && isSettled(settleable, activity, { now, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours }));
   const snoozedUntil = settleable && isSnoozed(settleable, activity, { now }) ? settleable.snoozedUntil : undefined;
   const [settleEnded, setSettleEnded] = useState<{ sessionId: string; text: string }>();
   const menuApi = createEngineApi(hostFetcher(hostId));

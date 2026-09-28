@@ -21,7 +21,6 @@ import { useDraftConfig } from "../hooks/use-draft-config";
 import { useJournalReactions } from "../hooks/use-journal-reactions";
 import { useLinkRouting } from "../hooks/use-link-routing";
 import { useNavigationMarks } from "../hooks/use-navigation-marks";
-import { useReadReceiptMarker } from "../hooks/use-read-receipt-marker";
 import { useSessionActions } from "../hooks/use-session-actions";
 import { useSessionBrowser } from "../hooks/use-session-browser";
 import { useSessionSync } from "../hooks/use-session-sync";
@@ -32,6 +31,7 @@ import { useTranscriptModel } from "../hooks/use-transcript-model";
 import { composerProps } from "./composer-props";
 import { rightPanelProps } from "./right-panel-props";
 import { SessionMasthead, SoloTools, usePanelPresence } from "./masthead";
+import { useReadReceipt } from "./read-receipt";
 import { TranscriptList } from "./transcript-list";
 
 export function SessionCockpit({
@@ -55,7 +55,7 @@ export function SessionCockpit({
   /** No session yet: the composer is the whole screen and nothing is polled. */
   const fresh = !sessionId;
   const sync = useSessionSync({ hostId, sessionId, initiallyLoading: Boolean(routeSessionId) });
-  const { session, setSession, setError, turns, events, transcriptLanded } = sync;
+  const { session, turns, transcriptLanded } = sync;
   const { projectName, projectResolved, defaults: projectDefaults, enabledPlugins } = useCockpitProject({
     hostId, projectId, serverProjectName, transcriptLanded,
   });
@@ -68,12 +68,9 @@ export function SessionCockpit({
   const pluginPanels = usePluginPanels(hostId, enabledPlugins);
   const panelKey = sessionId ?? (projectId === undefined ? "main" : canvasPanelKey(projectId));
   const panelState = useCockpitPanel({ panelKey, enabledPlugins, hostId, sessionId });
-  const { panel, editors, updatePanel, showPanelTab, showSessionBrowser } = panelState;
+  const { panel, showPanelTab } = panelState;
   const panelPresence = usePanelPresence(!solo && panel.open);
-  const browser = useSessionBrowser({
-    hostId, sessionId, projectId, transcriptLanded, events, draft: draftConfig.choices, composer,
-    panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab,
-  });
+  const browser = useSessionBrowser({ hostId, sessionId, projectId, sync, draft: draftConfig, composer, panel: panelState, setCreatedSessionId });
   useCockpitCommands({
     solo, enabledPlugins, panel: panelState,
     pinSession: () => {
@@ -81,21 +78,18 @@ export function SessionCockpit({
       void settling.patchFromMenu({ settledOverride: pinToggleOverride(session?.settledOverride) }, "Could not change the session's pin.");
     },
   });
-  const onConversationClick = useLinkRouting({ hostId, projectId, sessionId, solo, showPanelTab, showSessionBrowser, updatePanel });
-  const revealNewTerminals = useJournalReactions({ events, browser: browser.browser, enabledPlugins, showPanelTab, updatePanel });
-  const model = useTranscriptModel({ sessionId, turns, items: sync.items, events, tasks: sync.tasks, requests: sync.requests, showPanelTab });
+  const onConversationClick = useLinkRouting({ hostId, projectId, sessionId, solo, panel: panelState });
+  const revealNewTerminals = useJournalReactions({ sync, browser: browser.browser, enabledPlugins, panel: panelState });
+  const model = useTranscriptModel(sessionId, sync, showPanelTab);
   const { active } = model;
-  const settling = useSettling({ hostId, sessionId, session, setSession, setError });
-  const actions = useSessionActions({ sessionId, session, hydrate: sync.hydrate, setSession, setError });
-  const { submit, adoptConversation } = useSubmit({
-    hostId, sessionId, projectId, session, composer, draft: { ...draftConfig.choices, runtimeModeTouched: draftConfig.runtimeModeTouched },
-    busy: Boolean(active) || model.compacting, browserDraftFlight: browser.browserDraftFlight, browserDraftSendPending: browser.browserDraftSendPending,
-    follow, canvas: { panel, editors }, compact: actions.compact, hydrate: sync.hydrate, setSending: actions.setSending, setSession, setError,
-    clearTranscript: sync.clearTranscript, setCreatedSessionId,
+  const settling = useSettling(hostId, sessionId, sync);
+  const actions = useSessionActions(sessionId, sync);
+  const submit = useSubmit({
+    hostId, sessionId, projectId, busy: Boolean(active), sync, composer, draft: draftConfig, browser, panel: panelState, actions, follow, setCreatedSessionId,
   });
-  const headerMenu = useTitleMenu({ hostId, projectId, projectName, sessionId, session, settling, setError });
+  const headerMenu = useTitleMenu({ hostId, projectId, projectName, sessionId, sync, settling });
   useNavigationMarks(pathname, transcriptLanded, sync.loading);
-  const receipt = useReadReceiptMarker({ hostId, sessionId, session, turns, loading: sync.loading, setSession });
+  const receipt = useReadReceipt(hostId, sessionId, sync);
   const providerInstance = useProviderInstance(session?.providerInstanceId, session?.driver);
   const panelGestures = solo
     ? {}
@@ -130,27 +124,14 @@ export function SessionCockpit({
           />
         )}
         <TranscriptList
-          conversation={sync.syncKey}
-          landed={transcriptLanded}
+          sync={sync}
+          model={model}
+          receipt={receipt}
           follow={follow}
           onAtBottomChange={onAtBottomChange}
           onConversationClick={onConversationClick}
           projectId={projectId}
-          session={session}
-          stale={sync.stale}
-          error={sync.error}
           fresh={fresh}
-          loading={sync.loading}
-          page={sync.page}
-          loadingOlder={sync.loadingOlder}
-          loadOlder={sync.loadOlder}
-          transcript={model.transcript}
-          active={active}
-          requests={sync.requests}
-          openRequests={model.openRequests}
-          composerQuestion={model.composerQuestion}
-          newestResultRunId={receipt.newestResult?.runId}
-          markerRefFor={receipt.markerRefFor}
           turn={{
             roster: model.roster,
             sending: actions.sending,
@@ -163,7 +144,7 @@ export function SessionCockpit({
         />
         <Composer
           {...composerProps({
-            fresh, solo, session, projectId, projectName, composer, draft: draftConfig, actions, settling, model, submit, adoptConversation, showPanelTab,
+            fresh, solo, session, projectId, projectName, composer, draft: draftConfig, actions, settling, model, submit, showPanelTab,
             // Not while a conversation is opening: a composer changing height would move the viewport again.
             compact: readingBack && transcriptLanded,
             contextNoticePercent: normaliseContextNoticePercent(providerInstance?.contextNoticePercent),
@@ -173,7 +154,7 @@ export function SessionCockpit({
       {panelPresence.mounted && (
         <RightPanel
           {...rightPanelProps({
-            open: panelPresence.shown, hostId, sessionId, projectId, session, sync, model, panel: panelState, browser, composer, enabledPlugins, pluginPanels,
+            open: panelPresence.shown, hostId, sessionId, projectId, sync, model, panel: panelState, browser, composer, enabledPlugins, pluginPanels,
           })}
         />
       )}

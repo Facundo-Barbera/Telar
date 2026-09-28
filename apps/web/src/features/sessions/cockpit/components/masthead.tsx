@@ -40,8 +40,6 @@ export function usePanelPresence(open: boolean, durationMs = 200): { mounted: bo
   const [mounted, setMounted] = useState(open);
   const [shown, setShown] = useState(open);
   useEffect(() => {
-    // All state updates are deferred into a frame/timeout, never synchronous in
-    // the effect body (which would cascade renders — the lint rule this obeys).
     if (open) {
       let inner = 0;
       const outer = requestAnimationFrame(() => {
@@ -49,8 +47,7 @@ export function usePanelPresence(open: boolean, durationMs = 200): { mounted: bo
         // A second frame so the width starts at 0 and transitions to full.
         inner = requestAnimationFrame(() => setShown(true));
       });
-      // both frames are cancelled: the inner one, left running, would flip
-      // `shown` true again and reopen a panel that is closing.
+      // Both frames are cancelled: the inner one, left running, would reopen a closing panel.
       return () => {
         cancelAnimationFrame(outer);
         cancelAnimationFrame(inner);
@@ -66,45 +63,23 @@ export function usePanelPresence(open: boolean, durationMs = 200): { mounted: bo
   return { mounted, shown };
 }
 
-export function SessionMasthead({
-  projectId,
-  hostId,
-  projectName,
-  projectResolved,
-  session,
-  onRename,
-  panel,
-  onWatchRun,
-  onRunTerminals,
-  menu,
-}: {
+export function SessionMasthead({ projectId, hostId, projectName, projectResolved, session, onRename, panel, onWatchRun, onRunTerminals, menu }: {
   projectId?: string;
-  /** Which Mac the project is on — the breadcrumb's link must stay there. */
   hostId: string;
   projectName?: string;
   /** Whether this host's registry has answered at all. */
   projectResolved?: boolean;
   session?: Session;
   onRename: (title: string) => void;
-  /** The session panel's triggers. Passed in rather than constructed here so the
-   *  masthead stays identity-only and does not acquire the session record's
-   *  items, tasks, turns and events just to hand them straight through. */
+  /** The session panel's triggers, so the masthead never holds the session's items and events. */
   panel: React.ReactNode;
-  /** Opens the right panel's Run tab. Monitoring lives there; the masthead's
-   *  Run control only configures, starts and stops. */
-  onWatchRun?: () => void;
-  /** The Run control's feed, handed on so a terminal that opens gets its tab
-   *  and chip in the panel — see `revealNewTerminals` in the cockpit. */
-  onRunTerminals?: (terminals: readonly RunView[]) => void;
-  menu?: Omit<SessionActionMenuState, "actions"> & {
-    actions: Omit<SessionActionHandlers, "rename">;
-    onOpen?: () => void;
-  };
+  onWatchRun: () => void;
+  onRunTerminals: (terminals: readonly RunView[]) => void;
+  menu?: Omit<SessionActionMenuState, "actions"> & { actions: Omit<SessionActionHandlers, "rename">; onOpen?: () => void };
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const title = session?.title ?? "New conversation";
-  // Whether this header is the window's left edge — see main-sidebar-trigger.
   const mainIsLeftmost = useMainIsLeftmost();
 
   const commit = () => {
@@ -130,17 +105,13 @@ export function SessionMasthead({
     <header
       className={cn(
         "app-ground app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur md:h-[var(--titlebar-band-height)] md:min-h-[var(--titlebar-band-height)] md:py-0",
-        // The content island sits --app-island-inset in from the window edge
-        // (app-shell.tsx), so the traffic-light inset is measured from the
-        // island.
+        // The traffic-light inset is measured from the content island, not the window edge.
         mainIsLeftmost ? "pl-[max(16px,calc(var(--titlebar-inset)+var(--app-island-inset)))]" : "pl-4",
       )}
     >
       <SessionActionContextMenu items={menuItems} {...(menu?.onOpen ? { onOpen: menu.onOpen } : {})}>
         <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
-          {/* Only mounts while the rail is hidden, leaving the workspace at true
-              full width when it is not. The folder glyph stands in for it so the
-              breadcrumb does not shift sideways when the rail opens. */}
+          {/* The folder glyph stands in while the rail is open, so the breadcrumb never shifts. */}
           <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
           {projectId === undefined ? (
             <span className="shrink-0 truncate text-muted-foreground">Main</span>
@@ -160,7 +131,15 @@ export function SessionMasthead({
           )}
         </div>
       </SessionActionContextMenu>
-      <MastheadTools hostId={hostId} panel={panel} {...(session ? { session } : {})} {...(onWatchRun ? { onWatchRun } : {})} {...(onRunTerminals ? { onRunTerminals } : {})} />
+      <div className="app-no-drag ml-auto flex shrink-0 items-center gap-2">
+        {session && workspacePath(session.workspace) !== undefined && (
+          <>
+            <RunHeaderControl key={`${hostId}:${session.id}`} sessionId={session.id} hostId={hostId} onWatchOutput={onWatchRun} onTerminals={onRunTerminals} />
+            <OpenWorkspaceButton path={workspacePath(session.workspace)} hostId={hostId} />
+          </>
+        )}
+        {panel}
+      </div>
     </header>
   );
 }
@@ -190,13 +169,7 @@ function TitleEditor({ value, onChange, onCommit, onCancel }: { value: string; o
 
 // Click opens the menu after the double-click window so a double-click can rename instead;
 // keyboard activation (`detail === 0`) and the chevron open at once.
-function TitleMenu({
-  title,
-  items,
-  open,
-  onOpenChange,
-  onRename,
-}: {
+function TitleMenu({ title, items, open, onOpenChange, onRename }: {
   title: string;
   items: ReturnType<typeof buildSessionActionMenuItems> | undefined;
   open: boolean;
@@ -233,8 +206,7 @@ function TitleMenu({
             {title}
           </button>
         ) : (
-          // A fresh canvas: "New conversation" is a statement about what
-          // you are looking at, and there is nothing yet to act on.
+          // A fresh canvas has nothing yet to act on.
           <span className="truncate" title={title}>
             {title}
           </span>
@@ -265,60 +237,12 @@ function TitleMenu({
   );
 }
 
-function MastheadTools({
-  hostId,
-  session,
-  panel,
-  onWatchRun,
-  onRunTerminals,
-}: {
-  hostId: string;
-  session?: Session;
-  panel: React.ReactNode;
-  onWatchRun?: () => void;
-  onRunTerminals?: (terminals: readonly RunView[]) => void;
-}) {
-  return (
-    <div className="app-no-drag ml-auto flex shrink-0 items-center gap-2">
-      {session && workspacePath(session.workspace) !== undefined && (
-        <RunHeaderControl
-          key={`${hostId}:${session.id}`}
-          sessionId={session.id}
-          hostId={hostId}
-          {...(onWatchRun ? { onWatchOutput: onWatchRun } : {})}
-          {...(onRunTerminals ? { onTerminals: onRunTerminals } : {})}
-        />
-      )}
-      {session && workspacePath(session.workspace) !== undefined && (
-        <OpenWorkspaceButton path={workspacePath(session.workspace)} hostId={hostId} />
-      )}
-      {panel}
-    </div>
-  );
-}
-
-export function SoloTools({
-  projectId,
-  hostId,
-  session,
-}: {
-  /** The route's project. `session.projectId` wins once the record lands — same
-   *  precedence the masthead's own inspector used. */
-  projectId?: string;
-  hostId: string;
-  session?: Session;
-}) {
+export function SoloTools({ projectId, hostId, session }: { projectId?: string; hostId: string; session?: Session }) {
   const notesProjectId = session?.projectId ?? projectId;
-  /** A run is a process in a directory, so a conversation with neither offers
-   *  none — the same rule the masthead stated, kept rather than restated. */
   const runnable = session !== undefined && workspacePath(session.workspace) !== undefined;
-  // Nothing to carry: no empty box, no stray inset over the first turn.
   if (notesProjectId === undefined && !runnable) return null;
   return (
     <div className="relative z-20 h-0 shrink-0">
-      {/* `app-no-drag` for the same reason the masthead's cluster had it: these
-          are controls, and on the desktop shell the region they sit in is the
-          window's own titlebar band. */}
       <div className="app-no-drag absolute right-3 top-3 flex items-center gap-2">
         {runnable && <RunHeaderControl key={`${hostId}:${session.id}`} sessionId={session.id} hostId={hostId} />}
         {notesProjectId !== undefined && <WorkspaceInspector projectId={notesProjectId} />}

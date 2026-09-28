@@ -1,22 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import type { RequestDecision, RuntimeMode, Session, Turn } from "@telar/engine-client";
-import { asEngineError, createEngineApi, newRunId, retryAmbiguousTurn, type EngineApiError } from "@/platform/engine";
+import type { RequestDecision, RuntimeMode, Turn } from "@telar/engine-client";
+import { asEngineError, createEngineApi, newRunId, retryAmbiguousTurn } from "@/platform/engine";
 import { sessionModelSelection, type ModelChoice } from "@/features/providers";
+import type { useSessionSync } from "./use-session-sync";
 
 const api = createEngineApi();
 
 type SessionPatch = Parameters<typeof api.updateSession>[1];
 
 /** The gestures on an existing session: each is a no-op on a fresh canvas and reports failure through `setError`. */
-export function useSessionActions({ sessionId, session, hydrate, setSession, setError }: {
-  sessionId: string | undefined;
-  session: Session | undefined;
-  hydrate: () => Promise<void>;
-  setSession: (session: Session) => void;
-  setError: (error: EngineApiError | undefined) => void;
-}) {
+export function useSessionActions(sessionId: string | undefined, { session, hydrate, setSession, setError }: ReturnType<typeof useSessionSync>) {
   const [sending, setSending] = useState(false);
 
   const act = async (call: (id: string) => Promise<unknown>, failure: string, refreshOnFailure = false) => {
