@@ -1,33 +1,10 @@
 "use client";
 
-/**
- * The composer.
- *
- * Built on the shared InputGroup primitive rather than on a hand-styled form, so
- * the box you type into is the same object — same border token, same focus ring,
- * same radius — as every other field in Telar. The block-end addon is what puts
- * the toolbar INSIDE the box instead of under it.
- *
- * ENTER ALWAYS WORKS. While a turn is running the message goes INTO that turn
- * — the engine steers it, the way typing at a running Claude Code or Codex
- * does, and the way T3 Code's composer does — and the box clears exactly as if
- * it had sent. There is no queue strip: a message sent mid-turn appears in the
- * transcript inside the run it joined. The UI never says "wait".
- *
- * SEND BECOMES STOP — WHILE THE BOX IS EMPTY. One control in the corner, `↵` →
- * spinner → `■`, never moving and never duplicating. During a turn it is Stop
- * only while there is nothing typed; the moment there is a draft it is Send
- * again, so a steer can be clicked as well as entered. Escape twice stops from
- * the keyboard, and the FIRST press repaints that button with the literal word
- * ESC — an arming state nobody can see is indistinguishable from a keystroke
- * that did nothing.
- */
+// Enter always sends; mid-turn it steers the running turn. Send becomes Stop only while the box is empty.
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
-  // The rail's snoozed rows wear this one; the cockpit's banner says the same
-  // state and must not invent a second mark for it.
   AlarmClockIcon,
   CircleCheckIcon,
   CornerDownLeftIcon,
@@ -71,7 +48,6 @@ import {
   useComposerCommandChoices,
 } from "./composer-controls";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
-import { markComposerActive, registerComposer, type ComposerKind, type ComposerSubmit } from "@/lib/composer-registry";
 import { contextNoticeDue } from "@/lib/context-notice";
 import { contextNoticeDismissal, writeContextNoticeDismissed } from "@/lib/context-notice-dismissal";
 import { ComposerMenu } from "./composer-menu";
@@ -81,17 +57,22 @@ import {
   availableCommands,
   buildPathIndex,
   compactBlockedReason,
+  detectComposerTrigger,
   isResumeDraft,
+  markComposerActive,
   ORCHESTRATE_SKILL,
   providerCommandCompletions,
   rankCommands,
   rankPaths,
   rankSkills,
+  registerComposer,
   type Completion,
+  type ComposerKind,
+  type ComposerSubmit,
+  type ComposerTrigger,
   type PathEntry,
-} from "@/lib/composer-completions";
+} from "@/features/composer";
 import { rankNotes, useProjectNotes } from "@/lib/project-notes";
-import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
 import { DictationButton, DictationGlow, useComposerDictation } from "@/features/dictation";
 import { appendPrompt, mergeAttachments, splitImages, type StashedImage } from "@/lib/prompt-stash";
 import type { ShelfRow } from "@/lib/prompt-shelf";
@@ -111,14 +92,7 @@ const ESC_ARM_WINDOW_MS = 3_000;
 
 const api = createEngineApi();
 
-/** The contract's own ceiling (`TurnSubmission.attachments`). Enforced here so
- *  the seventeenth file is refused at the point of picking rather than at the
- *  end of a submit that also uploaded the first sixteen.
- *
- *  EXPORTED because attachments no longer arrive only through this box: the
- *  browser's camera (#474) hands one straight to the cockpit's list, and a
- *  second ceiling that disagreed with this one would be a limit enforced in
- *  two places and true in neither. */
+/** The contract's `TurnSubmission.attachments` ceiling, shared with the browser camera. */
 export const MAX_ATTACHMENTS = 16;
 
 /** What the box keeps after a stash of `captured`: whatever was typed after it while the pictures encoded. */

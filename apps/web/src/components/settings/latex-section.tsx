@@ -42,7 +42,7 @@ import { Switch } from "@/components/ui/switch";
 import { Row, SettingsGroup } from "./settings-shell";
 import { JobLog, type JobHandle, type JobIo } from "./job-log";
 import { cn } from "@/lib/utils";
-import { writeDraft } from "@/lib/composer-draft";
+import { writeDraft } from "@/features/composer";
 import { canvasHref } from "@/lib/session-list";
 
 const api = createEngineApi();

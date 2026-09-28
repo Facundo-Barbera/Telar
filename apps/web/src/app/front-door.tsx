@@ -34,7 +34,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FirstRun } from "@/components/first-run";
-import { canvasHrefFor, composerProject, noteDestination, readFrontDoorNote, writeFrontDoorNote } from "@/lib/composer-project";
+import { canvasHrefFor, composerProject, noteDestination, readFrontDoorNote, writeFrontDoorNote } from "@/features/composer";
 import { createEngineApi } from "@/lib/engine/client";
 import { installNavigationMarks, startNavigation } from "@/lib/perf-marks";
 

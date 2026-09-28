@@ -1,6 +1,6 @@
 // The draft is plain text only; a chip is a way of drawing a run of it, never
 // something stored beside it, so what the agent receives is the typed string.
-import type { ReferenceKind, TelarReference } from "./drag-reference";
+import type { ReferenceKind, TelarReference } from "@/lib/drag-reference";
 
 type ComposerTriggerKind = "path" | "command" | "skill";
 
@@ -53,7 +53,7 @@ export function replaceTextRange(text: string, rangeStart: number, rangeEnd: num
   return { text: `${text.slice(0, safeStart)}${replacement}${text.slice(safeEnd)}`, cursor: safeStart + replacement.length };
 }
 
-export type ComposerSegment =
+type ComposerSegment =
   | { type: "text"; text: string }
   /** A run of the draft that draws as a chip. `reference.text` IS `draft.slice(start, end)`. */
   | { type: "chip"; reference: TelarReference; start: number; end: number };

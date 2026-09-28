@@ -1,7 +1,7 @@
 /** A bad slot must read as "no draft" or as the draft, never as a throw. */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { listCanvasDrafts, readDraft, writeDraft, type DraftStorage } from "./composer-draft";
+import { listCanvasDrafts, readDraft, writeDraft, type DraftStorage } from "./draft";
 
 function storage(initial: Record<string, string> = {}) {
   const slots = new Map(Object.entries(initial));

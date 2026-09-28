@@ -13,8 +13,8 @@ import {
   rankCommands,
   rankPaths,
   rankSkills,
-} from "./composer-completions";
-import { directoryReference, fileReference, skillReference } from "./drag-reference";
+} from "./completions";
+import { directoryReference, fileReference, skillReference } from "@/lib/drag-reference";
 
 const FILES = [
   "README.md",

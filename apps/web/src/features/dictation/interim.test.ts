@@ -5,7 +5,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { insertReference } from "@/lib/drag-reference";
-import { replaceTextRange } from "@/lib/composer-tokens";
+import { replaceTextRange } from "@/features/composer";
 import { createDictationWriter, insertedSpan, type DictationBox } from "./interim";
 
 /** A composer that is a string and a caret, using the helpers `composer-editor.tsx` calls. */

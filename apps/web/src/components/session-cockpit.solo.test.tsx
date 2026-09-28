@@ -54,7 +54,7 @@ const { SessionCockpit } = await import("./session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
 const { clearTranscriptCache } = await import("@/lib/transcript-cache");
 const { installPageApi } = await import("@/lib/page-api");
-const { activeComposer } = await import("@/lib/composer-registry");
+const { activeComposer } = await import("@/features/composer");
 
 installPageApi();
 

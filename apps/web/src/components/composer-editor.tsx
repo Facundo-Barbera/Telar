@@ -42,8 +42,7 @@
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle } from "@/lib/composer-chip";
-import { replaceTextRange, segmentDraft } from "@/lib/composer-tokens";
+import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle, replaceTextRange, segmentDraft } from "@/features/composer";
 import { insertReference, type TelarReference } from "@/lib/drag-reference";
 import { chipGlyphFor, glyphElement } from "@/lib/glyph-paths";
 import { cn } from "@/lib/utils";

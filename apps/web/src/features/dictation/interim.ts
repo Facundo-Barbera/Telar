@@ -1,4 +1,4 @@
-import type { ComposerWrite } from "@/lib/composer-registry";
+import type { ComposerWrite } from "@/features/composer";
 import type { DictationWords } from "./transcript";
 
 export type DictationBox = {

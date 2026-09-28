@@ -1,4 +1,4 @@
-import { activeComposerToken } from "@/lib/composer-registry";
+import { activeComposerToken } from "@/features/composer";
 
 export type DictationControl = {
   toggle: () => void;
