@@ -77,7 +77,7 @@ export function AppearanceSection() {
   const [windowSupported, setWindowSupported] = useState(false);
   const [notice, setNotice] = useState<string>();
   /** What the last automatic wear of the host's look cost, if anything — see
-   *  the strip below and lib/host-follow.ts. */
+   *  the strip below and features/appearance/host-follow.ts. */
   const followNotice = useFollowNotice();
 
   /**
@@ -168,7 +168,7 @@ export function AppearanceSection() {
    */
   const wear = (look: Look) => {
     // A person choosing a look is the moment a remote window stops following
-    // the host's (lib/host-follow.ts). Every write path says so.
+    // the host's (features/appearance/host-follow.ts). Every write path says so.
     detachFromHost();
     setNotice(applyLook(look, setAppearance));
   };
@@ -196,7 +196,7 @@ export function AppearanceSection() {
       {homeNotice && <p className="mb-3 text-xs text-warning">{homeNotice}</p>}
       {/* WHAT THE LAST AUTOMATIC WEAR COST (#705). The follower wears a host's
           Look with nobody in the loop, so its `applyLook` message has no press
-          to be shown beside; it is parked in lib/host-follow.ts and surfaces
+          to be shown beside; it is parked in features/appearance/host-follow.ts and surfaces
           here, above the row that says where the look came from. Cleared by the
           next wear that has nothing to report. */}
       {followNotice && <p className="mb-3 text-xs text-warning">{followNotice}</p>}

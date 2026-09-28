@@ -315,7 +315,7 @@ function LookRow({
  * (features/appearance) until its person customises anything on
  * this pane, at which point it detaches and keeps its own taste. This row is
  * where that state is visible and reversible: the switch is the follow mode
- * (lib/host-follow.ts), and re-enabling it wears the host's current look at
+ * (features/appearance/host-follow.ts), and re-enabling it wears the host's current look at
  * once.
  *
  * DETACHED, THE ROW IS STILL A SOURCE. The published blob parses into a `Look`

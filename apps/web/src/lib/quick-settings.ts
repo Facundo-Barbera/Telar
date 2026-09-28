@@ -47,7 +47,7 @@ import { runCommand } from "@/lib/commands";
  * machinery, and importing a component module for one label map would drag all
  * of it into the palette's bundle. Eight strings are cheaper than that
  * coupling, and #471 left the accent vocabulary alone: tools.tsx still keeps
- * its own copy, and lib/accent-colours.ts holds the colours rather than the
+ * its own copy, and features/appearance/accent-colours.ts holds the colours rather than the
  * names, so there is still no shared table to import.
  */
 export const ACCENT_LABELS: Record<Accent, string> = {
