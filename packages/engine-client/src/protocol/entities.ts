@@ -507,105 +507,6 @@ export const LiveSessionRow = Session.omit({
 });
 export type LiveSessionRow = z.infer<typeof LiveSessionRow>;
 
-export const MIN_AUTO_SETTLE_HOURS = 1;
-export const MAX_AUTO_SETTLE_HOURS = 90 * 24;
-export const DEFAULT_AUTO_SETTLE_HOURS = 3 * 24;
-
-export const DEFAULT_SETTLE_DELEGATED_AFTER_HOURS = 1;
-
-export const DEFAULT_SETTLED_TERMINAL_LIMIT = 5;
-export const MAX_SETTLED_TERMINAL_LIMIT = 99;
-
-export const InboxPolicy = z.object({
-  autoSettleAfterHours: z.number().int().min(MIN_AUTO_SETTLE_HOURS).max(MAX_AUTO_SETTLE_HOURS).nullable(),
-  settleDelegatedAfterHours: z
-    .number()
-    .int()
-    .min(MIN_AUTO_SETTLE_HOURS)
-    .max(MAX_AUTO_SETTLE_HOURS)
-    .nullable()
-    .default(DEFAULT_SETTLE_DELEGATED_AFTER_HOURS),
-  settledTerminalLimit: z.number().int().min(0).max(MAX_SETTLED_TERMINAL_LIMIT).default(DEFAULT_SETTLED_TERMINAL_LIMIT),
-});
-export type InboxPolicy = z.infer<typeof InboxPolicy>;
-
-export const DEFAULT_INBOX_POLICY: InboxPolicy = {
-  autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS,
-  settleDelegatedAfterHours: DEFAULT_SETTLE_DELEGATED_AFTER_HOURS,
-  settledTerminalLimit: DEFAULT_SETTLED_TERMINAL_LIMIT,
-};
-
-export const AgentOrientation = z.object({
-  /** The paragraph, injected once per turn through each driver's existing
-   *  briefing seam. See `apps/engine/src/orientation.ts`. */
-  preamble: z.boolean(),
-  /** The `telar` skill, written into each provider's skills directory. Off
-   *  removes the file rather than merely stopping it being refreshed. */
-  skill: z.boolean(),
-});
-export type AgentOrientation = z.infer<typeof AgentOrientation>;
-
-export const DEFAULT_AGENT_ORIENTATION: AgentOrientation = { preamble: true, skill: true };
-
-export const SessionDefaults = z.object({
-  /**
-   * `worktree` gives every new session its own checkout, so two of them can
-   * edit the same repo without colliding — the reason to make it the standing
-   * choice rather than picking it by hand each time.
-   */
-  envMode: EnvMode,
-  resumeAfterRestart: z.boolean().optional(),
-  /**
-   * The access mode a new session opens in when its creator did not pick one.
-   * Absent keeps the posture's own default. A creator's ceiling still narrows
-   * it — see `createSession`.
-   */
-  runtimeMode: RuntimeMode.optional(),
-  /**
-   * Whether a Claude session sits out a usage limit and carries on, when the
-   * session itself has not said (`Session.resumeAfterRateLimit`). Absent is on.
-   */
-  resumeAfterRateLimit: z.boolean().optional(),
-});
-export type SessionDefaults = z.infer<typeof SessionDefaults>;
-
-/** What `PATCH /v2/session-defaults` accepts. `null` clears an optional default. */
-export type SessionDefaultsPatch = {
-  envMode?: EnvMode;
-  resumeAfterRestart?: boolean;
-  runtimeMode?: RuntimeMode | null;
-  resumeAfterRateLimit?: boolean;
-};
-
-/** `local` — what the engine did before this document existed, so an install
- *  that never opens the settings page behaves exactly as it always has. */
-export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
-
-/** Generous: a rail with a thousand project groups has other problems. The cap
- *  exists so a runaway client cannot grow this document without bound. */
-export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
-
-/** Per group, and for the pinned band — the same "a runaway client cannot grow
- *  this document" cap as the project order, applied one list at a time. */
-export const MAX_SIDEBAR_SESSION_ORDER = 1000;
-
-export const SidebarMode = z.enum(["grouped", "flat"]);
-export type SidebarMode = z.infer<typeof SidebarMode>;
-
-export const SidebarLayout = z.object({
-  projectOrder: z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_PROJECT_ORDER),
-  sessionOrder: z
-    .record(z.string().min(1).max(200), z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_SESSION_ORDER))
-    .default({}),
-  pinnedOrder: z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_SESSION_ORDER).default([]),
-  /** How the rail draws the list: by project (the default), or one flat list
-   *  with spawned sessions nested under their parent. */
-  mode: SidebarMode.default("grouped"),
-});
-export type SidebarLayout = z.infer<typeof SidebarLayout>;
-
-export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" };
-
 export const ComputerUsePermission = z.enum(["granted", "denied", "unauthenticated", "host-not-running", "unknown"]);
 export type ComputerUsePermission = z.infer<typeof ComputerUsePermission>;
 
@@ -648,27 +549,6 @@ export const ComputerUseGrant = z.object({
   message: z.string().optional(),
 });
 export type ComputerUseGrant = z.infer<typeof ComputerUseGrant>;
-
-export const TextGenPolicy = z.object({
-  /** Whether a session's first turn also asks a small model for a real title. */
-  titles: z.boolean(),
-  /** Whether a generated title also renames the engine-cut `telar/…` branch.
-   *  Never touches a branch a human named — those live outside `telar/`. */
-  renameBranches: z.boolean(),
-  driver: ProviderDriverKind,
-  /** Model id or alias for the generating call; absent = the driver's default. */
-  model: z.string().min(1).max(120).optional(),
-});
-export type TextGenPolicy = z.infer<typeof TextGenPolicy>;
-
-export const DEFAULT_TEXT_GEN_POLICY: TextGenPolicy = {
-  titles: true,
-  renameBranches: true,
-  driver: "claude",
-  // The alias, not a wire id: it keeps meaning "the current cheap model" as
-  // the provider moves it, exactly why `ProviderModel.resolves` exists.
-  model: "haiku",
-};
 
 /**
  * The live process. Not user-owned state — the engine's handle on something it

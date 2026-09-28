@@ -319,7 +319,7 @@ test("configuring a login reports what it stopped inheriting, and can be told to
  *  v1 fixture here would come back legitimately different from what went in and
  *  the equality would be measuring the migration rather than the mailbox. That
  *  migration has its own tests, over both the theme pair and every old backdrop
- *  kind — packages/engine-client/test/look.test.ts. */
+ *  kind — packages/engine-client/test/appearance.test.ts. */
 function publishedLook(label: string): PublishedAppearance {
   return {
     version: 2,
