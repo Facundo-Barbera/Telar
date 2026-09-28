@@ -132,7 +132,7 @@ import {
   type DictationLanguage,
   type DictationProviderId,
 } from "@telar/engine-client";
-import { type ProjectPatch, ProjectProbes, ProjectRegistry, WorkspaceConfigStore } from "./domains/projects";
+import { type ProjectPatch, ProjectProbes, ProjectRegistry, ProjectRemounts, WorkspaceConfigStore } from "./domains/projects";
 import { assertId, EngineStateError, Kernel, type JournalEntry } from "./platform/kernel";
 import { SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
@@ -160,7 +160,7 @@ import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, pre
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { CheckoutSizes, CleanupStore, copyStore, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor } from "./domains/terminal";
-import { findVolumeMount, mountSignature, type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
+import { type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
 
 /** The human-facing one-liner for a parked request's notification. */
 /**
@@ -808,6 +808,7 @@ export class EngineStore {
   private readonly github: GitHubStore;
   private readonly browser: SessionBrowser;
   private readonly worktrees: WorktreeMaintenance;
+  private readonly remounts: ProjectRemounts;
   private readonly attachments: SessionAttachments;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
@@ -1774,7 +1775,7 @@ export class EngineStore {
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
     ({
       settings: this.settings, appearance: this.appearance, mcpOAuth: this.mcpOAuth, mcpServers: this.mcpServers, usageSources: this.usageSources,
-      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers, toolchains: this.toolchains, github: this.github, browser: this.browser,
+      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers, toolchains: this.toolchains, github: this.github, browser: this.browser, remounts: this.remounts,
     } = this.leafStores(options));
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
@@ -1873,7 +1874,7 @@ export class EngineStore {
       asyncGit: this.asyncGit,
       volumes: this.volumes,
       forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
-      onUnavailable: (project) => void this.recoverRemountedProject(project),
+      onUnavailable: (project) => void this.remounts.recover(project),
     });
     const projectRegistry = new ProjectRegistry(this.kernel, {
       probes: projectProbes,
@@ -1889,12 +1890,19 @@ export class EngineStore {
     const providers = new ProviderRegistry(this.kernel, this.ambientEnv);
     const toolchains = new PluginToolchains(this.kernel, { getProject: (id) => projectRegistry.get(id) });
     const github = new GitHubStore(this.kernel, { gh: this.gh, getProject: (id) => projectRegistry.get(id), requireSenderClaim: (proof) => this.requireSenderClaim(proof) });
+    const remounts = new ProjectRemounts(this.kernel, {
+      registry: projectRegistry,
+      probes: projectProbes,
+      volumes: this.volumes,
+      sessions: () => this.records.read(),
+      prepareWorktree: (sessionId, root, plan, baseSha) => this.lifecycle.prepareWorktree(sessionId, root, plan, baseSha),
+    });
     const browser = new SessionBrowser(this.kernel, {
       require: (id) => void this.records.require(id),
       getSession: (id) => this.records.get(id),
       runningRunId: (id) => this.readQueue(id).turns.find((turn) => turn.state === "running")?.runId,
     });
-    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers, toolchains, github, browser };
+    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers, toolchains, github, browser, remounts };
   }
 
   /** How many projects the legacy-field fold changed on this open (0 on most). */
@@ -2173,7 +2181,6 @@ export class EngineStore {
    * valued by `mountSignature`, so an unplugged drive that stays unplugged is
    * searched for exactly once no matter how long the poll runs.
    */
-  private readonly remountAttempts = new Map<string, string>();
 
   projectAvailability(project: Pick<Project, "id" | "root"> & { volume?: Project["volume"] }): ProjectAvailability {
     return this.projectProbes.availability(project);
@@ -2210,12 +2217,12 @@ export class EngineStore {
       let availability = this.projectAvailability(project);
       /**
        * A DRIVE MOUNTED SOMEWHERE ELSE IS STILL THIS DRIVE — see
-       * `recoverRemountedProject`. Attempted only when the project cannot be
+       * `ProjectRemounts.recover`. Attempted only when the project cannot be
        * read, which is what keeps the `diskutil` it costs off the poll path, and
        * HERE rather than inside the probe because this is the call that happens
        * when a disk has just appeared.
        */
-      if (availability !== "available" && this.recoverRemountedProject(project) !== undefined) {
+      if (availability !== "available" && this.remounts.recover(project) !== undefined) {
         recovered += 1;
         availability = this.projectAvailability(this.getProject(project.id));
       }
@@ -2224,150 +2231,6 @@ export class EngineStore {
     return { projects: projects.length, changed, recovered };
   }
 
-  /**
-   * THE DRIVE IS BACK, UNDER A DIFFERENT NAME — issue #534, step 7.
-   *
-   * WHAT MACOS ACTUALLY DOES. A volume whose name is already taken in `/Volumes`
-   * — by the empty folder its own unmount left behind, or by another disk — is
-   * mounted at `<name> 1`. So replugging the drive a project was registered from
-   * routinely changes its PATH while changing nothing about the disk.
-   *
-   * WHY THE PATH CANNOT BE THE ANSWER. Before this, the only way back was to
-   * register the new folder, and `registerProject` mints a NEW id for a root it
-   * has not seen. Three things outlive a registration and are keyed by that id —
-   * a session's `projectId`, an MCP server's scope, a browser profile's binding
-   * — so the person would point Telar at the same disk and lose all three, from
-   * an action that reads like plugging a cable back in.
-   *
-   * THIS IS THE ONE SANCTIONED WRITE OF `Project.root`, and `updateProject`'s
-   * refusal still stands for every other caller: moving a project means
-   * registering the new folder. This is not a move. It is the same folder, on
-   * the same disk, and the uuid is what proves it — which is why the match is on
-   * the uuid and never on a name, a size or a label.
-   *
-   * IT REFUSES TO GUESS. The new root has to EXIST on the remounted volume; a
-   * drive that came back without the project's folder on it is a `missing`
-   * project, not a rename, and rewriting the record would point every session at
-   * a path that is not there either.
-   *
-   * Returns the updated project, or nothing when there was nothing to recover.
-   */
-  private recoverRemountedProject(project: Project): Project | undefined {
-    if (project.volume === undefined) return undefined;
-    /**
-     * THE CHEAP PRECONDITION FIRST — see `mountSignature`.
-     *
-     * The search below costs a `diskutil` child per mounted volume, and this
-     * runs on the ten-second poll for every away project. Paying that every tick
-     * would be a worse version of the git churn this issue exists to remove. A
-     * drive can only have come back if the set of mount points changed, and that
-     * question is a `readdir` and a `stat` each — so one attempt per project per
-     * distinct mount configuration, and nothing at all while a drive sits in
-     * somebody's bag.
-     */
-    const signature = mountSignature(this.volumes);
-    if (this.remountAttempts.get(project.id) === signature) return undefined;
-    this.remountAttempts.set(project.id, signature);
-    const mount = findVolumeMount(project.volume.uuid, this.volumes);
-    if (mount === undefined || mount === project.volume.mount) return undefined;
-    const within = path.relative(project.volume.mount, project.root);
-    // A root that is not under its own recorded mount is a record this cannot
-    // reason about; leave it alone rather than composing a path from a guess.
-    if (within.startsWith("..") || path.isAbsolute(within)) return undefined;
-    const root = within === "" ? mount : path.join(mount, within);
-    try {
-      if (!fs.statSync(root).isDirectory()) return undefined;
-    } catch {
-      return undefined;
-    }
-
-    const parsed = this.projectRegistry.read();
-    const stored = parsed.projects.find((candidate) => candidate.id === project.id);
-    if (stored === undefined) return undefined;
-    const previousRoot = stored.root;
-    stored.root = root;
-    stored.volume = { mount, uuid: project.volume.uuid };
-    stored.updatedAt = this.now();
-    this.writeDocument(this.paths.projects, parsed);
-
-    /**
-     * AND EVERY SESSION THAT WORKS IN IT. A `local` session's workspace IS the
-     * project root, so a record left pointing at the old path would send a
-     * provider to a folder that no longer exists — the project would be back and
-     * its conversations would not.
-     *
-     * A WORKTREE SESSION IS DELIBERATELY UNTOUCHED. Its checkout lives under the
-     * engine root on the internal disk (see `worktree.ts`) and never moved; what
-     * was broken while the drive was away was the `.git` it points AT, and that
-     * is fixed by the drive being back.
-     */
-    const moved: string[] = [];
-    const prefix = previousRoot.endsWith(path.sep) ? previousRoot : `${previousRoot}${path.sep}`;
-    for (const session of this.records.read()) {
-      if (session.projectId !== project.id) continue;
-      const current = workspacePath(session.workspace);
-      if (current === undefined) continue;
-      if (current !== previousRoot && !current.startsWith(prefix)) continue;
-      const next = current === previousRoot ? root : path.join(root, current.slice(prefix.length));
-      const updated: Session = {
-        ...session,
-        workspace: { ...session.workspace, path: next } as Session["workspace"],
-        updatedAt: this.now(),
-      };
-      this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(updated));
-      this.appendEvent(session.id, { type: "session.updated", session: updated });
-      moved.push(session.id);
-    }
-
-    // The reads in hand were taken off a disk that has since come back at
-    // another address; none of them describes anything that exists now.
-    this.projectProbes.forgetReads({ id: project.id, root: previousRoot });
-    this.projectProbes.forgetReads({ id: project.id, root });
-    this.projectProbes.forgetAvailability(project.id);
-
-    /**
-     * ONE LINE, because a record the engine rewrote on its own is exactly the
-     * kind of thing a person needs to be able to find afterwards — and because
-     * the alternative reading of a project that silently changed its path is
-     * that something is wrong with the store.
-     */
-    process.stdout.write(
-      `Telar engine: ${project.name} came back on its own drive at a new path — ${previousRoot} → ${root}` +
-        `${moved.length > 0 ? ` (${moved.length} session${moved.length === 1 ? "" : "s"} moved with it)` : ""}\n`,
-    );
-
-    this.retryWorktreesFailedWhileAway(project.id, root);
-    return structuredClone(stored);
-  }
-
-  /**
-   * ONE AUTOMATIC RETRY FOR A CUT THAT FAILED WHILE THE DISK WAS GONE.
-   *
-   * A worktree session created while the drive was away has a row saying so
-   * forever: `git worktree add` could not read the repository, the failure was
-   * recorded on the session (`SessionPreparation`), and nothing ever tried
-   * again. The reason it failed has just stopped being true, so this is the one
-   * moment a retry is not a guess.
-   *
-   * ONCE, AND ONLY HERE. Nothing retries on a timer and nothing retries a cut
-   * that failed for its own reasons — a branch that already exists, a bad base —
-   * because those failures are still failures with the drive plugged in. The
-   * gate is the RECOVERY, not the error text: a retry that fails again simply
-   * records the new failure, and the row says what git said this time.
-   */
-  private retryWorktreesFailedWhileAway(projectId: string, projectRoot: string): void {
-    for (const session of this.records.read()) {
-      if (session.projectId !== projectId) continue;
-      if (session.preparation?.state !== "failed") continue;
-      if (session.workspace.mode !== "worktree") continue;
-      const plan: WorktreePlan = { path: session.workspace.path, branch: session.workspace.branch, named: false };
-      const baseSha = workspaceBaseRef(session.workspace);
-      // No recorded base is no commit to cut from, and inventing one would put
-      // the session on a checkout nobody chose. The row keeps its failure.
-      if (baseSha === undefined) continue;
-      this.lifecycle.prepareWorktree(session.id, projectRoot, plan, baseSha);
-    }
-  }
 
   registerProject(input: { id?: string; name: string; root: string }): Project {
     return this.projectRegistry.register(input);
@@ -3628,92 +3491,30 @@ export class EngineStore {
 
   listSessions(projectId: string): Session[] {
     this.getProject(projectId);
-    /**
-     * THE PROJECT'S OWN ROWS, BY THE INDEX THAT EXISTS FOR THEM — issue #493.
-     *
-     * This used to read EVERY session on the engine and throw away the ones
-     * belonging to other projects: on the owner's store, 291 documents parsed to
-     * answer a question about a handful. `(project_id, updated_at)` names them
-     * without touching a document, and `readSessions` then pays for those alone.
-     */
+    // By the (project_id, updated_at) index, so only this project's documents are parsed.
     const rows = this.kernel.executionStore.projectSessionRows(projectId);
     return this.records.read(new Set(rows.map((row) => row.id)));
   }
 
-  /**
-   * WHEN EACH PROJECT WAS LAST WORKED IN — one integer per project, and not one
-   * session (#490).
-   *
-   * THE FRONT DOOR'S WHOLE QUESTION. It was reading `liveSessions({ all: true })`
-   * on every launch — 101.6 KB and 21.8 ms on the owner's store, 291 sessions —
-   * to hand `composerProject` a list it immediately folded into
-   * `Map<projectId, max(updatedAt)>` and read the top of. It renders NOTHING
-   * from those rows: it is a blank frame and a redirect. This is that fold,
-   * answered off the index rather than off the documents — see
-   * `ExecutionStore.projectActivity` for which index the planner actually picks,
-   * which is not the one you would guess.
-   *
-   * SAME POPULATION AS THE LIST IT REPLACES, which is the part that must not
-   * drift: ACTIVE sessions only, so a project whose conversations are all
-   * archived still scores nothing and falls through to most-recently-registered
-   * (see `composerProject`); and no projectless session, which that fold skips
-   * anyway.
-   */
+  /** Each project's latest activity, folded off the index rather than the documents. Active sessions only,
+   *  matching the list it replaced, so a project whose sessions are all archived scores nothing. */
   projectActivity(): { projectId: string; updatedAt: number }[] {
     return this.kernel.executionStore.projectActivity();
   }
 
   /**
-   * EVERY LIVE SESSION ON THIS ENGINE, across every project, with the project
-   * registry beside it.
-   *
-   * ONE READ AND NOT ONE PER PROJECT:
-   * a caller that fetched the projects and then each project's sessions would
-   * be composing one answer out of reads taken at different instants, with no
-   * way to tell staleness from truth. The `sessions` toolkit needs both halves
-   * on every call anyway — a project id is what `sessions_create` takes.
-   *
-   * LIVE MEANS `state: "active"`. An archived session is finished, and a
-   * toolkit that listed it would offer a model something it cannot drive.
-   *
-   * NO BRANCH DERIVATION, unlike `listProjects`: that costs a `git rev-parse`
-   * per project and nothing in this answer renders a branch.
-   *
-   * THE ARRANGEMENT RIDES ALONG, and that is what makes a drag on one device
-   * reach the others. `sidebar-layout.json` is one document per Mac, but until
-   * now nothing told a second device it had changed — a phone kept its copy
-   * until its rail reloaded, and then wrote that stale copy back on its next
-   * drop. This route is the one read EVERY rail already makes on its own
-   * cadence (3s live, 10s idle on both clients), so carrying the layout here
-   * costs no request, no timer and no connection anywhere, and every device
-   * converges within one polling pass. See `SidebarLayout`.
+   * Every active session across projects in one read, with the registry and the sidebar
+   * layout beside it: every rail polls this, so a drag on one device reaches the others.
    */
   liveSessions(only?: Set<string>): {
     sessions: Session[];
-    /**
-     * `availability` RIDES THE ROW — issue #534, and for `layout`'s reason. The
-     * rail draws its "drive not connected" badge in the project group of THIS
-     * list; without it here the sidebar would have to fetch `/v2/projects`
-     * beside this on every pass, per paired host, for one enum per project.
-     *
-     * Absent on a removed project, which this list does not carry anyway.
-     */
+    // The rail's "drive not connected" badge, so it needs no second fetch per pass.
     projects: Array<{ id: string; name: string; availability?: ProjectAvailability }>;
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
   } {
     const projects = this.projectRegistry.read().projects;
-    /**
-     * ASSIGNMENTS RIDE THE LIST, not a fetch per row.
-     *
-     * The sidebar reads this one route each polling pass. Asking it to fetch
-     * every session's full history to learn who each is working for would be an
-     * N+1 over whole transcripts — the most expensive read in the engine,
-     * repeated per session, per poll. One pass over the queues answers it here.
-     *
-     * AND IT IS ONE PASS NOW, rather than one for the activity and a second for
-     * the assignments over the same documents (#464). See `foldLiveSessions`.
-     */
+    // One pass over the queues answers activity and assignments, not a history fetch per row.
     const { sessions, assignments } = this.activity.foldLive(only);
     return {
       sessions,
@@ -3730,51 +3531,8 @@ export class EngineStore {
   }
 
   /**
-   * THE SAME ANSWER, WITH ONLY WHAT A RAIL DRAWS ON EACH ROW — issue #459, and
-   * the shape `GET /v2/sessions/live` serves.
-   *
-   * `liveSessions` above hands back whole `Session` records, which is right for
-   * the in-process `sessions` toolkit: a model that lists conversations may then
-   * ask any question about one. It is wrong for the wire. Measured on the
-   * owner's store, that route answered 318 KB in 200 ms for 267 sessions, and
-   * every cockpit asks for it on a timer, per paired host — so the engine was
-   * serializing a session's provider instance, resume cursor, runtime mode and
-   * un-settle ledger several times a second to clients that render none of them.
-   * See `LiveSessionRow` for the field-by-field argument.
-   *
-   * THE PROJECTION IS THE ONLY DIFFERENCE to the rows. Same filter, same
-   * ordering, same assignments, same layout — a caller that wants the old rows
-   * asks the route with `?full=1` and gets `liveSessions()` verbatim.
-   *
-   * AND THE SETTLING WINDOW RIDES ALONG, for the reason `layout` does. A rail
-   * bands every row by the policy of the engine those rows live on, so it was
-   * fetching `/v2/inbox` beside this on every pass — a second request, per host,
-   * per tick, for one number that changes when somebody opens Settings. It is
-   * the same argument the arrangement makes: this is the read a rail is already
-   * making, so anything the rail needs on every pass belongs on it.
-   *
-   * ══ AND BY DEFAULT IT IS ONLY THE UNSETTLED ROWS — issue #457 ══
-   *
-   * The lean row and the conditional cursor (#459) took this route off the
-   * engine's floor for an IDLE cockpit. They did nothing for a cockpit that is
-   * being used: every write bumps the revision, so a person typing in one
-   * conversation makes every connected rail re-read all of them. Re-measured on
-   * the owner's store at 276 KB and 2.33 s per full read, polled every three
-   * seconds by each connected cockpit, with 291 sessions in the body — AND SEVEN
-   * OF THEM NOT SETTLED. The other 284 were folded, projected and serialised so
-   * that each rail could decide, again, to draw them on a shelf nobody had open.
-   *
-   * SO THE SHELF ASKS FOR ITSELF. `?all=1` is the whole list, and it is what the
-   * cockpit sends when a reader opens Settled; the default is the rows a rail
-   * actually draws. `settledCount` rides both answers because the shelf's HEADER
-   * is drawn from the default one — a count is one integer, and without it the
-   * affordance that asks for the rest would not be there to click.
-   *
-   * THE RULE IS THE CLIENTS' OWN, IMPORTED (`isShelved`), never a second fold
-   * written here. A row this dropped and a rail would have drawn is a
-   * conversation that is simply not in the list, with nothing on either side to
-   * notice — which is the one failure this change could have, and the reason the
-   * rule sits in the protocol package rather than in each of us.
+   * `liveSessions` projected to what a rail draws (`LiveSessionRow`), with the settling window.
+   * Unsettled rows only unless `all`; the shelf rule is the clients' own `isShelved`.
    */
   liveSessionRows(options: { all?: boolean } = {}): {
     sessions: LiveSessionRow[];
@@ -3787,42 +3545,13 @@ export class EngineStore {
     /** Open terminals per session in this answer, whoever opened them (#883). */
     terminals: Record<string, number>;
   } {
-    /**
-     * THE REVISION IS READ FIRST, so a write that lands mid-fold is reported by
-     * the NEXT read rather than swallowed by this one. Taken after would name a
-     * state this answer does not contain, and the client would hold a cursor
-     * that says it is up to date with rows it never received.
-     */
+    // Read first, so a write that lands mid-fold is reported by the next read rather than swallowed.
     const revision = this.sessionsRevision({ all: options.all === true });
     const inbox = this.getInboxPolicy();
-    /**
-     * NOTHING IS EXEMPTED FROM THE SHELF ANY MORE (#531).
-     *
-     * #522 kept the designated conversation on this list whatever the settling
-     * clock said, because the rail drew its Main entry from a ROW here and a
-     * time rule would have made that entry vanish on a Tuesday. The exemption
-     * went with the designation, and every conversation now settles by the same
-     * rule.
-     */
+    // Every conversation settles by the same rule; nothing is exempted.
     const indexed = this.activity.shelf(inbox, options.all === true);
-    /**
-     * ══ THE INDEXED PATH — issue #493 ══
-     *
-     * The partition was decided above off `sessions` rows, so this reads
-     * documents for the rows that SURVIVED it and for nothing else. On the
-     * owner's store that is seven sessions rather than 291, and the 284 it
-     * skips are the ones whose whole contribution to the old answer was
-     * `settledCount += 1`.
-     *
-     * WHICH DOCUMENTS A SURVIVING ROW STILL COSTS: `session.json`, for the
-     * payload the row deliberately does not carry (title, driver, model,
-     * workspace, usage, `startedFrom`), and `queue.json`, for the assignments
-     * — plus `requests.json` and `tasks.json`, which `withActivityFrom` reads
-     * to re-derive the activity. The row's own activity is not trusted to
-     * serve the wire: it is what the DECISION is made on, and a row a
-     * downgrade left stale must not be able to put a wrong pill on a rail. It
-     * can only put a row on the list that the fold then describes correctly.
-     */
+    // Documents are read only for rows that survived the partition; activity is re-derived
+    // from them rather than trusted from a possibly stale row.
     const full = this.liveSessions(indexed.chosen);
     return {
       ...full,
@@ -3840,22 +3569,8 @@ export class EngineStore {
   }
 
   /**
-   * ══ THE QUERY READS — issue #516 ══
-   *
-   * Five questions an orchestrator actually asks a conversation, each answered
-   * from the projection or from one indexed span, none of them by folding the
-   * journal. The bounds are stated in every answer rather than applied silently:
-   * a caller that cannot tell what it did not get has to fetch everything to be
-   * sure, which is the behaviour #515 exists to stop.
-   *
-   * SCROLL A CONVERSATION — the newest `limit` turns, keyset by sequence.
-   *
-   * `before` IS A SEQUENCE, so a live session being appended to underneath a
-   * caller cannot shift the window; `more` is exact because one row past the
-   * limit is read and dropped. A session with no rows yet (an engine that has
-   * not run the backfill, a conversation written by an older binary) answers
-   * with an empty page rather than folding events to fake one — see
-   * `turnSummaryBackfill`.
+   * The newest `limit` turns, keyset by sequence so appends underneath cannot shift the window.
+   * A session with no summary rows yet answers an empty page rather than folding events.
    */
   turnOutline(sessionId: string, window: { limit: number; before?: number }): {
     turns: OutlineRow[];
