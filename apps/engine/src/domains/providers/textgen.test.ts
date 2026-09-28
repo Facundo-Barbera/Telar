@@ -6,7 +6,8 @@ import path from "node:path";
 import { DEFAULT_TEXT_GEN_POLICY, type TextGenPolicy } from "@telar/engine-client";
 import { EngineStore } from "../../state";
 import { EngineStateError } from "../../platform/kernel";
-import { buildTitlePrompt, generateSessionTitle, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "./textgen";
+import { buildTitlePrompt, cheapModel, generateSessionTitle, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "./textgen";
+import { OPENCODE_VERSION } from "../../drivers/opencode/version";
 import { worktreeReady } from "../../../test/worktree-ready";
 
 const roots: string[] = [];
@@ -124,35 +125,79 @@ describe("refreshWorktreeBranchFromTitle", () => {
   });
 });
 
-test("a Claude title is one bare model call, run outside the project", async () => {
-  const bin = tmp("telar-tg-bin-");
-  const record = path.join(bin, "record");
-  const claude = path.join(bin, "claude");
-  fs.writeFileSync(
-    claude,
-    `#!/bin/sh\n[ "$1" = "--version" ] && echo "2.1.270 (fake)" && exit 0\n{ pwd; echo "A=$A"; for a in "$@"; do echo "[$a]"; done; } > "${record}"\ncat > /dev/null\necho '{"structured_output":{"title":"Queue refill race"}}'\n`,
-  );
-  fs.chmodSync(claude, 0o755);
-  const project = repo();
-  const previous = process.env.TELAR_ALLOW_CLI;
-  process.env.TELAR_ALLOW_CLI = "1";
-  try {
-    expect(await generateSessionTitle({ driver: "claude", binaryPath: claude, env: { A: "b" }, cwd: project, model: "haiku", message: "fix the queue refill race" })).toBe("Queue refill race");
-  } finally {
+describe("each provider answers one bare call from an empty scratch directory", () => {
+  let previous: string | undefined;
+  beforeAll(() => {
+    previous = process.env.TELAR_ALLOW_CLI;
+    process.env.TELAR_ALLOW_CLI = "1";
+  });
+  afterAll(() => {
     if (previous === undefined) delete process.env.TELAR_ALLOW_CLI;
     else process.env.TELAR_ALLOW_CLI = previous;
+  });
+
+  function fakeCli(name: string, answer: string, version = "2.1.270 (fake)"): { binaryPath: string; recorded: () => { cwd: string; env: string[]; args: string[] } } {
+    const bin = tmp("telar-tg-bin-");
+    const record = path.join(bin, "record");
+    const binaryPath = path.join(bin, name);
+    fs.writeFileSync(
+      binaryPath,
+      `#!/bin/sh\n[ "$1" = "--version" ] && echo "${version}" && exit 0\n{ pwd; echo "A=$A"; echo "CONFIG=$OPENCODE_CONFIG_CONTENT"; for a in "$@"; do echo "[$a]"; done; } > "${record}"\ncat > /dev/null\n${answer}\n`,
+    );
+    fs.chmodSync(binaryPath, 0o755);
+    return {
+      binaryPath,
+      recorded: () => {
+        const [cwd, a, config, ...args] = fs.readFileSync(record, "utf8").trim().split("\n");
+        return { cwd: cwd!, env: [a!, config!], args };
+      },
+    };
   }
-  const [cwd, env, ...args] = fs.readFileSync(record, "utf8").trim().split("\n");
-  expect(cwd!.startsWith(fs.realpathSync(project))).toBe(false);
-  expect(fs.existsSync(cwd!)).toBe(false);
-  expect(env).toBe("A=b");
-  const joined = args.join(" ");
-  expect(joined).toContain("[--tools] []");
-  expect(joined).toContain("[--strict-mcp-config]");
-  expect(args).not.toContain("[--mcp-config]");
-  expect(joined).toContain("[--setting-sources] []");
-  expect(joined).toContain("[--max-turns] [1]");
-  expect(joined).toContain("[--model] [haiku]");
+
+  test("Claude: no tools, skills, hooks, MCP or thinking, low effort", async () => {
+    const cli = fakeCli("claude", `echo '{"structured_output":{"title":"Queue refill race"}}'`);
+    expect(await generateSessionTitle({ driver: "claude", binaryPath: cli.binaryPath, env: { A: "b" }, model: "haiku", message: "fix the queue refill race" })).toBe("Queue refill race");
+    const { cwd, env, args } = cli.recorded();
+    expect(fs.existsSync(cwd)).toBe(false);
+    expect(env[0]).toBe("A=b");
+    const joined = args.join(" ");
+    for (const expected of ["[--tools] []", "[--disable-slash-commands]", "[--strict-mcp-config]", "[--setting-sources] []", "[--permission-mode] [dontAsk]", "[--max-turns] [1]", "[--model] [haiku]", "[--effort] [low]"]) {
+      expect(joined).toContain(expected);
+    }
+    expect(joined).toContain(`[--settings] [${JSON.stringify({ disableAllHooks: true, alwaysThinkingEnabled: false })}]`);
+    expect(args).not.toContain("[--mcp-config]");
+  });
+
+  test("Codex: ephemeral, without the user's config, rules or web search", async () => {
+    const cli = fakeCli("codex", `out=""; prev=""; for a in "$@"; do [ "$prev" = "--output-last-message" ] && out="$a"; prev="$a"; done; echo '{"title":"Queue refill race"}' > "$out"`);
+    expect(await generateSessionTitle({ driver: "codex", binaryPath: cli.binaryPath, env: { A: "b" }, model: "gpt-6-luna", effort: "medium", message: "fix it" })).toBe("Queue refill race");
+    const { cwd, env, args } = cli.recorded();
+    expect(fs.existsSync(cwd)).toBe(false);
+    expect(env[0]).toBe("A=b");
+    const joined = args.join(" ");
+    for (const expected of ["[exec] [--ephemeral]", "[--ignore-user-config]", "[--ignore-rules]", "[-s] [read-only]", "[--model] [gpt-6-luna]", '[model_reasoning_effort="medium"]', '[web_search="disabled"]']) {
+      expect(joined).toContain(expected);
+    }
+  });
+
+  test("OpenCode: a pure run with every tool and permission denied", async () => {
+    const lines = [{ type: "step_start" }, { type: "text", part: { text: 'Sure: {"title":' } }, { type: "text", part: { text: '"Queue refill race"}' } }];
+    const cli = fakeCli("opencode", `printf '%s\\n' ${lines.map((line) => `'${JSON.stringify(line)}'`).join(" ")}`, OPENCODE_VERSION);
+    expect(await generateSessionTitle({ driver: "opencode", binaryPath: cli.binaryPath, env: { A: "b" }, model: "anthropic/claude-haiku-4-5", message: "fix it" })).toBe("Queue refill race");
+    const { cwd, env, args } = cli.recorded();
+    expect(fs.existsSync(cwd)).toBe(false);
+    expect(env[0]).toBe("A=b");
+    const config = JSON.parse(env[1]!.slice("CONFIG=".length)) as { permission: string; tools: Record<string, boolean> };
+    expect(config.permission).toBe("deny");
+    expect(config.tools).toEqual({ "*": false });
+    expect(args.join(" ")).toBe("[run] [--format] [json] [--pure] [--model] [anthropic/claude-haiku-4-5]");
+  });
+});
+
+test("the cheap default is the first small-tier model a provider lists", () => {
+  expect(cheapModel(["gpt-6-astra", "gpt-6-luna[1m]", "gpt-6-luna", "gpt-5.5"])).toBe("gpt-6-luna");
+  expect(cheapModel(["opencode/gemini-3-flash", "opencode/claude-haiku-4-5"])).toBe("opencode/claude-haiku-4-5");
+  expect(cheapModel(["google/gemini-3.1-pro"])).toBeUndefined();
 });
 
 describe("maybeRetitleSession", () => {
@@ -172,6 +217,7 @@ describe("maybeRetitleSession", () => {
     titleAfter: string;
     generated: string | undefined;
     message: string;
+    rows: string[];
   }>;
 
   function harness(overrides: Overrides = {}) {
@@ -179,8 +225,9 @@ describe("maybeRetitleSession", () => {
     let title = overrides.title ?? "fix the thing";
     const store: RetitleStore = {
       settings: { textGen: () => overrides.policy ?? { titles: true, renameBranches: true, driver: "claude", model: "haiku" } },
-      records: { get: () => ({ title, state: "active", workspace: { mode: "local", path: "/tmp" } }) },
+      records: { get: () => ({ title, state: "active" }) },
       providers: { resolve: () => ({ enabled: true, env: [{ name: "A", value: "b" }] }) },
+      catalogues: { cachedRows: () => overrides.rows?.map((id) => ({ id })) },
       lifecycle: {
         updateSession: (_id, patch) => {
           calls.updates.push(patch);
@@ -206,6 +253,13 @@ describe("maybeRetitleSession", () => {
     expect(calls.updates).toEqual([{ title: "A Real Title" }]);
     expect(calls.renamed).toEqual(["session_one"]);
     expect(calls.generate[0]).toMatchObject({ driver: "claude", model: "haiku", env: { A: "b" }, message: "fix the thing" });
+  });
+
+  test("OpenCode titles with the cheapest model it lists when the stored one is not an OpenCode id", async () => {
+    const { calls, run } = harness({ policy: { titles: true, renameBranches: true, driver: "opencode", model: "haiku" }, rows: ["google/gemini-3.1-pro", "anthropic/claude-haiku-4-5"] });
+    await run();
+    expect(calls.generate[0]).toMatchObject({ driver: "opencode", model: "anthropic/claude-haiku-4-5" });
+    expect(calls.updates).toEqual([{ title: "A Real Title" }]);
   });
 
   test("an image-only first message keeps its seed — there are no words to title", async () => {
