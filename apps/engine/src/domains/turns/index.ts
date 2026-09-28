@@ -11,3 +11,4 @@ export { TurnIngest } from "./ingest";
 export { isLiveTask, TurnClaims } from "./claims";
 export { TurnRecovery } from "./recovery";
 export { TurnWakes } from "./wakes";
+export { requireRunningClaimFromQueue, WorkerChannel } from "./worker-channel";
