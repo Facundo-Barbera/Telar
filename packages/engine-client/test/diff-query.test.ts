@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery } from "../src/protocol/diff-query";
+import { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery } from "../src/git/diff-query";
 
 const round = (query: string) => parseFilePatchQuery(new URLSearchParams(query));
 
