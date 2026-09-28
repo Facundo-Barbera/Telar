@@ -12,7 +12,6 @@ type Tool = { name?: string; function?: { name?: string } };
 const toolName = (tool: Tool): string => tool.name ?? tool.function?.name ?? "";
 const isTelar = (name: string): boolean => /(^|__|^)telar([-_]|$)/.test(name) || name.startsWith("telar");
 
-/** What Telar's own tools add to one captured provider request body (Anthropic, OpenAI chat or Responses). */
 export function telarToolCost(body: { tools?: Tool[]; messages?: unknown; input?: unknown }): ToolCost {
   const telar = (body.tools ?? []).filter((tool) => isTelar(toolName(tool)));
   const names = [...new Set(JSON.stringify([body.messages ?? [], body.input ?? []]).match(/mcp__telar[\w-]*__\w+/g) ?? [])];
