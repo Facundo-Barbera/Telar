@@ -1,27 +1,13 @@
-/**
- * THE PROJECT NOTEBOOK — the store's rules and the routes that expose them.
- *
- * What is under test is the set of decisions, rather than the getters:
- *   · a note belongs to a PROJECT and every session on it sees the same one;
- *   · `author` is provenance — stamped once, never patchable, and absent on the
- *     HTTP route means the HUMAN's;
- *   · reads are tolerant per row, so a hand-edit that breaks one note costs one
- *     note and not the notebook;
- *   · delete is real (the shelf's retire is deliberately not mirrored) and
- *     deleting what is already gone is not an error;
- *   · `state.ts` is untouched, so the notebook's directory is derived and one
- *     project's file cannot be reached through another's id.
- */
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { createNote, deleteNote, findNote, notesPath, readNotes, sortNotes, updateNote, ProjectNotesError } from "../src/notes";
-import { statePaths } from "../src/state";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { createNote, deleteNote, findNote, notesPath, readNotes, sortNotes, updateNote, ProjectNotesError } from "./store";
+import { statePaths } from "../../state";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -32,8 +18,6 @@ const tmp = (prefix: string): string => {
   return directory;
 };
 
-/** A throwaway repository with one commit — the house idiom, so a project can
- *  actually be registered rather than stubbed. */
 function repo(): string {
   const root = tmp("telar-notes-repo-");
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -69,7 +53,6 @@ describe("the store", () => {
     expect(note.projectId).toBe("p1");
     expect(note.created.at).toBe(note.updated.at);
 
-    // The runtime half, which a cast gets past where the type alone does not.
     expect(() => updateNote(paths, "p1", note.id, { author: "you" } as never)).toThrow(/author/);
     expect(() => updateNote(paths, "p1", note.id, { projectId: "p2" } as never)).toThrow(/identity/);
     expect(readNotes(paths, "p1")[0]!.author).toBe("session");
@@ -87,8 +70,6 @@ describe("the store", () => {
 
   test("an empty body is allowed and a blank title is not", () => {
     const paths = statePaths(tmp("telar-notes-store-"));
-    // "+, type a title, come back to it" is the gesture; a store that refused
-    // the half-written note would lose the title the user just typed.
     expect(createNote(paths, "p1", { title: "Later", body: "", author: "you" }).body).toBe("");
     expect(() => createNote(paths, "p1", { title: "  ", body: "x", author: "you" })).toThrow(/needs a title/);
   });
@@ -120,7 +101,6 @@ describe("the store", () => {
 
   test("a project id that is not a plain slug never becomes a path", () => {
     const paths = statePaths(tmp("telar-notes-store-"));
-    // The one route family where a caller's string becomes a filename.
     expect(() => notesPath(paths, "../escape")).toThrow(ProjectNotesError);
     expect(() => readNotes(paths, "a/b")).toThrow(/not a project id/);
   });
@@ -158,8 +138,6 @@ describe("the routes", () => {
 
   test("pin lifts a note above the unpinned ones, and unpin drops it back", async () => {
     const { client, projectId } = await withProject();
-    // Newest lands at the front of its band, so without a pin the ORDER is
-    // Second, First — and the pin has to be what moves First above it.
     const { note: first } = await client.createProjectNote(projectId, { title: "First" });
     await client.createProjectNote(projectId, { title: "Second" });
     expect((await client.projectNotes(projectId)).notes.map((row) => row.title)).toEqual(["Second", "First"]);
@@ -184,16 +162,12 @@ describe("the routes", () => {
     const { client, engineRoot } = await withProject();
     await expect(client.projectNotes("project_nothing")).rejects.toThrow();
     await expect(client.createProjectNote("project_nothing", { title: "Ghost" })).rejects.toThrow();
-    // And nothing was written for it: `getProject` runs before the store is
-    // reached, so an unknown id cannot leave a file behind.
     expect(fs.existsSync(path.join(engineRoot, "notes", "project_nothing.json"))).toBe(false);
   });
 
   test("a missing note is a 404, and a refusal keeps its sentence", async () => {
     const { client, projectId } = await withProject();
     await expect(client.projectNote(projectId, "n-nothing")).rejects.toThrow();
-    // The store's own words survive the HTTP boundary rather than becoming
-    // "internal error" — see `errorFor`.
     await expect(client.createProjectNote(projectId, { title: "   " })).rejects.toThrow(/needs a title/);
   });
 });

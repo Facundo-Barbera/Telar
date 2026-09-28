@@ -108,12 +108,12 @@ import {
   ensureNotesSocketSecret,
   handleNotesSocketMessage,
   notesSocketConnectCard,
-} from "./notes-tools/socket";
-import type { NotesCapability } from "./notes-tools/tools";
+  ProjectNotesError,
+  type NotesCapability,
+} from "./domains/notes";
 import { DICTATION_OFF, DictationError } from "./dictation/token";
 import { dictationProvider } from "./dictation/provider";
-import * as notebook from "./notes";
-import { ProjectNotesError } from "./notes";
+import * as notebook from "./domains/notes";
 import * as shelf from "./prompts";
 import { PreparedPromptsError } from "./prompts";
 import type { GhRunner } from "./github";

@@ -76,7 +76,7 @@ import type { DisplayCapability } from "./display/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
 import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
 import type { SessionsCapability } from "./sessions-tools/tools";
-import type { NotesCapability } from "./notes-tools/tools";
+import type { NotesCapability } from "./domains/notes";
 import type { PromptsCapability } from "./prompts-tools/tools";
 
 export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";

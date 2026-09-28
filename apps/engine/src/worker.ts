@@ -5,7 +5,7 @@ import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim, Wo
 import { collectTelarWall, telarWall, type TelarCapabilities, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
 import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
-import type { NotesCapability } from "./notes-tools/tools";
+import type { NotesCapability } from "./domains/notes";
 import type { PromptsCapability } from "./prompts-tools/tools";
 import { promptsForComposer } from "./prompts";
 import { createDisplayCapability } from "./display/capability";
