@@ -135,8 +135,7 @@ export function scanStalled(input: {
   const file = executionDatabase(input.engineRoot);
   if (!fs.existsSync(file)) {
     throw new DiagnoseError(
-      `no execution database at ${file} — this scan reads the sqlite backend, which is what a Telar engine writes by default. ` +
-        `A store still on the JSON backend (TELAR_EXECUTION_STORE=json) has no journal here to read.`,
+      `no execution database at ${file} — is this a Telar engine root?`,
     );
   }
   const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");

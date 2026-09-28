@@ -197,7 +197,7 @@ import {
   migrateClaudeCompaction,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
-import { atomicWrite, atomicWriteText } from "./atomic";
+import { atomicWrite } from "./atomic";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
 import {
   boundedOutline,
@@ -1219,13 +1219,6 @@ function assertText(value: unknown): asserts value is string {
   }
 }
 
-/** Stream deltas may legitimately be a space or newline; only user prompts must be non-blank. */
-function assertStreamText(value: unknown): asserts value is string {
-  if (typeof value !== "string" || value.length === 0 || value.length > MAX_TEXT_LENGTH) {
-    throw new EngineStateError("invalid_request", "stream text must be non-empty and within the allowed size");
-  }
-}
-
 function assertAbsolutePath(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || !path.isAbsolute(value)) {
     throw new EngineStateError("invalid_request", `${label} must be an absolute path`);
@@ -1794,10 +1787,6 @@ function prefixKey(sessionId: string, itemId: string): string {
   return `${sessionId}\n${itemId}`;
 }
 
-function eventsFile(paths: EngineStatePaths, sessionId: string): string {
-  return path.join(sessionDir(paths, sessionId), "events.ndjson");
-}
-
 function itemsFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "items.json");
 }
@@ -1849,113 +1838,6 @@ function readJson(file: string): unknown | undefined {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
-  }
-}
-
-/** `[start, end)` of a document file, read at an offset rather than whole —
- *  the file store's half of the windowed read (`document-window.ts`). */
-function readFileSlice(file: string, start: number, end: number): Buffer | undefined {
-  if (end <= start) return Buffer.alloc(0);
-  let handle: number;
-  try {
-    handle = fs.openSync(file, "r");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  try {
-    const span = Buffer.alloc(end - start);
-    const read = fs.readSync(handle, span, 0, span.length, start);
-    return read === span.length ? span : span.subarray(0, read);
-  } finally {
-    fs.closeSync(handle);
-  }
-}
-
-function readJournal(file: string): EngineEvent[] {
-  let raw: Buffer;
-  try {
-    raw = fs.readFileSync(file);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  const complete = raw.at(-1) === 0x0a;
-  const lines = raw.toString("utf8").split("\n");
-  if (complete) lines.pop();
-  const events: EngineEvent[] = [];
-  let repairedInterruptedRecord = false;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (!line) continue;
-    let event: EngineEvent;
-    try {
-      event = JSON.parse(line) as EngineEvent;
-    } catch (error) {
-      // Only an unterminated final record can be an interrupted append. A
-      // malformed complete record is durable corruption and must be surfaced.
-      if (!complete && index === lines.length - 1) {
-        const lastNewline = raw.lastIndexOf(0x0a);
-        fs.truncateSync(file, lastNewline < 0 ? 0 : lastNewline + 1);
-        repairedInterruptedRecord = true;
-        break;
-      }
-      throw error;
-    }
-    if (!Number.isSafeInteger(event.id) || event.id < 1 || !Number.isFinite(event.at) || typeof event.type !== "string") {
-      throw new Error("invalid event journal");
-    }
-    events.push(event);
-  }
-  // A crash can happen after the JSON bytes reached disk but before the
-  // newline. Preserve that valid final observation and restore the NDJSON
-  // delimiter before a subsequent append can concatenate two records.
-  if (!complete && !repairedInterruptedRecord && lines.at(-1)) fs.appendFileSync(file, "\n", { mode: 0o600 });
-  return events;
-}
-
-/**
- * The last complete record's id without parsing the file. A 9 MB journal is
- * ordinary for a long session; reading it whole to learn one integer is the
- * cost this exists to avoid. Reads a window from the end, widening until a
- * complete line is inside it; an interrupted final record (no trailing
- * newline) is skipped, exactly as `readJournal` would repair it.
- */
-function lastEventId(file: string): number {
-  let handle: number;
-  try {
-    handle = fs.openSync(file, "r");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    throw error;
-  }
-  try {
-    const size = fs.fstatSync(handle).size;
-    let window = 4096;
-    while (true) {
-      const start = Math.max(0, size - window);
-      const buffer = Buffer.alloc(size - start);
-      fs.readSync(handle, buffer, 0, buffer.length, start);
-      const text = buffer.toString("utf8");
-      const lines = text.split("\n");
-      // A trailing newline means the last element is "", and the record before
-      // it is complete; otherwise the last element is an unterminated append.
-      lines.pop();
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const line = lines[index]!;
-        if (!line) continue;
-        // The first line of the window may be a partial record unless the
-        // window reaches the start of the file.
-        if (index === 0 && start > 0) break;
-        const id = (JSON.parse(line) as { id?: unknown }).id;
-        if (!Number.isSafeInteger(id) || (id as number) < 1) throw new Error("invalid event journal");
-        return id as number;
-      }
-      if (start === 0) return 0;
-      window *= 4;
-    }
-  } finally {
-    fs.closeSync(handle);
   }
 }
 
@@ -2088,16 +1970,16 @@ const prefetchableRef = (ref: string | undefined): string | undefined =>
   ref === undefined ? "HEAD" : /^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(ref) ? ref : undefined;
 
 export class EngineStore {
-  private executionStore?: ExecutionStore;
+  private readonly executionStore: ExecutionStore;
   private commandDepth = 0;
   private afterCommit: Array<() => void> = [];
   private readDocument(file: string): unknown | undefined {
-    return this.executionStore?.owns(file) ? this.executionStore.read(file) : readJson(file);
+    return this.executionStore.owns(file) ? this.executionStore.read(file) : readJson(file);
   }
   private writeDocument(file: string, value: unknown, mode?: number): void {
     const owner = this.indexedSessionOf(file);
     this.inRowTransaction(owner, () => {
-      if (this.executionStore?.owns(file)) this.executionStore.write(file, value);
+      if (this.executionStore.owns(file)) this.executionStore.write(file, value);
       else atomicWrite(file, value, mode);
     });
     // See `sessionsRevision`. After the write, so a revision a reader observes
@@ -2120,7 +2002,6 @@ export class EngineStore {
    * forget this.
    */
   private indexedSessionOf(file: string): { id: string; movesActivity: boolean } | undefined {
-    if (!this.executionStore) return undefined;
     const name = path.basename(file);
     if (name !== "session.json" && name !== "queue.json" && name !== "requests.json" && name !== "tasks.json") return undefined;
     const relative = path.relative(this.paths.sessions, path.dirname(file));
@@ -2161,7 +2042,7 @@ export class EngineStore {
    * sidebar that disagrees with the conversation behind it.
    */
   private inRowTransaction(owner: { id: string; movesActivity: boolean } | undefined, write: () => void, written?: SessionQueue): void {
-    if (owner === undefined || !this.executionStore) return write();
+    if (owner === undefined) return write();
     if (this.commandDepth > 0) {
       write();
       const owed = this.dirtySessionRows.get(owner.id);
@@ -2209,7 +2090,6 @@ export class EngineStore {
    *  `written` is the queue this command already wrote, when it wrote one — see
    *  `dirtySessionRows`. */
   private storeSessionRow(sessionId: string, movesActivity = true, at = this.settlingClock(), written?: SessionQueue): void {
-    if (!this.executionStore) return;
     const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
     const before = this.executionStore.sessionRow(sessionId);
     // The metadata is gone: the session was deleted inside this command, and
@@ -2376,18 +2256,6 @@ export class EngineStore {
    */
   private bumpRevisionFor(file: string, owner: { id: string } | undefined): void {
     if (owner !== undefined) return;
-    /**
-     * NO INDEX, NO NARROWING. A store on the JSON backend has no `sessions`
-     * table, so no write can be attributed to a session and the allowlist below
-     * would silently stop the rail: every conversation's documents would move
-     * nothing. That store keeps the behaviour it has always had — bump on every
-     * write but the hot one — which is the safe direction and the one the
-     * narrowing above is measured against.
-     */
-    if (!this.executionStore) {
-      if (path.basename(file) !== "items.json") this.listRevision = this.nextRevision();
-      return;
-    }
     // `subscriptions` because a subscription is what makes a session read as
     // `waiting` (`withActivityFrom`): subscribing must redraw the row.
     if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox || file === this.paths.subscriptions || file === this.paths.cohorts) {
@@ -2423,10 +2291,10 @@ export class EngineStore {
    * replaced once sqlite has owned the store a week. Surfaced so the daemon can
    * SAY it: both sweeps delete things nothing can reach, so without a line in
    * the log the only evidence a person has that a quarter of a gigabyte went
-   * away is that it is gone. Absent on a store that never migrated.
+   * away is that it is gone.
    */
   executionHousekeeping(): ExecutionHousekeeping | undefined {
-    return this.executionStore?.housekeeping;
+    return this.executionStore.housekeeping;
   }
 
   /**
@@ -2435,12 +2303,9 @@ export class EngineStore {
    * The sweep runs itself; the VACUUM behind this does not, because it rewrites
    * the database under an exclusive lock (7 s on the owner's gigabyte) to
    * return space that accrues over a month. See `ExecutionStore.reclaim`.
-   *
-   * Absent on a store still running on JSON: there is no database to vacuum,
-   * and saying so is better than reporting a reclamation that did not happen.
    */
-  reclaimExecutionStore(): { before: number; after: number; deltas: number; starts: number; sessions: number; usage: number } | undefined {
-    return this.executionStore?.reclaim();
+  reclaimExecutionStore(): { before: number; after: number; deltas: number; starts: number; sessions: number; usage: number } {
+    return this.executionStore.reclaim();
   }
 
   /**
@@ -2479,25 +2344,21 @@ export class EngineStore {
   /**
    * Write a document and the offset index that lets its tail be read alone.
    *
-   * ONE SERIALISATION, SHARED. The index is byte ranges into the exact text
-   * stored, so the text has to be built here rather than inside each backend:
-   * the JSON store pretty-prints and SQLite does not, and an index measured
-   * against the wrong one of those would point into the middle of a row.
+   * The index is byte ranges into the exact text stored, so the text is built
+   * here, once, and both are measured against it.
    *
    * An unindexable document simply loses its index — the read falls back to
    * parsing the whole thing, which is what every document written before this
    * existed already does.
    */
   private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>, written?: SessionQueue): void {
-    const sqlite = this.executionStore?.owns(file);
-    const text = sqlite ? JSON.stringify(value) : `${JSON.stringify(value, null, 2)}\n`;
+    const text = JSON.stringify(value);
     // The queue is one of the four the row folds over, so it takes the same
     // route `writeDocument` does — document and row, one transaction. `written`
     // is that queue when this IS the queue write, so the row's fold can use it
     // rather than read it back (#547); the item projection passes nothing.
     this.inRowTransaction(this.indexedSessionOf(file), () => {
-      if (sqlite) this.executionStore!.writeText(file, text);
-      else atomicWriteText(file, text);
+      this.executionStore.writeText(file, text);
     }, written);
     const bytes = Buffer.from(text, "utf8");
     const ranges = arrayElementRanges(bytes, property);
@@ -2508,11 +2369,7 @@ export class EngineStore {
       // rather than leaving the PREVIOUS document's index in place to be
       // trusted. No document has a negative length.
       : { version: STATE_VERSION, length: -1, rows: [] };
-    // COMPACT WHATEVER THE BACKEND DOES. This is read on the way to every
-    // windowed snapshot, so it is on the path it exists to shorten; indenting
-    // it would roughly triple the only document a tail read still parses whole.
-    if (this.executionStore?.owns(indexFile)) this.executionStore.write(indexFile, index);
-    else atomicWriteText(indexFile, `${JSON.stringify(index)}\n`);
+    this.executionStore.write(indexFile, index);
   }
 
   /** The index beside `file`, or `undefined` when there is none that still
@@ -2528,13 +2385,7 @@ export class EngineStore {
   }
 
   private documentBytes(file: string): number | undefined {
-    if (this.executionStore?.owns(file)) return this.executionStore.byteLength(file);
-    try {
-      return fs.statSync(file).size;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
-    }
+    return this.executionStore.byteLength(file);
   }
 
   /**
@@ -2551,7 +2402,7 @@ export class EngineStore {
     if (wanted.length === 0) return [];
     const from = Math.min(...wanted.map((row) => row.start));
     const to = Math.max(...wanted.map((row) => row.end));
-    const span = this.executionStore?.owns(file) ? this.executionStore.slice(file, from, to) : readFileSlice(file, from, to);
+    const span = this.executionStore.slice(file, from, to);
     if (!span || span.length !== to - from) throw new EngineStateError("invalid_request", "document index does not describe this document");
     this.readAccounting.documentBytes += span.length;
     this.readAccounting.documentReads += 1;
@@ -2564,9 +2415,8 @@ export class EngineStore {
     this.readAccounting.documentReads += 1;
   }
 
-  closeExecutionStore(): void { this.executionStore?.close(); }
+  closeExecutionStore(): void { this.executionStore.close(); }
   executeCommand<T>(command: string, action: () => T, commandId?: string): T {
-    if (!this.executionStore) return action();
     this.commandDepth += 1;
     let result: T;
     try {
@@ -2588,7 +2438,7 @@ export class EngineStore {
       }, commandId);
     }
     catch (error) {
-      this.journalHead.clear(); this.openPrefixes.clear(); this.liveQueueIndex = undefined;
+      this.openPrefixes.clear(); this.liveQueueIndex = undefined;
       // And the liveness ledger (#813): its stamps came from appends inside the
       // transaction sqlite has just thrown away, so they name records that do
       // not exist. Dropped rather than repaired — `lastProgressOf` falls back
@@ -2746,14 +2596,6 @@ export class EngineStore {
   private readonly browserControlLast = new Map<string, string>();
 
   /**
-   * The last event id this store wrote to each session's journal. Seeded from
-   * disk on the first append after construction (see `appendEvent`) and then
-   * advanced in memory, which is sound only because the daemon lock makes one
-   * process the journal's sole writer. Dropped when the journal is deleted or
-   * a write fails, so the next append re-reads and repairs.
-   */
-  private readonly journalHead = new Map<string, number>();
-  /**
    * WHEN THIS SESSION'S RUNNING TURN LAST PRODUCED EVIDENCE — issue #813.
    *
    * ═══ WHY THIS EXISTS AND WHY IT IS NOT THE HEARTBEAT ═══
@@ -2780,7 +2622,7 @@ export class EngineStore {
    * KEYED BY SESSION, NOT BY RUN, and that is what bounds it: one turn per
    * session is the engine's own invariant, so one entry per session is exact —
    * and the entry carries its `runId` so a stamp left by an earlier run can
-   * never be read as this one's. Bounded exactly as `journalHead` above is, by
+   * never be read as this one's. Bounded by
    * the number of sessions this process has touched rather than by their age.
    *
    * IN MEMORY, AND THE DURABLE COPY IS `Turn.lastProgressAt`. Writing the queue
@@ -3561,7 +3403,6 @@ export class EngineStore {
   copyStoreTo(destination: string): { root: string; files: number; bytes: number } {
     if (!path.isAbsolute(destination)) throw new EngineStateError("invalid_request", "a copy destination must be an absolute path");
     if (fs.existsSync(destination)) throw new EngineStateError("invalid_request", "that folder already exists — choose one Telar can create");
-    if (!this.executionStore) throw new EngineStateError("invalid_request", "this engine is not running on SQLite, so there is nothing to copy");
     fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
     this.executionStore.vacuumInto(path.join(destination, "execution.sqlite"));
     let files = 1;
@@ -3654,7 +3495,6 @@ export class EngineStore {
    */
   retentionPreview(options: { bytes?: boolean } = {}): RetentionBucket[] {
     const store = this.executionStore;
-    if (!store) return [];
     const now = this.now();
     return RETENTION_BUCKET_DAYS.map((days) => ({
       days,
@@ -3677,7 +3517,7 @@ export class EngineStore {
   sweepRetention(): JournalRetirement {
     const store = this.executionStore;
     const policy = this.getRetentionPolicy();
-    if (!store || policy.idleAfterDays === null || !policy.exportTo) return { retired: 0, skipped: 0, events: 0 };
+    if (policy.idleAfterDays === null || !policy.exportTo) return { retired: 0, skipped: 0, events: 0 };
     const now = this.now();
     return store.retireJournal(
       { idleBefore: now - policy.idleAfterDays * 24 * 60 * 60 * 1000, now },
@@ -4913,7 +4753,6 @@ export class EngineStore {
     root: string,
     private readonly now: () => number = Date.now,
     options: {
-      executionStorage?: "json" | "sqlite";
       /**
        * WHAT THE JOURNAL SWEEP REMOVED, once it has — issue #646.
        *
@@ -5027,39 +4866,35 @@ export class EngineStore {
     });
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
-    const migrated = fs.existsSync(this.paths.executionStore) || fs.existsSync(path.join(root, "execution.sqlite"));
-    if (migrated && options.executionStorage === "json") throw new Error("this engine home has migrated to SQLite; restore a backup to downgrade");
-    if (migrated || options.executionStorage !== "json") {
-      // The journal sweep says what it removed when it removes it, which is
-      // seconds AFTER the open rather than during it — the first pass on a
-      // large store is a minute's work and belongs nowhere near the startup
-      // path (#646). `onExecutionHousekeeping` is the daemon's line.
-      this.executionStore = new ExecutionStore(root, {
-        onJournalCompacted: (swept) => options.onExecutionHousekeeping?.({ journal: swept }),
-        // RETENTION RIDES THE SAME CADENCE AND NEVER THE OPEN PATH (#542). The
-        // store owns the mechanism and this owns the policy document, so the
-        // sweep is a call rather than a second implementation of "settled".
-        onRetentionSweep: () => { this.sweepRetention(); },
-      });
-      // `ingestObservations` is NOT here: it wraps itself, because a batch of
-      // nothing but deltas writes no document at all and must not open a
-      // transaction. See the method.
-      const commands = ["createSession", "updateSession", "settleSession", "markSessionRead", "submitTurn", "submitAgentTurn",
-        "claimTurn", "claimNextTurn", "markRunning", "openRequest", "resolveRequest", "completeTurn", "failTurn",
-        "stopSession", "stopTurn", "pauseSession", "resumeSession", "stopBackgroundTasks", "taskStopsForWorker", "openProviderTurn",
-        "reportSessionTasks", "ackSteer", "promoteTurn", "releaseHeldTurn", "discardAmbiguousTurn", "recover", "retireWorkerRegistration",
-        "subscribe", "unsubscribe"] as const;
-      for (const name of commands) {
-        const operation = Reflect.get(this, name) as (...args: unknown[]) => unknown;
-        Object.defineProperty(this, name, { value: (...args: unknown[]) =>
-          this.executeCommand(name, () => Reflect.apply(operation, this, args)) });
-      }
-      // AFTER the commands are wrapped, so the backfill's own writes go through
-      // one transaction rather than one per row.
-      this.sessionIndexBackfill = this.backfillSessionRows();
-      this.turnSummaryBackfill = this.backfillTurnSummaries();
+    // The journal sweep says what it removed when it removes it, which is
+    // seconds AFTER the open rather than during it — the first pass on a
+    // large store is a minute's work and belongs nowhere near the startup
+    // path (#646). `onExecutionHousekeeping` is the daemon's line.
+    this.executionStore = new ExecutionStore(root, {
+      onJournalCompacted: (swept) => options.onExecutionHousekeeping?.({ journal: swept }),
+      // RETENTION RIDES THE SAME CADENCE AND NEVER THE OPEN PATH (#542). The
+      // store owns the mechanism and this owns the policy document, so the
+      // sweep is a call rather than a second implementation of "settled".
+      onRetentionSweep: () => { this.sweepRetention(); },
+    });
+    // `ingestObservations` is NOT here: it wraps itself, because a batch of
+    // nothing but deltas writes no document at all and must not open a
+    // transaction. See the method.
+    const commands = ["createSession", "updateSession", "settleSession", "markSessionRead", "submitTurn", "submitAgentTurn",
+      "claimTurn", "claimNextTurn", "markRunning", "openRequest", "resolveRequest", "completeTurn", "failTurn",
+      "stopSession", "stopTurn", "pauseSession", "resumeSession", "stopBackgroundTasks", "taskStopsForWorker", "openProviderTurn",
+      "reportSessionTasks", "ackSteer", "promoteTurn", "releaseHeldTurn", "discardAmbiguousTurn", "recover", "retireWorkerRegistration",
+      "subscribe", "unsubscribe"] as const;
+    for (const name of commands) {
+      const operation = Reflect.get(this, name) as (...args: unknown[]) => unknown;
+      Object.defineProperty(this, name, { value: (...args: unknown[]) =>
+        this.executeCommand(name, () => Reflect.apply(operation, this, args)) });
     }
-    // On both backends, and before anything can claim a turn — see the method.
+    // AFTER the commands are wrapped, so the backfill's own writes go through
+    // one transaction rather than one per row.
+    this.sessionIndexBackfill = this.backfillSessionRows();
+    this.turnSummaryBackfill = this.backfillTurnSummaries();
+    // Before anything can claim a turn — see the method.
     this.claudeLongWindowMigration = this.migrateBareClaudeIds();
     this.claudeCompactionMigration = this.migrateClaudeCompactionToLimits();
     this.pluginFieldMigration = this.migrateLegacyPluginFieldsOnOpen();
@@ -5253,7 +5088,6 @@ export class EngineStore {
    */
   private backfillSessionRows(): { built: number; removed: number } {
     const store = this.executionStore;
-    if (!store) return { built: 0, removed: 0 };
     const { missing, orphaned } = store.sessionRowGaps();
     if (missing.length === 0 && orphaned.length === 0) return { built: 0, removed: 0 };
     this.executeCommand("backfillSessionIndex", () => {
@@ -5297,7 +5131,6 @@ export class EngineStore {
    */
   private backfillTurnSummaries(): { sessions: number; turns: number } {
     const store = this.executionStore;
-    if (!store) return { sessions: 0, turns: 0 };
     const missing = store.turnSummaryGaps();
     if (missing.length === 0) return { sessions: 0, turns: 0 };
     let turns = 0;
@@ -9238,15 +9071,7 @@ export class EngineStore {
    * how they drift.
    */
   private storedSessionIds(): string[] {
-    if (this.executionStore) return this.executionStore.sessionIds();
-    try {
-      return fs.readdirSync(this.paths.sessions, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && ID.test(entry.name))
-        .map((entry) => entry.name);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
+    return this.executionStore.sessionIds();
   }
 
   /**
@@ -9303,12 +9128,6 @@ export class EngineStore {
    * WHICH ROWS THE RAIL WOULD DRAW, DECIDED WITHOUT READING A CONVERSATION —
    * issue #493.
    *
-   * `undefined` when there is no index to decide from: a store on the JSON
-   * backend has no `sessions` table, and the caller falls back to the fold over
-   * everything that this replaces. That fallback is not dead code — it is the
-   * reference the indexed path is measured against, and every test that
-   * constructs a store without `executionStorage: "sqlite"` runs it.
-   *
    * THE RULE IS THE SAME CALL, ON A NARROWER SHAPE. `rowIsShelved` hands the row
    * to `isShelved` — the clients' own function, imported — exactly as the
    * document path hands it a `Session`. If those two could disagree, the
@@ -9316,10 +9135,8 @@ export class EngineStore {
    * another's shelf; they cannot, because there is one function and the row
    * carries the fields it reads.
    */
-  private shelfFromIndex(inbox: InboxPolicy, all: boolean, keep?: string): { chosen: Set<string>; settledCount: number } | undefined {
-    if (!this.executionStore) return undefined;
-    // ONE CLOCK FOR THE WHOLE FOLD, and it is the STORE'S — see the document
-    // path below for why a test's counting clock must not meet a wall clock here.
+  private shelfFromIndex(inbox: InboxPolicy, all: boolean, keep?: string): { chosen: Set<string>; settledCount: number } {
+    // The store's clock, so a test's counting clock never meets a wall clock.
     const at = { now: this.now(), autoSettleAfterHours: inbox.autoSettleAfterHours };
     const chosen = new Set<string>();
     let settledCount = 0;
@@ -9345,9 +9162,8 @@ export class EngineStore {
      * answer a question about a handful. `(project_id, updated_at)` names them
      * without touching a document, and `readSessions` then pays for those alone.
      */
-    const rows = this.executionStore?.projectSessionRows(projectId);
-    if (rows) return this.readSessions(new Set(rows.map((row) => row.id)));
-    return this.readSessions().filter((session) => session.projectId === projectId);
+    const rows = this.executionStore.projectSessionRows(projectId);
+    return this.readSessions(new Set(rows.map((row) => row.id)));
   }
 
   /**
@@ -9368,21 +9184,9 @@ export class EngineStore {
    * archived still scores nothing and falls through to most-recently-registered
    * (see `composerProject`); and no projectless session, which that fold skips
    * anyway.
-   *
-   * THE DOCUMENT FALLBACK IS THE REFERENCE, not dead code — a store on the JSON
-   * backend has no `sessions` table, and every test that builds one without
-   * `executionStorage: "sqlite"` runs it. It is the same fold, spelled over
-   * records, and `session-index.test.ts` holds the two against each other.
    */
   projectActivity(): { projectId: string; updatedAt: number }[] {
-    const indexed = this.executionStore?.projectActivity();
-    if (indexed) return indexed;
-    const newest = new Map<string, number>();
-    for (const session of this.readSessions()) {
-      if (session.state !== "active" || !session.projectId) continue;
-      if (session.updatedAt > (newest.get(session.projectId) ?? 0)) newest.set(session.projectId, session.updatedAt);
-    }
-    return [...newest].map(([projectId, updatedAt]) => ({ projectId, updatedAt }));
+    return this.executionStore.projectActivity();
   }
 
   /**
@@ -9528,70 +9332,32 @@ export class EngineStore {
      * rule.
      */
     const indexed = this.shelfFromIndex(inbox, options.all === true);
-    if (indexed) {
-      /**
-       * ══ THE INDEXED PATH — issue #493 ══
-       *
-       * The partition was decided above off `sessions` rows, so this reads
-       * documents for the rows that SURVIVED it and for nothing else. On the
-       * owner's store that is seven sessions rather than 291, and the 284 it
-       * skips are the ones whose whole contribution to the old answer was
-       * `settledCount += 1`.
-       *
-       * WHICH DOCUMENTS A SURVIVING ROW STILL COSTS: `session.json`, for the
-       * payload the row deliberately does not carry (title, driver, model,
-       * workspace, usage, `startedFrom`), and `queue.json`, for the assignments
-       * — plus `requests.json` and `tasks.json`, which `withActivityFrom` reads
-       * to re-derive the activity. The row's own activity is not trusted to
-       * serve the wire: it is what the DECISION is made on, and a row a
-       * downgrade left stale must not be able to put a wrong pill on a rail. It
-       * can only put a row on the list that the fold then describes correctly.
-       */
-      const full = this.liveSessions(indexed.chosen);
-      return {
-        ...full,
-        sessions: full.sessions.map(liveRow),
-        inbox,
-        revision,
-        settledCount: indexed.settledCount,
-        terminals: this.terminalsFor(full.sessions.map((session) => session.id)),
-      };
-    }
-    const full = this.liveSessions();
     /**
-     * ONE CLOCK FOR THE WHOLE FOLD, and it is the STORE'S — `this.now()`, the
-     * same clock that stamped every `updatedAt` this compares against. A test
-     * driving a counting clock would otherwise measure its fixtures' staleness
-     * against a wall clock and shelve all of them.
+     * ══ THE INDEXED PATH — issue #493 ══
+     *
+     * The partition was decided above off `sessions` rows, so this reads
+     * documents for the rows that SURVIVED it and for nothing else. On the
+     * owner's store that is seven sessions rather than 291, and the 284 it
+     * skips are the ones whose whole contribution to the old answer was
+     * `settledCount += 1`.
+     *
+     * WHICH DOCUMENTS A SURVIVING ROW STILL COSTS: `session.json`, for the
+     * payload the row deliberately does not carry (title, driver, model,
+     * workspace, usage, `startedFrom`), and `queue.json`, for the assignments
+     * — plus `requests.json` and `tasks.json`, which `withActivityFrom` reads
+     * to re-derive the activity. The row's own activity is not trusted to
+     * serve the wire: it is what the DECISION is made on, and a row a
+     * downgrade left stale must not be able to put a wrong pill on a rail. It
+     * can only put a row on the list that the fold then describes correctly.
      */
-    const at = { now: this.now(), autoSettleAfterHours: inbox.autoSettleAfterHours };
-    const shelved = new Set<string>();
-    for (const session of full.sessions) {
-      /**
-       * TWO FIELDS SPELLED THE RAIL'S WAY, and both are the projection
-       * `toSidebarSession` already makes: `archived` is the `state` enum as the
-       * boolean the rule reads, and `draft` is the PRESENCE of the draft record
-       * (the engine stores a base-ref/branch object; the rail stores whether
-       * there is one). Converting here is what lets the rule be one function.
-       */
-      const settleable = { ...session, archived: session.state === "archived", draft: session.draft !== undefined };
-      if (isShelved(settleable, settlingActivityOf(session), at)) shelved.add(session.id);
-    }
-    const sessions = options.all === true ? full.sessions : full.sessions.filter((session) => !shelved.has(session.id));
+    const full = this.liveSessions(indexed.chosen);
     return {
       ...full,
-      sessions: sessions.map(liveRow),
-      // THE MAP FOLLOWS THE ROWS. An assignment is keyed by the session that
-      // holds it, so an entry for a row this answer does not carry is bytes
-      // describing a conversation the reader cannot see — and on the owner's
-      // store the dropped 284 are most of them.
-      assignments: options.all === true
-        ? full.assignments
-        : Object.fromEntries(Object.entries(full.assignments).filter(([id]) => !shelved.has(id))),
+      sessions: full.sessions.map(liveRow),
       inbox,
       revision,
-      settledCount: shelved.size,
-      terminals: this.terminalsFor(sessions.map((session) => session.id)),
+      settledCount: indexed.settledCount,
+      terminals: this.terminalsFor(full.sessions.map((session) => session.id)),
     };
   }
 
@@ -9626,24 +9392,6 @@ export class EngineStore {
   } {
     this.assertSessionExists(sessionId);
     const store = this.executionStore;
-    /**
-     * NO INDEX TO PAGE: fold the QUEUE, never the journal — `shelfFromIndex`'s
-     * fallback, one projection over. A store on the JSON backend has no
-     * `turn_summaries` table, and answering an empty outline for a conversation
-     * that plainly has turns would be a wrong answer dressed as a cheap one. The
-     * fold is over `queue.json`, which is the document the projection is derived
-     * from anyway, so this route's one promise — that it does not replay events
-     * — holds on both backends.
-     */
-    if (!store) {
-      const all = this.readQueue(sessionId).turns;
-      const above = window.before === undefined ? all : all.filter((turn) => turn.sequence < window.before!);
-      const window_ = above.slice(-(window.limit + 1)).reverse();
-      const rows = window_.map((turn) => outlineRow(summariseTurn(turn, this.itemsForRuns(sessionId, new Set([turn.runId])))));
-      const turns = boundedOutline(rows, window.limit);
-      const more = turns.length < rows.length;
-      return { turns, total: all.length, more, ...(more ? { next: turns.at(-1)!.sequence } : {}) };
-    }
     const read = store.outlineRows(sessionId, window.before, window.limit + 1);
     const page = boundedOutline(read.map(outlineRow), window.limit);
     const more = page.length < read.length;
@@ -9735,12 +9483,8 @@ export class EngineStore {
    * 1.66 MB and 24 ms — a hundred times the read it was guarding, paid to
    * produce a 404 that never comes. The index row answers the same question by
    * primary key.
-   *
-   * THE DOCUMENT PATH IS STILL THE FALLBACK, for a store with no index (the
-   * JSON backend), where there is nothing cheaper to ask.
    */
   private assertSessionExists(sessionId: string): void {
-    if (!this.executionStore) { this.getSession(sessionId); return; }
     if (!this.executionStore.sessionRow(sessionId)) throw new EngineStateError("not_found", "session does not exist");
   }
 
@@ -9795,25 +9539,9 @@ export class EngineStore {
     this.assertSessionExists(sessionId);
     const store = this.executionStore;
     const summary = options.runId === undefined
-      ? store?.latestAnsweredTurn(sessionId)
-      : store?.turnSummary(sessionId, options.runId);
-    /**
-     * NO INDEX TO ASK: fold the QUEUE, never the journal — `turnOutline`'s own
-     * fallback, one projection over, and it is a CORRECTNESS fix rather than a
-     * completeness one.
-     *
-     * Without this a JSON-backed store answered `TURN_ANSWER_NONE` for every
-     * bare call, because the only thing that can name "the latest turn that
-     * left text" is the projection and there is none. The sentence that miss
-     * produces is "this session has never left an answer… do not ask it again"
-     * — a closed door (#592, deliberately) in front of a session whose answer
-     * is sitting in `queue.json`. A refusal that tells a model to stop asking
-     * has to be true on every backend or it is worse than a slow answer.
-     */
-    const folded = options.runId === undefined && !store
-      ? this.readQueue(sessionId).turns.filter((turn) => (turn.resultText ?? "").length > 0).at(-1)?.runId
-      : undefined;
-    const runId = options.runId ?? summary?.runId ?? folded;
+      ? store.latestAnsweredTurn(sessionId)
+      : store.turnSummary(sessionId, options.runId);
+    const runId = options.runId ?? summary?.runId;
     if (runId === undefined) throw new EngineStateError("not_found", TURN_ANSWER_NONE);
     const turn = this.turnByIndex(sessionId, runId);
     if (!turn) throw new EngineStateError("not_found", TURN_ANSWER_NO_SUCH_RUN);
@@ -9852,10 +9580,6 @@ export class EngineStore {
   } {
     this.assertSessionExists(sessionId);
     const store = this.executionStore;
-    // REFUSED, NOT ANSWERED EMPTY. The JSON backend keeps its journal as a file
-    // nothing can scan without reading it whole, which is the cost this route
-    // exists to avoid — and "no matches" would be a lie a caller acts on.
-    if (!store) throw new EngineStateError("conflict", "this engine's store cannot search a journal");
     const read = store.grepEvents(sessionId, pattern, window.before, window.limit + 1);
     const rows = read.length > window.limit ? read.slice(0, window.limit) : read;
     const more = read.length > window.limit;
@@ -9898,9 +9622,6 @@ export class EngineStore {
     more: boolean;
   } {
     const store = this.executionStore;
-    // Refused for `grepSession`'s reason: a search across every conversation on
-    // the machine is exactly the fold the index exists to replace.
-    if (!store) throw new EngineStateError("conflict", "this engine's store cannot search across sessions");
     const terms = query.q.split(/\s+/).map((term) => term.trim()).filter(Boolean);
     const hits = store.searchTurnText(terms, FIND_SCAN);
     const at = { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
@@ -12709,7 +12430,7 @@ export class EngineStore {
       try { project = this.getProject(session.projectId); } catch { continue; }
       if (this.projectAvailability(project) !== "available") continue;
       if (!fs.existsSync(session.workspace.path)) continue;
-      const activity = settlingActivityOf(this.executionStore?.sessionRow(session.id) ?? { activity: session.activity });
+      const activity = settlingActivityOf(this.executionStore.sessionRow(session.id) ?? { activity: session.activity });
       candidates.push({
         sessionId: session.id,
         worktree: session.workspace.path,
@@ -13043,7 +12764,7 @@ export class EngineStore {
     // The event is appended BEFORE the directory goes, so a subscriber watching
     // this session is told why its stream ended rather than simply losing it.
     this.appendEvent(sessionId, { type: "session.archived" });
-    this.executionStore?.deleteSession(sessionId);
+    this.executionStore.deleteSession(sessionId);
     fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
     // A row that left is a change of MEMBERSHIP — the list is shorter, or the
     // shelf's count is — so every reader is told rather than only the side this
@@ -13060,9 +12781,6 @@ export class EngineStore {
     // And the requests went with it: nothing is open on a session that no
     // longer exists, and `writeRequests` will never be called for it again.
     this.liveRequestIndex?.delete(sessionId);
-    // The journal is gone with the directory; a session recreated under this
-    // id starts a new one from 1, not from where the old one stopped.
-    this.journalHead.delete(sessionId);
     // Same argument, for the liveness ledger: a session recreated under this id
     // must not inherit a stamp from the one that was deleted (#813).
     this.runProgress.delete(sessionId);
@@ -13243,14 +12961,6 @@ export class EngineStore {
     this.writeSubscriptions(all.filter((each) => !stale.includes(each)));
     for (const each of stale) this.discardQueuedWakes(each.subscriberSessionId, each.targetSessionId);
     return stale.map((each) => each.id);
-  }
-
-  private dropSubscriptionsBy(subscriberSessionId: string): void {
-    const all = this.readSubscriptions();
-    const removed = all.filter((each) => each.subscriberSessionId === subscriberSessionId);
-    if (removed.length === 0) return;
-    this.writeSubscriptions(all.filter((each) => each.subscriberSessionId !== subscriberSessionId));
-    for (const each of removed) this.discardQueuedWakes(each.subscriberSessionId, each.targetSessionId);
   }
 
   // ── Cohorts — one wake when several sessions are all done ────────────────
@@ -14247,7 +13957,6 @@ export class EngineStore {
    */
   sweepSchedules(): string[] {
     const store = this.executionStore;
-    if (!store) return [];
     const now = this.now();
     const acted: string[] = [];
     for (const row of store.dueSchedules(now)) {
@@ -14294,11 +14003,11 @@ export class EngineStore {
   }
 
   listSchedules(sessionId?: string): ScheduleRow[] {
-    return this.executionStore?.listSchedules(sessionId) ?? [];
+    return this.executionStore.listSchedules(sessionId);
   }
 
   readSchedule(id: string): ScheduleRow | undefined {
-    return this.executionStore?.readSchedule(id);
+    return this.executionStore.readSchedule(id);
   }
 
   /** Create or replace one schedule. The FIRST `nextRunAt` is computed here
@@ -14306,7 +14015,6 @@ export class EngineStore {
    *  row at the past and make the grace rule meaningless. */
   putSchedule(input: { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean }): ScheduleRow {
     const store = this.executionStore;
-    if (!store) throw new EngineStateError("conflict", "schedules need the sqlite execution store");
     if (!input.prompt.trim()) throw new EngineStateError("invalid_request", "a schedule needs a prompt");
     this.requireSession(input.sessionId);
     const now = this.now();
@@ -14330,7 +14038,7 @@ export class EngineStore {
   }
 
   deleteSchedule(id: string): boolean {
-    const deleted = this.executionStore?.deleteSchedule(id) ?? false;
+    const deleted = this.executionStore.deleteSchedule(id);
     if (deleted) this.listRevision = this.nextRevision();
     return deleted;
   }
@@ -14457,23 +14165,10 @@ export class EngineStore {
   /**
    * The rows a wake could still be owed on.
    *
-   * THE INDEXED STORE ANSWERS THIS IN ONE QUERY. The JSON backend has no
-   * `sessions` table to seek, so it pays the walk — the same trade
-   * `bumpRevisionFor` makes, and the same direction: the fallback is slower and
-   * never wrong.
+   * One indexed query.
    */
   private snoozeWakeCandidates(): SessionIndexRow[] {
-    if (this.executionStore) return this.executionStore.dueSnoozeWakes();
-    const rows: SessionIndexRow[] = [];
-    for (const sessionId of this.sessionIds()) {
-      try {
-        const row = indexRow(this.getSession(sessionId));
-        if (row.snoozedUntil !== undefined && row.wokeAt === undefined && !row.archived) rows.push(row);
-      } catch {
-        // Same as the sweep: one unreadable session is not the rest's problem.
-      }
-    }
-    return rows;
+    return this.executionStore.dueSnoozeWakes();
   }
 
   /**
@@ -15154,20 +14849,18 @@ export class EngineStore {
       // "stuck and nobody was told" has to be a detectable state.
       const notify = () => this.notifier?.({ sessionId, runId: turn.runId, requestId: request.id,
         kind: input.kind, title: requestTitle(input.detail) }) ?? false;
-      if (this.executionStore) {
-        request.notified = false;
-        this.afterCommit.push(() => {
-          // Best-effort notification is outside the execution transaction. A
-          // crash here leaves an explicitly unnotified, durable open request.
-          try {
-            const latest = this.readRequests(sessionId);
-            const pending = latest.get(request.id);
-            if (pending?.state !== "open") return;
-            pending.notified = notify();
-            this.writeRequests(sessionId, latest);
-          } catch { /* retain the unnotified request for the next reader */ }
-        });
-      } else request.notified = notify();
+      request.notified = false;
+      this.afterCommit.push(() => {
+        // Best-effort notification is outside the execution transaction. A
+        // crash here leaves an explicitly unnotified, durable open request.
+        try {
+          const latest = this.readRequests(sessionId);
+          const pending = latest.get(request.id);
+          if (pending?.state !== "open") return;
+          pending.notified = notify();
+          this.writeRequests(sessionId, latest);
+        } catch { /* retain the unnotified request for the next reader */ }
+      });
     }
 
     /**
@@ -15364,20 +15057,16 @@ export class EngineStore {
     this.requireSession(sessionId);
     if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
     if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) throw new EngineStateError("invalid_request", "event limit is invalid");
-    if (this.executionStore) return this.executionStore.events(sessionId, after, limit);
-    const tail = readJournal(eventsFile(this.paths, sessionId)).filter((event) => event.id > after);
-    return limit === undefined ? tail : tail.slice(0, limit);
+    return this.executionStore.events(sessionId, after, limit);
   }
 
   /**
    * The id of the last event on the journal — "now", for a client that wants
    * to tail from the snapshot it just read rather than replay from zero.
-   * Journals are append-only with strictly increasing ids, so the last complete
-   * line is the answer; only its tail is read.
    */
   eventCursor(sessionId: string): number {
     this.requireSession(sessionId);
-    return this.executionStore ? this.executionStore.cursor(sessionId) : lastEventId(eventsFile(this.paths, sessionId));
+    return this.executionStore.cursor(sessionId);
   }
 
   /**
@@ -15894,15 +15583,7 @@ export class EngineStore {
    * sessions have work in them. This is one `readdir`.
    */
   private sessionIds(): string[] {
-    if (this.executionStore) return this.executionStore.sessionIds();
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(this.paths.sessions, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-    return entries.filter((entry) => entry.isDirectory() && ID.test(entry.name)).map((entry) => entry.name);
+    return this.executionStore.sessionIds();
   }
 
   /**
@@ -16009,7 +15690,7 @@ export class EngineStore {
     if (stored === undefined) return emptyQueue(sessionId);
     this.accountWholeRead(file);
     this.readAccounting.queueParses += 1;
-    return parseQueue(stored, sessionId, this.executionStore?.owns(file) === true);
+    return parseQueue(stored, sessionId, true);
   }
 
   /** THE ONLY WRITER, which is what lets `liveQueueIndex` and `queueCache` be
@@ -16091,7 +15772,7 @@ export class EngineStore {
     const cached = this.foldedTurnStates.get(sessionId);
     if (cached) return cached;
     const known = new Map<string, Turn["state"]>(
-      (this.executionStore?.turnSummaryStates(sessionId) ?? []).map((row) => [row.runId, row.state as Turn["state"]]),
+      this.executionStore.turnSummaryStates(sessionId).map((row) => [row.runId, row.state as Turn["state"]]),
     );
     if (this.foldedTurnStates.size >= EngineStore.FOLDED_TURNS_LIMIT) {
       const oldest = this.foldedTurnStates.keys().next();
@@ -16121,7 +15802,6 @@ export class EngineStore {
    */
   private reconcileTurnSummaries(sessionId: string, queue: SessionQueue): void {
     const store = this.executionStore;
-    if (!store) return;
     const known = this.knownTurnStates(sessionId);
     const stale = queue.turns.filter((turn) => known.get(turn.runId) !== turn.state);
     const live = new Set(queue.turns.map((turn) => turn.runId));
@@ -16173,7 +15853,7 @@ export class EngineStore {
    */
   private announceQueueChange(): void {
     if (!this.onQueueChanged) return;
-    if (!this.executionStore || this.commandDepth === 0) {
+    if (this.commandDepth === 0) {
       this.onQueueChanged();
       return;
     }
@@ -16193,7 +15873,7 @@ export class EngineStore {
    */
   private announceStoppedClaims(cancellations: StoppedClaim[]): void {
     if (!this.onTurnsStopped || cancellations.length === 0) return;
-    if (!this.executionStore || this.commandDepth === 0) {
+    if (this.commandDepth === 0) {
       this.onTurnsStopped(cancellations);
       return;
     }
@@ -16425,7 +16105,7 @@ export class EngineStore {
    * always false here.
    */
   private itemsOnRows(sessionId: string): boolean {
-    return this.executionStore?.itemsAreRows(sessionId) === true;
+    return this.executionStore.itemsAreRows(sessionId);
   }
 
   /** Set only while the open-path backfill runs — see `backfillTurnSummaries`.
@@ -16453,7 +16133,7 @@ export class EngineStore {
    * it would be a second parse of the text they just parsed.
    */
   private migrateItemsToRows(sessionId: string, items: Map<string, Item>): void {
-    this.executionStore!.migrateItemsToRows(
+    this.executionStore.migrateItemsToRows(
       sessionId,
       [...items.values()].map((item) => ({ id: item.id, runId: item.runId, value: JSON.stringify(item) })),
       // THE OFFSET INDEX GOES WITH THE DOCUMENT IT DESCRIBES. An index left
@@ -16473,7 +16153,7 @@ export class EngineStore {
     const cached = this.itemsCache.get(sessionId);
     if (cached) return cached;
     if (this.itemsOnRows(sessionId)) {
-      const items = this.parseItemRows(this.executionStore!.itemRows(sessionId));
+      const items = this.parseItemRows(this.executionStore.itemRows(sessionId));
       this.cacheItems(sessionId, items);
       return items;
     }
@@ -16520,7 +16200,7 @@ export class EngineStore {
      * has nothing to move, and marking it here would write a metadata row on
      * every read of an empty projection. Its first `writeItems` marks it.
      */
-    if (this.executionStore && !this.suppressItemsMigration) this.migrateItemsToRows(sessionId, items);
+    if (!this.suppressItemsMigration) this.migrateItemsToRows(sessionId, items);
     this.cacheItems(sessionId, items);
     return items;
   }
@@ -16554,7 +16234,7 @@ export class EngineStore {
    * for the span it fetches.
    */
   private itemRowsOf(sessionId: string, runs: readonly string[]): Item[] {
-    const rows = this.executionStore!.itemRowsForRuns(sessionId, runs);
+    const rows = this.executionStore.itemRowsForRuns(sessionId, runs);
     if (rows.length === 0) return [];
     let bytes = 0;
     const seen: unknown[] = [];
@@ -16583,7 +16263,7 @@ export class EngineStore {
   private hasItem(sessionId: string, itemId: string): boolean {
     const cached = this.itemsCache.get(sessionId);
     if (cached) return cached.has(itemId);
-    if (this.itemsOnRows(sessionId)) return this.executionStore!.hasItemRow(sessionId, itemId);
+    if (this.itemsOnRows(sessionId)) return this.executionStore.hasItemRow(sessionId, itemId);
     return this.itemsById(sessionId).has(itemId);
   }
 
@@ -16610,50 +16290,14 @@ export class EngineStore {
    * one needs a delete here to go with it.
    */
   private writeItems(sessionId: string, items: Map<string, Item>, touched?: ReadonlySet<string>): void {
-    if (this.executionStore) {
-      // NOT ON ROWS YET — so this write is the migration. The map in hand is
-      // the post-edit projection, which is exactly what the rows should hold,
-      // and the blob it replaces goes in the same transaction. A session that
-      // never had a blob takes this path once too: the DELETE finds nothing and
-      // the marker is the whole of the work.
-      if (!this.itemsOnRows(sessionId)) this.migrateItemsToRows(sessionId, items);
-      else {
-        const moved = touched ? [...touched].map((id) => items.get(id)).filter((item): item is Item => item !== undefined) : [...items.values()];
-        this.executionStore.upsertItems(sessionId, moved.map((item) => ({ id: item.id, runId: item.runId, value: JSON.stringify(item) })));
-      }
-      this.cacheItems(sessionId, new Map(items));
-      return;
+    // NOT ON ROWS YET — so this write is the migration. The map in hand is the
+    // post-edit projection, which is exactly what the rows should hold.
+    if (!this.itemsOnRows(sessionId)) this.migrateItemsToRows(sessionId, items);
+    else {
+      const moved = touched ? [...touched].map((id) => items.get(id)).filter((item): item is Item => item !== undefined) : [...items.values()];
+      this.executionStore.upsertItems(sessionId, moved.map((item) => ({ id: item.id, runId: item.runId, value: JSON.stringify(item) })));
     }
-    const rows = [...items.values()];
-    this.writeIndexedDocument(
-      itemsFile(this.paths, sessionId),
-      itemsIndexFile(this.paths, sessionId),
-      { version: STATE_VERSION, items: rows },
-      "items",
-      // Keyed by the TURN, not the item: the window chooses turns, and an item
-      // is wanted exactly when its turn is.
-      rows.map((item) => ({ key: item.runId })),
-    );
-    /**
-     * AND THE PROJECTION STAYS, instead of being thrown away — issue #658.
-     *
-     * This line used to be `itemsCache.delete`, which meant every item event
-     * discarded the map this process had just finished writing. The next touch
-     * — on a streaming turn, the next delta — re-read the document, re-parsed
-     * it and re-validated every row through `ItemSchema.array()`: 0.21 ms per
-     * item event on a 100-item session, 11.75 ms on a 7000-item one, on the
-     * thread streaming tokens. The cache exists to spare exactly that read, and
-     * dropping it here put the cost back once per item event.
-     *
-     * Safe to KEEP rather than only safe to drop, because the one way the entry
-     * could come to disagree with sqlite is a rollback, and `executeCommand`
-     * already clears the whole cache when a command throws. The store is the
-     * single writer; nothing else can move the document underneath this.
-     *
-     * A COPY of the caller's map, not the map itself: `readItems` handed that
-     * one out to be mutated, and aliasing it here would let the next caller's
-     * edits reach the cache before a write agreed to them.
-     */
+    // A copy, so a caller's later edits cannot reach the cache before a write.
     this.cacheItems(sessionId, new Map(items));
   }
 
@@ -17376,53 +17020,16 @@ export class EngineStore {
      */
     const at = this.now();
     if (runId) this.runProgress.set(sessionId, { runId, at });
-    // The head is read from disk ONCE per session per store, through the same
-    // parse that validates every record and repairs a torn tail — so a restart
-    // still recovers exactly as before. After that the daemon lock makes this
-    // process the only writer, and the head is whatever it last wrote. Parsing
-    // a 9 MB journal to learn one integer on every append was the cost that
-    // made long sessions sluggish.
-    if (this.executionStore) {
-      const stored = {
-        id: this.executionStore.cursor(sessionId) + 1,
-        at,
-        sessionId,
-        ...(runId ? { runId } : {}),
-        ...event,
-      } as EngineEvent;
-      // NO DIRECTORY, AND NO `eventsFile`. There is no journal file on this
-      // backend — every other writer to `sessions/<id>/` goes through
-      // `atomicWrite`, which makes its own — so the `mkdir` below was a syscall
-      // per streamed token-chunk to guarantee a directory nothing would use.
-      this.executionStore.append(stored);
-      this.publish(stored);
-      return stored;
-    }
-    const file = eventsFile(this.paths, sessionId);
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const head = this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
-    const record = {
-      id: head + 1,
+    const stored = {
+      id: this.executionStore.cursor(sessionId) + 1,
       at,
       sessionId,
       ...(runId ? { runId } : {}),
       ...event,
     } as EngineEvent;
-    // NDJSON is an append-only stream, not a document: do not replace it with
-    // tmp+rename. The daemon lock gives this one writer and each record is one append.
-    try {
-      fs.appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-    } catch (error) {
-      // A failed write may have left a partial record. Forget the head so the
-      // next append goes back through `readJournal`, which repairs the tail
-      // before anything is concatenated onto it.
-      this.journalHead.delete(sessionId);
-      throw error;
-    }
-    this.journalHead.set(sessionId, record.id);
-    fs.chmodSync(file, 0o600);
-    this.publish(record);
-    return record;
+    this.executionStore.append(stored);
+    this.publish(stored);
+    return stored;
   }
 
   /**

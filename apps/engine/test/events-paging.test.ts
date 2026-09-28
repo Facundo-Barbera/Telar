@@ -10,8 +10,8 @@
  * that a client walking the pages sees EXACTLY the journal, once, in order. A
  * page size is easy; a keyset that neither skips nor repeats while the session
  * is still appending is the part that breaks. So the cases below assert the
- * reassembled walk against the unpaged read, on BOTH document backends, and
- * with unflushed deltas deliberately straddling a page boundary.
+ * reassembled walk against the unpaged read, with unflushed deltas
+ * deliberately straddling a page boundary.
  */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -40,18 +40,15 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-type Storage = "json" | "sqlite";
-const BACKENDS: Storage[] = ["json", "sqlite"];
-
 /**
  * A session carrying `deltas` streamed chunks, seeded through the PUBLIC path.
  *
  * Deltas rather than turns because they are what a long journal is actually
- * made of — one per token — and because they are the rows the sqlite backend
- * HOLDS unflushed, which is the case a naive `LIMIT` gets wrong.
+ * made of — one per token — and because they are the rows the store HOLDS
+ * unflushed, which is the case a naive `LIMIT` gets wrong.
  */
-function streaming(storage: Storage, deltas: number, home = root()) {
-  const store = new EngineStore(home, Date.now, { executionStorage: storage });
+function streaming(deltas: number, home = root()) {
+  const store = new EngineStore(home, Date.now);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
@@ -69,57 +66,55 @@ function streaming(storage: Storage, deltas: number, home = root()) {
   return { store, home, token };
 }
 
-for (const storage of BACKENDS) {
-  test(`a bounded read answers with the first page and nothing else (${storage})`, () => {
-    const { store } = streaming(storage, 40);
-    const whole = store.readEvents("session_one");
-    expect(whole.length).toBeGreaterThan(20);
+test("a bounded read answers with the first page and nothing else", () => {
+  const { store } = streaming(40);
+  const whole = store.readEvents("session_one");
+  expect(whole.length).toBeGreaterThan(20);
 
-    const page = store.readEvents("session_one", 0, 20);
-    expect(page).toHaveLength(20);
-    // THE SAME ROWS, not merely the same count: a page is a prefix of the tail.
-    expect(page).toEqual(whole.slice(0, 20));
-  });
+  const page = store.readEvents("session_one", 0, 20);
+  expect(page).toHaveLength(20);
+  // THE SAME ROWS, not merely the same count: a page is a prefix of the tail.
+  expect(page).toEqual(whole.slice(0, 20));
+});
 
-  test(`paging from the last id seen reassembles the journal exactly (${storage})`, () => {
-    const { store } = streaming(storage, 97);
-    const whole = store.readEvents("session_one");
+test("paging from the last id seen reassembles the journal exactly", () => {
+  const { store } = streaming(97);
+  const whole = store.readEvents("session_one");
 
-    const walked = [];
-    let cursor = 0;
-    for (let page = 0; page < 200; page += 1) {
-      const read = store.readEvents("session_one", cursor, 7);
-      if (!read.length) break;
-      walked.push(...read);
-      cursor = read.at(-1)!.id;
-    }
-    // NEITHER SKIPPED NOR REPEATED. An offset-based window would fail exactly
-    // here if anything were appended mid-walk, which is why the cursor is an id.
-    expect(walked.map((event) => event.id)).toEqual(whole.map((event) => event.id));
-    expect(new Set(walked.map((event) => event.id)).size).toBe(walked.length);
-  });
+  const walked = [];
+  let cursor = 0;
+  for (let page = 0; page < 200; page += 1) {
+    const read = store.readEvents("session_one", cursor, 7);
+    if (!read.length) break;
+    walked.push(...read);
+    cursor = read.at(-1)!.id;
+  }
+  // NEITHER SKIPPED NOR REPEATED. An offset-based window would fail exactly
+  // here if anything were appended mid-walk, which is why the cursor is an id.
+  expect(walked.map((event) => event.id)).toEqual(whole.map((event) => event.id));
+  expect(new Set(walked.map((event) => event.id)).size).toBe(walked.length);
+});
 
-  test(`a page that begins mid-journal starts at the row after the cursor (${storage})`, () => {
-    const { store } = streaming(storage, 30);
-    const whole = store.readEvents("session_one");
-    const from = whole[9]!.id;
-    expect(store.readEvents("session_one", from, 5)).toEqual(whole.slice(10, 15));
-  });
+test("a page that begins mid-journal starts at the row after the cursor", () => {
+  const { store } = streaming(30);
+  const whole = store.readEvents("session_one");
+  const from = whole[9]!.id;
+  expect(store.readEvents("session_one", from, 5)).toEqual(whole.slice(10, 15));
+});
 
-  test(`an absent limit still answers with the whole tail (${storage})`, () => {
-    // The export and the in-process folds ask without one, and #494 must not
-    // have quietly truncated them.
-    const { store } = streaming(storage, 25);
-    expect(store.readEvents("session_one", 0, undefined).length).toBe(store.readEvents("session_one").length);
-  });
+test("an absent limit still answers with the whole tail", () => {
+  // The export and the in-process folds ask without one, and #494 must not
+  // have quietly truncated them.
+  const { store } = streaming(25);
+  expect(store.readEvents("session_one", 0, undefined).length).toBe(store.readEvents("session_one").length);
+});
 
-  test(`a limit that is not a positive integer is refused, not defaulted (${storage})`, () => {
-    const { store } = streaming(storage, 3);
-    expect(() => store.readEvents("session_one", 0, 0)).toThrow(/limit/);
-    expect(() => store.readEvents("session_one", 0, -5)).toThrow(/limit/);
-    expect(() => store.readEvents("session_one", 0, 1.5)).toThrow(/limit/);
-  });
-}
+test("a limit that is not a positive integer is refused, not defaulted", () => {
+  const { store } = streaming(3);
+  expect(() => store.readEvents("session_one", 0, 0)).toThrow(/limit/);
+  expect(() => store.readEvents("session_one", 0, -5)).toThrow(/limit/);
+  expect(() => store.readEvents("session_one", 0, 1.5)).toThrow(/limit/);
+});
 
 /** What has actually been COMMITTED, on a second connection — the only way to
  *  separate "the reader saw it" from "the disk has it". Same idiom as
@@ -132,11 +127,10 @@ function committed(home: string): number {
 }
 
 test("unflushed deltas are paged with the stored rows, not appended past the limit", () => {
-  // SQLITE ONLY, because holding a delta in memory is what that backend does
-  // (see FLUSH_COUNT): a page has to be filled from the disk first and topped
-  // up from the buffer, or a bounded read would either overrun its limit or
-  // step over rows that had not been written yet.
-  const { store, home } = streaming("sqlite", 40);
+  // Deltas are held in memory (see FLUSH_COUNT), so a page has to be filled from
+  // disk first and topped up from the buffer, or it would overrun its limit or
+  // step over rows not yet written.
+  const { store, home } = streaming(40);
   const whole = store.readEvents("session_one");
 
   // THE PREMISE OF THE TEST, asserted rather than assumed: some of that tail is

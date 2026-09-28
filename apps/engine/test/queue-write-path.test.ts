@@ -21,7 +21,7 @@
  *
  * AND THEN THE TRADE: VALIDATE ON WRITE, TRUST ON READ, with the refusal
  * surviving it. A turn that violates `Turn` must still be refused — at the
- * write now rather than at the read, and on the JSON backend at both. Every
+ * write now rather than at the read. Every
  * test below that asserts a refusal has a sibling asserting the same shape is
  * ACCEPTED where it should be, so "refuses everything" cannot pass here.
  */
@@ -31,6 +31,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
 import { ExecutionStore } from "../src/execution-store";
+import { toLegacyHome } from "./store-internals";
 
 const roots: string[] = [];
 const stores: EngineStore[] = [];
@@ -49,13 +50,10 @@ afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-type Backend = "sqlite" | "json";
-const BACKENDS: Backend[] = ["sqlite", "json"];
-
 /** A clock that moves, so `activityAt` and `lastTurnEndedAt` are distinguishable. */
-function open(directory: string, backend: Backend, now?: () => number): EngineStore {
+function open(directory: string, now?: () => number): EngineStore {
   let clock = 1_000;
-  const store = new EngineStore(directory, now ?? (() => (clock += 1)), backend === "sqlite" ? {} : { executionStorage: "json" });
+  const store = new EngineStore(directory, now ?? (() => (clock += 1)));
   stores.push(store);
   return store;
 }
@@ -82,57 +80,43 @@ function queueParses(store: EngineStore, action: () => void): number {
 
 // ── the instrument, falsified before anything is proved with it ──────────────
 
-for (const backend of BACKENDS) {
-  test(`a whole-queue read is accounted for, bytes and all (${backend})`, () => {
-    /**
-     * THE COUNTER THIS SUITE USES, CHECKED AGAINST THE DOCUMENT ITSELF.
-     *
-     * `readAccounting` could not see `readQueue` at all before #547 — it was
-     * called from the two windowed reads and nowhere else, so every whole-queue
-     * read counted zero and a fold improvement proved with it would have read
-     * 0 = 0 as success. This test is the one that goes red if that is true
-     * again, and it is deliberately the first in the file.
-     */
-    const directory = root();
-    const store = seeded(open(directory, backend), 4);
-    const turns = store.turns("session_one");
+test("a whole-queue read is accounted for, bytes and all", () => {
+  /**
+   * THE COUNTER THIS SUITE USES, CHECKED AGAINST THE DOCUMENT ITSELF.
+   *
+   * `readAccounting` could not see `readQueue` at all before #547 — it was
+   * called from the two windowed reads and nowhere else, so every whole-queue
+   * read counted zero and a fold improvement proved with it would have read
+   * 0 = 0 as success. This test is the one that goes red if that is true
+   * again, and it is deliberately the first in the file.
+   */
+  const store = seeded(open(root()), 4);
+  const turns = store.turns("session_one");
 
-    store.readAccounting.documentBytes = 0;
-    store.readAccounting.documentReads = 0;
-    store.readAccounting.queueParses = 0;
-    // `turns()` is one `readQueue` and nothing else, which is what makes the
-    // count below exactly one rather than "at least one".
-    expect(store.turns("session_one")).toEqual(turns);
+  store.readAccounting.documentBytes = 0;
+  store.readAccounting.documentReads = 0;
+  store.readAccounting.queueParses = 0;
+  // `turns()` is one `readQueue` and nothing else, which is what makes the
+  // count below exactly one rather than "at least one".
+  expect(store.turns("session_one")).toEqual(turns);
 
-    expect(store.readAccounting.documentReads).toBe(1);
-    expect(store.readAccounting.queueParses).toBe(1);
+  expect(store.readAccounting.documentReads).toBe(1);
+  expect(store.readAccounting.queueParses).toBe(1);
 
-    /**
-     * AND THE BYTES ARE THE DOCUMENT'S BYTES, not a number that is merely
-     * positive. On the JSON backend that is exactly the file on disk, which is
-     * the strongest form this can take. SQLite stores the same document
-     * compactly and there is no file to stat, so it is pinned to the turns it
-     * holds instead: larger than them, and not by much — the rest of the
-     * document is a version, a session id and a sequence.
-     */
-    if (backend === "json") {
-      expect(store.readAccounting.documentBytes).toBe(fs.statSync(path.join(directory, "sessions", "session_one", "queue.json")).size);
-    } else {
-      const rows = Buffer.byteLength(JSON.stringify(turns), "utf8");
-      expect(store.readAccounting.documentBytes).toBeGreaterThanOrEqual(rows);
-      expect(store.readAccounting.documentBytes).toBeLessThan(rows + 200);
-    }
-  });
-}
+  // AND THE BYTES ARE THE DOCUMENT'S BYTES: larger than the turns it holds, and
+  // not by much — the rest is a version, a session id and a sequence.
+  const rows = Buffer.byteLength(JSON.stringify(turns), "utf8");
+  expect(store.readAccounting.documentBytes).toBeGreaterThanOrEqual(rows);
+  expect(store.readAccounting.documentBytes).toBeLessThan(rows + 200);
+});
 
 test("a session whose queue document is missing is not counted as a read", () => {
-  // The floor this would otherwise put under every measurement. `createSession`
-  // writes an empty queue, so the only way to reach the absent branch is a home
-  // that lost the file — a partial restore, a hand-edited directory — and the
-  // accounting must record nothing rather than a zero-byte read.
+  // `createSession` writes an empty queue, so the absent branch is reached by a
+  // legacy home that lost the file; it must record nothing, not a zero-byte read.
   const directory = root();
-  const store = seeded(open(directory, "json"), 1);
+  toLegacyHome(seeded(open(directory), 1), directory);
   fs.rmSync(path.join(directory, "sessions", "session_one", "queue.json"));
+  const store = open(directory);
   store.readAccounting.documentReads = 0;
   store.readAccounting.queueParses = 0;
   expect(store.turns("session_one")).toEqual([]);
@@ -142,64 +126,39 @@ test("a session whose queue document is missing is not counted as a read", () =>
 
 // ── step 2: the row's fold reads nothing the command already wrote ───────────
 
-for (const backend of BACKENDS) {
-  test(`a queue-writing command parses the queue a fixed number of times (${backend})`, () => {
-    /**
-     * THE NUMBERS, AND WHY THEY ARE WRITTEN DOWN RATHER THAN COMPARED.
-     *
-     * Each of the four transitions used to make one MORE whole-queue parse than
-     * this: `storeSessionRow` fetched the document back out of the store and
-     * re-parsed it to fold the activity, immediately after `writeQueue` had
-     * serialised the very same object. Reverting that pass-through turns
-     * 5/4/2/4 into 6/5/3/5 on sqlite, which is the red run this test exists to
-     * produce.
-     *
-     * THE JSON BACKEND IS THE CONTROL, not a second copy of the same proof. It
-     * has no index row at all — `indexedSessionOf` returns nothing without an
-     * execution store — so it never made the extra parse and reverting the
-     * pass-through does not move it. The two agreeing on 5/4/2/4 is the
-     * statement that sqlite now reads the queue as many times as a store with
-     * no row to fold, and no more.
-     */
-    const store = seeded(open(root(), backend), 5);
+test("a queue-writing command parses the queue a fixed number of times", () => {
+  /**
+   * THE NUMBERS, AND WHY THEY ARE WRITTEN DOWN RATHER THAN COMPARED.
+   *
+   * Each of the four transitions used to make one MORE whole-queue parse than
+   * this: `storeSessionRow` fetched the document back out of the store and
+   * re-parsed it to fold the activity, immediately after `writeQueue` had
+   * serialised the very same object. Reverting that pass-through turns
+   * 5/4/2/4 into 6/5/3/5, which is the red run this test exists to produce.
+   */
+  const store = seeded(open(root()), 5);
 
-    expect(queueParses(store, () => store.submitTurn("session_one", { runId: "run_x", input: "hello" }))).toBe(5);
+  expect(queueParses(store, () => store.submitTurn("session_one", { runId: "run_x", input: "hello" }))).toBe(5);
 
-    let token = "";
-    expect(queueParses(store, () => { token = store.claimTurn("session_one", "worker_one")!.claim!.token; })).toBe(4);
-    expect(queueParses(store, () => store.markRunning("session_one", "run_x", token))).toBe(2);
-    expect(queueParses(store, () => store.completeTurn("session_one", "run_x", token, { text: "done" }))).toBe(4);
+  let token = "";
+  expect(queueParses(store, () => { token = store.claimTurn("session_one", "worker_one")!.claim!.token; })).toBe(4);
+  expect(queueParses(store, () => store.markRunning("session_one", "run_x", token))).toBe(2);
+  expect(queueParses(store, () => store.completeTurn("session_one", "run_x", token, { text: "done" }))).toBe(4);
 
-    // AND A WRITE THAT CANNOT HAVE MOVED THE QUEUE still reads it once and not
-    // twice — `indexedSessionOf`'s carve-out means the row carries the folded
-    // fields over rather than folding them again.
-    expect(queueParses(store, () => store.updateSession("session_one", { title: "Renamed" }))).toBe(1);
-  });
-}
+  // AND A WRITE THAT CANNOT HAVE MOVED THE QUEUE still reads it once and not
+  // twice — `indexedSessionOf`'s carve-out means the row carries the folded
+  // fields over rather than folding them again.
+  expect(queueParses(store, () => store.updateSession("session_one", { title: "Renamed" }))).toBe(1);
+});
 
 test("the carried queue is the one the command wrote, at every transition", () => {
-  /**
-   * THE COUNT IS HALF THE CLAIM; THIS IS THE OTHER HALF.
-   *
-   * A pass-through that carried a STALE queue — the first of two writes in one
-   * command, or an object edited after the write — would keep the parse count
-   * at 5/4/2/4 and put a wrong pill on the rail. So the folded row is compared,
-   * transition by transition, against the same conversation folded from the
-   * documents on a store that has no index at all: `session-index.test.ts`'
-   * argument, applied to the write path rather than the read.
-   */
-  /**
-   * ONE CLOCK FOR BOTH, ADVANCED BY HAND. A clock that ticks per `now()` call
-   * gives the two backends different timestamps for the same transition — they
-   * do not read the clock the same number of times — and the comparison below
-   * would then fail for a reason that is not the thing under test.
-   */
+  // A pass-through that carried a STALE queue would keep the parse count at
+  // 5/4/2/4 and put a wrong pill on the rail, so the folded row is pinned at
+  // every transition. The clock only moves by hand.
   let clock = 1_000;
-  const tick = (): number => clock;
-  const indexed = seeded(open(root(), "sqlite", tick), 3);
-  const documents = seeded(open(root(), "json", tick), 3);
+  const store = seeded(open(root(), () => clock), 3);
 
-  const folded = (store: EngineStore): unknown => {
+  const folded = (): unknown => {
     const row = store.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_one")!;
     return {
       activity: row.activity,
@@ -209,30 +168,25 @@ test("the carried queue is the one the command wrote, at every transition", () =
       lastTurnSequence: row.lastTurnSequence,
     };
   };
+  const idle = (endedAt: number, sequence: number) =>
+    ({ activity: "idle", activityAt: undefined, lastTurnEndedAt: endedAt, lastTurnFailed: undefined, lastTurnSequence: sequence });
+  const busy = (activity: string, at: number) =>
+    ({ activity, activityAt: at, lastTurnEndedAt: 1_000, lastTurnFailed: undefined, lastTurnSequence: 3 });
 
-  // The seeded conversations already agree, which is the baseline the steps
-  // below are read against.
-  expect(folded(indexed)).toEqual(folded(documents));
-  expect(folded(indexed)).toMatchObject({ activity: "idle", lastTurnSequence: 3 });
-
-  const step = (action: (store: EngineStore) => void, expected: Record<string, unknown>): void => {
+  expect(folded()).toEqual(idle(1_000, 3));
+  const step = (action: () => void, expected: unknown): void => {
     clock += 10;
-    action(indexed);
-    action(documents);
-    expect(folded(indexed)).toEqual(folded(documents));
-    // …and it is the state we meant, not two stores agreeing on the old answer.
-    expect(folded(indexed)).toMatchObject(expected);
+    action();
+    expect(folded()).toEqual(expected);
   };
 
-  step((store) => store.submitTurn("session_one", { runId: "run_x", input: "hello" }), { activity: "queued" });
-  const tokens = new Map<EngineStore, string>();
-  step((store) => { tokens.set(store, store.claimTurn("session_one", "worker_one")!.claim!.token); }, { activity: "queued" });
-  step((store) => store.markRunning("session_one", "run_x", tokens.get(store)!), { activity: "working" });
-  step((store) => store.completeTurn("session_one", "run_x", tokens.get(store)!, { text: "done" }), { activity: "idle", lastTurnSequence: 4 });
-
-  // A metadata-only write afterwards must not disturb what the queue write
-  // folded — this is the carry-over half of `indexedSessionOf`, still working.
-  step((store) => store.updateSession("session_one", { title: "Renamed" }), { activity: "idle", lastTurnSequence: 4 });
+  let token = "";
+  step(() => store.submitTurn("session_one", { runId: "run_x", input: "hello" }), busy("queued", 1_010));
+  step(() => { token = store.claimTurn("session_one", "worker_one")!.claim!.token; }, busy("queued", 1_010));
+  step(() => store.markRunning("session_one", "run_x", token), busy("working", 1_030));
+  step(() => store.completeTurn("session_one", "run_x", token, { text: "done" }), idle(1_040, 4));
+  // A metadata-only write must not disturb what the queue write folded.
+  step(() => store.updateSession("session_one", { title: "Renamed" }), idle(1_040, 4));
 });
 
 // ── step 3: validate on write, trust on read, refuse either way ──────────────
@@ -270,14 +224,14 @@ test("a malformed turn in the store is refused at the write, not let through", (
   /**
    * THE TRADE THIS STEP MAKES, IN BOTH DIRECTIONS.
    *
-   * On sqlite the schema walk no longer runs per read, so a turn that violates
+   * The schema walk no longer runs per read, so a turn that violates
    * `Turn` is READ without complaint — that is the saving, and pretending
    * otherwise would be testing the wrong thing. What must not change is that
    * the store refuses to carry it: the next write validates every turn and
    * throws, so the bad row cannot be written back and cannot spread.
    */
   const directory = root();
-  const first = seeded(open(directory, "sqlite"), 2);
+  const first = seeded(open(directory), 2);
   const seededTurns = first.turns("session_one");
   const queue = { version: 2, sessionId: "session_one", nextSequence: 9, turns: [...seededTurns, malformedTurn("session_one", 8)] };
   first.closeExecutionStore();
@@ -285,7 +239,7 @@ test("a malformed turn in the store is refused at the write, not let through", (
 
   injectQueue(directory, "session_one", queue);
 
-  const store = open(directory, "sqlite");
+  const store = open(directory);
   // READ: trusted, so the row reaches the caller rather than throwing.
   expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
 
@@ -299,21 +253,17 @@ test("a malformed turn in the store is refused at the write, not let through", (
   store.closeExecutionStore();
   stores.splice(stores.indexOf(store), 1);
   injectQueue(directory, "session_one", clean);
-  const healthy = open(directory, "sqlite");
+  const healthy = open(directory);
   healthy.submitTurn("session_one", { runId: "run_next", input: "hello" });
   expect(healthy.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_next"]);
 });
 
-test("a structurally broken turn is refused on read, on the backend that trusts", () => {
-  /**
-   * TRUST IS ABOUT WHICH PROCESS WROTE THE BYTES, NOT THAT THEY ARE THERE.
-   *
-   * The four fields every reader keys on are checked on both backends, so a
-   * document a downgrade or a migration left behind fails as "invalid session
-   * queue" rather than as an `undefined` on the rail.
-   */
+test("a structurally broken turn is refused on read", () => {
+  // The four fields every reader keys on are still checked, so a document a
+  // downgrade or a migration left behind fails as "invalid session queue"
+  // rather than as an `undefined` on the rail.
   const directory = root();
-  const first = seeded(open(directory, "sqlite"), 2);
+  const first = seeded(open(directory), 2);
   const turns = first.turns("session_one");
   first.closeExecutionStore();
   stores.splice(stores.indexOf(first), 1);
@@ -325,7 +275,7 @@ test("a structurally broken turn is refused on read, on the backend that trusts"
     { ...turns[0]!, state: "mid-flight" },
   ]) {
     injectQueue(directory, "session_one", { version: 2, sessionId: "session_one", nextSequence: 3, turns: [broken] });
-    const store = open(directory, "sqlite");
+    const store = open(directory);
     expect(() => store.turns("session_one")).toThrow(/invalid session queue/);
     store.closeExecutionStore();
     stores.splice(stores.indexOf(store), 1);
@@ -334,27 +284,5 @@ test("a structurally broken turn is refused on read, on the backend that trusts"
   // AND THE SAME ROW, INTACT, READS FINE — four refusals mean nothing without
   // this line.
   injectQueue(directory, "session_one", { version: 2, sessionId: "session_one", nextSequence: 3, turns: [turns[0]!] });
-  expect(open(directory, "sqlite").turns("session_one")).toEqual([turns[0]!]);
-});
-
-test("the JSON backend still validates every turn on read", () => {
-  /**
-   * THE REFERENCE BACKEND KEEPS THE FULL WALK, and this is what says so. A
-   * `queue.json` is an ordinary file — a test rewrites it, an older engine
-   * wrote it, a person can open it — so nothing about which process wrote it
-   * can be assumed, and the schema is the only thing that knows the difference
-   * between `input: "hello"` and `input: 42`.
-   */
-  const directory = root();
-  const store = seeded(open(directory, "json"), 2);
-  const file = path.join(directory, "sessions", "session_one", "queue.json");
-  const document = JSON.parse(fs.readFileSync(file, "utf8")) as { turns: unknown[]; nextSequence: number };
-
-  fs.writeFileSync(file, JSON.stringify({ ...document, turns: [...document.turns, malformedTurn("session_one", 8)] }));
-  expect(() => store.turns("session_one")).toThrow(/invalid session queue/);
-
-  // The same document without the bad turn reads, so the refusal above is the
-  // turn and not the rewrite.
-  fs.writeFileSync(file, JSON.stringify(document));
-  expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1"]);
+  expect(open(directory).turns("session_one")).toEqual([turns[0]!]);
 });

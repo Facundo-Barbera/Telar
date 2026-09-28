@@ -6,9 +6,7 @@
  * only for the rows that survive. Three things have to hold for that to be safe,
  * and each has a test here:
  *
- *   - THE TWO PATHS AGREE. A store with an index and a store without must answer
- *     the same rows, or a conversation is on one machine's list and off
- *     another's. The document path is not dead code; it is the reference.
+ *   - THE PARTITION IS THE ONE WE MEANT, pinned as explicit expected rows.
  *   - THE ROW NEVER OUTLIVES ITS DOCUMENT. It is written in the transaction that
  *     wrote the document, so a command that throws leaves neither.
  *   - THE CURSOR MOVES FOR WHAT THE READER CAN SEE, and not for what it cannot.
@@ -28,7 +26,6 @@ const root = (): string => {
 };
 
 const stores: EngineStore[] = [];
-/** A store on the SQLite backend, which is the only one that has an index. */
 function indexed(directory = root(), clock?: () => number): EngineStore {
   const store = new EngineStore(directory, clock ?? (() => 1_700_000_000_000));
   stores.push(store);
@@ -42,8 +39,8 @@ afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-/** The same handful of sessions on either backend: one plainly live, one pinned
- *  settled, one archived — the three the partition has to get right. */
+/** One plainly live session, one pinned settled, one archived — the three the
+ *  partition has to get right. */
 function seed(store: EngineStore): void {
   store.registerProject({ id: "project_one", name: "Telar", root: "/tmp" });
   for (const id of ["session_aaaa", "session_bbbb", "session_cccc"]) {
@@ -53,23 +50,15 @@ function seed(store: EngineStore): void {
   store.archiveSession("session_cccc");
 }
 
-test("the indexed fold and the document fold answer the same rows", () => {
-  const withIndex = indexed();
-  const withoutIndex = new EngineStore(root(), () => 1_700_000_000_000);
-  stores.push(withoutIndex);
-  seed(withIndex);
-  seed(withoutIndex);
+test("the indexed fold answers the partition the documents describe", () => {
+  const store = indexed();
+  seed(store);
 
-  const ids = (store: EngineStore, all: boolean): string[] =>
-    store.liveSessionRows({ all }).sessions.map((session) => session.id).sort();
-
-  expect(ids(withIndex, false)).toEqual(ids(withoutIndex, false));
-  expect(ids(withIndex, true)).toEqual(ids(withoutIndex, true));
-  expect(withIndex.liveSessionRows().settledCount).toBe(withoutIndex.liveSessionRows().settledCount);
-
-  // And it is the partition we meant, not two empty lists agreeing.
-  expect(ids(withIndex, false)).toEqual(["session_aaaa"]);
-  expect(withIndex.liveSessionRows().settledCount).toBe(1);
+  const ids = (all: boolean): string[] => store.liveSessionRows({ all }).sessions.map((session) => session.id).sort();
+  expect(ids(false)).toEqual(["session_aaaa"]);
+  // The wide answer adds the settled one; archived is in neither.
+  expect(ids(true)).toEqual(["session_aaaa", "session_bbbb"]);
+  expect(store.liveSessionRows().settledCount).toBe(1);
 });
 
 test("the row carries the folded activity, so a blocked session is decided without its queue", () => {
@@ -214,59 +203,29 @@ const ticking = () => {
 };
 
 test("the aggregate and the list it replaces name the same newest project", () => {
-  const withIndex = indexed(root(), ticking());
-  const withoutIndex = new EngineStore(root(), ticking());
-  stores.push(withoutIndex);
-  for (const store of [withIndex, withoutIndex]) {
-    store.registerProject({ id: "project_quiet", name: "Quiet", root: root() });
-    store.registerProject({ id: "project_busy", name: "Busy", root: root() });
-    store.createSession({ id: "session_aaaa", projectId: "project_quiet", title: "older" });
-    store.createSession({ id: "session_bbbb", projectId: "project_busy", title: "newer" });
-    /**
-     * AND ONE ARCHIVED SESSION, TOUCHED LAST, IN THE LOSING PROJECT. Without it
-     * this test passes against an aggregate with no `archived` filter at all —
-     * every row in the fixture would be active and the two spellings could not
-     * disagree. With it, a leak makes `project_quiet` the newest and flips the
-     * ranking, which is the user-visible failure: Telar opens the project you
-     * finished with.
-     */
-    store.createSession({ id: "session_cccc", projectId: "project_quiet", title: "finished last" });
-    store.archiveSession("session_cccc");
-  }
+  const store = indexed(root(), ticking());
+  store.registerProject({ id: "project_quiet", name: "Quiet", root: root() });
+  store.registerProject({ id: "project_busy", name: "Busy", root: root() });
+  store.createSession({ id: "session_aaaa", projectId: "project_quiet", title: "older" });
+  store.createSession({ id: "session_bbbb", projectId: "project_busy", title: "newer" });
+  // AND ONE ARCHIVED SESSION, TOUCHED LAST, IN THE LOSING PROJECT: an aggregate
+  // that leaked archived rows would make `project_quiet` the newest.
+  store.createSession({ id: "session_cccc", projectId: "project_quiet", title: "finished last" });
+  store.archiveSession("session_cccc");
 
-  /** The fold `composerProject` makes, spelled here so the two answers are
-   *  compared as the ranking would use them and not as raw rows. */
-  const rank = (activity: { projectId: string; updatedAt: number }[]): string =>
-    [...activity].sort((left, right) => right.updatedAt - left.updatedAt)[0]!.projectId;
-
-  const indexedActivity = withIndex.projectActivity();
-  const documentActivity = withoutIndex.projectActivity();
-
-  /**
-   * THE INDEXED PATH AND THE DOCUMENT PATH AGREE — the second is the reference.
-   *
-   * COMPARED AS THE RANKING USES THEM, not as raw stamps: the two backends do
-   * not make the same number of `now()` calls to write the same fixture, so
-   * their absolute timestamps are allowed to differ. What may never differ is
-   * WHICH PROJECTS ARE IN THE ANSWER and WHICH ONE COMES OUT ON TOP — the only
-   * two things `composerProject` reads.
-   */
-  expect(indexedActivity.map((entry) => entry.projectId).sort())
-    .toEqual(documentActivity.map((entry) => entry.projectId).sort());
-  expect(rank(indexedActivity)).toBe(rank(documentActivity));
-  // And it is the answer we meant, not two empty lists agreeing.
-  expect(rank(indexedActivity)).toBe("project_busy");
-  expect(indexedActivity).toHaveLength(2);
+  // The fold `composerProject` makes: the newest project wins.
+  const activity = store.projectActivity();
+  expect(activity.map((entry) => entry.projectId).sort()).toEqual(["project_busy", "project_quiet"]);
+  expect([...activity].sort((left, right) => right.updatedAt - left.updatedAt)[0]!.projectId).toBe("project_busy");
 
   // AND IT MATCHES THE WIDE LIST IT REPLACES, folded the way the front door
   // folded it. This is the assertion that would catch a population drift.
   const fromRows = new Map<string, number>();
-  for (const row of withIndex.liveSessionRows({ all: true }).sessions) {
+  for (const row of store.liveSessionRows({ all: true }).sessions) {
     if (!row.projectId) continue;
     if (row.updatedAt > (fromRows.get(row.projectId) ?? 0)) fromRows.set(row.projectId, row.updatedAt);
   }
-  expect(Object.fromEntries(indexedActivity.map((entry) => [entry.projectId, entry.updatedAt])))
-    .toEqual(Object.fromEntries(fromRows));
+  expect(Object.fromEntries(activity.map((entry) => [entry.projectId, entry.updatedAt]))).toEqual(Object.fromEntries(fromRows));
 });
 
 /**

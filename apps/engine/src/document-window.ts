@@ -10,26 +10,21 @@
  * length of the conversation, not the size of the answer, and the cockpit pays
  * it once a second while a turn runs.
  *
- * THE INDEX IS BYTE OFFSETS INTO THE EXACT STORED TEXT. Both backends keep the
- * document as one blob — SQLite in `documents.value`, the JSON store in a file —
- * so one mechanism serves both: record where each array element starts and ends,
- * then read back only the span the window needs and parse that. SQLite slices
- * with `substr` over the value cast to a blob; the file store seeks and reads at
- * an offset. Neither hands the untouched history to JavaScript.
+ * THE INDEX IS BYTE OFFSETS INTO THE EXACT STORED TEXT (`documents.value`):
+ * record where each array element starts and ends, then read back only the span
+ * the window needs — `substr` over the value cast to a blob — and parse that.
  *
  * BYTES, NOT CHARACTERS, and the scanner below works on a `Buffer` for exactly
  * that reason. Conversations are full of non-ASCII, so a UTF-16 string offset
- * and a file offset stop agreeing at the first accented character; SQLite's own
- * `substr` is character-based over TEXT and byte-based over BLOB, and the file
- * store can only seek in bytes. Scanning bytes is safe because every structural
+ * and a byte offset stop agreeing at the first accented character; SQLite's own
+ * `substr` is character-based over TEXT and byte-based over BLOB. Scanning bytes is safe because every structural
  * character in JSON is ASCII and no UTF-8 continuation byte can be mistaken for
  * one.
  *
  * THE OFFSETS ARE DERIVED FROM THE TEXT, NOT FROM THE VALUE. A writer hands
  * this module the string it is about to store and gets back the ranges within
  * it, so the index cannot drift from the document by disagreeing about
- * formatting — the JSON store pretty-prints and SQLite does not, and neither
- * needs to know that here.
+ * formatting.
  */
 
 const QUOTE = 0x22;

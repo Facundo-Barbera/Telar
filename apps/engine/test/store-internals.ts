@@ -1,9 +1,43 @@
 // Test-only reads into store internals, kept out of the production classes.
+import fs from "node:fs";
+import path from "node:path";
 import type { ExecutionStore, TurnPolicyRequests, TurnUsageAggregate } from "../src/execution-store";
 import type { EngineStore } from "../src/state";
 
 type Row = Record<string, unknown> | undefined;
-const db = (store: ExecutionStore) => (store as unknown as { db: { prepare(sql: string): { get(...args: unknown[]): Row } } }).db;
+type Statement = { get(...args: unknown[]): Row; all(...args: unknown[]): Array<Record<string, unknown>> };
+const db = (store: ExecutionStore) => (store as unknown as { db: { prepare(sql: string): Statement } }).db;
+const executionOf = (store: EngineStore) => (store as unknown as { executionStore: ExecutionStore }).executionStore;
+
+/** The SQLite execution store behind an `EngineStore`. */
+export function executionStoreOf(store: EngineStore): ExecutionStore {
+  return executionOf(store);
+}
+
+/**
+ * Rewrite `root` as a pre-SQLite home: every session document and journal as
+ * files, and no database, so the next `EngineStore` open imports it.
+ * `edit` may change a document before it is written.
+ */
+export function toLegacyHome(store: EngineStore, root: string, edit?: (key: string, value: unknown) => unknown): void {
+  const execution = executionOf(store);
+  const documents = db(execution).prepare("SELECT key, value FROM documents WHERE key LIKE 'sessions/%'").all();
+  const journals = new Map<string, string[]>();
+  for (const sessionId of execution.sessionIds()) {
+    journals.set(sessionId, execution.events(sessionId).map((event) => JSON.stringify(event)));
+  }
+  store.closeExecutionStore();
+  for (const name of fs.readdirSync(root)) if (name.startsWith("execution.sqlite") || name === "execution-store.json") fs.rmSync(path.join(root, name));
+  for (const row of documents) {
+    const key = String(row.key);
+    const value = JSON.parse(String(row.value));
+    fs.mkdirSync(path.dirname(path.join(root, key)), { recursive: true });
+    fs.writeFileSync(path.join(root, key), JSON.stringify(edit ? edit(key, value) : value));
+  }
+  for (const [sessionId, lines] of journals) {
+    if (lines.length) fs.writeFileSync(path.join(root, "sessions", sessionId, "events.ndjson"), `${lines.join("\n")}\n`);
+  }
+}
 const openPrefixes = (store: EngineStore) => (store as unknown as { openPrefixes: Map<string, unknown> }).openPrefixes;
 
 /** Drop every cached item prefix, as a restart would. */

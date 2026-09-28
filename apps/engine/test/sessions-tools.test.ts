@@ -1745,46 +1745,6 @@ describe("the six query tools", () => {
     expect(nothing.json!.matches).toEqual([]);
     expect(String(nothing.json!.note)).toContain("substring match");
   });
-
-  /**
-   * THE REFUSAL IS THE FEATURE, and it is the one thing about these two tools a
-   * caller cannot recover from being wrong about. A JSON-backed store has no
-   * way to scan a journal or search across sessions without reading everything,
-   * which is the cost the projection exists to avoid — and "no matches" would
-   * be a sentence an agent acts on and reports onward as fact.
-   */
-  // JSON journal only; deleted with the JSON backend.
-  test("on a store that cannot search, find and grep refuse in words rather than answering empty", async () => {
-    const { store, projectId } = engine({ executionStorage: "json" });
-    const session = store.createSession({ projectId });
-    conversation(store, session.id, "run_1", "the appearance rework", "done");
-    const tools = wall(store);
-
-    const found = await call(tools, "sessions_find", { q: "appearance" });
-    expect(found.isError).toBe(true);
-    expect(found.text).toContain("cannot search across sessions");
-
-    const grepped = await call(tools, "sessions_grep", { sessionId: session.id, pattern: "appearance" });
-    expect(grepped.isError).toBe(true);
-    expect(grepped.text).toContain("cannot search a journal");
-
-    // THE OTHER FOUR STILL ANSWER THERE. `turnOutline` and `turnAnswer` fold
-    // the QUEUE rather than the journal when there is no index, which is why
-    // this backend keeps four of the six rather than none.
-    const outline = await call(tools, "sessions_outline", { sessionId: session.id });
-    expect((outline.json!.turns as unknown[]).length).toBe(1);
-    /**
-     * AND THE BARE `sessions_answer` RESOLVES A RUN HERE TOO. It did not: with
-     * no projection to name "the latest turn that left text", every bare call on
-     * this backend refused with `TURN_ANSWER_NONE` — whose sentence tells a
-     * model there is nothing here and not to ask again, in front of a session
-     * whose answer was in `queue.json`. See `turnAnswer`'s fold.
-     */
-    expect((await call(tools, "sessions_answer", { sessionId: session.id })).json!.text).toBe("done");
-    expect((await call(tools, "sessions_answer", { sessionId: session.id, runId: "run_1" })).json!.text).toBe("done");
-    expect((await call(tools, "sessions_steps", { sessionId: session.id, runId: "run_1" })).json!.total).toBe(3);
-    expect((await call(tools, "sessions_step", { sessionId: session.id, runId: "run_1", step: 0 })).json!.index).toBe(0);
-  });
 });
 
 // ── what the wall is, exactly ───────────────────────────────────────────────

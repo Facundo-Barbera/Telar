@@ -32,9 +32,9 @@ afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-function readyStore(executionStorage?: "json"): { store: EngineStore; root: string } {
+function readyStore(): { store: EngineStore; root: string } {
   const stateRoot = root();
-  const store = new EngineStore(stateRoot, () => 100, { executionStorage });
+  const store = new EngineStore(stateRoot, () => 100);
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
   return { store, root: stateRoot };
@@ -125,25 +125,12 @@ test("submitting a stable run id is idempotent and a session has only one active
   expect(queued.turn.state).toBe("queued");
 });
 
-// JSON journal only; deleted with the JSON backend.
-test("the event cursor is the last journal id, read without the journal", () => {
-  const { store, root: stateRoot } = readyStore("json");
+test("the event cursor is the last journal id", () => {
+  const { store } = readyStore();
   expect(store.eventCursor("session_one")).toBe(1); // session.created
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   store.stopTurn("session_one", "run_one");
-  const whole = store.readEvents("session_one");
-  expect(store.eventCursor("session_one")).toBe(whole.at(-1)!.id);
-
-  // A crash mid-append leaves an unterminated last line; the cursor names the
-  // last COMPLETE record, the same one readJournal keeps after its repair.
-  const file = path.join(stateRoot, "sessions", "session_one", "events.ndjson");
-  fs.appendFileSync(file, '{"id":99,"at":1,"sessionId":"session_one","type":"turn.st');
-  expect(store.eventCursor("session_one")).toBe(whole.at(-1)!.id);
-
-  // A record far larger than the first read window is still found.
-  const big = { id: whole.at(-1)!.id + 1, at: 1, sessionId: "session_one", type: "note", text: "x".repeat(20_000) };
-  fs.writeFileSync(file, `${whole.map((event) => JSON.stringify(event)).join("\n")}\n${JSON.stringify(big)}\n`);
-  expect(store.eventCursor("session_one")).toBe(big.id);
+  expect(store.eventCursor("session_one")).toBe(store.readEvents("session_one").at(-1)!.id);
 });
 
 test("a windowed snapshot is the newest settled turns plus everything unsettled, paged by runId", () => {
@@ -1194,161 +1181,6 @@ test("project roots are canonical existing directories and legacy homes are reje
   } finally {
     if (createdLegacy) fs.rmdirSync(legacy);
   }
-});
-
-// JSON journal only; deleted with the JSON backend.
-test("an interrupted final journal append is truncated, while malformed complete records are rejected", () => {
-  const { store, root: stateRoot } = readyStore("json");
-  const journal = path.join(stateRoot, "sessions", "session_one", "events.ndjson");
-  const valid = fs.readFileSync(journal, "utf8");
-  fs.appendFileSync(journal, '{"id":2');
-  expect(store.readEvents("session_one")).toHaveLength(1);
-  expect(fs.readFileSync(journal, "utf8")).toBe(valid);
-  fs.appendFileSync(journal, JSON.stringify({ id: 2, at: 100, type: "turn.accepted", sessionId: "session_one", runId: "run_one", turn: {}, replayed: false }));
-  expect(store.readEvents("session_one")).toHaveLength(2);
-  expect(fs.readFileSync(journal, "utf8")).toEndWith("\n");
-  fs.appendFileSync(journal, "not-json\n");
-  expect(() => store.readEvents("session_one")).toThrow();
-});
-
-// JSON journal only; deleted with the JSON backend.
-describe("the journal head is read from disk once per store, then kept in memory", () => {
-  /**
-   * `appendEvent` used to parse the whole journal on every append to learn
-   * the last id — 9 MB of JSON per event on a long session. The head is now
-   * cached per session after the first append. What these pin: the cache is
-   * seeded through the same validating, tail-repairing read as before (so a
-   * restart behaves identically), and ordinary appends no longer read the
-   * journal at all.
-   */
-  const journalOf = (stateRoot: string): string => path.join(stateRoot, "sessions", "session_one", "events.ndjson");
-  const ids = (store: EngineStore): number[] => store.readEvents("session_one").map((event) => event.id);
-
-  test("a restarted store continues the id sequence from the journal on disk", () => {
-    const { store, root: stateRoot } = readyStore("json");
-    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-    store.stopTurn("session_one", "run_one");
-    expect(ids(store)).toEqual([1, 2, 3]);
-
-    const restarted = new EngineStore(stateRoot, () => 200, { executionStorage: "json" });
-    restarted.submitTurn("session_one", { runId: "run_two", input: "Again" });
-    expect(ids(restarted)).toEqual([1, 2, 3, 4]);
-    // The original instance's memory is stale after the other wrote — which
-    // is why the daemon lock allows only one live writer. Not a supported
-    // configuration; recorded here so the assumption is visible.
-    expect(fs.readFileSync(journalOf(stateRoot), "utf8").split("\n").filter(Boolean)).toHaveLength(4);
-  });
-
-  test("a restart over a torn final record truncates it before the next append", () => {
-    // The crash happened before the JSON finished reaching disk. The fragment
-    // is not a record; a restart drops it and the next id follows the last
-    // COMPLETE one rather than the torn one's claimed id.
-    const { store, root: stateRoot } = readyStore("json");
-    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-    const journal = journalOf(stateRoot);
-    const intact = fs.readFileSync(journal, "utf8");
-    fs.appendFileSync(journal, '{"id":3,"at":100,"sessionId":"session_one","type":"turn.st');
-
-    const restarted = new EngineStore(stateRoot, () => 200, { executionStorage: "json" });
-    restarted.stopTurn("session_one", "run_one");
-    const after = fs.readFileSync(journal, "utf8");
-    expect(after.startsWith(intact)).toBe(true);
-    // Exactly one record follows the intact prefix — the fragment is gone, not
-    // glued to the front of the new record.
-    const appended = after.slice(intact.length).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    expect(appended).toEqual([expect.objectContaining({ id: 3, type: "turn.stopped" })]);
-    expect(ids(restarted)).toEqual([1, 2, 3]);
-  });
-
-  test("a restart over a valid unterminated record keeps it and restores the delimiter", () => {
-    // The crash happened after the JSON bytes landed but before the newline.
-    // That observation is real and must not be lost; the next append must
-    // not be glued onto it either.
-    const { store, root: stateRoot } = readyStore("json");
-    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-    const journal = journalOf(stateRoot);
-    const unterminated = JSON.stringify({ id: 3, at: 100, sessionId: "session_one", type: "turn.started", runId: "run_one" });
-    fs.appendFileSync(journal, unterminated);
-
-    const restarted = new EngineStore(stateRoot, () => 200, { executionStorage: "json" });
-    restarted.stopTurn("session_one", "run_one");
-    const lines = fs.readFileSync(journal, "utf8").split("\n");
-    expect(lines.at(-1)).toBe("");
-    expect(lines[2]).toBe(unterminated);
-    expect(ids(restarted)).toEqual([1, 2, 3, 4]);
-    expect(restarted.readEvents("session_one").map((event) => event.type)).toEqual([
-      "session.created",
-      "turn.accepted",
-      "turn.started",
-      "turn.stopped",
-    ]);
-  });
-
-  test("ordinary appends do not read the journal", () => {
-    // The whole point. `readJournal` goes through `fs.readFileSync`, and
-    // after the head is seeded no append on this session may touch it —
-    // counted per append so a regression to "read every time" is caught even
-    // if some other read slips in once.
-    const { store, root: stateRoot } = readyStore("json");
-    const journal = journalOf(stateRoot);
-    store.submitTurn("session_one", { runId: "warm", input: "seed the head" });
-    store.stopTurn("session_one", "warm");
-
-    const original = fs.readFileSync;
-    let journalReads = 0;
-    const spy = spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
-      if (args[0] === journal) journalReads += 1;
-      return original.apply(fs, args);
-    }) as typeof fs.readFileSync);
-    try {
-      for (let n = 0; n < 10; n += 1) {
-        store.submitTurn("session_one", { runId: `run_${n}`, input: "x" });
-        store.stopTurn("session_one", `run_${n}`);
-      }
-    } finally {
-      spy.mockRestore();
-    }
-    expect(journalReads).toBe(0);
-    expect(ids(store)).toEqual(Array.from({ length: 23 }, (_, index) => index + 1));
-  });
-
-  test("a deleted session's head is forgotten, so a recreated id starts a fresh journal", () => {
-    const { store } = readyStore("json");
-    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-    store.stopTurn("session_one", "run_one");
-    expect(store.deleteSession("session_one")).toBe(true);
-    store.createSession({ id: "session_one", projectId: "project_one" });
-    expect(ids(store)).toEqual([1]);
-  });
-
-  test("a failed append forgets the head so the next one re-reads and repairs", () => {
-    const { store, root: stateRoot } = readyStore("json");
-    const journal = journalOf(stateRoot);
-    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-
-    // Simulate a write that tore mid-record and then failed: the bytes that
-    // landed are a fragment, and the append threw.
-    const original = fs.appendFileSync;
-    const spy = spyOn(fs, "appendFileSync").mockImplementation(((...args: Parameters<typeof fs.appendFileSync>) => {
-      if (args[0] === journal) {
-        original.call(fs, journal, '{"id":3,"at":100,"sess', { mode: 0o600 });
-        throw new Error("ENOSPC: simulated");
-      }
-      return original.apply(fs, args);
-    }) as typeof fs.appendFileSync);
-    try {
-      expect(() => store.stopTurn("session_one", "run_one")).toThrow(/ENOSPC/);
-    } finally {
-      spy.mockRestore();
-    }
-    // The next append goes back through the repairing read: the fragment is
-    // gone, and the id continues from the last complete record. (The queue
-    // already recorded the stop before the append failed, so the follow-up
-    // append is a fresh submission rather than a second stop.)
-    store.submitTurn("session_one", { runId: "run_two", input: "Next" });
-    expect(ids(store)).toEqual([1, 2, 3]);
-    expect(fs.readFileSync(journal, "utf8")).not.toContain('"sess{');
-  });
 });
 
 test("stale lock recovery uses exclusive replacement and never removes a newly held lock", () => {
