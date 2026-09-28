@@ -33,7 +33,7 @@
     "test:desktop:smoke": "bun run --cwd apps/desktop test:desktop:smoke",
     "test:desktop:e2e": "bun run --cwd apps/desktop test:desktop:e2e",
     "knip": "knip",
-    "lint:ox": "oxlint -c .oxlintrc.json apps/engine apps/desktop packages/engine-client"
+    "lint:ox": "oxlint -c .oxlintrc.json --deny-warnings apps/engine apps/desktop packages/engine-client"
   },
   "devDependencies": {
     "knip": "^6.38.0",
