@@ -21,7 +21,7 @@
  * ────────────────────────────────────────────────────────────────────────────
  */
 import { expect, test } from "bun:test";
-import { MAX_DIFF_CHARS, unifiedDiff } from "../src/domains/git/diff";
+import { MAX_DIFF_CHARS, unifiedDiff } from "./diff";
 
 const HUNK = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] };
 

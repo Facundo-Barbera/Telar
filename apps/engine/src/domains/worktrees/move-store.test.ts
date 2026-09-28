@@ -8,7 +8,7 @@
  * naming a path that no longer exists would have broken the app to save disk.
  *
  * THROUGH `EngineStore` RATHER THAN THE DAEMON, the way every other
- * worktree-session test here works (`project-volume.test.ts`): the cut happens
+ * worktree-session test here works (`domains/projects/volume.test.ts`): the cut happens
  * in the store, and the HTTP layer above it is a route that calls this method
  * and serialises the answer.
  */
@@ -17,8 +17,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { writeWorktreesRoot } from "../src/domains/worktrees";
+import { EngineStore } from "../../state";
+import { writeWorktreesRoot } from ".";
 
 const made: string[] = [];
 const tmp = (prefix: string): string => {

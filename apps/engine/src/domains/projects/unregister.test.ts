@@ -17,7 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pluginBlock } from "@telar/engine-client";
-import { EngineStateError, EngineStore } from "../src/state";
+import { EngineStateError, EngineStore } from "../../state";
 
 const roots: string[] = [];
 const dir = (prefix: string): string => {

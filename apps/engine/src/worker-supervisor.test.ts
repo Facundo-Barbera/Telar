@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
+import { WorkerReconnectController, type SupervisedWorker } from "./worker-supervisor";
 
 test("a connection loss during the first registration retries instead of publishing a disconnected worker", async () => {
   let attempts = 0;

@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { flushUsageScanCaches, readUsageReport, resetUsageScanCaches, warmUsageScanCache, type UsageScanRoots } from "../src/usage";
-import type { RatesTable } from "../src/domains/usage";
+import { flushUsageScanCaches, readUsageReport, resetUsageScanCaches, warmUsageScanCache, type UsageScanRoots } from "./usage";
+import type { RatesTable } from "./domains/usage";
 
 const roots: string[] = [];
 const tmp = (): string => {

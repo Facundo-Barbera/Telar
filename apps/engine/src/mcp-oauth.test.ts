@@ -29,8 +29,8 @@ import {
   resolveRedirectUri,
   type AuthServerMeta,
   type McpOAuthRecord,
-} from "../src/mcp-oauth";
-import { EngineStore } from "../src/state";
+} from "./mcp-oauth";
+import { EngineStore } from "./state";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld

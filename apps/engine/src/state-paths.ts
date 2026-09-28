@@ -13,7 +13,7 @@
  * A module that imports nothing but `node:path` can be imported by ALL of them,
  * which is what makes "`statePaths` is the only way to name a store-root file"
  * a property rather than an aspiration — and it is the precondition for
- * `store-shape.test.ts`, whose allowlist IS this list. A file composed by hand
+ * `domains/storage/store-shape.test.ts`, whose allowlist IS this list. A file composed by hand
  * is a file the store shape does not know about, and the invariant test now
  * fails on one.
  *

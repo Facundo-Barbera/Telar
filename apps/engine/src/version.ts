@@ -10,7 +10,7 @@
  * `opencode/version.ts` is one: this package compiles with `include: ["src"]`
  * and ships through a packager that rewrites layout, so reaching outside the
  * source tree for a number is a build-shaped dependency for a string. The drift
- * that buys is caught by `test/version.test.ts`, which asserts the two agree —
+ * that buys is caught by `src/version.test.ts`, which asserts the two agree —
  * so bumping the package without bumping this fails the suite rather than
  * quietly telling a provider the wrong thing.
  */

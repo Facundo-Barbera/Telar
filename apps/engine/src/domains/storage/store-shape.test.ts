@@ -63,8 +63,8 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore, statePaths } from "../src/state";
-import { DIRECTORY_CATEGORIES } from "../src/domains/storage";
+import { EngineStore, statePaths } from "../../state";
+import { DIRECTORY_CATEGORIES } from ".";
 
 const scratch: string[] = [];
 const stores: EngineStore[] = [];
