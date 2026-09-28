@@ -1,13 +1,19 @@
 // Test-only reads into store internals, kept out of the production classes.
 import fs from "node:fs";
 import path from "node:path";
-import type { ExecutionStore, TurnPolicyRequests, TurnUsageAggregate } from "../src/execution-store";
+import type { ExecutionStore } from "../src/platform/db/execution-store";
+import type { TurnPolicyRequests } from "../src/platform/db/journal-maintenance";
 import type { EngineStore } from "../src/state";
+
+type TurnUsageAggregate = {
+  tokens: { input: number; output: number; cacheRead: number; cacheCreate: number; reasoning: number };
+  rows: number;
+};
 
 type Row = Record<string, unknown> | undefined;
 type Statement = { get(...args: unknown[]): Row; all(...args: unknown[]): Array<Record<string, unknown>> };
 const db = (store: ExecutionStore) => (store as unknown as { db: { prepare(sql: string): Statement } }).db;
-const executionOf = (store: EngineStore) => (store as unknown as { executionStore: ExecutionStore }).executionStore;
+const executionOf = (store: EngineStore) => (store as unknown as { kernel: { executionStore: ExecutionStore } }).kernel.executionStore;
 
 /** The SQLite execution store behind an `EngineStore`. */
 export function executionStoreOf(store: EngineStore): ExecutionStore {
@@ -26,7 +32,7 @@ export function toLegacyHome(store: EngineStore, root: string, edit?: (key: stri
   for (const sessionId of execution.sessionIds()) {
     journals.set(sessionId, execution.events(sessionId).map((event) => JSON.stringify(event)));
   }
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   for (const name of fs.readdirSync(root)) if (name.startsWith("execution.sqlite") || name === "execution-store.json") fs.rmSync(path.join(root, name));
   for (const row of documents) {
     const key = String(row.key);
@@ -38,7 +44,7 @@ export function toLegacyHome(store: EngineStore, root: string, edit?: (key: stri
     if (lines.length) fs.writeFileSync(path.join(root, "sessions", sessionId, "events.ndjson"), `${lines.join("\n")}\n`);
   }
 }
-const openPrefixes = (store: EngineStore) => (store as unknown as { openPrefixes: Map<string, unknown> }).openPrefixes;
+const openPrefixes = (store: EngineStore) => (store as unknown as { prefixes: { clear(): void; size: number } }).prefixes;
 
 /** Drop every cached item prefix, as a restart would. */
 export function forgetOpenPrefixes(store: EngineStore): void {

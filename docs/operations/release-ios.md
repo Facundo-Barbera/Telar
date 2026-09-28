@@ -11,7 +11,7 @@ The iOS app ships only through TestFlight. A maintainer cuts a nightly by pushin
 | `io.github.novarix.telar.dev` | "Telar Dev": a Debug build with the amber icon, installed by cable through `apps/ios/phone.sh`. iOS treats it as a separate app from the TestFlight build, and each keeps its own pairing. |
 | `io.github.novarix.telar.dev.activity` | The extension inside "Telar Dev". |
 
-The push relay (`workers/push-relay/v2.mjs`) and the cockpit's push topics (`apps/web/lib/mobile/push.ts`) accept the app and `.dev` ids.
+The push relay (`workers/push-relay/v2.mjs`) and the engine's push topics (`apps/engine/src/domains/push/push.ts`) accept the app and `.dev` ids.
 
 To change the id, override `TELAR_APP_BUNDLE_ID`. Never override `PRODUCT_BUNDLE_IDENTIFIER`, because the app and the extension would then share one id. The only entitlement is `aps-environment`: `development` in Debug and `production` in Release (`Config/TelarMobile.entitlements`). There are no app groups. The team is `MM74W7WGAM`.
 
@@ -135,7 +135,7 @@ To offer an existing upload to the external group again, for example after the p
 apps/ios/testflight-external.sh 202609270517
 ```
 
-`testflight-external.sh` accepts these optional overrides: `TELAR_ASC_APP_ID`, `TELAR_TESTFLIGHT_EXTERNAL_GROUP`, `TELAR_ASC_POLL_SECONDS`, `TELAR_ASC_POLL_TIMEOUT_SECONDS` and `TELAR_TESTFLIGHT_WHATS_NEW`. Both TestFlight scripts share `apps/ios/asc.sh`, which mints a fresh ES256 JWT for each call and never prints it. Their tests are in `apps/desktop/testflight-external.test.js`, with `curl` stubbed:
+`testflight-external.sh` accepts these optional overrides: `TELAR_ASC_APP_ID`, `TELAR_TESTFLIGHT_EXTERNAL_GROUP`, `TELAR_ASC_POLL_SECONDS`, `TELAR_ASC_POLL_TIMEOUT_SECONDS` and `TELAR_TESTFLIGHT_WHATS_NEW`. Both TestFlight scripts share `apps/ios/asc.sh`, which mints a fresh ES256 JWT for each call and never prints it. Their tests are in `apps/desktop/scripts/testflight-external.test.js`, with `curl` stubbed:
 
 ```sh
 cd apps/desktop && bun test testflight-external.test.js
@@ -143,7 +143,7 @@ cd apps/desktop && bun test testflight-external.test.js
 
 ## Pull request gate
 
-`verify.yml`'s `ios` job runs on a Mac only when `ios-paths.sh` matches a changed path: `apps/ios/**`, `verify.yml` or `ios-paths.sh`. Changes to `nightly-ios.yml` and `ios-export-probe.yml` do not trigger it. The job:
+`verify.yml`'s `ios` job runs on a Mac only when `ios-paths.sh` matches a changed path: `apps/ios/**` or `ios-paths.sh`. Changes to `verify.yml`, `nightly-ios.yml` and `ios-export-probe.yml` do not trigger it; to prove an edit to the job itself, touch a file under `apps/ios`. The job:
 
 1. Archives Release unsigned and asserts that both the app and the extension are Mach-O binaries.
 2. Reports the Swift expressions over the 500 ms type-check floor. This step never fails on slow expressions.

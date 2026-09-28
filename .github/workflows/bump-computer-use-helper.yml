@@ -4,7 +4,7 @@ name: Bump bundled cua-driver
 # rebuilds trycua/cua's CuaDriver.app as "Computer Use for Telar", under
 # Telar's own bundle id so a user's Accessibility / Screen Recording grants
 # survive an update). The pin that names which release that is lives in
-# apps/desktop/computer-use-helper.json, and nothing else ever moves it
+# apps/desktop/src/main/computer-use-helper.json, and nothing else ever moves it
 # forward — upstream cutting a new stable cua-driver-rs tag is invisible to
 # this repo until something goes and looks. This workflow is that look, on a
 # schedule, and it opens a PR rather than committing straight to main: see the
@@ -31,7 +31,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
-      PIN_FILE: apps/desktop/computer-use-helper.json
+      PIN_FILE: apps/desktop/src/main/computer-use-helper.json
     steps:
       - uses: actions/checkout@v4
 

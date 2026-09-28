@@ -32,14 +32,14 @@
  *
  * ── WHAT WOULD MAKE THIS LIE ───────────────────────────────────────────────
  * A pricing function that returns zero, or a model in which the two thresholds
- * do the same work. Both are checked in `test/compaction-cost.test.ts` — one of
+ * do the same work. Both are checked in `src/domains/usage/compaction-cost.test.ts` — one of
  * them by freezing the rate table to all-zero and asserting the comparison goes
  * red, which is this repository's own rule after six performance tests passed
  * while measuring a frozen clock.
  *
  * Run: `bun run --cwd apps/engine bench:compaction`
  */
-import { priceTokens, type RatesTable } from "../src/usage-pricing";
+import { priceTokens, type RatesTable } from "../src/domains/usage";
 
 /**
  * LIST PRICE AS RATIOS OF THE INPUT RATE, which is what makes this a fixture
@@ -192,7 +192,7 @@ export function sweep(hitRates: number[] = [0, 0.5, 0.9, 1]): Row[] {
 /** The multiplier #587 states as ~3.5×, per cache-hit assumption. */
 export function multipliers(rows: Row[]): { cacheHitRate: number; flatRatio: number; billedRatio: number }[] {
   const out: { cacheHitRate: number; flatRatio: number; billedRatio: number }[] = [];
-  for (const rate of [...new Set(rows.map((row) => row.cacheHitRate))]) {
+  for (const rate of new Set(rows.map((row) => row.cacheHitRate))) {
     const small = rows.find((row) => row.cacheHitRate === rate && row.thresholdTokens === THRESHOLDS[0]);
     const large = rows.find((row) => row.cacheHitRate === rate && row.thresholdTokens === THRESHOLDS[1]);
     if (!small || !large) continue;

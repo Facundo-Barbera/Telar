@@ -153,19 +153,19 @@ log "bun install --frozen-lockfile (snapshot)"
 NODE_OPTIONS= bun install --frozen-lockfile
 
 # --- computer-use helper (cua-driver, pinned) --------------------------------
-# Downloaded from the release pinned in apps/desktop/computer-use-helper.json,
+# Downloaded from the release pinned in apps/desktop/src/main/computer-use-helper.json,
 # refused unless its sha256 matches, rebuilt under Telar's bundle id and signed
 # with the Developer ID electron-builder is about to use (ad-hoc when there is
 # none, exactly as Telar itself then is). ANY failure here fails the build: a
 # release without its helper would silently hand computer use back to whatever
 # cua install the machine happens to have. after-pack.js re-checks the artefact.
-log "computer-use helper (cua-driver pinned in apps/desktop/computer-use-helper.json)"
+log "computer-use helper (cua-driver pinned in apps/desktop/src/main/computer-use-helper.json)"
 NODE_OPTIONS= bun scripts/computer-use-helper.mjs --out "$SNAP/apps/desktop/vendor/computer-use" --sign auto
 export TELAR_REQUIRE_COMPUTER_USE_HELPER=1
 
 # --- standalone web build ----------------------------------------------------
-log "build-app.sh (standalone Next server)"
-NODE_OPTIONS= bash apps/desktop/build-app.sh
+log "scripts/build-app.sh (standalone Next server)"
+NODE_OPTIONS= bash apps/desktop/scripts/build-app.sh
 
 # --- stamp build-info.json into the desktop resources (BEFORE packaging) -----
 # It lands at the root of the standalone tree, which electron-builder copies to
@@ -177,7 +177,7 @@ NODE_OPTIONS= bash apps/desktop/build-app.sh
 # apps/web/package.json into the bundle — and it is bumped in the SHELL's
 # package.json, which a packaged Next server cannot read out of app.asar. So the
 # flag that picked the channel writes it down here, and /api/about reports it
-# (apps/web/lib/build-identity.ts). Empty for an unchannelled build, which reads
+# (apps/engine/src/domains/updates/identity.ts). Empty for an unchannelled build, which reads
 # as "stable" — a build somebody cut.
 STANDALONE="$SNAP/apps/web/.next-desktop/standalone"
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -255,9 +255,8 @@ if codesign -dv "$BUILT_APP" >/dev/null 2>&1; then
   # update into an installed app.
   codesign --verify --deep --strict "$BUILT_APP"
   # The helper is signed apart from Telar (see computer-use-helper.mjs), so
-  # prove it carries the SAME team: a mismatch fails notarization at best and,
-  # for an un-notarized nightly, ships a helper macOS will not trust.
-  HELPER_NAME="$(NODE_OPTIONS= bun -e 'process.stdout.write(require(process.argv[1]).appName)' "$SNAP/apps/desktop/computer-use-helper.json")"
+  # prove it carries the same team, or notarization fails.
+  HELPER_NAME="$(NODE_OPTIONS= bun -e 'process.stdout.write(require(process.argv[1]).appName)' "$SNAP/apps/desktop/src/main/computer-use-helper.json")"
   HELPER_APP="$BUILT_APP/Contents/Helpers/$HELPER_NAME.app"
   team_of() { codesign -dv "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p'; }
   if [ "$(team_of "$HELPER_APP")" != "$(team_of "$BUILT_APP")" ]; then
@@ -265,20 +264,8 @@ if codesign -dv "$BUILT_APP" >/dev/null 2>&1; then
     exit 1
   fi
   log "computer-use helper signed by the same team as Telar"
-  # GATEKEEPER ACCEPTANCE, only when the build was actually notarized.
-  #
-  # `spctl --assess` asks "would macOS let a user open this if they downloaded
-  # it", and for a Developer ID app the answer is NO until it has been
-  # notarized — it exits 3 with `source=Unnotarized Developer ID`. So running it
-  # unconditionally asserts a property an un-notarized build cannot have, and
-  # the nightly channel deliberately does not notarize (see nightly-desktop.yml:
-  # notarization was 57% of the build and is billed at a 10x multiplier).
-  #
-  # That is exactly how this broke: the nightly signed fine, correctly skipped
-  # notarization, produced its zip and blockmap, and then failed here on a check
-  # that could never have passed. Notarization is inferred the same way
-  # electron-builder infers it — from the App Store Connect credentials being
-  # present — so the two can never disagree about whether it happened.
+  # spctl rejects a Developer ID app until it is notarized, and electron-builder
+  # notarizes exactly when these credentials are set, so assess under the same test.
   if [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ]; then
     spctl -a -vvv --type execute "$BUILT_APP"
   else

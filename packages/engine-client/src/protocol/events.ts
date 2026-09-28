@@ -1,8 +1,8 @@
-import { PluginStatus } from "./plugins";
+import { PluginStatus } from "../plugins/schema";
 import { z } from "zod";
 import { BrowserProvider, BrowserTab, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
-import { Project, Runtime, RuntimeState, Session, SessionSettledBy, Turn, TurnFailure } from "./entities";
+import { Runtime, RuntimeState, Session, SessionSettledBy, Turn, TurnFailure } from "./entities";
 import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
 import { Task } from "./tasks";
 
@@ -210,7 +210,6 @@ export const EngineEvent = z.discriminatedUnion("type", [
 ]);
 export type EngineEvent = z.infer<typeof EngineEvent>;
 
-export type EngineEventType = EngineEvent["type"];
 
 export function safeParseEvent(value: unknown): EngineEvent | null {
   const parsed = EngineEvent.safeParse(value);

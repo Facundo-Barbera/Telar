@@ -1,0 +1,39 @@
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
+
+/**
+ * How the sidebar bands its list — the auto-settle window, and whether there is
+ * one at all.
+ *
+ * ENVIRONMENT-SCOPED, like the MCP registry beside it, and for the sharper
+ * version of the same reason: this decides which band EVERY session lands in,
+ * so a per-browser copy would show the desktop shell and a browser tab two
+ * different inboxes off one engine.
+ *
+ * THE WINDOW IS FORWARDED UNVALIDATED. The engine holds the bound (1..90, or
+ * `null` for no clock) next to the schema that states it; re-checking here
+ * would be a second copy of a rule that could disagree with the first.
+ */
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).inboxPolicy());
+});
+
+export const PATCH = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).setInboxPolicy({
+      // `null` IS THE OFF SWITCH and `undefined` is "leave it alone", so the
+      // key's presence is the question — not its truthiness.
+      ...("autoSettleAfterHours" in body ? { autoSettleAfterHours: body.autoSettleAfterHours as number | null } : {}),
+      // The delegation grace (#378), forwarded by the same rule and for the
+      // same reason: the bound lives beside the schema that states it.
+      ...("settleDelegatedAfterHours" in body
+        ? { settleDelegatedAfterHours: body.settleDelegatedAfterHours as number | null }
+        : {}),
+      // What settled sessions may keep open (#883), by the same rule.
+      ...("settledTerminalLimit" in body ? { settledTerminalLimit: body.settledTerminalLimit as number } : {}),
+    }),
+  );
+});

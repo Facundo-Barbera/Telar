@@ -12,7 +12,7 @@ import fs from "node:fs";
 import { parseArgs } from "node:util";
 
 const require = createRequire(import.meta.url);
-const core = require("../apps/desktop/desktop-handoff-core.js");
+const core = require("../apps/desktop/src/handoff/desktop-handoff-core.js");
 
 export function manifestFromFeed(feedText, { channel, team }) {
   const feed = Bun.YAML.parse(feedText);

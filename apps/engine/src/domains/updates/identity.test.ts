@@ -1,0 +1,155 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import type http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { matchRoute } from "../../platform/http/router";
+import { buildIdentity, locateWebRoot } from "./identity";
+import { aboutRoutes } from "./routes";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
+function layout(options: { icons?: string[]; productName?: string } = {}): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-build-identity-"));
+  roots.push(root);
+  const web = path.join(root, "web");
+  fs.mkdirSync(web, { recursive: true });
+  if (options.icons?.length) {
+    const build = path.join(root, "desktop", "assets");
+    fs.mkdirSync(build, { recursive: true });
+    for (const icon of options.icons) fs.writeFileSync(path.join(build, icon), pngBytes(icon));
+  }
+  if (options.productName) {
+    fs.mkdirSync(path.join(root, "desktop"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "desktop", "package.json"),
+      JSON.stringify({ name: "telar-desktop", productName: options.productName }),
+    );
+  }
+  return web;
+}
+
+function packagedWeb(stamp: Record<string, unknown>, icons: string[] = []): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-build-identity-"));
+  roots.push(root);
+  const web = path.join(root, "standalone", "apps", "web");
+  fs.mkdirSync(web, { recursive: true });
+  fs.writeFileSync(path.join(root, "standalone", "build-info.json"), JSON.stringify(stamp));
+  if (icons.length) {
+    const branding = path.join(root, "branding");
+    fs.mkdirSync(branding, { recursive: true });
+    for (const icon of icons) fs.writeFileSync(path.join(branding, icon), pngBytes(icon));
+  }
+  return web;
+}
+
+function pngBytes(name: string): Uint8Array {
+  return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Buffer.from(name, "utf8")]);
+}
+
+describe("build identity", () => {
+  test("an unstamped checkout is the build the shell calls Telar Dev", () => {
+    const identity = buildIdentity({}, layout({ icons: ["icon-dev.png", "icon.png"], productName: "Telar" }));
+    expect(identity.channel).toBe("dev");
+    expect(identity.appName).toBe("Telar Dev");
+    expect(path.basename(identity.icon!.path)).toBe("icon-dev.png");
+  });
+
+  test("the channel comes from the packaging stamp, and only from it", () => {
+    expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "nightly" })).channel).toBe("nightly");
+    expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "nightly" })).appName).toBe("Telar Nightly");
+    expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "" })).channel).toBe("stable");
+    expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234" })).appName).toBe("Telar");
+    expect(buildIdentity({}, packagedWeb({ channel: "beta" })).channel).toBe("stable");
+  });
+
+  test("a --dev package is stamped dev and named Telar Dev; a plain local package is not", () => {
+    const dev = buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "dev" }));
+    expect(dev.channel).toBe("dev");
+    expect(dev.appName).toBe("Telar Dev");
+    const local = buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "local" }));
+    expect(local.channel).toBe("stable");
+    expect(local.appName).toBe("Telar");
+  });
+
+  test("a malformed or absent stamp reads as a checkout rather than throwing", () => {
+    const web = packagedWeb({ channel: "nightly" });
+    fs.writeFileSync(path.join(web, "..", "..", "build-info.json"), "{ not json");
+    expect(buildIdentity({}, web).channel).toBe("dev");
+    expect(buildIdentity({}, path.join(os.tmpdir(), "telar-nonexistent-layout")).channel).toBe("dev");
+  });
+
+  test("a build with no icon of its own falls back to the default one", () => {
+    const identity = buildIdentity({}, packagedWeb({ channel: "nightly" }, ["icon.png"]));
+    expect(path.basename(identity.icon!.path)).toBe("icon.png");
+  });
+
+  test("no icon anywhere means no icon claimed", () => {
+    expect(buildIdentity({}, layout()).icon).toBeUndefined();
+  });
+
+  test("the icon key moves when the bytes do, which is what the immutable cache rests on", () => {
+    const web = layout({ icons: ["icon.png"] });
+    const first = buildIdentity({}, web).icon!.key;
+    const file = path.join(web, "..", "desktop", "assets", "icon.png");
+    fs.writeFileSync(file, pngBytes("a rather longer icon than before"));
+    expect(buildIdentity({}, web).icon!.key).not.toBe(first);
+  });
+
+  test("productName names the app, and TELAR_APP_NAME overrides it outright", () => {
+    const web = layout({ productName: "Telar Fork" });
+    expect(buildIdentity({}, web).appName).toBe("Telar Fork Dev");
+    expect(buildIdentity({ TELAR_APP_NAME: "  Downstairs Mac  " }, web).appName).toBe("Downstairs Mac");
+    expect(buildIdentity({ TELAR_APP_NAME: "   " }, web).appName).toBe("Telar Fork Dev");
+  });
+});
+
+describe("about routes", () => {
+  const about = (web: string, route: string) => {
+    const { route: found } = matchRoute(aboutRoutes("/state/root", () => buildIdentity({}, web)), "GET", route)!;
+    return found.handle({ body: {}, params: [], query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }) as { status: number; body: any; bytes?: Uint8Array; headers?: Record<string, string> };
+  };
+
+  test("about carries the identity, the version and the engine's own root", () => {
+    const { body } = about(layout({ icons: ["icon-dev.png"], productName: "Telar" }), "/v2/about");
+    expect(typeof body.appVersion).toBe("string");
+    expect(body).toMatchObject({ appName: "Telar Dev", channel: "dev", stateRoot: "/state/root" });
+    expect(body.iconUrl).toMatch(/^\/api\/about\/icon\?v=/);
+  });
+
+  test("the icon answers PNG bytes under an immutable cache, the default one when the build has none", () => {
+    const answer = about(layout({ icons: ["icon.png"] }), "/v2/about/icon");
+    expect(answer.status).toBe(200);
+    expect(answer.headers).toEqual({ "content-type": "image/png", "cache-control": "public, max-age=31536000, immutable" });
+    expect(Array.from(answer.bytes!.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect(new TextDecoder().decode(answer.bytes)).toContain("icon.png");
+  });
+
+  test("no icon on this layout is a 404, and about stops advertising one", () => {
+    const web = layout();
+    expect(about(web, "/v2/about/icon").status).toBe(404);
+    expect(about(web, "/v2/about").body.iconUrl).toBeUndefined();
+  });
+});
+
+describe("locating the cockpit's directory", () => {
+  test("from the engine inside a packaged app", () => {
+    const web = packagedWeb({ channel: "nightly" });
+    const resources = path.resolve(web, "..", "..", "..");
+    fs.mkdirSync(path.join(resources, "engine"));
+    expect(locateWebRoot(path.join(resources, "engine"))).toBe(web);
+  });
+
+  test("from anywhere in a checkout", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-checkout-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, "apps", "web"), { recursive: true });
+    fs.mkdirSync(path.join(root, "apps", "engine", "src"), { recursive: true });
+    expect(locateWebRoot(path.join(root, "apps", "engine", "src"))).toBe(path.join(root, "apps", "web"));
+    expect(locateWebRoot(root)).toBe(path.join(root, "apps", "web"));
+  });
+});

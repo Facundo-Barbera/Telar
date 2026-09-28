@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { manifestFromFeed } from "./handoff-manifest.mjs";
 
 const require = createRequire(import.meta.url);
-const core = require("../apps/desktop/desktop-handoff-core.js");
+const core = require("../apps/desktop/src/handoff/desktop-handoff-core.js");
 
 const SHA = Buffer.alloc(64, 7).toString("base64");
 // The shape electron-builder writes for a zip-only nightly.

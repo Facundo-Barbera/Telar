@@ -1,0 +1,188 @@
+import { afterEach, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import { EngineStore } from "../../state";
+import { toLegacyHome } from "../../../test/store-internals";
+import { cleanup, homes, setup, stores } from "./execution-store-fixture";
+
+afterEach(cleanup);
+
+test("SQLite commits projections, events and a receipt together; a lost response is replayed", () => {
+  const { store } = setup();
+  const action = () => store.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  const first = store.kernel.command("submit:session_one:run_one", action, "command_one");
+  const cursor = store.queries.eventCursor("session_one");
+  const again = store.kernel.command<typeof first>("submit:session_one:run_one", () => { throw new Error("must not repeat"); }, "command_one");
+  expect(again).toEqual(first);
+  expect(store.queries.eventCursor("session_one")).toBe(cursor);
+  expect(store.queries.turns("session_one")).toHaveLength(1);
+});
+test("an interrupted transaction rolls back both journal and queue and invalidates caches", () => {
+  const { store } = setup();
+  const before = store.queries.eventCursor("session_one");
+  expect(() => store.kernel.command("broken", () => {
+    store.intake.submitTurn("session_one", { runId: "run_rollback", input: "never accepted" });
+    throw new Error("injected disk failure");
+  })).toThrow("injected disk failure");
+  expect(store.queries.turns("session_one")).toEqual([]);
+  expect(store.queries.eventCursor("session_one")).toBe(before);
+  store.intake.submitTurn("session_one", { runId: "run_next", input: "after rollback" });
+  expect(store.claims.claimTurn("session_one", "worker_one")?.runId).toBe("run_next");
+});
+test("migration preserves history and keeps a backup", () => {
+  const { store: original, home } = setup();
+  original.intake.submitTurn("session_one", { runId: "run_one", input: "keep me" });
+  toLegacyHome(original, home); stores.splice(stores.indexOf(original), 1);
+  const migrated = new EngineStore(home, Date.now); stores.push(migrated);
+  expect(migrated.queries.turns("session_one")[0]?.input).toBe("keep me");
+  expect(fs.existsSync(path.join(home, "execution-json-backup", "session_one", "queue.json"))).toBe(true);
+  migrated.turnLifecycle.stopSession("session_one");
+  migrated.kernel.executionStore.close(); stores.splice(stores.indexOf(migrated), 1);
+  const reopened = new EngineStore(home); stores.push(reopened);
+  expect(reopened.queries.turns("session_one")[0]?.state).toBe("stopped");
+  expect(reopened.queries.readEvents("session_one").some((event) => event.type === "turn.stopped")).toBe(true);
+});
+
+test("a replayed Stop receipt cannot cancel a new message submitted afterward", () => {
+  const { store } = setup();
+  store.intake.submitTurn("session_one", { runId: "run_first", input: "first" });
+  const stop = () => store.kernel.command("stop:session_one", () => store.turnLifecycle.stopSession("session_one"), "command_stop");
+  stop();
+  store.intake.submitTurn("session_one", { runId: "run_new", input: "new instruction" });
+  stop();
+  expect(store.queries.turns("session_one").find((turn) => turn.runId === "run_new")?.state).toBe("queued");
+});
+
+test("task-stop deliveries survive reopening and only their owner can acknowledge them", () => {
+  const { store, home } = setup();
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "watch" });
+  const turn = store.claims.claimTurn("session_one", "worker_one")!;
+  store.turnLifecycle.markRunning("session_one", turn.runId, turn.claim!.token);
+  store.ingest.ingestObservations("session_one", turn.runId, turn.claim!.token, [{ kind: "task.started", task: {
+    id: "task_one", kind: "background", state: "running", title: "watch", providerTaskId: "provider_one",
+  } }]);
+  store.turnLifecycle.stopSession("session_one");
+  const pending = store.sessionTasks.stopsForWorker("worker_one");
+  expect(pending).toHaveLength(1);
+  expect(store.sessionTasks.stopsForWorker("worker_other", [pending[0]!.deliveryId!])).toEqual([]);
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
+  const reopened = new EngineStore(home); stores.push(reopened);
+  expect(reopened.sessionTasks.stopsForWorker("worker_one")).toEqual(pending);
+  expect(reopened.sessionTasks.stopsForWorker("worker_one", [pending[0]!.deliveryId!])).toEqual([]);
+});
+
+test("SIGKILL between projection and commit leaves no accepted turn or journal fragment", async () => {
+  const { store, home } = setup();
+  const cursor = store.queries.eventCursor("session_one");
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
+  const child = Bun.spawn([process.execPath, "-e", `
+    import { EngineStore } from ${JSON.stringify(path.resolve(import.meta.dir, "../../state.ts"))};
+    const store = new EngineStore(process.argv[1]);
+    store.executeCommand("crash", () => {
+      store.submitTurn("session_one", { runId: "run_crashed", input: "uncommitted" });
+      process.kill(process.pid, "SIGKILL");
+    });
+  `, home], { stdout: "ignore", stderr: "pipe" });
+  expect(await child.exited).not.toBe(0);
+  const reopened = new EngineStore(home); stores.push(reopened);
+  expect(reopened.queries.turns("session_one")).toEqual([]);
+  expect(reopened.queries.eventCursor("session_one")).toBe(cursor);
+  reopened.intake.submitTurn("session_one", { runId: "run_after", input: "still usable" });
+  expect(reopened.claims.claimTurn("session_one", "worker_after")?.runId).toBe("run_after");
+});
+
+test("export retains post-migration history and re-imports on open", async () => {
+  const { home, store } = setup();
+  store.intake.submitTurn("session_one", { runId: "run_export", input: "after migration" });
+  store.turnLifecycle.stopSession("session_one");
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
+  const destination = `${home}-export`; homes.push(destination);
+  const child = Bun.spawn([process.execPath, path.resolve(import.meta.dir, "../../../scripts/export-execution.ts"), home, destination], { stdout: "ignore", stderr: "pipe" });
+  expect(await child.exited).toBe(0);
+  const exported = new EngineStore(destination, Date.now); stores.push(exported);
+  expect(exported.queries.turns("session_one")[0]?.state).toBe("stopped");
+  expect(exported.queries.readEvents("session_one").at(-1)?.type).toBe("turn.stopped");
+});
+
+test("internal command receipts do not retain resolved provider credentials", async () => {
+  const { store, home } = setup();
+  store.kernel.command("claim-like", () => {
+    store.intake.submitTurn("session_one", { runId: "run_private", input: "hello" });
+    return { providerInstance: { env: [{ name: "API_KEY", value: "private-fixture-token" }] } };
+  });
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(path.join(home, "execution.sqlite"));
+  try { expect(JSON.stringify(db.query("SELECT result FROM receipts").all())).not.toContain("private-fixture-token"); }
+  finally { db.close(); }
+});
+
+test("human Stop keeps agent traffic blocked across restart until a fresh human message", () => {
+  const { home, store } = setup();
+  store.kernel.command("stop", () => store.turnLifecycle.stopSession("session_one", "user"), "stop_guard");
+  store.kernel.executionStore.close();
+  const reopened = new EngineStore(home, Date.now); stores.push(reopened);
+  expect(() => reopened.intake.submitAgentTurn("session_one", { runId: "run_noise", input: "checkpoint" })).toThrow("stopped by its user");
+  expect(reopened.queries.turns("session_one")).toHaveLength(0);
+  reopened.intake.submitTurn("session_one", { runId: "run_human", input: "new task" });
+  reopened.kernel.command("stop", () => reopened.turnLifecycle.stopSession("session_one", "user"), "stop_guard");
+  expect(reopened.records.get("session_one").agentMessagesBlocked).toBeUndefined();
+  expect(reopened.intake.submitAgentTurn("session_one", { runId: "run_fresh", input: "new report" }).replayed).toBe(false);
+});
+
+test("statements reused across calls still answer for the row they were asked about", () => {
+  const { store } = setup();
+  for (const id of ["session_two", "session_three"]) store.lifecycle.createSession({ id, projectId: "project_one" });
+  const sessions = ["session_one", "session_two", "session_three"];
+  for (const sessionId of sessions) store.intake.submitTurn(sessionId, { runId: `run_${sessionId}`, input: `text for ${sessionId}` });
+  // Interleaved, and twice, so any statement is run against a different
+  // session than the one that prepared it.
+  for (let round = 0; round < 2; round += 1) {
+    for (const sessionId of sessions) {
+      expect(store.queries.turns(sessionId).map((turn) => turn.input)).toEqual([`text for ${sessionId}`]);
+      expect(store.queries.eventCursor(sessionId)).toBeGreaterThan(0);
+      expect(store.queries.readEvents(sessionId).every((event) => event.sessionId === sessionId)).toBe(true);
+    }
+  }
+  store.turnLifecycle.stopTurn("session_two", "run_session_two");
+  store.lifecycle.deleteSession("session_two");
+  expect(store.queries.turns("session_one")).toHaveLength(1);
+  expect(store.queries.turns("session_three")).toHaveLength(1);
+  expect(() => store.records.get("session_two")).toThrow();
+});
+
+test("a queue written after a scan is seen by the next scan", () => {
+  const { store } = setup();
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  expect(store.claims.claimTurn("session_one", "worker_one")?.runId).toBe("run_one");
+  // Populates the cache while there is nothing to report.
+  expect(store.recovery.cancellationsForWorker("worker_one")).toEqual([]);
+  store.turnLifecycle.stopSession("session_one", "user");
+  expect(store.recovery.cancellationsForWorker("worker_one").map((cancel) => cancel.runId)).toEqual(["run_one"]);
+});
+
+test("a rolled-back stop is not reported to the worker that would have acted on it", () => {
+  const { store } = setup();
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claims.claimTurn("session_one", "worker_one");
+  expect(store.recovery.cancellationsForWorker("worker_one")).toEqual([]);
+  expect(() => store.kernel.command("broken-stop", () => {
+    store.turnLifecycle.stopSession("session_one", "user");
+    throw new Error("injected disk failure");
+  })).toThrow("injected disk failure");
+  // The transaction took the stop back, so there is nothing to cancel — and
+  // the turn is still the claimed one it was before.
+  expect(store.recovery.cancellationsForWorker("worker_one")).toEqual([]);
+  expect(store.queries.turns("session_one").map((turn) => turn.state)).toEqual(["claimed"]);
+});
+
+test("a session id reused after a delete does not inherit the old queue", () => {
+  const { store } = setup();
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claims.claimTurn("session_one", "worker_one");
+  store.turnLifecycle.stopSession("session_one", "user");
+  expect(store.recovery.cancellationsForWorker("worker_one")).toHaveLength(1);
+  store.lifecycle.deleteSession("session_one");
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  expect(store.queries.turns("session_one")).toEqual([]);
+  expect(store.recovery.cancellationsForWorker("worker_one")).toEqual([]);
+});

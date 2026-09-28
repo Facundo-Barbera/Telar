@@ -1,0 +1,86 @@
+const { execFile } = require("node:child_process");
+const remoteFile = require("./remote-file");
+
+const STATUS_TIMEOUT_MS = 1_500;
+const SERVE_TIMEOUT_MS = 10_000;
+
+function run(args, timeoutMs) {
+  return new Promise((resolve) => {
+    execFile("tailscale", args, { timeout: timeoutMs }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        spawnFailed: Boolean(error && (error.code === "ENOENT" || error.code === "ENOTDIR")),
+        exitCode: typeof error?.code === "number" ? error.code : error ? 1 : 0,
+        stdout: String(stdout ?? ""),
+        stderr: String(stderr ?? ""),
+      });
+    });
+  });
+}
+
+async function certDomain() {
+  const result = await run(["status", "--json"], STATUS_TIMEOUT_MS);
+  if (!result.ok) return null;
+  try {
+    const raw = JSON.parse(result.stdout);
+    const domains = Array.isArray(raw?.CertDomains) ? raw.CertDomains.filter((d) => typeof d === "string" && d) : [];
+    return domains[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function classify(stderr, exitCode) {
+  const text = String(stderr ?? "");
+  if (/https.{0,30}(is not|not) enabled|cert.{0,40}disabled|enable https/i.test(text)) return "https-disabled";
+  if (/not logged in|logged out|needs? login/i.test(text)) return "not-logged-in";
+  if (/permission denied|access denied|must be root|operation not permitted/i.test(text)) return "permission-denied";
+  return exitCode === 0 ? "none" : "unknown";
+}
+
+async function startServe(port) {
+  const result = await run(["serve", "--bg", "--https=443", `http://127.0.0.1:${port}`], SERVE_TIMEOUT_MS);
+  if (result.ok) return "none";
+  if (result.spawnFailed) return "not-installed";
+  return classify(result.stderr, result.exitCode);
+}
+
+async function stopServe() {
+  await run(["serve", "--https=443", "off"], SERVE_TIMEOUT_MS);
+}
+
+let tailscaleServeUrl = null;
+let tailscaleServeError = null;
+
+async function publishTailscaleServe(home, port) {
+  tailscaleServeError = null;
+  if (!remoteFile.tailscaleServeRequested(home)) return null;
+  const domain = await certDomain();
+  if (!domain) {
+    tailscaleServeError = "no-cert-domain";
+    console.error("[telar-desktop] tailscale serve requested but tailscale is missing, not running, or has HTTPS certificates disabled; skipped.");
+    return null;
+  }
+  const outcome = await startServe(port);
+  if (outcome !== "none") {
+    tailscaleServeError = outcome;
+    console.error(`[telar-desktop] tailscale serve failed (${outcome}); the ts.net endpoint is down.`);
+    return null;
+  }
+  tailscaleServeUrl = `https://${domain}`;
+  console.log(`[telar-desktop] tailnet: ${tailscaleServeUrl}/`);
+  return tailscaleServeUrl;
+}
+
+function serveEnv() {
+  return {
+    ...(tailscaleServeUrl ? { TELAR_TAILSCALE_URL: tailscaleServeUrl } : {}),
+    ...(tailscaleServeError ? { TELAR_TAILSCALE_SERVE_ERROR: tailscaleServeError } : {}),
+  };
+}
+
+function unpublishTailscaleServe() {
+  if (tailscaleServeUrl) void stopServe();
+}
+
+module.exports = { publishTailscaleServe, serveEnv, unpublishTailscaleServe };

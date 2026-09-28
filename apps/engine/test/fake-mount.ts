@@ -29,7 +29,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { VolumeDeps } from "../src/volumes";
+import type { VolumeDeps } from "../src/platform/fs/volumes";
 
 /** The device every path that is not on a fake mount reports — this machine's
  *  own disk, as far as the injected `stat` is concerned. */

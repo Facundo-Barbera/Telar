@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,7 +25,7 @@ test("client preserves typed engine errors", async () => {
       new Response(JSON.stringify({ error: { code: "worker_unavailable", message: "no worker" } }), {
         status: 503,
         headers: { "content-type": "application/json" },
-      })) as typeof fetch,
+      })),
   );
   await expect(client.registerProject({ name: "A", root: "/tmp/a" })).rejects.toEqual(
     new EngineClientError("worker_unavailable", "no worker", 503),
@@ -39,7 +39,7 @@ test("client exposes the authenticated ambiguous-turn discard action", async () 
     (async (url, init) => {
       calls.push({ url: String(url), init });
       return Response.json({ turn: { runId: "run_uncertain", state: "discarded" } });
-    }) as typeof fetch,
+    }),
   );
   await client.discardAmbiguousTurn("session_one", "run_uncertain");
   expect(calls).toEqual([{
@@ -59,7 +59,7 @@ test("a windowed session read carries the window as query parameters", async () 
     (async (url) => {
       urls.push(String(url));
       return Response.json({ session: { id: "s" }, turns: [], items: [], requests: [], tasks: [] });
-    }) as typeof fetch,
+    }),
   );
   await client.session("s", { turns: 10, before: "run_x" });
   await client.session("s", { turns: 10 });

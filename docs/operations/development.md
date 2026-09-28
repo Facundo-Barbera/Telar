@@ -86,7 +86,7 @@ bun run test:desktop:e2e
 bun run --cwd apps/desktop build:app && bun run test:desktop:smoke
 ```
 
-The smoke boots the bundled engine and the standalone cockpit, so it needs `build:app` first. The [desktop testing notes](../../apps/desktop/TESTING.md) describe each layer.
+The smoke boots the bundled engine and the standalone cockpit, so it needs `build:app` first. Use the smallest layer that proves the change; `test:desktop:e2e` is a final integration pass. The `extension`, `extension-boot` and `webauthn` tests need the 1Password extension: set `TELAR_1P_CRX` to a packaged one or `TELAR_1P_UNPACKED` to an unpacked one.
 
 ## Checks
 
@@ -103,13 +103,13 @@ bun run lint            # eslint, apps/web
 Report-only in CI, but worth running on what you touched:
 
 ```sh
-bun run lint:ox         # oxlint: engine, desktop, engine-client; warns on files over 800 lines and functions over 150
-bun run knip            # unused files, exports and dependencies; never fails
+bun run lint:ox         # oxlint: engine, desktop, engine-client; fails CI on any finding
+bun run knip            # unused files, exports and dependencies; fails CI on any finding
 ```
 
 ### check:source
 
-`scripts/source-invariants.mjs` checks the source text without running any app. Each failure names the check and says what to change. It includes the comment ratchet.
+`scripts/source-invariants.mjs` checks the source text without running any app. Each failure names the check and says what to change. It includes the comment and size ratchets.
 
 ### Comment ratchet
 
@@ -120,13 +120,16 @@ It fails when:
 
 It needs the merge base, so fetch first (`git fetch origin main`). To compare against another branch, set `COMMENT_RATCHET_BASE=origin/<branch>`.
 
-`scripts/comment-baseline.json` records each workspace's count and is not a gate. When a workspace drops below its baseline, `check:source` prints a note. Only then run:
+There is no baseline file to update: the merge base is the baseline.
 
-```sh
-bun run comments:baseline
-```
+### Size ratchet
 
-Commit the rewritten file in the same PR as the deletions that lowered the count. Don't rewrite it to make room for new comments. That doesn't help anyway, since the gate compares against the merge base.
+Against the same merge base, for TS/JS files (Swift: file size only), it fails when:
+
+- a new file is over 800 lines, or an existing file grows past `max(800, its size at the merge base)`;
+- a function over 150 lines is new (more than half its lines added) or grew. Untouched long functions pass.
+
+Moves are followed down to 30% similarity, so moving a file keeps its history.
 
 ## Local desktop install (unsigned)
 

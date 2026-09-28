@@ -62,79 +62,8 @@ permissions:
 # added without it would run fork code, and there is no inherited default to
 # rely on.
 
-# CANCELLING IS RIGHT ON A BRANCH AND WRONG ON MAIN — one setting, two refs,
-# and it needed splitting rather than choosing between (#687).
-#
-# On a pull request ref, cancelling is what you want: a new push supersedes the
-# commit under test, and a serial runner should not spend minutes proving
-# something nobody is waiting on. That half is unchanged.
-#
-# On `refs/heads/main` the same setting destroys the evidence it was meant to
-# produce. Every merge pushes the same ref, joins the same concurrency group,
-# and kills the run verifying the PREVIOUS merge. Merge quickly enough and main
-# is never proven at all — each merge erases the proof for the one before it.
-#
-# MEASURED, 2026-09-19: 12 of the last 20 verify runs on main were cancelled —
-# 60% — including five consecutively, `fbc250c0` through `4aaa8979`, five
-# merges of which not one was verified. The sharpest case is `7b77a276`, the
-# merge of #684's SQLite busy-timeout fix: the commit is on main and its own
-# verification was cancelled by the next merge, so nothing ever confirmed main
-# was green with it. Serialising merges by hand stopped it dead — five clean
-# runs in a row — which is what this expression makes automatic rather than
-# something a person has to remember.
-#
-# NOT A RUNNER-LOAD PROBLEM, and the intuitive reading is wrong. Groups never
-# span a pull request and main — under the expression below a PR's group is its
-# ref and main's is a commit sha, and before it they were two different refs.
-# Either way a branch push cannot reach main's run: only a push to
-# `refs/heads/main` shares main's group, and only a merge does that. Throttling
-# PR pushes buys nothing here; it was verified live that a branch push queues
-# behind an in-progress main run rather than killing it.
-#
-# `cancel-in-progress: false` WAS NOT ENOUGH, and the reason is the whole of
-# why this expression looks the way it does. That setting protects a run that
-# has STARTED. GitHub separately keeps ONE PENDING RUN PER GROUP, and a newly
-# queued run evicts an older QUEUED one no matter what the setting says. On a
-# single serial runner "queued" is the common case, not the rare one.
-#
-# MEASURED after the first fix shipped:
-#
-#   02cb9c2b  main  00:50:44  in_progress   ← holding the runner
-#   e104cf61  main  01:10:35  CANCELLED 01:10:48 — ZERO JOBS, never started
-#   fd1662f7  main  01:10:46  pending       ← took the slot
-#
-# `e104cf61` carried the first fix and was evicted from the pending slot
-# thirteen seconds after it was created, with no job ever run. The three main
-# runs that DID survive a merge landing on them had all already started, which
-# is why the first fix looked complete and was not.
-#
-# SO EVERY MAIN COMMIT GETS ITS OWN GROUP. A group of one cannot be superseded
-# — not in progress, not pending — so every merged commit is verified as
-# itself. A green commit means THAT commit, which is the only version of this
-# worth having: "which commit broke it" is the question people actually ask.
-#
-# Pull requests keep the ref as their group and keep cancelling, which is right
-# there and unchanged: a new push supersedes the commit under test, and a
-# serial runner should not spend minutes proving something nobody waits on.
-# A sha can never collide with a ref-shaped group — one is 40 hex, the other
-# begins `refs/`.
-#
-# `A && B || C` IS NOT A TERNARY, and the difference bites here. It yields B
-# only when B is TRUTHY; a falsy B falls through to C. So if the middle operand
-# could ever be empty, a push would silently land back on the ref group — this
-# exact defect, reintroduced invisibly. It cannot: `format('verify-{0}', …)`
-# always returns a non-empty string. Verified by evaluating this file's own
-# expressions with GitHub's engine (`@actions/expressions`), including that
-# substituting an empty middle operand reproduces `verify-refs/heads/main`.
-#
-# THE COST, stated so nobody trims it back by accident: every main commit now
-# queues a run on one serial runner, competing with PR verification — roughly
-# 90 minutes at the 22 merges this repo did on 2026-09-19. IF THAT QUEUE
-# BECOMES THE BINDING CONSTRAINT, THE ANSWER IS RUNNER CAPACITY OR A CHEAPER
-# MAIN JOB — NOT re-introducing a setting that throws the evidence away.
-# Reverting this to shorten the queue restores the exact defect #687 records.
-# A scheduled verify of main's tip was considered and rejected: it proves the
-# tip and leaves every intermediate commit unproven.
+# A pull request's new push cancels its older run. Each main commit gets its own
+# group, so a later merge can never cancel or evict the run verifying it.
 concurrency:
   group: ${{ github.event_name == 'push' && format('verify-{0}', github.sha) || format('verify-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
@@ -174,13 +103,11 @@ jobs:
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint -shellcheck= -pyflakes= .github/workflows/*.yml
 
-  # Report-only until the findings are cleared; not a dependency of verify-passed.
-  guards:
-    name: Guards (knip, oxlint; report only)
+  knip:
+    name: knip
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -191,10 +118,23 @@ jobs:
           set -euo pipefail
           bun install --frozen-lockfile
       - name: knip
-        continue-on-error: true
         run: bun run knip
+
+  oxlint:
+    name: oxlint
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
       - name: oxlint
-        continue-on-error: true
         run: bun run lint:ox
 
   typecheck:
@@ -608,13 +548,11 @@ jobs:
             fi
           }
 
-          check 'apps/ios/TelarMobile/Views/SessionView.swift'   yes
+          check 'apps/ios/TelarMobile/Features/Sessions/SessionView.swift'   yes
           check 'apps/ios/TelarMobile.xcodeproj/project.pbxproj' yes
           check 'apps/ios/nightly.sh'                            yes
           check 'apps/ios/Config/ActivityInfo.plist'             yes
-          # This file gates the archive, so a change to it must archive — which
-          # is also how this job's own pull request proves the gate fires.
-          check '.github/workflows/verify.yml'                   yes
+          check '.github/workflows/verify.yml'                   no
           check '.github/workflows/ios-paths.sh'                 yes
           # The nightly's workflow does not change what compiles; it changes
           # what publishes. nightly.sh above does, and is in.
@@ -632,7 +570,7 @@ jobs:
           # there, so the anchor it was named for was untested.
           check 'vendor/apps/ios/Thing.swift'                    no
           check 'apps/iosextra/Thing.swift'                      no
-          check '.github/workflows/verify.yml.bak'               no
+          check '.github/workflows/ios-paths.sh.bak'             no
           # A .swift outside apps/ios is not in the Xcode project.
           check 'packages/whatever/Helper.swift'                 no
 
@@ -1069,7 +1007,7 @@ jobs:
     name: Verify passed
     runs-on: ubuntu-latest
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [source, typecheck, lint, test, test-engine, macos, electron, ios-changes, ios]
+    needs: [source, knip, oxlint, typecheck, lint, test, test-engine, macos, electron, ios-changes, ios]
     timeout-minutes: 5
     steps:
       - name: Report the aggregate

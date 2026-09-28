@@ -30,12 +30,10 @@
 import { verifyAssertion, verifyAttestation } from './appattest.mjs';
 import { DAY, DEAD_TOKEN, appleReason, b64url, readText, reply, unb64 } from './shared.mjs';
 
-/**
- * Bundles a phone may register as. Debug builds are `.dev` and use APNs sandbox.
- * The `com.telar.mobile` pair is the app before #1042; phones paired with it
- * keep working until they move to the new app.
- */
-const BUNDLES = new Set(['io.github.novarix.telar', 'io.github.novarix.telar.dev', 'com.telar.mobile', 'com.telar.mobile.dev']);
+// Delete the legacy ids on `until`, together with MOBILE_TOPICS in apps/web/src/lib/mobile/push.ts.
+const LEGACY_BUNDLE_IDS = { until: '2026-11-01', ids: ['com.telar.mobile', 'com.telar.mobile.dev'] };
+/** Bundles a phone may register as. Debug builds are `.dev` and use APNs sandbox. */
+const BUNDLES = new Set(['io.github.novarix.telar', 'io.github.novarix.telar.dev', ...LEGACY_BUNDLE_IDS.ids]);
 const hex = /^[a-f0-9]{64,512}$/i;
 const id = /^[a-zA-Z0-9_-]{1,128}$/;
 const HANDLE = /^[A-Za-z0-9_-]{43}$/; // 32 random bytes
@@ -54,16 +52,16 @@ const HANDLE_MINUTE = 120, HANDLE_DAY = 5000;
  * BACKGROUND PUSHES STOP WHERE THE LAST 1,000 OF A HANDLE'S DAY BEGIN. A silent
  * read-sync only tidies the lock screen; an alert is the thing the budget is
  * for. The Mac already sends at most one background push a minute per phone
- * (`READ_SYNC_INTERVAL_S` in apps/web/lib/mobile/read-sync.ts), so this ceiling
+ * (`READ_SYNC_INTERVAL_S` in apps/web/src/lib/mobile/read-sync.ts), so this ceiling
  * is only reached by a handle already deep in its day — and what is left then
  * is kept for alerts and Live Activities. `HANDLE_BACKGROUND_CEILING` in the
  * environment overrides it, for tests.
  */
-export const BACKGROUND_CEILING = 4000;
+const BACKGROUND_CEILING = 4000;
 /** [requests, per window in ms] for each IP (IPv6 by /64). */
 export const IP_LIMITS = { challenge: [30, 3600000], register: [10, 3600000], phone: [240, 3600000], send: [3000, 3600000] };
 /** Every v2 request counts. Well below the account's shared 100k a day. */
-export const GLOBAL_DAILY_BUDGET = 40000;
+const GLOBAL_DAILY_BUDGET = 40000;
 
 const random = n => b64url(crypto.getRandomValues(new Uint8Array(n)));
 const retryAfter = ms => ({ 'retry-after': String(Math.max(1, Math.ceil(ms / 1000))) });
@@ -71,7 +69,7 @@ const configured = env => Boolean(env.APNS_KEY_BASE64 && env.APNS_KEY_ID && env.
 const teamOf = env => env.APPATTEST_TEAM_ID || env.APNS_TEAM_ID;
 
 /** An IPv6 client is limited by its /64, which is what one subscriber gets. */
-export function ipKey(ip) {
+function ipKey(ip) {
   if (!ip) return 'unknown';
   if (!ip.includes(':')) return ip;
   const [head, tail = ''] = ip.toLowerCase().split('::');

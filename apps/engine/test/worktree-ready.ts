@@ -33,7 +33,7 @@
  * Nothing pays this ceiling in the ordinary case: the loop returns the moment
  * the row settles, which on an idle machine is a few milliseconds.
  */
-import { DEFAULT_GIT_TIMEOUT_MS } from "../src/worktree";
+import { DEFAULT_GIT_TIMEOUT_MS } from "../src/platform/git/runner";
 import type { EngineStore } from "../src/state";
 
 /** What the git runner is allowed per invocation, which is the only honest
@@ -44,9 +44,9 @@ export const WORKTREE_READY_TIMEOUT_MS = DEFAULT_GIT_TIMEOUT_MS;
 export async function worktreeReady(store: EngineStore, sessionId: string): Promise<void> {
   const deadline = Date.now() + WORKTREE_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (store.getSession(sessionId).preparation?.state !== "preparing") return;
+    if (store.records.get(sessionId).preparation?.state !== "preparing") return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  if (store.getSession(sessionId).preparation?.state !== "preparing") return;
+  if (store.records.get(sessionId).preparation?.state !== "preparing") return;
   throw new Error(`the worktree for ${sessionId} never finished preparing within ${WORKTREE_READY_TIMEOUT_MS}ms`);
 }

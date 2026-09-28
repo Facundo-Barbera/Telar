@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // A scripted stand-in for `codex app-server`, driven through a REAL subprocess
-// boundary by codex-driver.test.ts via CODEX_BIN.
+// boundary by drivers/codex tests via CODEX_BIN.
 //
 // COPIED FROM apps/web_old/lib/fixtures/fake-codex-app-server.mjs and extended.
 // The value carried over is the part that cannot be re-derived: every method
@@ -32,7 +32,7 @@ async function callConfiguredTool(serverKey, tool, args) {
   if (!entry?.url) return { error: `no ${serverKey} server was configured` };
   const response = await fetch(entry.url, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(entry.http_headers ?? {}) },
+    headers: { "content-type": "application/json", ...entry.http_headers },
     body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: tool, arguments: args ?? {} } }),
   });
   return await response.json();

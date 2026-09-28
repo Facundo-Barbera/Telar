@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # Archive and upload a Telar Mobile nightly to TestFlight. CI is the caller
-# (.github/workflows/nightly-ios.yml, on an ios-nightly-* tag) — pushing the
-# tag is how a nightly is cut. The runner is GitHub-hosted (macos-latest)
-# since 2026-09-20; before that it was the maintainer's Mac mini. Either way
-# the Xcode must be a RELEASE build — App Store Connect refuses a beta's
-# uploads — which is why DEVELOPER_DIR is named rather than inherited.
+# (.github/workflows/nightly-ios.yml, on an ios-nightly-* tag).
 #
 # Three modes, and the middle one exists because of #757:
 #   (no argument)   archive → export → upload to TestFlight.
@@ -24,7 +20,7 @@
 # on the way to an exported IPA. So the IPA is exported, then pushed with
 # altool.
 #
-# Auth is an App Store Connect API key (Admin — cloud signing needs it):
+# Auth is an App Store Connect API key (Admin: testflight-app.sh lists users):
 #   TELAR_ASC_KEY_ID, TELAR_ASC_ISSUER_ID, TELAR_ASC_KEY_PATH (the .p8)
 #
 # TestFlight needs a UNIQUE build number per upload; the minute-stamp is it.
@@ -52,8 +48,8 @@ export TELAR_BUNDLE_ID="$BUNDLE"
 BUILD_NUMBER="$(date +%Y%m%d%H%M)"
 ARCHIVE="$DIR/DerivedData-nightly/Telar-$BUILD_NUMBER.xcarchive"
 EXPORT_DIR="$DIR/DerivedData-nightly/export-$BUILD_NUMBER"
-# The Mac's one Xcode. Named here so a bare `xcode-select` pointing at the
-# Command Line Tools (which cannot archive an iOS app) never gets a chance.
+# Named here so a bare `xcode-select` pointing at the Command Line Tools
+# (which cannot archive an iOS app) never gets a chance.
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi

@@ -26,9 +26,9 @@ import os from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
 import type { TurnObservation } from "@telar/engine-client";
-import { createClaudeDriver } from "../../src/driver";
-import type { TurnDriver } from "../../src/provider-contract";
-import { cliUsable, resolveCli } from "../../src/cli-resolution";
+import { createClaudeDriver } from "../../src/drivers/claude";
+import type { TurnDriver } from "../../src/drivers";
+import { cliUsable, resolveCli } from "../../src/domains/providers";
 
 /** Skipped where there is no Claude Code — CI has none, and this test is about
  *  what the real binary emits. */

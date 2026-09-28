@@ -1,0 +1,33 @@
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
+
+/**
+ * One hub: saved, or forgotten.
+ *
+ * THE BODY RIDES THROUGH VERBATIM. The engine owns every rule about it — the
+ * URL must parse and be http(s), an empty management key KEEPS the stored one,
+ * a `null` label clears it — and re-checking any of that here would be a second
+ * copy that could disagree with the first.
+ */
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+type Context = { params: Promise<{ sourceId: string }> };
+
+export const PUT = engineRoute(async (request: Request, context: Context) => {
+  const { sourceId } = await context.params;
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).saveUsageLimitSource({
+      id: sourceId,
+      ...(body.label === undefined ? {} : { label: body.label as string | null }),
+      ...(body.url === undefined ? {} : { url: body.url as string }),
+      ...(body.managementKey === undefined ? {} : { managementKey: body.managementKey as string }),
+      ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+    }),
+  );
+});
+
+export const DELETE = engineRoute(async (_request: Request, context: Context) => {
+  const { sourceId } = await context.params;
+  return Response.json(await (await engineClient()).removeUsageLimitSource(sourceId));
+});

@@ -1,0 +1,194 @@
+import Foundation
+import Testing
+@testable import TelarMobile
+
+@Suite struct ActivitySegmentsTests {
+    private func row(_ id: String, _ type: String) -> JournalItem {
+        JournalItem(item: makeItem(id, type: type), streamedText: "", openedBy: 0)
+    }
+
+    @Test func runsAreCutAtProseSteersPlansAndCompactions() {
+        let segments = segmentActivity([
+            row("a", "command_execution"), row("b", "file_read"),
+            row("c", "assistant_message"), row("d", "command_execution"),
+            row("e", "user_message"), row("f", "plan"),
+            row("g", "context_compaction"), row("h", "file_change"),
+        ])
+        let shape = segments.map { segment -> String in
+            switch segment {
+            case .row(let item): item.id
+            case .run(let items): items.map(\.id).joined()
+            }
+        }
+        #expect(shape == ["ab", "c", "d", "e", "f", "g", "h"])
+    }
+
+    @Test func reasoningAndSpawnsStayInsideTheirRun() {
+        let segments = segmentActivity([row("a", "reasoning"), row("b", "task"), row("c", "command_execution")])
+        #expect(segments.count == 1)
+        if case .run(let items) = segments[0] { #expect(items.count == 3) } else { Issue.record("expected a run") }
+    }
+
+    @Test func emptyTimelineHasNoSegments() {
+        #expect(segmentActivity([]).isEmpty)
+    }
+}
+
+@Suite struct MessageBoundaryTests {
+    private func row(_ id: String, _ type: String) -> JournalItem {
+        JournalItem(item: makeItem(id, type: type), streamedText: "", openedBy: 0)
+    }
+
+    private func shape(_ responses: [TurnResponse]) -> [String] {
+        responses.flatMap { response in
+            (response.boundary.map { [$0.id] } ?? []) + (response.items.isEmpty ? [] : [response.items.map(\.id).joined()])
+        }
+    }
+
+    @Test func aTurnSplitsAtEachMessageWithTheWorkThatFollowedIt() {
+        let responses = splitAtMessageBoundaries([
+            row("w1", "command_execution"),
+            row("a1", "assistant_message"),
+            row("m1", "user_message"),
+            row("w2", "command_execution"),
+            row("w3", "file_change"),
+            row("m2", "user_message"),
+            row("w4", "command_execution"),
+        ])
+        #expect(responses.map(\.boundary?.id) == [nil, "m1", "m2"])
+        #expect(responses.map { $0.items.map(\.id).joined() } == ["w1a1", "w2w3", "w4"])
+    }
+
+    @Test func aTurnNobodySteeredIsOneResponse() {
+        let responses = splitAtMessageBoundaries([row("w1", "command_execution"), row("a1", "assistant_message")])
+        #expect(responses.count == 1)
+        #expect(responses[0].boundary == nil)
+    }
+
+    @Test func aTurnWhoseFirstItemIsTheMessageHasNoEmptyOpeningResponse() {
+        let responses = splitAtMessageBoundaries([row("m1", "user_message"), row("w1", "command_execution")])
+        #expect(responses.map(\.boundary?.id) == ["m1"])
+        #expect(responses[0].items.map(\.id) == ["w1"])
+    }
+
+    @Test func twoSteersEachIntroduceTheirOwnWork() {
+        let responses = splitAtMessageBoundaries([
+            row("A", "command_execution"),
+            row("s1", "user_message"),
+            row("B", "command_execution"),
+            row("s2", "user_message"),
+            row("C", "command_execution"),
+        ])
+        #expect(shape(responses) == ["A", "s1", "B", "s2", "C"])
+    }
+
+    @Test func consecutiveSteersEachKeepTheirOwnPlace() {
+        let responses = splitAtMessageBoundaries([
+            row("s1", "user_message"),
+            row("s2", "user_message"),
+            row("A", "command_execution"),
+        ])
+        #expect(shape(responses) == ["s1", "s2", "A"])
+    }
+
+    @Test func aTrailingSteerWithNoWorkAfterItIsStillEmitted() {
+        #expect(shape(splitAtMessageBoundaries([row("A", "command_execution"), row("s1", "user_message")])) == ["A", "s1"])
+    }
+
+    @Test func liveAndSettledCutInTheSamePlace() {
+        let items = [row("w1", "command_execution"), row("m1", "user_message"), row("w2", "command_execution"), row("a1", "assistant_message")]
+        let responses = splitAtMessageBoundaries(items)
+        #expect(responses.map(\.boundary?.id) == [nil, "m1"])
+        let answering = responses[responses.count - 1]
+        #expect(!answering.items.contains { if case .userMessage = $0.detail { return true } else { return false } })
+        let segments = segmentActivity(answering.items).map { segment -> String in
+            switch segment {
+            case .row(let item): item.id
+            case .run(let items): items.map(\.id).joined()
+            }
+        }
+        #expect(segments == ["w2", "a1"])
+    }
+
+    @Test func noMessageIsRenderedTwice() {
+        let items = [row("m1", "user_message"), row("w1", "command_execution"), row("m2", "user_message")]
+        let responses = splitAtMessageBoundaries(items)
+        let asItems = responses.flatMap { $0.items.map(\.id) }
+        let asBoundaries = responses.compactMap(\.boundary?.id)
+        #expect(asItems.filter { asBoundaries.contains($0) }.isEmpty)
+        #expect((asBoundaries + asItems).sorted() == ["m1", "m2", "w1"])
+    }
+}
+
+@Suite struct SpawnRowTests {
+    private func row(_ id: String, _ type: String) -> JournalItem {
+        JournalItem(item: makeItem(id, type: type), streamedText: "", openedBy: 0)
+    }
+
+    private func spawn(_ id: String, _ taskId: String) -> JournalItem {
+        let item = try! JSONDecoder().decode(Item.self, from: Data("""
+        {"id":"\(id)","runId":"run_1","sessionId":"s","status":"completed",
+         "detail":{"type":"task","taskId":"\(taskId)"},"startedAt":100}
+        """.utf8))
+        return JournalItem(item: item, streamedText: "", openedBy: 0)
+    }
+
+    private func task(_ id: String, state: String = "completed", kind: String = "agent", extra: String = "") -> JournalTask {
+        let agent = try! JSONDecoder().decode(AgentTask.self, from: Data("""
+        {"id":"\(id)","sessionId":"s","runId":"run_1","kind":"\(kind)","state":"\(state)",
+         "startedAt":5,"updatedAt":5\(extra)}
+        """.utf8))
+        return JournalTask(task: agent, items: [])
+    }
+
+    @Test func aSpawnIsARowInTheRunAtThePlaceItHappened() {
+        let items = [row("a", "command_execution"), spawn("s1", "t1"), row("b", "file_read")]
+        #expect(renderable(items, tasks: [task("t1")]).map(\.id) == ["a", "s1", "b"])
+    }
+
+    @Test func aBackgroundedShellIsNotADelegate() {
+        #expect(renderable([spawn("s1", "t1")], tasks: [task("t1", kind: "background")]).isEmpty)
+
+        let stale = #","warp":{"warpRunId":"w1","warpName":"fan-out"}"#
+        #expect(renderable([spawn("s1", "t1")], tasks: [task("t1", kind: "background", extra: stale)]).isEmpty)
+    }
+
+    @Test func aSpawnWhoseTaskIsMissingIsStillARow() {
+        #expect(renderable([spawn("s1", "gone")], tasks: []).map(\.id) == ["s1"])
+    }
+
+    @Test func anEmptyReasoningBlockNeverCountsAsAStep() {
+        #expect(renderable([row("a", "reasoning"), row("b", "command_execution")]).map(\.id) == ["b"])
+    }
+
+    @Test func aSettledRunIsCutAroundItsStillLiveAgents() {
+        let items = [row("a", "command_execution"), spawn("s1", "t1"), row("b", "file_read"), spawn("s2", "t2"), row("c", "command_execution")]
+        let cuts = cutAroundLiveAgents(items, tasks: [task("t1", state: "running"), task("t2", state: "completed")])
+        let shape = cuts.map { cut -> String in
+            switch cut {
+            case .agent(let item): "<\(item.id)>"
+            case .run(let run): run.map(\.id).joined()
+            }
+        }
+        #expect(shape == ["a", "<s1>", "bs2c"])
+    }
+
+    @Test func aRunWithNoLiveAgentIsOneCut() {
+        let items = [row("a", "command_execution"), spawn("s1", "t1")]
+        let cuts = cutAroundLiveAgents(items, tasks: [task("t1")])
+        #expect(cuts.count == 1)
+        if case .run(let run) = cuts[0] { #expect(run.map(\.id) == ["a", "s1"]) } else { Issue.record("expected a run") }
+    }
+
+    @Test func aTaskWithNoSpawnRowIsNotLost() {
+        let items = [row("a", "command_execution"), spawn("s1", "t1")]
+        let tasks = [task("t1"), task("t2"), task("t3", kind: "background")]
+        #expect(spawnlessTasks(items, tasks: tasks).map(\.id) == ["t2"])
+    }
+
+    @Test func transcriptTasksKeepsAgentsOnly() {
+        let stale = #","warp":{"warpRunId":"w1","warpName":"fan-out"}"#
+        let kept = transcriptTasks([task("a"), task("b", kind: "background"), task("c", kind: "background", extra: stale)])
+        #expect(kept.map(\.id) == ["a"])
+    }
+}

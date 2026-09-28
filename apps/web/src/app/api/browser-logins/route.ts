@@ -1,0 +1,16 @@
+import { engineClient, engineRoute } from "@/platform/engine/server";
+
+/**
+ * The logins a person allowed agents to fill without being asked again.
+ *
+ * READ ONLY HERE — there is no POST, deliberately. A grant is created in
+ * exactly one way: an unchecked box ticked on a `secret_access` approval card,
+ * with the page and the item in front of the person. A route that could mint
+ * one would be a way to hand out vault access at a distance.
+ */
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).browserLogins());
+});

@@ -1,47 +1,5 @@
 name: Nightly iOS build
 
-# The phone's nightly channel: TestFlight internal testing AND the external
-# group "Nightly" — every upload is offered to both, by apps/ios/
-# testflight-external.sh once App Store Connect has processed it. Internal
-# testers get it minutes after processing; external testers get it once Beta
-# App Review clears it, and the FIRST build of each new marketing version sits
-# in that review for hours (a full review) while later builds of the same
-# version pass in minutes (Apple re-approves them against the reviewed one).
-# Same shape as nightly-desktop.yml — the tag is the deliberate act, the
-# workflow is the consequence — and the same rule: a nightly installs itself
-# on real devices (TestFlight auto-updates testers), so it builds from what
-# the tag points at on the trunk, not from a branch someone happened to have.
-#
-# `ios-nightly-*` only: the desktop nightly owns `v*-nightly.*`, and one tag
-# pattern per artifact keeps the two from racing a shared version scheme.
-#
-# SIGNING TAKES TWO CREDENTIALS, not one, and they do different jobs:
-#
-#   The App Store Connect API key (APPLE_API_*) authorises
-#   -allowProvisioningUpdates to fetch the provisioning profile, and
-#   authorises the upload. It is the SAME key the desktop release uses to
-#   notarize — one credential, both platforms (it needs the App Manager role
-#   for build uploads; notarization alone tolerates less).
-#
-#   A REAL Apple Distribution certificate (IOS_DIST_CERT_*) does the signing,
-#   imported into a temporary keychain below. This is NOT cloud-managed
-#   signing: Apple's upload validator refuses cloud-managed signatures
-#   outright (90035, measured twice on 2026-09-01), while the same archive
-#   re-signed from a keychain cert validated clean.
-#
-# This paragraph said the opposite until 2026-09-20 — "signing is cloud-
-# managed, there is no cert .p12 to import" — describing the workflow as it
-# was before that measurement, while the step below imported a .p12 anyway.
-# It sent at least one reader to the wrong conclusion about #757. Said
-# plainly here because a header that contradicts its own steps is worse than
-# no header.
-#
-# HOSTED (macos-latest) since 2026-09-20, with the rest of CI. It ran on the
-# maintainer's Mac mini from 2026-09-11, when the hosted lane stopped starting
-# jobs for billing and the Mac had gained a release Xcode; that is over.
-# `DEVELOPER_DIR` rather than `xcode-select` outlived the move — every script
-# here honours the variable, and naming the Xcode beats inheriting whatever
-# `xcode-select` points at.
 on:
   push:
     tags:
@@ -57,48 +15,15 @@ concurrency:
 
 jobs:
   testflight:
-    # Only trusted release triggers use the personal Mac.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
-    # NEEDS macOS, NOT THIS PARTICULAR MAC — moved to hosted 2026-09-20 with
-    # the rest of CI. Nothing about credentials had to change: the certificate
-    # comes from repository secrets into a temporary per-run keychain, which is
-    # already the hosted-runner pattern.
-    #
-    # THIS COMMENT SAID "signing here is cloud-managed (no .p12 to import)"
-    # AND THAT WAS WRONG — the step below imports IOS_DIST_CERT_P12_BASE64, and
-    # cloud-managed signatures are exactly what Apple's validator refuses
-    # (90035). I wrote it from the old file header, which said the same thing
-    # and has since been corrected above. It is named here rather than quietly
-    # replaced because it was reasoned from twice: it is why the hosted probe
-    # archived WITHOUT signing rather than proving the real signing path, so
-    # the iOS signing route on a hosted runner is still unproven. #757.
-    #
-    # ⚠ KNOWN RED ON ARRIVAL, and moving it is not what broke it. Two separate
-    # faults, both pre-dating the move:
-    #
-    #   #757 — `exportArchive Copy failed`. The archive succeeds and the
-    #          EXPORT fails. Four consecutive failures ON THE MAC from
-    #          2026-09-19T03:45Z; last green 2026-09-18T21:35Z. Nobody was
-    #          told, because nothing notified on failure.
-    #   #758 — the ARCHIVE fails on a hosted runner: SessionView.swift's body
-    #          exceeds the Swift type checker's time budget. A THRESHOLD, not
-    #          a clean break — the maintainer's Mac finishes inside it and a
-    #          hosted runner does not, so a re-run may pass. Do not read a
-    #          green retry as a fix.
-    #
-    # So this was already failing before it moved, and it lost nothing that
-    # worked. #758 is what gets it BUILDING here; #757 is what gets it
-    # PUBLISHING. Fixing either alone does not produce a nightly.
     runs-on: macos-latest
     # 45 covered archive → export → upload. The external-group step then waits
     # up to 30 minutes for App Store Connect to process the build before it
     # can be added and submitted, so the ceiling is the old one plus that wait.
     timeout-minutes: 80
     env:
-      # THE ONE XCODE ON THIS MAC, and it must be a release build: App Store
-      # Connect refuses uploads from a beta. A missing app fails the first
-      # xcodebuild loudly rather than falling back to whatever xcode-select
-      # names (the Command Line Tools, which cannot archive an iOS app).
+      # Named rather than inherited: it must be a release Xcode (App Store
+      # Connect refuses a beta's uploads), never the Command Line Tools.
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
@@ -154,8 +79,6 @@ jobs:
           security unlock-keychain -p ci "$KEYCHAIN"
           security import "$RUNNER_TEMP/dist.p12" -k "$KEYCHAIN" -P "$IOS_DIST_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -k ci "$KEYCHAIN" >/dev/null
-          # ON A PERSISTENT MAC the search list outlives the job, so save it for
-          # the cleanup step to put back. Same rule as release-desktop.yml.
           security list-keychains -d user > "$RUNNER_TEMP/keychain-search-list.txt"
           # Trim the wrapping quotes and the indentation, and NOTHING else. The
           # `s/[" ]//g` this replaces could not tell those spaces from a space
@@ -192,12 +115,6 @@ jobs:
       - name: Clean up the API key and keychain
         if: always()
         run: |
-          # PUT THE SEARCH LIST BACK BEFORE THE KEYCHAIN GOES. Deleting the
-          # keychain without restoring the list leaves it naming a keychain that
-          # no longer exists — harmless on an ephemeral VM, one more dead entry
-          # per run on a persistent Mac. `shlex.split` reads the saved lines as
-          # `security` wrote them, quotes and spaces intact. Same restore as
-          # release-desktop.yml and nightly-desktop.yml.
           if [ -f "$RUNNER_TEMP/keychain-search-list.txt" ]; then
             python3 - <<'PYTHON'
           import os, pathlib, shlex, subprocess

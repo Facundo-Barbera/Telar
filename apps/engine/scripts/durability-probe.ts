@@ -12,7 +12,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ExecutionStore } from "../src/execution-store";
+import { ExecutionStore } from "../src/platform/db/execution-store";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-durability-probe-"));
 try {

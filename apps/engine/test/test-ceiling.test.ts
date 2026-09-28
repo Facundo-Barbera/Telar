@@ -204,7 +204,7 @@ test("the preload ran in this process, and says which knob it took the ceiling f
   // Corroboration, not proof — see the header. The suite runs with no flag and
   // normally no env var, so the preload should have fallen through to its own
   // constant; a machine using the documented override is the other legal answer.
-  expect(["default", "env", "flag"]).toContain(sourceFromPreload);
+  expect<Array<string | undefined>>(["default", "env", "flag"]).toContain(sourceFromPreload);
   if (sourceFromPreload === "default") expect(ceilingFromPreload).toBe(TEST_CEILING_MS);
   // The property that matters about the number, rather than the number twice:
   // anything at or under bun's own default would leave #740's trap open.

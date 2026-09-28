@@ -37,14 +37,14 @@ git tag v0.1.0-beta.7 origin/main
 git push origin v0.1.0-beta.7
 ```
 
-Or dispatch from main. There are no inputs. The build uses the tip of `origin/main` and derives the version itself:
+Or dispatch from main. There are no inputs. The nightly builds the tip of `origin/main`, the beta builds the commit `main` pointed at when dispatched, and both derive the version themselves:
 
 ```sh
 gh workflow run nightly-desktop.yml --ref main
 gh workflow run release-desktop.yml --ref main
 ```
 
-After a dispatched nightly publishes, the workflow pushes the `v<version>` tag, which later runs count. A dispatched beta gets its tag from `gh release create`.
+After a dispatched nightly publishes, the workflow pushes the `v<version>` tag, which later runs count. A dispatched beta gets its tag from `gh release create --target`, on the commit it built.
 
 Pick tag numbers that sort above the version currently on the channel. Clients compare semver, and numeric prerelease parts compare as numbers.
 
@@ -55,7 +55,7 @@ Pick tag numbers that sort above the version currently on the channel. Clients c
 3. Writes the App Store Connect API key, and installs the `aws` CLI if it is missing.
 4. Runs `scripts/build-desktop.sh`:
    - takes a clean `git worktree` snapshot of the ref, so local changes never ship;
-   - runs a frozen install and builds the pinned computer-use helper (`apps/desktop/computer-use-helper.json`);
+   - runs a frozen install and builds the pinned computer-use helper (`apps/desktop/src/main/computer-use-helper.json`);
    - builds the standalone web server and stamps `build-info.json` (sha, ref, channel);
    - sets the version, then runs `electron-builder --mac`. The app is signed from the keychain and notarized when `APPLE_API_KEY*` are set;
    - verifies the signature, checks that the helper has Telar's team ID, and runs `spctl --assess`;
@@ -63,7 +63,7 @@ Pick tag numbers that sort above the version currently on the channel. Clients c
    - uploads zip/dmg/blockmap to R2 first, and `<channel>-mac.yml` last, under `--feed-prefix`.
 5. Nightly: pushes the tag (dispatch only). Beta: creates the GitHub prerelease.
 
-Targets: nightly builds `zip` only, beta builds `zip,dmg`. Both run on `macos-latest`. Nightlies share a `nightly-publish` concurrency group. The beta workflow has no concurrency group.
+Targets: nightly builds `zip` only, beta builds `zip,dmg`. Both run on `macos-latest`. Nightlies share the `nightly-publish` concurrency group and betas the `Release desktop app` group. A run in progress is never cancelled; a new run queues behind it, and GitHub keeps only the newest queued run.
 
 ### Secrets used
 
@@ -101,7 +101,7 @@ Squirrel installs only updates that carry the running app's bundle id, so `com.t
 2. downloads the zip it names and checks size, sha512, bundle id, team and Gatekeeper;
 3. swaps the new app in with a detached helper, which restores the old app if the new one doesn't confirm a boot within 180 seconds.
 
-The logic is in `apps/desktop/desktop-handoff-core.js` and `desktop-handoff.js`. Nothing happens until the manifest exists.
+The logic is in `apps/desktop/src/handoff/desktop-handoff-core.js` and `desktop-handoff.js`. Nothing happens until the manifest exists.
 
 Publish a manifest one channel at a time, after that channel's new-id build has been installed and tried. Do nightly first, then beta:
 

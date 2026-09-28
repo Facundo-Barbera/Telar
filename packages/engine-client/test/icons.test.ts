@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { IDENTITY_COLORS, IdentityColor, isIdentityColor, isTelarIcon, TELAR_ICONS, TelarIcon } from "../src/index";
 
 describe("the icon set", () => {
@@ -19,6 +20,12 @@ describe("the icon set", () => {
     expect(isTelarIcon(undefined)).toBe(false);
     expect(isTelarIcon(null)).toBe(false);
     expect(isTelarIcon("")).toBe(false);
+  });
+
+  test("the iPhone pairs every id with a symbol, and only these ids", () => {
+    const swift = readFileSync(new URL("../../../apps/ios/TelarMobile/UI/TelarIcons.swift", import.meta.url), "utf8");
+    const paired = [...swift.matchAll(/^\s*"([a-z0-9-]+)":\s*"[^"]+",?$/gm)].map((match) => match[1]);
+    expect(paired.sort()).toEqual([...TELAR_ICONS].sort());
   });
 
   test("the schema parses exactly the list", () => {

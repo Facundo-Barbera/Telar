@@ -1,0 +1,32 @@
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
+import type { EnvMode, RuntimeMode } from "@telar/engine-client";
+
+/**
+ * What a new session is built with when nobody said — today, the workspace:
+ * the project's own checkout, or a worktree of its own.
+ *
+ * ENVIRONMENT-SCOPED, like the inbox rule beside it and for the same reason:
+ * the desktop shell and a browser tab on one engine must agree about what "new
+ * session" means, or the composer's pre-selected answer looks like a bug.
+ *
+ * FORWARDED UNVALIDATED, also like the inbox rule: the set of legal modes lives
+ * next to the schema in the engine, and a second copy here could disagree.
+ */
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).sessionDefaults());
+});
+
+export const PATCH = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).setSessionDefaults({
+      ...("envMode" in body ? { envMode: body.envMode as EnvMode } : {}),
+      ...("resumeAfterRestart" in body ? { resumeAfterRestart: body.resumeAfterRestart as boolean } : {}),
+      ...("runtimeMode" in body ? { runtimeMode: body.runtimeMode as RuntimeMode | null } : {}),
+      ...("resumeAfterRateLimit" in body ? { resumeAfterRateLimit: body.resumeAfterRateLimit as boolean } : {}),
+    }),
+  );
+});

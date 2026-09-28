@@ -11,7 +11,7 @@
  * member it is about — see `agent-tools.test.ts`, which is where the behaviour
  * is actually pinned.
  */
-import type { SessionsQueryCapability } from "../src/sessions-tools/query";
+import type { SessionsQueryCapability } from "../src/domains/sessions/tools/query";
 
 export const noQueries = (): SessionsQueryCapability => ({
   find: async () => ({ sessions: [], index: "like", more: false }),

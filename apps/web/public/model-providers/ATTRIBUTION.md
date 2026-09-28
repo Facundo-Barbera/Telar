@@ -39,6 +39,6 @@ All marks are `fill="currentColor"`. The logos remain trademarks of their
 respective owners (OpenAI, Anthropic, Anomaly / SST, Amazon); they are used
 here to identify the corresponding service, not to imply endorsement.
 
-`components/session/connection-icon.tsx` embeds these paths and is GENERATED —
+`features/providers/components/connection-icon.tsx` embeds these paths and is GENERATED —
 regenerate it with `node generate-icons.mjs` from this directory after
 re-vendoring, rather than hand-editing it.

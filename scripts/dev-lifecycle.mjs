@@ -1,4 +1,21 @@
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+
+export function defaultTelarHome(homeDir = os.homedir()) {
+  return path.join(homeDir, ".telar-dogfood");
+}
+
+/** The dev home: `TELAR_HOME`, else the dogfood home. Never the installed app's store. */
+export function resolveTelarHome(env = process.env, homeDir = os.homedir()) {
+  const selected = env.TELAR_HOME?.trim() || defaultTelarHome(homeDir);
+  if (!path.isAbsolute(selected)) throw new Error("TELAR_HOME for Telar must be an absolute dedicated directory.");
+  const resolved = path.resolve(selected);
+  if ([".telar", ".telar-dev"].some((name) => resolved === path.join(homeDir, name))) {
+    throw new Error(`Refusing to use legacy TELAR_HOME ${resolved}. Set TELAR_HOME to a dedicated dogfood directory.`);
+  }
+  return resolved;
+}
 
 /**
  * Pure decisions used by the Telar development supervisor.

@@ -2,15 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
-  forgeQuery,
-  parseForgeQuery,
   EngineEvent,
   Item,
   ItemDetail,
   EngineRequest,
-  DEFAULT_SETTLE_DELEGATED_AFTER_HOURS,
-  InboxPolicy,
-  MAX_AUTO_SETTLE_HOURS,
   RequestKind,
   RuntimeMode,
   Session,
@@ -25,6 +20,8 @@ import {
   safeParseEvent,
   type Task,
 } from "../src/protocol";
+import { DEFAULT_SETTLE_DELEGATED_AFTER_HOURS, InboxPolicy, MAX_AUTO_SETTLE_HOURS } from "../src/settings/schema";
+import { forgeQuery, parseForgeQuery } from "../src/github/query";
 import * as packageRoot from "../src/index";
 
 const at = 1_700_000_000_000;

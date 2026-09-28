@@ -1,0 +1,190 @@
+import Foundation
+
+struct EngineEvent {
+    var id: Int
+    var at: Timestamp
+    var sessionId: EngineID
+    var runId: EngineID?
+    var type: String
+    var payload: Payload
+
+    enum Payload {
+        case turnAccepted(turn: Turn, replayed: Bool)
+        case turnCompleted(resultText: String, usage: UsageSnapshot?)
+        case turnFailed(code: String, message: String)
+        case turnStopped(reason: String?)
+        case turnPlanUpdated(item: Item)
+        case itemStarted(item: Item)
+        case itemUpdated(item: Item)
+        case itemCompleted(item: Item)
+        case contentDelta(itemId: EngineID, stream: ContentStream, text: String)
+        case requestOpened(request: EngineRequest)
+        case requestResolved(requestId: EngineID, decision: RequestDecision?)
+        case taskStarted(task: AgentTask)
+        case taskProgress(task: AgentTask)
+        case taskCompleted(task: AgentTask)
+        case sessionUpdated(session: Session)
+        case usageUpdated(usage: UsageSnapshot)
+
+        case browserControlChanged(controller: String)
+
+        case displayOpened(path: String, title: String?)
+
+        case kernelStateChanged(state: KernelState, reason: String?)
+
+        case notebookCellOutput(execId: String, cellId: String?, producer: String?, output: CellOutput?)
+
+        case none
+    }
+}
+
+extension EngineEvent: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case id, at, sessionId, runId, type
+        case turn, replayed, resultText, usage, code, message, reason
+        case item, itemId, stream, text, request, requestId, decision
+        case task, session, controller, path, title
+        case state, execId, cellId, producer, output
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        at = try c.decode(Timestamp.self, forKey: .at)
+        sessionId = try c.decode(EngineID.self, forKey: .sessionId)
+        runId = try c.decodeIfPresent(EngineID.self, forKey: .runId)
+        type = try c.decode(String.self, forKey: .type)
+
+        switch type {
+        case "turn.accepted":
+            if let turn = try? c.decode(Turn.self, forKey: .turn) {
+                payload = .turnAccepted(turn: turn, replayed: (try? c.decode(Bool.self, forKey: .replayed)) ?? false)
+            } else { payload = .none }
+        case "turn.completed":
+            payload = .turnCompleted(
+                resultText: (try? c.decode(String.self, forKey: .resultText)) ?? "",
+                usage: try? c.decodeIfPresent(UsageSnapshot.self, forKey: .usage)
+            )
+        case "turn.failed":
+            payload = .turnFailed(
+                code: (try? c.decode(String.self, forKey: .code)) ?? "internal_error",
+                message: (try? c.decode(String.self, forKey: .message)) ?? ""
+            )
+        case "turn.stopped":
+            payload = .turnStopped(reason: try? c.decodeIfPresent(String.self, forKey: .reason))
+        case "turn.plan.updated":
+            payload = (try? c.decode(Item.self, forKey: .item)).map { .turnPlanUpdated(item: $0) } ?? .none
+        case "item.started":
+            payload = (try? c.decode(Item.self, forKey: .item)).map { .itemStarted(item: $0) } ?? .none
+        case "item.updated":
+            payload = (try? c.decode(Item.self, forKey: .item)).map { .itemUpdated(item: $0) } ?? .none
+        case "item.completed":
+            payload = (try? c.decode(Item.self, forKey: .item)).map { .itemCompleted(item: $0) } ?? .none
+        case "content.delta":
+            if let itemId = try? c.decode(EngineID.self, forKey: .itemId),
+               let text = try? c.decode(String.self, forKey: .text) {
+                payload = .contentDelta(
+                    itemId: itemId,
+                    stream: (try? c.decode(ContentStream.self, forKey: .stream)) ?? .unknown,
+                    text: text
+                )
+            } else { payload = .none }
+        case "request.opened":
+            payload = (try? c.decode(EngineRequest.self, forKey: .request)).map { .requestOpened(request: $0) } ?? .none
+        case "request.resolved":
+            if let requestId = try? c.decode(EngineID.self, forKey: .requestId) {
+                payload = .requestResolved(requestId: requestId, decision: try? c.decodeIfPresent(RequestDecision.self, forKey: .decision))
+            } else { payload = .none }
+        case "task.started":
+            payload = (try? c.decode(AgentTask.self, forKey: .task)).map { .taskStarted(task: $0) } ?? .none
+        case "task.progress":
+            payload = (try? c.decode(AgentTask.self, forKey: .task)).map { .taskProgress(task: $0) } ?? .none
+        case "task.completed":
+            payload = (try? c.decode(AgentTask.self, forKey: .task)).map { .taskCompleted(task: $0) } ?? .none
+        case "session.updated":
+            payload = (try? c.decode(Session.self, forKey: .session)).map { .sessionUpdated(session: $0) } ?? .none
+        case "usage.updated":
+            payload = (try? c.decode(UsageSnapshot.self, forKey: .usage)).map { .usageUpdated(usage: $0) } ?? .none
+        case "browser.control.changed":
+            payload = (try? c.decode(String.self, forKey: .controller)).map { .browserControlChanged(controller: $0) } ?? .none
+        case "display.opened":
+            payload = (try? c.decode(String.self, forKey: .path)).map { .displayOpened(path: $0, title: try? c.decodeIfPresent(String.self, forKey: .title)) } ?? .none
+        case "kernel.state.changed":
+
+            payload = (try? c.decode(KernelState.self, forKey: .state))
+                .map { .kernelStateChanged(state: $0, reason: try? c.decodeIfPresent(String.self, forKey: .reason)) } ?? .none
+        case "notebook.cell.output":
+
+            payload = (try? c.decode(String.self, forKey: .execId)).map {
+                .notebookCellOutput(
+                    execId: $0,
+                    cellId: try? c.decodeIfPresent(String.self, forKey: .cellId),
+                    producer: try? c.decodeIfPresent(String.self, forKey: .producer),
+                    output: try? c.decodeIfPresent(CellOutput.self, forKey: .output)
+                )
+            } ?? .none
+        default:
+            payload = .none
+        }
+    }
+}
+
+struct EventPage: Decodable {
+    var events: [EngineEvent]
+
+    var cursor: Int
+    var more: Bool
+
+    var next: Int?
+
+    private enum CodingKeys: String, CodingKey { case events, cursor, more, next }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        events = try c.decode([Skippable<EngineEvent>].self, forKey: .events).compactMap(\.value)
+        cursor = try c.decode(Int.self, forKey: .cursor)
+        more = try c.decodeIfPresent(Bool.self, forKey: .more) ?? false
+        next = try c.decodeIfPresent(Int.self, forKey: .next)
+    }
+}
+
+struct EngineHealth: Decodable {
+    struct Worker: Decodable {
+        var registered: Bool
+        var workerId: EngineID?
+    }
+    var daemonId: EngineID
+    var startedAt: Timestamp
+    var worker: Worker
+}
+
+struct SnapshotPage: Decodable {
+    var before: EngineID?
+
+    var more: Bool
+}
+
+struct SessionSnapshot: Decodable {
+    var cursor: Int?
+
+    var page: SnapshotPage?
+    var session: Session
+    var turns: [Turn]
+    var items: [Item]
+    var requests: [EngineRequest]
+    var tasks: [AgentTask]
+
+    private enum CodingKeys: String, CodingKey { case cursor, page, session, turns, items, requests, tasks }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cursor = try c.decodeIfPresent(Int.self, forKey: .cursor)
+        page = try? c.decodeIfPresent(SnapshotPage.self, forKey: .page)
+        session = try c.decode(Session.self, forKey: .session)
+
+        turns = try c.decode([Skippable<Turn>].self, forKey: .turns).compactMap(\.value)
+        items = try c.decode([Skippable<Item>].self, forKey: .items).compactMap(\.value)
+        requests = try c.decode([Skippable<EngineRequest>].self, forKey: .requests).compactMap(\.value)
+        tasks = try c.decode([Skippable<AgentTask>].self, forKey: .tasks).compactMap(\.value)
+    }
+}

@@ -3,16 +3,16 @@
   "workspaces": {
     ".": {
       "entry": [
-        "scripts/*.{mjs,ts}"
+        "scripts/*.{mjs,ts}",
+        "workers/push-relay/worker.mjs"
       ],
       "project": [
-        "scripts/**/*.{mjs,ts}"
+        "scripts/**/*.{mjs,ts}",
+        "workers/push-relay/**/*.mjs"
       ]
     },
     "apps/engine": {
       "entry": [
-        "src/*-main.ts",
-        "src/main.ts",
         "bench/*.ts",
         "scripts/*.{ts,mjs}"
       ],
@@ -26,14 +26,14 @@
         "@playwright/mcp"
       ],
       "ignoreIssues": {
-        "src/plugins/contract.ts": [
+        "src/domains/plugins/contract.ts": [
           "types"
         ]
       }
     },
     "apps/web": {
       "project": [
-        "**/*.{ts,tsx,mjs}"
+        "**/*.{ts,tsx,mjs,css}"
       ],
       "entry": [
         "scripts/*.mjs",
@@ -42,18 +42,13 @@
     },
     "apps/desktop": {
       "entry": [
-        "main.js",
-        "*preload*.js",
-        "*.electron-test.js",
-        "desktop-e2e*.js",
-        "after-pack.js",
-        "render-opener-icons.mjs"
+        "src/preload/*.js",
+        "src/**/*.electron-test.js",
+        "test/electron/desktop-e2e*.js",
+        "scripts/after-pack.js"
       ],
       "project": [
         "**/*.{js,mjs,cjs}"
-      ],
-      "ignore": [
-        "test-fixtures/**"
       ],
       "ignoreDependencies": [
         "electron-builder",
@@ -64,15 +59,6 @@
       "project": [
         "src/**/*.ts",
         "test/**/*.ts"
-      ]
-    },
-    "workers/push-relay": {
-      "entry": [
-        "worker.mjs",
-        "deploy.mjs"
-      ],
-      "project": [
-        "**/*.mjs"
       ]
     },
     "workers/updates-proxy": {
@@ -92,10 +78,7 @@
     "uv",
     "osascript",
     "scutil",
-    "tailscale",
-    "plutil",
-    "sips",
-    "rsvg-convert"
+    "tailscale"
   ],
   "ignoreIssues": {
     "packages/engine-client/src/protocol/common.ts": [
@@ -104,10 +87,18 @@
     "packages/engine-client/src/protocol/entities.ts": [
       "duplicates"
     ],
-    "packages/engine-client/src/protocol/plugins.ts": [
+    "packages/engine-client/src/plugins/{schema,toolchains}.ts": [
       "duplicates"
     ],
-    "apps/desktop/{desktop-handoff-core,desktop-handoff,dev-update-core,dev-update,tailscale,update-watchdog,store-location,store-migrate}.js": ["exports"],
-    "apps/desktop/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": ["exports"]
+    "apps/desktop/src/{handoff/desktop-handoff-core,handoff/desktop-handoff,dev/dev-update-core,dev/dev-update,main/tailscale,main/update-watchdog,store/store-location,store/store-migrate}.js": [
+      "exports"
+    ],
+    "apps/desktop/src/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": [
+      "exports"
+    ],
+    "apps/web/src/features/remote/server/**": [
+      "exports",
+      "types"
+    ]
   }
 }

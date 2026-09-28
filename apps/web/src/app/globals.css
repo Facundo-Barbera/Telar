@@ -1,0 +1,1619 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* The `dark` variant keys off a class on <html>, set before first paint by the
+   init script in layout.tsx. Deliberately the plain form: adding a
+   `:not(:is(.light *))` half would push every `dark:` rule from (0,1,0) to
+   (0,2,0) and make any element wearing a bare `light` class silently lose dark
+   mode inside it. */
+@custom-variant dark (&:is(.dark *));
+
+/* THE PALETTE BELOW IS PORTED VERBATIM FROM THE FROZEN APP (apps/web_old/app/
+   globals.css) AND ITS VALUES ARE NOT FREE PARAMETERS. Each one was tuned
+   against a named contrast floor on a named surface, and the comments state
+   which. this app previously carried a hand-rolled twelve-token approximation of
+   this system; that is what made the cockpit read as a different product. If a
+   colour looks wrong here, the fix is a component using the wrong token, not a
+   nudge to the token. */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  /* One indirection so the TYPEFACE is a setting: --app-font-* carry the
+     chosen stack (defaults in :root, alternatives keyed off data-font-*
+     below), and next/font emits the webfont variables (--font-geist-sans,
+     --font-inter, --font-jetbrains, …) in layout.tsx. Reading variables
+     rather than family names means a missing font degrades to the stack
+     instead of to whatever the browser picks. */
+  --font-sans: var(--app-font-sans);
+  --font-mono: var(--app-font-mono);
+  /* THE SUB-12px RAMP, WHICH THIS APP HAS ALWAYS HAD AND NEVER NAMED.
+     528 `text-[…]` utilities sat on exactly four steps below Tailwind's
+     `text-xs`, so the scale was real, consistently applied, and invisible to
+     anyone reading globals.css looking for it.
+
+     Rem, not px, because `features/appearance/appearance.ts` sets `html { font-size }` between
+     13 and 18px and the whole app is meant to follow the reader's slider.
+     Values are the ones already in the tree, so nothing moves at the 16px
+     default.
+
+     NAMED `{n}xs` AND NOT `xxs`, AND THAT IS NOT A STYLE PREFERENCE:
+     tailwind-merge sorts `text-*` into its font-size group only when the
+     suffix passes its t-shirt-size test, and `4xs`/`3xs`/`2xs` pass where
+     `xxs` does not. A `text-xxs` would land in the TEXT-COLOUR group instead,
+     so `cn("text-xxs", "text-muted-foreground")` would silently drop the size
+     and the caption would render at 16px. `xs-plus` has the same problem and
+     is registered explicitly in lib/utils.ts, which is the only reason it is
+     safe to write.
+
+     No `--text-*--line-height` on any of them ON PURPOSE. The arbitrary
+     utilities these replace set font-size alone and inherited their leading;
+     giving the tokens a line-height here would re-space 528 call sites in a
+     rename. */
+  --text-4xs: 0.5625rem; /* 9px  */
+  --text-3xs: 0.625rem;  /* 10px */
+  --text-2xs: 0.6875rem; /* 11px */
+  --text-xs-plus: 0.8125rem; /* 13px — between text-xs and text-sm */
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary: var(--sidebar-primary);
+  /* Same indirection as --color-sidebar below, for the same reason (a custom
+     property cannot reference its own themed value), serving the legibility
+     floor the translucent-light block down by the wash rules declares. The
+     fallback is the themed token, so every other scene is untouched. */
+  --color-sidebar-foreground: var(--sidebar-foreground-wash, var(--sidebar-foreground));
+  /* THE ONE TOKEN THE WASH IS ALLOWED TO REPLACE, and the indirection is what
+     makes that possible at all. The rail is a GROUND (see the translucency
+     section below), so it has to go see-through — but a custom property cannot
+     reference its own themed value, and the injected theme stylesheet sets
+     `--sidebar` at (0,1,1) while the wash rules sit at (0,2,0). Writing
+     `--sidebar: color-mix(… var(--sidebar) …)` in the wash block is a cycle;
+     writing it from --background/--foreground instead throws the theme's own
+     rail colour away. So the wash writes a DIFFERENT name, and the bridge
+     prefers it when it exists: no cycle, and the mix reads the live
+     `--sidebar` — whatever theme set it. */
+  --color-sidebar: var(--sidebar-wash, var(--sidebar));
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  /* Tailwind v4 only emits a utility for a --color-* name it can see in THIS
+     block, so a token declared in :root and nowhere else is unreachable:
+     `text-success` would compile to nothing and leave the text whatever it
+     inherited. These four are the state vocabulary catching up to
+     --destructive, which already had its bridge. */
+  /* The kind hues (see :root). Bridged because the call sites are class
+     strings in a lookup table — `text-tint-blue` has to be a real utility. */
+  --color-tint-blue: var(--tint-blue);
+  --color-tint-cyan: var(--tint-cyan);
+  --color-tint-green: var(--tint-green);
+  --color-tint-yellow: var(--tint-yellow);
+  --color-tint-orange: var(--tint-orange);
+  --color-tint-red: var(--tint-red);
+  --color-tint-pink: var(--tint-pink);
+  --color-tint-purple: var(--tint-purple);
+  /* The modal scrim, so `bg-overlay` exists in place of a hardcoded black. */
+  --color-overlay: var(--overlay);
+  --color-info: var(--info);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground-wash, var(--muted-foreground));
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  /* The default typefaces. Alternatives live in the data-font-* blocks after
+     the palette; the settings pane writes those attributes on <html>. */
+  --app-font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --app-font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* The canvas sits a REAL step off white so a card can BE white and actually
+     read as raised. Telar once shipped --background and --card both at
+     oklch(1 0 0), which is why light mode had no elevation anywhere; 0.992 was
+     the first fix and it was not enough — a white card on it cleared 1.02:1,
+     which is not a step, it is a rounding error. At 0.975 the same card clears
+     1.075:1 and the elevation ladder below has something to cast onto. The
+     neutral spine carries a zinc tint — hue 286, chroma never above 0.016 —
+     because a chroma-0 light UI reads cold and clinical, and 0.016 is small
+     enough that tokens used at partial opacity compose the same way.
+
+     EVERY FILL UNDER THE CANVAS CAME DOWN WITH IT (--secondary, --muted,
+     --accent, --sidebar, --sidebar-accent), because each was tuned as a ratio
+     AGAINST the canvas rather than as an absolute lightness; the ratios below
+     are the ones that were documented, re-measured after the move. */
+  --background: oklch(0.975 0.002 286);
+  --foreground: oklch(0.274 0.006 286);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.274 0.006 286);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.274 0.006 286);
+
+  /* Hue 264 is the anchor and it means one thing: A PERSON. The focus ring, the
+     link, the button a human presses — never anything an agent resolves on its
+     own. Chroma is pinned at 0.16 in both themes so only lightness moves
+     between them, and 0.16 is also where hue 264 stays inside sRGB at the
+     lightness dark mode needs. */
+  --primary: oklch(0.488 0.16 264);
+  --primary-foreground: oklch(1 0 0);
+
+  /* Badge and Button render `secondary` as `bg-secondary` on a base class with
+     a transparent border and no shadow, so the fill IS the whole chip — too
+     close to the canvas and it reads as loose body text rather than a chip.
+     THE NUMBER THAT MATTERS IS THE RATIO, NOT THE LIGHTNESS: 1.10:1 off the
+     canvas, one notch lighter than --accent so a resting chip still sits above
+     a hover surface. It was 0.96 against a 0.992 canvas; it is 0.943 against a
+     0.975 one, and the ratio is unchanged at 1.099:1. */
+  --secondary: oklch(0.943 0.002 286);
+  --secondary-foreground: oklch(0.274 0.006 286);
+  --muted: oklch(0.952 0.001 286);
+  /* 0.525 is a floor, not a round number. --muted-foreground is the app's
+     heaviest token by an order of magnitude and has to clear 4.5:1 on the
+     quietest surface it lands on — a hovered sidebar row — which it does at
+     4.51:1. One notch lighter and every quiet label in the app fails AA on
+     hover.
+
+     THIS FLOOR IS WHAT CAPS THE RAIL'S HOVER. Lowering the canvas pulled every
+     fill down with it, and --sidebar-accent could not follow all the way: at
+     0.938 the hover is 4.51:1 under this text and there is nothing left. So
+     the rail's hover step narrowed (1.084:1 → 1.052:1) rather than this token
+     moving. Legibility outranks a crisper hover. */
+  --muted-foreground: oklch(0.525 0.016 286);
+  --accent: oklch(0.939 0.002 286);
+  --accent-foreground: oklch(0.21 0.006 286);
+
+  /* Five states, one token each, every one tuned as TEXT on the quietest
+     surface it can land on — because that is how the app uses them
+     (`bg-destructive/10 text-destructive`, dots, hairlines), and a value that
+     clears 4.5:1 as text is automatically past 3:1 as a dot. A SOLID fill of
+     any of them takes `text-background`, in both themes; that falls out of
+     tuning them this way and is why there are no -foreground companions.
+
+     "Blocked" folds into --warning on purpose: both mean a person has to move,
+     and 22 degrees of hue is not enough to tell amber from orange once light
+     mode has darkened them both to brown. --info stays at 215 rather than
+     moving toward 235: that would buy distance from --success but lose more to
+     --primary, and 225-235 fall outside sRGB at this lightness.
+
+     /15 is the deepest tint any of them carries as a text backing. IN DARK it
+     clears 4.5:1 on canvas, card and popover with room to spare (4.77–7.64).
+     IN LIGHT IT DOES NOT, AND DID NOT BEFORE THIS CANVAS MOVED: measured as
+     text on its own /15 tint, light ran 4.28–5.00 on the canvas and 4.37–5.11
+     on card and popover — three of the six ramps were already short of 4.5.
+     Lowering the canvas costs another ~0.20 on the canvas case (now 4.09–4.77);
+     card and popover are unchanged, because --card and --popover did not move.
+     The ramps themselves are deliberately left alone here: they are four
+     semantic colours used far beyond this one backing, and re-tuning them is
+     its own change with its own evidence. If you need a deeper fill than /15,
+     it is a solid and it takes `text-background`, not `text-X`.
+
+     Do not add a sixth ramp. New state colours go on this vocabulary. */
+  --info: oklch(0.51 0.09 215);
+  --success: oklch(0.495 0.108 162);
+  --warning: oklch(0.515 0.11 72);
+  --destructive: oklch(0.50 0.19 25.5);
+
+  /* THE EIGHT IDENTITY HUES — `IDENTITY_COLORS`, the per-thing marks
+     (Apple Calendar's per-calendar hues).
+
+     IDENTITY, NEVER STATE. Each of these says WHOSE something is — a thing
+     the user coloured — and nothing else. They are constant: never derived
+     from state, never a function of a deadline, a pin or a tier, never used
+     for urgency. This is NOT a sixth ramp: the rule above ("do not add a
+     sixth ramp; new state colours go on this vocabulary") is about STATE, and
+     none of these may ever mean done, blocked, failing or needs-attention —
+     those stay on --warning and --destructive like every other screen.
+
+     TUNED AS SMALL DOTS, deliberately quieter than the state ramps (chroma
+     0.03–0.10 against the ramps' 0.09–0.20) so eight of them on one screen
+     read as a key, not a carnival. Dark lifts lightness (0.55 → 0.73) and
+     holds chroma. `slate` and `sand` run near-grey on purpose — a palette
+     needs quiet members.
+
+     DELIBERATELY NOT BRIDGED INTO @theme: no `bg-subject-*` utility exists,
+     so the only door to these values is the one pure helper
+     (`identityColorVar` in `lib/telar-icons.tsx`), which is what keeps them
+     out of state conditionals by construction. */
+  --subject-plum: oklch(0.55 0.09 325);
+  --subject-sea: oklch(0.55 0.08 205);
+  --subject-moss: oklch(0.55 0.08 140);
+  --subject-amber: oklch(0.58 0.09 70);
+  --subject-slate: oklch(0.55 0.03 265);
+  --subject-rose: oklch(0.57 0.09 15);
+  --subject-sky: oklch(0.57 0.09 240);
+  --subject-sand: oklch(0.58 0.05 90);
+
+  /* THE EIGHT KIND HUES — what a THING IS, not how it is doing.
+
+     A TypeScript file, a pull request, a stylesheet: `features/files/file-kinds.ts` and
+     `lib/glyph-paths.ts` colour these so a chip is recognisable before it is
+     read. Both files used to reach for raw Tailwind ramps
+     (`text-sky-600 dark:text-sky-400`) — a fixed sRGB pair that cannot follow a
+     theme and had to restate itself in every block. One token per hue, flipping
+     with the scheme like everything else, is the same fix `--subject-*` already
+     is for identity.
+
+     IDENTITY, NEVER STATE, exactly like the subject hues above: nothing here may
+     ever mean done, blocked or failing — those stay on --success / --warning /
+     --destructive. The names are the FAMILY (blue, green, …), not the meaning,
+     because "TypeScript is blue" is the fact those tables encode.
+
+     BRIDGED, unlike --subject-*, because the call sites ARE class strings —
+     `text-tint-blue` has to exist as a utility. Tuned on the --chart-* spine
+     (L 0.56 light, 0.74 dark) rather than the subject dots' quieter one: these
+     are read as small glyphs against a panel, and they carry more chroma so
+     eight file kinds stay apart at 14px. */
+  --tint-blue: oklch(0.56 0.15 245);
+  --tint-cyan: oklch(0.56 0.095 200);
+  --tint-green: oklch(0.56 0.13 155);
+  --tint-yellow: oklch(0.58 0.12 85);
+  --tint-orange: oklch(0.58 0.14 55);
+  --tint-red: oklch(0.56 0.16 20);
+  --tint-pink: oklch(0.56 0.16 350);
+  --tint-purple: oklch(0.56 0.16 295);
+
+  /* HELD AT 0.92 WHILE THE CANVAS CAME DOWN, which costs it contrast there
+     (1.24:1 → 1.18:1) and that is the point of this whole change rather than a
+     casualty of it: the hairline was carrying elevation on its own because
+     nothing cast a shadow, and the ladder below now does that job. Against a
+     CARD — where most borders in the app actually sit — it is unmoved at
+     1.27:1. Darkening it to chase the old canvas ratio would put the wireframe
+     back. */
+  --border: oklch(0.92 0.004 286);
+  /* --input is far darker than --border deliberately. --border is the hairline
+     the base layer puts on EVERY element; pushed to 3:1 it would draw a box
+     around the whole app. --input marks a control boundary, where WCAG 1.4.11
+     does ask for 3:1, so it sits at 3.30:1 against a card.
+
+     IT HAD TO FOLLOW THE CANVAS DOWN. At 0.66 it cleared 3.05:1 on a 0.992
+     canvas and only 2.89:1 on a 0.975 one — a field resting on the canvas
+     would have dropped under the 3:1 this token exists to promise. 0.645
+     restores it.
+
+     That 3:1 is a claim about three surfaces, not all of them: canvas 3.07,
+     card and popover 3.30. It does NOT hold on --sidebar (2.90), --muted
+     (2.87), --secondary (2.80) or --accent (2.76). Nest a field in one of those
+     and it needs its own border. */
+  --input: oklch(0.645 0.008 286);
+  --ring: var(--primary);
+
+  /* WHAT A MODAL PUTS THE APP BEHIND. Dialog and Sheet both shipped
+     `bg-black/10`, which is not a colour this palette owns: under a warm theme
+     it lays a cold grey film over an ember canvas, and it says the same thing
+     in both schemes when the two schemes need opposite things. So the scrim
+     is a TOKEN, and each half is mixed from the theme's own ends — the ink in
+     light, the canvas in dark — which is what "push the app back" actually
+     means on each. Kept deliberately light: the overlay carries
+     `backdrop-blur-xs` too, and blur plus a heavy film reads as a curtain.
+
+     TRANSPARENT IS WRITTEN FIRST ON PURPOSE. Tailwind emits an @supports guard
+     around every color-mix in a theme block and falls the declaration back to
+     the mix's FIRST colour; with the ink first, a browser without color-mix
+     would paint an opaque slab over the app and the dialog would open onto
+     nothing. Transparent first degrades to "no scrim", which is a look, not a
+     failure. Same reasoning for --shadow-tint below. */
+  --overlay: color-mix(in oklab, transparent 90%, var(--foreground));
+
+  /* THE COLOUR A RAISED SURFACE CASTS. Three call sites hardcoded
+     `rgba(0,0,0,.9)`, and pure black is the one ink no theme has: under a light
+     theme it smudges, and it cannot pick up a tint the rest of the surface
+     carries. Light mixes the theme's ink toward its canvas; dark deepens the
+     theme's canvas past its own floor, because a shadow in dark mode is
+     "darker than the room", not "black". Both carry their alpha, so the whole
+     ladder below is mixed from this ONE ink and nothing else ever names a
+     shadow colour. */
+  --shadow-tint: color-mix(in oklab, transparent 12%, color-mix(in oklab, var(--foreground) 92%, var(--background)));
+
+  /* ─── THE ELEVATION LADDER: THE PER-HALF DIALS ─────────────────────────────
+
+     The RUNGS (--shadow-1/2/3) are one shared shape, written once in the
+     @theme block after .dark. THESE THREE NUMBERS ARE WHAT A HALF TUNES, and
+     they are why one shape can serve both:
+
+       --shadow-lift      how far the ambient layer travels. A multiplier on
+                          every offset, blur and spread in that layer, so a
+                          half can flatten the ladder without restating it.
+       --shadow-ink       how much of --shadow-tint the ambient layer carries.
+       --shadow-ring-ink  …and the tight contact layer directly under the edge.
+
+     LIGHT IS AMBIENT-LED. There is nowhere to go above white, so a card rises
+     by the soft shadow it drops onto a canvas that is finally dark enough to
+     take one; the contact line stays a whisper so edges do not read as drawn.
+
+     DARK IS THE OPPOSITE and the comment on --shadow-tint above says why: a
+     shadow on a dark canvas is darker than the room, and 24px of "slightly
+     darker than near-black" is invisible. So dark spends almost all of its ink
+     on the contact ring — the thing that actually separates two dark surfaces —
+     and keeps only a trace of ambient. */
+  --shadow-lift: 1;
+  --shadow-ink: 26%;
+  --shadow-ring-ink: 11%;
+
+  /* Two series hues at one lightness, so neither reads as "more". Not the
+     status tokens: a chart of session states uses --success and --warning. */
+  --chart-1: oklch(0.56 0.16 264);
+  --chart-2: oklch(0.56 0.15 336);
+
+  /* THE ONE AUTHORED RADIUS; every step in the @theme block above derives
+     from it.
+
+     There was a second — `--control-radius: 0.5rem`, bridged as
+     `--radius-control` — carrying a seven-line argument that a button, a chip
+     or a field has to hold 8px even if the containers are later rounded
+     harder. It shipped with ZERO call sites: `rounded-control` was never
+     written anywhere, and `rounded-md` happens to compute to the same 8px,
+     which is why nobody noticed for as long as it existed.
+
+     It is gone rather than adopted. Adopting it would have moved every
+     <Button> from 10px to 8px and every <Badge> from 16px to 8px — a visible
+     change to every control in the app, made to enforce a hierarchy the
+     shipped app already contradicts elsewhere (cards are drawn at 14px and
+     documented at 18px). Which way the radius doctrine should move is a taste call worth
+     seeing before committing, and shipping half of it inside a dead-token
+     cleanup would have pre-empted it. Deleting the name changes no pixel. */
+  --radius: 0.625rem;
+  /* Two radii, because a button and a dialog are not the same object. --radius
+     is the container value the whole scale derives from. --control-radius is
+     authored rather than derived: on something the size of a button, a chip or
+     a field, 10px of corner starts eating the label, and the value has to hold
+     at 8px even if someone later rounds the containers harder.
+
+     THE HIERARCHY THIS LANDS — 8px controls, 10px fields and popovers, 14px
+     CARDS, 18px dialogs and the composer.
+
+     That 14 is a correction, and #250 item 13 is where it was made. This
+     comment used to say "18px cards and dialogs", and it was the only place
+     that believed it: the app draws cards at 14px (`rounded-xl`) at 58 sites in
+     32 files against seven at 18px, and iOS `Theme.radiusCard` is 14 too. So
+     the doctrine was wrong rather than the practice, and the alternative —
+     moving those 58 to 18px — would have made the phone the thing out of step
+     with a paragraph. A ladder documented as one thing and shipped as another
+     is worse than an undocumented one, because the next person reads the
+     paragraph and trusts it.
+
+     `rounded-xl` reads as the odd rung in Tailwind's names, not in the scale:
+     the steps are ×0.6 / ×0.8 / ×1 / ×1.4 / ×1.8, so a card at 1.4 sits
+     exactly where a card should — between the field it contains and the dialog
+     that contains it. The names are Tailwind's; the ladder is ours. */
+  --control-radius: 0.5rem;
+
+  /* The rail always steps TOWARD mid-grey from the canvas: it recesses here
+     because there is no room above white, and lifts in dark because there is no
+     room below the base. It keeps the step it was tuned with — 1.06:1 under the
+     canvas — rather than the lightness it had, so it came down with everything
+     else. Everything else derives from the core tokens so the rail cannot drift
+     out of family. --sidebar-accent is the one value the rail authors for
+     itself, because a row hover has to read against 0.955, not the canvas —
+     and it is pinned by --muted-foreground's AA floor rather than by taste
+     (see that token). */
+  --sidebar: oklch(0.955 0.002 286);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-accent: oklch(0.938 0.003 286);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+.dark {
+  /* Dark holds chroma at exactly 0 across the whole spine, so surfaces lift out
+     of one black family rather than starting from a milky grey — and because
+     status dots and syntax-highlighted code already put a lot of hue on this
+     screen, and tinted grey underneath them fights it. Four rungs, each a real
+     step: canvas, rail, card, popover. */
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.97 0 0);
+  --card: oklch(0.2 0 0);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.225 0 0);
+  --popover-foreground: oklch(0.97 0 0);
+
+  /* Same hue, same chroma, more lightness — and the fill/text polarity flips,
+     which is not cosmetic. A 264 blue dark enough to carry white text tops out
+     near L 0.56; the same token has to reach about L 0.585 before it is legible
+     as `text-primary` on the canvas. The two windows do not overlap, so one
+     side has to give, and the app's `text-primary` sites plus its
+     `bg-primary/15` chips make this the right side to keep. */
+  --primary: oklch(0.68 0.16 264);
+  --primary-foreground: oklch(0.17 0.04 264);
+
+  /* Opaque, not `white / 4%`. Tailwind v4 compiles `bg-muted/40` to a
+     color-mix against transparent, so alpha on the TOKEN multiplies rather than
+     replaces — against a 4-6% token those land at 1-3% white, which is nothing.
+     The translucency a translucent token gets for free has to be paid for in
+     opaque steps here, so muted sits above the popover rung and accent one step
+     above muted, keeping a hover on a muted chip visible. */
+  --secondary: oklch(0.265 0 0);
+  --secondary-foreground: oklch(0.97 0 0);
+  --muted: oklch(0.265 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.305 0 0);
+  --accent-foreground: oklch(0.97 0 0);
+
+  /* Same four meanings, same four hues, lifted for a dark surface. Each still
+     clears 4.5:1 as text on every rung including --accent, and a solid fill
+     still takes `text-background` — the polarity of that pairing flips between
+     themes but the class does not, which is the point. */
+  --info: oklch(0.74 0.125 215);
+  --success: oklch(0.73 0.15 162);
+  --warning: oklch(0.78 0.15 72);
+  --destructive: oklch(0.7 0.19 25.5);
+
+  /* The identity hues, lifted the same way — see the light theme for
+     the law they live under: WHOSE, never how urgent. */
+  --subject-plum: oklch(0.73 0.1 325);
+  --subject-sea: oklch(0.73 0.09 205);
+  --subject-moss: oklch(0.73 0.09 140);
+  --subject-amber: oklch(0.76 0.1 70);
+  --subject-slate: oklch(0.72 0.04 265);
+  --subject-rose: oklch(0.74 0.1 15);
+  --subject-sky: oklch(0.74 0.1 240);
+  --subject-sand: oklch(0.76 0.06 90);
+
+  /* The kind hues, lifted onto the dark spine the same way — see the light
+     theme for the law they live under: WHAT IT IS, never how it is doing. */
+  --tint-blue: oklch(0.74 0.13 245);
+  --tint-cyan: oklch(0.74 0.1 200);
+  --tint-green: oklch(0.74 0.14 155);
+  --tint-yellow: oklch(0.79 0.14 85);
+  --tint-orange: oklch(0.77 0.14 55);
+  --tint-red: oklch(0.74 0.15 20);
+  --tint-pink: oklch(0.74 0.15 350);
+  --tint-purple: oklch(0.74 0.16 295);
+
+  /* These two split on whether the value has to promise a number. --border is
+     decorative — the base layer puts it on every element, a 3:1 hairline
+     everywhere would be a wireframe — and its job is to sit correctly on all
+     four rungs of the elevation ladder from ONE value, which is exactly what
+     alpha is for. --input cannot work that way: it is the sole boundary of
+     every bg-transparent field and WCAG 1.4.11 asks it for a fixed 3:1, but a
+     translucent value's contrast floats with whatever is behind it. So it goes
+     opaque and holds 3.43:1 on card, 3.75 on canvas, 3.24 on popover. */
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(0.53 0 0);
+  --ring: var(--primary);
+
+  /* The scrim flips ENDS, not just values: dimming toward the theme's ink is
+     what "behind" means on a light canvas, and there is no ink darker than a
+     dark canvas — so this half deepens the canvas instead. See :root. */
+  --overlay: color-mix(in oklab, transparent 45%, var(--background));
+  --shadow-tint: color-mix(in oklab, transparent 12%, color-mix(in oklab, var(--background) 45%, oklch(0 0 0)));
+
+  /* The ladder's dials, flipped: mostly the contact ring, a trace of ambient,
+     and half the travel. See :root for what each one does and why this half
+     wants the opposite balance. */
+  --shadow-lift: 0.5;
+  --shadow-ink: 9%;
+  --shadow-ring-ink: 38%;
+
+  --chart-1: oklch(0.74 0.13 264);
+  --chart-2: oklch(0.74 0.15 336);
+
+  /* The rail lifts off the canvas here because there is no usable room below
+     0.145, and stops short of --card so a card inside the rail still reads. */
+  --sidebar: oklch(0.175 0 0);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-accent: oklch(0.265 0 0);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+/* ─── THE ELEVATION LADDER ───────────────────────────────────────────────────
+
+   THREE RUNGS AND ONE INK. Before this, 38 call sites wore Tailwind's stock
+   `shadow-sm`, popovers wore stock `shadow-md`, and four surfaces carried
+   hand-written arbitrary values — five vocabularies for one idea, none of
+   which could follow a theme, and (the stock ones) none of which could pick up
+   --shadow-tint at all. So: three named rungs, every one of them mixed from
+   --shadow-tint, and nothing anywhere else names a shadow colour.
+
+     --shadow-1  A RESTING SURFACE. Cards, settings groups, the rail's own
+                 island, a selected tab. It is ON the page.
+     --shadow-2  SOMETHING THAT FLOATS OVER THE PAGE but belongs to it — the
+                 composer, the panel, a pinned strip, a scroll-to-bottom pill.
+     --shadow-3  SOMETHING THE PAGE IS BEHIND. Popovers, menus, dialogs,
+                 sheets, toasts.
+
+   EACH RUNG IS TWO LAYERS, and that is what makes it read as depth rather than
+   as a grey halo. A TIGHT CONTACT layer sits directly under the edge and says
+   the surface is touching something; a SOFT AMBIENT layer, far larger and
+   pulled in by a negative spread, is the room light it interrupts. A single
+   blurred layer can do one job or the other, never both.
+
+   THE SHAPE IS SHARED, THE BALANCE IS THEMED. The geometry below is written
+   once; --shadow-lift, --shadow-ink and --shadow-ring-ink (in :root and .dark)
+   are what make light ambient-led and dark ring-led. See those blocks.
+
+   WHY THE RUNGS LIVE IN @theme RATHER THAN IN :root. Tailwind v4 turns a
+   `--shadow-*` theme key into a utility that goes through the same
+   `--tw-shadow` composition the stock ones use, and that composition is the
+   only reason `shadow-1 ring-1` and `shadow-none` still do what they say —
+   all three write the one box-shadow property, and Tailwind's variables are
+   what let them share it. A hand-rolled `@utility shadow-1 { box-shadow: … }`
+   would silently win over any `ring-*` beside it.
+
+   SO `--shadow-1/2/3` ARE BUILD NAMES, NOT DOCUMENT VARIABLES. Tailwind
+   inlines a shadow theme key into the utility (it has to, to substitute
+   `--tw-shadow-color` per layer) and emits no `:root` declaration for it,
+   `inline` or not. THE DOCUMENT TOKENS ARE THE THREE BELOW — --shadow-ring,
+   --shadow-ambient and --shadow-float — and a one-off call site that genuinely
+   needs its own geometry should reach for those rather than invent a colour:
+   `shadow-[0_2px_8px_-4px_var(--shadow-ambient)]` still rides the ink, the
+   theme and the Depth setting. */
+:root {
+  /* WHAT THE DEPTH SETTING MOVES — `data-depth` on <html>, written pre-paint by
+     APPEARANCE_INIT_SCRIPT (features/appearance/appearance.ts) and kept in step by
+     applyAppearance. Pure MULTIPLIERS on the half's own dials, never absolute
+     values: "deep" has to mean the same thing to a light theme and a dark one,
+     and those two want very different shadows.
+
+     `soft` is the default and has no block, exactly like `indigo` and `geist`
+     above: the tokens as authored ARE soft.
+
+     FLAT ZEROES BOTH, which leaves the contact ring alone and switches the
+     ambient layer off entirely — not merely shrinks it. At lift 0 the ambient
+     layer would still be a zero-sized shadow sitting exactly behind the box,
+     and a surface painted at less than full alpha (`bg-card/95`) would show it
+     through as a faint bruise. Zeroing the ink as well is what makes "flat"
+     actually flat. */
+  --depth-lift: 1;
+  --depth-ink: 1;
+
+  /* The three values the rungs are written in terms of. Declared here rather
+     than inside @theme because they read the half's dials, and .dark has to be
+     able to move those without restating the ladder.
+
+     TRANSPARENT IS WRITTEN FIRST FOR THE REASON --overlay GIVES, and it is not
+     hypothetical here: the build emits `--shadow-ring: transparent` followed by
+     an `@supports (color: color-mix(…))` block carrying the real value, so the
+     FIRST colour in the mix is literally what an engine without color-mix
+     paints. With the ink first, that engine would draw every card, menu and
+     dialog in the app with a fully opaque near-black shadow. This way it draws
+     no shadow, which is a look rather than a failure. The percentages are
+     therefore the COMPLEMENT — `transparent 74%` is 26% ink. */
+  --shadow-float: calc(var(--shadow-lift) * var(--depth-lift));
+  --shadow-ring: color-mix(in oklab, transparent calc(100% - var(--shadow-ring-ink)), var(--shadow-tint));
+  --shadow-ambient: color-mix(in oklab, transparent calc(100% - var(--shadow-ink) * var(--depth-ink)), var(--shadow-tint));
+}
+
+[data-depth="flat"] {
+  --depth-lift: 0;
+  --depth-ink: 0;
+}
+
+/* DEEP HAS TO BE A DIFFERENT PLACE ON THE LADDER, NOT A NUDGE ALONG IT (#471).
+
+   It was 1.5 / 1.6, and the setting read as doing nothing: on a `shadow-1` card
+   — which is most of the app — that moved the ambient layer from 2px/6px/-4px
+   to 3px/9px/-6px and its ink from 26% to 42% in the light half. A one-pixel
+   offset and a blur that grows by three is under the threshold of noticing on a
+   single card, and there is nothing to compare it against, because the whole
+   app moves at once.
+
+   2.5 / 2.2 puts a `shadow-1` card at 5px/15px/-10px: a shadow you can see the
+   shape of, sitting clearly off the page rather than pressed onto it, and the
+   gap between the rungs grows with it (`shadow-3` reaches 45px/120px/-65px, a
+   dialog that is plainly floating over the thing behind it).
+
+   BOTH HALVES, AND THEY DO NOT MOVE THE SAME DISTANCE. The multipliers ride the
+   half's own dials, which is the whole reason they are multipliers: light is
+   ambient-led (lift 1, ink 26%) so deep lands at 2.5× travel and 57% ink, while
+   dark is ring-led (lift 0.5, ink 9%) so the same stops land at 1.25× travel
+   and 20% ink. That is the authored balance kept, not a shortfall — a dark
+   theme with a light theme's ambient shadow is a smear, and dark's separation
+   comes from the contact ring, which Depth deliberately leaves alone: a deeper
+   surface is one that has travelled further from the page, not one with a
+   heavier edge. Both halves' ink stays well inside 100%, so the complement in
+   --shadow-ambient never goes negative. */
+[data-depth="deep"] {
+  --depth-lift: 2.5;
+  --depth-ink: 2.2;
+}
+
+@theme {
+  --shadow-1:
+    0 1px 1px -1px var(--shadow-ring),
+    0 calc(2px * var(--shadow-float)) calc(6px * var(--shadow-float)) calc(-4px * var(--shadow-float)) var(--shadow-ambient);
+  --shadow-2:
+    0 1px 2px -1px var(--shadow-ring),
+    0 calc(8px * var(--shadow-float)) calc(24px * var(--shadow-float)) calc(-14px * var(--shadow-float)) var(--shadow-ambient);
+  --shadow-3:
+    0 2px 4px -2px var(--shadow-ring),
+    0 calc(18px * var(--shadow-float)) calc(48px * var(--shadow-float)) calc(-26px * var(--shadow-float)) var(--shadow-ambient);
+}
+
+/* ─── ACCENTS — the anchor hue as a setting ──────────────────────────────────
+
+   `--primary` means A PERSON (see :root), and these blocks move only WHERE it
+   sits on the wheel, never what it means: everything deriving from it (--ring,
+   --sidebar-primary, every bg-primary/15 chip) follows by reference. Lightness
+   is pinned at the base palette's 0.488/0.68 so every accent keeps the same
+   contrast maths; CHROMA IS PER-HUE because sRGB's gamut is not round — sea
+   and moss run out of room long before rose does, and pushing them to 0.16
+   would clip. The dark `--primary-foreground` re-tints with the hue the same
+   way the base palette's does.
+
+   Selectors: `[data-accent=…]` is <html> (set pre-paint by
+   APPEARANCE_INIT_SCRIPT in features/appearance/appearance.ts), and `.dark [data-accent=…]`
+   (descendant) lets the settings pane's swatches retint a single span with the
+   same attribute — one source for every value.
+
+   `indigo` is the default and has no block: the base tokens ARE indigo. */
+[data-accent="sky"] { --primary: oklch(0.488 0.15 240); }
+.dark[data-accent="sky"], .dark [data-accent="sky"] { --primary: oklch(0.68 0.15 240); --primary-foreground: oklch(0.17 0.04 240); }
+[data-accent="sea"] { --primary: oklch(0.488 0.1 205); }
+.dark[data-accent="sea"], .dark [data-accent="sea"] { --primary: oklch(0.68 0.11 205); --primary-foreground: oklch(0.17 0.04 205); }
+[data-accent="moss"] { --primary: oklch(0.488 0.11 140); }
+.dark[data-accent="moss"], .dark [data-accent="moss"] { --primary: oklch(0.68 0.13 140); --primary-foreground: oklch(0.17 0.04 140); }
+[data-accent="amber"] { --primary: oklch(0.488 0.12 70); }
+.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: oklch(0.68 0.14 70); --primary-foreground: oklch(0.17 0.04 70); }
+[data-accent="rose"] { --primary: oklch(0.488 0.17 15); }
+.dark[data-accent="rose"], .dark [data-accent="rose"] { --primary: oklch(0.68 0.17 15); --primary-foreground: oklch(0.17 0.04 15); }
+[data-accent="plum"] { --primary: oklch(0.488 0.16 325); }
+.dark[data-accent="plum"], .dark [data-accent="plum"] { --primary: oklch(0.68 0.15 325); --primary-foreground: oklch(0.17 0.04 325); }
+[data-accent="violet"] { --primary: oklch(0.488 0.17 293); }
+.dark[data-accent="violet"], .dark [data-accent="violet"] { --primary: oklch(0.68 0.16 293); --primary-foreground: oklch(0.17 0.04 293); }
+/* The swatch row needs indigo to be paintable on a SPAN too — the base value,
+   restated for the descendant case only (on <html> it is simply the default). */
+[data-accent="indigo"] { --primary: oklch(0.488 0.16 264); }
+.dark [data-accent="indigo"] { --primary: oklch(0.68 0.16 264); }
+
+/* ─── TYPEFACES AS A SETTING ────────────────────────────────────────────────
+
+   The stacks the data attributes swap in. `geist` is the default and has no
+   block; the system stacks name no webfont at all, which is the point of
+   choosing them. */
+/* EVERY FACE IS OFFERED TO BOTH SLOTS, so every id needs a rule in both — a
+   reader who wants the whole interface in JetBrains Mono is not making a
+   mistake, and the picker no longer pretends they are. `geist` stays
+   role-dependent because that is what it has always meant in each slot:
+   Geist in the interface, Geist Mono in code. */
+/* THE FALLBACK STACK FOLLOWS THE FACE, NOT THE SLOT. A proportional face falls
+   back to the system's proportional stack and a monospaced one to its
+   monospaced stack, in BOTH slots — so a reader who puts Fira Code in the
+   interface still gets a monospaced fallback while it loads, and one who puts
+   Lato in the code slot gets the proportional one they asked for. */
+[data-font-sans="inter"] { --app-font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="plex-sans"] { --app-font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="source-sans"] { --app-font-sans: var(--font-source-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="roboto"] { --app-font-sans: var(--font-roboto), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="noto-sans"] { --app-font-sans: var(--font-noto-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="space-grotesk"] { --app-font-sans: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="lato"] { --app-font-sans: var(--font-lato), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="jetbrains"] { --app-font-sans: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="plex-mono"] { --app-font-sans: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="fira-code"] { --app-font-sans: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="geist-mono"] { --app-font-sans: var(--font-geist-mono-face), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="source-code-pro"] { --app-font-sans: var(--font-source-code-pro), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="roboto-mono"] { --app-font-sans: var(--font-roboto-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="cascadia-code"] { --app-font-sans: var(--font-cascadia-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="system"] { --app-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+[data-font-mono="inter"] { --app-font-mono: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="plex-sans"] { --app-font-mono: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="source-sans"] { --app-font-mono: var(--font-source-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="roboto"] { --app-font-mono: var(--font-roboto), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="noto-sans"] { --app-font-mono: var(--font-noto-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="space-grotesk"] { --app-font-mono: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="lato"] { --app-font-mono: var(--font-lato), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="jetbrains"] { --app-font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="plex-mono"] { --app-font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="fira-code"] { --app-font-mono: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* `geist-mono` in the code slot names the same face `geist` already resolves to
+   there. It exists for the OTHER slot — `geist` means Geist in the interface,
+   so there was no way to ask for Geist Mono outside code — and a slot that
+   silently had no rule would fall through to the default. */
+[data-font-mono="geist-mono"] { --app-font-mono: var(--font-geist-mono-face), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="source-code-pro"] { --app-font-mono: var(--font-source-code-pro), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="roboto-mono"] { --app-font-mono: var(--font-roboto-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="cascadia-code"] { --app-font-mono: var(--font-cascadia-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="system"] { --app-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* THE SIZE OF MONO CONTENT, and pointedly not of mono CHROME.
+   `--app-font-mono-size` is written on <html> by features/appearance/appearance.ts. It lands
+   on the elements that actually hold code — inline code, blocks, keys, sample
+   output — rather than on the `font-mono` utility, because that class is also
+   what every panel header and status chip wears. Sizing by the class would
+   have made the reader's "code a notch smaller" quietly reflow the entire
+   interface's labels; sizing by the ELEMENT gives them the thing they asked
+   for and nothing else.
+
+   A `text-*` utility on the same element still wins — it is a deliberate size
+   at a specific call site, and this is the default those sites depart from. */
+code, pre, kbd, samp {
+  font-size: var(--app-font-mono-size, inherit);
+}
+
+/* ─── WINDOW TRANSLUCENCY (macOS desktop shell only) ────────────────────────
+
+   The shell creates its window with an `under-window` vibrancy layer when the
+   preference is on (apps/desktop/main.js), and these rules are the other half:
+   the desktop shows through exactly where the page paints ALPHA, so the canvas
+   and the rail — the two "ground" surfaces — go translucent while cards,
+   popovers and every raised surface stay opaque and legible.
+
+   GATED ON BOTH ATTRIBUTES on purpose: `data-translucent` alone is a stored
+   preference any browser tab reproduces, and a translucent canvas in a browser
+   tab is a bug (there is no vibrancy behind it — the page behind is white).
+   `data-telar-shell` is set by the shell's preload before any page script. */
+/* `--translucency` is percent TRANSPARENCY, written inline on <html> by
+   features/appearance/appearance.ts (the slider in Settings → Appearance, 0–100 display
+   mapped to 0–90 here). The fallback matches DEFAULT_APPEARANCE.
+
+   THE WASH IS PAINTED EXACTLY ONCE, ON BODY. The first cut put the alpha on
+   the --background TOKEN, and every nested `bg-background` ground — body,
+   then the sidebar-inset content pane, then a panel — painted it again:
+   two 64%-opacity layers compound to 87%, which is why "40%" read as no
+   transparency at all. So the token stays opaque (solid fills wearing
+   `text-background` need it opaque anyway), body alone carries the alpha,
+   and the structural grounds marked `app-ground` stop painting. The two
+   backdrop-blur header washes go fully transparent — their blur is what
+   keeps them legible, and a 65%-opaque bar over a see-through canvas would
+   read as a solid stripe. */
+/* THE SAME WASH NOW SERVES TWO SCENES. `data-backdrop` (features/appearance/backdrop.ts) puts
+   a gradient or an image under the app in ANY window — no shell required,
+   there is really something behind the page — so every see-through rule gates
+   on either attribute. `:is()` keeps the specificity at the higher of the two
+   (0,2,0), which still outranks the theme stylesheet's `html:root`.
+
+   ─── THE CONTRACT, IN ONE LINE ──────────────────────────────────────────────
+
+   THE WASH THINS GROUNDS. IT NEVER RETINTS A MARK.
+
+   A GROUND is a structural canvas layer — body, the rail, the pane behind a
+   panel, a room's `h-dvh` sheet. Those are what the scene is meant to show
+   through, and they are the ONLY things these rules touch. Everything else —
+   cards, popovers, chips, hover fills, inline code, the selected row — keeps
+   the value its theme gave it, at FULL ALPHA.
+
+   Two bugs are why that line is now a rule rather than a habit.
+
+   1. THE WASH USED TO REPLACE TOKENS IT DID NOT OWN. --muted, --accent and
+      --sidebar-accent were re-synthesised here from --background and
+      --foreground at ratios reproducing TELAR's deltas (light 3-6% toward ink,
+      dark 14-19%). Those numbers are a property of one palette. A theme whose
+      hover is a deliberate colour — the whole point of a custom theme — had it
+      silently discarded the moment a backdrop came on: turn on a wallpaper and
+      your theme partly stopped being your theme.
+
+   2. ALPHA ON A TOKEN MULTIPLIES, IT DOES NOT REPLACE. Tailwind compiles
+      `bg-muted/25` to `color-mix(in oklab, var(--muted) 25%, transparent)`, so
+      a token already sitting at 72% alpha lands the element at 18% — and
+      `bg-muted/25` is exactly what the quiet section headers and the
+      workspace strip use for their fills. Under a backdrop they dissolved.
+      This is NOT fixable at the call sites: the SAME class string renders on a
+      page with no backdrop at all, where the token is opaque and /25 means
+      what it says. One class, two states, one value — so the value is the
+      thing that has to stop moving.
+
+   WHAT THE MARKS LOSE, and why that is the right trade: a hover fill no longer
+   frosts, so a selected sidebar row over a wallpaper is an opaque step rather
+   than a translucent one. That is what a selection should look like — it lifts
+   OUT of the glass. What it gains is that every `/NN` in the app keeps meaning
+   what it says, in every scene, under every theme.
+
+   THE ONE SURVIVOR IS --sidebar, because the rail IS a ground. It is mixed
+   from the live `--sidebar` — the theme's own rail colour, whatever it is —
+   through the `--sidebar-wash` indirection the @theme block explains, rather
+   than re-derived from --background. Ratios are unchanged, so Telar's default
+   look is pixel-identical; Ember's rail now frosts ember instead of grey. */
+/* ─── THE TWO HALVES DO NOT SPEND THE SLIDER THE SAME WAY (#399, #434) ──────
+
+   `--translucency` is what the person asked for. `--wash-transparency` is what
+   this half has to spend to deliver it, and they are the same number in dark
+   only.
+
+   LIGHT SPENDS MORE, AND THAT IS THE CORRECTION #434 MAKES. The first reading
+   of this was backwards. It looked like a contrast budget — thinning a
+   near-white canvas mixes in an arbitrary desktop, usually brighter than the
+   ink — so light was given LESS of the slider (0.6, then 0.85). Two rounds of
+   screenshots say the premise was wrong at the pixel level: the same alpha
+   does not buy the same amount of see-through in the two halves. A near-white
+   canvas over a darker desktop reads as FROST at the opacity where a
+   near-black one reads as GLASS, because the light canvas is the one making
+   the bigger difference to what is behind it. So the honest way to give the
+   two halves the same PERCEIVED depth is to spend more of the slider on light,
+   not less. #434 measured 1.0 on a real build and it still barely moved.
+
+   1.4 AND AN 85% CAP, BOTH TUNINGS. 1.4 is the overshoot that made light and
+   dark read alike at 45% and 65% side by side; the cap is a floor under
+   legibility at the top of the slider, where 1.4× would otherwise ask for
+   126% and erase the canvas entirely. Anyone re-tuning moves these two numbers
+   and nothing else — that is the whole reason this is one declaration rather
+   than two hand-mixed ratios that could drift apart.
+
+   ONLY THE LIGHT HALF DECLARES ANYTHING. The two rules below read the slider
+   THROUGH `--wash-transparency`, falling back to the slider itself — so the
+   dark half sets nothing, takes the fallback, and computes byte-for-byte what
+   it computed before this rule existed. Light is the exception and says so in
+   one place. `.dark` is the class the theme provider toggles on <html>
+   (features/appearance), which is the same element both attributes are written
+   on, so `:not(.dark)` is the light half of exactly this scene. */
+html:not(.dark):is([data-telar-shell][data-translucent], [data-backdrop]) {
+  --wash-transparency: min(calc(var(--translucency, 45%) * 1.4), 85%);
+}
+:is([data-telar-shell][data-translucent], [data-backdrop]) body {
+  background-color: color-mix(in oklab, var(--background) calc(100% - var(--wash-transparency, var(--translucency, 45%))), transparent);
+}
+:is([data-telar-shell][data-translucent], [data-backdrop]) {
+  --sidebar-wash: color-mix(in oklab, var(--sidebar) calc(90% - var(--wash-transparency, var(--translucency, 45%))), transparent);
+}
+/* THE OPT-IN IS A CLASS, NOT A CLASS NAME. This used to also match
+   `.bg-background\/65` and `.bg-background\/80` — the utilities the two
+   blurred headers happened to wear — which made "is this a ground?" a question
+   about the string a component typed. Three chips and a button in
+   components/composer.tsx wear `bg-background/80` because they want an 80%
+   fill, and under a backdrop they lost it entirely. `app-ground` is the only
+   door now, and the grounds that were relying on the class-name coincidence
+   carry it explicitly. */
+:is([data-telar-shell][data-translucent], [data-backdrop]) .app-ground {
+  background-color: transparent;
+}
+
+/* ─── A LEGIBILITY FLOOR FOR LIGHT UNDER GLASS (#434) ───────────────────────
+
+   THE QUIET TOKENS ARE TUNED AGAINST A CANVAS THAT IS NO LONGER THERE.
+   --muted-foreground carries its own note in the palette: 0.525 is a floor,
+   picked to clear 4.5:1 on the quietest OPAQUE surface it lands on. Thin that
+   surface and the ratio it was measured against stops existing — the row is
+   now part canvas and part desktop, and a quiet label over it goes grey on
+   grey. Sidebar rows, hints and every `text-muted-foreground` caption are the
+   visible half of that; the rail's own text is the other, because a theme is
+   free to make --sidebar-foreground quieter than its body ink.
+
+   ONLY LIGHT, AND ONLY THE SHELL'S TRANSLUCENT SCENE. The dark half thins
+   toward black, which is where its text is not, so its margins survive the
+   wash; the floor would only make dark text heavier for no reason. A plain
+   opaque window keeps the palette exactly as tuned.
+
+   TOWARD THE THEME'S OWN INK, NOT A COLOUR OF OURS. The mix pulls each token
+   toward the live --foreground, so a custom theme keeps its hue and merely
+   gets more of itself. Written through the `-wash` names for the reason the
+   @theme block gives at --color-sidebar: a custom property cannot reference
+   its own themed value, so the override writes a different name and the
+   bridge prefers it when it exists.
+
+   30% IS A TUNING AND IT IS WRITTEN TWICE ON PURPOSE — the two lines are
+   adjacent and must move together. On Telar's own light palette it takes
+   --muted-foreground from 0.525 to roughly 0.45 and leaves --sidebar-foreground
+   where it is (the default look already sets it to --foreground); it is the
+   themes that quiet their rail which the second line is for.
+
+   NOT --sidebar-accent-foreground: that one sits on an opaque hover or active
+   fill, which the wash never thins, so it is not part of this problem. */
+html:not(.dark)[data-telar-shell][data-translucent] {
+  --muted-foreground-wash: color-mix(in oklab, var(--foreground) 30%, var(--muted-foreground));
+  --sidebar-foreground-wash: color-mix(in oklab, var(--foreground) 30%, var(--sidebar-foreground));
+}
+
+/* ─── A FLOOR UNDER THE SEMANTIC TINTS (#691) ───────────────────────────────
+
+   `bg-success/10` IS NOT A TINT. IT IS AN ALPHA. Tailwind compiles it to
+   `color-mix(in oklab, var(--success) 10%, transparent)` — 10% of a colour the
+   theme chose, and 90% of WHATEVER HAPPENS TO BE BEHIND IT. On an opaque card
+   that reads as a wash of green over the card, which is what was wanted. Over
+   the translucency wash the other 90% is the desktop, so a diff's added line
+   was a tenth of a hue and nine tenths of somebody's wallpaper. #434 put a
+   legibility floor under --muted-foreground for exactly this scene and left the
+   semantic tints with no floor at all; these two classes are that floor.
+
+   MIXED AGAINST THE CARD, NOT AGAINST TRANSPARENT. Each class names the mix the
+   utility was reaching for and supplies the second colour it was missing: the
+   card the tinted row sits on. The result is OPAQUE, so the wash cannot thin
+   it, it cannot compound through nesting (bug 2 in the contract above), and the
+   number is a floor on how much of the semantic colour is PRESENT rather than a
+   ceiling on how much of the scene shows through.
+
+   A CLASS RATHER THAN A UTILITY, for the reason the contract gives at
+   `bg-muted/25`: Tailwind hands `bg-x/NN` exactly one lever — the alpha — and
+   the end of the mix that had to change is the other one. One class string
+   renders in every scene, so the VALUE is the thing that has to stop moving.
+
+   12% IS THE FLOOR AND IT IS ONE NUMBER, in one declaration, so a re-tune
+   cannot leave the tints disagreeing. It replaces 10% of an unknown with 12% of
+   the live token against the live --card, which means both schemes and every
+   Look are already covered — there is nothing scheme-specific to state and so
+   nothing to keep in sync.
+
+   THE INK IS UNTOUCHED. `text-success` on an added line keeps the colour its
+   theme gave it. The wash never retints a mark, and neither does this.
+
+   A RESTING FILL ONLY, AND THAT IS NOT A LIMITATION. There is deliberately no
+   variant-capable form of these: a HOVER tint should compose with whatever it is
+   over — deepening the surface under the pointer — which is exactly what an
+   alpha is for and exactly what an opaque mix cannot do. `hover:bg-warning/15`
+   over a band that now paints is correct as written; the same string over a band
+   that did not paint was the bug, and painting the band is the fix for both. */
+:root {
+  --tint-floor: 12%;
+}
+.tint-success {
+  background-color: color-mix(in oklab, var(--success) var(--tint-floor), var(--card));
+}
+.tint-destructive {
+  background-color: color-mix(in oklab, var(--destructive) var(--tint-floor), var(--card));
+}
+.tint-warning {
+  background-color: color-mix(in oklab, var(--warning) var(--tint-floor), var(--card));
+}
+
+/* ─── THE DIFF VIEWER, WEARING THIS APP'S TOKENS (#694) ─────────────────────
+
+   The Diff surface renders through `@pierre/diffs`, whose viewer is a CUSTOM
+   ELEMENT WITH A SHADOW ROOT. That sounds like a wall and is the opposite:
+   custom properties inherit straight through a shadow boundary, so the whole
+   of the theming below is ordinary CSS on the host — no !important, no
+   stylesheet injection, nothing reaching inside the component. The library
+   publishes a `-override` name for every colour it computes, which is the
+   supported hook and the one this block uses.
+
+   THE FLOOR ABOVE IS THE FLOOR HERE. An added line's fill is the same
+   expression `.tint-success` is, against the same --card and through the same
+   --tint-floor. That is the point of writing it here rather than in the
+   component: the diff is a reading surface, and a second number for the same
+   idea is how the two drift apart. Re-tune --tint-floor and the diff moves
+   with the rest of the app.
+
+   BOTH ARMS OF EVERY light-dark() GET THE SAME VARIABLE, and that is load-
+   bearing rather than lazy. Pierre's stylesheet sets `color-scheme: light dark`
+   on its own :host, so `light-dark()` inside it follows the SYSTEM scheme —
+   while this app's scheme is the `.dark` class on <html>. A user on a light OS
+   running a dark Look would get the viewer's light arm over a dark card. Two
+   independent fixes, deliberately both: `color-scheme` is set on the host from
+   out here (an outer-tree rule on the host outranks the shadow tree's own
+   :host), and every value this block supplies is a token that ALREADY carries
+   the scheme — so even where the cascade surprises us, both arms agree.
+
+   --card AND NOT --background, unlike the reference's --code-background: this
+   viewer is mounted inside an expanded file row, which is a card. Matching the
+   panel behind it would make the hunk invisible as a body; matching the card
+   is what the hand-rolled <pre> it replaces already did. */
+.diff-code-view {
+  color-scheme: light;
+
+  /* The ground and the ink. */
+  --diffs-light-bg: var(--card);
+  --diffs-dark-bg: var(--card);
+  --diffs-light: var(--card-foreground);
+  --diffs-dark: var(--card-foreground);
+
+  /* The semantic pair, through this app's floor. */
+  --diffs-addition-base: var(--success);
+  --diffs-deletion-base: var(--destructive);
+  --diffs-bg-addition-override: color-mix(in oklab, var(--success) var(--tint-floor), var(--card));
+  --diffs-bg-deletion-override: color-mix(in oklab, var(--destructive) var(--tint-floor), var(--card));
+  /* The emphasis is the WORD that changed inside a changed line, so it has to
+     read as more than the line it sits on: TWICE THE FLOOR, against the same
+     card. Written out rather than mixed against the fill above it so there is
+     one shape here and not two — and so the pair moves together when the floor
+     is re-tuned, which is the whole argument for --tint-floor being one
+     number. */
+  --diffs-bg-addition-emphasis-override: color-mix(in oklab, var(--success) calc(var(--tint-floor) * 2), var(--card));
+  --diffs-bg-deletion-emphasis-override: color-mix(in oklab, var(--destructive) calc(var(--tint-floor) * 2), var(--card));
+
+  /* The neutral chrome inside the viewer: unchanged context, the hunk
+     separator, the gutter. Muted is the app's name for exactly this — a
+     surface that recedes without leaving the card. */
+  --diffs-bg-context-override: var(--card);
+  --diffs-bg-context-gutter-override: var(--card);
+  --diffs-bg-separator-override: var(--muted);
+  --diffs-bg-buffer-override: var(--muted);
+  --diffs-fg-number-override: var(--muted-foreground);
+  --diffs-fg-number-addition-override: var(--success);
+  --diffs-fg-number-deletion-override: var(--destructive);
+
+  /* Type, from the same variables every other mono surface in the app reads —
+     so a hunk and the file viewer beside it are the same size. `--app-font-*`
+     rather than the `--font-*` Tailwind bridge, which is the rule the katex
+     block below states: the setting lives on the former, and these land in
+     Pierre's own plain `font-family` declaration. */
+  --diffs-font-family: var(--app-font-mono);
+  --diffs-header-font-family: var(--app-font-sans);
+  --diffs-font-size: var(--app-font-mono-size, 13px);
+}
+.dark .diff-code-view {
+  color-scheme: dark;
+}
+
+/* ─── THE BACKDROP LAYER (features/appearance/backdrop.ts) ──────────────────────────────────
+
+   One fixed div, first child of body, painted entirely from variables the
+   init script and applyBackdrop write on <html>. Inset is negative so a
+   layer's soft edges bleed off-screen instead of vignetting.
+
+   EACH COLOUR STATE HAS ITS OWN FOUR LISTS, AND THIS IS WHERE THEY ARE CHOSEN
+   BETWEEN (#471). Light and dark are two states of one composition with
+   genuinely separate layer stacks, so entry n of one can be an image where the
+   other's is a gradient — and `background-size/position/repeat` take one comma
+   entry per image, so one shared list cannot serve both. The init script writes
+   both states' variables and makes no decision; the `.dark` rule below is the
+   decision. That is what makes first paint correct with no flash, and what
+   keeps it correct when the OS flips scheme under a window set to `system`
+   with no script running at all.
+
+   THE `-dark` VARIABLES FALL BACK TO THE `-light` ONES so a composition whose
+   dark state is untouched paints its light stack rather than nothing — the
+   same courtesy --backdrop-dark has always done for the image list. */
+#app-backdrop {
+  display: none;
+}
+/**
+ * THE ONE DECLARATION THAT PUTS THE WASH ON THE RIGHT SIDE OF THE SCENE.
+ *
+ * Nothing set a background on <html>, so CSS did what it does for an HTML
+ * document whose root has none: it PROPAGATED body's background to the canvas.
+ * A propagated background is painted before the root's own stacking context —
+ * strictly below a `z-index: -1` descendant. So the order was
+ *
+ *     [body's washed background]  →  #app-backdrop (the scene)  →  the app
+ *
+ * and the wash sat UNDERNEATH the wallpaper it was supposed to be tinting. The
+ * translucency slider moved a layer nobody could see: grounds went transparent
+ * straight onto a full-strength photo, with only --backdrop-dim between the
+ * image and the text on top of it.
+ *
+ * Giving the root a background of its own stops the propagation, and body's
+ * background becomes an ordinary in-flow block background — painted in step 3
+ * of the root stacking context, AFTER the negative-z-index scene in step 2:
+ *
+ *     html's canvas  →  #app-backdrop (the scene)  →  body's wash  →  the app
+ *
+ * SCOPED TO [data-backdrop] BECAUSE VIBRANCY NEEDS THE OPPOSITE. In the
+ * desktop shell's translucent mode with no scene, propagation is exactly what
+ * makes the window canvas alpha and lets the desktop through; an opaque root
+ * there would kill it. With a scene present there is nothing to lose — the
+ * backdrop div is already an opaque `background-color: var(--background)`
+ * across the whole viewport, so the desktop was covered either way.
+ */
+[data-backdrop] {
+  background-color: var(--background);
+}
+[data-backdrop] #app-backdrop {
+  display: block;
+  position: fixed;
+  inset: -32px;
+  z-index: -1;
+  pointer-events: none;
+  background-color: var(--background);
+  /* `none` is the honest fallback: the variables are written inline on <html>
+     by features/appearance/backdrop.ts, and until they are, there is no scene. */
+  background-image: var(--backdrop-light, none);
+  background-size: var(--backdrop-size-light, cover);
+  background-position: var(--backdrop-position-light, center);
+  background-repeat: var(--backdrop-repeat-light, no-repeat);
+}
+.dark[data-backdrop] #app-backdrop {
+  background-image: var(--backdrop-dark, var(--backdrop-light));
+  background-size: var(--backdrop-size-dark, var(--backdrop-size-light, cover));
+  background-position: var(--backdrop-position-dark, var(--backdrop-position-light, center));
+  background-repeat: var(--backdrop-repeat-dark, var(--backdrop-repeat-light, no-repeat));
+}
+
+/* ─── A SCENE AND THE DESKTOP, TOGETHER ─────────────────────────────────────
+
+   THE BUG THIS FIXES: a Look that carried a backdrop silently cancelled the
+   translucent window. Two rules above paint an OPAQUE canvas colour — the root
+   (to stop body's background propagating under the scene) and the scene div
+   itself (so a gradient with transparent stops has something to sit on). In a
+   plain window both are free: there is nothing behind the page to lose. Under
+   macOS vibrancy there is, and two opaque layers covered every pixel of it. So
+   "turn on translucency" did nothing at all for any look with a wallpaper —
+   which is most looks worth having, including five of the six starters.
+
+   THE SCENE BECOMES THE GLASS. Under vibrancy the backdrop layer stops
+   painting a canvas and takes the show-through slider as its own alpha, so the
+   stack finally reads the way the pane describes it:
+
+       desktop  →  the scene, thinned  →  body's wash  →  the app
+
+   One slider, one meaning: how much of what is behind the window comes
+   through. At 0% the scene is a wallpaper and the desktop is hidden, exactly
+   as before; at 50% the desktop arrives through a half-strength gradient,
+   which is the thing the feature was always for.
+
+   `background-image` ON THE ROOT WITH NOTHING IN IT is not a trick for its own
+   sake: propagation is specified to happen only when the root has BOTH a
+   transparent background-color and `background-image: none`, so a gradient of
+   two transparents is the one way to decline the propagation without painting
+   over the desktop we are trying to reveal. */
+[data-telar-shell][data-translucent][data-backdrop] {
+  background-color: transparent;
+  background-image: linear-gradient(transparent, transparent);
+}
+[data-telar-shell][data-translucent][data-backdrop] #app-backdrop {
+  background-color: transparent;
+  opacity: calc(100% - var(--translucency, 45%));
+}
+
+/* THE HIGHLIGHT TOKENS USED TO FROST HERE — --muted, --accent and
+   --sidebar-accent, re-synthesised from --background/--foreground at Telar's
+   own deltas and dropped to 72% alpha. Both halves of that were wrong, and the
+   contract above says why at length: the re-synthesis threw away a custom
+   theme's hover colour, and the alpha multiplied against every `bg-muted/25`
+   in the app until those elements dissolved.
+
+   The rule is gone rather than rewritten. There is no version of it that
+   frosts a bare `bg-accent` without also thinning a `bg-accent/60`, because
+   Tailwind gives both exactly one lever — the token's value — and the same
+   class string also has to render on a page with no scene behind it.
+
+   The user's chat bubble below is the shape a mark-level frost has to take if
+   one is ever wanted again: a rule on the ELEMENT, which can set an alpha
+   without moving a token every other call site reads. */
+
+/* The user's chat bubble is a solid `bg-secondary` chip (components/ui/
+   message.tsx) — near-white in light mode, and against a see-through canvas it
+   reads as a headlight. Frosted instead: most of the token's colour, a little
+   of the desktop, and its own blur so the text stays readable over whatever
+   is behind the window. */
+:is([data-telar-shell][data-translucent], [data-backdrop]) [data-role="user"] > .bg-secondary {
+  background-color: color-mix(in oklab, var(--secondary) 72%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* WebKit 26.x crashes its renderer on keyframe animations that fade
+   fixed-position layers in/out from near-zero opacity — exactly what overlay
+   enter/exit animations do. Disable enter/exit animations everywhere (dialogs
+   just appear); animate-pulse / animate-spin are unaffected. */
+[class*="animate-in"],
+[class*="animate-out"] {
+  animation-name: none !important;
+}
+
+/* THE SHIMMER SWEEP, IN CSS RATHER THAN AN ANIMATION RUNTIME.
+   Animating mask-position directly (rather than a `--shimmer-x` variable) is
+   deliberate: custom properties are not interpolable unless registered with
+   @property, so a variable-based keyframe would STEP rather than sweep. Both
+   the prefixed and unprefixed properties are set because WebKit still needs
+   -webkit-mask-position. Consumers carry the `motion-safe:` variant, so the
+   sweep simply does not run for users who asked for less animation. */
+@keyframes telar-shimmer {
+  from {
+    -webkit-mask-position: 100% center;
+    mask-position: 100% center;
+  }
+  to {
+    -webkit-mask-position: 0% center;
+    mask-position: 0% center;
+  }
+}
+
+/* THE ROW A SETTINGS SEARCH SENT YOU TO, SAID ONCE.
+
+   Scrolling a row to the middle of a pane of twenty leaves "which one?"
+   unanswered — nineteen other rows are now equally on screen. One pass of the
+   selection wash names it and then gets out of the way, which is why this is an
+   animation rather than a lasting highlight: a mark that stays has to be
+   dismissed, and nobody would.
+
+   The wash is `--muted`, the same fill the nav's selected item and a hovered
+   row already wear, so this reads as "this one" in the vocabulary the pane
+   already uses rather than as a colour with a new meaning. The inset shadow
+   draws it INSIDE the row's box: rows are separated by hairlines with no
+   padding of their own, and a background would touch its neighbours' rules.
+
+   Held at full strength through the middle of the run so it registers as a
+   deliberate mark rather than a flicker, then faded out.
+
+   `settings-search-target-pulse` is added by hand in settings-shell.tsx, so
+   Tailwind's scanner is not involved and the class cannot be purged. It must
+   not contain "animate-in"/"animate-out" — those are killed wholesale above for
+   a WebKit renderer crash. */
+@keyframes settings-search-target-pulse {
+  0% {
+    box-shadow: inset 0 0 0 9999px transparent;
+  }
+  12% {
+    box-shadow: inset 0 0 0 9999px var(--muted);
+  }
+  55% {
+    box-shadow: inset 0 0 0 9999px var(--muted);
+  }
+  100% {
+    box-shadow: inset 0 0 0 9999px transparent;
+  }
+}
+
+.settings-search-target-pulse {
+  animation: settings-search-target-pulse 1.2s ease-out 1;
+  border-radius: var(--radius);
+}
+
+/* Asked for less motion: the row is still centred and still focused, which is
+   what carries the meaning; only the flash is dropped. settings-shell.tsx makes
+   the same check before it adds the class, so this is the belt to that
+   braces — a stylesheet rule cannot be bypassed by a stale media query read. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-search-target-pulse {
+    animation: none;
+  }
+}
+
+/* THE DICTATION GLOW — see features/dictation/components/dictation-glow.tsx.
+
+   The angle is a REGISTERED property for the shimmer's reason above: an
+   unregistered one would step instead of turning. Opacity is a TRANSITION, not
+   a keyframe — the WebKit crash above is about keyframed fades — and the layers
+   are absolute, never fixed. The spin pauses while idle rather than stopping,
+   so a fade-out does not snap the colours back to 0deg on its way out.
+
+   The palette is Apple Intelligence's: violet, pink, blue, coral, amber. */
+@property --dictation-glow-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes dictation-glow-spin {
+  to {
+    --dictation-glow-angle: 360deg;
+  }
+}
+
+.dictation-glow {
+  position: absolute;
+  pointer-events: none;
+  /* The card's `rounded-2xl`, spelled from the :root token it derives from. */
+  border-radius: calc(var(--radius) * 1.8);
+  background: conic-gradient(
+    from var(--dictation-glow-angle, 0deg),
+    #bc82f3,
+    #f5b9ea,
+    #8d9fff,
+    #ff6778,
+    #ffba71,
+    #c686ff,
+    #bc82f3
+  );
+  opacity: 0;
+  transition: opacity 450ms ease;
+  animation: dictation-glow-spin 4s linear infinite;
+  animation-play-state: paused;
+}
+
+.dictation-glow[data-phase="starting"],
+.dictation-glow[data-phase="listening"] {
+  animation-play-state: running;
+}
+
+.dictation-glow-halo {
+  inset: -3px;
+  filter: blur(14px);
+}
+.dictation-glow-halo[data-phase="starting"] {
+  opacity: 0.3;
+}
+.dictation-glow-halo[data-phase="listening"] {
+  opacity: 0.75;
+}
+
+/* Only the border band is painted: the content box is masked out, so the
+   draft underneath is never tinted. */
+.dictation-glow-ring {
+  inset: 0;
+  padding: 1.5px;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+.dictation-glow-ring[data-phase="starting"] {
+  opacity: 0.45;
+}
+.dictation-glow-ring[data-phase="listening"] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dictation-glow {
+    animation: none;
+  }
+}
+
+/* Chromium's default scrollbars paint a stark near-white thumb over the dark
+   shell. The standard properties (which supersede ::-webkit-scrollbar when set)
+   tint the thumb from theme tokens so it re-themes with light/dark. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 35%, transparent)
+    transparent;
+}
+
+/* SYNTAX HIGHLIGHTING ACTUALLY REACHING THE PIXELS.
+
+   Streamdown highlights fenced code with Shiki and emits, per token, a span
+   carrying its colours as CUSTOM PROPERTIES (`--sdm-c` light, `--shiki-dark`
+   dark) plus Tailwind ARBITRARY-VALUE classes that read them. Those classes
+   never exist in the stylesheet: Tailwind v4 builds its CSS by scanning source
+   files at build time, and these class strings are generated at RUNTIME inside
+   node_modules, so the scanner never sees them and emits no rule. The result is
+   every token carrying correct colour variables and computing to the same
+   inherited foreground — code reads as flat monospace.
+
+   Consuming the variables directly is what makes this independent of the
+   scanner: the attribute selectors match the inline `style` Shiki wrote, so no
+   class has to survive a build step. Scoped to `pre` so it can only ever
+   repaint code blocks. */
+pre span[style*="--sdm-c"] {
+  color: var(--sdm-c);
+}
+.dark pre span[style*="--shiki-dark"] {
+  color: var(--shiki-dark);
+}
+
+/* THE SAME TRICK, FOR THE FILE VIEWER'S OWN MARKUP.
+
+   The viewer draws its own line-numbered table rather than Shiki's `<pre>` (it
+   needs a gutter that does not end up in a copy), so it renders tokens itself
+   with `defaultColor: false` — each span carrying BOTH themes as custom
+   properties. These two rules are what turns that into pixels, and why switching
+   light/dark repaints an open file without re-tokenising a line of it.
+
+   Keyed on `data-shiki` rather than a class for the reason the comment above
+   gives: an attribute cannot be missed by Tailwind's scanner. */
+[data-shiki] span[style*="--shiki-light"] {
+  color: var(--shiki-light);
+}
+.dark [data-shiki] span[style*="--shiki-dark"] {
+  color: var(--shiki-dark);
+}
+
+/* Streamdown ships its own stylesheet (imported ahead of this one in
+   layout.tsx) and marks each block with a data attribute. One structural fix
+   belongs here: it emits ONE span per line inside a code block, carrying the
+   Tailwind utility `block` — which does not exist unless Tailwind scanned it.
+   Without this rule every fenced block collapses to a single wrapped line. */
+.telar-markdown pre code > span {
+  display: block;
+}
+
+/* ONE QUIET FRAME AROUND A FENCED BLOCK.
+
+   Streamdown 2.5 draws a code block as a card inside a card: an outer
+   `rounded-xl border bg-sidebar p-2` wrapper, an `h-8` header row (empty when
+   the fence names no language), a sticky actions row, and an inner
+   `rounded-md border bg-background p-4` body — two borders, 24px of stacked
+   padding and up to 48px of chrome above two lines of text. It also hints
+   `contain-intrinsic-size: auto 200px`, so a short block off-screen reserves
+   a card's height and the transcript jolts as it scrolls into view.
+
+   These rules collapse that to the same surface every other monospace body
+   in the app wears (components/ui/code-surface.tsx): one hairline, the muted
+   fill, ten pixels of padding, content-sized. Keyed on the `data-streamdown`
+   attributes for the reason the Shiki rules above give — an attribute cannot
+   be missed by Tailwind's scanner, and no class in node_modules has to
+   survive a build. Nothing here touches the tokens inside the block, so the
+   highlighting the two rules above reach stays exactly as it was. */
+.telar-markdown [data-streamdown="code-block"] {
+  margin-block: 0.75rem;
+  gap: 0;
+  padding: 0;
+  /* `rounded-md`, spelled from the :root token the @theme scale derives it from. */
+  border-radius: calc(var(--radius) * 0.8);
+  border-color: color-mix(in oklch, var(--border) 70%, transparent);
+  background: color-mix(in oklch, var(--muted) 40%, transparent);
+  contain-intrinsic-size: auto none;
+}
+.telar-markdown [data-streamdown="code-block-header"] {
+  height: auto;
+  min-height: 0;
+  padding: 0.25rem 0.625rem 0;
+  font-size: 0.625rem;
+  line-height: 1rem;
+}
+/* No language, no row: an empty 32px band above two lines of code was the
+   most visible symptom of the old frame. */
+.telar-markdown [data-streamdown="code-block-header"]:not([data-language]),
+.telar-markdown [data-streamdown="code-block-header"][data-language=""] {
+  display: none;
+}
+.telar-markdown [data-streamdown="code-block-body"] {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.5rem 0.625rem;
+}
+/* THE CONTROL COLUMN LIVES ON THE FRAME, NOT THE BODY. The body scrolls
+   horizontally for long source, so padding on it scrolls away with the text
+   and the first line runs under the button at a narrow measure. Reserving
+   the column on the non-scrolling frame keeps it fixed whatever the body
+   does; the button is absolutely positioned into that column. */
+.telar-markdown [data-streamdown="code-block"] {
+  padding-right: 2rem;
+}
+/* The actions row keeps its sticky position (a long block's copy stays in
+   reach) but sheds the pull-up that assumed the 32px header. The button
+   itself stays a real button: focusable, labelled, thumb-sized. */
+.telar-markdown [data-streamdown="code-block"] {
+  position: relative;
+}
+.telar-markdown [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
+  /* Absolute, not sticky-with-negative-margin: the library's `-mt-10` pulled
+     the row up over a header that no longer exists, and the button's top
+     half was clipped at the frame's border. Inside the frame, top-right. */
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  margin: 0;
+  height: auto;
+}
+.telar-markdown [data-streamdown="code-block-actions"] {
+  margin: 0;
+  border: 0;
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  padding: 0.125rem;
+}
+.telar-markdown [data-streamdown="code-block-actions"] button {
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+}
+/* An unlabelled, unhinted code block is also an element with a copy button
+   that must be reachable by keyboard: `:focus-visible` gets the ring the
+   rest of the app draws. */
+.telar-markdown [data-streamdown="code-block-actions"] button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* ─── TYPESET EQUATIONS (KaTeX) ─────────────────────────────────────────────
+
+   The markup is KaTeX's, via Streamdown's math plugin; katex.min.css is
+   imported in layout.tsx ahead of this file. Three things it does not decide
+   for us, all of them about living inside a chat lane:
+
+   1. AN EQUATION MUST NOT WIDEN ITS CONTAINER. `.katex-display` is a block of
+      unbreakable inline boxes — a long derivation is simply wide, and every
+      surface that renders a message (transcript, cockpit, the 18rem side
+      panels, the file viewer) wraps it in `overflow-hidden`. Without a scroll
+      port here the tail of the equation is CLIPPED with no way to reach it;
+      with `min-width: 0` missing it would instead stretch the flex column and
+      push the whole transcript sideways. Both halves are needed.
+   2. Colour comes from `currentColor` in KaTeX's own rules, so light and dark
+      follow the surrounding prose with nothing to declare — except the MathML
+      mirror, which is hidden from sight but must stay reachable by a screen
+      reader, so it is not `display: none`d by anything here.
+   3. The vertical rhythm is the code block's, not KaTeX's 1em default, so an
+      equation and a fenced block sit at the same distance from prose. */
+.telar-markdown .katex-display {
+  margin-block: 0.75rem;
+  /* The scroll port. `overflow-y: hidden` because a tall fraction otherwise
+     earns a vertical bar on Windows/Linux from KaTeX's own strut heights. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Room for the bar itself, so it never lands on the glyphs. */
+  padding-block: 0.125rem 0.375rem;
+}
+/* The flex columns in message.tsx are `min-w-0`, but the equation still has to
+   agree not to establish a wider intrinsic minimum. */
+.telar-markdown .katex-display > .katex {
+  max-width: 100%;
+}
+/* A narrow panel gets a smaller equation rather than a wider scroll: KaTeX's
+   1.21em default is set against body copy, and the panels already run at
+   0.75–0.8125rem. */
+.telar-markdown .katex {
+  font-size: 1.1em;
+}
+/* An equation that failed to parse — a half-streamed `$$\frac{1}{`, or TeX the
+   renderer refuses (`\href`, `\htmlClass`) — shows its own source in the muted
+   token rather than throwing. Keep it selectable and wrapping: it is text now,
+   not an equation, and it is the only clue the author has. */
+.telar-markdown .katex-error {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* `--app-font-mono`, not the `--font-mono` Tailwind bridge: this is a plain
+     declaration, and the setting lives on the former (see the typeface block). */
+  font-family: var(--app-font-mono);
+  font-size: 0.9em;
+}
+
+/* ─── THE APP OWNS ITS TITLEBAR (macOS desktop shell only) ───────────────────
+
+   apps/desktop launches the window with `titleBarStyle: "hiddenInset"`, which
+   removes the system titlebar and leaves the three traffic lights floating over
+   whatever the page draws at the top-left. Two things follow, and both are
+   here rather than in a component because both are conditional on running
+   INSIDE that shell — a browser tab must be untouched.
+
+   `data-telar-shell` IS SET BY THE PRELOAD, before the page's own scripts, for
+   the same reason the theme script runs `beforeInteractive`: the inset changes
+   layout, and discovering it one render late means the header visibly jumps on
+   every launch. <html> already carries `suppressHydrationWarning` for the
+   theme, so a second attribute mutated out from under React is not a new kind
+   of thing here.
+
+   --titlebar-inset IS THE ROOM THE LIGHTS NEED, and it is the one number the
+   two processes have to agree on: x (22) + three 12px lights + two 8px gaps +
+   a margin. apps/desktop/window-chrome.js derives its side of it from the same
+   56px header height.
+
+   PX, NEVER REM, FOR EVERY NUMBER IN THIS BLOCK. The lights are placed in
+   window coordinates by the OS, and the interface font-size preference sets
+   `font-size` on <html> (features/appearance/appearance.ts) — so a `rem` here is 13px..18px of
+   root, and drags the reserved width and the band's centreline off the lights
+   with it (#203). Everything else keeps scaling with the reader's type. */
+:root {
+  --titlebar-inset: 0px;
+  /** The gutter the islands sit in (app-shell.tsx), and why the band below is
+   *  shorter than the titlebar: it starts this far down and the lights do not
+   *  move, so it has to lose the gutter at the top AND the bottom to keep its
+   *  centre on theirs. */
+  --app-island-inset: 8px;
+  --app-island-span: calc(2 * var(--app-island-inset));
+  /**
+   * ONE HEIGHT FOR THE WHOLE TOP BAND, and it is a contract with the shell.
+   *
+   * The traffic lights are parked at a FIXED point in the window (see
+   * apps/desktop/window-chrome.js, which centres them in this exact number), so
+   * every pane that can be the window's left edge has to agree on how tall its
+   * header is — otherwise the lights are centred for one of them and visibly
+   * low in the other. They were: the rail's header was 56px and the session
+   * masthead 44px, so hiding the rail dropped the lights 6px below the
+   * breadcrumb beside them.
+   *
+   * UNCONDITIONAL, not shell-only. Two headers of different heights sitting
+   * side by side is worth fixing in a browser tab too — the rail's header and
+   * the masthead are one row across the window, and they should read as one.
+   */
+  --titlebar-height: 56px;
+  /** The band every island header draws on `md` and up. Named once here
+   *  because five headers each spelled the same `calc(... - 1rem)`. */
+  --titlebar-band-height: calc(var(--titlebar-height) - var(--app-island-span));
+}
+[data-telar-shell="macos"] {
+  --titlebar-inset: 76px;
+}
+
+/* DRAG REGIONS ARE OPT-IN AND SHELL-ONLY. `-webkit-app-region` is inert in a
+   real browser, but `drag` also suppresses text selection and pointer events on
+   descendants — so scoping it to the shell keeps a browser tab from inheriting
+   behaviour that would only ever be a bug there.
+
+   EVERY INTERACTIVE CHILD OF A DRAG REGION NEEDS `app-no-drag`. A button inside
+   a drag region does not receive clicks at all; it moves the window instead.
+   That is the single failure mode of this whole feature, and it is silent. */
+[data-telar-shell] .app-drag {
+  -webkit-app-region: drag;
+}
+[data-telar-shell] .app-no-drag {
+  -webkit-app-region: no-drag;
+}
