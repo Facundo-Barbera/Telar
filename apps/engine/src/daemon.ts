@@ -2346,6 +2346,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...("projectOrder" in input ? { projectOrder: input.projectOrder } : {}),
             ...("sessionOrder" in input ? { sessionOrder: input.sessionOrder } : {}),
             ...("pinnedOrder" in input ? { pinnedOrder: input.pinnedOrder } : {}),
+            ...("mode" in input ? { mode: input.mode } : {}),
           }),
         });
         return;

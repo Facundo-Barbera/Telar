@@ -365,6 +365,9 @@ export type SessionListInput = {
   windowsByHost?: ReadonlyMap<string, number | null>;
   limit?: number;
   settledLimit?: number;
+  /** `activity` sorts the live list by its latest activity — the flat rail's
+   *  order. Default `created`, which is what the grouped rail has always used. */
+  order?: "created" | "activity";
 };
 
 /** The settling window that applies to ONE row: its own Mac's, else the default. */
@@ -395,6 +398,14 @@ export type SessionListResult = {
 
 const createdNewestFirst = (a: SidebarSession, b: SidebarSession) =>
   b.createdAt - a.createdAt || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
+
+/** When a row last did anything — the flat rail's sort key. */
+export function lastActivityAt(session: Pick<SidebarSession, "updatedAt" | "activityAt" | "lastTurnEndedAt">): number {
+  return Math.max(session.updatedAt, session.activityAt ?? 0, session.lastTurnEndedAt ?? 0);
+}
+
+export const activeNewestFirst = (a: SidebarSession, b: SidebarSession) =>
+  lastActivityAt(b) - lastActivityAt(a) || createdNewestFirst(a, b);
 
 /**
  * Which band a row belongs to, in the precedence order stated at the top of
@@ -504,7 +515,9 @@ export function deriveSessionList({
   windowsByHost,
   limit = SESSION_PAGE_SIZE,
   settledLimit = limit,
+  order = "created",
 }: SessionListInput): SessionListResult {
+  const newestFirst = order === "activity" ? activeNewestFirst : createdNewestFirst;
   const optionsFor = (session: SidebarSession): SettlingOptions => ({ now, autoSettleAfterHours: windowFor(session, autoSettleAfterHours, windowsByHost) });
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const eligible = sessions
@@ -513,7 +526,7 @@ export function deriveSessionList({
       if (!normalizedQuery) return true;
       return `${session.title} ${session.projectName ?? ""}`.toLocaleLowerCase().includes(normalizedQuery);
     })
-    .sort(createdNewestFirst);
+    .sort(newestFirst);
 
   // Search deliberately flattens every band. It is a transient command-like view
   // and should be able to recover a snoozed or settled session immediately —
@@ -551,7 +564,7 @@ export function deriveSessionList({
   // aged-out fact), and merely READING a session is neither — the row stays on
   // its shelf, highlighted there, until the person presses "Return to the list".
   const activeSnoozed = activeSessionId ? snoozed.find((session) => sessionKey(session) === activeSessionId) : undefined;
-  const currentWithSurvivor = activeSnoozed ? [...current, activeSnoozed].sort(createdNewestFirst) : current;
+  const currentWithSurvivor = activeSnoozed ? [...current, activeSnoozed].sort(newestFirst) : current;
   const snoozedRest = activeSnoozed ? snoozed.filter((session) => sessionKey(session) !== sessionKey(activeSnoozed)) : snoozed;
 
   const currentPage = pageWithActive(currentWithSurvivor, limit, activeSessionId);

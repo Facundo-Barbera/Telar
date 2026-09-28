@@ -2923,7 +2923,7 @@ test("the sidebar layout round-trips, dedupes, and refuses a shape that is not a
   // "alphabetical, nobody has moved anything" — and on the engine so the
   // desktop shell, a browser tab and a paired phone draw one arrangement.
   const { store } = readyStore();
-  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };
+  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" };
   expect(store.getSidebarLayout()).toEqual(blank);
 
   expect(store.setSidebarLayout({ projectOrder: ["b", "h1:a", "a"] })).toEqual({ ...blank, projectOrder: ["b", "h1:a", "a"] });
@@ -2951,12 +2951,14 @@ test("the rows inside a group and inside pinned are arranged by their own fields
     projectOrder: ["p1"],
     sessionOrder: { p1: ["s2", "s1"] },
     pinnedOrder: [],
+    mode: "grouped",
   });
   // The pinned write leaves the group arrangement — and the project one — alone.
   expect(store.setSidebarLayout({ pinnedOrder: ["h1:s9", "s8", "s8"] })).toEqual({
     projectOrder: ["p1"],
     sessionOrder: { p1: ["s2", "s1"] },
     pinnedOrder: ["h1:s9", "s8"],
+    mode: "grouped",
   });
   // A key said twice inside a group list is kept once too.
   expect(store.setSidebarLayout({ sessionOrder: { p1: ["s1", "s2", "s1"] } }).sessionOrder).toEqual({ p1: ["s1", "s2"] });
@@ -2967,7 +2969,20 @@ test("the rows inside a group and inside pinned are arranged by their own fields
   for (const bad of ["a", [1], [""], Array.from({ length: 1001 }, (_, i) => `s${i}`)]) {
     expect(() => store.setSidebarLayout({ pinnedOrder: bad })).toThrow(EngineStateError);
   }
-  expect(store.getSidebarLayout()).toEqual({ projectOrder: ["p1"], sessionOrder: { p1: ["s1", "s2"] }, pinnedOrder: ["h1:s9", "s8"] });
+  expect(store.getSidebarLayout()).toEqual({ projectOrder: ["p1"], sessionOrder: { p1: ["s1", "s2"] }, pinnedOrder: ["h1:s9", "s8"], mode: "grouped" });
+});
+
+test("the rail mode defaults to grouped, persists on its own, and refuses anything else", () => {
+  const { store } = readyStore();
+  store.setSidebarLayout({ pinnedOrder: ["s1"] });
+  expect(store.getSidebarLayout().mode).toBe("grouped");
+  // The mode write leaves every arrangement alone, and they leave it alone.
+  expect(store.setSidebarLayout({ mode: "flat" })).toMatchObject({ pinnedOrder: ["s1"], mode: "flat" });
+  expect(store.setSidebarLayout({ pinnedOrder: ["s2"] }).mode).toBe("flat");
+  for (const bad of ["tree", null, 1, ""]) {
+    expect(() => store.setSidebarLayout({ mode: bad })).toThrow(EngineStateError);
+  }
+  expect(store.getSidebarLayout().mode).toBe("flat");
 });
 
 test("the live-session read carries the arrangement, so a drag on one device reaches the others", () => {
@@ -2978,7 +2993,7 @@ test("the live-session read carries the arrangement, so a drag on one device rea
   // "nobody has arranged anything" is an answer, and a client that got no key
   // could not tell it from an engine too old to have one.
   const { store } = readyStore();
-  expect(store.liveSessions().layout).toEqual({ projectOrder: [], sessionOrder: {}, pinnedOrder: [] });
+  expect(store.liveSessions().layout).toEqual({ projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" });
 
   store.setSidebarLayout({ projectOrder: ["p2", "p1"] });
   store.setSidebarLayout({ sessionOrder: { p1: ["s2", "s1"] } });
@@ -2987,12 +3002,13 @@ test("the live-session read carries the arrangement, so a drag on one device rea
     projectOrder: ["p2", "p1"],
     sessionOrder: { p1: ["s2", "s1"] },
     pinnedOrder: ["s9"],
+    mode: "grouped",
   });
 });
 
 test("a malformed sidebar-layout document costs the arrangement, never the list", () => {
   const { store, root: stateRoot } = readyStore();
-  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };
+  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" };
   fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), '{"version":2,"projectOrder":"b,a"}');
   expect(store.getSidebarLayout()).toEqual(blank);
   fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), "not json at all");

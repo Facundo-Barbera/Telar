@@ -51,6 +51,7 @@ import {
   type ProjectWorkspaceOverrides,
   type ProjectWorkspaceView,
   type SidebarLayout,
+  type SidebarMode,
   type StorageReport,
   type JournalReclaim,
   type JournalRetirement,
@@ -1322,6 +1323,7 @@ export class EngineClient {
     projectOrder?: string[];
     sessionOrder?: Record<string, string[]>;
     pinnedOrder?: string[];
+    mode?: SidebarMode;
   }): Promise<{ layout: SidebarLayout }> {
     return this.request("PATCH", "/v2/sidebar-layout", patch);
   }

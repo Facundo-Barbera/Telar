@@ -62,6 +62,7 @@ import type {
   SessionDefaults,
   SessionDefaultsPatch,
   SidebarLayout,
+  SidebarMode,
   CleanupPolicy,
   CleanupState,
   JournalReclaim,
@@ -607,7 +608,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** Where each project group sits in the rail — see `SidebarLayout`. One
      *  arrangement for every client of this engine. */
     sidebarLayout: () => request<{ layout: SidebarLayout }>(fetcher, "GET", "/api/sidebar-layout"),
-    setSidebarLayout: (patch: { projectOrder?: string[]; sessionOrder?: Record<string, string[]>; pinnedOrder?: string[] }) =>
+    setSidebarLayout: (patch: { projectOrder?: string[]; sessionOrder?: Record<string, string[]>; pinnedOrder?: string[]; mode?: SidebarMode }) =>
       request<{ layout: SidebarLayout }>(fetcher, "PATCH", "/api/sidebar-layout", patch),
     /** Spend over time, folded from the engine's journals. */
     usage: (input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }) => {
