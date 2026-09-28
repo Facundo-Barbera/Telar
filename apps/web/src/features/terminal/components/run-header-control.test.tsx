@@ -10,7 +10,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { headerMode, RunHeaderControl } from "./run-header-control";
+import { headerMode } from "../hooks/use-run-header";
+import { RunHeaderControl } from "./run-header-control";
 import { RunConfigEditor } from "./run-config-editor";
 import { latestOpenTerminal, openTerminals, runSummary, statusLabel, statusTone } from "../run/presentation";
 import { RunGlyph } from "../run/icons";

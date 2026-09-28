@@ -1,22 +1,7 @@
 "use client";
 
-/**
- * The form for one saved configuration: a name, a command, where to run it, and
- * the environment it needs.
- *
- * A SECRET CANNOT BE READ BACK, AND THE FORM SAYS SO. `RunEnvView` has no
- * `value` when `secret` is true — the cockpit is never sent one — so a secret
- * row opens as “hidden”, not as an empty box that would silently blank it on
- * save. The engine's patch merges shallowly, so leaving `env` out of the patch
- * preserves what is stored; that is exactly what this form does whenever the
- * environment was not touched.
- *
- * THE ONE AWKWARD CASE IS STATED RATHER THAN GUESSED. Environment is stored as a
- * whole list, so changing ANY row means sending every row — including secrets
- * whose values this form does not have. Instead of dropping them, or inventing a
- * placeholder the engine would store verbatim, `environmentBlocker` refuses the
- * save and names the variables that must be re-entered.
- */
+// A secret is never sent back to the cockpit: an untouched environment is left out of the patch, and a changed one
+// that would drop a kept secret is refused with the names to re-enter.
 
 import { useState } from "react";
 import { EyeOffIcon, PlusIcon, XIcon } from "lucide-react";
@@ -56,15 +41,7 @@ export function draftFromConfiguration(config: RunConfigurationView): EditorDraf
 export function toDraft(draft: EditorDraft): RunConfigurationDraft {
   return {
     name: draft.name.trim(),
-    /**
-     * ALWAYS SENT, INCLUDING THE DEFAULT, and that is not laziness. The engine
-     * merges a patch shallowly, so omitting `icon` means "leave it alone" —
-     * which would make switching a configuration back to `play` silently
-     * impossible, the stored `server` surviving a save the human watched
-     * succeed. An absent icon still means `play` everywhere it is READ, for
-     * the documents written before icons existed and for the ones an agent
-     * saves without naming one.
-     */
+    // Always sent, the default included: the engine merges shallowly, so omitting it could never switch back to `play`.
     icon: draft.icon,
     command: draft.command.trim(),
     ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
@@ -110,39 +87,12 @@ export function editorProblems(original: RunConfigurationView | undefined, draft
 /** Which fields a human has finished with: blurred, or swept in by a submit. */
 export type TouchedFields = Partial<Record<DraftProblem["field"], true>>;
 
-/**
- * WHAT TO SAY OUT LOUD, WHICH IS NOT EVERYTHING THAT IS WRONG.
- *
- * A blank form is invalid by construction, so the editor opened with "Give
- * this configuration a name." already in red — a complaint about not having
- * typed anything yet, addressed to somebody whose cursor had not reached the
- * first box. A problem earns its sentence once the human has LEFT the field it
- * is about, or once they have pressed Save and asked to be told.
- *
- * The list itself is unchanged: `editorProblems` still decides what may be
- * saved. This only decides what is shown.
- */
+/** A problem is shown once its field was left, or after Save; `editorProblems` still decides what may be saved. */
 export function visibleProblems(problems: DraftProblem[], touched: TouchedFields, submitted: boolean): DraftProblem[] {
   return submitted ? problems : problems.filter((problem) => touched[problem.field]);
 }
 
-/**
- * CANCEL IS NOT "LEAVING A FIELD", and treating it as one cost a second click.
- *
- * The bug: on an EMPTY new form, the first press of Cancel showed "Give this
- * configuration a name." and closed nothing; only a second press closed it.
- * Pressing a button BLURS the focused field on mousedown, before the click
- * exists. The blur marked Name as touched, its complaint appeared ABOVE the
- * buttons, the row moved down under the pointer — and the mouseup landed
- * beside Cancel, so the click was never delivered. Cancel itself ran no
- * validation; the layout shift ate it.
- *
- * TWO GUARDS, BECAUSE THERE ARE TWO WAYS TO GET THERE. A pointer press on
- * Cancel keeps focus where it is (`preventDefault` on mousedown), so nothing
- * blurs and nothing moves. And a blur whose focus is going TO Cancel — Tab
- * onto it, then Enter — does not count as finishing the field either, which
- * is what this answers.
- */
+// Leaving a field for Cancel does not mark it touched: the complaint appearing above Cancel moved it from under the pointer.
 export const CANCEL_MARK = "data-editor-cancel";
 
 export function blurMarksTouched(next: EventTarget | null): boolean {
@@ -157,8 +107,138 @@ export function blurMarksTouched(next: EventTarget | null): boolean {
 export function configurationPatch(original: RunConfigurationView | undefined, draft: EditorDraft): Partial<RunConfigurationDraft> {
   const full = toDraft(draft);
   if (environmentTouched(original, draft)) return full;
-  const { env: _env, ...rest } = full;
+  const rest = { ...full };
+  delete rest.env;
   return rest;
+}
+
+const INPUT = "w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm focus-visible:outline focus-visible:outline-ring";
+
+function Field({
+  label,
+  value,
+  placeholder,
+  title,
+  mono,
+  onChange,
+  onLeave,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  title?: string;
+  mono?: boolean;
+  onChange: (value: string) => void;
+  onLeave: (next: EventTarget | null) => void;
+}) {
+  return (
+    <label className="block space-y-1">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <input
+        className={cn(INPUT, mono && "font-mono")}
+        value={value}
+        placeholder={placeholder}
+        {...(title ? { title } : {})}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={(event) => onLeave(event.relatedTarget)}
+      />
+    </label>
+  );
+}
+
+function IconPicker({ value, onChange }: { value: RunIcon; onChange: (icon: RunIcon) => void }) {
+  return (
+    <fieldset className="space-y-1">
+      <legend className="text-xs font-medium text-muted-foreground">Icon</legend>
+      <div role="radiogroup" aria-label="Icon" className="flex flex-wrap gap-1">
+        {RUN_ICON_KEYS.map((key) => {
+          const chosen = value === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              role="radio"
+              aria-checked={chosen}
+              aria-label={RUN_ICON_LABELS[key]}
+              title={RUN_ICON_LABELS[key]}
+              onClick={() => onChange(key)}
+              className={cn(
+                "rounded-md border p-1.5 transition-colors focus-visible:outline focus-visible:outline-ring",
+                chosen ? "border-ring bg-accent" : "border-border text-muted-foreground hover:bg-muted",
+              )}
+            >
+              <RunGlyph icon={key} className="size-4" />
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+function EnvironmentSection({
+  rows,
+  setRows,
+  onLeave,
+}: {
+  rows: EnvRow[];
+  setRows: (update: (rows: EnvRow[]) => EnvRow[]) => void;
+  onLeave: (next: EventTarget | null) => void;
+}) {
+  const setRow = (index: number, patch: Partial<EnvRow>) => setRows((current) => current.map((row, position) => (position === index ? { ...row, ...patch } : row)));
+  return (
+    <section className="space-y-2" aria-label="Environment variables">
+      <h3 className="text-xs font-medium text-muted-foreground">Environment</h3>
+      {rows.map((row, index) => (
+        <div key={index} className="flex items-center gap-2">
+          <input
+            aria-label="Variable name"
+            className="w-40 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
+            value={row.key}
+            onChange={(event) => setRow(index, { key: event.target.value })}
+            onBlur={(event) => onLeave(event.relatedTarget)}
+          />
+          {row.kept ? (
+            <button
+              type="button"
+              className="flex flex-1 items-center gap-1.5 rounded-md border border-dashed border-border px-2 py-1 text-left text-sm text-muted-foreground hover:bg-muted"
+              onClick={() => setRow(index, { kept: false, value: "" })}
+            >
+              <EyeOffIcon className="size-3.5" /> Hidden — click to replace
+            </button>
+          ) : (
+            <input
+              aria-label="Value"
+              type={row.secret ? "password" : "text"}
+              className="flex-1 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
+              value={row.value}
+              onChange={(event) => setRow(index, { value: event.target.value })}
+              onBlur={(event) => onLeave(event.relatedTarget)}
+            />
+          )}
+          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+            <input type="checkbox" checked={Boolean(row.secret)} onChange={(event) => setRow(index, { secret: event.target.checked, kept: false })} />
+            Secret
+          </label>
+          <button
+            type="button"
+            aria-label={`Remove ${row.key || "variable"}`}
+            className="rounded p-1 text-muted-foreground hover:bg-muted"
+            onClick={() => setRows((current) => current.filter((_, position) => position !== index))}
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+        onClick={() => setRows((current) => [...current, { key: "", value: "" }])}
+      >
+        <PlusIcon className="size-3.5" /> Add variable
+      </button>
+    </section>
+  );
 }
 
 type Props = {
@@ -185,158 +265,40 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
     if (blurMarksTouched(next)) touch(field);
   };
   const set = (patch: Partial<EditorDraft>) => setDraft((current) => ({ ...current, ...patch }));
-  const setRow = (index: number, patch: Partial<EnvRow>) =>
-    setDraft((current) => ({
-      ...current,
-      env: current.env.map((row, position) => (position === index ? { ...row, ...patch } : row)),
-    }));
+  const setRows = (update: (rows: EnvRow[]) => EnvRow[]) => setDraft((current) => ({ ...current, env: update(current.env) }));
 
   return (
     <form
       className="space-y-4"
       onSubmit={(event) => {
         event.preventDefault();
-        // SAVE IS ALWAYS PRESSABLE, and pressing it is how a human asks to be
-        // told. A disabled Save on a form that is hiding its complaints is a
-        // button that does nothing for a reason it will not give.
+        // Save is always pressable: pressing it is how a person asks to see every problem.
         setSubmitted(true);
         if (!problems.length && !busy) onSave(configurationPatch(config, draft));
       }}
     >
-      <label className="block space-y-1">
-        <span className="text-xs font-medium text-muted-foreground">Name</span>
-        <input
-          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm focus-visible:outline focus-visible:outline-ring"
-          value={draft.name}
-          placeholder="Dev server"
-          onChange={(event) => set({ name: event.target.value })}
-          onBlur={(event) => leave("name", event.relatedTarget)}
-        />
-      </label>
-      {/* A radio group, not a dropdown: ten glyphs fit, and a human picking one
-          should see the set rather than open it. `role=radiogroup` because that
-          is what it is — one of ten, always exactly one chosen. */}
-      <fieldset className="space-y-1">
-        <legend className="text-xs font-medium text-muted-foreground">Icon</legend>
-        <div role="radiogroup" aria-label="Icon" className="flex flex-wrap gap-1">
-          {RUN_ICON_KEYS.map((key) => {
-            const chosen = draft.icon === key;
-            return (
-              <button
-                key={key}
-                type="button"
-                role="radio"
-                aria-checked={chosen}
-                aria-label={RUN_ICON_LABELS[key]}
-                title={RUN_ICON_LABELS[key]}
-                onClick={() => set({ icon: key })}
-                className={cn(
-                  "rounded-md border p-1.5 transition-colors focus-visible:outline focus-visible:outline-ring",
-                  chosen ? "border-ring bg-accent" : "border-border text-muted-foreground hover:bg-muted",
-                )}
-              >
-                <RunGlyph icon={key} className="size-4" />
-              </button>
-            );
-          })}
-        </div>
-      </fieldset>
-
-      <label className="block space-y-1">
-        <span className="text-xs font-medium text-muted-foreground">Command</span>
-        <input
-          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
-          value={draft.command}
-          placeholder="bun run dev"
-          onChange={(event) => set({ command: event.target.value })}
-          onBlur={(event) => leave("command", event.relatedTarget)}
-        />
-      </label>
-      {/* THE PLACEHOLDER IS THE EXPLANATION. Both of these rows carried a grey
-          sentence under the box — "Relative to the worktree the run is started
-          from", "Optional. Only counted when the address was silent…" — which
-          is an implementation note under a labelled field that already shows
-          the shape of its answer. The label says what it is, the placeholder
-          says what one looks like, and the two sentences were the difference
-          between this form fitting a short window and not. */}
-      <label className="block space-y-1">
-        <span className="text-xs font-medium text-muted-foreground">Working directory</span>
-        <input
-          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
-          value={draft.cwd}
-          placeholder="apps/web"
-          title="Relative to the worktree the run is started from."
-          onChange={(event) => set({ cwd: event.target.value })}
-          onBlur={(event) => leave("cwd", event.relatedTarget)}
-        />
-      </label>
-      <label className="block space-y-1">
-        <span className="text-xs font-medium text-muted-foreground">Readiness check</span>
-        <input
-          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
-          value={draft.readinessUrl}
-          placeholder="http://localhost:3000 — optional"
-          title="Only counted when the address was silent before the run started."
-          onChange={(event) => set({ readinessUrl: event.target.value })}
-          onBlur={(event) => leave("readinessUrl", event.relatedTarget)}
-        />
-      </label>
-
-      <section className="space-y-2" aria-label="Environment variables">
-        <h3 className="text-xs font-medium text-muted-foreground">Environment</h3>
-        {draft.env.map((row, index) => (
-          <div key={index} className="flex items-center gap-2">
-            <input
-              aria-label="Variable name"
-              className="w-40 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
-              value={row.key}
-              onChange={(event) => setRow(index, { key: event.target.value })}
-              onBlur={(event) => leave("env", event.relatedTarget)}
-            />
-            {row.kept ? (
-              <button
-                type="button"
-                className="flex flex-1 items-center gap-1.5 rounded-md border border-dashed border-border px-2 py-1 text-left text-sm text-muted-foreground hover:bg-muted"
-                onClick={() => setRow(index, { kept: false, value: "" })}
-              >
-                <EyeOffIcon className="size-3.5" /> Hidden — click to replace
-              </button>
-            ) : (
-              <input
-                aria-label="Value"
-                type={row.secret ? "password" : "text"}
-                className="flex-1 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
-                value={row.value}
-                onChange={(event) => setRow(index, { value: event.target.value })}
-                onBlur={(event) => leave("env", event.relatedTarget)}
-              />
-            )}
-            <label className="flex items-center gap-1 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={Boolean(row.secret)}
-                onChange={(event) => setRow(index, { secret: event.target.checked, kept: false })}
-              />
-              Secret
-            </label>
-            <button
-              type="button"
-              aria-label={`Remove ${row.key || "variable"}`}
-              className="rounded p-1 text-muted-foreground hover:bg-muted"
-              onClick={() => setDraft((current) => ({ ...current, env: current.env.filter((_, position) => position !== index) }))}
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          </div>
-        ))}
-        <button
-          type="button"
-          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
-          onClick={() => setDraft((current) => ({ ...current, env: [...current.env, { key: "", value: "" }] }))}
-        >
-          <PlusIcon className="size-3.5" /> Add variable
-        </button>
-      </section>
+      <Field label="Name" value={draft.name} placeholder="Dev server" onChange={(name) => set({ name })} onLeave={(next) => leave("name", next)} />
+      <IconPicker value={draft.icon} onChange={(icon) => set({ icon })} />
+      <Field label="Command" mono value={draft.command} placeholder="bun run dev" onChange={(command) => set({ command })} onLeave={(next) => leave("command", next)} />
+      <Field
+        label="Working directory"
+        mono
+        value={draft.cwd}
+        placeholder="apps/web"
+        title="Relative to the worktree the run is started from."
+        onChange={(cwd) => set({ cwd })}
+        onLeave={(next) => leave("cwd", next)}
+      />
+      <Field
+        label="Readiness check"
+        mono
+        value={draft.readinessUrl}
+        placeholder="http://localhost:3000 — optional"
+        title="Only counted when the address was silent before the run started."
+        onChange={(readinessUrl) => set({ readinessUrl })}
+        onLeave={(next) => leave("readinessUrl", next)}
+      />
+      <EnvironmentSection rows={draft.env} setRows={setRows} onLeave={(next) => leave("env", next)} />
 
       {shown.map((problem, index) => (
         <p key={index} role="alert" className="text-xs text-destructive">
