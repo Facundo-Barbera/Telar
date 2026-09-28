@@ -70,7 +70,7 @@ import { CohortFold, foldCohortTurns } from "./session/cohort-fold";
 // one function every notification verb in this app comes from (#572) — so this
 // header cannot name a happening differently from the row below it.
 import { ActivityGroup, groupNotificationTurns, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
-import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, isRestorablePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, isRestorablePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "@/features/panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
@@ -100,7 +100,7 @@ import {
   clearPanelTabs,
   type PanelTabParams,
   type PanelTabState,
-} from "@/lib/right-panel-tabs";
+} from "@/features/panel";
 import { closeTerminalTab } from "@/lib/terminal-close";
 import { createRunApi } from "@/lib/run/api";
 import { foldTerminalParams } from "@/lib/terminal-workspace";

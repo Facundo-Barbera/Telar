@@ -9,7 +9,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { RunView } from "@/lib/run/types";
-import type { PanelTabInstance, PanelTabState } from "@/lib/right-panel-tabs";
+import type { PanelTabInstance, PanelTabState } from "@/features/panel";
 import { freshTerminals, revealTerminal, TERMINAL_PANEL_KIND } from "@/lib/terminal-reveal";
 import { addShell, emptyWorkspace, readWorkspace, runShells, shellForRun, workspaceParams } from "@/lib/terminal-workspace";
 

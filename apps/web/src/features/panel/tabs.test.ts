@@ -26,8 +26,8 @@ import {
   writePanelTabs,
   type PanelTabInstance,
   type PanelTabState,
-} from "./right-panel-tabs";
-import { browserPanelTab, browserTabId, browserTabLabel, describePanelTab, describePanelTabInstance, isPanelTab, LIVE_BROWSER_TAB, panelTabSuffix, type PanelTab } from "@/components/right-panel";
+} from "./tabs";
+import { browserPanelTab, browserTabId, browserTabLabel, describePanelTab, describePanelTabInstance, isPanelTab, LIVE_BROWSER_TAB, panelTabSuffix, type PanelTab } from "./components/right-panel";
 import { foldTerminalParams, readWorkspace, terminalIds, TERMINAL_ID_PARAM } from "@/lib/terminal-workspace";
 
 /** The strip as kinds, which is what every assertion below is actually about —

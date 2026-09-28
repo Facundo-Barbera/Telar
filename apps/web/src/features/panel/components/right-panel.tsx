@@ -62,7 +62,7 @@ import {
   RIGHT_PANEL_MAIN_MIN_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
-} from "@/lib/right-panel-layout";
+} from "../layout";
 import { RelatedConversations } from "@/components/session/related-conversations";
 import { HeldReports } from "@/components/session/held-reports";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
@@ -70,7 +70,7 @@ import { fileKind } from "@/lib/file-kinds";
 import { PluginSurface } from "@/components/plugins/surfaces";
 import { isPluginSurface, PLUGIN_SURFACES, pluginSurfaces, viewerAvailable, type PluginSurfaceId } from "@/lib/plugins/registry";
 import type { PluginPanelSource } from "@/lib/plugins/panels";
-import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
+import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "../tabs";
 import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { cn } from "@/lib/utils";

@@ -29,7 +29,7 @@
  */
 import { isOpenTerminal } from "./run/presentation";
 import type { RunView } from "./run/types";
-import { findPanelTab, nextPanelTabId, revealPanelTab, setPanelTabParams, type PanelTabState } from "./right-panel-tabs";
+import { findPanelTab, nextPanelTabId, revealPanelTab, setPanelTabParams, type PanelTabState } from "@/features/panel";
 import { readWorkspace, upsertRunShell, workspaceParams } from "./terminal-workspace";
 
 /** The panel's Terminal kind — the one tab every shell and run lives in. */

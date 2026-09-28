@@ -29,7 +29,7 @@ import { chipIsDirectory, chipPath, segmentDraft } from "@/lib/composer-tokens";
 import { chipGlyphFor } from "@/lib/glyph-paths";
 import { cn } from "@/lib/utils";
 import type { TelarReference } from "@/lib/drag-reference";
-import { filePanelTab, issuePanelTab, pullPanelTab, type PanelTab } from "@/components/right-panel";
+import { filePanelTab, issuePanelTab, pullPanelTab, type PanelTab } from "@/features/panel";
 
 /**
  * One `<svg>`, built the way lucide builds one — the React twin of

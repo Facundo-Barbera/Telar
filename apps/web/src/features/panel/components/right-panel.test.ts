@@ -32,7 +32,7 @@ import {
   splitRoster,
   type PanelTab,
 } from "./right-panel";
-import { emptyPanelTabs, openPanelTab, revealPanelTab, type PanelTabState } from "@/lib/right-panel-tabs";
+import { emptyPanelTabs, openPanelTab, revealPanelTab, type PanelTabState } from "../tabs";
 
 function fileChange(overrides: {
   path: string;

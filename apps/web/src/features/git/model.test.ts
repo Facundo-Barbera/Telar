@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { GitFileChange, SessionDiff } from "@telar/engine-client";
 import { reconcileReview } from "@/lib/session-review";
 import { reviewUnderFilter, underDiffFilter } from "./model";
-import { describePanelTabInstance, type PanelTabItem } from "@/components/right-panel";
+import { describePanelTabInstance, type PanelTabItem } from "@/features/panel";
 
 const file = (path: string, extra: Partial<GitFileChange> = {}): GitFileChange => ({
   path,
