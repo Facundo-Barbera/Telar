@@ -28,7 +28,7 @@ export interface PairedDevice {
   identity?: DeviceIdentity;
 }
 
-export interface PendingPairing {
+interface PendingPairing {
   tokenHash: string;
   attempts?: number;
   createdAt: number;

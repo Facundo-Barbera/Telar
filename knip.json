@@ -3,16 +3,17 @@
   "workspaces": {
     ".": {
       "entry": [
-        "scripts/*.{mjs,ts}"
+        "scripts/*.{mjs,ts}",
+        "workers/push-relay/worker.mjs"
       ],
       "project": [
-        "scripts/**/*.{mjs,ts}"
+        "scripts/**/*.{mjs,ts}",
+        "workers/push-relay/**/*.mjs"
       ]
     },
     "apps/engine": {
       "entry": [
         "src/*-main.ts",
-        "src/main.ts",
         "bench/*.ts",
         "scripts/*.{ts,mjs}"
       ],
@@ -33,7 +34,7 @@
     },
     "apps/web": {
       "project": [
-        "**/*.{ts,tsx,mjs}"
+        "**/*.{ts,tsx,mjs,css}"
       ],
       "entry": [
         "scripts/*.mjs",
@@ -59,15 +60,6 @@
       "project": [
         "src/**/*.ts",
         "test/**/*.ts"
-      ]
-    },
-    "workers/push-relay": {
-      "entry": [
-        "worker.mjs",
-        "deploy.mjs"
-      ],
-      "project": [
-        "**/*.mjs"
       ]
     },
     "workers/updates-proxy": {
@@ -102,9 +94,19 @@
     "packages/engine-client/src/protocol/plugins.ts": [
       "duplicates"
     ],
-    "apps/desktop/src/{handoff/desktop-handoff-core,handoff/desktop-handoff,dev/dev-update-core,dev/dev-update,main/tailscale,main/update-watchdog,store/store-location,store/store-migrate}.js": ["exports"],
-    "apps/desktop/src/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": ["exports"],
-    "apps/web/lib/remote/**": ["exports", "types"],
-    "apps/web/lib/mobile/**": ["exports", "types"]
+    "apps/desktop/src/{handoff/desktop-handoff-core,handoff/desktop-handoff,dev/dev-update-core,dev/dev-update,main/tailscale,main/update-watchdog,store/store-location,store/store-migrate}.js": [
+      "exports"
+    ],
+    "apps/desktop/src/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": [
+      "exports"
+    ],
+    "apps/web/lib/remote/**": [
+      "exports",
+      "types"
+    ],
+    "apps/web/lib/mobile/**": [
+      "exports",
+      "types"
+    ]
   }
 }

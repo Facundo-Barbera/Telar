@@ -57,11 +57,11 @@ const HANDLE_MINUTE = 120, HANDLE_DAY = 5000;
  * is kept for alerts and Live Activities. `HANDLE_BACKGROUND_CEILING` in the
  * environment overrides it, for tests.
  */
-export const BACKGROUND_CEILING = 4000;
+const BACKGROUND_CEILING = 4000;
 /** [requests, per window in ms] for each IP (IPv6 by /64). */
 export const IP_LIMITS = { challenge: [30, 3600000], register: [10, 3600000], phone: [240, 3600000], send: [3000, 3600000] };
 /** Every v2 request counts. Well below the account's shared 100k a day. */
-export const GLOBAL_DAILY_BUDGET = 40000;
+const GLOBAL_DAILY_BUDGET = 40000;
 
 const random = n => b64url(crypto.getRandomValues(new Uint8Array(n)));
 const retryAfter = ms => ({ 'retry-after': String(Math.max(1, Math.ceil(ms / 1000))) });
@@ -69,7 +69,7 @@ const configured = env => Boolean(env.APNS_KEY_BASE64 && env.APNS_KEY_ID && env.
 const teamOf = env => env.APPATTEST_TEAM_ID || env.APNS_TEAM_ID;
 
 /** An IPv6 client is limited by its /64, which is what one subscriber gets. */
-export function ipKey(ip) {
+function ipKey(ip) {
   if (!ip) return 'unknown';
   if (!ip.includes(':')) return ip;
   const [head, tail = ''] = ip.toLowerCase().split('::');
