@@ -674,7 +674,7 @@ describe("the state vocabulary", () => {
     // lib/ IS IN SCOPE, because that is where the rule was being broken. The
     // guard only ever read .tsx under app/ and components/, and the two files
     // that actually held eight raw ramps each — features/files/file-kinds.ts and
-    // lib/glyph-paths.ts — are LOOKUP TABLES of class strings in .ts. A class
+    // features/composer/glyph-paths.ts — are LOOKUP TABLES of class strings in .ts. A class
     // string is a class string wherever it is written down.
     for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
       for (const hit of withoutProse(file).matchAll(pattern)) {

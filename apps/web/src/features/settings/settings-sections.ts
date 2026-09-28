@@ -2,7 +2,7 @@ import { BlocksIcon, DownloadIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIc
 import type { PluginStatus } from "@telar/engine-client";
 import { type SettingsSearchIndex } from "./search";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "./registry";
-import { pluginSettingsSearchEntries } from "@/features/plugins/index";
+import { pluginSettingsSearchEntries } from "@/features/plugins";
 import type { SettingsSection } from "./components/settings-shell";
 
 export const SECTIONS: SettingsSection[] = [

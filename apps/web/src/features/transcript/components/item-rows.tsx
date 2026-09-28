@@ -12,14 +12,14 @@ HourglassIcon,
 Minimize2Icon
 } from "lucide-react";
 import { itemLabel, itemText, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
-import { fmtTokens } from "@/lib/format";
+import { fmtTokens } from "@/ui/format";
 import { attachmentUrl } from "@/features/plugins";
-import { MessageMenu, MessageResponse } from "@/components/ui/message";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { Shimmer } from "@/components/ui/shimmer";
+import { MessageMenu, MessageResponse } from "@/ui/message";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/ui/context-menu";
+import { Shimmer } from "@/ui/shimmer";
 import { ROW } from "./transcript-fold";
-import { AgentMessageBubble, ConversationMessage, type OpenTab } from "@/components/session/conversation-message";
-import { cn } from "@/lib/utils";
+import { AgentMessageBubble, ConversationMessage, type OpenTab } from "./conversation-message";
+import { cn } from "@/ui/utils";
 import { notificationLabel, reasoningPaints, reasoningTokens, running } from "../model";
 import { RowGestures } from "./tool-row";
 

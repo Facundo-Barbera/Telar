@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { EraserIcon, ImageIcon, LayersIcon, MonitorIcon, PaperclipIcon, PlusIcon, TriangleAlertIcon, XIcon } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/ui/dropdown-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/ui/context-menu";
 import { isStashable } from "../hooks/use-composer-stash";
 
 export function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {

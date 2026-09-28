@@ -27,11 +27,11 @@ import {
 import { contrastRatio, parseVsCodeColor } from "../../vscode-theme-import";
 import { STATE_INK, TINT_FLOOR, tintCost } from "../../tint-separation";
 import type { CompositionMode } from "../../composition";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { CheckIcon, RotateCcwIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/ui/select";
 import { Row } from "@/features/settings";
 import { HexField } from "./hex-field";
 import { CodeSpecimen, InterfaceSpecimen, TerminalSpecimen } from "./type-specimen";

@@ -16,3 +16,4 @@ export {
   turnActivity,
   withoutOpeningNotification,
 } from "./model";
+export { AgentMessageBubble, ConversationMessage } from "./components/conversation-message";

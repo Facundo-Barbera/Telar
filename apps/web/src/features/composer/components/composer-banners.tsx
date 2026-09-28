@@ -2,8 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { AlarmClockIcon, CircleCheckIcon, FoldVerticalIcon } from "lucide-react";
-import { contextNoticeDue } from "@/lib/context-notice";
-import { fmtTokens } from "@/lib/format";
+import { contextNoticeDue } from "../context-notice";
+import { fmtTokens } from "@/ui/format";
 import { contextNoticeDismissal, writeContextNoticeDismissed } from "../context-notice-dismissal";
 import { ComposerBanner } from "./composer-chrome";
 import type { ComposerProps } from "./composer-props";

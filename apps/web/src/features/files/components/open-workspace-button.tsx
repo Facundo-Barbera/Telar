@@ -14,11 +14,11 @@ import {
   writePreferredOpener,
   type WorkspaceOpenerEntry,
 } from "../workspace-opener-preference";
-import { useCommandHandlers, KeyHint } from "@/features/commands/index";
+import { useCommandHandlers, KeyHint } from "@/features/commands";
 import { OpenerIcon } from "./opener-icon";
-import { Button } from "@/components/ui/button";
-import { ButtonGroup, ButtonGroupSeparator } from "@/components/ui/button-group";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Button } from "@/ui/button";
+import { ButtonGroup, ButtonGroupSeparator } from "@/ui/button-group";
+import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
 
 export function OpenWorkspaceButton({
   path,

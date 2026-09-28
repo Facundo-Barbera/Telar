@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { runAsChip } from "../reveal";
 import { createRunApi } from "../run/api";
 import { isOpenTerminal } from "../run/presentation";

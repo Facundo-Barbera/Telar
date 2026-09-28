@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCwIcon } from "lucide-react";
 import { parsePluginPanelView, type PluginPanelBlock, type TurnState } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { panelSourceKey, type PluginPanelSource } from "../panels";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { PluginBlocks } from "./panel-blocks";
 
 const api = createEngineApi();

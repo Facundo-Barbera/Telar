@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { claimDraft, draftScope, forgetDraft, newDraftOwner, rememberDraft, type DraftOwner } from "../editor-drafts";
-import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import type { EditorViewState } from "../editor-workspace";
 import { createFileWriter, type FileWriter } from "../file-writer";
 import { detectNewline, withNewline } from "../line-endings";

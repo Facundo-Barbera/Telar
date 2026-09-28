@@ -1,10 +1,10 @@
 "use client";
 
 import { CameraIcon, ChevronLeftIcon, ChevronRightIcon, MinusIcon, PencilIcon, PlusIcon, SquareArrowOutUpRightIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/ui/button";
 import { siteLabel } from "../desktop-site-permissions";
-import { IdentityIcon } from "@/lib/telar-icons";
-import { cn } from "@/lib/utils";
+import { IdentityIcon } from "@/ui/telar-icons";
+import { cn } from "@/ui/utils";
 import type { BrowserUi } from "../hooks/use-browser-session";
 import { APPEARANCES, zoomLabel } from "../model";
 import type { DesktopBrowserProfile } from "../types";

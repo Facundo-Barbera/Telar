@@ -1,9 +1,9 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { isPluginSurface, pluginCommands, pluginSurfaces, viewerAvailable } from "./registry";
-import { panelTabForPath } from "@/features/panel/index";
+import { panelTabForPath } from "@/features/panel";
 import { editorFileForPath } from "@/features/files/editor-workspace";
-import { defaultRightPanelWidth } from "@/features/panel/index";
+import { defaultRightPanelWidth } from "@/features/panel";
 
 describe("the web plugin registry, gated by the enabled ids", () => {
   test("Data Science and LaTeX contribute their tab and opener only while on", () => {

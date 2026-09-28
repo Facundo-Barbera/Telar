@@ -4,12 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2Icon, XIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/platform/engine/index";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { announceProjectsChanged } from "../projects";
-import { createRequestGate } from "@/lib/request-gate";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { createRequestGate } from "@/platform/request-gate";
+import { Alert, AlertDescription, AlertTitle } from "@/ui/alert";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
 import {
   Dialog,
   DialogClose,
@@ -18,7 +18,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@/ui/dialog";
 import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();

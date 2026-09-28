@@ -7,7 +7,7 @@ import { summarizeChildren, type FlatEntry } from "./flat-rail";
 import type { RailJumpSlot } from "../session-groups";
 import type { SessionRowChanged } from "../session-mutations";
 import { sessionKey, type SessionBand, type SidebarSession } from "../session-list";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 type RowContext = {
   activeSessionId?: string;

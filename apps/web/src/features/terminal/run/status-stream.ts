@@ -27,7 +27,7 @@
  * is DOWN - without one a refused port is a tight spin.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { hostFetcher, LOCAL_HOST_ID, rewriteApiPath } from "@/lib/hosts/client";
+import { hostFetcher, LOCAL_HOST_ID, rewriteApiPath } from "@/platform/engine/host-client";
 import { createRunApi, runPath, type RunApi } from "./api";
 import type { RunStatusAnswer, RunStatusEvent } from "./types";
 

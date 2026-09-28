@@ -3,7 +3,7 @@
 import { createPortal } from "react-dom";
 import { MicIcon } from "lucide-react";
 import { languageBadge } from "../language-label";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const LIFT_PX = 6;
 const NUDGE_PX = 4;

@@ -6,7 +6,7 @@ import { ACCENT_COLOURS, LIGHT_PRIMARY_FOREGROUND } from "../accent-colours";
 import { useAppearance } from "../appearance";
 import { useComposition } from "../composition";
 import { createEngineApi } from "@/platform/engine";
-import { isHostWindow } from "@/lib/host-window";
+import { isHostWindow } from "@/platform/desktop/host-window";
 import { captureLook } from "../looks";
 import { readTheme, useTheme } from "./theme-provider";
 

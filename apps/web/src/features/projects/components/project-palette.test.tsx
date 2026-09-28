@@ -1,10 +1,10 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { buttonLabelled, click, flush, installTestDom, mount, stubFetch, type Route } from "@/lib/testing/dom";
+import { Dialog, DialogContent } from "@/ui/dialog";
+import { buttonLabelled, click, flush, installTestDom, mount, stubFetch, type Route } from "@/test/dom";
 import { PROJECTS_CHANGED_EVENT } from "../projects";
-import { clearField, typeInto } from "@/lib/testing/type-into";
+import { clearField, typeInto } from "@/test/type-into";
 import {
   cloneRequest,
   folderName,

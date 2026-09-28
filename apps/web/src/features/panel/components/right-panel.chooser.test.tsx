@@ -28,7 +28,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { RightPanel } from "./right-panel";
 import type { PanelTabItem } from "../model";
-import { nativeViewOverlayHidden } from "@/lib/native-view-overlay";
+import { nativeViewOverlayHidden } from "@/platform/desktop/native-view-overlay";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

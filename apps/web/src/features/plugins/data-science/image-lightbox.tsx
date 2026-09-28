@@ -1,6 +1,6 @@
 "use client";
 
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/ui/dialog";
 import { attachmentUrl } from "./ds";
 
 export function ImageLightbox({ sessionId, attachmentId, onClose }: { sessionId: string; attachmentId?: string; onClose: () => void }) {

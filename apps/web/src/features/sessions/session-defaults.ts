@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_SESSION_DEFAULTS, type SessionDefaults, type SessionDefaultsPatch } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 
 const api = createEngineApi();
 

@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { MonitorIcon, XIcon } from "lucide-react";
-import { createEngineApi, EngineApiError } from "@/platform/engine/index";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import type { PublicHost } from "@telar/engine-client";
 import { forgetRows, readSidebarCache, writeSidebarCache, snapshotStore } from "@/features/sessions";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
 import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();

@@ -13,7 +13,7 @@ import {
   SlidersHorizontalIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { ProjectAvatar } from "@/features/projects/index";
+import { ProjectAvatar } from "@/features/projects";
 import {
   OpenerIcon,
   workspaceOpenBlocker,
@@ -37,7 +37,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+} from "@/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,13 +45,13 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
+} from "@/ui/dropdown-menu";
+import { SidebarGroup, SidebarGroupContent } from "@/ui/sidebar";
 import type { ProjectPlace } from "@/features/hosts";
 import type { ProjectGroup as Group, RailJumpSlot } from "../session-groups";
 import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "../session-list";
 import type { SessionRowChanged } from "../session-mutations";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root: string | undefined) {
   const [answer, setAnswer] = useState<WorkspaceOpenersAnswer>();

@@ -30,7 +30,7 @@ import { FrontDoor } from "./front-door";
  *
  * THE ONE SCREEN THAT IS NOT A COMPOSER is the case where a composer is
  * impossible: no project to open one against, or an engine that cannot say. See
- * `components/first-run.tsx`.
+ * `features/projects/components/first-run.tsx`.
  */
 export default function HomePage() {
   return <FrontDoor />;

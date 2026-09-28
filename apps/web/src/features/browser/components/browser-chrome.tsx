@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { CameraIcon, CheckIcon, DownloadIcon, KeyRoundIcon, Loader2Icon, TriangleAlertIcon } from "lucide-react";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { useNativeViewOverlay } from "@/lib/native-view-overlay";
-import { cn } from "@/lib/utils";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/ui/context-menu";
+import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
+import { cn } from "@/ui/utils";
 import type { BrowserUi } from "../hooks/use-browser-session";
 import { describeDownload, describeExtensionHealth } from "../model";
 

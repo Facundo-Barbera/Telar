@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { MessageResponse } from "@/components/ui/message";
-import { CodeSurface } from "@/components/ui/code-surface";
+import { MessageResponse } from "@/ui/message";
+import { CodeSurface } from "@/ui/code-surface";
 import { OverlayEditor } from "@/features/files";
 
 const SHORT_TS = "```ts\nconst a = 1;\nexport default a;\n```";

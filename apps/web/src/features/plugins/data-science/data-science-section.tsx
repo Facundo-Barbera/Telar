@@ -16,19 +16,19 @@ import type {
 } from "@telar/engine-client";
 import { pluginBlock } from "@telar/engine-client";
 import { blockPatch } from "../sections";
-import { createEngineApi } from "@/platform/engine/index";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
+import { createEngineApi } from "@/platform/engine";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/ui/select";
+import { Spinner } from "@/ui/spinner";
+import { Switch } from "@/ui/switch";
 import { Row, Segmented, SettingsGroup } from "@/features/settings";
 import { JobLog, type JobHandle } from "../components/job-log";
 import { MANAGER_LABEL, PackagesPanel } from "../components/packages-panel";
-import { cn } from "@/lib/utils";
-import { writeDraft } from "@/features/composer/index";
-import { canvasHref } from "@/features/sessions/index";
+import { cn } from "@/ui/utils";
+import { writeDraft } from "@/features/composer";
+import { canvasHref } from "@/features/sessions";
 
 const api = createEngineApi();
 

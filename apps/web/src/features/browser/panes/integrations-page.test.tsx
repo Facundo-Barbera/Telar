@@ -2,8 +2,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { confirmProfileDeletion, describeProfileUse, profileNameProblem, whyUndeletable, type BrowserProfile } from "../desktop-browser-profiles";
-import { buttonLabelled, click, flush, mount, installTestDom } from "@/lib/testing/dom";
-import { typeInto } from "@/lib/testing/type-into";
+import { buttonLabelled, click, flush, mount, installTestDom } from "@/test/dom";
+import { typeInto } from "@/test/type-into";
 import { NewBrowserProfileDialog } from "../settings";
 import { BrowserProfilesSection } from "./browser-profiles-section";
 import { IntegrationsPage } from "./integrations-page";

@@ -15,13 +15,13 @@ import {
 import type { WorkspaceFile } from "@telar/engine-client";
 import { CODE_FONT_SIZE, CODE_GEOMETRY, CodeLines } from "./overlay-editor";
 import { FileKindIcon } from "./file-icon";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { PanelEmpty } from "@/components/ui/panel";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { PanelEmpty } from "@/ui/panel";
 import type { fileKind } from "../file-kinds";
 import { MAX_HIGHLIGHT_BYTES } from "../highlight";
 import type { MarkdownEditAction } from "../markdown-edit";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import type { SaveProblem } from "../hooks/use-file-editor";
 import { formatBytes } from "../model";
 

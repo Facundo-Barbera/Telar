@@ -26,7 +26,7 @@ const mockNavigation = () =>
 mockNavigation();
 
 const { SessionCockpit } = await import("./session-cockpit");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 const { clearTranscriptCache } = await import("../transcript-cache");
 const { TAIL_LIVE_MS, TAIL_SETTLED_MS } = await import("@/platform/engine");
 

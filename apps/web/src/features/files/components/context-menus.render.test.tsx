@@ -2,12 +2,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ContextMenu } from "@/components/ui/context-menu";
-import { RightPanel, type PanelTabItem } from "@/features/panel/index";
-import { click, flush, installTestDom, mount, stubFetch } from "@/lib/testing/dom";
-import { directoryReference, fileReference, type TelarReference } from "@/lib/drag-reference";
+import { ContextMenu } from "@/ui/context-menu";
+import { RightPanel, type PanelTabItem } from "@/features/panel";
+import { click, flush, installTestDom, mount, stubFetch } from "@/test/dom";
+import { directoryReference, fileReference, type TelarReference } from "@/features/composer/drag-reference";
 import type { EditorState } from "../editor-workspace";
-import { nativeViewOverlayHidden } from "@/lib/native-view-overlay";
+import { nativeViewOverlayHidden } from "@/platform/desktop/native-view-overlay";
 import type { WorkspaceFileMenu } from "../workspace-open";
 import { EditorSurface } from "./editor-surface";
 import { FileRowMenuItems, FilesSurface } from "./files-surface";

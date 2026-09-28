@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ArrowUpCircleIcon, ChevronDownIcon, DownloadIcon, InfoIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/ui/tooltip";
 import {
   AUTO_COMPACT_DEFAULTS,
   AUTO_COMPACT_MAX_TOKENS,
@@ -11,19 +11,19 @@ import {
   type ProviderInstanceEnvVar,
   type ProviderProbe,
 } from "@telar/engine-client";
-import { cn } from "@/lib/utils";
-import { normaliseContextNoticePercent } from "@/lib/context-notice";
+import { cn } from "@/ui/utils";
+import { normaliseContextNoticePercent } from "@/features/composer";
 import { displayNameOf, DRIVER_LABEL, isDefaultInstance, providerSummary, STATUS_DOT, STATUS_LABEL, updateAdvisory, versionLabel } from "../provider-instances";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
-import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
+import { Collapsible, CollapsibleContent } from "@/ui/collapsible";
 import { Tabs } from "@/features/settings";
 import { ProviderModelsTab } from "./provider-models-tab";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { Input } from "@/ui/input";
+import { Switch } from "@/ui/switch";
 import { ProviderIcon } from "./provider-icon";
-import { CopyCommand } from "@/components/ui/copy-command";
+import { CopyCommand } from "@/ui/copy-command";
 
 type ProviderTab = "configuration" | "models";
 

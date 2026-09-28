@@ -11,7 +11,7 @@ import {
   questionFields,
   setCustomAnswer,
   type QuestionDraft,
-} from "@/lib/question-drawer";
+} from "../question-drawer";
 
 /** While a question is open the editor holds its custom answer; the real draft waits untouched underneath. */
 export function useQuestionMode(

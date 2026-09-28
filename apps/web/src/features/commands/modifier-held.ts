@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { isEditableTarget } from "./command-keys";
-import { keyCapPlatformFor, type KeyCapPlatform } from "@/lib/key-caps";
+import { keyCapPlatformFor, type KeyCapPlatform } from "./key-caps";
 
 export type ModifierEventLike = {
   type?: string | undefined;

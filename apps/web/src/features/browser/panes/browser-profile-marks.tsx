@@ -1,9 +1,9 @@
 "use client";
 
 import { IDENTITY_COLORS, TELAR_ICONS, type IdentityColor, type TelarIcon } from "@telar/engine-client";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { identityColorVar, IdentityIcon } from "@/lib/telar-icons";
-import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
+import { identityColorVar, IdentityIcon } from "@/ui/telar-icons";
+import { cn } from "@/ui/utils";
 
 const TRIGGER = "flex size-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted";
 

@@ -11,9 +11,9 @@ import {
   type DirectoryBrowserState,
 } from "../directory-keys";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
-import { LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { workspaceOpener } from "../workspace-open";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 

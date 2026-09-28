@@ -3,7 +3,7 @@
  * React. Every measurement is in `em` so a chip scales with the prose around it.
  */
 import { chipPath } from "./tokens";
-import type { TelarReference } from "@/lib/drag-reference";
+import type { TelarReference } from "./drag-reference";
 
 export const CHIP_CLASS =
   "inline-flex max-w-full select-none items-center gap-[0.33em] rounded-[0.5em] border border-border/70 bg-accent/40 px-[0.5em] py-[0.08em] align-middle text-[0.86em] font-medium leading-[1.1] text-foreground";

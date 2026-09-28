@@ -22,7 +22,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { ProjectGroupSection } = await import("./project-group");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 import { groupSessions } from "../session-groups";
 import type { SidebarSession } from "../session-list";
 

@@ -1,7 +1,7 @@
 import { useRef, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { FolderPlusIcon, MessageSquarePlusIcon, XIcon } from "lucide-react";
-import { SidebarSearchField } from "@/components/sidebar-search-field";
-import { Button } from "@/components/ui/button";
+import { SidebarSearchField } from "@/ui/sidebar-search-field";
+import { Button } from "@/ui/button";
 import { KeyHint, type CommandId } from "@/features/commands";
 import type { SidebarSession } from "../session-list";
 

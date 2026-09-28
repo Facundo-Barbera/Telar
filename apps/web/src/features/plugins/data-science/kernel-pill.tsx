@@ -1,7 +1,7 @@
 "use client";
 
 import type { KernelState } from "./ds";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const TONE: Record<KernelState, string> = {
   none: "bg-muted text-muted-foreground",

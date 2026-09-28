@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { DEFAULT_INBOX_POLICY, type InboxPolicy } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
-import { hostFetcher, hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { createEngineApi } from "@/platform/engine";
+import { hostFetcher, hostFromPathname, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 
 export const INBOX_POLICY_TTL_MS = 30_000;
 

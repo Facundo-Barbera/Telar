@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageResponse } from "@/components/ui/message";
+import { MessageResponse } from "@/ui/message";
 
 /**
  * THE TWO EQUATIONS FROM THE REPORT, verbatim, in the shape they arrived: each

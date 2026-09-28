@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { updateToast, type UpdateStatus } from "../desktop-updates";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 export const UPDATE_TOAST_MS = 4_000;
 

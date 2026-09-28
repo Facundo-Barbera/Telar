@@ -3,8 +3,8 @@
 import { PackageIcon, SettingsIcon } from "lucide-react";
 import Link from "next/link";
 import type { KernelState } from "./ds";
-import { projectSettingsHref } from "@/features/projects/index";
-import { PanelEmpty } from "@/components/ui/panel";
+import { projectSettingsHref } from "@/features/projects";
+import { PanelEmpty } from "@/ui/panel";
 import { PackagesPanel } from "../components/packages-panel";
 
 export function EnvironmentSurface({ sessionId, projectId, kernel, onRestart }: { sessionId?: string; projectId?: string; kernel: KernelState; onRestart: () => void }) {

@@ -4,7 +4,7 @@ import { ChevronDownIcon } from "lucide-react";
 import type { GitRefEntry } from "@telar/engine-client";
 import { scopesFor, type DiffScopeKind, type DiffTab } from "../diff-scope";
 import { turnFor, turnLabel, type DiffTurn } from "../diff-turns";
-import { fmtAgo } from "@/lib/format";
+import { fmtAgo } from "@/ui/format";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,7 +13,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@/ui/dropdown-menu";
 import { SCOPE_BLURB, SCOPE_LABEL } from "../model";
 
 const MAX_BASE_REFS = 12;

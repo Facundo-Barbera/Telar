@@ -96,11 +96,7 @@
     "apps/desktop/src/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": [
       "exports"
     ],
-    "apps/web/src/lib/remote/**": [
-      "exports",
-      "types"
-    ],
-    "apps/web/src/lib/mobile/**": [
+    "apps/web/src/features/remote/server/**": [
       "exports",
       "types"
     ]

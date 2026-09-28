@@ -1,6 +1,6 @@
 
 import { fileKind } from "./file-kinds";
-import { viewerAvailable } from "@/features/plugins/index";
+import { viewerAvailable } from "@/features/plugins";
 
 export type EditorView = "code" | "notebook" | "table" | "pdf";
 

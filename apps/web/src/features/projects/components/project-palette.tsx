@@ -10,12 +10,12 @@ import {
 } from "lucide-react";
 import { DirectoryBrowser } from "@/features/files";
 import { ProjectAvatar } from "./project-avatar";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { chooseDirectory } from "@/lib/choose-directory";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/ui/dialog";
+import { chooseDirectory } from "@/platform/desktop/choose-directory";
 import { claimChords } from "@/features/commands";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { announceProjectsChanged } from "../projects";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import {
   cloneRequest,
   folderName,

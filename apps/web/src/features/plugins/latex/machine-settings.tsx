@@ -4,10 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleAlertIcon, DownloadIcon, HardDriveIcon } from "lucide-react";
 import type { LatexToolchain, ManagedTectonic, PluginLatexEngine, ProjectPlugins } from "@telar/engine-client";
 import { latexMachineSettings } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { machineSettingsPatch } from "../sections";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
 import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();

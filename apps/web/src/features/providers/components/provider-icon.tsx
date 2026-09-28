@@ -1,5 +1,5 @@
 import type { ProviderDriverKind } from "@telar/engine-client";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { MarkIcon, OPENCODE_MARK } from "./connection-icon";
 
 // Claude: `claude@15` from simple-icons (CC0-1.0). Codex: verbatim from `@lobehub/icons-static-svg` (MIT).

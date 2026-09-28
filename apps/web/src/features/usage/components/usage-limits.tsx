@@ -4,10 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import type { ProviderDriverKind, UsageLimitAccount, UsageLimitSourceSnapshot, UsageLimitWindow } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
 import { DRIVER_LABEL } from "../model";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 

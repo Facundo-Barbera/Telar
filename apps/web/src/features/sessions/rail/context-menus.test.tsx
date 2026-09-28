@@ -1,8 +1,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
-import { click, flush, installTestDom, mount, press } from "@/lib/testing/dom";
-import { liveRow, mountRail, project, pushes, stubRail } from "@/lib/testing/rail";
+import { click, flush, installTestDom, mount, press } from "@/test/dom";
+import { liveRow, mountRail, project, pushes, stubRail } from "@/test/rail";
 import { projectSettingsHref } from "@/features/projects";
 import { canvasHref } from "../session-list";
 import type { ProjectGroup } from "../session-groups";

@@ -3,12 +3,12 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import type { EngineHealth } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
-import { markNavigation } from "@/lib/perf-marks";
-import { Badge } from "@/components/ui/badge";
+import { createEngineApi } from "@/platform/engine";
+import { markNavigation } from "@/platform/perf-marks";
+import { Badge } from "@/ui/badge";
 import { Row, SettingsGroup, SettingsShell } from "./settings-shell";
 import { SECTION_IDS, SECTIONS, settingsSearchIndex } from "../settings-sections";
-import { projectPaneFor } from "@/features/plugins/index";
+import { projectPaneFor } from "@/features/plugins";
 import { useSectionFromUrl } from "../use-section-from-url";
 
 const AppearanceSection = dynamic(() => import("@/features/appearance/components/appearance-section").then((mod) => mod.AppearanceSection));
@@ -30,7 +30,7 @@ const PluginsPage = dynamic(() => import("@/features/plugins/components/plugins-
 const UpdatesSection = dynamic(() => import("@/features/updates/components/updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("@/features/storage/components/store-section").then((mod) => mod.StoreSection));
 const CleanupSection = dynamic(() => import("@/features/worktrees/components/cleanup-section").then((mod) => mod.CleanupSection));
-const UsageProvidersSection = dynamic(() => import("@/features/usage/index").then((mod) => mod.UsageProvidersSection));
+const UsageProvidersSection = dynamic(() => import("@/features/usage").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("@/features/projects/components/workspace-section").then((mod) => mod.WorkspaceSection));
 
 const api = createEngineApi();

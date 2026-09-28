@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, EyeIcon, EyeOffIcon, PlusIcon, StarIcon, XIcon } from "lucide-react";
 import type { CustomProviderModel, ModelCatalogue, ModelOverlay, ProviderInstance, ProviderModel } from "@telar/engine-client";
-import { cn } from "@/lib/utils";
-import { createEngineApi } from "@/platform/engine/index";
+import { cn } from "@/ui/utils";
+import { createEngineApi } from "@/platform/engine";
 import { forgetModelCatalogues } from "../model-catalogue-cache";
 import { DRIVER_LABEL } from "../provider-instances";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
 
 const api = createEngineApi();
 

@@ -3,7 +3,7 @@
 import { useRef } from "react";
 import type { GitFileChange, GitFilePatch } from "@telar/engine-client";
 import type { SessionReview } from "../session-review";
-import { PanelDivider } from "@/components/ui/panel";
+import { PanelDivider } from "@/ui/panel";
 import type { DiffView } from "../hooks/use-diff-view";
 import type { PatchWitness } from "../model";
 import { DiffFileTree } from "./diff-file-tree";

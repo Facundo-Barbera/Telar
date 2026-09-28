@@ -12,7 +12,7 @@ const { SETTINGS_SEARCH_INDEX } = await import("../index");
 const { SettingsSearchNav } = await import("./settings-search-nav");
 const { SettingsShell, revealSettingsRow } = await import("./settings-shell");
 const { SECTIONS } = await import("../settings-sections");
-const { typeInto } = await import("@/lib/testing/type-into");
+const { typeInto } = await import("@/test/type-into");
 type Entry = Parameters<Parameters<typeof SettingsSearchNav>[0]["onChoose"]>[0];
 
 let host: HTMLDivElement;

@@ -1,9 +1,9 @@
 "use client";
 
 import { XIcon, type LucideIcon } from "lucide-react";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/ui/context-menu";
 import { activateForge, closeForge, forgeNumbersAfter, otherForgeNumbers, showForgeList, type ForgeOpen } from "../forge-workspace";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import type { ForgeListKind } from "../model";
 
 function ForgeChip({

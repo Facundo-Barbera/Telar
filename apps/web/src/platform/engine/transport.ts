@@ -2,7 +2,7 @@ import type { EngineTransport } from "@telar/engine-client";
 import type {
 EngineErrorCode
 } from "@telar/engine-client";
-import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pinnedHost } from "@/lib/hosts/client";
+import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pinnedHost } from "@/platform/engine/host-client";
 
 export type EngineApiErrorCode = EngineErrorCode | "cockpit_unauthorized";
 

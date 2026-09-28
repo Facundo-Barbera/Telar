@@ -19,24 +19,24 @@ import {
   type OpenIntent,
 } from "../editor-workspace";
 import { discardDraft, draftScope } from "../editor-drafts";
-import type { TelarReference } from "@/lib/drag-reference";
+import type { TelarReference } from "@/features/composer";
 import { useWorkspaceFileMenu, workspaceFilePath } from "../workspace-open";
 import { EDITOR_HEADER_ROW } from "./editor-chrome";
 import { FileKindIcon } from "./file-icon";
 import { FilesSurface } from "./files-surface";
 import { FileViewSurface } from "./file-view-surface";
-import { NotebookSurface } from "@/features/plugins/index";
+import { NotebookSurface } from "@/features/plugins";
 import { PdfSurface } from "./pdf-surface";
 import { TableSurface } from "./table-surface";
-import { PanelEmpty } from "@/components/ui/panel";
+import { PanelEmpty } from "@/ui/panel";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import { cn } from "@/lib/utils";
+} from "@/ui/context-menu";
+import { cn } from "@/ui/utils";
 
 const EXPLORER_WIDTH = "13rem";
 

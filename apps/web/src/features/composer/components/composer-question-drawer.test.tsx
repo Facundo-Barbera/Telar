@@ -2,9 +2,9 @@
 import { afterEach, describe, expect, jest, test } from "bun:test";
 import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { installTestDom, mount } from "@/lib/testing/dom";
+import { installTestDom, mount } from "@/test/dom";
 import { ComposerQuestionDrawer } from "./composer-question-drawer";
-import type { QuestionDraft, QuestionField } from "@/lib/question-drawer";
+import type { QuestionDraft, QuestionField } from "../question-drawer";
 
 installTestDom();
 afterEach(() => jest.useRealTimers());

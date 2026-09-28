@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { routeOf } from "../model-connections";
 import type { ProviderDriverKind } from "@telar/engine-client";
 

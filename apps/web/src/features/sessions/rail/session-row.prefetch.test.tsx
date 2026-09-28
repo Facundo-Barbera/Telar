@@ -61,7 +61,7 @@ class FakeObserver {
 (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = FakeObserver;
 
 const { SessionRow } = await import("./session-row");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 const { PREFETCH_INTENT_MS, PREFETCH_MARGIN, resetPrefetch, warmedRows } = await import("./rail-prefetch");
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SidebarSession } from "../session-list";

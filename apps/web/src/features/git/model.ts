@@ -2,7 +2,7 @@ import type { DiffBaseOption, FilePatchOptions, GitFileChange, GitFilePatch, Git
 import { unreportedFiles, type SessionReview } from "./session-review";
 import type { DiffScopeKind } from "./diff-scope";
 import type { DiffTurn } from "./diff-turns";
-import type { LineSide } from "@/lib/drag-reference";
+import type { LineSide } from "@/features/composer";
 import type { DiffView } from "./hooks/use-diff-view";
 import type { PatchReading } from "./components/diff-code-view";
 

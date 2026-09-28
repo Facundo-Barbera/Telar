@@ -3,7 +3,7 @@
 import { type SetStateAction, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { EngineEvent, Session, SessionSnapshot } from "@telar/engine-client";
 import { createEngineApi, EngineApiError, INITIAL_TURNS, loadOlderTurns, projectJournal, sessionConnection, tailIntervalMs } from "@/platform/engine";
-import { hostFetcher } from "@/lib/hosts/client";
+import { hostFetcher } from "@/platform/engine/host-client";
 import { saveSnapshot, snapshotKey, snapshotStore } from "../../snapshot-cache";
 import { recallTranscript, rememberTranscript, transcriptKey } from "../transcript-cache";
 import { decideStale } from "../stale-state";

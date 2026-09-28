@@ -36,7 +36,7 @@
  */
 import { FolderOpenIcon } from "lucide-react";
 
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const MARKS: Record<string, string> = {
   // visualstudiocode@11 — simple-icons REMOVED this mark after v11, so it is

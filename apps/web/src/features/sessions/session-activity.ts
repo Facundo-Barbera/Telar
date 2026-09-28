@@ -1,5 +1,5 @@
 import type { SessionActivity, SessionActivityDetail, WaitingOn } from "@telar/engine-client";
-import { fmtAgo } from "@/lib/format";
+import { fmtAgo } from "@/ui/format";
 
 export type ActivityBadge = {
   label: string;

@@ -15,7 +15,7 @@ import {
   type Look,
   type Theme,
 } from "@/features/appearance";
-import { desktopAppearance } from "@/lib/desktop-appearance";
+import { desktopAppearance } from "@/platform/desktop/desktop-appearance";
 import { quickSettings, type PaletteQuickSetting, type QuickSettingId } from "./palette-model";
 import { runCommand } from "./commands";
 

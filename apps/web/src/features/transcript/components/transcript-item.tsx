@@ -4,8 +4,8 @@ import {
 TriangleAlertIcon
 } from "lucide-react";
 import { isToolItem, itemLabel, itemText, type JournalItem, type JournalTask } from "@/platform/engine";
-import { MessageMenu, MessageResponse } from "@/components/ui/message";
-import { type OpenTab } from "@/components/session/conversation-message";
+import { MessageMenu, MessageResponse } from "@/ui/message";
+import { type OpenTab } from "./conversation-message";
 import { RowGestures, ToolRow } from "./tool-row";
 import { running, transcriptTasks } from "../model";
 import { AgentRow, CompactionRow, ConversationImportRow, PlanRow, PlotRow, ProviderWaitRow, ReasoningRow, SteeredMessageRow } from "./item-rows";

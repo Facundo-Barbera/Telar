@@ -4,8 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { COMMANDS, defaultKeymap, mergeKeymap, type Command, type Keymap } from "../commands";
 // The formatter moved out of the pane in #401 — every control bound to a chord
 // draws its caps now, so a settings page is not where they can live.
-import { keyCaps } from "@/lib/key-caps";
-import { searchSettings, SETTINGS_SEARCH_INDEX } from "@/features/settings/index";
+import { keyCaps } from "../key-caps";
+import { searchSettings, SETTINGS_SEARCH_INDEX } from "@/features/settings";
 import { KeybindingsPage, jumpChordsFrom, keybindingRows, recordedChord } from "./keybindings-page";
 
 /**

@@ -1,6 +1,6 @@
 
 import type { DiffBaseOption } from "@telar/engine-client";
-import type { PanelTabParams } from "@/features/panel/index";
+import type { PanelTabParams } from "@/features/panel";
 
 export type DiffScopeKind = "unstaged" | "branch" | "turn";
 

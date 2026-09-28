@@ -4,13 +4,13 @@ import { useEffect, useState } from "react";
 import { DownloadIcon, MonitorIcon, PowerIcon, RefreshCwIcon } from "lucide-react";
 import { CHANNEL_HINT, desktopUpdates, updateStatusHint, useDesktopUpdate, type UpdatePrefsInfo } from "../desktop-updates";
 import { Row, SettingsGroup } from "@/features/settings";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
+import { Switch } from "@/ui/switch";
 import { UpdateToast } from "./update-toast";
 import { RestartUpdateDialog } from "./restart-update-dialog";
-import { useSessionDefaults } from "@/features/sessions/index";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useSessionDefaults } from "@/features/sessions";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/ui/select";
 
 export function UpdatesSection() {
   const { supported: isDesktop, status, action, label, busy, failure, act, restart } = useDesktopUpdate();

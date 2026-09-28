@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { DEFAULT_INBOX_POLICY, type EngineRequest, type Session, type Turn } from "@telar/engine-client";
-import { flush, installTestDom, mount } from "@/lib/testing/dom";
+import { flush, installTestDom, mount } from "@/test/dom";
 
 installTestDom();
 (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = class {
@@ -24,7 +24,7 @@ const installNavigation = () =>
 installNavigation();
 
 const { SessionCockpit } = await import("./session-cockpit");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 const { clearTranscriptCache } = await import("../transcript-cache");
 const { readDraft, writeDraft } = await import("@/features/composer");
 const { runCommand } = await import("@/features/commands");

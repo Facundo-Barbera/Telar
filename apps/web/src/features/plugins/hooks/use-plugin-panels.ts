@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { registerPluginToolPrefixes } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
-import { hostFetcher } from "@/lib/hosts/client";
+import { createEngineApi } from "@/platform/engine";
+import { hostFetcher } from "@/platform/engine/host-client";
 import { pluginPanelSources, type PluginPanelSource } from "../panels";
 import { PLUGIN_WEB } from "../registry";
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
+import { desktopBrowserBridge } from "@/features/browser";
 import type { LivePage } from "../model";
 
 /** The shell's live tab list per browser scope, or nothing outside the shell. Stamped with the keys so a session switch drops stale pages. */

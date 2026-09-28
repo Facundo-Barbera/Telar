@@ -1,6 +1,6 @@
 "use client";
 
-import { lineRangeReference } from "@/lib/drag-reference";
+import { lineRangeReference } from "@/features/composer";
 import type { LineRange } from "../model";
 
 /** Offers selected lines to the message. It never takes focus, so the composer keeps its caret. */

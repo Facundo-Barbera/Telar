@@ -10,7 +10,7 @@
  * open a shell on THIS one and present it as that machine's. A terminal that
  * lies about which computer it is on is worse than no terminal.
  */
-import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFromPathname, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 
 /**
  * WHY A TERMINAL ENDED.

@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import { TELAR_ICONS, type TelarIcon } from "@telar/engine-client";
-import { IdentityIcon } from "@/lib/telar-icons";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { IdentityIcon } from "@/ui/telar-icons";
+import { Button } from "@/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
+import { cn } from "@/ui/utils";
 import { ProjectAvatar } from "./project-avatar";
 
 function iconLabel(id: string): string {

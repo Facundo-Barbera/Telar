@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import { CLEANUP_INACTIVE_DAYS, CLEANUP_LOG_DAYS, type CleanupPolicy, type CleanupReport, type CleanupState, type RetentionPolicy } from "@telar/engine-client";
 import { ArchiveIcon, ClockIcon, GitBranchIcon, HistoryIcon, ScrollTextIcon } from "lucide-react";
-import { createEngineApi } from "@/platform/engine/index";
-import { fmtAgo, formatBytes } from "@/lib/format";
-import { Button } from "@/components/ui/button";
+import { createEngineApi } from "@/platform/engine";
+import { fmtAgo, formatBytes } from "@/ui/format";
+import { Button } from "@/ui/button";
 import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/features/settings";
 import { WorktreeListSection } from "./worktree-list-section";
 import { WorktreesRootRows } from "./worktrees-root-section";

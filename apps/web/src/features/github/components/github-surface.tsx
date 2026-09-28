@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { CircleDotIcon, GitPullRequestIcon } from "lucide-react";
 import type { GitHubIssue } from "@telar/engine-client";
 import { emptyForge, openForge, type ForgeOpen } from "../forge-workspace";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { useGitHubList } from "../hooks/use-github-list";
 import { useIssueSession } from "../hooks/use-issue-session";
 import type { ForgeListKind } from "../model";

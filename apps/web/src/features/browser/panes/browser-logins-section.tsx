@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { KeyRoundIcon } from "lucide-react";
 import type { RememberedLogin } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { createEngineApi } from "@/platform/engine";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
 import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { carryTokens, highlight, type CarriedLines, type HighlightedLine } from "../highlight";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 export const CODE_GEOMETRY = "font-mono leading-[1.55] tracking-normal";
 

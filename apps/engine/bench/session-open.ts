@@ -11,7 +11,7 @@
  * crosses a Next route handler, which forwards it to this same socket — so the
  * saved round trip is worth roughly twice what this bench reports. The
  * end-to-end figure needs a running app and is measured with
- * `apps/web/src/lib/perf-marks.ts` instead.
+ * `apps/web/src/platform/perf-marks.ts` instead.
  *
  * Run: `bun run --cwd apps/engine bench:open [turns] [itemsPerTurn] [reps]`
  */

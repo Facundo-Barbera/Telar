@@ -14,7 +14,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ProjectGroupSection } from "./project-group";
-import { SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarProvider } from "@/ui/sidebar";
 import { projectPlaces } from "@/features/hosts";
 import { groupSessions } from "../session-groups";
 import type { SidebarSession } from "../session-list";

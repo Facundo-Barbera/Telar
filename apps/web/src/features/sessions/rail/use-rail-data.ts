@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { InboxPolicy, Project, PublicHost, SidebarLayout } from "@telar/engine-client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
-import { hostFetcher } from "@/lib/hosts/client";
+import { hostFetcher } from "@/platform/engine/host-client";
 import { PROJECTS_CHANGED_EVENT } from "@/features/projects";
 import { dedupeAcrossHosts } from "../session-groups";
 import { toSidebarSession, type SidebarSession } from "../session-list";

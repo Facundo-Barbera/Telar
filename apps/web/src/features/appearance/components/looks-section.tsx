@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { DownloadIcon, MonitorSmartphoneIcon, PencilIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { createEngineApi } from "@/platform/engine";
 import { useFollowHost } from "../host-follow";
-import { isHostWindow } from "@/lib/host-window";
+import { isHostWindow } from "@/platform/desktop/host-window";
 import {
   captureLook,
   lookFilename,
@@ -23,10 +23,10 @@ import { BUILT_IN_LOOKS, BUILT_IN_NOTES } from "../built-in-looks";
 import { useAppearance } from "../appearance";
 import { useComposition } from "../composition";
 import { MONO_LABEL, SANS_LABEL } from "./studio/tools";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
+import { Switch } from "@/ui/switch";
+import { cn } from "@/ui/utils";
 import { LookThumb } from "./look-thumb";
 import { Row, SettingsGroup } from "@/features/settings";
 

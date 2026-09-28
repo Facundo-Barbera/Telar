@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import type { LiveSessionRow } from "@telar/engine-client";
 import { ProjectAvatar } from "@/features/projects";
-import { fmtAgo, fmtTokens } from "@/lib/format";
+import { fmtAgo, fmtTokens } from "@/ui/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "../session-activity";
 import { canvasHref, sessionHref, sessionKey, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "../session-list";
 import { claimPrefetch, PREFETCH_INTENT_MS, PREFETCH_MARGIN, releasePrefetch, warmConversation } from "./rail-prefetch";
@@ -28,12 +28,12 @@ import { SessionInboxMenu, SessionRowContextMenu, type SessionRowMenuProps } fro
 import { closeRowTerminals, mutateRow, patchSession, withSettling, withSnooze, withTitle, type SessionRowChanged } from "../session-mutations";
 import { canSettle, canSnooze, settleClosesText, settledTerminalsHint, snoozePresets, terminalsClosedHint, wakeLabel } from "../session-settling";
 import type { RailJumpSlot } from "../session-groups";
-import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Button } from "@/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/ui/dropdown-menu";
 import { KeyHintOverlay } from "@/features/commands";
-import { useSidebar } from "@/components/ui/sidebar";
-import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import { cn } from "@/lib/utils";
+import { useSidebar } from "@/ui/sidebar";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/ui/hover-card";
+import { cn } from "@/ui/utils";
 
 function TickingDuration({ startedAt }: { startedAt: number }) {
   const [now, setNow] = useState(startedAt);

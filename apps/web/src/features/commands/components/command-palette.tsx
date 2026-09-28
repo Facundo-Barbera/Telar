@@ -13,7 +13,7 @@ import {
   type PalettePage,
   type Registered,
 } from "@/features/projects";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/ui/dialog";
 import { KeyHint } from "./key-hint";
 import {
   PALETTE_QUICK_COMMANDS,

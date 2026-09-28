@@ -3,7 +3,7 @@
 import { parsePatchFiles, type SelectedLineRange } from "@pierre/diffs";
 import { PatchDiff } from "@pierre/diffs/react";
 
-import type { LineSide } from "@/lib/drag-reference";
+import type { LineSide } from "@/features/composer";
 
 export type PatchReading = {
   complaint?: string;

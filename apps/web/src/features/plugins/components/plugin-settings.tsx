@@ -3,11 +3,11 @@
 import { useState, type ReactNode } from "react";
 import { CircleAlertIcon, PlugIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { enablePatch, type PluginSectionEntry } from "../sections";
 import { pluginEnabled, pluginSettings, readProjectPlugins } from "@telar/engine-client";
-import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/ui/badge";
+import { Switch } from "@/ui/switch";
 import { GeneratedSettingsRows } from "./generated-settings";
 import { settingsFields } from "../settings-form";
 import { Row, SettingsGroup } from "@/features/settings";

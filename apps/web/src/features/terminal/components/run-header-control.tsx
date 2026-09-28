@@ -1,9 +1,9 @@
 "use client";
 
 import { ChevronDownIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
+import { cn } from "@/ui/utils";
 import { RunGlyph } from "../run/icons";
 import { runSummary } from "../run/presentation";
 import type { RunApi } from "../run/api";

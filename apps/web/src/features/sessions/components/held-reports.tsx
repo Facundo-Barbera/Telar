@@ -2,11 +2,11 @@
 
 import { useState } from "react";
 import { InboxIcon } from "lucide-react";
-import { PanelRow, PanelSectionLabel } from "@/components/ui/panel";
+import { PanelRow, PanelSectionLabel } from "@/ui/panel";
 import { usePoll } from "@/ui/hooks/use-poll";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
-import { hostFetcher } from "@/lib/hosts/client";
+import { hostFetcher } from "@/platform/engine/host-client";
 
 export function heldLabel(held: number): string | undefined {
   return held > 0 ? `${held} held` : undefined;

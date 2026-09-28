@@ -1,5 +1,5 @@
 import path from "node:path";
-import { canonicalPath, isLegacyTelarHome } from "@/lib/telar-home";
+import { canonicalPath, isLegacyTelarHome } from "@/platform/telar-home";
 import {
   EngineClientError,
   type EngineClient,

@@ -12,13 +12,13 @@ import {
   type WorkspaceSetup,
   type WorkspaceSource,
 } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { createEngineApi } from "@/platform/engine";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
+import { Switch } from "@/ui/switch";
+import { Textarea } from "@/ui/textarea";
+import { cn } from "@/ui/utils";
 import { Dropdown, Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();

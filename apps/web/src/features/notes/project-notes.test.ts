@@ -10,7 +10,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { ProjectNote } from "@telar/engine-client";
-import { noteReference } from "@/lib/drag-reference";
+import { noteReference } from "@/features/composer/drag-reference";
 import { rankNotes } from "./project-notes";
 
 const stamp = { label: "Thu 10:00", at: 1 };

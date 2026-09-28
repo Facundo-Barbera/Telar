@@ -7,7 +7,7 @@ import { detachFromHost, useFollowNotice } from "../host-follow";
 import { ThemeControl } from "./theme-control";
 import { useTheme } from "./theme-provider";
 import { useAppearance, type Frost } from "../appearance";
-import { desktopAppearance } from "@/lib/desktop-appearance";
+import { desktopAppearance } from "@/platform/desktop/desktop-appearance";
 import { applyLook, readLooks as readLooksNow, writeLooks, type Look } from "../looks";
 import {
   compositionHalf,
@@ -18,7 +18,7 @@ import {
 import { halfFromBase } from "../palette-from-image";
 import { mergeById, readAppearanceHome } from "../appearance-home";
 import { THEME_TOKENS, type ThemeToken } from "../theme-palettes";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/ui/button";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "@/features/settings";
 import { DepthControl } from "./depth-control";
 import { LooksSection } from "./looks-section";

@@ -2,8 +2,8 @@
 
 import { CircleDotIcon, ExternalLinkIcon, GitMergeIcon, GitPullRequestIcon, MilestoneIcon, SquareKanbanIcon, UserIcon } from "lucide-react";
 import type { GitHubIssueDetail, GitHubLink, GitHubPullDetail } from "@telar/engine-client";
-import { Badge } from "@/components/ui/badge";
-import { fmtAgo } from "@/lib/format";
+import { Badge } from "@/ui/badge";
+import { fmtAgo } from "@/ui/format";
 import { exactTime, linkVerb } from "../model";
 import { GitHubAvatar } from "./github-avatar";
 

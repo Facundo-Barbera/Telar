@@ -10,7 +10,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { beforeEach, describe, expect, test } from "bun:test";
-import { LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { LOCAL_HOST } from "../snapshot-cache";
 import { claimPrefetch, PREFETCH_CAP, releasePrefetch, resetPrefetch, warmedRows } from "./rail-prefetch";
 

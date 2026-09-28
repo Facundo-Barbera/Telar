@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { normaliseColourText } from "../../colour-field";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
+import { Input } from "@/ui/input";
+import { cn } from "@/ui/utils";
 
 export function HexField({
   value,

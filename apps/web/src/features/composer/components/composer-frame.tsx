@@ -2,10 +2,10 @@
 
 import type { ReactNode } from "react";
 import type { ProjectAvailability } from "@telar/engine-client";
-import { FreshGreeting } from "@/components/session/fresh-greeting";
-import { ResumePicker } from "@/components/session/resume-picker";
-import { WorkspaceEnvironment } from "@/components/workspace-environment";
-import { cn } from "@/lib/utils";
+import { FreshGreeting } from "./fresh-greeting";
+import { ResumePicker } from "./resume-picker";
+import { WorkspaceEnvironment } from "@/features/worktrees";
+import { cn } from "@/ui/utils";
 import { ComposerNote } from "./composer-chrome";
 import { BackgroundPresence } from "./context-pill";
 import type { ComposerProps } from "./composer-props";

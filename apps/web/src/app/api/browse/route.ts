@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
  * this server runs on the user's own machine, so it can ask the platform for a
  * real folder chooser and return the absolute path the browser sandbox will never
  * give up. In the desktop shell nothing comes here — Electron's own
- * `dialog.showOpenDialog` is better in every way, and `lib/choose-directory.ts`
+ * `dialog.showOpenDialog` is better in every way, and `platform/desktop/choose-directory.ts`
  * prefers it (parented to the window, and cross-platform without this file
  * learning three more platforms).
  *

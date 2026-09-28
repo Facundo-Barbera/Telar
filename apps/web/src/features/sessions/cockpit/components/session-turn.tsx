@@ -4,13 +4,26 @@ import { Fragment, memo, useEffect, useRef, useState } from "react";
 import { ChevronRightIcon, Minimize2Icon, ShieldCheckIcon } from "lucide-react";
 import type { EngineRequest, RequestDecision, Turn } from "@telar/engine-client";
 import { isActiveTurn, isCompacting, itemText, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
-import { ActivityGroup, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "@/features/transcript";
+import {
+  ActivityGroup,
+  LiveActivity,
+  Marker,
+  NotificationRow,
+  sessionWakeLabel,
+  splitAtMessageBoundaries,
+  TranscriptItem,
+  turnActivity,
+  TurnFailureRow,
+  WorkingIndicator,
+  withoutOpeningNotification,
+  AgentMessageBubble,
+  ConversationMessage,
+} from "@/features/transcript";
 import type { PanelTab } from "@/features/panel";
-import { cn } from "@/lib/utils";
-import { AgentMessageBubble, ConversationMessage } from "@/components/session/conversation-message";
-import { ApprovalCard } from "@/components/approval-card";
-import { Message, MessageContent, MessageMenu, MessageResponse } from "@/components/ui/message";
-import { CodeSurface } from "@/components/ui/code-surface";
+import { cn } from "@/ui/utils";
+import { ApprovalCard } from "../../components/approval-card";
+import { Message, MessageContent, MessageMenu, MessageResponse } from "@/ui/message";
+import { CodeSurface } from "@/ui/code-surface";
 import { describeTurnState, wakeUpLabel } from "../model";
 
 function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {

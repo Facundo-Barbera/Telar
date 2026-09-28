@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_TEXT_GEN_POLICY, type ProviderDriverKind, type ProviderModel, type TextGenPolicy } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { useModelCatalogueGeneration } from "../model-catalogue-cache";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/ui/select";
 import { Dropdown, Row, SettingsGroup, ToggleRow, useRestoreDefaults } from "@/features/settings";
 
 const api = createEngineApi();

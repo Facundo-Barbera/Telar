@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, type RefObject } from "react";
-import { clampSidebarWidth, setSidebarWidth } from "@/lib/sidebar-width";
+import { clampSidebarWidth, setSidebarWidth } from "@/ui/sidebar-width";
 import { RIGHT_PANEL_MAIN_MIN_WIDTH, RIGHT_PANEL_MIN_WIDTH, RIGHT_PANEL_WIDTH_STORAGE_KEY } from "../layout";
 
 type Drag = {

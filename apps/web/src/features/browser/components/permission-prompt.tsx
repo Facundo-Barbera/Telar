@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { BellIcon, CameraIcon, ClipboardIcon, GlobeIcon, LockIcon, MapPinIcon, MicIcon, ScreenShareIcon, type LucideIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/ui/button";
 import {
   describePermissionKinds,
   describeSitePermission,
@@ -15,7 +15,7 @@ import {
   type SitePermissionKind,
   type SitePermissionRecord,
 } from "../desktop-site-permissions";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const KIND_ICONS: Record<SitePermissionKind, LucideIcon> = {
   camera: CameraIcon,

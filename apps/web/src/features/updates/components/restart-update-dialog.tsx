@@ -2,9 +2,9 @@
 
 import type { RestartConfirmation } from "../desktop-updates";
 import { restartDialogCopy } from "../desktop-updates";
-import { useSessionDefaults } from "@/features/sessions/index";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useSessionDefaults } from "@/features/sessions";
+import { Button } from "@/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/ui/dialog";
 
 const RESUME_AFTER_RESTART_LABEL = "Continue sessions after restarting";
 

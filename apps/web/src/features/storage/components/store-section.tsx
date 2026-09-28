@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { CopyIcon, HardDriveIcon, TrashIcon } from "lucide-react";
-import { chooseDirectory } from "@/lib/choose-directory";
-import { formatBytes } from "@/lib/format";
+import { chooseDirectory } from "@/platform/desktop/choose-directory";
+import { formatBytes } from "@/ui/format";
 import {
   desktopStore,
   progressLabel,
@@ -11,9 +11,9 @@ import {
   useStoreStatus,
   type StoreProgress,
 } from "../desktop-store";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { Row, SettingsGroup } from "@/features/settings";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/ui/button";
 
 const api = createEngineApi();
 

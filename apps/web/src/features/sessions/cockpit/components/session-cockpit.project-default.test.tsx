@@ -20,7 +20,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { SessionCockpit } = await import("./session-cockpit");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 const { forgetModelCatalogues } = await import("@/features/providers/model-catalogue-cache");
 
 const row = (id: string, label: string, efforts: string[], isDefault = false): ProviderModel => ({

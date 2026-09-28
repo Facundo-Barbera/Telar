@@ -4,8 +4,8 @@ import { useState } from "react";
 import { FolderIcon } from "lucide-react";
 import { isTelarIcon } from "@telar/engine-client";
 import { projectHue, projectIconUrl, projectInitial } from "../project-avatar";
-import { IdentityIcon } from "@/lib/telar-icons";
-import { cn } from "@/lib/utils";
+import { IdentityIcon } from "@/ui/telar-icons";
+import { cn } from "@/ui/utils";
 
 export function ProjectAvatar({
   name,

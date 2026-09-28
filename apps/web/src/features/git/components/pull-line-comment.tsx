@@ -6,10 +6,10 @@ import type { GitHubLineCommentInput, GitHubLineCommentResult, GitHubPullAnchor 
 
 import type { DiffScopeKind } from "../diff-scope";
 import { anchorPullLines, applyLineComment, type AnchorAnswer, type LineCommentEntry, type PullLineAnchor, type SelectedLines } from "../pull-anchor";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
+import { Textarea } from "@/ui/textarea";
+import { cn } from "@/ui/utils";
 
 export type PullCommentContext = {
   read: () => Promise<GitHubPullAnchor>;

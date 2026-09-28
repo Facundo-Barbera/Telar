@@ -1,8 +1,8 @@
 "use client";
 
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
-import { InputGroup, InputGroupAddon } from "@/components/ui/input-group";
-import { cn } from "@/lib/utils";
+import { InputGroup, InputGroupAddon } from "@/ui/input-group";
+import { cn } from "@/ui/utils";
 import { DictationButton, DictationGlow, type ComposerDictation } from "@/features/dictation";
 import type { ComposerCompletions } from "../hooks/use-composer-completions";
 import type { ComposerStash } from "../hooks/use-composer-stash";

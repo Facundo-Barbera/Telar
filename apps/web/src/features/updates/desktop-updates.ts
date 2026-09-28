@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 
 export type UpdateStatus = {
   status: "checking" | "available" | "not-available" | "downloading" | "downloaded" | "restarting" | "error" | "unsupported";

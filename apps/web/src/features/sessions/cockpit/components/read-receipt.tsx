@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createEngineApi } from "@/platform/engine";
-import { hostFetcher } from "@/lib/hosts/client";
-import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
+import { hostFetcher } from "@/platform/engine/host-client";
+import { hostVisible, subscribeHostVisibility } from "@/platform/desktop/host-visibility";
 import {
   ReadReceiptCourier,
   type ReceiptAnswer,

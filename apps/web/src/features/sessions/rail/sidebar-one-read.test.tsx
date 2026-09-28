@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { DEFAULT_INBOX_POLICY, EngineClient } from "@telar/engine-client";
 import { GET as liveGet } from "@/app/api/sessions/live/route";
-import { click, installTestDom } from "@/lib/testing/dom";
-import { liveReads, liveRow, mountRail, nextPass, project, stubRail, type LiveAnswer, type RailRequest } from "@/lib/testing/rail";
+import { click, installTestDom } from "@/test/dom";
+import { liveReads, liveRow, mountRail, nextPass, project, stubRail, type LiveAnswer, type RailRequest } from "@/test/rail";
 import { startEngine, type EngineDaemon } from "../../../../../engine/src/daemon";
 
 installTestDom();

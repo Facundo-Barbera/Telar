@@ -1,5 +1,5 @@
 import type { Host } from "./store";
-import { HOST_NAME_HEADER } from "@/lib/hosts/client";
+import { HOST_NAME_HEADER } from "@/platform/engine/host-client";
 import { HOST_HEADER } from "@/features/remote/server";
 
 const REQUEST_HEADERS_DROPPED = new Set([HOST_HEADER, "authorization", "cookie", "host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"]);

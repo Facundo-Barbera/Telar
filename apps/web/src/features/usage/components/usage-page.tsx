@@ -4,9 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCwIcon } from "lucide-react";
 import type { UsageReport } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
-import { PageHeader } from "@/components/common/page-header";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { PageHeader } from "@/ui/page-header";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
 import { Segmented } from "@/features/settings";
 import { UsageChart, type ChartSeries } from "./usage-chart";
 import { UsageLimitsSection } from "./usage-limits";
@@ -19,7 +19,7 @@ import {
   formatUsd,
   type UsageFold,
 } from "../model";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 

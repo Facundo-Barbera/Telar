@@ -3,25 +3,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon, FolderTreeIcon, HardDriveIcon, RotateCwIcon, SearchIcon } from "lucide-react";
 import type { GitChangeStatus, TurnState, WorkspaceListing } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/platform/engine/index";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, type FileTreeNode } from "../file-tree";
-import { directoryReference, fileReference, startReferenceDrag, type TelarReference } from "@/lib/drag-reference";
+import { directoryReference, fileReference, startReferenceDrag, type TelarReference } from "@/features/composer";
 import type { OpenIntent } from "../editor-workspace";
-import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "@/features/git/index";
+import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "@/features/git";
 import { useWorkspaceFileMenu, workspaceFilePath, type WorkspaceFileMenu } from "../workspace-open";
 import { EDITOR_HEADER_ROW } from "./editor-chrome";
 import { FileKindIcon } from "./file-icon";
 import { OpenerIcon } from "./opener-icon";
-import { PanelEmpty, PanelRow } from "@/components/ui/panel";
-import { Spinner } from "@/components/ui/spinner";
+import { PanelEmpty, PanelRow } from "@/ui/panel";
+import { Spinner } from "@/ui/spinner";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import { cn } from "@/lib/utils";
+} from "@/ui/context-menu";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 

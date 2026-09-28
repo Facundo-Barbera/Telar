@@ -60,7 +60,7 @@ export function machineCalls(fetcher: Fetcher) {
     projects: (options: { includeRemoved?: boolean } = {}) =>
       request<{ projects: Project[] }>(fetcher, "GET", options.includeRemoved ? "/api/projects?includeRemoved=1" : "/api/projects"),
     /** The other Macs this cockpit is paired with — always THIS cockpit's book,
-     *  whichever host the fetcher points at (lib/hosts/client.ts). */
+     *  whichever host the fetcher points at (platform/engine/host-client.ts). */
     hosts: () => request<{ hosts: PublicHost[] }>(fetcher, "GET", "/api/hosts"),
     addHost: (input: { pairingUrl: string; name?: string }) => request<{ host: PublicHost }>(fetcher, "POST", "/api/hosts", input),
     renameHost: (hostId: string, name: string) =>

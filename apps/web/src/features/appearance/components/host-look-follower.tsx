@@ -4,8 +4,8 @@ import { useEffect } from "react";
 import { createEngineApi } from "@/platform/engine";
 import { useAppearance } from "../appearance";
 import { decideFollow, readAppliedStamp, useFollowHost, wearPublication, writeAppliedStamp } from "../host-follow";
-import { isHostWindow } from "@/lib/host-window";
-import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
+import { isHostWindow } from "@/platform/desktop/host-window";
+import { hostVisible, subscribeHostVisibility } from "@/platform/desktop/host-visibility";
 import { useTheme } from "./theme-provider";
 
 const api = createEngineApi();

@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorktreeInventory, WorktreeReclaimResult, WorktreeRow } from "@telar/engine-client";
 import { FolderGitIcon, LockIcon, TriangleAlertIcon } from "lucide-react";
-import { createEngineApi } from "@/platform/engine/index";
-import { fmtAgo, formatBytes } from "@/lib/format";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Spinner } from "@/components/ui/spinner";
+import { createEngineApi } from "@/platform/engine";
+import { fmtAgo, formatBytes } from "@/ui/format";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
+import { Spinner } from "@/ui/spinner";
 import { SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();

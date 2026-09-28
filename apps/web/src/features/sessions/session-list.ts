@@ -11,7 +11,7 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { isShelved, isSnoozed, settlingActivityOf, type SettlingActivity, type SettlingOptions } from "./session-settling";
-import { hostPrefix } from "@/lib/hosts/client";
+import { hostPrefix } from "@/platform/engine/host-client";
 
 export const SESSION_PAGE_SIZE = 20;
 export const SETTLED_PAGE_SIZE = 10;

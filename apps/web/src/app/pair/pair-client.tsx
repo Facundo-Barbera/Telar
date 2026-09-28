@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
 
 type PairState = { phase: "idle" } | { phase: "pairing" } | { phase: "paired" } | { phase: "failed"; message: string };
 

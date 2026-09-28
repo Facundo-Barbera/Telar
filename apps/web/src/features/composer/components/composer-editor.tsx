@@ -6,16 +6,16 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle } from "../chip";
 import { replaceTextRange, segmentDraft } from "../tokens";
-import { insertReference, type TelarReference } from "@/lib/drag-reference";
-import { chipGlyphFor, glyphElement } from "@/lib/glyph-paths";
-import { cn } from "@/lib/utils";
+import { insertReference, type TelarReference } from "../drag-reference";
+import { chipGlyphFor, glyphElement } from "../glyph-paths";
+import { cn } from "@/ui/utils";
 
 /**
  * One chip.
  *
  * THE LOOK MOVED TO `lib/composer-chip.ts` and is now shared with the
  * transcript, which draws the same chips in React once a message is sent (see
- * `components/session/prompt-text.tsx`). Two mechanisms — this one builds DOM
+ * `features/transcript/components/prompt-text.tsx`). Two mechanisms — this one builds DOM
  * because a `contenteditable` needs nodes a caret can stand between — and they
  * must not be two appearances.
  *
@@ -392,7 +392,7 @@ export type ComposerEditorHandle = {
    *
    * THE RETURN IS FOR A CALLER WHO CANNOT WAIT FOR THE RENDER. `onChange` is
    * the parent's route to the new string and stays the route for anything on
-   * screen; the page API (`lib/page-api.ts`) answers an external client
+   * screen; the page API (`features/composer/page-api.ts`) answers an external client
    * synchronously, and the React state it would have to read back has not
    * arrived yet at the moment it must answer.
    */

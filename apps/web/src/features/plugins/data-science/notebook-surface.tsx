@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon, CirclePlayIcon, NotebookIcon, PlayIcon, PlusIcon, RotateCwIcon, SquareIcon, Trash2Icon, TriangleAlertIcon } from "lucide-react";
 import type { TurnState } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/platform/engine/index";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import type { CellOutput, KernelState, NotebookCell, NotebookRead } from "./ds";
 import {
   EditorAddressRow,
@@ -15,15 +15,15 @@ import {
   newDraftOwner,
   rememberCellDraft,
 } from "@/features/files";
-import { Button } from "@/components/ui/button";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { PanelEmpty } from "@/components/ui/panel";
-import { Spinner } from "@/components/ui/spinner";
-import { MessageResponse } from "@/components/ui/message";
+import { Button } from "@/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/ui/context-menu";
+import { PanelEmpty } from "@/ui/panel";
+import { Spinner } from "@/ui/spinner";
+import { MessageResponse } from "@/ui/message";
 import { CellOutputView } from "./cell-output";
-import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { KernelPill } from "./kernel-pill";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 function engineFor(hostId: string | undefined) {
   return createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
