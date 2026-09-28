@@ -2,7 +2,7 @@
 import type { AutoCompact, Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDefault, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./domains/notes";
-import type { PromptsCapability } from "./prompts-tools/tools";
+import type { PromptsCapability } from "./domains/prompts";
 import type { DisplayCapability } from "./display/tools";
 import type { RunCapability } from "./run/capability";
 import type { SteerMailbox } from "./domains/turns";

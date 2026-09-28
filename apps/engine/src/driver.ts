@@ -72,7 +72,7 @@ import type { DisplayCapability } from "./display/tools";
 import { framedSteerText, RELAY_RULE, type SteerMessage, steerRowTitle } from "./domains/turns";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./domains/notes";
-import type { PromptsCapability } from "./prompts-tools/tools";
+import type { PromptsCapability } from "./domains/prompts";
 
 export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";
 export type { DriverRequest, DriverRun, ProviderTurnBinding, DriverSessionHooks, TurnDriver, SessionsCapability } from "./provider-contract";
