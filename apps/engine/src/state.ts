@@ -54,12 +54,9 @@ import {
   Subscription as SubscriptionSchema,
   Cohort as CohortSchema,
   Turn as TurnSchema,
-  TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
   WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
-  type BrowserProvider,
   type BrowserSnapshot,
-  type BrowserTab,
   type GitCommitEntry,
   type GitHubCheckLog,
   type GitHubCommentResult,
@@ -155,7 +152,7 @@ import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, typ
 import { ProjectProbes, ProjectRegistry, type ProjectPatch } from "./domains/projects";
 import { dataScienceBlock, latexBlock, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { awaitsRateLimitSweep, createSessionModules, workspaceRootOf, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
+import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
 import { boundedOutline, cohortNotification, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, inlineExcerpt, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
@@ -164,6 +161,7 @@ import { listWorkspaceFilesAsync, readFenced, readFencedAsync, readFencedBytes, 
 import { type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
+import { type AttachedBrowser, SessionBrowser } from "./domains/browser";
 import { GitHubStore, commentOnPullLine, defaultGhRunner, openPullRequest, readPullFiles, readPullForBranch, type GhRunner } from "./domains/github";
 import {  } from "zod";
 import { providerProcessEnv } from "./domains/providers";
@@ -174,7 +172,7 @@ import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatu
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultWorktreeGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, derivedBranchFor, type WorktreePlan, type WorktreeQueue, buildInventory, type InventoryProject, type InventorySession, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, moveCheckouts, type Checkout, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
-import { CheckoutSizes, CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
+import { CheckoutSizes, CleanupStore, copyStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor } from "./domains/terminal";
 import { findVolumeMount, mountSignature, type ProjectAvailability, type VolumeDeps } from "./volumes";
 
@@ -543,24 +541,9 @@ function planWindow(
  */
 export const ENGINE_EXIT_LOCK_HELD = 3;
 
-/**
- * How large one attached file may be.
- *
- * 20 MB is above every screenshot and design mock and below the point where
- * holding the bytes in memory to write them matters. It is a guard on the HTTP
- * edge rather than a product limit: the cost of a too-large attachment lands on
- * the provider's context, and refusing it here with a clear message beats
- * discovering it three layers down as a token overflow.
- */
-const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 /** Per turn, so one message cannot smuggle 16 × 20 MB past the per-file cap. */
 const MAX_TURN_ATTACHMENTS = 16;
-
-
-
-
-
 
 /**
  * How far the DURABLE `Turn.lastProgressAt` may drift behind the in-memory
@@ -572,9 +555,6 @@ const MAX_TURN_ATTACHMENTS = 16;
  * `STALLED_AFTER_MS`, so the lag can never be what decides a verdict.
  */
 const PROGRESS_STAMP_MS = 60_000;
-
-
-
 
 /**
  * THE STORE ROOT'S FILE LIST, RE-EXPORTED — it moved to `./state-paths` in #665
@@ -588,23 +568,6 @@ import type { ReapCandidate } from "./domains/storage";
 export { statePaths, type EngineStatePaths };
 export { EngineStateError };
 
-/** Every regular file's size under `root`, one at a time. Iterative for the
- *  reason `storage.ts`'s walk is: a store holds a checkout per session and a
- *  `node_modules` inside several of them, and a recursive walk over that is a
- *  stack as deep as the worst dependency chain somebody installed. */
-function* walkFiles(root: string): Generator<number> {
-  const frontier = [root];
-  while (frontier.length > 0) {
-    const at = frontier.pop()!;
-    let stat: fs.Stats;
-    try { stat = fs.lstatSync(at); } catch { continue; }
-    if (stat.isDirectory()) {
-      try { for (const name of fs.readdirSync(at)) frontier.push(path.join(at, name)); } catch { /* unreadable: counted as nothing */ }
-      continue;
-    }
-    yield stat.size;
-  }
-}
 
 export function engineRootFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.TELAR_HOME?.trim();
@@ -675,30 +638,11 @@ function canonicalPath(input: string): string {
   return canonical;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 function assertText(value: unknown): asserts value is string {
   if (typeof value !== "string" || value.trim() === "" || value.length > MAX_TEXT_LENGTH) {
     throw new EngineStateError("invalid_request", "turn text must be non-empty and within the allowed size");
   }
 }
-
-
-
-
 
 /**
  * THE SESSION'S DIRECTORY, OR A REFUSAL — every store call that needs a real
@@ -788,12 +732,6 @@ const liveRow = (session: Session): LiveSessionRow => ({
   ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
 });
 
-
-
-
-
-
-
 /**
  * The most recently FINISHED turn, whatever it finished as.
  *
@@ -835,67 +773,6 @@ function taskSeedOf(task: Task): TaskSeed {
   const { sessionId: _sessionId, runId: _runId, startedAt: _startedAt, updatedAt: _updatedAt, completedAt: _completedAt, ...seed } = task;
   return seed;
 }
-
-
-
-
-
-
-
-
-
-
-/** The id → metadata index for a session's uploaded files. */
-function attachmentsFile(paths: EngineStatePaths, sessionId: string): string {
-  return path.join(sessionDir(paths, sessionId), "attachments.json");
-}
-
-/**
- * Where an attachment's bytes land.
- *
- * THE FILENAME IS MINTED HERE AND IS NOT THE HUMAN'S. `attachment.name` is
- * whatever the client sent — `../../.ssh/id_rsa`, a newline, 4 KB of unicode —
- * and it is kept only for display. The path is `<id><ext>` where the id is one
- * the engine generated, so no user-supplied byte reaches the filesystem. The
- * extension is the one part that follows the name, sanitised down to a short
- * alphanumeric run, because a provider and a human both read files by suffix.
- */
-function attachmentFile(paths: EngineStatePaths, sessionId: string, attachmentId: string, name: string): string {
-  assertId(attachmentId, "attachment id");
-  const extension = /\.([A-Za-z0-9]{1,12})$/.exec(name)?.[1]?.toLowerCase();
-  return path.join(sessionDir(paths, sessionId), "attachments", `${attachmentId}${extension ? `.${extension}` : ""}`);
-}
-
-/**
- * Told when a request parks with nobody watching.
- *
- * IT RETURNS WHETHER A HUMAN WAS ACTUALLY REACHED, and that boolean is stored
- * on the request. With no notifier configured the answer is `false` — which
- * records the honest state "this session is stuck and nobody was told" rather
- * than implying someone was. The contract comment on `EngineRequest.notified` exists
- * for exactly this: it must be detectable, not inferred from absence.
- */
-/**
- * The browser as the STORE is allowed to see it.
- *
- * Narrow on purpose, and `state` is optional: every test constructs an
- * `EngineStore` directly, and requiring the full runtime here would drag
- * Chromium's transport into all of them. A store with no browser answers
- * `provider: "none"`, which is the same thing a session that never browsed
- * answers — one code path, not two.
- */
-export type AttachedBrowser = {
-  release(scopeKey: string, reason?: string): Promise<boolean>;
-  state?(
-    scopeKey: string,
-    options: { screenshot?: boolean; start?: boolean },
-  ): Promise<{ provider: BrowserProvider; running: boolean; tabs: BrowserTab[]; screenshot?: string | null; error?: string | null }>;
-  /** Bind a scope to its project's browser profile before a human-started
-   *  read opens a tab (the desktop host refuses an unbound scope). */
-  bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
-  /** One browser tool call on a scope — what `browserOpen` uses to open a tab. */
-  call?(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<{ isError?: boolean; content: Array<{ type: string; text?: string }> }>;
-};
 
 /**
  * The session's terminals as the STORE is allowed to see them — the run
@@ -1006,6 +883,8 @@ export class EngineStore {
   private readonly projectRegistry: ProjectRegistry;
   private readonly toolchains: PluginToolchains;
   private readonly github: GitHubStore;
+  private readonly browser: SessionBrowser;
+  private readonly attachments: SessionAttachments;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1128,30 +1007,14 @@ export class EngineStore {
   /** What a provider process would inherit from this engine — read to say what
    *  a newly-configured login is about to stop inheriting (#594). */
   private readonly ambientEnv: Record<string, string | undefined>;
-  /**
-   * Set by the daemon when it owns a browser. ATTACHED RATHER THAN CONSTRUCTED
-   * so the store keeps no provider dependency — every test builds an
-   * EngineStore directly and must not pull Chromium in to do it.
-   */
-  private browser?: AttachedBrowser;
-  /** The last tab set journalled from a HAND-STARTED browser read, per session.
-   *  In memory like the caches above: it only exists to stop repeated `start`
-   *  reads writing identical `browser.state.changed` rows. */
-  private readonly browserJournalSignature = new Map<string, string>();
-  /** The last journalled controller per session — same dedupe job as the
-   *  signature above, for `browser.control.changed`. In memory: a duplicate
-   *  row after a restart is noise, not a lie. */
-  private readonly browserControlLast = new Map<string, string>();
 
 
   noteForNextTurn(sessionId: string, note: string): void {
     this.mailbox.noteForNextTurn(sessionId, note);
   }
 
-
-
   attachBrowser(browser: AttachedBrowser): void {
-    this.browser = browser;
+    this.browser.attach(browser);
   }
 
   /**
@@ -1398,8 +1261,6 @@ export class EngineStore {
     return this.toolchains.resolveLatex(session);
   }
 
-
-
   managedTectonic(): ManagedTectonicStatus {
     return this.toolchains.managedStatus();
   }
@@ -1440,148 +1301,28 @@ export class EngineStore {
     return { path: target, ...windowCsv(file.text, /\.tsv$/i.test(target) ? "\t" : ",", options), ...(file.truncated ? { truncated: true } : {}) };
   }
 
-  /** The attachment index, for the plots gallery. Newest first. */
   listAttachments(sessionId: string, options: { tag?: string } = {}): TurnAttachment[] {
-    this.records.require(sessionId);
-    const all = [...this.readAttachments(sessionId).values()];
-    const filtered = options.tag ? all.filter((a) => a.tags?.includes(options.tag!)) : all;
-    return structuredClone(filtered.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)));
+    return this.attachments.list(sessionId, options);
   }
 
   attachmentBytes(sessionId: string, attachmentId: string): { attachment: TurnAttachment; data: Uint8Array } {
-    this.records.require(sessionId);
-    const attachment = this.readAttachments(sessionId).get(attachmentId);
-    if (!attachment) throw new EngineStateError("not_found", "attachment does not exist");
-    return { attachment: structuredClone(attachment), data: new Uint8Array(fs.readFileSync(attachment.path)) };
+    return this.attachments.bytes(sessionId, attachmentId);
   }
 
-  /** Replace an attachment's tags — how a plot is pinned and unpinned. */
   tagAttachment(sessionId: string, attachmentId: string, tags: string[]): TurnAttachment {
-    this.records.require(sessionId);
-    const index = this.readAttachments(sessionId);
-    const attachment = index.get(attachmentId);
-    if (!attachment) throw new EngineStateError("not_found", "attachment does not exist");
-    const cleaned = [...new Set(tags.map((t) => t.trim()).filter(Boolean))].slice(0, 16);
-    const next = { ...attachment, ...(cleaned.length ? { tags: cleaned } : {}) };
-    if (!cleaned.length) delete next.tags;
-    index.set(attachmentId, next);
-    this.writeDocument(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
-    return structuredClone(next);
+    return this.attachments.tag(sessionId, attachmentId, tags);
   }
 
-  /**
-   * Record whose hands are on the session's shared browser (§6). Reported by
-   * the DESKTOP SHELL — the only process that can see a human's click land in
-   * the native view — over the engine's own HTTP API, and deduped here so a
-   * shell that re-reports the standing state journals nothing new.
-   */
   recordBrowserControl(sessionId: string, controller: "agent" | "human" | "idle", tabId?: string, interrupted = false): void {
-    this.records.require(sessionId);
-    // Control is PER TAB (§6): the dedupe key carries the tab so tab 1
-    // changing hands is never mistaken for a re-report about tab 0.
-    const key = `${sessionId}:${tabId ?? ""}`;
-    if (this.browserControlLast.get(key) === controller) return;
-    this.browserControlLast.set(key, controller);
-    // Stamped with the RUNNING turn when there is one, so the transcript can
-    // put "You interacted with the browser" inside the turn whose action it explains.
-    // Between turns the row is session-level — the panel badge is live state.
-    const running = this.readQueue(sessionId).turns.find((turn) => turn.state === "running");
-    this.appendEvent(
-      sessionId,
-      { type: "browser.control.changed", controller, ...(tabId ? { tabId } : {}), ...(interrupted ? { interrupted: true } : {}) },
-      running?.runId,
-    );
+    this.browser.recordControl(sessionId, controller, tabId, interrupted);
   }
 
-  /**
-   * What the session's browser is looking at, for a human.
-   *
-   * ANSWERED FROM THE DAEMON'S OWN RUNTIME, which is a real limitation and is
-   * stated rather than hidden: the out-of-process worker owns a DIFFERENT
-   * `BrowserRuntime` that this process cannot reach (see worker-main.ts), so a
-   * deployment running its worker separately reports `provider: "none"` here
-   * even while that worker is driving a page. The journalled
-   * `browser.state.changed` observation still shows the tabs in that case,
-   * because the party that drove them reported them. Only the pixels are
-   * daemon-local.
-   *
-   * `provider: "none"` with no error is also the ordinary answer for a session
-   * that has never browsed, and asking must never be what starts a browser.
-   */
-  async browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
-    const session = this.records.get(sessionId);
-    if (!this.browser?.state) {
-      return { scopeKey: sessionId, provider: "none", running: false, tabs: [], canStart: false };
-    }
-    // BIND THE PROJECT PROFILE ON THE HUMAN ENTRY PATH. "Open a browser" from
-    // the cockpit reaches here with `start:true` BEFORE the browser surface
-    // mounts, so its own bind effect cannot run first; a fresh human-only
-    // session after a restart would otherwise hit an unbound scope and the
-    // host would refuse to open. Idempotent with the worker's per-turn bind.
-    // Projectless sessions bind the explicit `none`.
-    if (options.start && this.browser.bindProfile) {
-      await this.browser.bindProfile(sessionId, session.projectId ?? "none");
-    }
-    const state = await this.browser.state(sessionId, {
-      ...(options.screenshot === undefined ? {} : { screenshot: options.screenshot }),
-      ...(options.start === undefined ? {} : { start: options.start }),
-    });
-    /**
-     * A browser opened BY HAND has no worker to report it. The socket journals
-     * `browser.state.changed` for agent-driven navigation; a human pressing
-     * "open a browser" goes through this read with `start`, and without this
-     * write the launched page would exist with no tab in the panel — the panel
-     * folds the journal, not this snapshot. Deduped by signature so repeated
-     * presses (or a poll that someone hands `start` to) journal nothing new.
-     */
-    if (options.start && !state.error && state.running) {
-      const signature = `${state.provider}:${JSON.stringify(state.tabs)}`;
-      if (this.browserJournalSignature.get(sessionId) !== signature) {
-        this.browserJournalSignature.set(sessionId, signature);
-        this.appendEvent(sessionId, { type: "browser.state.changed", provider: state.provider, tabs: state.tabs });
-      }
-    }
-    return {
-      scopeKey: sessionId,
-      provider: state.provider,
-      running: state.running,
-      tabs: state.tabs,
-      ...(state.screenshot ? { screenshot: state.screenshot } : {}),
-      ...(state.error ? { error: state.error } : {}),
-      canStart: true,
-    };
+  browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
+    return this.browser.state(sessionId, options);
   }
 
-  /**
-   * OPEN A URL IN THE SESSION'S BROWSER, AS THE HUMAN — the engine-side twin
-   * of the desktop shell's "new tab" action, for the clients that have no
-   * shell: a phone, or this cockpit reading a paired Mac. The tab opens on
-   * whichever browser that engine routes to (the desktop's when its shell is
-   * up, headless otherwise), and the resulting tab set is journalled exactly
-   * as a hand-started browser's is, so the panel learns of it.
-   *
-   * http(s) only: a browser tool is not a way to hand `file:` or a custom
-   * scheme to whatever handles it on that machine.
-   */
-  async browserOpen(sessionId: string, url: string): Promise<BrowserSnapshot> {
-    const session = this.records.get(sessionId);
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new EngineStateError("invalid_request", "that is not a URL");
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new EngineStateError("invalid_request", "only http and https pages can be opened");
-    if (!this.browser?.call || !this.browser.state) throw new EngineStateError("invalid_request", "this engine has no browser to open pages in");
-    if (this.browser.bindProfile) await this.browser.bindProfile(sessionId, session.projectId ?? "none");
-    const result = await this.browser.call(sessionId, "browser_tabs", { action: "new", url: parsed.href });
-    if (result.isError) {
-      const text = result.content.find((part) => part.type === "text")?.text;
-      throw new EngineStateError("invalid_request", text || "the browser could not open that page");
-    }
-    // The same dedupe-by-signature journal write as a hand-started browser:
-    // the panel folds the journal, not this snapshot.
-    return this.browserState(sessionId, { start: true });
+  browserOpen(sessionId: string, url: string): Promise<BrowserSnapshot> {
+    return this.browser.open(sessionId, url);
   }
 
   listMcpServers(scope?: { projectId: string | null }): McpServer[] {
@@ -1609,65 +1350,9 @@ export class EngineStore {
     return next;
   }
 
-  /**
-   * A SAFE COPY OF THIS STORE — issue #665, and the thing whose absence made
-   * "do not touch the live store" a rule with no alternative behind it.
-   *
-   * Every question of the form "what is actually in there" used to become
-   * either a hand-run query against the one irreplaceable artifact or an
-   * estimate. #646's figures had to be corrected twice for exactly that reason.
-   * This is the sanctioned answer: a store a person — or an agent — can open,
-   * grep, query and throw away.
-   *
-   * ══ WHAT IT CARRIES, AND WHAT IT DELIBERATELY DOES NOT ══
-   *
-   * Tier 1 and tier 1′: the database, through
-   * `VACUUM INTO` so it is consistent rather than a `cp` of pages from
-   * different moments, and every other file and directory at the store root.
-   *
-   * NOT THE REPRODUCIBLE TIER. `worktrees/`, `python/` and `tools/` are
-   * re-makeable from a recorded sha or a re-install, and on this machine the
-   * first of them is 59 checkouts and tens of gigabytes — a "safe copy" that
-   * took minutes and filled a disk would be a button nobody presses. Named
-   * here rather than guessed at by size.
-   *
-   * NOT `engine.lock` EITHER, which names a live daemon on a live host: copying
-   * it would hand a second engine a lock record that looks like a crash.
-   *
-   * AND NOT THE `-wal`/`-shm`. `VACUUM INTO` produces a self-contained
-   * database; carrying the log beside it would be carrying a log that describes
-   * a different file.
-   *
-   * THE DESTINATION MUST NOT EXIST. The one operation here that could destroy
-   * something is writing over a directory somebody named by mistake, and a
-   * refusal costs them one retry.
-   */
+  /** A consistent copy of this store, without the reproducible tier, to open instead of the live one. */
   copyStoreTo(destination: string): { root: string; files: number; bytes: number } {
-    if (!path.isAbsolute(destination)) throw new EngineStateError("invalid_request", "a copy destination must be an absolute path");
-    if (fs.existsSync(destination)) throw new EngineStateError("invalid_request", "that folder already exists — choose one Telar can create");
-    fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
-    this.kernel.executionStore.vacuumInto(path.join(destination, "execution.sqlite"));
-    let files = 1;
-    let bytes = fs.statSync(path.join(destination, "execution.sqlite")).size;
-    /** Reproducible (tier 3), the live daemon's lock, and the database's own
-     *  files — each skipped for the reason the header gives. */
-    const skip = new Set(["worktrees", "python", "tools", "engine.lock", "execution.sqlite", "execution.sqlite-wal", "execution.sqlite-shm"]);
-    for (const entry of fs.readdirSync(this.paths.root, { withFileTypes: true })) {
-      if (skip.has(entry.name)) continue;
-      const from = path.join(this.paths.root, entry.name);
-      const to = path.join(destination, entry.name);
-      try {
-        fs.cpSync(from, to, { recursive: true, errorOnExist: true, force: false, dereference: false });
-      } catch {
-        // ONE UNREADABLE SUBTREE IS NOT A FAILED COPY. A permission, a socket,
-        // a file that vanished under the walk: the copy is worth having
-        // without it, and refusing the whole thing would put somebody back on
-        // the live store, which is what this exists to keep them off.
-        continue;
-      }
-      for (const measured of walkFiles(to)) { files += 1; bytes += measured; }
-    }
-    return { root: destination, files, bytes };
+    return copyStore(this.paths.root, this.kernel.executionStore, destination);
   }
 
   getRetentionPolicy(): RetentionPolicy {
@@ -1889,10 +1574,6 @@ export class EngineStore {
     this.appearance.clear();
   }
 
-
-
-
-
   getMcpOAuthRecord(serverId: string, projectId?: string): McpOAuthRecord | undefined {
     return this.mcpOAuth.get(serverId, projectId);
   }
@@ -1916,8 +1597,6 @@ export class EngineStore {
   takePendingMcpOAuth(state: string): PendingMcpOAuth | undefined {
     return this.mcpOAuth.takePending(state);
   }
-
-
 
   async resolveMcpOAuthToken(serverId: string, projectId: string | undefined, fetchImpl?: typeof fetch): Promise<string | undefined> {
     return this.mcpOAuth.resolveToken(serverId, projectId, fetchImpl);
@@ -1974,12 +1653,6 @@ export class EngineStore {
     return this.providers.resolve(instanceId, driver);
   }
 
-
-
-
-
-
-
   listUsageLimitSources(): UsageLimitSource[] {
     return this.usageSources.list();
   }
@@ -1995,8 +1668,6 @@ export class EngineStore {
   resolveUsageLimitSources(): ResolvedUsageLimitSource[] {
     return this.usageSources.resolve();
   }
-
-
 
   constructor(
     root: string,
@@ -2114,11 +1785,11 @@ export class EngineStore {
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
     ({
       settings: this.settings, appearance: this.appearance, mcpOAuth: this.mcpOAuth, mcpServers: this.mcpServers, usageSources: this.usageSources,
-      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers, toolchains: this.toolchains, github: this.github,
+      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers, toolchains: this.toolchains, github: this.github, browser: this.browser,
     } = this.leafStores(options));
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
-      activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes,
+      activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes, attachments: this.attachments,
     } = createSessionModules(this.kernel, {
       readQueue: (sessionId) => this.readQueue(sessionId),
       readEvents: (sessionId) => this.readEvents(sessionId),
@@ -2164,7 +1835,12 @@ export class EngineStore {
     const providers = new ProviderRegistry(this.kernel, this.ambientEnv);
     const toolchains = new PluginToolchains(this.kernel, { getProject: (id) => projectRegistry.get(id) });
     const github = new GitHubStore(this.kernel, { gh: this.gh, getProject: (id) => projectRegistry.get(id), requireSenderClaim: (proof) => this.requireSenderClaim(proof) });
-    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers, toolchains, github };
+    const browser = new SessionBrowser(this.kernel, {
+      require: (id) => void this.records.require(id),
+      getSession: (id) => this.records.get(id),
+      runningRunId: (id) => this.readQueue(id).turns.find((turn) => turn.state === "running")?.runId,
+    });
+    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers, toolchains, github, browser };
   }
 
   /** How many projects the legacy-field fold changed on this open (0 on most). */
@@ -2421,12 +2097,6 @@ export class EngineStore {
     return { sessions, turns };
   }
 
-
-
-
-
-
-
   /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
    *  project has none rather than guessing. */
   async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
@@ -2462,8 +2132,6 @@ export class EngineStore {
       if (key.includes(root)) this.gitReadCache.delete(key);
     }
   }
-
-
 
   /**
    * ASK EVERY PROJECT'S DISK NOW, rather than waiting for somebody to look.
@@ -3022,8 +2690,6 @@ export class EngineStore {
     };
   }
 
-
-
   latexToolchain(fresh = false): Promise<LatexToolchain> {
     return this.toolchains.latexToolchain(fresh);
   }
@@ -3449,13 +3115,9 @@ export class EngineStore {
     return this.catalogues.catalogue(driver, options);
   }
 
-
-
   prefetchModelCatalogues(drivers?: readonly ProviderDriverKind[]): Promise<void> {
     return this.catalogues.prefetch(drivers);
   }
-
-
 
   getModelOverlay(instanceId: string): ModelOverlay {
     return this.catalogues.overlay(instanceId);
@@ -3464,8 +3126,6 @@ export class EngineStore {
   setModelOverlay(instanceId: string, patch: { favorites?: unknown; hidden?: unknown; order?: unknown; custom?: unknown; default?: unknown }): ModelOverlay {
     return this.catalogues.setOverlay(instanceId, patch);
   }
-
-
 
   projectGitHub(projectId: string, options: { force?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {}): Promise<GitHubSnapshot> {
     return this.github.list(projectId, options);
@@ -3528,8 +3188,6 @@ export class EngineStore {
     const folder = outcome.root.split("/").pop() ?? outcome.root;
     return this.registerProject({ name: input.name?.trim() || folder, root: outcome.root });
   }
-
-
 
   projectIssue(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubIssueRead> {
     return this.github.issue(projectId, number, options);
@@ -3800,10 +3458,6 @@ export class EngineStore {
     const session = this.records.get(sessionId);
     return writeFenced(workspaceRootOf(session), target, text, expected, "session workspace");
   }
-
-
-
-
 
   /**
    * Run a synchronous store command with its git questions already answered
@@ -4587,12 +4241,6 @@ export class EngineStore {
     return this.records.markRead(sessionId, runId);
   }
 
-
-
-
-
-
-
   listSessions(projectId: string): Session[] {
     this.getProject(projectId);
     /**
@@ -5190,49 +4838,10 @@ export class EngineStore {
     return structuredClone([...this.sessionTasks.read(sessionId).values()]);
   }
 
-  /**
-   * Store one attached file and hand back its handle.
-   *
-   * WRITTEN BEFORE THE MESSAGE THAT REFERS TO IT, and independent of any turn:
-   * a human picks three files, changes their mind about one, then types. Binding
-   * bytes to a turn at upload time would mean either inventing a turn that does
-   * not exist yet or holding megabytes in memory until they send.
-   *
-   * The index is what makes an id resolvable. Without it `submitTurn` would have
-   * to take the whole attachment from the client — including its PATH — and a
-   * client-supplied path is a client-supplied file read.
-   */
-  putAttachment(sessionId: string, input: { name: string; mediaType: string; data: Uint8Array; tags?: string[]; producer?: string; title?: string }): TurnAttachment {
-    this.records.require(sessionId);
-    if (input.data.byteLength === 0) throw new EngineStateError("invalid_request", "attachment is empty");
-    if (input.data.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new EngineStateError("invalid_request", "attachment is larger than the engine accepts");
-    }
-    const name = input.name.trim().slice(0, 200) || "attachment";
-    const mediaType = input.mediaType.trim().slice(0, 120) || "application/octet-stream";
-    const id = `att_${crypto.randomUUID().replaceAll("-", "")}`;
-    const file = attachmentFile(this.paths, sessionId, id, name);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, input.data, { mode: 0o600 });
-    const attachment: TurnAttachment = {
-      id, name, mediaType, bytes: input.data.byteLength, path: file, createdAt: this.now(),
-      ...(input.tags?.length ? { tags: input.tags } : {}),
-      ...(input.producer ? { producer: input.producer } : {}),
-      ...(input.title?.trim() ? { title: input.title.trim().slice(0, 200) } : {}),
-    };
-    const index = this.readAttachments(sessionId);
-    index.set(id, attachment);
-    this.writeDocument(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
-    return structuredClone(attachment);
+  putAttachment(sessionId: string, input: AttachmentInput): TurnAttachment {
+    return this.attachments.put(sessionId, input);
   }
 
-  private readAttachments(sessionId: string): Map<string, TurnAttachment> {
-    const stored = this.readDocument(attachmentsFile(this.paths, sessionId)) as { attachments?: unknown } | undefined;
-    const parsed = TurnAttachmentSchema.array().safeParse(stored?.attachments ?? []);
-    // A corrupt index costs the ABILITY TO REFERENCE old attachments, not the
-    // session. Throwing here would make one bad record unopenable forever.
-    return new Map((parsed.success ? parsed.data : []).map((attachment) => [attachment.id, attachment]));
-  }
 
   submitTurn(
     sessionId: string,
@@ -5361,7 +4970,7 @@ export class EngineStore {
           const ids = input.attachments ?? [];
           if (ids.length === 0) return {};
           if (ids.length > MAX_TURN_ATTACHMENTS) throw new EngineStateError("invalid_request", "too many attachments on one turn");
-          const index = this.readAttachments(sessionId);
+          const index = this.attachments.index(sessionId);
           const attachments = ids.map((id) => {
             const found = index.get(id);
             // Loud rather than silent: a message that says "look at this" and
@@ -6419,9 +6028,6 @@ export class EngineStore {
     });
   }
 
-
-
-
   /**
    * WHAT THE WORKER IS ACTUALLY HANDED, model-wise.
    *
@@ -7098,7 +6704,7 @@ export class EngineStore {
     // Free the session's browser. WITHOUT THIS, Chromium instances accumulate
     // until the pool's LRU evicts them six sessions later — which is a leak
     // measured in hundreds of megabytes on a machine running detached work.
-    void this.browser?.release(sessionId, "session archived");
+    void this.browser.release(sessionId, "session archived");
     this.releaseDataScience(session, "session archived");
 
     // A WORKTREE IMPLIES A PROJECT, and checking both is how that stays true
@@ -7576,7 +7182,7 @@ export class EngineStore {
     );
     if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before deleting");
 
-    void this.browser?.release(sessionId, "session deleted");
+    void this.browser.release(sessionId, "session deleted");
     this.releaseDataScience(session, "session deleted");
 
     // See `archiveSession` for why the project is checked beside the mode.
@@ -8532,7 +8138,7 @@ export class EngineStore {
     } catch {
       // A session that cannot be read has no tasks this can stop.
     }
-    void this.browser?.release(sessionId, "The session was settled.").catch(() => undefined);
+    void this.browser.release(sessionId, "The session was settled.")?.catch(() => undefined);
     let terminals = 0;
     try {
       terminals = (await this.terminals?.closeSession(sessionId)) ?? 0;
@@ -9316,9 +8922,6 @@ export class EngineStore {
     );
   }
 
-
-
-
   /** Is a turn of this session's actually in front of a provider right now? The
    *  question `settled_only` turns on — and `queued` is deliberately NOT busy:
    *  a queued wake is already waiting its turn, which is what holding is for. */
@@ -10086,8 +9689,6 @@ export class EngineStore {
     );
   }
 
-
-
   private scanQueue(sessionId: string): SessionQueue {
     return this.sessionQueues.scan(sessionId);
   }
@@ -10103,10 +9704,6 @@ export class EngineStore {
   private writeQueue(sessionId: string, queue: SessionQueue): void {
     this.sessionQueues.write(sessionId, queue);
   }
-
-
-
-
 
   /**
    * AFTER THE COMMIT, FOR THE SAME REASON `announceQueueChange` DEFERS: telling

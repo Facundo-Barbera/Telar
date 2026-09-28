@@ -7,7 +7,6 @@ import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRo
 import type { ExecutionStore } from "../src/platform/db/execution-store";
 import { INLINE_CHARS } from "../src/domains/turns/agent-notice";
 import { RELAY_RULE } from "../src/domains/turns";
-import { summariseTurn } from "../src/domains/turns";
 import { forgetOpenPrefixes, openPrefixCount } from "./store-internals";
 
 const roots: string[] = [];
@@ -1294,64 +1293,6 @@ setTimeout(() => { lock.release(); process.exit(0); }, 1_000);`;
   expect(statuses.sort()).toEqual([0, 1]);
 });
 
-test("an attachment is stored under the engine's own name and a turn may only reference one that exists", () => {
-  const { store, root: stateRoot } = readyStore();
-  const attachment = store.putAttachment("session_one", {
-    name: "../../escape.png",
-    mediaType: "image/png",
-    data: new Uint8Array([1, 2, 3, 4]),
-  });
-
-  // THE HUMAN'S NAME NEVER REACHES THE FILESYSTEM. It is kept for display and
-  // the path is minted from the engine's own id, so a name full of `..` is a
-  // label rather than a traversal.
-  expect(attachment.name).toBe("../../escape.png");
-  expect(attachment.path.startsWith(path.join(stateRoot, "sessions", "session_one", "attachments"))).toBe(true);
-  expect(path.basename(attachment.path)).toBe(`${attachment.id}.png`);
-  expect(fs.readFileSync(attachment.path)).toEqual(Buffer.from([1, 2, 3, 4]));
-
-  const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "Look", attachments: [attachment.id] });
-  expect(turn.attachments).toEqual([attachment]);
-
-  // Loud rather than silent: a message that says "look at this" and arrives
-  // with nothing attached is worse than one that fails to send.
-  expect(() => store.submitTurn("session_one", { runId: "run_two", input: "Look", attachments: ["att_missing"] })).toThrow(
-    EngineStateError,
-  );
-});
-
-test("an image-only message is a message; a blank one with only a PDF, or nothing, is not", () => {
-  const { store } = readyStore();
-  const png = (name: string) => store.putAttachment("session_one", { name, mediaType: "image/png", data: new Uint8Array([1, 2, 3, 4]) });
-  const pdf = store.putAttachment("session_one", { name: "spec.pdf", mediaType: "application/pdf", data: new Uint8Array([1]) });
-
-  const shot = png("Screenshot.png");
-  const { turn } = store.submitTurn("session_one", { runId: "run_image", input: "", attachments: [shot.id] });
-  expect(turn).toMatchObject({ input: "", state: "queued", attachments: [shot] });
-  // Its outline line names the picture rather than going blank.
-  expect(summariseTurn(turn, store.items("session_one")).input).toBe("[Screenshot.png]");
-  // Idempotent like any other send.
-  expect(store.submitTurn("session_one", { runId: "run_image", input: "", attachments: [shot.id] }).replayed).toBe(true);
-
-  // A file alone gives the agent a path and no reason; nothing at all is nothing.
-  for (const attempt of [
-    { runId: "run_pdf", input: " ", attachments: [pdf.id] },
-    { runId: "run_empty", input: "" },
-    { runId: "run_compact", input: "", kind: "compact" as const, attachments: [png("b.png").id] },
-  ]) {
-    expect(() => store.submitTurn("session_one", attempt)).toThrow(EngineStateError);
-  }
-  expect(store.turns("session_one").map((row) => row.runId)).toEqual(["run_image"]);
-});
-
-test("a browser draft promoted by an image-only message is titled by its picture", () => {
-  const { store } = readyStore();
-  store.createSession({ id: "session_draft", projectId: "project_one", draft: true, title: "Browser draft" });
-  const shot = store.putAttachment("session_draft", { name: "Screenshot.png", mediaType: "image/png", data: new Uint8Array([1]) });
-  store.submitTurn("session_draft", { runId: "run_first", input: "", attachments: [shot.id] });
-  expect(store.getSession("session_draft").title).toBe("Screenshot.png");
-});
-
 test("a per-turn model beats the session default and cannot change the provider", () => {
   const { store } = readyStore();
   const session = store.getSession("session_one");
@@ -1395,64 +1336,6 @@ test("a daemon-injected computer-use resolver reaches a claim", () => {
   store.createSession({ id: "session_one", projectId: "project_one" });
   store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
   expect(store.claimNextTurn("worker_one")?.mcpServers?.map((server) => server.id)).toEqual(["mac"]);
-});
-
-test("a store with no browser attached reports none rather than failing", async () => {
-  const { store } = readyStore();
-  // The ordinary answer for a session that has never browsed, and the same one
-  // a deployment whose worker owns the browser gives. One code path, not two.
-  // `canStart: false` is what tells a client not to offer an "open a browser"
-  // button that would start one beside the worker's own.
-  expect(await store.browserState("session_one")).toEqual({
-    scopeKey: "session_one",
-    provider: "none",
-    running: false,
-    tabs: [],
-    canStart: false,
-  });
-});
-
-test("a hand-started browser journals its tabs exactly once, so the panel can show them", async () => {
-  const { store } = readyStore();
-  const tabs = [{ id: "0", url: "http://x", title: "X", active: true }];
-  store.attachBrowser({
-    state: async () => ({ provider: "headless" as const, running: true, tabs }),
-    release: async () => undefined,
-  } as never);
-
-  // A plain read journals nothing: asking what the browser shows must never
-  // become history. Only the explicit `start` gesture is an event.
-  await store.browserState("session_one");
-  const before = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
-  expect(before).toHaveLength(0);
-
-  const started = await store.browserState("session_one", { start: true });
-  expect(started.canStart).toBe(true);
-  // A second press with the same tab set journals nothing new.
-  await store.browserState("session_one", { start: true });
-  const events = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
-  expect(events).toHaveLength(1);
-  expect((events[0] as { tabs: { url: string }[] }).tabs[0]?.url).toBe("http://x");
-});
-
-test("a hand-started browser binds the session's project profile BEFORE opening, even with no worker turn and no mounted surface", async () => {
-  const { store } = readyStore(); // creates session_one in project_one
-  const calls: Array<{ op: string; scopeKey: string; profileKey?: string; start?: boolean }> = [];
-  store.attachBrowser({
-    bindProfile: async (scopeKey: string, profileKey: string) => { calls.push({ op: "bind", scopeKey, profileKey }); },
-    state: async (scopeKey: string, options: { start?: boolean }) => { calls.push({ op: "state", scopeKey, start: options.start }); return { provider: "attached" as const, running: true, tabs: [] }; },
-    release: async () => undefined,
-  } as never);
-  await store.browserState("session_one", { start: true });
-  // Bind happened, with the session's project, BEFORE the state read that opens.
-  expect(calls).toEqual([
-    { op: "bind", scopeKey: "session_one", profileKey: "project_one" },
-    { op: "state", scopeKey: "session_one", start: true },
-  ]);
-  // A plain read (no start) does not bind — nothing opens, so nothing to bind.
-  calls.length = 0;
-  await store.browserState("session_one");
-  expect(calls.find((c) => c.op === "bind")).toBeUndefined();
 });
 
 test("a local session records the commit it started from, so its review survives the agent committing", () => {
@@ -3128,35 +3011,6 @@ describe("worker queries scale with live turns, not with the number of sessions"
     expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_first");
     expect(store.claimNextTurn("worker_two")?.turn.runId).toBe("run_second");
   });
-});
-
-test("browserOpen opens an http(s) page as the human on the session's browser and journals the tab set", async () => {
-  const { store } = readyStore();
-  const calls: Array<{ op: string; name?: string; args?: Record<string, unknown>; profileKey?: string }> = [];
-  let tabs: { id: string; url: string; title: string; active: boolean }[] = [];
-  store.attachBrowser({
-    bindProfile: async (_scopeKey: string, profileKey: string) => { calls.push({ op: "bind", profileKey }); },
-    call: async (_scopeKey: string, name: string, args: Record<string, unknown>) => {
-      calls.push({ op: "call", name, args });
-      tabs = [{ id: "0", url: String(args.url), title: "Docs", active: true }];
-      return { content: [{ type: "text", text: "opened" }] };
-    },
-    state: async () => ({ provider: "attached" as const, running: true, tabs }),
-    release: async () => undefined,
-  } as never);
-  const answer = await store.browserOpen("session_one", "https://example.test/docs");
-  expect(answer.tabs.map((tab) => tab.url)).toEqual(["https://example.test/docs"]);
-  expect(calls).toEqual([
-    { op: "bind", profileKey: "project_one" },
-    { op: "call", name: "browser_tabs", args: { action: "new", url: "https://example.test/docs" } },
-    // browserState({start}) binds again before its read — idempotent, and the
-    // one write that journals the tab set for the panel.
-    { op: "bind", profileKey: "project_one" },
-  ]);
-  const events = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
-  expect(events).toHaveLength(1);
-  await expect(store.browserOpen("session_one", "file:///etc/passwd")).rejects.toThrow(/only http and https/);
-  await expect(store.browserOpen("session_one", "not a url")).rejects.toThrow(/not a URL/);
 });
 
 test("a shutdown mid-turn settles the message it was carrying — not held, not replayed", () => {

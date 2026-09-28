@@ -20,3 +20,4 @@ export { sessionReadRoutes } from "./reads";
 export { sessionLifecycleRoutes } from "./lifecycle";
 export { holdEventStream, type OpenStream } from "./stream";
 export { sessionAttachmentRoutes } from "./attachments";
+export { SessionAttachments, type AttachmentInput } from "./attachment-store";

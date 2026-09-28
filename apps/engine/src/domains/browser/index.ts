@@ -7,3 +7,4 @@ export { runSecretFill } from "./secret-fill";
 export { BrowserToolSocket, type BrowserRunBinding, type BrowserSocketCapability, type BrowserSocketLease } from "./socket";
 export { BROWSER_TOOLS } from "./tools";
 export { browserRoutes, browserSessionRoutes } from "./routes";
+export { SessionBrowser, type AttachedBrowser } from "./session-browser";
