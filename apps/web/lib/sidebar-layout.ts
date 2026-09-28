@@ -32,7 +32,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_SIDEBAR_LAYOUT, type SidebarLayout } from "@telar/engine-client";
+import { DEFAULT_SIDEBAR_LAYOUT, type SidebarLayout, type SidebarMode } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 
@@ -54,6 +54,7 @@ function announce(layout: SidebarLayout): void {
 export function sameSidebarLayout(left: SidebarLayout, right: SidebarLayout): boolean {
   const same = (a: readonly string[] = [], b: readonly string[] = []) => a.length === b.length && a.every((key, at) => key === b[at]);
   if (!same(left.projectOrder, right.projectOrder) || !same(left.pinnedOrder, right.pinnedOrder)) return false;
+  if ((left.mode ?? "grouped") !== (right.mode ?? "grouped")) return false;
   const groups = left.sessionOrder ?? {};
   const others = right.sessionOrder ?? {};
   const keys = new Set([...Object.keys(groups), ...Object.keys(others)]);
@@ -98,6 +99,10 @@ export type SidebarLayoutHandle = {
    *  last write wins, exactly as `setOrder` has always worked. */
   setSessionOrder: (groupKey: string, next: string[]) => Promise<void>;
   setPinnedOrder: (next: string[]) => Promise<void>;
+  /** Grouped by project, or one flat list. An engine too old to store it
+   *  answers without the field, which reads as grouped. */
+  mode: SidebarMode;
+  setMode: (next: SidebarMode) => Promise<void>;
 };
 
 export function useSidebarLayout(): SidebarLayoutHandle {
@@ -162,6 +167,7 @@ export function useSidebarLayout(): SidebarLayoutHandle {
 
   const setOrder = useCallback((next: string[]) => patch({ projectOrder: next }), [patch]);
   const setPinnedOrder = useCallback((next: string[]) => patch({ pinnedOrder: next }), [patch]);
+  const setMode = useCallback((next: SidebarMode) => patch({ mode: next }), [patch]);
   const setSessionOrder = useCallback(
     (groupKey: string, next: string[]) => patch({ sessionOrder: { ...(latest.current.sessionOrder ?? {}), [groupKey]: next } }),
     [patch],
@@ -175,5 +181,7 @@ export function useSidebarLayout(): SidebarLayoutHandle {
     setOrder,
     setSessionOrder,
     setPinnedOrder,
+    mode: layout.mode ?? "grouped",
+    setMode,
   };
 }

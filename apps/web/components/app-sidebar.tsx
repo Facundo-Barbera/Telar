@@ -87,7 +87,7 @@ import {
 import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
-import type { InboxPolicy, Project, SidebarLayout } from "@telar/engine-client";
+import type { InboxPolicy, Project, SidebarLayout, SidebarMode } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -138,6 +138,8 @@ import {
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
 import { ProjectGroupSection } from "@/components/session/project-group";
+import { FlatSessionList, RailModeSwitch } from "@/components/session/flat-session-list";
+import { flatRailRows, flattenSessions, useExpandedParents } from "@/lib/flat-rail";
 import {
   dedupeAcrossHosts,
   groupSessions,
@@ -195,7 +197,7 @@ const APP_SIDEBAR_RESIZABLE = {
  * the glyph rather than inside `SidebarTrigger`: the primitive is shared with
  * the panel, and only THIS one is what `toggle-rail` binds.
  */
-function TelarSidebarHeader() {
+function TelarSidebarHeader({ mode, onModeChange }: { mode: SidebarMode; onModeChange: (next: SidebarMode) => void }) {
   return (
     // The inset is measured from the island's edge, never less than the 8px
     // this header had before. Vertically: the lights are centred at
@@ -209,6 +211,8 @@ function TelarSidebarHeader() {
         {/* A WORDMARK, NOT A SWITCHER. Sessions are the product and the only
             place this rail shows, so there is nothing to switch between. */}
         <span className="px-1.5 font-heading text-lg font-semibold tracking-tight">Telar</span>
+        <span className="ml-auto" />
+        <RailModeSwitch mode={mode} onChange={onModeChange} />
       </div>
     </SidebarHeader>
   );
@@ -423,7 +427,11 @@ function SidebarBody() {
     setSessionOrder,
     pinnedOrder,
     setPinnedOrder,
+    mode: railMode,
+    setMode: setRailMode,
   } = useSidebarLayout();
+  /** Which parents show their spawned conversations in flat mode. */
+  const { expanded: expandedParents, toggle: toggleParent } = useExpandedParents();
   /** The group being carried, and where it would land. Owned here rather than
    *  by the group, because a drop lands on a DIFFERENT group than the one that
    *  started the drag. */
@@ -993,6 +1001,7 @@ function SidebarBody() {
     windowsByHost: hostWindows,
     limit: sessionLimit,
     settledLimit,
+    order: railMode === "flat" ? "activity" : "created",
   });
   // The engine is not answering AND the rail kept its last read — so the list
   // renders dimmed under a line saying so, and "Engine unavailable" is left for
@@ -1006,7 +1015,10 @@ function SidebarBody() {
   // `list`, so paging, search and scope are untouched. Only in the banded view;
   // a search stays flat. The groups sit in the reader's own order — nothing a
   // conversation does moves its project.
-  const grouped = list.flat ? undefined : groupSessions(list, projectOrder, { sessions: sessionOrder, pinned: pinnedOrder });
+  const grouped = list.flat || railMode === "flat" ? undefined : groupSessions(list, projectOrder, { sessions: sessionOrder, pinned: pinnedOrder });
+  // FLAT MODE: one list, pinned first, children under their parent — see
+  // lib/flat-rail.ts. A search stays the same flat result list in both modes.
+  const flatEntries = !list.flat && railMode === "flat" ? flattenSessions(list, pinnedOrder) : undefined;
   /**
    * EVERY GROUP AS IT CAME BACK — issue #381.
    *
@@ -1187,7 +1199,9 @@ function SidebarBody() {
   // its project group is no longer showing would count something invisible.
   const jumpRows = grouped
     ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups)
-    : list.sessions.slice(0, RAIL_JUMP_SLOTS.length);
+    : flatEntries
+      ? flatRailRows(flatEntries, expandedParents, activeSessionId).slice(0, RAIL_JUMP_SLOTS.length)
+      : list.sessions.slice(0, RAIL_JUMP_SLOTS.length);
   /**
    * THE SAME ROWS, AS THE NUMBERS THEY WEAR while ⌘ is held — issue #401.
    *
@@ -1439,7 +1453,7 @@ function SidebarBody() {
           />
         </Suspense>
       )}
-      <TelarSidebarHeader />
+      <TelarSidebarHeader mode={railMode} onModeChange={(next) => void setRailMode(next)} />
       {/* The "Settings session" entry was removed from the product UI: it did
           not work reliably and duplicated the real Settings (in the footer). */}
       <SidebarContent>
@@ -1689,7 +1703,7 @@ function SidebarBody() {
               you said to keep in front of you, and a control that hides them
               would be arguing.
             */}
-            {!list.flat && (grouped ? grouped.pinned : list.pinned).length > 0 && (
+            {!list.flat && !flatEntries && (grouped ? grouped.pinned : list.pinned).length > 0 && (
               <div className="space-y-0.5" role="group" aria-label="Pinned">
                 {/* ONE ROW PER PINNED CONVERSATION, AND NOTHING UNDER IT —
                     issue #381. This band drew a coordinator's delegates as
@@ -1826,6 +1840,17 @@ function SidebarBody() {
                   />
                 );
               })
+            ) : flatEntries ? (
+              <FlatSessionList
+                entries={flatEntries}
+                expanded={expandedParents}
+                onToggle={toggleParent}
+                {...(activeSessionId ? { activeSessionId } : {})}
+                renderedAt={renderedAt}
+                bandFor={bandFor}
+                onRowChanged={onRowChanged}
+                jumpSlot={jumpSlotFor}
+              />
             ) : (
               list.sessions.map((session, index) => (
                 <SessionRow
@@ -1913,15 +1938,19 @@ function SidebarBody() {
               {/* Folds only the groups ON SCREEN — see `foldedAfter`. A rail
                   showing search results has none, so both rows stand down
                   rather than writing a fold nobody can see undone. */}
-              <ContextMenuSeparator />
-              <ContextMenuItem disabled={drawnGroupKeys.length === 0} onClick={() => collapseAll(drawnGroupKeys)}>
-                <FoldVerticalIcon />
-                Collapse all projects
-              </ContextMenuItem>
-              <ContextMenuItem disabled={drawnGroupKeys.length === 0} onClick={() => expandAll(drawnGroupKeys)}>
-                <UnfoldVerticalIcon />
-                Expand all
-              </ContextMenuItem>
+              {railMode === "grouped" && (
+                <>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem disabled={drawnGroupKeys.length === 0} onClick={() => collapseAll(drawnGroupKeys)}>
+                    <FoldVerticalIcon />
+                    Collapse all projects
+                  </ContextMenuItem>
+                  <ContextMenuItem disabled={drawnGroupKeys.length === 0} onClick={() => expandAll(drawnGroupKeys)}>
+                    <UnfoldVerticalIcon />
+                    Expand all
+                  </ContextMenuItem>
+                </>
+              )}
             </ContextMenuContent>
           </ContextMenu>
         </SidebarGroup>

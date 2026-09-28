@@ -19,6 +19,7 @@ const layout = (patch: Partial<SidebarLayout> = {}): SidebarLayout => ({
   projectOrder: [],
   sessionOrder: {},
   pinnedOrder: [],
+  mode: "grouped",
   ...patch,
 });
 
@@ -54,5 +55,12 @@ describe("sameSidebarLayout", () => {
     // look like a change on every poll.
     const old = { projectOrder: ["a"] } as SidebarLayout;
     expect(sameSidebarLayout(old, layout({ projectOrder: ["a"] }))).toBe(true);
+  });
+
+  test("the rail mode is part of the document, and a missing one reads as grouped", () => {
+    expect(sameSidebarLayout(layout({ mode: "flat" }), layout())).toBe(false);
+    expect(sameSidebarLayout(layout({ mode: "flat" }), layout({ mode: "flat" }))).toBe(true);
+    const older = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] } as unknown as SidebarLayout;
+    expect(sameSidebarLayout(older, layout())).toBe(true);
   });
 });
