@@ -1,7 +1,7 @@
 /**
  * EVERY TOOL ANSWER, MEASURED — issue #515.
  *
- * ── WHY THIS FILE IS DIFFERENT FROM `domains/sessions/tools/tools.test.ts` ────────────────
+ * ── WHY THIS FILE IS DIFFERENT FROM `domains/sessions/tools/tools-*.test.ts` ────────────────
  * That file runs against a real store on a real repository, because what it
  * asserts is that the RULES exist. This one asserts a NUMBER, and a number
  * needs a fixture big enough to break the thing being measured: 500 sessions,
