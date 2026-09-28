@@ -131,6 +131,7 @@ export function SessionCockpit({
           onAtBottomChange={onAtBottomChange}
           onConversationClick={onConversationClick}
           projectId={projectId}
+          hostId={hostId}
           fresh={fresh}
           turn={{
             roster: model.roster,

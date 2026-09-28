@@ -1,12 +1,14 @@
 export { ActivityGroup, LiveActivity } from "./components/activity";
 export { sessionWakeLabel } from "./components/item-rows";
 export { NotificationRow } from "./components/notification-row";
+export { notificationHead } from "./notifications";
 export { SessionSkeleton } from "./components/session-skeleton";
 export { TranscriptWorkspace } from "./components/tool-row";
 export { ROW } from "./components/transcript-fold";
 export { TranscriptItem } from "./components/transcript-item";
 export { Marker, TurnFailureRow, WorkingIndicator } from "./components/turn-status";
 export {
+  bareNotificationTurn,
   cutAroundLiveAgents,
   groupNotificationTurns,
   segmentActivity,
