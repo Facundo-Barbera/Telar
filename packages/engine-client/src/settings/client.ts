@@ -57,4 +57,12 @@ export const settingsClient = {
   ): Promise<{ textGen: TextGenPolicy }> {
     return this.request("PATCH", "/v2/textgen", patch);
   },
+
+  completeStructured(
+    this: EngineTransport,
+    input: { prompt: string; schema: Record<string, unknown>; model?: string; effort?: "low" | "medium" | "high" },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ result: Record<string, unknown> }> {
+    return this.request("POST", "/v2/textgen/complete", input, options.signal);
+  },
 };
