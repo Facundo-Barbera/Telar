@@ -29,8 +29,8 @@ the App Attest capability enabled.
   Activity, the activity id the phone registered. The relay picks the token,
   the topic (`<bundle>` or `<bundle>.push-type.liveactivity`) and the APNs host
   (`sandbox` → `api.sandbox.push.apple.com`).
-- **Bundles:** `io.github.novarix.telar` and `io.github.novarix.telar.dev`, plus the pre-#1042
-  `com.telar.mobile` and `com.telar.mobile.dev` for phones not yet moved.
+- **Bundles:** `io.github.novarix.telar` and `io.github.novarix.telar.dev`, plus the legacy
+  `com.telar.mobile` and `com.telar.mobile.dev` for phones not yet moved, until 2026-11-01.
 - **Keys:** there is one send key per pairing. Asking again for the same
   `pairing` rotates that key. Each handle holds at most 16 keys. A key unused
   for 60 days, or a handle the phone has not refreshed in 60 days, expires.
