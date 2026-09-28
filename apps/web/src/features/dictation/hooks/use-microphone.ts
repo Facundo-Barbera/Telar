@@ -16,11 +16,11 @@ import {
   writeMicrophone,
   type AudioInput,
   type MicrophoneChoice,
-} from "./devices";
+} from "../devices";
 import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
-import type { DictationBox } from "./interim";
-import { createLevelMeter, type LevelMeter } from "./level";
-import { microphoneRefusal } from "./refusal";
+import type { DictationBox } from "../interim";
+import { createLevelMeter, type LevelMeter } from "../level";
+import { microphoneRefusal } from "../refusal";
 import { useDictation, type DictationState } from "./use-dictation";
 
 export { useMicrophoneUnavailable } from "./use-dictation";

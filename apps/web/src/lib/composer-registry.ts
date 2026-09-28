@@ -23,7 +23,7 @@ export type ComposerEntry = {
   insert: (text: string) => ComposerWrite;
   /**
    * Swap a run of the draft by draft offsets. App-internal only, never exposed on the page API.
-   * The caller owns the offsets and must check they are still valid (`lib/dictation/interim.ts`).
+   * The caller owns the offsets and must check they are still valid (`features/dictation/interim.ts`).
    */
   replace: (start: number, end: number, text: string) => ComposerWrite;
   /**
@@ -72,7 +72,7 @@ export function activeComposer(): ComposerEntry | undefined {
   return token === undefined ? undefined : mounted.get(token);
 }
 
-/** For sibling registries (`lib/dictation/registry.ts`) that must resolve the same active composer. */
+/** For sibling registries (`features/dictation/registry.ts`) that must resolve the same active composer. */
 export function activeComposerToken(): string | undefined {
   return activeToken();
 }

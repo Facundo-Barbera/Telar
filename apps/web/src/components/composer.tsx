@@ -75,8 +75,6 @@ import { markComposerActive, registerComposer, type ComposerKind, type ComposerS
 import { contextNoticeDue } from "@/lib/context-notice";
 import { contextNoticeDismissal, writeContextNoticeDismissed } from "@/lib/context-notice-dismissal";
 import { ComposerMenu } from "./composer-menu";
-import { DictationButton } from "./dictation-button";
-import { DictationGlow } from "./dictation-glow";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
 import {
@@ -94,7 +92,7 @@ import {
 } from "@/lib/composer-completions";
 import { rankNotes, useProjectNotes } from "@/lib/project-notes";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
-import { useComposerDictation } from "@/lib/dictation/use-composer-dictation";
+import { DictationButton, DictationGlow, useComposerDictation } from "@/features/dictation";
 import { appendPrompt, mergeAttachments, splitImages, type StashedImage } from "@/lib/prompt-stash";
 import type { ShelfRow } from "@/lib/prompt-shelf";
 import { encodeImagesForStash, filesFromStash } from "@/lib/stash-images";
