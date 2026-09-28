@@ -12,3 +12,4 @@ export { isLiveTask, TurnClaims } from "./claims";
 export { TurnRecovery } from "./recovery";
 export { TurnWakes } from "./wakes";
 export { requireRunningClaimFromQueue, WorkerChannel } from "./worker-channel";
+export { TurnAnchors } from "./anchors";
