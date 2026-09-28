@@ -16,8 +16,8 @@
  * "whose".
  *
  * ── THE FIELD NEVER SHOWS A STORED KEY ──────────────────────────────────────
- * It shows WHETHER one is there, which is what the Agent's key row does and
- * what every provider login on the Providers pane does, for the same reason: a
+ * It shows WHETHER one is there, which is what every provider login on the
+ * Providers pane does, for the same reason: a
  * field that displayed a secret would be one screen-share away from leaking it.
  * Typing a new one replaces it; the button beside it removes it.
  *
@@ -135,11 +135,8 @@ export function DictationSection() {
 
   async function saveKey(value: string): Promise<void> {
     setKeySaved(false);
-    // AN EMPTY STRING IS AN EXPLICIT CLEAR, the same departure the Agent's key
-    // row makes from the provider registry's "blank never clears". There,
-    // blank is indistinguishable from "I did not retype it" on a shared form;
-    // here this field is the only writer of the secret and Remove has to mean
-    // it.
+    // An empty string is an explicit clear, unlike the provider registry's
+    // "blank never clears": this field is the only writer of the secret.
     await save({ apiKey: value.trim() });
     setKey("");
     if (value.trim()) setKeySaved(true);

@@ -4,9 +4,9 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
 /**
  * WHETHER THIS MAC CAN DICTATE, AND WHOSE SERVICE IT WOULD USE (#544).
  *
- * MACHINE-SCOPED, like the session defaults and the Agent beside it and for the
- * same reason: remote web, the desktop shell and a paired phone read one
- * engine, and a per-client key would be a key pasted once per device.
+ * MACHINE-SCOPED, like the session defaults: remote web, the desktop shell and
+ * a paired phone read one engine, and a per-client key would be a key pasted
+ * once per device.
  *
  * THE KEY GOES DOWN AND NEVER COMES BACK. `apiKey` on the PATCH is write-only;
  * both methods answer `{ dictation: { provider, configured } }` and nothing
