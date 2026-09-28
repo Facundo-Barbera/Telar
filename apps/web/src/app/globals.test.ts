@@ -335,7 +335,7 @@ describe("the text scale", () => {
    * 10 → 0.625rem, 9 → 0.5625rem), so the sweep changed nothing about how the
    * app looks until the slider moves.
    */
-  const corpus = ["app", "components", "features", "lib"] as const;
+  const corpus = ["app", "features", "ui", "platform"] as const;
 
   test("no component pins a font size in px", () => {
     const offenders: string[] = [];
@@ -496,7 +496,7 @@ describe("cards must paint", () => {
      * that palette's own tokens, which `bg-*` cannot express.
      */
     const offenders: string[] = [];
-    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "features", "ui", "platform"], /\.tsx?$/)) {
       const source = withoutProse(file);
       for (const hit of source.matchAll(CARD_SHAPED)) {
         const value = hit[1] ?? hit[2] ?? "";
@@ -665,7 +665,7 @@ describe("the state vocabulary", () => {
     // that actually held eight raw ramps each — features/files/file-kinds.ts and
     // features/composer/glyph-paths.ts — are LOOKUP TABLES of class strings in .ts. A class
     // string is a class string wherever it is written down.
-    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "features", "ui", "platform"], /\.tsx?$/)) {
       for (const hit of withoutProse(file).matchAll(pattern)) {
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
       }
@@ -680,7 +680,7 @@ describe("the state vocabulary", () => {
     // from the live tokens instead, and each flips ENDS between the schemes.
     const pattern = /\b(?:bg|text|border|ring|fill|stroke)-(?:black|white)\/\d+|rgba?\(\s*0\s*,\s*0\s*,\s*0\s*[,)]/g;
     const offenders: string[] = [];
-    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "features", "ui", "platform"], /\.tsx?$/)) {
       for (const hit of withoutProse(file).matchAll(pattern)) {
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
       }
