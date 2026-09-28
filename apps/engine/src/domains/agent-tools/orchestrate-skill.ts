@@ -46,9 +46,9 @@ Write each worker a self-contained brief. It will not see this conversation.
 
 ## 3. Dispatch
 
-- One \`worktree\` session per task (\`sessions_create\` with \`envMode:
-  "worktree"\`), titled so the rail says what it is.
-- Send every brief with \`sessions_send\` intent \`task\`.
+- One \`worktree\` session per task: \`sessions_create\` with \`envMode:
+  "worktree"\`, a title that says what it is, and the brief as \`task\`. One
+  call creates it under you and assigns the work.
 - Then ONE \`sessions_subscribe({ sessionIds: [...] })\` for all of them, and
   END YOUR TURN. No per-session subscribes, no polling, no sleeping. You are
   woken once, when every worker has sent its result (or failed, was stopped

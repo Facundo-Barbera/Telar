@@ -280,6 +280,7 @@ export class EngineStore {
       git: this.prefetch,
       getProject: (id) => this.projectRegistry.get(id),
       availability: (project) => this.projectProbes.availability(project),
+      requireSenderClaim: (proof) => this.worker.requireSenderClaim(proof),
     });
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.

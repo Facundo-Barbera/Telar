@@ -13,7 +13,9 @@ export type SessionIdentity = { sessionId: string; proof: () => ClaimProof };
 /** The EngineClient verbs the sessions capability speaks. `EngineClient` satisfies it; the daemon passes a store adapter. */
 export type SessionsPort = {
   liveSessions(options: { all?: boolean }): ReturnType<Capability["list"]>;
-  createSession(input: Parameters<Capability["create"]>[0] & { origin: "session"; ceilingFrom?: string }): Promise<{ session: Session }>;
+  createSession(
+    input: Parameters<Capability["create"]>[0] & { origin: "session"; ceilingFrom?: string; proof?: ClaimProof & { sessionId: string } },
+  ): Promise<{ session: Session }>;
   submitAgentTurn(
     sessionId: string,
     input: Parameters<Capability["send"]>[1] & { proof?: ClaimProof & { sessionId: string } },
@@ -86,7 +88,7 @@ export function storeReads(store: EngineStore): SessionsReads {
 export function storeSessionsPort(store: EngineStore): SessionsPort {
   return {
     liveSessions: async (options) => store.live.rows(options),
-    createSession: async (input) => ({ session: await store.requestPath.createSession(input) }),
+    createSession: async ({ proof, ...input }) => ({ session: await store.requestPath.createSession(input, proof) }),
     submitAgentTurn: async (id, { proof, ...input }) => store.requestPath.submitAgentTurn(id, input, proof),
     events: async (id, after, limit) => ({ events: store.queries.readEvents(id, after, limit) }),
     stopSession: async (id, by) => store.turnLifecycle.stopSession(id, by),
@@ -114,7 +116,7 @@ export function storeSessionsPort(store: EngineStore): SessionsPort {
 
 /**
  * A session's door to other sessions. With an identity it names itself as `self`, caps what it
- * creates at its own mode (`ceilingFrom`) and proves each message with the live claim.
+ * creates at its own mode (`ceilingFrom`) and proves each message and each creation with the live claim.
  */
 export function sessionsCapability(port: SessionsPort, identity: SessionIdentity | undefined, reads: SessionsReads): SessionsCapability {
   return {
@@ -122,7 +124,11 @@ export function sessionsCapability(port: SessionsPort, identity: SessionIdentity
     ...reads,
     list: (options) => port.liveSessions({ all: options?.settled === true }),
     create: async (input) =>
-      (await port.createSession({ ...input, origin: "session", ...(identity ? { ceilingFrom: identity.sessionId } : {}) })).session,
+      (await port.createSession({
+        ...input,
+        origin: "session",
+        ...(identity ? { ceilingFrom: identity.sessionId, proof: { sessionId: identity.sessionId, ...identity.proof() } } : {}),
+      })).session,
     send: (id, input) => port.submitAgentTurn(id, identity ? { ...input, proof: { sessionId: identity.sessionId, ...identity.proof() } } : input),
     read: async (id, after, options) => (await port.events(id, after, options?.limit)).events,
     stop: (id) => port.stopSession(id, "agent"),

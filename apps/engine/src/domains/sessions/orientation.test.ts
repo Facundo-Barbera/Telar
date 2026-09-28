@@ -283,10 +283,10 @@ test("the skill and the run briefing send long-running work to a terminal the pe
 });
 
 test("the skill says the things a coordinator gets wrong", () => {
-  // Every one of these is a real failure mode: a session treating a peer as a
-  // child, reading settling as approval, or routing a refused action through
-  // another session.
-  expect(TELAR_SKILL).toContain("PEERS");
+  // Every one of these is a real failure mode: expecting a created session to
+  // report back untasked, reading settling as approval, or routing a refused
+  // action through another session.
+  expect(TELAR_SKILL).toContain("reports back only when you task it");
   expect(TELAR_SKILL.toLowerCase()).toContain("is shelving, not acceptance");
   expect(TELAR_SKILL).toContain("CANNOT");
   expect(TELAR_SKILL.toLowerCase()).toContain("refused");

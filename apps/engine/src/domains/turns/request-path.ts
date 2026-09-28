@@ -1,7 +1,7 @@
 import type { Project, ProjectAvailability, Session } from "@telar/engine-client";
 import { prefetchableRef, type PrefetchedGit } from "../../platform/git/prefetch";
 import type { SessionLifecycle, SessionRecords } from "../sessions";
-import type { TurnIntake } from "./intake";
+import type { SenderProof, TurnIntake } from "./intake";
 
 type RequestPathDeps = {
   records: SessionRecords;
@@ -10,6 +10,7 @@ type RequestPathDeps = {
   git: PrefetchedGit;
   getProject: (projectId: string) => Project;
   availability: (project: Project) => ProjectAvailability;
+  requireSenderClaim: (proof: SenderProof) => { sessionId: string };
 };
 
 const cutQuestions = (baseRef: string | undefined): string[][] => {
@@ -22,7 +23,8 @@ export class RequestPath {
   constructor(private readonly deps: RequestPathDeps) {}
 
   /** A project that is not there skips the prefetch: `createSession` refuses it before asking git anything. */
-  async createSession(input: Parameters<SessionLifecycle["createSession"]>[0]): Promise<Session> {
+  async createSession(requested: Parameters<SessionLifecycle["createSession"]>[0], proof?: SenderProof): Promise<Session> {
+    const input = proof ? { ...requested, startedFrom: { sessionId: this.deps.requireSenderClaim(proof).sessionId, runId: proof.runId } } : requested;
     let project: Project | undefined;
     try {
       project = input.projectId === undefined ? undefined : this.deps.getProject(input.projectId);
