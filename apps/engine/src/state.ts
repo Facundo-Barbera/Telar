@@ -221,7 +221,7 @@ import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings
 import type { DictationContext } from "./dictation/keyterms";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
-import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
+import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./domains/appearance";
 import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./domains/files";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
