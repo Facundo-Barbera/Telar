@@ -3,14 +3,18 @@ import { pluginEnabled, readProjectPlugins, type TurnState } from "@telar/engine
 import type { JournalTask, JournalTurn } from "@/platform/engine";
 import { insertReference } from "@/features/composer";
 
-const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
-  completed: "Completed",
-  failed: "Failed",
-  stopped: "Stopped",
-  ambiguous: "Needs recovery decision",
-  discarded: "Discarded after recovery decision",
-  steering: "Sending into the running turn",
-  steered: "Sent into the running turn",
+type TurnTone = "active" | "done" | "attention" | "danger" | "muted";
+const turnStates: Record<TurnState, { label: string; tone: TurnTone }> = {
+  queued: { label: "Queued", tone: "active" },
+  claimed: { label: "Claimed", tone: "active" },
+  running: { label: "Streaming", tone: "active" },
+  completed: { label: "Completed", tone: "done" },
+  failed: { label: "Failed", tone: "danger" },
+  ambiguous: { label: "Needs recovery decision", tone: "attention" },
+  stopped: { label: "Stopped", tone: "muted" },
+  steering: { label: "Sending into the running turn", tone: "active" },
+  steered: { label: "Sent into the running turn", tone: "done" },
+  discarded: { label: "Discarded after recovery decision", tone: "muted" },
 };
 
 // Unpinning clears the override rather than writing "settled", which would shelve the session.
@@ -18,17 +22,8 @@ export function pinToggleOverride(settledOverride: "settled" | "active" | null |
   return settledOverride === "active" ? null : "active";
 }
 
-export function describeTurnState(state: TurnState): { label: string; tone: "active" | "done" | "attention" | "danger" | "muted" } {
-  if (state === "queued") return { label: "Queued", tone: "active" };
-  if (state === "claimed") return { label: "Claimed", tone: "active" };
-  if (state === "running") return { label: "Streaming", tone: "active" };
-  if (state === "completed") return { label: terminal.completed, tone: "done" };
-  if (state === "failed") return { label: terminal.failed, tone: "danger" };
-  if (state === "ambiguous") return { label: terminal.ambiguous, tone: "attention" };
-  if (state === "stopped") return { label: terminal.stopped, tone: "muted" };
-  if (state === "steering") return { label: terminal.steering, tone: "active" };
-  if (state === "steered") return { label: terminal.steered, tone: "done" };
-  return { label: terminal.discarded, tone: "muted" };
+export function describeTurnState(state: TurnState): { label: string; tone: TurnTone } {
+  return { ...(turnStates[state] ?? turnStates.discarded) };
 }
 
 export function cockpitPlugins(project: Parameters<typeof readProjectPlugins>[0] | undefined): string[] {
