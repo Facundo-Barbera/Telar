@@ -191,17 +191,15 @@ import {
   type AutoCompact,
   CLAUDE_COMPACTION_ENV_NAMES,
   migrateClaudeCompaction,
+  type DictationLanguage,
+  type DictationProviderId,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
 import { assertId, assertStateVersion, EngineStateError, ID, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
 import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, SessionQueues, SessionMailbox, isPeerMail, awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, type SessionQueue, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "./domains/turns";
 import { TELAR_ORIENTATION } from "./orientation";
-import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
-import { lastKeytermFit, type KeytermFit } from "./dictation/fit";
-import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
-import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
-import type { DictationContext } from "./dictation/keyterms";
+import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./domains/appearance";

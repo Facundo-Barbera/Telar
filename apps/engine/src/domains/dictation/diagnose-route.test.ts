@@ -1,23 +1,11 @@
-/**
- * THE DIAGNOSIS ROUTE, AGAINST A REAL DAEMON AND A FAKE DEEPGRAM (#711).
- *
- * `dictation-diagnose.test.ts` covers the sentences. This covers the route: that
- * it is reachable, that it refuses the way the mint beside it refuses, that it
- * asks the question the client's socket asked rather than a different one, and
- * that an off Mac spends nothing finding out.
- *
- * DEEPGRAM IS NEVER CALLED, for `dictation-token.test.ts`'s reason: a developer
- * with a real key pasted into their own engine would otherwise have this suite
- * spending their account.
- */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, EngineClientError } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { stubModels } from "./stub-models";
-import { forgetKeytermFits } from "../src/dictation/fit";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { stubModels } from "../../../test/stub-models";
+import { forgetKeytermFits } from "./fit";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -46,8 +34,6 @@ async function engine(deepgram?: (call: Call) => Response): Promise<{ client: En
 afterEach(async () => {
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
-  // The fit remembers accepted answers across calls, and a remembered one from
-  // another test would make this one ask a different question.
   forgetKeytermFits();
 });
 
@@ -73,8 +59,6 @@ test("a Mac with no key is a conflict naming the pane, not a diagnosis", async (
 });
 
 test("Deepgram's refusal comes back as Deepgram's own words", async () => {
-  // THE WHOLE OF #711 IN ONE ASSERTION. This is the body that reached the owner
-  // as "the connection to the transcription service failed".
   const { client } = await engine((call) =>
     listen(call)
       ? new Response(JSON.stringify({ err_msg: "Bad Request: Keyterm limit exceeded. The maximum number of tokens across all keyterms is 500." }), { status: 400 })
@@ -95,9 +79,6 @@ test("an accepted handshake sends the reader to the network, not to the vendor's
 });
 
 test("it asks with the model and language a client would have opened with", async () => {
-  // A DIAGNOSIS OF A DIFFERENT REQUEST IS NOT A DIAGNOSIS — and `language` is
-  // the field that made dictation transcribe Spanish as English when it went
-  // missing once already (#560).
   const { client, calls } = await engine((call) =>
     listen(call) ? new Response(JSON.stringify({ err_msg: "Token is invalid." }), { status: 401 }) : Response.json({ access_token: "jwt", expires_in: 300 }),
   );
@@ -108,8 +89,6 @@ test("it asks with the model and language a client would have opened with", asyn
   const url = new URL(asked[0]!.url);
   expect(url.searchParams.get("model")).toBe("nova-3");
   expect(url.searchParams.get("language")).toBe("es");
-  // WITHOUT THE UPGRADE HEADERS Deepgram answers before it reads the query, and
-  // every diagnosis would be the same one.
   expect(asked[0]!.headers.Upgrade).toBe("websocket");
 });
 
