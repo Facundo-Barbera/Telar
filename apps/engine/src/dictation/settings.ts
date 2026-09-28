@@ -43,7 +43,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWrite } from "../atomic";
+import { atomicWrite } from "../platform/fs/atomic";
 import { DICTATION_LANGUAGE_DEFAULT, isDictationLanguage, isDictationProviderId, type DictationProviderId } from "./provider";
 
 /** Everything the settings document holds. The key is NOT in it — see the

@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { autoResolution, EngineEvent, idleSince, isShelved, RuntimeMode, settlingActivityOf, type RequestKind, type SessionActivity } from "@telar/engine-client";
 import type { ScheduleRule } from "./schedules";
-import { atomicWrite } from "./atomic";
+import { atomicWrite } from "./platform/fs/atomic";
 import { statePaths } from "./state-paths";
 import type { TurnSummary } from "./turn-summary";
 

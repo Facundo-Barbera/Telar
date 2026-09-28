@@ -26,7 +26,7 @@ import {
   type ProjectWorkspaceView,
   type WorkspaceProposal,
 } from "@telar/engine-client";
-import { atomicWrite } from "./atomic";
+import { atomicWrite } from "./platform/fs/atomic";
 
 /** Relative to a project's checkout. Tracked, so a repo can propose its own setup. */
 const WORKSPACE_PROPOSAL_PATH = path.join(".telar", "workspace.json");

@@ -30,7 +30,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWrite } from "../atomic";
+import { atomicWrite } from "../platform/fs/atomic";
 import type { RunOrigin } from "./types";
 
 /** Enough to re-attach a terminal the host still holds. No secret, no pid. */

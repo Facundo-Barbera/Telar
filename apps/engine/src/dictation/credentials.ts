@@ -21,7 +21,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWrite } from "../atomic";
+import { atomicWrite } from "../platform/fs/atomic";
 
 /** `<engineRoot>/dictation/credentials.json`. Its own file rather than a field
  *  on a settings document, for `agentKeyFile`'s reason: the settings document

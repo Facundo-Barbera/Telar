@@ -21,7 +21,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceConfig } from "@telar/engine-client";
-import { atomicWrite } from "./atomic";
+import { atomicWrite } from "./platform/fs/atomic";
 import type { RunHandle, RunLauncher } from "./run/launcher";
 import { resolveShell } from "./run/shell";
 
