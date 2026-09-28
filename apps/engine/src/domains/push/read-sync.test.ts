@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { signalKey, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import { collectReads, noteAlert, READ_SYNC_BATCH, READ_SYNC_INTERVAL_S, readCleared, readSyncDelivery } from "./read-sync";
@@ -27,7 +26,6 @@ describe("what counts as read", () => {
     expect(readCleared(finished("a"))).toBe(false);
     expect(readCleared(read(finished("a")))).toBe(true);
     expect(readCleared({ ...read(finished("a")), activity: "blocked" })).toBe(false);
-    // Never produced a result: nothing to read, so nothing to keep up.
     expect(readCleared({ activity: "idle" })).toBe(true);
   });
 });
@@ -40,7 +38,6 @@ describe("the silent push", () => {
     expect(delivery.token).toBe(registration.token);
     expect(delivery.payload).toEqual({ aps: { "content-available": 1 }, read: { host: registration.hostId, sessions: ["a", "b"] } });
     expect(JSON.stringify(delivery.payload)).not.toContain("Secret");
-    // Relay v2 carries it as a kind of its own.
     expect(v2Body(delivery)).toEqual({ kind: "background", collapseId: delivery.collapseId, payload: delivery.payload });
   });
 });
@@ -49,7 +46,6 @@ describe("coalescing and the one-a-minute limit", () => {
   test("only a session this phone was alerted about is ever cleared", async () => {
     const quiet = working("quiet");
     const { sent, send } = recorder();
-    // `quiet` was read on the Mac, but the phone never got an alert for it.
     const next = await deliverRecord(record([quiet]), [read(quiet)], send, 10_000, { readSync: true });
     expect(background(sent)).toEqual([]);
     expect(next?.readSync).toBeUndefined();
@@ -60,21 +56,17 @@ describe("coalescing and the one-a-minute limit", () => {
     const { sent, send } = recorder();
     let current = record([a, b, c]);
     let now = 10_000;
-    // Three alerts go out and are tracked.
     current = (await deliverRecord(current, [finished("a"), finished("b"), finished("c")], send, now, { readSync: true }))!;
     expect(current.readSync?.alerted).toEqual(["a", "b", "c"]);
-    // Two are read on the Mac in the same sweep: ONE push names both.
     now += 5;
     current = (await deliverRecord(current, [read(finished("a")), read(finished("b")), finished("c")], send, now, { readSync: true }))!;
     expect(background(sent).map(d => d.payload.read?.sessions)).toEqual([["a", "b"]]);
-    // The third is read seconds later: held, not sent.
     now += 10;
     const all = [read(finished("a")), read(finished("b")), read(finished("c"))];
     current = (await deliverRecord(current, all, send, now, { readSync: true }))!;
     expect(background(sent)).toHaveLength(1);
     expect(current.readSync?.pending).toEqual(["c"]);
     expect(readSyncPass([current], all, now)).toEqual({ due: false, waiting: true });
-    // A minute after the last push it goes, with nothing else to trigger it.
     now = 10_005 + READ_SYNC_INTERVAL_S;
     expect(readSyncPass([current], all, now)).toEqual({ due: true, waiting: true });
     current = (await deliverRecord(current, all, send, now, { readSync: true, changed: new Set() }))!;
@@ -96,7 +88,6 @@ describe("coalescing and the one-a-minute limit", () => {
   test("a new alert for a session supersedes its pending clear", () => {
     const pending = { alerted: [], pending: ["a"], sentAt: 1 };
     expect(noteAlert(pending, "a")).toEqual({ alerted: ["a"], pending: [], sentAt: 1 });
-    // A session that is gone is forgotten rather than cleared.
     expect(collectReads({ alerted: ["gone"], pending: [] }, [])).toEqual({ alerted: [], pending: [] });
   });
 
@@ -118,7 +109,6 @@ describe("coalescing and the one-a-minute limit", () => {
 
   test("an alert the Mac took is not one the phone holds, so it is never cleared there", async () => {
     const { sent, send } = recorder();
-    // "Notify on" routed this transition to the Mac: nothing reached the phone.
     const next = (await deliverRecord(record([working("a")]), [finished("a")], send, 10_000, { readSync: true, macTook: () => true }))!;
     expect(sent).toEqual([]);
     expect(next.readSync).toBeUndefined();

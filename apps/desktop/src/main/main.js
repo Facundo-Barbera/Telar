@@ -17,7 +17,7 @@ const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
 const { watchWindowVisibility } = require("./window-visibility");
-const { ACTIVE_IDLE_SECONDS, DESKTOP_NOTIFICATIONS_ENV, createDesktopNotifier, createPresenceReporter, routeOf } = require("./desktop-notifications");
+const { ACTIVE_IDLE_SECONDS, createDesktopNotifier, createPresenceReporter, routeOf } = require("./desktop-notifications");
 const { watchVolumes } = require("./volume-watch");
 const { awaitStore } = require("../store/store-gate");
 const { createStoreGateWindow } = require("../store/store-gate-window");
@@ -34,7 +34,8 @@ const serviceWorkerWatchdog = require("./service-worker-watchdog");
 const { createProcessMetricsReader } = require("./process-metrics");
 const { wireLoginOffer } = require("../login/login-offer-window");
 const uiServer = require("./ui-server");
-const { findFreePort, getStablePort, seatHostCookie, seatHostHeader, sendToServer, waitForServer } = uiServer;
+const { findFreePort, getStablePort, seatHostCookie, seatHostHeader, waitForServer } = uiServer;
+const engineNotices = require("./engine-notices").createEngineNotices({ onMessage: (message) => desktopNotifier.handleServerMessage(message) });
 const { jsonPrefs } = require("./prefs");
 
 const SMOKE = process.argv.includes("--smoke");
@@ -488,9 +489,7 @@ function startServer(port, home) {
       TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-ui-dev" : "telar-ui",
       ...(tailscaleServeUrl ? { TELAR_TAILSCALE_URL: tailscaleServeUrl } : {}),
       ...(tailscaleServeError ? { [TAILSCALE_SERVE_ERROR_ENV]: tailscaleServeError } : {}),
-      [DESKTOP_NOTIFICATIONS_ENV]: "1",
     },
-    onMessage: (message) => desktopNotifier.handleServerMessage(message),
     onExit: (code, signal) => {
       presenceReporter.stop();
       if (!SMOKE && !app.isQuitting) {
@@ -499,6 +498,7 @@ function startServer(port, home) {
       }
     },
   });
+  engineNotices.start(engineDiscoveryFile(home));
   watchPresence();
   return child;
 }
@@ -508,12 +508,12 @@ function cockpitFocus() {
   const cockpit = focused && [...browserManagers].some((manager) => manager.window === focused);
   return { focused: Boolean(cockpit), viewingPath: cockpit ? routeOf(focused.webContents.getURL()) : null };
 }
-const desktopNotifier = createDesktopNotifier({ Notification, send: sendToServer, context: cockpitFocus, open: openNotificationPath });
+const desktopNotifier = createDesktopNotifier({ Notification, send: engineNotices.send, context: cockpitFocus, open: openNotificationPath });
 
 let screenLocked = false;
 const presenceReporter = createPresenceReporter({
   sample: () => ({ idleState: powerMonitor.getSystemIdleState(ACTIVE_IDLE_SECONDS), locked: screenLocked, ...cockpitFocus() }),
-  send: sendToServer,
+  send: engineNotices.send,
 });
 let presenceWatched = false;
 function watchPresence() {

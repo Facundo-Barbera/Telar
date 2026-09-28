@@ -1,61 +1,39 @@
-/**
- * WHAT A MAC WITH NOBODY TO SEND TO SAYS, AND WHO IT TELLS — issue #579.
- *
- * Notifications never arrived on the owner's phone, and no code was broken:
- * nothing could send and every surface that knew stayed quiet. The worker
- * returns without starting, the registration route answers
- * `{ configured: false }`, and until then the only place that fact was
- * rendered was a status line under a toggle on the phone.
- *
- * What must not drift:
- *
- *   - the worker does NOT start with no phone registered through the relay and
- *     no direct key, and the route says so, so a phone can tell "unavailable"
- *     from "nothing has happened yet";
- *   - a phone that registered without a relay credential is reported as not
- *     having finished registering, never as failing;
- *   - the status route answers the same predicate the worker gates on — a pane
- *     that disagreed with the sender would be worse than no pane;
- *   - NO CREDENTIAL leaves that route: not a relay key, not a device token,
- *     not a push-to-start token;
- *   - `notification()` pushes for the two things a person must be told about —
- *     a session that opened a request, and a turn that failed — and the second
- *     is NOT behind the "work completed" preference;
- *   - `lastDeliveryAt` records a delivery and survives a re-registration, which
- *     is what lets the pane tell a registered phone from a reached one.
- */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addDevice, mintDeviceToken } from "@/lib/testing/remote";
-import { GET as pushGET } from "../../app/api/mobile/push/route";
-import { GET as relayGET } from "../../app/api/mobile/relay/route";
+import type { EngineClient } from "@telar/engine-client";
+import { matchRoute, type Route } from "../../platform/http/route";
 import { notification, pushConfigured, readPushRecords, saveRegistration, signalKey, writePushRecords, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
-import { startMobilePushWorker } from "./worker";
-import { deliverRecord } from "./worker";
+import { pushRoutes } from "./routes";
+import { deliverRecord, startMobilePushWorker, stopMobilePushWorker } from "./worker";
 
-const old = { home: process.env.TELAR_HOME, cockpit: process.env.TELAR_COCKPIT, key: process.env.TELAR_APNS_KEY_ID };
+const old = { home: process.env.TELAR_HOME, key: process.env.TELAR_APNS_KEY_ID };
 let folder: string | undefined;
 
 afterEach(() => {
-  for (const [name, value] of [["TELAR_HOME", old.home], ["TELAR_COCKPIT", old.cockpit], ["TELAR_APNS_KEY_ID", old.key]] as const) {
+  stopMobilePushWorker();
+  for (const [name, value] of [["TELAR_HOME", old.home], ["TELAR_APNS_KEY_ID", old.key]] as const) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
   if (folder) fs.rmSync(folder, { recursive: true, force: true });
   folder = undefined;
-  delete (globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer;
 });
 
 function setup() {
   folder = fs.mkdtempSync(path.join(os.tmpdir(), "telar-relay-"));
   process.env.TELAR_HOME = folder;
-  process.env.TELAR_COCKPIT = "1";
-  // No phone has registered and no direct key is in the environment — which is
-  // exactly the owner's Mac before this batch.
   delete process.env.TELAR_APNS_KEY_ID;
+}
+const phone = { id: "phone", name: "Facundo's iPhone", role: "full" };
+const workerDeps = { client: () => ({}) as EngineClient, fullDevices: () => [phone.id] };
+async function call(method: Route["method"], pathname: string, devices = [phone]) {
+  const { route, params } = matchRoute(pushRoutes({ client: () => ({}) as EngineClient, pairedDevices: () => devices }), method, pathname)!;
+  return route.handle({ body: {}, params, query: new URLSearchParams() }) as Promise<{ status: number; body: Record<string, unknown> }>;
+}
+async function relayStatus<T>(devices = [phone]): Promise<T> {
+  return (await call("GET", "/v2/push/relay", devices)).body as T;
 }
 
 const registration: MobileRegistration = {
@@ -75,40 +53,31 @@ describe("a Mac with nobody to send to", () => {
   test("the worker does not start, and nothing schedules a tick", () => {
     setup();
     expect(pushConfigured()).toBe(false);
-    startMobilePushWorker();
-    // NOT STARTED is the whole point: a worker that ran would poll every five
-    // seconds and send nothing, for ever, with no way to tell the two apart.
+    startMobilePushWorker(workerDeps);
     expect((globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer).toBeUndefined();
   });
 
-  test("the registration route says so, rather than accepting in silence", () => {
+  test("the registration route says so, rather than accepting in silence", async () => {
     setup();
-    const token = mintDeviceToken();
-    addDevice("Phone", token);
-    const answer = pushGET(new Request("http://localhost/api/mobile/push", { headers: { authorization: `Bearer ${token}` } }));
-    expect(answer.status).toBe(200);
+    expect(await call("GET", "/v2/push/devices/phone")).toEqual({ status: 200, body: { configured: false } });
   });
 
   test("the status route answers the same predicate the worker gates on", async () => {
     setup();
-    const answer = await relayGET();
-    const body = (await answer.json()) as Record<string, unknown>;
+    const body = await relayStatus<Record<string, unknown>>();
     expect(body.configured).toBe(pushConfigured());
     expect(body.configured).toBe(false);
     expect(body.devices).toEqual([]);
-    // Nothing about provisioning is left to report.
     expect(Object.keys(body).sort()).toEqual(["configured", "devices"]);
   });
 
   test("a phone that brought no relay credential is shown as not yet registered, and not sent to", async () => {
     setup();
-    const device = addDevice("Phone", mintDeviceToken());
-    saveRegistration(device.id, registration);
-    const body = (await (await relayGET()).json()) as { configured: boolean; devices: Array<{ transport: string }> };
+    saveRegistration(phone.id, registration);
+    const body = await relayStatus<{ configured: boolean; devices: Array<{ transport: string }> }>();
     expect(body.devices[0]!.transport).toBe("none");
-    // Nothing can reach it, so the worker does not start to try.
     expect(body.configured).toBe(false);
-    startMobilePushWorker();
+    startMobilePushWorker(workerDeps);
     expect((globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer).toBeUndefined();
   });
 });
@@ -116,33 +85,24 @@ describe("a Mac with nobody to send to", () => {
 describe("the status route never carries a credential", () => {
   test("a registered phone is described, never quoted", async () => {
     setup();
-    const token = mintDeviceToken();
-    const device = addDevice("Facundo's iPhone", token);
-    saveRegistration(device.id, { ...registration, pushToStartToken: "b".repeat(64), liveActivities: true });
+    saveRegistration(phone.id, { ...registration, pushToStartToken: "b".repeat(64), liveActivities: true });
 
-    const answer = await relayGET();
-    const text = await answer.text();
-    // The three secrets a push record holds. None of them is a thing a Settings
-    // pane has any use for.
+    const text = JSON.stringify(await relayStatus());
     expect(text).not.toContain("a".repeat(64));
     expect(text).not.toContain("b".repeat(64));
-    expect(text).not.toContain(token);
 
     const body = JSON.parse(text) as { devices: Array<{ name?: string; enabled: boolean; paired: boolean; lastDeliveryAt?: number }> };
     expect(body.devices).toHaveLength(1);
     expect(body.devices[0]!.name).toBe("Facundo's iPhone");
     expect(body.devices[0]!.enabled).toBe(true);
     expect(body.devices[0]!.paired).toBe(true);
-    // NEVER DELIVERED TO, which is what the pane has to be able to say about a
-    // phone that registered and has been silent ever since.
     expect(body.devices[0]!.lastDeliveryAt).toBeUndefined();
   });
 
   test("a record whose device is no longer paired is shown as what it is", async () => {
     setup();
     saveRegistration("gone", registration);
-    const answer = await relayGET();
-    const body = (await answer.json()) as { devices: Array<{ paired: boolean; name?: string }> };
+    const body = await relayStatus<{ devices: Array<{ paired: boolean; name?: string }> }>();
     expect(body.devices[0]!.paired).toBe(false);
     expect(body.devices[0]!.name).toBeUndefined();
   });
@@ -150,15 +110,10 @@ describe("the status route never carries a credential", () => {
 
 describe("what a person is pushed about", () => {
   test("a session that opened a request, and a turn that failed", () => {
-    // A REQUEST OPENED is what `blocked` means on the signal the worker reads:
-    // the session is parked on a person.
     const blocked: SessionSignal = { ...working, activity: "blocked", activityAt: 2000 };
     const opened = notification(registration, blocked, signalKey(working))!;
     expect(opened.payload.aps.alert).toEqual({ title: "Telar", body: "A session needs your input or approval." });
 
-    // A TURN THAT FAILED, and NOT behind `completions`: somebody who has turned
-    // off "work completed" has asked not to hear about successes, which is not
-    // the same as asking not to hear that something broke.
     const failed: SessionSignal = { ...working, activity: "idle", lastTurnEndedAt: 3000, lastTurnFailed: true };
     const quiet = notification({ ...registration, completions: false }, failed, signalKey(working))!;
     expect(quiet.payload.aps.alert).toEqual({ title: "Telar", body: "A session failed. Open Telar to review it." });
@@ -179,8 +134,6 @@ describe("telling a registered phone from a reached one", () => {
     const sent = await deliverRecord(record(), [blocked], async () => ({ status: 200 }), 5_000);
     expect(sent!.lastDeliveryAt).toBe(5_000);
 
-    // NOTHING CHANGED, so nothing was sent, so the timestamp must not move —
-    // otherwise "last delivery 2 seconds ago" would be true of every idle Mac.
     const quiet = await deliverRecord(sent!, [working], async () => ({ status: 200 }), 9_000);
     expect(quiet!.lastDeliveryAt).toBe(5_000);
   });
@@ -200,31 +153,21 @@ describe("telling a registered phone from a reached one", () => {
   });
 });
 
-/**
- * WHY A PHONE IS NOT RINGING — issue #584.
- *
- * Two of the owner's three records were dead, one with 627 consecutive
- * failures, and the pane showed a count of "recent failures" and nothing about
- * WHY. A status and Apple's own word for it is the difference between "this
- * phone's token is gone" and "the relay had a bad minute" — and it is still
- * only a status: no token, no payload, no provider body.
- */
 describe("the status route says why a phone is not being reached", () => {
   test("the last status, Apple's reason, the failure run and whether it is parked", async () => {
     setup();
-    const device = addDevice("Facundo's iPhone", mintDeviceToken());
-    saveRegistration(device.id, registration);
+    saveRegistration(phone.id, registration);
     writePushRecords([{ ...readPushRecords()[0]!, lastStatus: 400, lastReason: "BadDeviceToken", failures: 20, parked: true }]);
 
-    const body = (await (await relayGET()).json()) as {
+    const body = await relayStatus<{
       devices: Array<{ lastStatus?: number; lastReason?: string; consecutiveFailures: number; parked: boolean }>;
-    };
+    }>();
     expect(body.devices[0]).toMatchObject({ lastStatus: 400, lastReason: "BadDeviceToken", consecutiveFailures: 20, parked: true });
   });
 
   test("a quiet Mac reports no pause, and the pause is never a guess", async () => {
     setup();
-    const body = (await (await relayGET()).json()) as { pausedUntil?: number };
+    const body = await relayStatus<{ pausedUntil?: number }>();
     expect(body.pausedUntil).toBeUndefined();
   });
 });

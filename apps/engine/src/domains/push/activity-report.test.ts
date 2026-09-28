@@ -1,20 +1,11 @@
-/**
- * WHY NO CARD APPEARED — what the Mac tells the phone about its automatic
- * Live Activity.
- *
- * Apple answers 200 for a push-to-start that iOS then drops, so "accepted,
- * and no card came back" has to be said as itself: it is the one case that
- * looks exactly like success from here.
- */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activityLine } from "../../components/settings/push-notifications-group";
-import { PUT as pushPUT } from "../../app/api/mobile/push/route";
-import { addDevice, mintDeviceToken } from "@/lib/testing/remote";
+import type { EngineClient } from "@telar/engine-client";
+import { matchRoute } from "../../platform/http/route";
 import { AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, activityReport, tokenFingerprint, type PushRecord } from "./push";
+import { pushRoutes } from "./routes";
 import { deliverRecord } from "./worker";
 
 const record = (patch: Partial<PushRecord> = {}): PushRecord => ({
@@ -40,35 +31,20 @@ describe("the report", () => {
   test("every start is recorded with what came back, accepted or refused", async () => {
     let next = (await deliverRecord(record(), [work], async () => ({ status: 200 }), 1000))!;
     expect(activityReport(next).lastStart).toEqual({ at: 1000, status: 200, relay: false, token: tokenFingerprint("b".repeat(64)) });
-    // A fingerprint, never the token, and the phone's own formula (StartTokenPolicy.fingerprint).
     expect(tokenFingerprint("b".repeat(64))).toMatch(/^[0-9a-f]{16}$/);
     expect(JSON.stringify(activityReport(next))).not.toContain("b".repeat(64));
     next = (await deliverRecord(record(), [work], async () => ({ status: 400, reason: "BadDeviceToken" }), 2000))!;
     expect(activityReport(next).lastStart).toMatchObject({ at: 2000, status: 400, reason: "BadDeviceToken", relay: false });
     next = (await deliverRecord(record(), [work], async () => ({ status: 409, relay: true, reason: "not_registered" }), 3000))!;
-    // The relay's word reaches the phone, which is how it knows to re-send its start token.
     expect(activityReport(next).lastStart).toMatchObject({ at: 3000, status: 409, reason: "not_registered", relay: true });
   });
 });
 
-describe("in the Mac's own Settings", () => {
-  test("an accepted start with no card says iOS dropped it, not that it worked", () => {
-    expect(activityLine({ card: false, lastStart: { at: 1, status: 200, relay: false } })).toBe("the last start was accepted, but no card appeared on the phone");
-    expect(activityLine({ card: false, lastStart: { at: 1, status: 400, reason: "TopicDisallowed", relay: false } })).toBe("push service refused the last start (400 TopicDisallowed)");
-    expect(activityLine({ card: false, lastStart: { at: 1, status: 401, relay: true } })).toBe("relay refused the last start (401)");
-    expect(activityLine({ card: true })).toBe("card running");
-    expect(activityLine({ card: false, blocker: "no-start-token" })).toContain("no push-to-start token");
-    expect(activityLine({ card: false })).toBeUndefined();
-  });
-});
-
 describe("to the phone", () => {
-  const old = { home: process.env.TELAR_HOME, cockpit: process.env.TELAR_COCKPIT };
+  const oldHome = process.env.TELAR_HOME;
   let folder: string | undefined;
   afterEach(() => {
-    for (const [name, value] of [["TELAR_HOME", old.home], ["TELAR_COCKPIT", old.cockpit]] as const) {
-      if (value === undefined) delete process.env[name]; else process.env[name] = value;
-    }
+    if (oldHome === undefined) delete process.env.TELAR_HOME; else process.env.TELAR_HOME = oldHome;
     if (folder) fs.rmSync(folder, { recursive: true, force: true });
     delete (globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer;
   });
@@ -76,13 +52,11 @@ describe("to the phone", () => {
   test("the registration reply carries the report, so the phone can say why", async () => {
     folder = fs.mkdtempSync(path.join(os.tmpdir(), "telar-activity-"));
     process.env.TELAR_HOME = folder;
-    process.env.TELAR_COCKPIT = "1";
-    // A timer already set is how `startMobilePushWorker` knows one runs: none starts here.
     (globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer = setTimeout(() => {}, 0);
-    const token = mintDeviceToken();
-    addDevice("Phone", token);
+    const routes = pushRoutes({ client: () => ({}) as EngineClient, pairedDevices: () => [{ id: "phone", name: "Phone", role: "full" }] });
+    const { route, params } = matchRoute(routes, "PUT", "/v2/push/devices/phone")!;
     const { deviceId: _, revision: __, updatedAt: ___, seen: ____, activitySent: _____, ...registration } = record({ pushToStartToken: undefined });
-    const answer = await pushPUT(new Request("http://localhost/api/mobile/push", { method: "PUT", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(registration) }));
-    expect(await answer.json()).toEqual({ configured: false, activity: { card: false, blocker: "no-start-token" } });
+    const answer = await route.handle({ body: registration, params, query: new URLSearchParams() });
+    expect(answer).toEqual({ status: 200, body: { configured: false, activity: { card: false, blocker: "no-start-token" } } });
   });
 });

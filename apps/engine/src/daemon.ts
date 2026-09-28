@@ -131,6 +131,7 @@ import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote"
 import { createHostsStore, hostsRoutes } from "./domains/hosts";
 import { mcpOAuthRoutes } from "./domains/agent-tools";
 import { aboutRoutes } from "./domains/updates";
+import { createPushService } from "./domains/push";
 import { matchRoute } from "./platform/http/route";
 
 /**
@@ -1198,7 +1199,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const pluginsDir = options.pluginsDir ?? externalPluginsDir(root);
   const remoteDir = options.remoteDir ?? remoteDirFor(root);
   const iconPng = createIconPng(path.join(store.paths.root, "icon-png"));
-  const domainRoutes = [...filesRoutes(), ...remoteRoutes(createRemoteStore(remoteDir)), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)()), ...aboutRoutes(root)];
+  const remoteStore = createRemoteStore(remoteDir), openStreams = new Set<(() => void) & { end?: () => void }>();
+  const push = createPushService({ remoteDir, pairedDevices: () => remoteStore.read().devices, openStreams });
+  const domainRoutes = [...filesRoutes(), ...remoteRoutes(remoteStore), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)()), ...aboutRoutes(root), ...push.routes];
   const external = loadInstalledPlugins(pluginsDir);
   const externalModule = (loaded: LoadedExternalPlugin) =>
     externalPlugin(loaded, {
@@ -1705,10 +1708,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   };
   const notesSocketTools = (): SocketTool[] => (notesToolsCache ??= collectNotesWallTools(buildNotesCapability()));
 
-  /** Every live event stream, so shutdown can end them — see the routes. A
-   *  `Set` of teardown functions rather than of responses: the route owns what
-   *  ending one means. */
-  const openStreams = new Set<(() => void) & { end?: () => void }>();
 
 
   const execution = createExecutionPort(store, {
@@ -1855,6 +1854,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, health());
         return;
       }
+      if (push.serveStream(request, response, url.pathname)) return;
       const domainRoute = matchRoute(domainRoutes, request.method ?? "GET", url.pathname);
       if (domainRoute) {
         const answer = await domainRoute.route.handle({ body: request.method === "GET" ? {} : await body(request), params: domainRoute.params, query: url.searchParams });
@@ -5070,16 +5070,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, { session: updated });
           return;
         }
-        /**
-         * A HUMAN SAW A RESULT. Its own verb rather than a PATCH field: the
-         * receipt names the turn that was on screen and the store decides
-         * whether that moves the mark, so there is nothing here for a client
-         * to get wrong by sending a timestamp of its own. See
-         * `EngineStore.markSessionRead`.
-         */
+        // A read receipt names the turn that was on screen; the store decides whether it moves the mark.
         if (request.method === "POST" && session.tail === "/read") {
           const input = await body(request);
           writeJson(response, 200, { session: store.markSessionRead(session.sessionId, stringValue(input.runId, "run id")!) });
+          push.dismiss(session.sessionId);
           return;
         }
         if (request.method === "POST" && session.tail === "/archive") {
@@ -5215,6 +5210,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     // discovery is published, so clients never observe a pre-recovery queue.
     store.recover();
     writeDiscovery(store, discovery);
+    push.listening(discovery);
 
     // Lifecycle operations use the same execution port as HTTP handlers,
     // directly in process. Tool capability calls retain the authenticated API.
@@ -5398,6 +5394,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (closed) return;
         closed = true;
         if (warmUp) clearTimeout(warmUp);
+        push.close();
         // The worker stops FIRST: it holds claims, and a claim outliving the
         // server it reports to becomes an ambiguous turn on the next start.
         await embedded?.stop();
