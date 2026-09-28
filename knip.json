@@ -21,7 +21,15 @@
         "bench/**/*.ts",
         "scripts/**/*.{ts,mjs}",
         "test/**/*.ts"
-      ]
+      ],
+      "ignoreDependencies": [
+        "@playwright/mcp"
+      ],
+      "ignoreIssues": {
+        "src/plugins/contract.ts": [
+          "types"
+        ]
+      }
     },
     "apps/web": {
       "project": [
