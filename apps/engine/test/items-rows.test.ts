@@ -30,6 +30,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { toLegacyHome } from "./store-internals";
 
 const roots: string[] = [];
 const stores: EngineStore[] = [];
@@ -48,12 +49,9 @@ afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-type Backend = "sqlite" | "json";
-const BACKENDS: Backend[] = ["sqlite", "json"];
-
-function open(directory: string, backend: Backend): EngineStore {
+function open(directory: string): EngineStore {
   let clock = 1_000;
-  const store = new EngineStore(directory, () => (clock += 1), backend === "sqlite" ? {} : { executionStorage: "json" });
+  const store = new EngineStore(directory, () => (clock += 1));
   stores.push(store);
   return store;
 }
@@ -131,7 +129,7 @@ function countItemBytes(store: EngineStore): () => number {
 // ── the claim ───────────────────────────────────────────────────────────────
 
 test("two hundred items cost two hundred items' worth of writes, not two hundred documents", () => {
-  const store = open(root(), "sqlite");
+  const store = open(root());
   const bytes = countItemBytes(store);
   seed(store);
 
@@ -160,7 +158,7 @@ test("two hundred items cost two hundred items' worth of writes, not two hundred
 test("the item a batch did not touch is not rewritten", () => {
   // The same claim one item at a time, which is the shape the amplification
   // came from: the last write of a 200-item session must weigh one item.
-  const store = open(root(), "sqlite");
+  const store = open(root());
   seed(store);
 
   const runId = "run_last";
@@ -181,49 +179,46 @@ test("the item a batch did not touch is not rewritten", () => {
 
 // ── the answer is the same answer ───────────────────────────────────────────
 
-for (const backend of BACKENDS) {
-  test(`the projection reads back whole and in first-open order (${backend})`, () => {
-    const directory = root();
-    const store = open(directory, backend);
-    seed(store);
-    const expected = Array.from({ length: ITEMS / PER_TURN }, (_, turn) =>
-      Array.from({ length: PER_TURN }, (_, step) => `run_${turn}_item_${step}`)).flat();
+test("the projection reads back whole and in first-open order", () => {
+  const directory = root();
+  const store = open(directory);
+  seed(store);
+  const expected = Array.from({ length: ITEMS / PER_TURN }, (_, turn) =>
+    Array.from({ length: PER_TURN }, (_, step) => `run_${turn}_item_${step}`)).flat();
 
-    expect(store.items("session_one").map((item) => item.id)).toEqual(expected);
-    // And across a restart, from whatever shape it is actually stored in.
-    const reopened = open(directory, backend);
-    expect(reopened.items("session_one")).toEqual(store.items("session_one"));
-  });
+  expect(store.items("session_one").map((item) => item.id)).toEqual(expected);
+  // And across a restart, from whatever shape it is actually stored in.
+  const reopened = open(directory);
+  expect(reopened.items("session_one")).toEqual(store.items("session_one"));
+});
 
-  test(`a window carries its own turns' items and no others (${backend})`, () => {
-    const directory = root();
-    const store = open(directory, backend);
-    seed(store);
-    const every = store.items("session_one");
+test("a window carries its own turns' items and no others", () => {
+  const directory = root();
+  const store = open(directory);
+  seed(store);
+  const every = store.items("session_one");
 
-    // A store of its own, so the answer comes from storage rather than from a
-    // cache the seeding left warm — which is the path the run index is for.
-    const cold = open(directory, backend);
-    const window = cold.snapshotWindow("session_one", { limit: 4 });
-    const chosen = new Set(window.turns.map((turn) => turn.runId));
-    expect(chosen.size).toBe(4);
-    expect(window.items).toEqual(every.filter((item) => chosen.has(item.runId)));
-    expect(window.items).toHaveLength(4 * PER_TURN);
-  });
-}
+  // A store of its own, so the answer comes from storage rather than from a
+  // cache the seeding left warm — which is the path the run index is for.
+  const cold = open(directory);
+  const window = cold.snapshotWindow("session_one", { limit: 4 });
+  const chosen = new Set(window.turns.map((turn) => turn.runId));
+  expect(chosen.size).toBe(4);
+  expect(window.items).toEqual(every.filter((item) => chosen.has(item.runId)));
+  expect(window.items).toHaveLength(4 * PER_TURN);
+});
 
 // ── the migration ───────────────────────────────────────────────────────────
 
-/** A sqlite store holding a session in the OLD shape: the blob, its offset
- *  index, and no marker. Built by seeding on JSON and importing, which is the
- *  route every existing store will actually take. */
+/** A legacy JSON home whose items are the blob, so the next open imports a
+ *  session in the OLD shape: the blob and no marker. */
 function blobShaped(): { directory: string; expected: ReturnType<EngineStore["items"]> } {
   const directory = root();
-  const json = open(directory, "json");
-  seed(json);
-  const expected = json.items("session_one");
-  json.closeExecutionStore();
-  stores.splice(stores.indexOf(json), 1);
+  const seeded = open(directory);
+  seed(seeded);
+  const expected = seeded.items("session_one");
+  toLegacyHome(seeded, directory);
+  fs.writeFileSync(path.join(directory, "sessions", "session_one", "items.json"), JSON.stringify({ items: expected }));
   return { directory, expected };
 }
 
@@ -232,7 +227,7 @@ const inner = (store: EngineStore): Marker => (store as unknown as { executionSt
 
 test("a session stored as a blob is moved to rows the first time it is read, and answers identically", () => {
   const { directory, expected } = blobShaped();
-  const store = open(directory, "sqlite");
+  const store = open(directory);
   const items = path.join(directory, "sessions", "session_one", "items.json");
 
   // Imported, not yet migrated: the blob is there and the marker is not.
@@ -241,22 +236,19 @@ test("a session stored as a blob is moved to rows the first time it is read, and
 
   expect(store.items("session_one")).toEqual(expected);
 
-  // And now it is rows: marker present, blob and its index gone.
+  // And now it is rows: marker present, blob gone.
   expect(inner(store).itemsAreRows("session_one")).toBe(true);
   expect(inner(store).byteLength(items)).toBeUndefined();
-  expect(inner(store).byteLength(path.join(directory, "sessions", "session_one", "items.index.json"))).toBeUndefined();
 
   // The answer survives the shape change and a restart.
-  expect(open(directory, "sqlite").items("session_one")).toEqual(expected);
+  expect(open(directory).items("session_one")).toEqual(expected);
 });
 
-test("a migration killed before it commits leaves the blob, the index and no marker", () => {
+test("a migration killed before it commits leaves the blob and no marker", () => {
   const { directory, expected } = blobShaped();
-  const store = open(directory, "sqlite");
+  const store = open(directory);
   const items = path.join(directory, "sessions", "session_one", "items.json");
-  const index = path.join(directory, "sessions", "session_one", "items.index.json");
   const before = inner(store).byteLength(items);
-  const beforeIndex = inner(store).byteLength(index);
   expect(before).toBeGreaterThan(ITEMS * BODY.length);
 
   /**
@@ -286,14 +278,10 @@ test("a migration killed before it commits leaves the blob, the index and no mar
   expect(intercepted).toBe(1);
   seam.executionStore.statement = real;
 
-  // NOTHING MOVED. The blob is byte-for-byte what it was, its index is beside
-  // it, and the marker never landed — which is a correct unmigrated session.
+  // NOTHING MOVED. The blob is byte-for-byte what it was and the marker never
+  // landed — which is a correct unmigrated session.
   expect(inner(store).itemsAreRows("session_one")).toBe(false);
   expect(inner(store).byteLength(items)).toBe(before!);
-  // Whatever the index was — a legacy import carries no offset index at all,
-  // since `importLegacy` moves the five documents and not the two derived from
-  // them — it is exactly what it was.
-  expect(inner(store).byteLength(index)).toBe(beforeIndex!);
 
   // And the next read simply tries again and succeeds.
   expect(store.items("session_one")).toEqual(expected);
@@ -302,7 +290,7 @@ test("a migration killed before it commits leaves the blob, the index and no mar
 
 test("deleting a session takes its rows and the marker that points at them", () => {
   const directory = root();
-  const store = open(directory, "sqlite");
+  const store = open(directory);
   seed(store);
   expect(store.items("session_one")).toHaveLength(ITEMS);
   expect(inner(store).itemsAreRows("session_one")).toBe(true);

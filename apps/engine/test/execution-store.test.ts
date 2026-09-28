@@ -6,6 +6,7 @@ import type { ContentStream, ItemDetail } from "@telar/engine-client";
 import { ContentStream as ContentStreamSchema, ItemDetail as ItemDetailSchema } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { ExecutionStore } from "../src/execution-store";
+import { toLegacyHome } from "./store-internals";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
@@ -13,9 +14,9 @@ afterEach(() => {
   for (const store of stores.splice(0)) store.closeExecutionStore();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
-function setup(storage: "json" | "sqlite" = "sqlite") {
+function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-sqlite-")); homes.push(home);
-  const store = new EngineStore(home, Date.now, { executionStorage: storage }); stores.push(store);
+  const store = new EngineStore(home, Date.now); stores.push(store);
   store.registerProject({ id: "project_one", name: "one", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
   return { home, store };
@@ -42,15 +43,15 @@ test("an interrupted transaction rolls back both journal and queue and invalidat
   store.submitTurn("session_one", { runId: "run_next", input: "after rollback" });
   expect(store.claimTurn("session_one", "worker_one")?.runId).toBe("run_next");
 });
-test("migration preserves history, keeps a backup, and reopening cannot return to stale JSON", () => {
-  const { store: original, home } = setup("json");
+test("migration preserves history and keeps a backup", () => {
+  const { store: original, home } = setup();
   original.submitTurn("session_one", { runId: "run_one", input: "keep me" });
+  toLegacyHome(original, home); stores.splice(stores.indexOf(original), 1);
   const migrated = new EngineStore(home, Date.now); stores.push(migrated);
   expect(migrated.turns("session_one")[0]?.input).toBe("keep me");
   expect(fs.existsSync(path.join(home, "execution-json-backup", "session_one", "queue.json"))).toBe(true);
   migrated.stopSession("session_one");
   migrated.closeExecutionStore(); stores.splice(stores.indexOf(migrated), 1);
-  expect(() => new EngineStore(home, Date.now, { executionStorage: "json" })).toThrow("migrated");
   const reopened = new EngineStore(home); stores.push(reopened);
   expect(reopened.turns("session_one")[0]?.state).toBe("stopped");
   expect(reopened.readEvents("session_one").some((event) => event.type === "turn.stopped")).toBe(true);
@@ -104,7 +105,7 @@ test("SIGKILL between projection and commit leaves no accepted turn or journal f
   expect(reopened.claimTurn("session_one", "worker_after")?.runId).toBe("run_after");
 });
 
-test("export retains post-migration history and reopens in a JSON-only store", async () => {
+test("export retains post-migration history and re-imports on open", async () => {
   const { home, store } = setup();
   store.submitTurn("session_one", { runId: "run_export", input: "after migration" });
   store.stopSession("session_one");
@@ -112,7 +113,7 @@ test("export retains post-migration history and reopens in a JSON-only store", a
   const destination = `${home}-export`; homes.push(destination);
   const child = Bun.spawn([process.execPath, path.resolve(import.meta.dir, "../scripts/export-execution.ts"), home, destination], { stdout: "ignore", stderr: "pipe" });
   expect(await child.exited).toBe(0);
-  const exported = new EngineStore(destination, Date.now, { executionStorage: "json" }); stores.push(exported);
+  const exported = new EngineStore(destination, Date.now); stores.push(exported);
   expect(exported.turns("session_one")[0]?.state).toBe("stopped");
   expect(exported.readEvents("session_one").at(-1)?.type).toBe("turn.stopped");
 });
@@ -480,9 +481,9 @@ test("a restart retires the claim on a stopped turn without disturbing the sessi
 test("the pre-SQLite backup is kept for its week and then swept, and the sweep says what it took", () => {
   const day = 24 * 60 * 60 * 1000;
   let clock = Date.now();
-  const { store: original, home } = setup("json");
+  const { store: original, home } = setup();
   original.submitTurn("session_one", { runId: "run_one", input: "keep me" });
-  original.closeExecutionStore(); stores.splice(stores.indexOf(original), 1);
+  toLegacyHome(original, home); stores.splice(stores.indexOf(original), 1);
 
   // The migration itself, which is what writes the backup.
   const migrated = new EngineStore(home, Date.now); stores.push(migrated);

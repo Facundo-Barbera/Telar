@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { toLegacyHome } from "./store-internals";
 
 const roots: string[] = [];
 
@@ -27,9 +28,9 @@ afterEach(() => {
 
 const bashDetail = { kind: "command_execution" as const, command: { command: "rm -rf build" } };
 
-function readyStore(directory = root(), options: ConstructorParameters<typeof EngineStore>[2] = {}): EngineStore {
+function readyStore(directory = root()): EngineStore {
   let clock = 100;
-  const store = new EngineStore(directory, () => (clock += 1), { notifier: () => true, ...options });
+  const store = new EngineStore(directory, () => (clock += 1), { notifier: () => true });
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   return store;
 }
@@ -118,13 +119,11 @@ test("an open request is never dropped, however far past the window it sits", ()
 
 test("the boot sweep trims documents written before the window existed", () => {
   const directory = root();
-  // A JSON home, imported into SQLite by the next open.
-  const seeded = readyStore(directory, { executionStorage: "json" });
+  const seeded = readyStore(directory);
   const token = runningSession(seeded);
   churn(seeded, token, 20);
 
-  // Write a fat document straight to disk, as an engine without the window did.
-  const file = path.join(seeded.paths.sessions, "session_one", "requests.json");
+  // A fat document in a legacy home, as an engine without the window left it.
   const rows = Array.from({ length: 300 }, (_unused, n) => ({
     id: `old_${String(n).padStart(4, "0")}`,
     runId: "run_one",
@@ -136,7 +135,8 @@ test("the boot sweep trims documents written before the window existed", () => {
     resolvedBy: "human",
     resolvedAt: 2,
   }));
-  fs.writeFileSync(file, JSON.stringify({ version: 1, requests: rows }));
+  toLegacyHome(seeded, directory, (key, value) =>
+    key === "sessions/session_one/requests.json" ? { version: 1, requests: rows } : value);
 
   const booted = new EngineStore(directory, () => 9_000, { notifier: () => true });
   booted.recover();

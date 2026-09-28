@@ -58,8 +58,7 @@ const embeddedWorker = process.env.TELAR_EMBEDDED_WORKER?.trim() !== "0";
  */
 let daemon: Awaited<ReturnType<typeof startEngine>>;
 try {
-  daemon = await startEngine({ embeddedWorker, warmUsageCacheAfterMs: 5_000, skillRoots: providerSkillRoots(),
-    executionStorage: process.env.TELAR_EXECUTION_STORE === "json" ? "json" : "sqlite" });
+  daemon = await startEngine({ embeddedWorker, warmUsageCacheAfterMs: 5_000, skillRoots: providerSkillRoots() });
 } catch (error) {
   if (!(error instanceof EngineStateError) || error.code !== "conflict") throw error;
   process.stderr.write(`Telar engine: ${error.message} — ${statePaths(engineRootFromEnv()).lock}\n`);

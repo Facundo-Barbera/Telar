@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
 import { legacyLongSpelling } from "../src/model-manifest";
+import { toLegacyHome } from "./store-internals";
 
 const roots: string[] = [];
 const dir = (prefix: string): string => {
@@ -30,29 +31,25 @@ const MARKER = "claude-long-window-migration.json";
 /** A store as a pre-#986 engine left it: bare ids on disk, and no marker. */
 function oldStore(): string {
   const root = dir("telar-long-window-");
-  // A JSON home, which the next open imports into SQLite.
-  const store = new EngineStore(root, () => 100, { executionStorage: "json" });
+  const store = new EngineStore(root, () => 100);
   store.registerProject({ id: "project_one", name: "One", root: dir("telar-long-window-checkout-") });
   store.registerProject({ id: "project_two", name: "Two", root: dir("telar-long-window-checkout-") });
   store.createSession({ id: "session_opus", projectId: "project_one" });
   store.createSession({ id: "session_sonnet", projectId: "project_one" });
   store.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
-  // What an older engine wrote. Edited on disk, because this build keeps a bare
-  // id as the 200k pick it now is.
-  const edit = (file: string, change: (value: Record<string, unknown>) => void) => {
-    const value = JSON.parse(fs.readFileSync(file, "utf8"));
-    change(value);
-    fs.writeFileSync(file, JSON.stringify(value));
+  // What an older engine wrote, as a legacy home the next open imports: this
+  // build keeps a bare id as the 200k pick it now is, so it cannot write one.
+  const models: Record<string, unknown> = {
+    "sessions/session_opus/session.json": { instanceId: "claude", model: "opus", effort: "high" },
+    "sessions/session_sonnet/session.json": { instanceId: "claude", model: "sonnet" },
+    "sessions/session_codex/session.json": { instanceId: "codex", model: "gpt-5-codex" },
   };
-  const session = (id: string) => path.join(root, "sessions", id, "session.json");
-  edit(session("session_opus"), (value) => void (value.model = { instanceId: "claude", model: "opus", effort: "high" }));
-  edit(session("session_sonnet"), (value) => void (value.model = { instanceId: "claude", model: "sonnet" }));
-  edit(session("session_codex"), (value) => void (value.model = { instanceId: "codex", model: "gpt-5-codex" }));
-  edit(path.join(root, "projects.json"), (value) => {
-    const projects = value.projects as Record<string, unknown>[];
-    projects[0]!.defaultModel = { instanceId: "claude", model: "claude-opus-5-5", effort: "medium" };
-    projects[1]!.defaultModel = { instanceId: "codex", model: "gpt-5-codex" };
-  });
+  toLegacyHome(store, root, (key, value) => (key in models ? { ...(value as object), model: models[key] } : value));
+  const projectsFile = path.join(root, "projects.json");
+  const registry = JSON.parse(fs.readFileSync(projectsFile, "utf8"));
+  registry.projects[0].defaultModel = { instanceId: "claude", model: "claude-opus-5-5", effort: "medium" };
+  registry.projects[1].defaultModel = { instanceId: "codex", model: "gpt-5-codex" };
+  fs.writeFileSync(projectsFile, JSON.stringify(registry));
   fs.rmSync(path.join(root, MARKER), { force: true });
   return root;
 }

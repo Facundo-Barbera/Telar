@@ -207,7 +207,6 @@ async function turnWith(
    *  have always used; `"sqlite"` is what the query routes need, because two of
    *  them refuse outright without an index to read (#516). */
   options: {
-    executionStorage?: "sqlite";
     /** What the session DOING the asking is allowed to do. The privilege
      *  ceiling (#541 G1) caps anything it creates at this. */
     hostRuntimeMode?: RuntimeMode;
@@ -217,7 +216,6 @@ async function turnWith(
     models: stubModels,
     engineRoot: tmp("telar-sessions-wiring-"),
     workerLeaseMs: 1_000,
-    ...(options.executionStorage ? { executionStorage: options.executionStorage } : {}),
   });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
