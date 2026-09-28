@@ -4073,7 +4073,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, { revision: since, unchanged: true, daemonId }, { etag });
           return;
         }
-        writeJson(response, 200, { ...store.liveSessionRows({ all }), daemonId }, { etag });
+        writeJson(response, 200, { ...store.liveSessionRows({ all }), projects: store.listProjects(), daemonId }, { etag });
         return;
       }
       /**

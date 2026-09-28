@@ -394,7 +394,7 @@ export type SessionBootstrap = SessionSnapshot & {
 
 export type LiveSessionsAnswer = {
   sessions: LiveSessionRow[];
-  projects: Array<{ id: string; name: string }>;
+  projects: Project[];
   assignments?: Record<string, SessionAssignment[]>;
   layout?: SidebarLayout;
   daemonId?: string;

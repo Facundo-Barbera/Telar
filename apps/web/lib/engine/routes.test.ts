@@ -35,6 +35,9 @@ describe("engine route adapters", () => {
     expect(await response.json()).toEqual({
       error: { code: "engine_unavailable", message: "Set an absolute TELAR_HOME for the engine before opening the cockpit." },
     });
+    const live = await liveGet(new Request("http://localhost/api/sessions/live"));
+    expect(live.status).toBe(503);
+    expect((await live.json()).error.code).toBe("engine_unavailable");
   });
 
   test("the web adapter refuses engine access outside the dedicated launcher", () => {
@@ -93,6 +96,36 @@ describe("engine route adapters", () => {
       pinnedOrder: ["session_plain"],
       mode: "flat",
     });
+  });
+
+  test("the live list is the engine's answer, with full projects and its conditional reads", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
+    roots.push(home);
+    process.env.TELAR_HOME = home;
+    process.env.TELAR_COCKPIT = "1";
+    const daemon = await startEngine({ engineRoot: path.join(home, "engine") });
+    daemons.push(daemon);
+    const client = new EngineClient(daemon.discovery);
+    fs.mkdirSync(path.join(home, "one"));
+    await client.registerProject({ id: "project_one", name: "One", root: path.join(home, "one") });
+    await client.createSession({ id: "session_one", projectId: "project_one" });
+
+    const first = await liveGet(new Request("http://cockpit.test/api/sessions/live"));
+    const etag = first.headers.get("etag");
+    const body = await first.json();
+    expect(body.projects).toEqual((await client.listProjects()).projects);
+    expect(etag).toBeTruthy();
+
+    const unchanged = await liveGet(new Request("http://cockpit.test/api/sessions/live", { headers: { "if-none-match": etag! } }));
+    expect(unchanged.status).toBe(304);
+    expect(unchanged.headers.get("etag")).toBe(etag);
+    expect(await unchanged.text()).toBe("");
+
+    const since = await liveGet(new Request(`http://cockpit.test/api/sessions/live?since=${body.revision}`));
+    expect(await since.json()).toEqual({ revision: body.revision, unchanged: true, daemonId: body.daemonId });
+
+    const wide = await liveGet(new Request(`http://cockpit.test/api/sessions/live?all=1&since=${body.revision}`));
+    expect((await wide.json()).sessions.map((s: { id: string }) => s.id)).toEqual(["session_one"]);
   });
 
   /**

@@ -7,12 +7,6 @@ import {
 } from "@telar/engine-client";
 import { connectEngine } from "@telar/engine-client/node";
 
-/**
- * The web process is only an authenticated engine client.  In
- * particular, this module does not import core state, a legacy session runner,
- * or any provider SDK.  The engine discovery document remains private under
- * the explicitly selected engine state root.
- */
 /** Telar routes are available only through the launcher, which rejects legacy homes before Next boots. */
 export function engineRootFromWebEnv(
   env: { TELAR_HOME?: string; TELAR_COCKPIT?: string } = process.env as { TELAR_HOME?: string; TELAR_COCKPIT?: string },
@@ -45,12 +39,10 @@ export async function engineClient(): Promise<EngineClient> {
   return connectEngine(engineRootFromWebEnv());
 }
 
-const statusByCode: Record<EngineErrorCode, number> = {
+export const statusByCode: Record<EngineErrorCode, number> = {
   engine_unavailable: 503,
   engine_unauthorized: 502,
   engine_locked: 503,
-  // 409, not 400: the request was well-formed and the client is not at fault —
-  // it is simply speaking a protocol version this engine no longer answers.
   protocol_mismatch: 409,
   invalid_request: 400,
   not_found: 404,
@@ -61,10 +53,6 @@ const statusByCode: Record<EngineErrorCode, number> = {
   // 502 like `driver_failed`: this cockpit is fine, the harness behind the
   // one-shot completion did not answer.
   textgen_failed: 502,
-  // 400, not 500: a plugin refused a well-formed request and said why — a
-  // toolchain that is missing, a kernel that died. The engine is not broken and
-  // the cockpit should show the plugin's own sentence, with its id on it, rather
-  // than the "something went wrong" a 500 produces.
   plugin_error: 400,
   internal_error: 500,
 };
