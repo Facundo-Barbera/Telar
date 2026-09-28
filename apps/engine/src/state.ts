@@ -95,8 +95,6 @@ import {
   type Cohort,
   type SubscribedCohort,
   type Turn,
-  type WakeKind,
-  type WakeReason,
   type WorkerClaim,
   type WorkerStatus,
   type WorkspaceFile,
@@ -114,8 +112,8 @@ import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, 
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { type AttachmentInput, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, isPeerMail, newestAssignment, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TERMINAL_WAKE_KINDS } from "./domains/sessions";
-import { FOLDING_INTENTS, heldDelivery, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, wakeNotification, withoutWakesFrom } from "./domains/turns";
+import { type AttachmentInput, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, newestAssignment, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession } from "./domains/sessions";
+import { requestTitle, TIMEOUT_REASON, TurnWakes, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -136,144 +134,15 @@ import { backfillTurnSummaries, CheckoutSizes, CleanupStore, copyStore, migrateB
 import { type AttachedTerminals, pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
 import { type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
 
-/** The human-facing one-liner for a parked request's notification. */
-/**
- * THE WAKE TEXT — A PING, NOT A REPORT.
- *
- * It begins with `[wake: …]` so a model can tell it from a person, names the
- * peer, the turn and what happened, and then names the ONE call that fetches
- * the detail. It carries at most a bounded excerpt of a completed turn's answer
- * (`INLINE_CHARS`): a wake is injected into the subscriber's context whether or
- * not it needs the answer, and a child that wrote fifty kilobytes used to spend
- * that on every coordinator subscribed to it. The rest is one
- * `sessions_read(sessionId, runId)` away.
- *
- * A PARKED REQUEST IS NO EXCEPTION. It names the request, its kind and a short
- * title, and then the two calls: read it, answer it. The fields used to ride
- * the notice so an answer could be composed without a second read — but that
- * made the one notice whose size followed its payload, and a coordinator that
- * is going to answer a question can afford the read it needs to answer it
- * properly. A secret pick is never described beyond its origin: the wall
- * refuses to resolve those, and naming candidates would offer the model
- * something it may not touch.
- */
-function wakeMessage(
-  kind: WakeKind,
-  target: Session,
-  turn: Turn,
-  context: { resultText?: string; failure?: Turn["failure"]; request?: EngineRequest },
-): string {
-  /**
-   * THE KIND LEADS. A queue strip truncates a wake to its first few words, and
-   * four wakes that all began `[wake] Session session_… "title"` read as four
-   * copies of one message — which is what a person saw when a child parked an
-   * approval and then finished: two rows, apparently identical, actually two
-   * different facts. The verb up front makes them tell apart at a glance.
-   */
-  const who = `Session ${target.id} "${target.title}"`;
-  const lines: string[] = [];
-  switch (kind) {
-    case "turn_completed": {
-      const text = (context.resultText ?? "").trim();
-      lines.push(`[wake: completed] ${who} — turn ${turn.runId} completed.`);
-      if (!text) {
-        lines.push("It ended with no answer text.");
-        break;
-      }
-      // A BOUNDED EXCERPT, not the whole answer (see `INLINE_CHARS`): enough
-      // that the common case needs no read, and a large answer still costs
-      // every subscriber little. The quoted words are a session's, so the relay
-      // rule comes with them.
-      const where = `sessions_read(sessionId: "${target.id}", runId: "${turn.runId}")`;
-      lines.push(`It answered with ${text.length} characters.`, ...quotedExcerpt(text, where), RELAY_RULE, "—", "The same read has that run's events; its diff is sessions_diff.");
-      return lines.join("\n");
-    }
-    case "turn_failed":
-      lines.push(
-        `[wake: failed] ${who} — turn ${turn.runId} FAILED${context.failure ? ` (${context.failure.code})` : "."}`,
-        ...(context.failure ? [clampWake(context.failure.message)] : []),
-      );
-      break;
-    case "turn_stopped":
-      lines.push(`[wake: stopped] ${who} — turn ${turn.runId} was stopped.`);
-      break;
-    case "request_opened": {
-      const request = context.request!;
-      lines.push(
-        `[wake: waiting] ${who} — is WAITING on a request (request ${request.id}, kind ${request.detail.kind}): ${clampWake(requestTitle(request.detail))}`,
-        "—",
-        `Read it with sessions_read(sessionId: "${target.id}", runId: "${turn.runId}") — the request's own fields are there. Answer with sessions_resolve_request(sessionId: "${target.id}", requestId: "${request.id}", decision, answers?). Only answer what you actually know; decline or leave it for the user otherwise.`,
-      );
-      return lines.join("\n");
-    }
-  }
-  lines.push(
-    "—",
-    // THE RETRIEVAL IS DIRECTLY USABLE, and scoped to this run: a coordinator
-    // that wants the outcome should not have to page a journal to find it.
-    `Fetch it with sessions_read(sessionId: "${target.id}", runId: "${turn.runId}") — that run's events and its final answer, bounded. Its diff with sessions_diff.`,
-  );
-  return lines.join("\n");
-}
-
-/**
- * WHAT A TIMED-OUT REQUEST TELLS THE MODEL THAT ASKED — issue #541 D.
- *
- * Rides `EngineRequest.reason`, which `resolutionsForWorker` hands back to the
- * worker and the drivers turn into the tool's own answer. Without it a declined
- * default reads to the model exactly like a person saying no, and it adapts to a
- * judgement nobody made; an accepted one reads like approval that was given.
- *
- * AND IT SAYS NOT TO ASK AGAIN THE SAME WAY, for `DECLINED_ANSWER`'s reason one
- * file over: a model that reads a timeout as "that attempt failed" re-opens the
- * identical request, which parks, which times out, which is a loop nobody is
- * watching by construction.
- */
-const TIMEOUT_REASON =
-  "Nobody answered before this request's deadline, so the default stated when it was opened was taken. A person did not decide this. Do not re-open the same request — say what happened and carry on, or ask something the person can answer later.";
-
-/** One clamped line for a wake. A wake is a ping; nothing in it is a payload. */
-function clampWake(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.length <= MAX_WAKE_LINE_CHARS
-    ? trimmed
-    : `${trimmed.slice(0, MAX_WAKE_LINE_CHARS)}… [${trimmed.length - MAX_WAKE_LINE_CHARS} more characters — sessions_read has the rest]`;
-}
-
-function requestTitle(detail: RequestDetail): string {
-  switch (detail.kind) {
-    case "command_execution":
-      return detail.command.command;
-    case "file_change":
-      return `${detail.change.kind} ${detail.change.path}`;
-    case "file_read":
-      return detail.read.path;
-    case "tool_call":
-      return detail.call.name;
-    case "user_input":
-      return detail.prompt;
-    case "secret_access":
-      // Origin and nothing else: the notification body may land on a lock
-      // screen, and even item TITLES are more than a passer-by should read.
-      return `Fill login from 1Password — ${detail.secret.origin}`;
-  }
-}
 
 
 
 
-/** How much of a finished turn's answer rides in the wake that announces it.
- *  The whole answer is one `sessions_read` away; the wake is a summons. */
-/**
- * The clamp on any single line a wake carries — a failure message, a request's
- * prompt, a field label. Not a budget for a result: a wake carries no result at
- * all (see `wakeMessage`), and this only keeps a pathological one-liner from
- * becoming the notice.
- */
-const MAX_WAKE_LINE_CHARS = 240;
 
 
-const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
+
+
+
 
 
 
@@ -395,21 +264,6 @@ function canonicalPath(input: string): string {
 
 
 /**
- * THE SESSION'S DIRECTORY, OR A REFUSAL — every store call that needs a real
- * folder on disk (#526).
- *
- * A `none` workspace is not a missing path, it is a session that HAS no path:
- * the Main conversation reads and delegates and owns no checkout. So the honest
- * answer to "read this session's files" is a refusal naming the reason, not a
- * `git` command run against `undefined` or against the engine's own cwd — which
- * is what every one of these call sites would have done had the path merely
- * gone optional.
- *
- * `invalid_request` RATHER THAN `not_found`: the session exists and the caller
- * is fine; what was asked of it does not apply to this kind of session.
- */
-
-/**
  * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
  *
  * SPELLED AS A PICK RATHER THAN A DELETE-LIST, so a field added to `Session`
@@ -470,36 +324,6 @@ const liveRow = (session: Session): LiveSessionRow => ({
 });
 
 /**
- * The most recently FINISHED turn, whatever it finished as.
- *
- * `completedAt` is the test rather than a list of states, because the states
- * that set it are exactly the states that ended: completed, failed, stopped,
- * discarded and steered all stamp it, and nothing else does. An enumeration
- * here would be a second copy of that fact, and the copy is the one that would
- * fall behind.
- *
- * WHICH IS ALSO WHY THIS IS NOT THE FUNCTION UNREAD IS BUILT ON. "Something
- * ended" and "there is an answer to read" are different questions: a steered
- * turn ends when the human's own words reach the provider, and a discarded one
- * ends because a human dismissed it. See `lastResultTurn`.
- *
- * Chosen by MAXIMUM rather than by position. Turns run one at a time per
- * session so the array is very nearly in finish order, and "very nearly" is the
- * kind of thing that yields a wrong answer once a month.
- *
- * `>=`, NOT `>`, AND A TEST CAUGHT IT. Timestamps are milliseconds, two turns
- * can finish inside one, and with a strict comparison a tie kept the EARLIER
- * turn — so a session that failed and was then retried successfully in the same
- * millisecond would keep reporting the failure. Ties break toward queue order,
- * which is finish order.
- */
-/**
- * The session's terminals as the STORE is allowed to see them — the run
- * manager, narrowed. `openCount` knows only the terminals the engine opened
- * (runs and the agent's); `closeSession` reaches the person's shells too,
- * because the desktop host closes by session.
- */
-/**
  * One claim a Stop just killed — the same triple `cancellationsForWorker`
  * returns, plus the worker it belongs to, because this is PUSHED rather than
  * asked for and the receiver has to check the claim is its own.
@@ -515,15 +339,6 @@ export type EngineNotifier = (input: {
 
 
 
-/**
- * How to read ONE file's patch — the two questions that change what git prints
- * rather than which file it prints it for.
- *
- * Named rather than inlined at four call sites because the session read, the
- * project read and their two synchronous twins have to agree: a flag one of
- * them accepted and another silently dropped would be a toolbar toggle that
- * worked on a session and did nothing on a canvas.
- */
 /**
  * `DiffBaseOption` AND `FilePatchOptions` COME FROM THE CONTRACT, not from
  * here — `protocol/diff-query.ts` owns the shape, its query builder and its
@@ -570,6 +385,7 @@ export class EngineStore {
   private readonly ingest: TurnIngest;
   private readonly claims: TurnClaims;
   private readonly recovery: TurnRecovery;
+  private readonly wakes: TurnWakes;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1281,6 +1097,17 @@ export class EngineStore {
     this.intake = this.createIntake();
     this.turnLifecycle = this.createTurnLifecycle();
     this.claims = this.createClaims();
+    this.wakes = new TurnWakes(this.kernel, {
+      records: this.records,
+      items: this.sessionItems,
+      mailbox: this.mailbox,
+      subscriptions: this.subscriptions,
+      readQueue: (id) => this.readQueue(id),
+      writeQueue: (id, queue) => this.writeQueue(id, queue),
+      scanQueue: (id) => this.scanQueue(id),
+      submitTurn: (id, input) => this.submitTurn(id, input),
+      writeNotificationItem: (id, turn) => this.writeNotificationItem(id, turn),
+    });
     this.recovery = new TurnRecovery(this.kernel, {
       records: this.records,
       items: this.sessionItems,
@@ -1966,12 +1793,6 @@ export class EngineStore {
   sessionDiffAsync(sessionId: string, options: DiffBaseOption = {}): Promise<SessionDiff> {
     const session = this.records.get(sessionId);
     const base = resolveRequestedBase(options, workspaceBaseRef(session.workspace));
-    /**
-     * A WORKTREE SESSION'S CHECKOUT IS ON THE INTERNAL DISK AND ITS `.git` IS
-     * NOT — see `worktree.ts`'s header. So the availability that matters to this
-     * read is the PROJECT's, not the workspace path's: the worktree directory is
-     * perfectly readable while every git command inside it fails.
-     */
     /**
      * A RANGE IS READ WHERE IT STILL RESOLVES — issue #741.
      *
@@ -2858,309 +2679,10 @@ export class EngineStore {
     return this.subscriptions.sweepCohorts();
   }
 
-  /**
-   * THE WAKE. Called at the end of every terminal turn transition and when a
-   * request parks — after the target's own queue and events are written, so
-   * a wake that fails can never fail the transition that caused it.
-   *
-   * A WAKE IS A TURN ON THE SUBSCRIBER, through `submitTurn` and no other
-   * path — which means it follows the same rule as a typed message: STEERED
-   * into a running turn the moment it arrives, or claimed as the next turn
-   * when the subscriber is idle. An orchestrator mid-thought hears that its
-   * child finished while it is still thinking about that child, rather than
-   * fourteen turns later. There is
-   * no event bus in this engine to ride instead, and `openProviderTurn` is
-   * for a process that is already talking — a subscriber sitting idle has no
-   * such process to inject into.
-   *
-   * A WAKE'S OWN ENDING WAKES NOBODY. Two sessions subscribed to each other
-   * would otherwise ping-pong forever: A finishes → B is woken → B's wake
-   * turn finishes → A is woken → … The turn whose ending is being announced
-   * is checked for a `wakeReason` and skipped. A DIRECT agent message's turn
-   * does wake: the sender asked for work and, if subscribed, wants its end.
-   *
-   * ONE FILE READ PER TRANSITION, returning at once when nothing matches —
-   * the common case on an engine with no orchestrator.
-   */
-  private fireSubscriptions(
-    targetSessionId: string,
-    kind: WakeKind,
-    turn: Turn,
-    context: { resultText?: string; failure?: Turn["failure"]; request?: EngineRequest },
-  ): void {
-    if (turn.origin === "session" && turn.wakeReason) return;
-    this.subscriptions.advanceCohortMember(targetSessionId, kind, turn, context);
-    const all = this.subscriptions.readSubscriptions();
-    const hits = all.filter((each) => each.targetSessionId === targetSessionId && each.events.includes(kind));
-    /**
-     * A COHORT PASSES A PARKED REQUEST THROUGH AT ONCE — the barrier holds
-     * endings, not someone waiting on an answer. As a subscription for this one
-     * wake, unless the subscriber already has a real one that fires on it.
-     */
-    if (kind === "request_opened") {
-      for (const cohort of this.subscriptions.readCohorts()) {
-        if (!cohort.members.some((member) => member.sessionId === targetSessionId && !member.outcome)) continue;
-        if (hits.some((each) => each.subscriberSessionId === cohort.subscriberSessionId)) continue;
-        hits.push({
-          id: cohort.id,
-          subscriberSessionId: cohort.subscriberSessionId,
-          targetSessionId,
-          events: ["request_opened"],
-          ...(cohort.completionWake ? { completionWake: cohort.completionWake } : {}),
-          createdAt: cohort.createdAt,
-        });
-      }
-    }
-    if (hits.length === 0) return;
-    let target: Session;
-    try {
-      target = this.records.get(targetSessionId);
-    } catch {
-      return;
-    }
-    let changed = false;
-    const remove = (subscription: Subscription) => {
-      const index = all.indexOf(subscription);
-      if (index >= 0) all.splice(index, 1);
-      changed = true;
-    };
-    /**
-     * ONE NOTIFICATION FOR EVERY SUBSCRIBER — minted here rather than per hit.
-     *
-     * Nothing in it is about WHO is being woken: it names the session that acted,
-     * its run, and the sentence the engine wrote about the transition. Two
-     * subscribers to one completion were being told the same fact in two objects
-     * built from the same inputs, which is the drift `notification.ts` exists to
-     * prevent, one level up. It is read and never written (`holdNotification`
-     * stores it, `mergeNotifications` builds new ones), so sharing it is safe.
-     *
-     * THE WAKE TEXT IS ITS BODY, NOT A TURN'S INPUT (#550). Same sentence, same
-     * author — what changed is where it sits. On `input` it was engine prose in
-     * the slot a person's words occupy, and every reader downstream had to be
-     * told in prose not to believe it. Here it is labelled as what it is, and
-     * `input` says only that a notification arrived. See `notificationLabel`.
-     */
-    const notification = wakeNotification({
-      wakeKind: kind,
-      targetSessionId,
-      runId: turn.runId,
-      ...(context.request ? { requestId: context.request.id } : {}),
-      body: wakeMessage(kind, target, turn, context),
-    });
-    // Asked once, not per subscriber: it is a fact about the run.
-    const silentTurn = kind === "turn_completed" && this.saidNothing(targetSessionId, turn);
-    for (const subscription of hits) {
-      const subscriberId = subscription.subscriberSessionId;
-      if (subscriberId === targetSessionId) continue;
-      let subscriber: Session | undefined;
-      try {
-        subscriber = this.records.get(subscriberId);
-      } catch {
-        subscriber = undefined;
-      }
-      if (!subscriber || subscriber.state !== "active") {
-        // The subscriber is gone; its wish goes with it.
-        remove(subscription);
-        continue;
-      }
-      if (subscriber.agentMessagesBlocked) continue;
-      /**
-       * A RESULT AND A COMPLETION ARE TWO DIFFERENT FACTS (#240) — AND SINCE
-       * #919 THE SECOND IS RECORDED, NOT DELIVERED, ONCE THE FIRST IS READ.
-       *
-       * #240 reverted a suppression: this used to swallow the `turn_completed`
-       * of any run whose worker had already sent an awaited `result`, and a
-       * worker that sent a result for the part it finished and kept working
-       * left its coordinator waiting for an end that never arrived. #590 then
-       * folded the second ROW into the result still waiting in the queue
-       * (`mergeIntoWaitingResult`), which covers the completion that lands
-       * before the result is read.
-       *
-       * THE CASE NEITHER COVERED is the measured one (#919): the coordinator
-       * has CLAIMED the result — or it was steered into the turn it was in —
-       * and the worker's run ends seconds later. The merge misses (the turn is
-       * not `queued`), the completion is held, and the coordinator spends a
-       * whole turn after the result turn saying "that session finished;
-       * already integrated". Seven times in one day's transcripts, every one
-       * the same shape.
-       *
-       * THE RESOLUTION IS THE CONTRACT, NOT A GUESS BY THE ENGINE. `result`
-       * now means "my final answer — send it last" and mid-task progress is a
-       * `report` (see `sessions_send` and the `telar` skill). Under that
-       * contract a completion arriving after its result is in front of the
-       * model is news the model already has, so `messageDeliveredTo` records
-       * it as a passive row and wakes nobody. A `turn_failed` or
-       * `turn_stopped` still wakes — a run that fell over after reporting is
-       * something to act on — as does an `always` subscriber, who asked to be
-       * interrupted, and any completion whose run sent no result.
-       */
-      const wakeReason: WakeReason = {
-        kind,
-        sessionId: targetSessionId,
-        runId: turn.runId,
-        ...(context.request ? { requestId: context.request.id } : {}),
-      };
-      /**
-       * ONE ERRAND CLOSING, NOT TWO ANNOUNCEMENTS — issue #590 half 2.
-       *
-       * The result this run already sent is still WAITING in this subscriber's
-       * queue, unread. Announcing its ending beside it is a second row and a
-       * second notice about one errand, which is the complaint — so the ending
-       * is merged into the notification that is already waiting. Both facts
-       * survive (see `mergeRunOutcome`); what does not is the second row.
-       *
-       * NOT WHEN THE WAKE WOULD INTERRUPT. `completionWake: always` on a busy
-       * subscriber is an opt-in to hearing this NOW, and folding it into a turn
-       * still waiting in the queue would quietly take that back.
-       */
-      const interrupting = (subscription.completionWake ?? "settled_only") === "always" && this.hasLiveTurn(subscriberId);
-      if (!interrupting && this.mergeIntoWaitingResult(subscriberId, targetSessionId, notification, kind)) {
-        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
-        continue;
-      }
-      /**
-       * A COMPLETION WHOSE RESULT IS ALREADY IN FRONT OF THE MODEL — issue #919.
-       *
-       * The sibling of the merge above, for the result the subscriber has
-       * already taken: no hold, no turn. It still spends a one-shot exactly as
-       * the other terminal branches do — the run ended, and this subscriber
-       * has been told everything it will hear about it.
-       *
-       * A ROW IS STILL WRITTEN, as a passive turn (the shape `submitTurn` gives
-       * a routine report, minus the mailbox), so the transcript and
-       * `sessions_status` say "and the run has ended" where a person looks for
-       * it. Nothing claims it and nothing is woken by it.
-       *
-       * ONLY A CLEAN ENDING. A failure or a stop after a result is a run that
-       * fell over having already reported, and that is actionable: it takes
-       * the ordinary path.
-       *
-       * A RESULT OR BLOCKER COUNTS FROM THE MOMENT IT IS SENT, however it was
-       * delivered — woken, held for a cohort, left in the mailbox, or joined to
-       * another waiting notice — and whatever `completionWake` says. Keying
-       * this on delivery state left gaps where the ending woke the coordinator
-       * a second time, just to acknowledge (`reportedTo`).
-       */
-      /**
-       * AND A COMPLETION THAT SAYS NOTHING. A turn that journalled no answer and
-       * sent no message has no news in it — the measured case is the turn the
-       * driver opens to decide a tool call for background work (#891), whose
-       * whole answer is one engine sentence. Waking a coordinator on it cost a
-       * turn to read "Decided a tool call…". Recorded the same way, for the
-       * same reason: the row is history, not something to act on.
-       */
-      if (
-        kind === "turn_completed" &&
-        (this.reportedTo(subscriberId, targetSessionId, turn.runId) ||
-          ((subscription.completionWake ?? "settled_only") === "settled_only" && (this.messageDeliveredTo(subscriberId, targetSessionId, turn.runId) || silentTurn)))
-      ) {
-        const recorded: NotificationDetail = { ...notification, deliveries: 1 };
-        try {
-          this.submitTurn(subscriberId, {
-            runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
-            input: notificationLabel(recorded),
-            origin: "session",
-            wakeReason,
-            notification: recorded,
-            agentDelivery: "passive",
-          });
-        } catch (error) {
-          // The same contract as the wake path below: a subscriber that cannot
-          // take a row (its project put away, say) keeps its own state, and the
-          // reason goes on its journal.
-          if (!(error instanceof EngineStateError && error.code === "conflict")) throw error;
-          this.appendEvent(subscriberId, {
-            type: "runtime.warning",
-            message: `a completion from session ${targetSessionId} could not be recorded: ${error.message}`,
-          });
-        }
-        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
-        continue;
-      }
-      /**
-       * SETTLED ONLY, BY DEFAULT — #550 clause 3.
-       *
-       * A wake arriving while the subscriber has a live turn used to be STEERED
-       * into it (`submitTurn` steers whatever it accepts when a turn is
-       * running), so a coordinator with four workers took four interruptions in
-       * the middle of its own reasoning. Held instead, they arrive together, as
-       * ONE notification, when it next comes up for air.
-       *
-       * `always` IS STILL THERE and still means what it did, for a subscriber
-       * whose whole job is to react. It has to be asked for, which is the
-       * change: the loud behaviour is no longer what you get by not choosing.
-       */
-      if ((subscription.completionWake ?? "settled_only") === "settled_only" && this.hasLiveTurn(subscriberId)) {
-        this.mailbox.hold(subscriberId, notification);
-        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
-        continue;
-      }
-      /**
-       * A COHORT ALREADY WAITING TAKES THIS ONE WITH IT.
-       *
-       * Otherwise a wake landing in the window between a session going idle and
-       * its held mail being delivered would queue a turn of its own and the
-       * cohort would arrive as two — which is the merge failing at exactly the
-       * moment it matters, since that window is when a busy session drains.
-       */
-      if (this.mailbox.pending(subscriberId).length > 0) {
-        this.mailbox.hold(subscriberId, notification);
-        this.flushPendingNotifications(subscriberId);
-        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
-        continue;
-      }
-      try {
-        /**
-         * ONE QUEUED WAKE PER CHILD TURN. A child that parks an approval,
-         * then gets it, then finishes, produced two queued turns on the
-         * parent about the same run — and both would have run as full turns,
-         * the first announcing a state already superseded. The newest fact
-         * about THAT RUN wins: a wake still waiting for it is REWRITTEN in
-         * place, keeping its position in the queue. Different runs keep
-         * separate wakes — a failure on one turn is not erased by the next
-         * turn finishing. A wake already claimed or running is not touched;
-         * it is the worker's now.
-         */
-        const coalesced = this.coalesceQueuedWake(subscriberId, targetSessionId, notification, wakeReason);
-        /**
-         * AND ONE QUEUED NOTIFICATION TURN PER SESSION. A queued turn is not a
-         * live one, so two children finishing a moment apart on an idle
-         * subscriber used to queue two turns about two runs. The second joins
-         * the first instead — unless this wake was asked to interrupt a live
-         * turn, which a queued turn behind it would quietly take back.
-         */
-        const waiting = coalesced || interrupting ? undefined : this.waitingNotificationTurn(subscriberId);
-        if (waiting) this.joinWaitingNotification(subscriberId, waiting, notification, wakeReason);
-        else if (!coalesced) {
-          const delivered: NotificationDetail = { ...notification, deliveries: 1 };
-          this.submitTurn(subscriberId, {
-            runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
-            input: notificationLabel(delivered),
-            origin: "session",
-            wakeReason,
-            notification: delivered,
-          });
-        }
-        // ONLY AN ENDING SPENDS A ONE-SHOT — see `TERMINAL_WAKE_KINDS`. A
-        // `request_opened` says the target is waiting on someone, not that it
-        // is finished, and a subscription spent there never fired again.
-        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
-      } catch (error) {
-        // A full backlog or an ambiguous turn on the subscriber is that
-        // session's own state, and a wake is not worth breaking it for. Said
-        // on the subscriber's journal, where the person reading it will look.
-        if (error instanceof EngineStateError && error.code === "conflict") {
-          this.appendEvent(subscriberId, {
-            type: "runtime.warning",
-            message: `a wake from session ${targetSessionId} (${kind}) was dropped: ${error.message}`,
-          });
-          continue;
-        }
-        throw error;
-      }
-    }
-    if (changed) this.subscriptions.writeSubscriptions(all);
+  private fireSubscriptions(...args: Parameters<TurnWakes["fireSubscriptions"]>): void {
+    this.wakes.fireSubscriptions(...args);
   }
+
 
   /* ---------------------------------------------------------------- *
    * DELEGATION SETTLING — issue #378. The rule is in
@@ -3559,414 +3081,46 @@ export class EngineStore {
     if (this.sessionTerminals.attached) void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
   }
 
-  /** Rewrite a still-queued wake about the same child run with newer words. True when one was found. */
-  private coalesceQueuedWake(subscriberId: string, targetSessionId: string, notification: NotificationDetail, wakeReason: WakeReason): boolean {
-    const queue = this.readQueue(subscriberId);
-    const waiting = queue.turns.find(
-      (turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason?.sessionId === targetSessionId && turn.wakeReason.runId === wakeReason.runId,
-    );
-    if (!waiting) return false;
-    /**
-     * A REWRITE IS A DELIVERY TOO, AND THERE ARE TWO OF THEM — #550 clause 3.
-     *
-     * The waiting turn has already been put in front of nobody yet, but it HAS
-     * been announced, and every rewrite spends the recipient's attention again
-     * on an errand it has not got to. Past `MAX_DELIVERIES` the turn keeps
-     * whatever it last said and the newer fact goes to the mailbox, where it
-     * stays PENDING and `sessions_status` reports it. That is what stops a
-     * chatty child from re-announcing itself at a busy coordinator for ever.
-     */
-    const deliveries = (waiting.notification?.deliveries ?? 1) + 1;
-    if (deliveries > MAX_DELIVERIES) {
-      this.mailbox.hold(subscriberId, notification);
-      return true;
-    }
-    const at = this.now();
-    // A turn that carries a cohort keeps it: only this run's lines are replaced.
-    const others = waiting.notification?.entries?.filter((entry) => !(entry.sessionId === targetSessionId && entry.runId === wakeReason.runId));
-    notification = { ...(others?.length ? mergeNotifications([{ ...waiting.notification!, entries: others }, notification]) : notification), deliveries };
-    waiting.input = notificationLabel(notification);
-    waiting.notification = notification;
-    waiting.wakeReason = wakeReason;
-    waiting.updatedAt = at;
-    this.writeQueue(subscriberId, queue);
-    this.records.touch(subscriberId, at);
-    // The ROW is rewritten with the turn: the transcript's notification says
-    // what the turn says, or a person reads a superseded line beside a turn that
-    // will announce something else.
-    this.rewriteNotificationItem(subscriberId, waiting);
-    // The strip redraws from `turn.accepted`; re-announcing the same run id
-    // with `replayed: true` is how a client learns the words changed.
-    this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
-    return true;
-  }
 
-  /**
-   * THE NOTIFICATION TURN STILL WAITING TO BE READ, if this session has one: a
-   * wake, or a peer's report, result or blocker, queued and not yet claimed. A
-   * `task` is not one — it hands work over and keeps a turn of its own — and a
-   * passive row reached no model to join.
-   */
   private waitingNotificationTurn(sessionId: string): string | undefined {
-    return this.readQueue(sessionId).turns.find(
-      (turn) =>
-        turn.state === "queued" &&
-        turn.origin === "session" &&
-        turn.notification !== undefined &&
-        turn.agentDelivery !== "passive" &&
-        (turn.wakeReason !== undefined || (turn.agentIntent !== undefined && FOLDING_INTENTS.has(turn.agentIntent))),
-    )?.runId;
+    return this.wakes.waitingNotificationTurn(sessionId);
   }
 
-  /**
-   * JOIN A NOTIFICATION TO THE TURN `waitingNotificationTurn` FOUND — the
-   * queued-turn half of the cohort merge.
-   *
-   * NOT A DELIVERY SPENT. `MAX_DELIVERIES` bounds how often ONE errand is
-   * re-announced; a different run joining the list is news the turn has not
-   * carried yet, and capping it would push every third finisher of a fan-out
-   * back into a turn of its own.
-   *
-   * A PEER'S TURN KEEPS ITS BODY AND TAKES NO `wakeReason`, for
-   * `mergeIntoWaitingResult`'s reason: a wake's words are the engine's and
-   * replaceable, a peer's are the only copy.
-   */
-  private joinWaitingNotification(sessionId: string, waitingRunId: string, notification: NotificationDetail, wakeReason?: WakeReason): void {
-    const queue = this.readQueue(sessionId);
-    const waiting = queue.turns.find((candidate) => candidate.runId === waitingRunId);
-    if (!waiting?.notification || waiting.state !== "queued") return;
-    const at = this.now();
-    const merged: NotificationDetail = { ...mergeNotifications([waiting.notification, notification]), deliveries: waiting.notification.deliveries ?? 1 };
-    waiting.notification = merged;
-    if (waiting.wakeReason) {
-      waiting.input = notificationLabel(merged);
-      if (wakeReason) waiting.wakeReason = wakeReason;
-    } else {
-      waiting.agentNotice = merged.body;
-    }
-    waiting.updatedAt = at;
-    this.writeQueue(sessionId, queue);
-    this.records.touch(sessionId, at);
-    this.rewriteNotificationItem(sessionId, waiting);
-    this.appendEvent(sessionId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
+
+  private joinWaitingNotification(...args: Parameters<TurnWakes["joinWaitingNotification"]>): void {
+    this.wakes.joinWaitingNotification(...args);
   }
 
-  /**
-   * FOLD A RUN'S ENDING INTO THE RESULT IT ALREADY SENT — issue #590 half 2.
-   * True when one was found and the wake is spoken for.
-   *
-   * THE SAME KEY AS EVERYWHERE ELSE: the session that acted and the run it
-   * acted in. A peer's message names its sender's run on `agentSourceRunId`,
-   * which is precisely the run the wake is about — so this is "the errand this
-   * ending belongs to", not a guess from matching words.
-   *
-   * ONLY A TURN NOBODY HAS READ. `queued` is the whole condition: a turn that
-   * has been claimed is in front of a model already, and one that ran is
-   * history. Rewriting either would be editing something the recipient has
-   * been told, which is a worse failure than a second row.
-   *
-   * `input` IS NOT TOUCHED, unlike `coalesceQueuedWake`'s rewrite. A wake's
-   * prose is the engine's own and replaceable; a peer's message body is the
-   * only copy there is, and `sessions_read` hands it back whole. The
-   * notification is rewritten, the message is not, and no `wakeReason` is
-   * stamped on — a peer's turn that started reading as a wake would be
-   * coalescible, and the next coalesce would overwrite that body.
-   */
-  private mergeIntoWaitingResult(subscriberId: string, targetSessionId: string, notification: NotificationDetail, kind: WakeKind): boolean {
-    // AN ENDING, NOT A PARKED REQUEST. "Someone is waiting on you" is a thing
-    // to act on rather than an outcome, and folding it under a result would
-    // hide the one notification a person is meant to answer.
-    if (!TERMINAL_WAKE_KINDS.includes(kind)) return false;
-    const queue = this.readQueue(subscriberId);
-    const waiting = queue.turns.find(
-      (candidate) =>
-        candidate.state === "queued" &&
-        candidate.origin === "session" &&
-        !candidate.wakeReason &&
-        candidate.notification?.kind === "peer_message" &&
-        candidate.sender?.sessionId === targetSessionId &&
-        candidate.agentSourceRunId === notification.runId,
-    );
-    if (!waiting?.notification) return false;
-    /**
-     * A MERGE IS A DELIVERY TOO — `coalesceQueuedWake`'s rule, for the same
-     * reason: the waiting turn has already been announced, and past the cap the
-     * newer fact goes to the mailbox rather than rewriting a row nobody has
-     * read for a third time. The completion is not lost there — it stays
-     * PENDING and `sessions_status` reports it.
-     */
-    const deliveries = (waiting.notification.deliveries ?? 1) + 1;
-    if (deliveries > MAX_DELIVERIES) {
-      this.mailbox.hold(subscriberId, notification);
-      return true;
-    }
-    const at = this.now();
-    const merged: NotificationDetail = { ...mergeRunOutcome(waiting.notification, notification), deliveries };
-    waiting.notification = merged;
-    // THE NOTICE AND THE NOTIFICATION ARE ONE STRING (#550). `agentNotice` is
-    // derived from the body and nothing else, so a merge that moved one and
-    // left the other is the drift that field exists to prevent.
-    waiting.agentNotice = merged.body;
-    waiting.updatedAt = at;
-    this.writeQueue(subscriberId, queue);
-    this.records.touch(subscriberId, at);
-    this.rewriteNotificationItem(subscriberId, waiting);
-    // The strip redraws from `turn.accepted`; re-announcing the same run id
-    // with `replayed: true` is how a client learns the words changed.
-    this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
-    return true;
-  }
 
-  /**
-   * HAS A MESSAGE FROM THIS RUN REACHED THE SUBSCRIBER'S MODEL — issue #919,
-   * widened from `result` to any report, result or blocker.
-   *
-   * WIDENED BECAUSE THE CONTRACT MADE REPORTS THE COMMON CASE. Since #919 a
-   * mid-task update is a `report` and `result` is a run's last word, so most
-   * workers send a report, finish, and the completion woke the coordinator a
-   * second time about the run it had just heard from — two turns for one
-   * event, all day. A message from the run is in front of the model; the run
-   * ending cleanly after it is news that does not need a turn. A `task` is
-   * not in the set: it hands work over rather than saying how this run went.
-   *
-   * THE SAME KEY AS `mergeIntoWaitingResult`: a `result` from the session
-   * that acted, naming the run it acted in on `agentSourceRunId`. Where the
-   * merge wants the one turn nobody has read (`queued`), this wants any turn
-   * somebody has — see `RESULT_DELIVERED_STATES`.
-   *
-   * AND ONLY A RESULT THAT WAS DELIVERED AS A WAKE. A passive result (nobody
-   * was awaiting it when it was sent, and the recipient was busy or put away)
-   * is `completed` on the queue but reached no model: it sits in the mailbox,
-   * and the completion is what carries it out on the flush. Treating that as
-   * "already read" would leave a shelved coordinator's result waiting for a
-   * wake that never comes — the lost-message class #631 closed.
-   */
-  /**
-   * A RUN THAT LEFT NOTHING FOR ANYONE TO READ.
-   *
-   * The driver's background-claim turn (`providerReason: background_task`)
-   * always qualifies: it exists to decide one tool call for work that outlived
-   * its turn, and its "answer" is the engine's own sentence. Any other turn
-   * qualifies when it ended with no answer text and journalled none on the way.
-   *
-   * A MESSAGE IT SENT DOES NOT NEED CHECKING HERE. It either woke the
-   * subscriber already (`messageDeliveredTo`, or folded into the waiting wake)
-   * or sits in its mailbox, which delivers it at the next idle whether or not
-   * this completion wakes anyone.
-   *
-   * Only the run's own rows are read — the warm cache or its indexed rows —
-   * and never the session's whole history. Without either, the answer text
-   * alone decides.
-   */
-  private saidNothing(sessionId: string, turn: Turn): boolean {
-    if (turn.origin === "provider" && turn.providerReason?.kind === "background_task") return true;
-    if (turn.resultText?.trim()) return false;
-    const items = this.sessionItems.peekRun(sessionId, turn.runId);
-    return !items.some((item) => item.detail.type === "assistant_message" && item.detail.text.trim().length > 0);
-  }
 
-  /**
-   * HAS THE TARGET ALREADY GIVEN THIS SUBSCRIBER ITS ANSWER — a `result` or a
-   * `blocker` from `runId`, or a `result` since the subscriber's latest errand
-   * to it. Either way its turn ending is not news: the result IS the
-   * completion, and a blocker already woke the subscriber.
-   *
-   * Counted from when it was SENT: any delivery (woken, cohort-held, mailbox,
-   * joined) and any state but discarded.
-   */
-  private reportedTo(subscriberId: string, targetSessionId: string, runId: string): boolean {
-    const errandAt = this.scanQueue(targetSessionId).turns
-      .filter((turn) => turn.agentDelivery !== "passive" && turn.sender?.sessionId === subscriberId)
-      .at(-1)?.acceptedAt;
-    return this.scanQueue(subscriberId).turns.some(
-      (candidate) =>
-        candidate.origin === "session" &&
-        candidate.state !== "discarded" &&
-        candidate.sender?.sessionId === targetSessionId &&
-        (((candidate.agentIntent === "result" || candidate.agentIntent === "blocker") && candidate.agentSourceRunId === runId) ||
-          (candidate.agentIntent === "result" && errandAt !== undefined && candidate.acceptedAt >= errandAt)),
-    );
-  }
 
-  private messageDeliveredTo(subscriberId: string, targetSessionId: string, runId: string): boolean {
-    return this.scanQueue(subscriberId).turns.some(
-      (candidate) =>
-        RESULT_DELIVERED_STATES.has(candidate.state) &&
-        candidate.origin === "session" &&
-        candidate.agentIntent !== undefined &&
-        FOLDING_INTENTS.has(candidate.agentIntent) &&
-        candidate.agentDelivery !== "passive" &&
-        candidate.sender?.sessionId === targetSessionId &&
-        candidate.agentSourceRunId === runId,
-    );
-  }
 
-  /** Is a turn of this session's actually in front of a provider right now? The
-   *  question `settled_only` turns on — and `queued` is deliberately NOT busy:
-   *  a queued wake is already waiting its turn, which is what holding is for. */
+
   private hasLiveTurn(sessionId: string): boolean {
-    return this.scanQueue(sessionId).turns.some((turn) => turn.state === "claimed" || turn.state === "running" || turn.state === "steering");
+    return this.wakes.hasLiveTurn(sessionId);
   }
 
 
-  /**
-   * DELIVER EVERYTHING HELD, AS ONE NOTIFICATION — the cohort merge.
-   *
-   * Called when a session settles, and when a wake arrives on one that is
-   * already idle. ONE turn and ONE item for the whole cohort: four wakes that
-   * arrived during a long turn are four lines in one notice, not four turns.
-   *
-   * SILENT WHEN THERE IS NOTHING TO SAY, and silent while the session is still
-   * working — a flush that raced a claim would put a turn behind the very turn
-   * it was waiting for, which is holding with extra steps.
-   */
+
   private flushPendingNotifications(sessionId: string): void {
-    if (!this.hasLiveTurn(sessionId)) this.subscriptions.deliverReadyCohorts(sessionId);
-    const pending = this.mailbox.pending(sessionId);
-    if (pending.length === 0) return;
-    if (this.hasLiveTurn(sessionId)) return;
-    // Peer mail alone is not a reason for a turn: it rides with the next one.
-    if (pending.every(isPeerMail)) return;
-    const merged = heldDelivery(mergeNotifications(pending));
-    // CLEARED BEFORE THE SUBMIT, so a submit that throws cannot be retried into
-    // a duplicate — and after it, the facts live on the turn, which is durable.
-    this.mailbox.setPending(sessionId, []);
-    // A notification turn already queued takes the held mail with it.
-    const waiting = this.waitingNotificationTurn(sessionId);
-    if (waiting) {
-      this.joinWaitingNotification(sessionId, waiting, merged);
-      return;
-    }
-    const delivered: NotificationDetail = { ...merged, deliveries: 1 };
-    try {
-      this.submitTurn(sessionId, {
-        runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
-        input: notificationLabel(delivered),
-        origin: "session",
-        /**
-         * The COHORT'S newest happening is what stamps the turn — the same one
-         * whose fields lead the merged detail. A turn needs exactly one wake
-         * reason and this is the honest choice of one.
-         *
-         * AND A PEER-LED COHORT CARRIES A SENDER INSTEAD (#631 part 2). A held
-         * peer message is not a wake: nothing this session subscribed to did
-         * anything, and the old `?? "turn_completed"` fallback would have told
-         * the transcript, the phone and the inbox that some run finished. What
-         * it IS is a message from the session that sent it, so that is what
-         * stamps the turn — which is also the shape `submitTurn` insists on,
-         * exactly one of a wake reason or a sender on a session-origin turn.
-         */
-        ...(merged.wakeKind
-          ? {
-              wakeReason: {
-                kind: merged.wakeKind,
-                sessionId: merged.sessionId ?? sessionId,
-                ...(merged.runId ? { runId: merged.runId } : {}),
-                ...(merged.requestId ? { requestId: merged.requestId } : {}),
-              },
-            }
-          : { sender: merged.sessionId ? { sessionId: merged.sessionId } : {} }),
-        notification: delivered,
-      });
-    } catch (error) {
-      // Same contract as `fireSubscriptions`: the recipient's own state is not
-      // worth breaking a delivery for, and the reason goes where a person looks.
-      if (error instanceof EngineStateError && error.code === "conflict") {
-        this.appendEvent(sessionId, { type: "runtime.warning", message: `held notifications could not be delivered: ${error.message}` });
-        return;
-      }
-      throw error;
-    }
+    this.wakes.flushPendingNotifications(sessionId);
   }
 
-  /**
-   * WHAT THIS SESSION HAS NOT BEEN TOLD — the "pollable" half of the cap.
-   *
-   * A notification the cap refused to queue a third time stays here, and this is
-   * how `sessions_status` reports it: the result is not lost, it is simply not
-   * being pushed at a session that has not read the last two.
-   */
+
   pendingNotifications(sessionId: string): NotificationDetail[] {
-    this.records.require(sessionId);
-    return structuredClone(this.mailbox.pending(sessionId));
+    return this.wakes.pendingNotifications(sessionId);
   }
 
-  /** The other half of `writeNotificationItem`: the row a coalesce superseded. */
+
   private rewriteNotificationItem(sessionId: string, turn: Turn): void {
-    const detail = turn.notification;
-    if (!detail) return;
-    const items = this.sessionItems.read(sessionId);
-    const existing = items.get(`notification_${turn.runId}`);
-    if (!existing) {
-      this.writeNotificationItem(sessionId, turn);
-      return;
-    }
-    const item: Item = { ...existing, title: detail.summary, detail: { type: "notification", notification: detail } };
-    items.set(item.id, item);
-    this.sessionItems.write(sessionId, items, new Set([item.id]));
-    this.appendEvent(sessionId, { type: "item.updated", item }, turn.runId);
+    this.wakes.rewriteNotificationItem(sessionId, turn);
   }
 
-  /**
-   * Withdraw every QUEUED wake from `targetSessionId` on `subscriberId` — what
-   * an unsubscribe means when wakes have already piled up. Turns already
-   * claimed or running stay; they are the worker's. Returns how many went.
-   */
+
   private discardQueuedWakes(subscriberId: string, targetSessionId?: string): number {
-    const queue = this.readQueue(subscriberId);
-    const at = this.now();
-    /**
-     * `targetSessionId` NARROWS IT TO ONE SOURCE; omitting it means every wake
-     * this session is still holding, whoever it was about — which is what a
-     * session being decommissioned asks for, and what an unsubscribe must NOT
-     * do.
-     *
-     * `wakeReason` IS THE WHOLE TEST OF "AUTOMATED", and it is exact rather than
-     * convenient: a turn is `origin: "session"` for two different reasons, and
-     * carries `wakeReason` for one of them and `sender` for the other (see
-     * `Turn.origin`). A peer's task or report is somebody asking for work, and
-     * it survives here for the same reason a human's queued message does.
-     */
-    const candidates = queue.turns.filter((turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason !== undefined);
-    /**
-     * A TURN OTHER SESSIONS' NEWS JOINED IS KEPT, minus this one's lines — see
-     * `joinWaitingNotification`. Only a turn with nothing else in it goes.
-     */
-    const dropped: Turn[] = [];
-    const trimmed: Turn[] = [];
-    for (const turn of candidates) {
-      // A cohort's notification is about all its members, not the one that led it.
-      if (targetSessionId !== undefined && turn.notification?.cohortId) continue;
-      if (targetSessionId === undefined || !turn.notification?.entries) {
-        if (targetSessionId === undefined || turn.wakeReason!.sessionId === targetSessionId) dropped.push(turn);
-        continue;
-      }
-      const kept = withoutWakesFrom(turn.notification, targetSessionId, subscriberId);
-      if (!kept) dropped.push(turn);
-      else if (kept !== turn.notification) {
-        turn.notification = { ...kept, deliveries: turn.notification.deliveries ?? 1 };
-        turn.input = notificationLabel(turn.notification);
-        const wake = kept.entries?.filter((entry) => entry.kind !== "peer_message" && entry.wakeKind).at(-1);
-        if (wake) turn.wakeReason = { kind: wake.wakeKind!, sessionId: wake.sessionId!, runId: wake.runId!, ...(wake.requestId ? { requestId: wake.requestId } : {}) };
-        turn.updatedAt = at;
-        trimmed.push(turn);
-      }
-    }
-    if (dropped.length === 0 && trimmed.length === 0) return 0;
-    for (const turn of dropped) {
-      turn.state = "discarded";
-      turn.completedAt = at;
-      turn.updatedAt = at;
-    }
-    this.writeQueue(subscriberId, queue);
-    this.records.touch(subscriberId, at);
-    for (const turn of trimmed) {
-      this.rewriteNotificationItem(subscriberId, turn);
-      this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(turn), replayed: true }, turn.runId);
-    }
-    for (const turn of dropped) this.appendEvent(subscriberId, { type: "turn.discarded" }, turn.runId);
-    return dropped.length + trimmed.length;
+    return this.wakes.discardQueuedWakes(subscriberId, targetSessionId);
   }
+
 
   requests(sessionId: string): EngineRequest[] {
     this.records.require(sessionId);
