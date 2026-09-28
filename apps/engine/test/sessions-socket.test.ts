@@ -169,8 +169,7 @@ describe("the protocol surface", () => {
     // so a tool added to the toolkit appears here in the same change or this
     // fails.
     expect(result.tools.map((tool) => tool.name)).toEqual(wallNames);
-    // 21 since #543 added `sessions_schedule`.
-    expect(result.tools.length).toBe(21);
+    expect(result.tools.length).toBe(20);
     for (const tool of result.tools) {
       expect(tool.name).not.toMatch(/accept|approve|merge|land|archive|delete|promote|finish|complete/);
       expect(tool.description.length).toBeGreaterThan(0);
@@ -231,7 +230,7 @@ describe("the protocol surface", () => {
     const { session } = await client.createSession({ projectId: project.id, title: "a target" });
 
     for (const name of ["sessions_subscribe", "sessions_unsubscribe", "sessions_subscriptions"]) {
-      const refused = await callTool(daemon, mcp.secret, name, { sessionId: session.id, subscriptionId: "sub_x" });
+      const refused = await callTool(daemon, mcp.secret, name, { sessionIds: [session.id], subscriptionId: "sub_x" });
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain("no session to wake");
     }
