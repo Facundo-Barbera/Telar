@@ -36,7 +36,6 @@ import {
   // live list drops the rows a rail would shelve (#457), so an engine that
   // disagreed with a cockpit here would produce a conversation neither of them
   // shows. See `protocol/settling.ts`.
-  isShelved,
   settlingActivityOf,
   // AND THE WAKE MOMENT, from the same file and for the same reason. It already
   // decides the scheduled expiry and the early wake together; `sweepSnoozeWakes`
@@ -141,7 +140,7 @@ import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, 
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { dataScienceBlock, latexBlock, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
+import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
@@ -157,9 +156,9 @@ import { adoptClaudeConversation, type Adoption, type ClaudeConversation, descri
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
 import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, listPackages, listTexPackages, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, windowCsv } from "./domains/plugins";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
-import { createWorktreeQueue, defaultWorktreeGitRunner, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, derivedBranchFor, type WorktreePlan, type WorktreeQueue, buildInventory, type InventoryProject, type InventorySession, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, moveCheckouts, type Checkout, type MoveOutcome } from "./domains/worktrees";
+import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, prepareSessionWorktree, derivedBranchFor, type WorktreePlan, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
-import { CheckoutSizes, CleanupStore, copyStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
+import { CheckoutSizes, CleanupStore, copyStore, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor } from "./domains/terminal";
 import { findVolumeMount, mountSignature, type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
 
@@ -808,6 +807,7 @@ export class EngineStore {
   private readonly toolchains: PluginToolchains;
   private readonly github: GitHubStore;
   private readonly browser: SessionBrowser;
+  private readonly worktrees: WorktreeMaintenance;
   private readonly attachments: SessionAttachments;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
@@ -882,7 +882,6 @@ export class EngineStore {
   readonly setups: WorktreeSetups;
   /** Settings → Storage's automatic cleanup — see `cleanup.ts`. */
   readonly cleanup: CleanupStore;
-  private cleanupRunning = false;
   /** See the constructor option: the claims a Stop just killed, handed to the
    *  in-process worker so the abort does not ride a poll. */
   private readonly onTurnsStopped?: (cancellations: StoppedClaim[]) => void;
@@ -952,6 +951,70 @@ export class EngineStore {
 
   attachTerminals(terminals: AttachedTerminals): void {
     this.terminals = terminals;
+  }
+
+  releaseSessionWorktree(
+    sessionId: string,
+    reason: "manual" | "inactive" | "unchanged" | "archived",
+    options: { strict?: boolean } = {},
+  ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
+    return this.worktrees.release(sessionId, reason, options);
+  }
+
+  runCleanup(): Promise<void> {
+    return this.worktrees.runCleanup();
+  }
+
+  isCleanupRunning(): boolean {
+    return this.worktrees.isCleanupRunning();
+  }
+
+  restoreSessionWorktree(sessionId: string): Session {
+    return this.worktrees.restore(sessionId);
+  }
+
+  private settleWorktree(sessionId: string, failure: string | undefined): void {
+    this.worktrees.settle(sessionId, failure);
+  }
+
+  reapableWorktrees(): ReapCandidate[] {
+    return this.worktrees.reapable();
+  }
+
+  lockLiveWorktrees(): { locked: number } {
+    return this.worktrees.lockLive();
+  }
+
+  moveWorktrees(destination: string): Promise<MoveOutcome> {
+    return this.worktrees.move(destination);
+  }
+
+  worktreeInventory(): Promise<WorktreeInventory> {
+    return this.worktrees.inventory();
+  }
+
+  reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<WorktreeReclaimResult[]> {
+    return this.worktrees.reclaim(items);
+  }
+
+  private worktreeMaintenance(): WorktreeMaintenance {
+    return new WorktreeMaintenance(this.kernel, {
+      records: this.records,
+      git: this.worktreeGit,
+      queue: this.worktreeQueue,
+      cleanup: this.cleanup,
+      checkoutSizes: this.checkoutSizes,
+      getProject: (id) => this.getProject(id),
+      listProjects: () => this.listProjects(),
+      availability: (project) => this.projectAvailability(project),
+      forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
+      setupRunning: (id) => this.setups.isRunning(id),
+      startSetup: (id, worktree) => this.startWorktreeSetup(id, worktree),
+      openTerminals: (id) => this.terminals?.openCount(id) ?? 0,
+      hasLiveBackgroundWork: (id) => this.hasLiveBackgroundWork(id),
+      autoSettleAfterHours: () => this.getInboxPolicy().autoSettleAfterHours,
+      archiveSession: (id, options) => this.archiveSession(id, options),
+    });
   }
 
   /**
@@ -1726,6 +1789,7 @@ export class EngineStore {
     }));
     this.subscriptions = this.createSubscriptions();
     this.lifecycle = this.createLifecycle();
+    this.worktrees = this.worktreeMaintenance();
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
     this.sessionIndexBackfill = this.sessionIndex.backfill();
@@ -3540,231 +3604,11 @@ export class EngineStore {
     return this.lifecycle.createSession(input);
   }
 
-  /**
-   * DELETE A SESSION'S CHECKOUT, KEEP ITS BRANCH AND CONVERSATION — see
-   * `worktree-release.ts`. Refused, and nothing touched, for a turn in
-   * flight, uncommitted changes, unpushed commits, a live process, or a
-   * checkout outside Telar's worktrees root. `strict` is the automatic
-   * sweep's: it also refuses when the platform cannot say what runs where.
-   */
-  async releaseSessionWorktree(
-    sessionId: string,
-    reason: "manual" | "inactive" | "unchanged" | "archived",
-    options: { strict?: boolean } = {},
-  ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
-    const session = this.records.get(sessionId);
-    if (session.workspace.mode !== "worktree" || !session.projectId) return { ok: false, refusal: "not-worktree" };
-    if (session.workspace.released) return { ok: true };
-    /**
-     * `idle` AND NOTHING WEAKER. `getSession` folds the tasks in, so a session
-     * whose only activity is a backgrounded shell or sub-agent reads
-     * `monitoring` here and is refused like a running turn — the same line the
-     * settling clock and the delegation settle draw. This is also the #943
-     * sweep's idle check: it releases through here and nowhere else.
-     * `waiting` and `scheduled` are refused too, and must be: either can be
-     * woken into this checkout at any moment — by its worker answering, or its
-     * schedule firing.
-     */
-    if (session.activity !== "idle" || session.preparation !== undefined || this.setups.isRunning(sessionId)) {
-      return { ok: false, refusal: "in-use" };
-    }
-    /**
-     * AN OPEN TERMINAL IS A PROCESS IN THIS CHECKOUT — issue #883. Asked of the
-     * engine's own records before `lsof`, because a run whose server changed
-     * directory, or a platform `lsof` cannot read, would otherwise pass. The
-     * person closes them, or settles the session, which closes them; the
-     * release does not do it for them. A person's own shell in the checkout is
-     * the `lsof` check's to see.
-     */
-    const openTerminals = this.terminals?.openCount(sessionId) ?? 0;
-    if (openTerminals > 0) {
-      return { ok: false, refusal: "process", detail: `${openTerminals} terminal${openTerminals === 1 ? " is" : "s are"} open in this session` };
-    }
-    const project = this.getProject(session.projectId);
-    const workspace = session.workspace;
-    const location = readWorktreesRoot(this.paths.root);
-    const configured = rootOf(location);
-    const roots = [defaultWorktreesRoot(this.paths.root), ...(configured ? [configured] : [])];
-    const processes = await checkoutsWithProcesses([workspace.path]);
-    const checked = await releaseRefusal(this.worktreeGit, {
-      projectRoot: project.root,
-      worktreesRoots: roots,
-      path: workspace.path,
-      branch: workspace.branch,
-      process: processes === undefined ? undefined : processes.has(workspace.path),
-      strict: options.strict === true,
-    });
-    if (checked.refusal) return { ok: false, refusal: checked.refusal, ...(checked.detail ? { detail: checked.detail } : {}) };
 
-    const removed = await this.worktreeQueue(project.root, () =>
-      removeSessionWorktreeAsync(this.worktreeGit, project.root, workspace.path, this.projectAvailability(project)),
-    );
-    this.forgetGitReadsUnder(project.root);
-    this.forgetGitReadsUnder(workspace.path);
-    if (!removed) return { ok: false, refusal: "not-found", detail: "the checkout is still there" };
 
-    // Re-read: seconds passed while git ran.
-    const current = this.records.get(sessionId);
-    if (current.workspace.mode !== "worktree") return { ok: true };
-    const updated: Session = {
-      ...current,
-      workspace: { ...current.workspace, released: { at: this.now(), reason } },
-      updatedAt: this.now(),
-    };
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
-    this.appendEvent(sessionId, { type: "session.updated", session: updated });
-    return { ok: true };
-  }
 
-  /**
-   * ONE CLEANUP SWEEP — Settings → Storage's switches (`cleanup.ts`). One at a
-   * time: a second call while one runs answers the state and does nothing.
-   * Every worktree goes through `releaseSessionWorktree` in strict mode, so the
-   * fixed rules hold whatever the switches say.
-   */
-  async runCleanup(): Promise<void> {
-    if (this.cleanupRunning) return;
-    this.cleanupRunning = true;
-    try {
-      const policy = this.cleanup.policy();
-      const now = this.now();
-      const sessions = this.records.read();
-      const candidates = sessions.flatMap((session) =>
-        session.workspace.mode === "worktree" && session.projectId
-          ? [
-              {
-                sessionId: session.id,
-                archived: session.state === "archived",
-                released: session.workspace.released !== undefined,
-                lastActiveAt: Math.max(session.updatedAt, session.lastTurnEndedAt ?? 0, session.activityAt ?? 0),
-              },
-            ]
-          : [],
-      );
-      let freedBytes = 0;
-      let released = 0;
-      let skipped = 0;
-      for (const { sessionId, reason } of planWorktreeCleanup(candidates, policy, now)) {
-        const session = this.records.get(sessionId);
-        if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-        if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) continue;
-        if (!fs.existsSync(session.workspace.path)) continue;
-        const bytes = await diskUsage(session.workspace.path);
-        const result = await this.releaseSessionWorktree(sessionId, reason, { strict: true });
-        if (result.ok) {
-          released += 1;
-          freedBytes += bytes;
-        } else {
-          skipped += 1;
-        }
-      }
-      let logs = 0;
-      if (policy.logsDays !== null) {
-        const gone = new Set(
-          sessions.filter((session) => session.workspace.mode === "worktree" && session.workspace.released).map((session) => session.id),
-        );
-        const swept = await sweepLogs({
-          logDirectories: [this.paths.diagnostics],
-          setupLogs: [...gone].map((sessionId) => path.join(sessionDir(this.paths, sessionId), "setup.log")),
-          days: policy.logsDays,
-          now,
-        });
-        logs = swept.count;
-        freedBytes += swept.bytes;
-      }
-      this.cleanup.record({ at: this.now(), freedBytes, released, logs, skipped });
-    } finally {
-      this.cleanupRunning = false;
-    }
-  }
 
-  isCleanupRunning(): boolean {
-    return this.cleanupRunning;
-  }
 
-  /**
-   * DOES THIS BRANCH HOLD ANYTHING THE DEFAULT BRANCH DOES NOT? Unchanged
-   * means zero commits in `<default>..<branch>`. A git read that did not
-   * answer is "changed" — the safe side, since this licenses a delete.
-   */
-  private async branchUnchanged(projectId: string, branch: string): Promise<boolean> {
-    const project = this.getProject(projectId);
-    for (const base of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"]) {
-      const exists = await this.worktreeGit(project.root, ["rev-parse", "--verify", "--quiet", base]);
-      if (exists.status !== 0) continue;
-      const ahead = await this.worktreeGit(project.root, ["rev-list", "--count", `${base}..refs/heads/${branch}`]);
-      return ahead.status === 0 && !ahead.timedOut && ahead.stdout.trim() === "0";
-    }
-    return false;
-  }
-
-  /**
-   * BRING A RELEASED CHECKOUT BACK — at the same path, from the same branch,
-   * then the setup in the background. Idempotent: a session that is not
-   * released, or is already being restored, is left alone. While it runs the
-   * session is `preparing`, so a queued turn waits for the directory the same
-   * way it waits for a first cut.
-   */
-  restoreSessionWorktree(sessionId: string): Session {
-    const session = this.records.get(sessionId);
-    if (session.workspace.mode !== "worktree" || !session.workspace.released || session.preparation?.state === "preparing") {
-      return session;
-    }
-    if (!session.projectId) return session;
-    const project = this.getProject(session.projectId);
-    const { released: _released, ...workspace } = session.workspace;
-    const updated: Session = {
-      ...session,
-      workspace,
-      preparation: { state: "preparing", at: this.now() },
-      updatedAt: this.now(),
-    };
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
-    this.appendEvent(sessionId, { type: "session.updated", session: updated });
-    void this.worktreeQueue(project.root, async () => {
-      try {
-        await reattachSessionWorktreeAsync(this.worktreeGit, {
-          projectRoot: project.root,
-          path: workspace.path,
-          branch: workspace.branch,
-        });
-        this.settleWorktree(sessionId, undefined);
-        void this.startWorktreeSetup(sessionId, workspace.path);
-      } catch (error) {
-        this.settleWorktree(sessionId, error instanceof Error ? error.message : String(error));
-      } finally {
-        this.forgetGitReadsUnder(project.root);
-        this.forgetGitReadsUnder(workspace.path);
-      }
-    });
-    return updated;
-  }
-
-  /**
-   * Record how a cut ended, on whatever the row says NOW.
-   *
-   * RE-READ RATHER THAN CLOSED OVER. Seconds passed while git ran, and the
-   * session may have been renamed, settled or paused in them; writing a record
-   * captured before the cut would silently undo whatever happened during it.
-   * A session deleted while its cut ran is not an error — there is simply
-   * nothing left to flip, and the worktree the cut made is reaped like any
-   * other orphan.
-   */
-  private settleWorktree(sessionId: string, failure: string | undefined): void {
-    const existing = this.readDocument(sessionMetadataFile(this.paths, sessionId));
-    if (existing === undefined) return;
-    const session = parseSession(existing);
-    const updated: Session = {
-      ...session,
-      // Absent is READY. A success clears the key rather than writing a third
-      // state, so every reader's "is this ready" is one question.
-      ...(failure === undefined ? {} : { preparation: { state: "failed" as const, error: failure, at: this.now() } }),
-      updatedAt: this.now(),
-    };
-    if (failure === undefined) delete updated.preparation;
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
-    this.appendEvent(sessionId, { type: "session.updated", session: updated });
-  }
 
   updateSession(sessionId: string, patch: Parameters<SessionLifecycle["updateSession"]>[1]): Session {
     return this.lifecycle.updateSession(sessionId, patch);
@@ -6227,371 +6071,11 @@ export class EngineStore {
     return this.lifecycle.archiveSession(sessionId, options);
   }
 
-  /**
-   * LOCK THE WORKTREES THAT ALREADY EXIST — issue #641.
-   *
-   * `createSessionWorktreeAsync` locks at the cut, which covers everything made
-   * from now on and nothing made before. That is the entire installed base on
-   * the day this ships, including the sessions the bug was reported against, so
-   * without this the fix arrives for the worktrees nobody has yet.
-   *
-   * ON THE WAY UP, LIKE THE OTHER SWEEPS, and for the sharper version of their
-   * reason: the window this closes is between a daemon starting and a PR being
-   * merged, and the orchestrator merges as soon as CI passes. A lock that waited
-   * for the session's next turn would routinely lose that race.
-   *
-   * NOT ARCHIVED, which is the whole policy in one predicate. An archived
-   * session has already been put down and its worktree released; locking that
-   * one would be locking a corpse, and `removeSessionWorktreeAsync`'s unlock is
-   * what any survivor needs rather than a fresh lock. Everything else is live by
-   * definition — settled is a shelf, not an ending, and a settled session's
-   * checkout is still the thing it would resume into.
-   *
-   * IDEMPOTENT AND BEST-EFFORT. `git worktree lock` on an already-locked tree
-   * answers non-zero and that is not a failure; a project on an absent drive
-   * cannot be asked at all and is skipped rather than waited for. Nothing here
-   * may fail a boot — an unlocked worktree is the status quo, not a regression.
-   */
-  /**
-   * EVERY SESSION CHECKOUT THE REAP MIGHT TAKE — issue #633.
-   *
-   * It hands out the four facts `reapNodeModules` decides on and nothing else,
-   * so the rule lives in one testable function with no database behind it. The
-   * ARCHIVE FLAG IS NOT FILTERED HERE: the sweep counts what it refused, and a
-   * list pre-filtered to the qualifying rows would make "refused 12 live
-   * sessions" unreportable and the do-nothing direction untestable.
-   *
-   * `live` IS THE SAME QUESTION `settlingActivityOf` ASKS, rather than a second
-   * opinion about it — a turn queued, claimed or running is a turn holding that
-   * directory right now.
-   *
-   * AND LIVE BACKGROUND WORK IS LIVE, read off the TASKS rather than the index
-   * row's `monitoring`, because this is the one caller holding both and the
-   * tasks are the fact the row is folded from. A backgrounded shell running
-   * `bun test` in an archived session is using that `node_modules` exactly as
-   * much as a turn would. Paused and ambient tasks do not count, on
-   * `countsAsActivity`'s terms.
-   *
-   * A PROJECT WHOSE DRIVE IS OUT IS DROPPED ENTIRELY, on `releaseWorktree`'s
-   * argument: a filesystem question asked of a disk nobody can read answers
-   * about a disk nobody can read, and on the recreated-empty-mountpoint case it
-   * answers "there is no node_modules here" about a tree that is sitting on the
-   * drive in somebody's bag.
-   */
-  reapableWorktrees(): ReapCandidate[] {
-    const candidates: ReapCandidate[] = [];
-    for (const session of this.records.all()) {
-      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-      let project: Project;
-      try { project = this.getProject(session.projectId); } catch { continue; }
-      if (this.projectAvailability(project) !== "available") continue;
-      if (!fs.existsSync(session.workspace.path)) continue;
-      const activity = settlingActivityOf(this.kernel.executionStore.sessionRow(session.id) ?? { activity: session.activity });
-      candidates.push({
-        sessionId: session.id,
-        worktree: session.workspace.path,
-        archived: session.state === "archived",
-        live:
-          activity.working === true ||
-          activity.waitingOnYou === true ||
-          this.hasLiveBackgroundWork(session.id) ||
-          // A dev server in an open terminal is reading those node_modules.
-          (this.terminals?.openCount(session.id) ?? 0) > 0,
-      });
-    }
-    return candidates;
-  }
 
-  lockLiveWorktrees(): { locked: number } {
-    let locked = 0;
-    for (const session of this.records.all()) {
-      if (session.state === "archived") continue;
-      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-      let project: Project;
-      try {
-        project = this.getProject(session.projectId);
-      } catch {
-        continue;
-      }
-      // The same question `releaseWorktree` asks, and for the same reason: git
-      // run against a repository nobody can read answers about a repository
-      // nobody can read. See `worktree.ts`'s header.
-      if (this.projectAvailability(project) !== "available") continue;
-      if (!fs.existsSync(session.workspace.path)) continue;
-      locked++;
-      const worktreePath = session.workspace.path;
-      // ON THE QUEUE so a lock cannot race a cut or a removal on the same
-      // repository, and NOT AWAITED so a machine with forty worktrees does not
-      // hold the boot open while git walks every one of them.
-      void this.worktreeQueue(project.root, () => lockSessionWorktree(this.worktreeGit, project.root, worktreePath));
-    }
-    return { locked };
-  }
 
-  /**
-   * MOVE EVERY CHECKOUT THIS ENGINE HOLDS TO A NEW ROOT — issue #642 part 2.
-   *
-   * RE-CUT, NOT COPIED. See `worktrees-move.ts` for why copy-and-repair is the
-   * wrong design; the short version is that a worktree has one admin entry and
-   * `repair` moves it, leaving two directories sharing an index.
-   *
-   * ONLY WHAT IS ACTUALLY ON DISK. A session whose checkout was already
-   * released has a recorded path that names nothing, and asking git to remove
-   * it would report a failure about a checkout nobody has.
-   *
-   * BUSY MEANS ANYTHING BUT `idle`, AND ONE OF THEM REFUSES THE WHOLE RUN. An
-   * archived session's checkout has already been released, so "refuse while
-   * anything is unsettled" would refuse every time and the operation could
-   * never run at all; what actually matters is whether a turn is in flight in
-   * that directory, which is what `activity` answers.
-   *
-   * THE GIT WORK GOES THROUGH THE PER-PROJECT QUEUE, so a move and a cut on
-   * the same project never race on the index lock — the same discipline
-   * `releaseWorktree` and `lockLiveWorktrees` follow.
-   */
-  async moveWorktrees(destination: string): Promise<MoveOutcome> {
-    const checkouts: Checkout[] = [];
-    for (const session of this.records.read()) {
-      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-      if (!fs.existsSync(session.workspace.path)) continue;
-      let project: Project;
-      try {
-        project = this.getProject(session.projectId);
-      } catch {
-        continue; // A removed project is not one to re-cut against.
-      }
-      checkouts.push({
-        sessionId: session.id,
-        path: session.workspace.path,
-        branch: session.workspace.branch ?? "",
-        projectRoot: project.root,
-        busy: session.activity !== "idle",
-      });
-    }
-    const roots = [...new Set(checkouts.map((checkout) => checkout.projectRoot))];
-    const run = () =>
-      moveCheckouts(this.worktreeGit, {
-        checkouts,
-        destination,
-        onMoved: (sessionId, to) => this.recordWorktreeMove(sessionId, to),
-      });
-    // One queue is enough to serialise against cuts; with several projects the
-    // queues nest, which is the same ordering guarantee one at a time.
-    return roots.reduce<() => Promise<MoveOutcome>>((next, root) => () => this.worktreeQueue(root, next), run)();
-  }
 
-  /**
-   * WHAT IS BEING KEPT, AND WHICH OF IT CAN GO — issue #671.
-   *
-   * THE STORE'S PART IS THE FACTS, NOT THE PROOF. Everything that decides
-   * whether a checkout is safe to reclaim lives in `worktree-inventory.ts`,
-   * where it is a pure function over stated facts and can be tested without a
-   * fixture capable of losing data. What this method owns is the three things
-   * only the store knows: which sessions there are and what they are doing,
-   * which projects' disks are actually there, and where the checkouts live.
-   *
-   * SETTLED IS THE CLIENTS' OWN QUESTION, IMPORTED (`isShelved`), for the
-   * reason every other caller of it here states: a pane that folded the shelf
-   * rule a second time would disagree with the rail about which sessions are
-   * finished, and this pane offers to end the ones it thinks are.
-   *
-   * ARCHIVED SESSIONS ARE INCLUDED, and they are not noise. `releaseWorktree`
-   * is best-effort and skips a project whose disk is not there, so an archive
-   * performed while the drive was out leaves a directory with a record that
-   * has already been put down — bytes nothing will ever use again, and
-   * invisible to every surface until this one.
-   */
-  async worktreeInventory(): Promise<WorktreeInventory> {
-    const location = readWorktreesRoot(this.paths.root);
-    const configured = rootOf(location);
-    const fallback = defaultWorktreesRoot(this.paths.root);
-    const roots = configured && configured !== fallback ? [configured, fallback] : [fallback];
-    const at = { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
 
-    const projects: InventoryProject[] = this.listProjects().map((project) => ({
-      id: project.id,
-      name: project.name,
-      root: project.root,
-      available: this.projectAvailability(project) === "available",
-    }));
 
-    const sessions: InventorySession[] = [];
-    for (const session of this.records.read()) {
-      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-      const settleable = { ...session, archived: session.state === "archived", draft: session.draft !== undefined };
-      const lifecycle =
-        session.state === "archived" ? "archived" : isShelved(settleable, settlingActivityOf(session), at) ? "settled" : "live";
-      sessions.push({
-        id: session.id,
-        ...(session.title ? { title: session.title } : {}),
-        path: session.workspace.path,
-        ...(session.workspace.branch ? { branch: session.workspace.branch } : {}),
-        projectId: session.projectId,
-        lifecycle,
-        // `moveWorktrees`' predicate, and #671's rung 1. See
-        // `worktree-inventory.ts` for why this is a policy asserted up front
-        // rather than a git lock waiting to refuse.
-        busy: session.activity !== "idle",
-      });
-    }
-
-    return buildInventory(
-      {
-        git: this.worktreeGit,
-        // The storage pane's own background sizer, so a row and the "Session
-        // checkouts" figure that sent somebody here can never disagree by a
-        // gigabyte — and so this read never walks a checkout itself. A row
-        // not sized yet has no `bytes`, and the inventory says `measuring`.
-        measure: async (target) => this.checkoutSizes.peek(target, roots),
-      },
-      {
-        // Both roots while a #642 move is half-done — `readStorage`'s reason,
-        // and the same pair it passes.
-        roots,
-        rootsReadable: location.kind !== "absent" && location.kind !== "unreadable",
-        ...(worktreesRootBlocker(location) ? { blocker: worktreesRootBlocker(location)! } : {}),
-        sessions,
-        projects,
-        // The tree this daemon is executing from, when it is executing from
-        // one. On the machine Telar is developed on that is a worktree of
-        // Telar, and it must never be offered for reclamation.
-        engineRoot: process.cwd(),
-        now: at.now,
-      },
-    );
-  }
-
-  /**
-   * GIVE CHECKOUTS BACK — the other half of #671, and the only thing in this
-   * feature that removes anything.
-   *
-   * TWO ACTS, NEVER MERGED INTO "CLEAN UP". A checkout held by a SETTLED
-   * session is given back by ARCHIVING THAT SESSION, because that is the only
-   * supported way: settling deliberately does not release a checkout, and
-   * nothing re-cuts a missing worktree — so deleting the directory under a live
-   * record would trade invisible orphans for invisible broken sessions, which
-   * is not progress. A checkout nothing claims (no session, or an archived one
-   * whose release never happened) has no session to end, so the directory goes.
-   * The caller renders which, and the confirm says "archive the session" rather
-   * than naming the gigabytes.
-   *
-   * EVERY REFUSAL IS RE-PROVED HERE, not trusted from the listing the press
-   * came from. That inventory may be seconds old and a session can start
-   * working in that window — the prediction on the row is the courtesy, this is
-   * the guarantee.
-   *
-   * PARTIAL IS SUCCESS. Each item is independent, and one refused for a typed
-   * confirmation that did not match changes nothing about the others.
-   */
-  async reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<WorktreeReclaimResult[]> {
-    const inventory = await this.worktreeInventory();
-    const byPath = new Map(inventory.rows.map((row) => [path.resolve(row.path), row]));
-    const results: WorktreeReclaimResult[] = [];
-
-    for (const item of items) {
-      const row = byPath.get(path.resolve(item.path));
-      if (!row) {
-        results.push({ path: item.path, ok: false, refusal: "not-found" });
-        continue;
-      }
-      if (row.verdict.kind === "locked") {
-        results.push({ path: row.path, ok: false, refusal: row.verdict.reason });
-        continue;
-      }
-      if (row.verdict.kind === "needs-force") {
-        // THE BASENAME, TYPED. Not ceremony: these are the rows where Telar
-        // could NOT prove the work is safe, so the person is being asked to say
-        // they looked — which a checkbox cannot express.
-        if (item.confirm === undefined) {
-          results.push({ path: row.path, ok: false, refusal: "needs-confirm" });
-          continue;
-        }
-        if (item.confirm.trim() !== row.basename) {
-          results.push({ path: row.path, ok: false, refusal: "confirm-mismatch" });
-          continue;
-        }
-      }
-
-      const bytes = row.bytes;
-      try {
-        if (row.owner.kind === "session" && row.owner.lifecycle === "settled" && item.settled !== "archive") {
-          // RELEASE IS THE DEFAULT: the checkout goes, the
-          // session and its branch stay, and the next message brings it back.
-          const released = await this.releaseSessionWorktree(row.owner.sessionId, "manual");
-          results.push(
-            released.ok
-              ? { path: row.path, ok: true, action: "released", sessionId: row.owner.sessionId, ...(bytes === undefined ? {} : { bytes }) }
-              : {
-                  path: row.path,
-                  ok: false,
-                  refusal:
-                    released.refusal === "in-use" || released.refusal === "dirty" || released.refusal === "unpushed" || released.refusal === "process" || released.refusal === "not-found"
-                      ? released.refusal
-                      : "failed",
-                  ...(released.detail ? { detail: released.detail } : {}),
-                },
-          );
-          continue;
-        }
-        if (row.owner.kind === "session" && row.owner.lifecycle === "settled") {
-          // The supported path, which releases the checkout on the project
-          // queue as part of putting the session down.
-          this.archiveSession(row.owner.sessionId, { releaseCheckout: true });
-          results.push({
-            path: row.path,
-            ok: true,
-            action: "archived",
-            sessionId: row.owner.sessionId,
-            ...(bytes === undefined ? {} : { bytes }),
-          });
-          continue;
-        }
-        // Nothing claims it. `removeSessionWorktreeAsync` already unlocks
-        // first, already refuses to prune against a disk that is not there, and
-        // already runs on the per-project queue through `releaseWorktree`'s
-        // discipline — which is why this reuses it rather than inventing a
-        // second teardown.
-        const project = row.projectId ? this.getProject(row.projectId) : undefined;
-        // REGISTERED OR NOT IS THE FORK, NOT WHETHER A PROJECT IS KNOWN. A
-        // directory git has already pruned is not a worktree — `worktree
-        // remove` answers "is not a working tree" and leaves every byte — so it
-        // takes the fenced `rm` even when we know exactly which project it was
-        // cut from.
-        const removed =
-          row.registered && project
-            ? await this.worktreeQueue(project.root, () =>
-                removeSessionWorktreeAsync(this.worktreeGit, project.root, row.path, this.projectAvailability(project)),
-              )
-            : removeUnregisteredCheckout(row.path, inventory.roots);
-        if (!removed) {
-          results.push({ path: row.path, ok: false, refusal: "failed", detail: "the checkout is still there" });
-          continue;
-        }
-        results.push({ path: row.path, ok: true, action: "removed", ...(bytes === undefined ? {} : { bytes }) });
-      } catch (cause) {
-        results.push({
-          path: row.path,
-          ok: false,
-          refusal: "failed",
-          detail: cause instanceof Error ? cause.message : "the checkout could not be given back",
-        });
-      }
-    }
-    return results;
-  }
-
-  /** The commit point for one moved checkout: the recorded path, and the event
-   *  that tells every open cockpit its session moved. */
-  private recordWorktreeMove(sessionId: string, to: string): void {
-    const session = this.records.get(sessionId);
-    const updated: Session = {
-      ...session,
-      workspace: { ...session.workspace, path: to } as Session["workspace"],
-      updatedAt: this.now(),
-    };
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
-    this.appendEvent(sessionId, { type: "session.updated", session: updated });
-  }
 
   deleteSession(sessionId: string): boolean {
     return this.lifecycle.deleteSession(sessionId);
