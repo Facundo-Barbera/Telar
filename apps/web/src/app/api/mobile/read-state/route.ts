@@ -1,6 +1,4 @@
-import { readDeviceCookie } from "@/lib/remote/cookie";
-import { identifyCaller } from "@/lib/remote/gate";
-import { readRemote } from "@/lib/remote/store";
+import { readDeviceCookie, identifyCaller, readRemote } from "@/features/remote/server";
 import { engineForward } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";

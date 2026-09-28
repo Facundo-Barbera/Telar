@@ -3,9 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckIcon, GaugeIcon } from "lucide-react";
 import type { ProviderDriverKind } from "@telar/engine-client";
-import { choiceOf, effortLabel, type ModelChoice } from "@/lib/models";
-import { windowSuffix } from "@/lib/model-families";
-import { useModelCatalogue } from "@/lib/model-catalogue-cache";
+import { choiceOf, effortLabel, type ModelChoice, windowSuffix, useModelCatalogue } from "@/features/providers";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";

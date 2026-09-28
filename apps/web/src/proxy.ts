@@ -1,8 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import fs from "node:fs";
-import { decideApiAccess } from "@/lib/remote/gate";
-import { HOST_HEADER } from "@/lib/remote/host-token";
-import { readRemote, remoteHome, storePath, type RemoteFile } from "@/lib/remote/store";
+import { decideApiAccess, HOST_HEADER, readRemote, remoteHome, storePath, type RemoteFile } from "@/features/remote/server";
 import { engineCall } from "@/platform/engine/server";
 
 /**

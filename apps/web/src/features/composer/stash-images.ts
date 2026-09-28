@@ -1,7 +1,7 @@
 // Kept apart from prompt-stash.ts because it needs createImageBitmap and a canvas, which tests lack.
 // Images are re-encoded under a size budget; whatever still does not fit is handed back, never dropped.
 
-import type { StashedImage } from "@/lib/prompt-stash";
+import type { StashedImage } from "@/features/prompts";
 
 /** Enough to read a screenshot back and know which one it was, which is all a
  *  restored attachment has to do — the model gets the re-encode either way. */

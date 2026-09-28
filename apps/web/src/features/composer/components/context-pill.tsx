@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Minimize2Icon } from "lucide-react";
 import type { ProviderDriverKind, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
-import { PROVIDER_LABEL } from "@/components/session/provider-icon";
+import { PROVIDER_LABEL } from "@/features/providers";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 

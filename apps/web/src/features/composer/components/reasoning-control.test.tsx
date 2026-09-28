@@ -14,7 +14,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ModelCatalogue, ProviderModel } from "@telar/engine-client";
 import { reasoningPillLabel } from "../model-options";
 import { ReasoningControl } from "./reasoning-control";
-import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
+import { forgetModelCatalogues } from "@/features/providers/model-catalogue-cache";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

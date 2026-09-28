@@ -2,7 +2,7 @@
 
 import { CornerDownLeftIcon, LayersIcon, SquareIcon } from "lucide-react";
 import type { ProviderDriverKind } from "@telar/engine-client";
-import type { ModelChoice } from "@/lib/models";
+import type { ModelChoice } from "@/features/providers";
 import { InputGroupButton } from "@/components/ui/input-group";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";

@@ -1,5 +1,5 @@
 import os from "node:os";
-import { machineName } from "@/lib/remote/observe";
+import { machineName } from "@/features/remote/server";
 import { engineErrorResponse } from "@/platform/engine/server";
 import { engineCall, engineForward } from "@/platform/engine/server";
 

@@ -1,6 +1,4 @@
-import { readDeviceCookie } from "@/lib/remote/cookie";
-import { identifyCaller } from "@/lib/remote/gate";
-import { readRemote } from "@/lib/remote/store";
+import { readDeviceCookie, identifyCaller, readRemote } from "@/features/remote/server";
 import { engineErrorResponse } from "@/platform/engine/server";
 import { engineCall } from "@/platform/engine/server";
 

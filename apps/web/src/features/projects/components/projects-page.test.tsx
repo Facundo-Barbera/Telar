@@ -8,7 +8,7 @@ import { SETTINGS_SEARCH_INDEX, searchSettings } from "@/features/settings/index
 import { projectSettingsHref } from "../project-settings-link";
 import { enablePatch } from "@/lib/plugins/sections";
 import { isTelarIcon, TELAR_ICONS, type ProviderModel } from "@telar/engine-client";
-import type { ModelChoice } from "@/lib/models";
+import type { ModelChoice } from "@/features/providers/models";
 import { modelOptionsOf } from "@/features/composer/index";
 import type { ScopedProject } from "./projects-page";
 

@@ -14,8 +14,8 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { hasUltrathink, modelOptionSections, toggleUltrathink, type ModelOptionSection } from "./model-options";
 import { ReasoningControl } from "./components/reasoning-control";
-import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
-import type { ModelChoice } from "@/lib/models";
+import { forgetModelCatalogues } from "@/features/providers/model-catalogue-cache";
+import type { ModelChoice } from "@/features/providers/models";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

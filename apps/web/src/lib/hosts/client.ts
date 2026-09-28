@@ -47,7 +47,7 @@ type Fetcher = typeof fetch;
 
 /**
  * THE NAME A PAIRED MAC ANSWERS UNDER, stamped by this cockpit's own proxy on
- * everything it carries back (features/hosts/proxy.ts).
+ * everything it carries back (features/hosts/server/proxy.ts).
  *
  * It is read off the reads a screen was making anyway, so an error can say
  * WHICH MAC refused without a request of its own — and it is the proxy's word,

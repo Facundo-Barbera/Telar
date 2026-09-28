@@ -1,9 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { appendPrompt, mergeAttachments, splitImages, type StashedImage } from "@/lib/prompt-stash";
-import type { ShelfRow } from "@/lib/prompt-shelf";
-import { usePromptShelf } from "@/lib/use-prompt-shelf";
+import { appendPrompt, mergeAttachments, splitImages, type StashedImage, type ShelfRow, usePromptShelf } from "@/features/prompts";
 import { encodeImagesForStash, filesFromStash } from "../stash-images";
 import type { ComposerEditorHandle } from "../components/composer-editor";
 

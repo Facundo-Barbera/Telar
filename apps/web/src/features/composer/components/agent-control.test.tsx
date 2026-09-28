@@ -56,7 +56,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { searchScope } from "../model-options";
 import { AgentControl } from "./agent-control";
-import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
+import { forgetModelCatalogues } from "@/features/providers/model-catalogue-cache";
 import { typeInto } from "@/lib/testing/type-into";
 
 /** Registered here and released in `afterAll` — Happy DOM throws on a second

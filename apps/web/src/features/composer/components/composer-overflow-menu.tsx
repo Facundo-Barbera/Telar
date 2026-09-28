@@ -3,9 +3,7 @@
 import type { ReactNode } from "react";
 import { CheckIcon, MoreHorizontalIcon } from "lucide-react";
 import type { ProviderDriverKind, RuntimeMode } from "@telar/engine-client";
-import type { ModelChoice } from "@/lib/models";
-import { useModelCatalogue } from "@/lib/model-catalogue-cache";
-import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
+import { type ModelChoice, useModelCatalogue, ProviderIcon, PROVIDER_LABEL, RUNTIME_MODE_LABELS, RUNTIME_MODES } from "@/features/providers";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,7 +13,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { RUNTIME_MODE_LABELS, RUNTIME_MODES } from "@/lib/runtime-modes";
 import { modelOptionSections, PROVIDERS } from "../model-options";
 
 type MenuChoice = { key: string; label: string; icon?: ReactNode; hint?: string; selected: boolean; disabled?: boolean; onClick: () => void };
