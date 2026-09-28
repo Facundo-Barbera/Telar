@@ -11,7 +11,6 @@ import Testing
         let away = try decodeProject(#"{"id":"project_one","name":"One","availability":"unmounted"}"#)
         #expect(away.availability == .unmounted)
         #expect(away.awayLabel == "Drive away")
-        #expect(away.availability?.isReadable == false)
 
         let here = try decodeProject(#"{"id":"project_one","name":"One","availability":"available"}"#)
         #expect(here.availability == .available)
@@ -28,7 +27,6 @@ import Testing
         let future = try decodeProject(#"{"id":"project_one","name":"One","availability":"ejecting"}"#)
         #expect(future.availability == .unknown)
         #expect(future.awayLabel == nil)
-        #expect(future.availability?.isReadable == true)
         #expect(future.name == "One")
     }
 

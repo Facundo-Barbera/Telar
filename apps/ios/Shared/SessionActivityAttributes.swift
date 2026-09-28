@@ -15,7 +15,6 @@ struct SessionActivityAttributes: ActivityAttributes {
     var sessionId: String
     var hostName: String
 
-    var sessionURL: URL { url(sessionId: sessionId) }
     func url(sessionId: String?) -> URL {
         if sessionId == nil && self.sessionId == "__automatic__" { return URL(string: "telar://inbox")! }
         var parts = URLComponents()

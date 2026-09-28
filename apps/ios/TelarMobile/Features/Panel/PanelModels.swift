@@ -45,8 +45,6 @@ enum ProjectAvailability: String, Codable, Equatable {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = ProjectAvailability(rawValue: raw) ?? .unknown
     }
-
-    var isReadable: Bool { self != .unmounted && self != .missing }
 }
 
 struct Project: Decodable, Identifiable, Equatable {

@@ -253,25 +253,6 @@ struct PushStatus: Decodable {
         }
     }
 
-    func follow(_ ref: ScopedSessionID, session: Session) async {
-        activityError = nil
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { activityError = "Enable Live Activities for Telar in system Settings."; return }
-        guard session.activity != .idle else { activityError = "Follow a session while it is working, queued, monitoring, or waiting for you."; return }
-        guard !followed.contains(ref) else { return }
-        let now = Date()
-        let state = SessionActivityAttributes.ContentState(title: previews ? session.title : "Telar session", status: label(session), updatedAt: now, startedAt: now, ended: false)
-        var pushType: PushType? = .token
-        #if DEBUG
-        if UserDefaults.standard.bool(forKey: "localActivityPreview"),
-           let url = UserDefaults.standard.string(forKey: "mobilePreviewURL").flatMap(URL.init(string:)),
-           url.scheme == "http", ["localhost", "127.0.0.1"].contains(url.host ?? "") { pushType = nil }
-        #endif
-        do {
-            let activity = try Activity.request(attributes: SessionActivityAttributes(hostId: ref.hostId.uuidString, sessionId: ref.sessionId, hostName: settings?.host(ref.hostId)?.name ?? "Mac"), content: ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale)), pushType: pushType)
-            watch(activity)
-            UIApplication.shared.registerForRemoteNotifications()
-        } catch { activityError = "Couldn't start a Live Activity: \(error.localizedDescription)" }
-    }
     func startAutomaticCards(_ active: [HostedSession]) {
         guard UIApplication.shared.applicationState == .active else { return }
         let working = Set(active.filter { $0.session.activity != .idle }.map(\.hostId))
