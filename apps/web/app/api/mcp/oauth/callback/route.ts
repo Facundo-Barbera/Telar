@@ -37,15 +37,13 @@ export const runtime = "nodejs";
  * unread in a pane that never mounted, ready to fire the next time it does.
  * Found by pressing the button.
  *
- * A PROJECT-SCOPED GRANT LANDS ON PROJECTS, NOT ON A PAGE OF ITS OWN (#363).
- * `/projects/:id/settings` is a redirect now, and it would drop the query this
- * whole function exists to carry; `?section=projects&project=` puts the reader
- * in front of that project's own MCP group, which is where the server they just
- * signed in to is listed.
+ * A PROJECT-SCOPED GRANT LANDS ON PROJECTS: `?section=projects&project=` puts
+ * the reader in front of that project's own MCP group, which is where the
+ * server they just signed in to is listed.
  */
 function settingsUrl(projectId: string | undefined, params: Record<string, string>): string {
   const query = new URLSearchParams(
-    projectId ? { section: "projects", project: projectId, ...params } : { section: "mcp", ...params },
+    projectId ? { section: "projects", project: projectId, ...params } : { section: "tools", ...params },
   );
   return `/settings?${query.toString()}`;
 }
