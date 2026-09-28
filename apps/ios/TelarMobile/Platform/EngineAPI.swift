@@ -372,9 +372,6 @@ extension PanelAPI {
     func latexCompile(_ id: EngineID, path: String?) async throws -> LatexCompileAnswer {
         try await latex(id, method: "compile", body: .object(path.map { ["path": .string($0)] } ?? [:]))
     }
-    func latexLog(_ id: EngineID, tail: Int = 200) async throws -> LatexLog {
-        try await latex(id, method: "log", body: .object(["tail": .number(Double(tail))]))
-    }
     func latexToolchain(_ id: EngineID) async throws -> LatexToolchain { try await latex(id, method: "toolchain", body: .object([:])) }
 }
 
@@ -569,7 +566,6 @@ struct HTTPEngineAPI: EngineAPI {
         try await send("PUT", "api/mobile/push", body: registration)
     }
 
-    func pushStatus() async throws -> PushStatus { try await get("api/mobile/push") }
 
     func health() async throws -> EngineHealth {
         try await get("api/health")

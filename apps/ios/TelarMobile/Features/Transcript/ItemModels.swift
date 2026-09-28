@@ -270,17 +270,6 @@ extension ItemDetail: Decodable {
             self = fallback()
         }
     }
-
-    /// Matches `isToolItem` in items.ts's `ToolItemType`.
-    var isTool: Bool {
-        switch self {
-        case .commandExecution, .fileChange, .fileRead, .mcpToolCall,
-             .dynamicToolCall, .webSearch, .browserAction:
-            true
-        default:
-            false
-        }
-    }
 }
 
 /// One timeline row. `title` is engine-produced — the client must not invent

@@ -184,7 +184,6 @@ struct JournalTurn: Identifiable, Equatable {
     /// a switch on how it draws: every peer message is the collapsed notice row
     /// now, and the intent is its label — a task rendered in full let a peer
     /// decide how much of someone else's prose sat in this conversation.
-    var isAgentTask: Bool { isFromAgent && agentIntent == "task" }
 
     /// An open `context_compaction` item — the provider squeezing right now.
     var isCompacting: Bool {

@@ -96,13 +96,6 @@ extension RequestDetail: Decodable {
             self = fallback()
         }
     }
-
-    /// A question is answered, not permitted — it renders a form, and it is
-    /// never auto-resolved by any runtime mode.
-    var isUserInput: Bool {
-        if case .userInput = self { return true }
-        return false
-    }
 }
 
 struct EngineRequest: Identifiable, Equatable {

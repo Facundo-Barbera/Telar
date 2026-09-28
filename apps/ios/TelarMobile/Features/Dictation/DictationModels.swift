@@ -45,7 +45,6 @@ struct DictationTokenAnswer: Decodable, Sendable {
     /// exactly what every dictation was until now.
     var keyterms: [String]?
 
-    var expiry: Date { Date(timeIntervalSince1970: expiresAt / 1000) }
     var listenLanguage: String { language ?? DictationLanguages.automatic }
     var listenKeyterms: [String] { keyterms ?? [] }
 }

@@ -276,7 +276,6 @@ struct KernelStatus: Decodable, Equatable {
     var state: KernelState
     var executionCount: Int?
     var python: String?
-    var executable: String?
 }
 
 struct VarRow: Decodable, Identifiable, Equatable {
@@ -551,8 +550,4 @@ struct LatexToolchain: Decodable {
     var kind: String
     var mainFile: String?
     var version: String?
-}
-
-struct LatexLog: Decodable {
-    var lines: [String]
 }

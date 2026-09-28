@@ -50,7 +50,6 @@ struct ModelCatalogue: Decodable {
 struct ProviderInstance: Decodable, Identifiable, Equatable {
     var id: String
     var driver: String
-    var displayName: String?
     var enabled: Bool
 }
 
