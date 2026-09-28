@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2";
 import { autoCompactLimitFor, type AutoCompact } from "@telar/engine-client";
 import { BROWSER_BRIEFING } from "../../domains/browser";
-import { RUN_BRIEFING } from "../../run/briefing";
+import { RUN_BRIEFING } from "../../domains/terminal";
 import { pluginBriefings } from "../../domains/plugins";
 import { writeOrientationInstructions } from "../../domains/sessions";
 import type { DriverRun } from "../contract";

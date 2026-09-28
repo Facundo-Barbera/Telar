@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import type http from "node:http";
 import { HttpError } from "../../platform/http/http";
 import { matchRoute } from "../../platform/http/router";
-import type { RunMount } from "../../run/mount";
-import { RunError } from "../../run/types";
+import type { RunMount } from "./mount";
+import { RunError } from "./types";
 import type { EngineStore } from "../../state";
 import { runRoutes } from "./run-routes";
 

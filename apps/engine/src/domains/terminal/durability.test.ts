@@ -1,24 +1,11 @@
-/**
- * AN ENGINE RESTART LEAVES NOTHING BLOCKING.
- *
- * This file used to pin the opposite: a record left open by a crashed engine
- * came back as an `unknown` run that held its project's slot until a person
- * released it, and an unreadable journal refused every launch. "Run = a new
- * terminal" removed the slot, the `unknown` and the release. What is left is a
- * name tag per terminal (`journal.ts`) so a restarted engine can re-list the
- * terminals the desktop host kept — asked once, from `GET /state` — and
- * nothing it can find or fail to find ever refuses a start.
- *
- * The host here is a fake that starts no process; the journal is a real file
- * in a temp directory.
- */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { RunJournalFile, type RunRecord } from "./journal";
 import type { RunHandle, RunLaunchEvents, RunLauncher } from "./launcher";
-import { RunManager, type StartRunInput } from "./manager";
+import { RunManager } from "./manager";
+import { type StartRunInput } from "./live-run";
 import type { TerminalFacts } from "./terminal-client";
 import { PTY_MASK } from "./pty-stream";
 import type { RunConfiguration } from "./types";
@@ -39,7 +26,6 @@ afterEach(async () => {
     try {
       await managers.pop()!.shutdown();
     } catch {
-      /* a manager that already failed is not a second failure */
     }
   }
 });
@@ -78,10 +64,6 @@ const record = (extra: Partial<RunRecord> = {}): RunRecord => ({
   ...extra,
 });
 
-/**
- * A desktop host that starts nothing and keeps whatever it is told it holds —
- * which is what a real host looks like to an engine that just restarted.
- */
 function fakeHost(held: TerminalFacts[] = [], options: { unreachable?: boolean } = {}) {
   const adopted = new Map<string, RunLaunchEvents>();
   const mirrored: Array<{ id: string; data: string }> = [];
@@ -114,8 +96,6 @@ function fakeHost(held: TerminalFacts[] = [], options: { unreachable?: boolean }
   return { launcher, adopted, mirrored };
 }
 
-// ── the file itself ──────────────────────────────────────────────────────────
-
 test("a missing, corrupt or malformed journal is simply empty — it never refuses a launch", async () => {
   const dir = temp("journal");
   const journal = new RunJournalFile(dir);
@@ -123,7 +103,6 @@ test("a missing, corrupt or malformed journal is simply empty — it never refus
 
   fs.writeFileSync(path.join(dir, "open-terminals.json"), "{ not json");
   expect(journal.list()).toEqual([]);
-  // One malformed entry costs that entry, not the good one beside it.
   fs.writeFileSync(path.join(dir, "open-terminals.json"), JSON.stringify({ terminals: [record(), { terminalId: 7 }] }));
   expect(journal.list().map((entry) => entry.terminalId)).toEqual(["term_kept"]);
 
@@ -149,28 +128,21 @@ test("an opened terminal leaves a name tag with no secret in it, and an ended on
   expect(journal.list()).toEqual([]);
 });
 
-// ── the restart ──────────────────────────────────────────────────────────────
-
 test("an engine restart re-lists the terminals the host kept, forgets the rest, and blocks nothing", async () => {
   const dir = temp("journal");
   const journal = new RunJournalFile(dir);
   journal.replace([record(), record({ terminalId: "term_gone", title: "web dev" })]);
 
-  // The host kept one of the two. The other ended while no engine was
-  // listening — the host is the only thing that could have ended it.
   const host = fakeHost([{ id: "term_kept", pid: 4242, sessionId: "sess_a", origin: "run", title: "web dev #2" }]);
   const manager = runManager({ journal, launcher: host.launcher });
   const recovered = await manager.recover({ configFor: () => config() });
 
   expect(recovered.map((run) => [run.terminalId, run.status, run.title, run.sessionId, run.pid])).toEqual([["term_kept", "running", "web dev #2", "sess_a", 4242]]);
   expect(() => manager.run("term_gone")).toThrow(/no terminal/);
-  // NO ORPHAN, NO UNKNOWN: nothing about the gone one survives, not even a tag.
   expect(journal.list().map((entry) => entry.terminalId)).toEqual(["term_kept"]);
 
-  // And a start goes straight through — there is nothing it could be blocked by.
   const next = await manager.start(input(temp("tree")));
   expect(next.status).toBe("running");
-  // The re-listed "web dev #2" still holds its number, so the new one is "web dev".
   expect(next.title).toBe("web dev");
 });
 
@@ -199,7 +171,6 @@ test("a re-listed terminal whose configuration was deleted shows nothing rather 
   host.adopted.get("term_kept")!.output("stdout", `token=${SECRET}\r\n`);
   expect(JSON.stringify(manager.output("term_kept"))).not.toContain(SECRET);
   expect(host.mirrored).toEqual([]);
-  // It says why, rather than looking like a silent process.
   expect(manager.output("term_kept").lines.map((line) => line.text).join(" ")).toContain("has since been deleted");
 });
 
@@ -227,7 +198,6 @@ test("a terminal the host closed while the engine was away is recorded closed by
   const manager = runManager({ journal, launcher: host.launcher });
   await manager.recover({ configFor: () => config() });
 
-  // What the channel reports after a reconnect finds the terminal gone.
   host.adopted.get("term_kept")!.gone("Telar's terminal host no longer has this terminal");
   const run = manager.run("term_kept");
   expect(run.status).toBe("closed");

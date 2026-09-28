@@ -4,7 +4,7 @@ import { notesCapability } from "../domains/notes";
 import { sessionsCapability, windowedReads } from "../domains/sessions";
 import { promptsForComposer, type PromptsCapability } from "../domains/prompts";
 import { createDisplayCapability } from "../domains/agent-tools";
-import { clientRunCapability } from "../run/client-capability";
+import { clientRunCapability } from "../domains/terminal";
 import type { SessionsCapability } from "../drivers";
 import type { WorkerClient } from "./options";
 import type { TurnHost } from "./host";

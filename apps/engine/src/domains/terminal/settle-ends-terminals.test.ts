@@ -1,26 +1,14 @@
-/**
- * SETTLING A SESSION ENDS WHAT IT LEFT RUNNING — issue #883.
- *
- * An explicit settle closes every terminal the session owns at once, the
- * person's own shells included, through the host's `/close-session`; they are
- * recorded as closed by Telar and the agent is not told the person did it. The
- * clock's settle waits `SETTLED_TERMINAL_GRACE_MS` first, and live background
- * work (#965) keeps the clock from settling at all.
- *
- * BOTH REAL HALVES OF THE WIRE ARE IN THE LOOP, as in `terminal-client.test.ts`:
- * the desktop's `run-terminal-server.js` over loopback, and a host behind it
- * that is a fake only in that it starts no process.
- */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { terminalLauncher } from "./launcher";
-import { RunManager, type StartRunInput } from "./manager";
+import { RunManager } from "./manager";
+import { type StartRunInput } from "./live-run";
 import { RunTerminalClient } from "./terminal-client";
 import type { RunView } from "./types";
-import { EngineStore, SETTLED_TERMINAL_GRACE_MS } from "../state";
-import { desktopTerminalServer } from "../../test/desktop-terminal";
+import { EngineStore, SETTLED_TERMINAL_GRACE_MS } from "../../state";
+import { desktopTerminalServer } from "../../../test/desktop-terminal";
 
 type StartServer = (options: {
   port: number;
@@ -33,7 +21,6 @@ const HOUR = 60 * 60 * 1000;
 
 type FakeTerminal = { id: string; pid: number; sessionId?: string; origin: string; owner: "engine" | "renderer" };
 
-/** Holds terminals for two owners, like the real one: the engine's and the person's. */
 class FakeHost {
   readonly terminals = new Map<string, FakeTerminal>();
   readonly sessionCloses: string[] = [];
@@ -46,7 +33,6 @@ class FakeHost {
     return { id, pid: 40_000 + this.sequence };
   }
 
-  /** A shell the person opened in the session's panel. The engine never sees it. */
   personShell(sessionId: string): string {
     const id = `term_${(this.sequence += 1)}`;
     this.terminals.set(id, { id, pid: 40_000 + this.sequence, sessionId, origin: "user", owner: "renderer" });
@@ -64,7 +50,6 @@ class FakeHost {
     return records.length;
   }
 
-  /** Quitting Telar: the desktop's `before-quit` closes every terminal. */
   async closeAll(): Promise<number> {
     const records = [...this.terminals.values()];
     for (const record of records) this.end(record.id, "quit");
@@ -137,12 +122,10 @@ test("an explicit settle closes every terminal of the session through /close-ses
   const ended = await store.endSessionLeftovers("session_one");
 
   expect(host.sessionCloses).toEqual(["session_one"]);
-  // The person's shell counts: it was the session's too.
   expect(ended).toEqual({ terminals: 3, backgroundTasks: 0 });
   expect(host.terminals.has(shell)).toBe(false);
   for (const run of agents) expect(manager.run(run.terminalId)).toMatchObject({ status: "closed", closedBy: "telar" });
   expect(closedByPerson).toEqual([]);
-  // Another session's terminal is not this settle's.
   expect(manager.run(other.terminalId).status).toBe("running");
   expect(manager.openCount("session_two")).toBe(1);
   expect(manager.openSessions()).toEqual(["session_two"]);
@@ -160,7 +143,6 @@ test("the clock's settle keeps the terminals for the grace, then closes them as 
   const run = await open("session_one");
   const window = store.getInboxPolicy().autoSettleAfterHours!;
 
-  // Shelved by the clock, but only just: nothing closes.
   advance(window * HOUR + 60_000);
   expect(await store.sweepSettledTerminals()).toEqual([]);
   expect(manager.run(run.terminalId).status).toBe("running");

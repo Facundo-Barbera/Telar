@@ -40,7 +40,7 @@ import {
 } from "./state";
 import { bundledPlugins, externalPlugin, externalPluginsDir, installedPlugins, isSymlink, type LoadedExternalPlugin, loadInstalledPlugins, PluginHost, PluginInputError, pluginRoutes, pluginScopedRoutes, pluginSessionRoutes } from "./domains/plugins";
 import { setPluginReadTools } from "./drivers/claude";
-import { createRunMount } from "./run/mount";
+import { createRunMount, runRoutes } from "./domains/terminal";
 import { maybeRetitleSession, sessionProviderRoutes, type ProviderSkillsOptions } from "./domains/providers";
 import { appearanceRoutes } from "./domains/appearance";
 import { warmUsageScanCache } from "./usage";
@@ -63,7 +63,6 @@ import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 import { filesRoutes, sessionFilesRoutes } from "./domains/files";
 import { sessionGitRoutes } from "./domains/git";
-import { runRoutes } from "./domains/terminal";
 import { projectCheckoutRoutes, projectRoutes } from "./domains/projects";
 import { settingsRoutes } from "./domains/settings";
 import { dictationRoutes } from "./domains/dictation";

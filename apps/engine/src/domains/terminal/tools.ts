@@ -1,48 +1,8 @@
-/**
- * The `terminal_*` wall, the saved run configurations, and the `run_*` names
- * kept as aliases for one release.
- *
- * A TERMINAL IS WHERE ANYTHING LONG-RUNNING GOES, AND THE PERSON SEES IT. Each
- * `terminal_open` opens a new terminal in this session's panel — from a saved
- * configuration, or from a command the agent chose — and none blocks another.
- * The agent reads it, waits on it and closes it; it NEVER types into it. There
- * is no `terminal_send` on purpose: typing into a terminal is the person's act
- * on a surface they are looking at.
- *
- * THE AGENT GETS THE SAME RULES AS THE BUTTON: the worktree capture, the
- * session ownership and the redaction all live under this wall in the manager,
- * not in the sentence a skill wrote.
- *
- * A CLOSE FROM HERE IS RECORDED AS THE AGENT'S. Every close says who asked, so
- * a later turn can be told "the person closed it" — and the person is the
- * default everywhere else, which is why this wall always says `agent`.
- *
- * THE `run_*` NAMES ARE THIN ALIASES, for one release, so a model that learned
- * them still gets an answer. Each description says which tool replaced it and
- * nothing more: they share the handlers below, so the two names cannot come to
- * mean different things.
- */
 import { z } from "zod";
-import { err, failure, json, ok, type ToolFactory } from "../domains/agent-tools";
+import { err, failure, json, ok, type ToolFactory } from "../agent-tools";
 import type { RunCapability, RunStopSignal, RunTarget } from "./capability";
 import { RunIcon, RunShell, type RunView } from "./types";
 
-/**
- * Tools that only read. Handed to the host, which decides the approval posture.
- *
- * THE WAITS ARE ON THIS LIST, AND THEY ARE THE ONES WORTH ARGUING ABOUT. They
- * block for up to a minute, which is not what "read" usually suggests — but
- * they SIGNAL NOTHING, START NOTHING AND CHANGE NOTHING, and the alternative an
- * approval prompt produces is the one they exist to replace: an agent that
- * cannot wait sleeps and guesses instead.
- */
-export const RUN_READ_ONLY_TOOLS = ["terminal_list", "terminal_output", "terminal_wait", "run_configs", "run_status", "run_output", "run_wait"] as const;
-
-/**
- * HOW A TERMINAL ENDED, when somebody ended it. WHO CLOSED IT IS THE FACT THAT
- * DECIDES WHAT THE AGENT DOES NEXT: a terminal the person closed was ended on
- * purpose, and reopening it unasked undoes their decision.
- */
 function closedPhrase(run: RunView): string | undefined {
   if (run.status !== "closed") return undefined;
   const code = run.exitCode ?? run.signal;
@@ -78,11 +38,6 @@ const SIGNAL = z
 const signalOf = (value: unknown): RunStopSignal | undefined => (value === "SIGTERM" || value === "SIGINT" || value === "SIGKILL" ? value : undefined);
 
 export function runTools(tool: ToolFactory, capability: RunCapability): unknown[] {
-  /**
-   * The person's close, said first when it applies. Looked up only for a
-   * terminal named by id: with no id the verb picked one itself, and naming
-   * the wrong one here would be worse than saying nothing.
-   */
   const personClosed = async (terminalId: string | undefined): Promise<string | undefined> => {
     if (!terminalId) return undefined;
     try {
@@ -140,9 +95,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       });
       const body = lineText(result.lines);
       const dropped = result.dropped ? `[${result.dropped} earlier line(s) dropped]\n` : "";
-      // WHICH EMPTY THIS IS. "No output yet" and "nothing matched your
-      // filter" are different facts, and a model told the first one when the
-      // second is true concludes the process is silent and restarts it.
       const narrowed = args.tail !== undefined || args.grep !== undefined || args.stream !== undefined;
       const empty = narrowed ? "(no line in this window matched)" : "(no output yet)";
       const closed = await personClosed(terminalId);
@@ -164,8 +116,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
         ...(args.exit === true ? { exit: true } : {}),
         timeoutMs: Number(args.timeoutMs),
       });
-      // THE VERDICT FIRST AND IN WORDS. `fired: "timeout"` read past in a wall
-      // of log output is how an agent convinces itself a server is up.
       const closed = result.fired === "exit" ? await personClosed(terminalId) : undefined;
       const verdict =
         result.fired === "timeout"
@@ -198,7 +148,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
   const RUN_ID = z.string().min(1).optional().describe("The terminalId. Default: this session's one open terminal.");
 
   return [
-    // ── terminals ───────────────────────────────────────────────────────────
     tool(
       "terminal_open",
       "Open a NEW terminal in this session's panel, where the person sees it, running a command: a dev server, a watcher, a long build. Pass command (with cwd, name, ready) or a saved configId. Returns its terminalId. Use this, never a background shell or '&', for anything that keeps running.",
@@ -264,7 +213,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       async (args) => await kill(idOf(args.terminalId), args.signal),
     ),
 
-    // ── saved configurations ────────────────────────────────────────────────
     tool(
       "run_configs",
       "The project's saved run configurations: name, icon, command, working directory and which environment variables are set. Secret values are never returned. A project usually already has the recipe you want; open one with terminal_open({configId}).",
@@ -301,13 +249,8 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       async (args) => {
         const patch = {
           ...(typeof args.name === "string" ? { name: args.name } : {}),
-          // Parsed rather than cast: the tool schema is the model's contract,
-          // but a name outside the closed set must be refused here too, or a
-          // configuration would be stored with an icon nothing can draw.
           ...(RunIcon.safeParse(args.icon).success ? { icon: args.icon as RunIcon } : {}),
           ...(typeof args.command === "string" ? { command: args.command } : {}),
-          // Parsed, not cast, for the same reason as the icon: a malformed
-          // shell must be refused here rather than stored and spawned.
           ...(RunShell.safeParse(args.shell).success ? { shell: RunShell.parse(args.shell) } : {}),
           ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
           ...(Array.isArray(args.env) ? { env: args.env as { key: string; value: string; secret?: boolean }[] } : {}),
@@ -341,7 +284,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       },
     ),
 
-    // ── the old names, for one release ──────────────────────────────────────
     tool(
       "run_start",
       "Deprecated: use terminal_open({configId}). Opens a new terminal from a saved configuration; replace is ignored.",
@@ -394,12 +336,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       async (args) => await wait(idOf(args.runId), args),
     ),
 
-    /**
-     * KEPT SO A MODEL THAT LEARNED IT GETS AN ANSWER RATHER THAN "NO SUCH
-     * TOOL" — and the answer is that there is nothing to release. It used to
-     * free a project's deployment slot held by a run Telar had lost; there is
-     * no slot and no lost state now.
-     */
     tool(
       "run_release",
       "No longer needed: nothing is ever held for a terminal. To end one, close it with terminal_kill.",

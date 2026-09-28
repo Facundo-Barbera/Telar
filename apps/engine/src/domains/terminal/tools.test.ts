@@ -1,17 +1,9 @@
-/**
- * The `terminal_*` tools, the `run_*` aliases, and "closed by the person".
- *
- * ON A FAKE HOST. The rules under test are the toolkit's and the manager's —
- * which terminal a call means, who closed it, what the agent is told — and a
- * host that records what it was asked to open, and prints what the test tells
- * it to, is a sharper witness to them than a real process.
- */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, type FetchLike } from "@telar/engine-client";
-import { withTurnNotes } from "../domains/turns";
+import { withTurnNotes } from "../turns";
 import { clientRunCapability } from "./client-capability";
 import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "./launcher";
 import { RunManager } from "./manager";
@@ -21,7 +13,7 @@ import { RunStore } from "./store";
 import { storeRunCapability } from "./store-capability";
 import { runTools } from "./tools";
 import type { RunView } from "./types";
-import { EngineStore } from "../state";
+import { EngineStore } from "../../state";
 
 const tempDirs: string[] = [];
 const temp = (label: string) => {
@@ -38,12 +30,6 @@ afterAll(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/**
- * A host that opens nothing: it names each terminal, remembers what it was
- * asked for, prints on request, and ends a terminal the way the real one does —
- * `close` when the engine asked, or `personCloses` for a tab the person closed
- * from the cockpit without going through the engine.
- */
 function fakeHost() {
   const opened: Array<{ id: string; request: RunLaunchRequest; events: RunLaunchEvents }> = [];
   let sequence = 0;
@@ -101,8 +87,6 @@ function surface() {
 
 const idIn = (text: string) => /terminalId: (term_\d+)/.exec(text)![1]!;
 
-// ── the new wall ────────────────────────────────────────────────────────────
-
 test("terminal_open opens a NEW terminal on every call, owned by the session, and returns its terminalId", async () => {
   const { call, host, manager } = surface();
   const first = await call("terminal_open", { command: "bun run dev --port 3000" });
@@ -111,8 +95,6 @@ test("terminal_open opens a NEW terminal on every call, owned by the session, an
   expect(second.isError).toBe(false);
   const [a, b] = [idIn(first.text), idIn(second.text)];
   expect(a).not.toBe(b);
-  // An agent's command is `origin: agent`, titled from the command when it has
-  // no name, and numbered like any other instance.
   expect(host.opened.map((entry) => [entry.request.sessionId, entry.request.origin, entry.request.title])).toEqual([
     ["s", "agent", "bun run dev"],
     ["s", "agent", "bun run dev #2"],
@@ -185,21 +167,15 @@ test("terminal_kill closes the terminal and records the agent as who closed it",
   expect(killed.text).toContain("Closed by you");
   expect(manager.run(id).status).toBe("closed");
   expect(manager.run(id).closedBy).toBe("agent");
-  // The agent's own close is not news to the agent.
   expect(closedByPerson).toEqual([]);
 });
-
-// ── closed by the person ────────────────────────────────────────────────────
 
 test("a wait on a terminal the person closes answers plainly, at once, and the agent gets a note", async () => {
   const { call, capability, closedByPerson } = surface();
   const id = idIn((await call("terminal_open", { command: "bun run dev", name: "web" })).text);
 
-  // Waiting on a pattern that will now never print — the close must end it,
-  // not the timeout.
   const began = Date.now();
   const waiting = call("terminal_wait", { terminalId: id, pattern: "never printed", timeoutMs: 30_000 });
-  // The cockpit's close: the route with no `closedBy` is the person.
   await matchRunRoute("POST", "/run/stop")!.route.handle({ params: [], input: { terminalId: id }, capability });
   const waited = await waiting;
   expect(Date.now() - began).toBeLessThan(5_000);
@@ -224,7 +200,6 @@ test("a tab the person closes from the cockpit is recorded as theirs", async () 
 test("the person closing a terminal the agent never touched is not a note", async () => {
   const { host, manager, store, capability, closedByPerson } = surface();
   const config = store.create("p", { name: "web dev", command: "bun run dev" });
-  // Pressed Run in the cockpit: the person's, not the agent's.
   const run = await capability.start({ configId: config.id });
   host.personCloses(run.terminalId);
   expect(manager.run(run.terminalId).closedBy).toBe("person");
@@ -265,45 +240,37 @@ test("a note is handed over once", () => {
   expect(store.claimNextTurn("worker_one")!.notes).toBeUndefined();
 });
 
-// ── the old names ───────────────────────────────────────────────────────────
-
 test("each run_* alias maps onto the terminal it replaced", async () => {
   const { call, store, manager, host, closedByPerson } = surface();
   const config = store.create("p", { name: "web dev", command: "bun run dev" });
 
-  // run_start → terminal_open({configId}), `replace` ignored, opened by the agent.
   const started = await call("run_start", { configId: config.id, replace: true });
   const id = idIn(started.text);
   expect(host.opened[0]!.request.origin).toBe("run");
   await call("run_start", { configId: config.id });
   expect(manager.terminals("s").filter((run) => run.status === "running")).toHaveLength(2);
 
-  // run_status → terminal_list, only runs: an agent's own command is not listed.
   const agentId = idIn((await call("terminal_open", { command: "bun test --watch" })).text);
   const status = await call("run_status");
   expect(status.text).toContain(id);
   expect(status.text).not.toContain(agentId);
   expect((await call("terminal_list")).text).toContain(agentId);
 
-  // run_output / run_wait → terminal_output / terminal_wait, runId as the id.
   host.print(id, "Listening on 3000\r\n");
   expect((await call("run_output", { runId: id })).text).toContain("Listening on 3000");
   const waiting = call("run_wait", { runId: id, pattern: "compiled", timeoutMs: 5_000 });
   host.print(id, "compiled\r\n");
   expect((await waiting).text.startsWith("MATCHED")).toBe(true);
 
-  // run_restart → kill, then open: a new id, and the old one closed by the agent.
   const restarted = await call("run_restart", { runId: id });
   const newId = idIn(restarted.text);
   expect(newId).not.toBe(id);
   expect(manager.run(id).closedBy).toBe("agent");
   expect(manager.run(newId).title).toBe("web dev");
 
-  // run_stop → terminal_kill, as the agent.
   await call("run_stop", { runId: newId });
   expect(manager.run(newId).closedBy).toBe("agent");
 
-  // A configuration the agent opened is the agent's: the person closing it is news.
   const opened = manager.terminals("s").find((run) => run.title === "web dev #2")!;
   host.personCloses(opened.terminalId);
   expect(closedByPerson.map((run) => run.terminalId)).toEqual([opened.terminalId]);
@@ -337,18 +304,12 @@ test("every deprecated alias says which tool replaced it", () => {
   }
 });
 
-/**
- * THE WALL'S DESCRIPTIONS ARE PAID FOR ON EVERY TURN of every session with a
- * project, whether or not a terminal is ever opened. The same per-tool cap the
- * other walls keep, and a total that the aliases must not grow past.
- */
 test("the wall's descriptions stay inside their budget", () => {
   const { tools } = surface();
   const over = [...tools].filter(([, entry]) => entry.description.length > 350).map(([name, entry]) => `${name} (${entry.description.length})`);
   expect(over).toEqual([]);
   const total = [...tools.values()].reduce((sum, entry) => sum + entry.description.length, 0);
   expect(total).toBeLessThanOrEqual(3_200);
-  // An alias is a pointer, not a second copy of the contract.
   for (const [name, entry] of tools) if (name.startsWith("run_") && entry.description.startsWith("Deprecated")) expect(entry.description.length).toBeLessThanOrEqual(160);
 });
 

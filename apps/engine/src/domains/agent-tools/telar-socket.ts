@@ -8,7 +8,7 @@ import { displayTools } from "./display-tools";
 import { notesTools } from "../notes";
 import { pluginToolModules } from "../plugins";
 import { promptsTools } from "../prompts";
-import { runTools } from "../../run/tools";
+import { runTools } from "../terminal";
 import { sessionsTools } from "../sessions";
 
 export type TelarSocketLease = {

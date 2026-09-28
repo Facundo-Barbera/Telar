@@ -1,27 +1,14 @@
-/**
- * Real processes, in temp directories, and nothing of the user's is touched:
- * every fixture here is a `sh` command in a `mkdtemp` worktree, and every
- * process this file starts is stopped by the assertion that follows it.
- */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RunManager, type StartRunInput } from "./manager";
+import { RunManager } from "./manager";
+import { type StartRunInput } from "./live-run";
 import type { RunConfiguration, RunEnvVar } from "./types";
 
 const worktree = () => track(fs.mkdtempSync(path.join(os.tmpdir(), "telar-run-tree-")));
 
 const track = (dir: string): string => (tempDirs.push(dir), dir);
-/**
- * NOTHING THIS FILE STARTS OUTLIVES IT, and nothing it writes stays on disk.
- * Every run here is a real process in a real temp directory: a test that fails
- * midway used to leave a `sleep` holding a process group and a directory in
- * `/tmp`, so the next reader of a failure was also debugging the litter from
- * the last one. Managers are shut down after each test and the directories go
- * at the end — after, not during, because a manager still draining a group
- * needs its cwd to exist.
- */
 const managers: RunManager[] = [];
 const tempDirs: string[] = [];
 
@@ -36,7 +23,6 @@ afterEach(async () => {
     try {
       await managers.pop()!.shutdown();
     } catch {
-      /* a manager that already failed is not a second failure */
     }
   }
 });
@@ -44,7 +30,6 @@ afterEach(async () => {
 afterAll(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
-
 
 function config(command: string, extra: Partial<RunConfiguration> = {}): RunConfiguration {
   return {
@@ -62,21 +47,6 @@ function input(tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput
   return { projectId: "proj_1", config: cfg, worktreePath: tree, sessionId: "sess_a", ...extra };
 }
 
-/**
- * THE BUDGET MUST FIT UNDER THIS FILE'S OWN CEILING (#706).
- *
- * It was 15 s, while three tests below cap themselves at 10 s and five more at
- * 15 s. A wait that outlives the ceiling it runs under cannot fail cleanly:
- * bun kills the test first, the assertion resolves into a dead test, and the
- * run reports `this test timed out` with the real reason — a predicate that
- * never came true — thrown away as an unhandled error between tests. That is
- * what #706 was seeing, and it reproduced on two of three full-suite runs.
- *
- * Six seconds is not a number picked to make this pass; it is what every
- * sibling already uses — `run-durability` and `run-integration` are both 6 s,
- * `run-singleton` 4 s — against the same kind of child process. This file was
- * the outlier.
- */
 async function until(predicate: () => boolean, ms = 6_000): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < ms) {
@@ -96,12 +66,6 @@ const alive = (pid: number): boolean => {
 };
 
 test("a watcher is told every transition, with the whole view and the session it belongs to", async () => {
-  /**
-   * #890: the cockpit stopped polling `/run/status`, so every state a person
-   * can see has to ARRIVE. The frame carries the WHOLE view, because there is
-   * no journal to page back to, and it names the SESSION, because a terminal
-   * is the session's and the stream is scoped to one.
-   */
   const manager = runManager();
   const seen: Array<{ status: string; terminalId: string; sessionId: string }> = [];
   const stop = manager.watch((event) => {
@@ -114,11 +78,9 @@ test("a watcher is told every transition, with the whole view and the session it
   const started = await manager.start(input(tree, config("exit 0")));
   expect(await until(() => seen.some((frame) => frame.status === "exited"))).toBe(true);
 
-  // The first frame is the terminal existing — named, and already running.
   expect(seen[0]).toEqual({ status: "running", terminalId: started.terminalId, sessionId: "sess_a" });
   expect(seen[seen.length - 1]!.status).toBe("exited");
 
-  // Unsubscribing is real: a panel that closed must stop costing transitions.
   stop();
   const before = seen.length;
   await manager.start(input(tree, config("exit 0", { id: "runcfg_two" })));
@@ -137,7 +99,6 @@ test("a run lands in the configured directory with the configured environment, a
   expect(started.worktreePath).toBe(tree);
   expect(started.sessionId).toBe("sess_a");
   expect(started.origin).toBe("run");
-  // No Electron here, so the engine minted the terminal's name itself.
   expect(started.terminalId).toMatch(/^pipe_/);
   expect(started.runId).toBe(started.terminalId);
 
@@ -145,7 +106,6 @@ test("a run lands in the configured directory with the configured environment, a
   const finished = manager.run(started.runId);
   expect(finished.exitCode).toBe(0);
 
-  // Output survives the process: reading it is most of the point of a run.
   const output = manager.output(started.runId);
   const text = output.lines.map((line) => line.text).join("\n");
   expect(text).toContain("greeting=hello");
@@ -179,7 +139,6 @@ test("a working directory outside the worktree, or one that does not exist, is r
   const tree = worktree();
   await expect(manager.start(input(tree, config("ls", { cwd: "../.." })))).rejects.toThrow(/outside the worktree/);
   await expect(manager.start(input(tree, config("ls", { cwd: "nope" })))).rejects.toThrow(/no directory/);
-  // A refused start leaves no record behind.
   expect(manager.terminals("sess_a")).toEqual([]);
 });
 
@@ -201,11 +160,7 @@ test("closing takes the whole process group, so a background child does not surv
 
 test("a shell that ignores SIGTERM and keeps working is killed outright, and the terminal still closes", async () => {
   const manager = runManager({ stopGraceMs: 500 });
-  // The trap survives the group's SIGTERM and the loop restarts its sleep, so
-  // only the escalation to SIGKILL can end this one.
   const run = await manager.start(input(worktree(), config("trap '' TERM; echo trapped; while :; do sleep 1; done")));
-  // Wait for the trap to actually be installed — signalling before that would
-  // test the default disposition instead of the escalation.
   expect(await until(() => manager.output(run.terminalId).lines.some((line) => line.text === "trapped"))).toBe(true);
 
   const before = Date.now();
@@ -228,17 +183,11 @@ test("restart closes the terminal and opens the same recipe on the same tree in 
   expect(second.status).toBe("running");
   expect(manager.run(first.terminalId).status).toBe("closed");
   expect(manager.run(first.terminalId).closedBy).toBe("agent");
-  // The first one closed, so its number is free again.
   expect(second.title).toBe("fixture");
 
   await manager.close(second.terminalId, "person");
 }, 15_000);
 
-/**
- * THE PIPE FALLBACK KEEPS MULTIPLE INSTANCES. No Electron, no chip — and still
- * no slot: two starts of one recipe are two processes, numbered, and closing
- * one leaves the other running.
- */
 test("the pipe fallback opens two instances of one recipe, and closing one leaves the other", async () => {
   const tree = worktree();
   const manager = runManager();

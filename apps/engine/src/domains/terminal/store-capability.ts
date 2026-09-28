@@ -1,23 +1,11 @@
-/**
- * `RunCapability` over the real store and manager — the daemon's copy.
- *
- * THE SESSION CONTEXT IS INJECTED, not read out of engine state, so this file
- * imports nothing that would drag the whole daemon into a unit test. The
- * daemon's mount point supplies a resolver that answers "which session, which
- * project, and which tree is it sitting on"; every rule about ownership and
- * redaction lives below it, which is what makes the HTTP surface and the
- * toolkit incapable of disagreeing.
- */
 import type { RunCapability, RunStatusAnswer, RunTarget } from "./capability";
 import type { RunManager } from "./manager";
 import type { RunStore } from "./store";
 import { isTerminal, redactConfiguration, RunConfigurationInput, RunError, type RunView } from "./types";
 
-/** Who is asking, and from where. Resolved per call: a worktree can move. */
 export type RunSessionContext = {
   sessionId: string;
   projectId: string;
-  /** Absolute path of the tree this session works in. */
   worktreePath: string;
   worktreeBranch?: string;
 };
@@ -28,7 +16,6 @@ export type RunDeps = {
   context: () => RunSessionContext;
 };
 
-/** A tab title for a command with no name: its first few words, short. */
 function titleOf(command: string): string {
   const words = command.trim().split(/\s+/).slice(0, 3).join(" ");
   return words.length > 40 ? `${words.slice(0, 39)}…` : words;
@@ -37,20 +24,6 @@ function titleOf(command: string): string {
 export function storeRunCapability(deps: RunDeps): RunCapability {
   const { store, manager } = deps;
 
-  /**
-   * Resolve which terminal a call is about — ALWAYS ONE OF THIS SESSION'S.
-   *
-   * An id from another session is `not_found` rather than acted on: a
-   * terminal belongs to the session whose panel it is in, and a conversation
-   * closing somebody else's dev server by a pasted id is the mistake this
-   * refuses.
-   *
-   * WITH NO ID, `reads` fall back to the newest terminal, open or not — the
-   * most useful output is usually from the one that just ended — while every
-   * verb that ACTS needs exactly one open terminal to mean. With two open the
-   * answer names them, because guessing which dev server to close is how the
-   * wrong one goes.
-   */
   const target = (input: RunTarget | undefined, mode: "read" | "act"): RunView => {
     const { sessionId } = deps.context();
     const id = input?.terminalId ?? input?.runId;
@@ -105,7 +78,6 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
       return { terminals: manager.terminals(context.sessionId), sessionWorktreePath: context.worktreePath };
     },
 
-    // `replace` is read and dropped: every start opens a new terminal.
     async start({ configId, openedBy }) {
       const context = deps.context();
       return await manager.start({
@@ -118,15 +90,8 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
       });
     },
 
-    /**
-     * AN AD-HOC CONFIGURATION, NEVER STORED. It has no id, so the journal
-     * re-lists it after a restart without tying it to a recipe, and nothing in
-     * the Run menu grows because an agent started a watcher.
-     */
     async open(input) {
       const context = deps.context();
-      // The same rules a saved recipe meets: a cwd inside the worktree, an
-      // http(s) readiness URL.
       const parsed = RunConfigurationInput.safeParse({
         name: input.name ?? titleOf(input.command),
         command: input.command,
@@ -152,8 +117,6 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
     },
 
     async restart(input) {
-      // A restart may reopen one that already ended — that is a re-run, and
-      // naming the ended one is how a caller asks for it.
       const run = target(input, input?.terminalId ?? input?.runId ? "read" : "act");
       return await manager.restart(run.terminalId, input?.closedBy ?? "person");
     },
@@ -166,8 +129,6 @@ export function storeRunCapability(deps: RunDeps): RunCapability {
       });
     },
 
-    // `act` LIKE THE KEYBOARD AND UNLIKE `output`: waiting on "whatever ran
-    // last" is waiting on nothing.
     async wait(input) {
       return await manager.wait(target(input, "act").terminalId, {
         ...(input.pattern === undefined ? {} : { pattern: input.pattern }),

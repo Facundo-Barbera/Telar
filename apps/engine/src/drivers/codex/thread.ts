@@ -5,7 +5,7 @@ import { BROWSER_BRIEFING } from "../../domains/browser";
 import { claimHasComputerUse } from "../../domains/computer-use";
 import { pluginBriefings } from "../../domains/plugins";
 import type { DriverRun } from "../contract";
-import { RUN_BRIEFING } from "../../run/briefing";
+import { RUN_BRIEFING } from "../../domains/terminal";
 
 export type CodexThreadConfig = {
   approvalPolicy: "untrusted" | "on-request" | "never";

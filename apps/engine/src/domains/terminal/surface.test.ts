@@ -1,20 +1,15 @@
-/**
- * The two doors — HTTP routes and the `run_*` toolkit — over ONE capability.
- *
- * The point of these tests is that neither door has rules of its own: a refusal
- * a human sees from the panel is the refusal the agent gets, worded for a model.
- */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, type FetchLike } from "@telar/engine-client";
 import { clientRunCapability } from "./client-capability";
-import { RunManager, type RunManagerOptions } from "./manager";
+import { RunManager } from "./manager";
+import { type RunManagerOptions } from "./live-run";
 import { matchRunRoute } from "./routes";
 import { RunStore } from "./store";
 import { storeRunCapability, type RunSessionContext } from "./store-capability";
-import { RUN_READ_ONLY_TOOLS, runTools } from "./tools";
+import { runTools } from "./tools";
 import type { RunCapability } from "./capability";
 
 const tempDirs: string[] = [];
@@ -31,7 +26,6 @@ type FakeTool = {
   call: (args?: Record<string, unknown>) => Promise<{ text: string; isError: boolean }>;
 };
 
-/** A `ToolFactory` that keeps the tools instead of registering them. */
 function harness(capability: RunCapability): Map<string, FakeTool> {
   const tools = new Map<string, FakeTool>();
   runTools((name, description, shape, handler) => {
@@ -61,12 +55,9 @@ function surface(context: () => RunSessionContext, options: RunManagerOptions = 
 }
 
 afterEach(async () => {
-  // Nothing this file starts outlives it.
   while (managers.length) await managers.pop()!.shutdown();
 });
 
-/** And nothing it wrote stays on disk — after the managers, so a group still
- *  draining is not left without a working directory. */
 afterAll(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -77,29 +68,13 @@ const route = (method: string, tail: string) => {
   return found;
 };
 
-test("every tool on this wall is terminal_- or run_-prefixed, and the read-only list names real tools", () => {
+test("every tool on this wall is terminal_- or run_-prefixed", () => {
   const tools = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: temp("tree") })).tools;
 
   expect(tools.size).toBe(15);
   for (const name of tools.keys()) {
     expect(name).toMatch(/^(terminal|run)_[a-z_]+$/);
   }
-  // The host reads this list to decide what may skip approval, so a typo in it
-  // would either over-expose a mutation or park a harmless read forever.
-  for (const name of RUN_READ_ONLY_TOOLS) {
-    expect(tools.has(name)).toBe(true);
-  }
-  expect(RUN_READ_ONLY_TOOLS).not.toContain("run_start");
-  expect(RUN_READ_ONLY_TOOLS).not.toContain("run_release");
-  expect(RUN_READ_ONLY_TOOLS).not.toContain("run_stop");
-  // `run_wait` BLOCKS AND IS STILL A READ (#890). It signals nothing, starts
-  // nothing and changes nothing; putting it behind an approval prompt would
-  // make the deterministic path the expensive one, and an agent that cannot
-  // wait sleeps and guesses instead — which is the behaviour it replaces.
-  expect(RUN_READ_ONLY_TOOLS).toContain("run_wait");
-  expect(RUN_READ_ONLY_TOOLS).toContain("terminal_wait");
-  expect(RUN_READ_ONLY_TOOLS).not.toContain("terminal_open");
-  expect(RUN_READ_ONLY_TOOLS).not.toContain("terminal_kill");
 });
 
 test("a configuration saved through the route is the one the agent's tool reads back", async () => {
@@ -116,7 +91,6 @@ test("a configuration saved through the route is the one the agent's tool reads 
   expect(listed.isError).toBe(false);
   expect(listed.text).toContain("web dev");
   expect(listed.text).toContain(created.id);
-  // The recipe keeps the secret for the launch; neither door hands it back.
   expect(listed.text).not.toContain("sk_live_secret");
 });
 
@@ -127,7 +101,6 @@ test("an absolute working directory is refused at the door, in words a human cou
   ).rejects.toThrow(/must stay inside the worktree/i);
 });
 
-/** The terminal id a tool's answer names — the one thing it must always say. */
 const terminalIn = (text: string): string => /terminal (pipe_[0-9a-f]+|term_[0-9a-z_]+)/.exec(text)![1]!;
 
 test("run_status lists THIS session's terminals, each with its id", async () => {
@@ -148,8 +121,6 @@ test("run_status lists THIS session's terminals, each with its id", async () => 
   expect(seen.text).toContain(id);
   expect(seen.text).toContain(tree);
 
-  // Another session in the same project does not see it: the terminal is the
-  // session's, not the project's.
   sessionId = "other";
   expect((await tools.get("run_status")!.call()).text).toContain("no terminals");
 }, 15_000);
@@ -163,7 +134,6 @@ test("run_start on a configuration already open opens another instance, and igno
 
   expect(second.isError).toBe(false);
   expect(second.text).toContain('"server #2"');
-  // `replace` took nothing over: the first one is still running.
   expect(manager.run(terminalIn(first.text)).status).toBe("running");
   expect(manager.run(terminalIn(second.text)).status).toBe("running");
 }, 15_000);
@@ -175,8 +145,6 @@ test("run_stop closes the terminal, records the agent as who closed it, and name
   const first = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
   const second = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
 
-  // Two open and no id: guessing which dev server to close is how the wrong
-  // one goes, so the answer names both.
   const ambiguous = await tools.get("run_stop")!.call({});
   expect(ambiguous.isError).toBe(true);
   expect(ambiguous.text).toContain(first);
@@ -188,7 +156,6 @@ test("run_stop closes the terminal, records the agent as who closed it, and name
   expect(manager.run(first).closedBy).toBe("agent");
   expect(manager.run(second).status).toBe("running");
 
-  // And the status an agent reads next says who closed it.
   expect((await tools.get("run_status")!.call()).text).toContain("Closed by you");
 }, 15_000);
 
@@ -198,7 +165,6 @@ test("a close from the cockpit is the person's, and the agent is told so", async
   const config = store.create("p", { name: "server", command: "sleep 30" });
   const id = terminalIn((await tools.get("run_start")!.call({ configId: config.id })).text);
 
-  // The route with no `closedBy` is the cockpit.
   const closed = (await route("POST", "/run/stop").route.handle({ params: [], input: { terminalId: id }, capability })) as { closedBy?: string };
   expect(closed.closedBy).toBe("person");
   expect((await tools.get("run_status")!.call()).text).toContain("Closed by the person");
@@ -219,7 +185,6 @@ test("a terminal id belonging to another session is not found rather than acted 
   expect(stopped.text).toMatch(/no terminal/);
   await expect(route("POST", "/run/stop").route.handle({ params: [], input: { terminalId: id }, capability })).rejects.toThrow(/no terminal/);
 
-  // And it really was not touched.
   expect(manager.run(id).status).toBe("running");
 }, 15_000);
 
@@ -268,17 +233,9 @@ test("the route table covers the whole capability and nothing else", () => {
   expect(matchRunRoute("POST", "/run/configs/a/b")).toBeUndefined();
 });
 
-// ── what an agent needs from a process that keeps talking (#890) ────────────
-
-/**
- * A recipe that prints on a schedule, so the four conditions are reachable
- * without a port. `sh -c` is what an unpinned recipe resolves to anyway.
- */
 const chatty = (command: string) => ({ name: "server", command });
 
 test("run_wait blocks until a line matches, and says WHICH condition fired", async () => {
-  // The whole point of the tool: "start the dev server then curl it" stops
-  // being `sleep 2 && curl` and becomes a step that either matched or did not.
   const tree = temp("tree");
   const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("echo booting; sleep 0.3; echo 'Listening on http://localhost:3000'; sleep 30"));
@@ -288,13 +245,10 @@ test("run_wait blocks until a line matches, and says WHICH condition fired", asy
   expect(waited.isError).toBe(false);
   expect(waited.text).toContain("MATCHED");
   expect(waited.text).toContain("Listening on http://localhost:3000");
-  // The lines are the ones that arrived WHILE WAITING, and the cursor resumes.
   expect(waited.text).toMatch(/\[cursor \d+\]/);
 }, 20_000);
 
 test("a wait that times out says so first, rather than burying it under the log", async () => {
-  // An agent that read past `timeout` in a wall of output would curl a port
-  // nothing is listening on and report the refusal as the project's bug.
   const tree = temp("tree");
   const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("echo quiet; sleep 30"));
@@ -319,8 +273,6 @@ test("run_wait exit waits a build out, and fires once the terminal has ended", a
 }, 20_000);
 
 test("waiting for readiness on a recipe with no readiness URL is refused, not waited out", async () => {
-  // Nothing could ever make it fire, so honouring it would spend a minute of
-  // somebody's turn arriving at `timeout` — which reads as "it did not come up".
   const tree = temp("tree");
   const { store, tools } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: tree }));
   const config = store.create("p", chatty("sleep 30"));
@@ -365,9 +317,6 @@ test("run_output narrows with tail, grep and stream WITHOUT moving the cursor", 
   const whole = await capability.output({});
   expect(whole.lines.length).toBeGreaterThanOrEqual(4);
 
-  // THE CURSOR IS THE WINDOW'S, NOT THE FILTER'S. Every one of these narrows
-  // what comes BACK and still reports the position a reader would resume from,
-  // which is what lets a caller grep now and read everything later.
   const tailed = await capability.output({ tail: 2 });
   expect(tailed.lines.length).toBe(2);
   expect(tailed.cursor).toBe(whole.cursor);
@@ -380,23 +329,17 @@ test("run_output narrows with tail, grep and stream WITHOUT moving the cursor", 
   expect(errs.lines.map((line) => line.text)).toEqual(["four"]);
   expect(errs.cursor).toBe(whole.cursor);
 
-  // And through the tool, where an empty ANSWER has to say which empty it is.
   const none = await tools.get("run_output")!.call({ grep: "nothing matches this" });
   expect(none.text).toContain("no line in this window matched");
   expect(none.text).not.toContain("no output yet");
 }, 20_000);
 
 test("run_stop sends the signal it was asked for first, and the close escalates to SIGKILL regardless", async () => {
-  // Ctrl-C semantics matter to a dev server that traps SIGTERM to drain
-  // connections: for that process SIGTERM is a request it declines and SIGINT
-  // is the one it obeys. What must NOT be configurable is the escalation — a
-  // second attempt that can be refused is not a second attempt.
   const tree = temp("tree");
   const signalled: Array<{ pid: number; signal: string }> = [];
   const { store, tools } = surface(
     () => ({ sessionId: "s", projectId: "p", worktreePath: tree }),
     {
-      // A group that swallows every signal, so the whole escalation is reached.
       processGroup: {
         detached: true,
         stop: (pid, force, signal) => {
@@ -416,21 +359,16 @@ test("run_stop sends the signal it was asked for first, and the close escalates 
     await tools.get("run_stop")!.call({ signal: "SIGINT" });
     expect(signalled.map((entry) => entry.signal)).toEqual(["SIGINT", "SIGTERM", "SIGKILL"]);
   } finally {
-    // This group swallowed even SIGKILL, so reap the fixture by the pid it saw.
     for (const pid of new Set(signalled.map((entry) => entry.pid))) {
       try {
         process.kill(-pid, "SIGKILL");
       } catch {
-        /* already gone */
       }
     }
   }
 }, 20_000);
 
 test("the wait route exists, refuses a budget past the ceiling, and is a POST", async () => {
-  // The tool schema is the model's contract; the HTTP surface is everyone
-  // else's. A route that trusted the caller could be made to park a worker for
-  // as long as it liked.
   const { capability } = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: temp("tree") }));
   expect(matchRunRoute("GET", "/run/wait")).toBeUndefined();
   await expect(
@@ -439,17 +377,9 @@ test("the wait route exists, refuses a budget past the ceiling, and is a POST", 
 });
 
 test("every call the worker's capability makes hits a route that exists", async () => {
-  // The two halves are written apart — a REST table here, a client over there —
-  // and nothing but this test makes the client's spelling wrong out loud. An
-  // earlier draft asked for `configs/create`, which typechecked and 404'd.
-  //
-  // The REAL client with a fake socket, not a stub that re-spells the paths: a
-  // double would only prove the test agrees with itself.
   const asked: Array<{ method: string; path: string }> = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    // The session prefix is the daemon's to strip before it consults the table,
-    // and the query string is parsed into `input` rather than matched.
     asked.push({ method: init?.method ?? "GET", path: url.pathname.replace(/^\/v2\/sessions\/[^/]+/, "") });
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   }) as unknown as FetchLike;
@@ -470,8 +400,6 @@ test("every call the worker's capability makes hits a route that exists", async 
   await capability.stop({});
   await capability.restart({});
   await capability.output({});
-  // AND THE TWO #890 VERBS. `wait` is the one that would have been easiest to
-  // spell differently on each side, since it is the only POST among the reads.
   await capability.output({ tail: 5, grep: "error", stream: "stderr" });
   await capability.wait({ runId: "run_1", pattern: "up", timeoutMs: 1 });
   await capability.stop({ signal: "SIGINT", closedBy: "agent" });
@@ -483,9 +411,6 @@ test("every call the worker's capability makes hits a route that exists", async 
 });
 
 test("the worker's capability names the terminal and who closed it on the wire", async () => {
-  // A close from a tool must reach the daemon as the AGENT's, or a later turn
-  // would be told the person closed it; and the old `runId` must arrive as the
-  // `terminalId` the routes read.
   const bodies: Array<{ path: string; body: unknown }> = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);

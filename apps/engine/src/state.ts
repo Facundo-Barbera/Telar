@@ -188,8 +188,7 @@ import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker }
 import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./worktree-release";
 import { SETUP_STOP_GRACE_MS, WorktreeSetups } from "./worktree-setup";
 import { CheckoutSizes, CleanupStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
-import { pipeLauncher } from "./run/launcher";
-import { processGroupFor } from "./run/platform";
+import { pipeLauncher, processGroupFor } from "./domains/terminal";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 

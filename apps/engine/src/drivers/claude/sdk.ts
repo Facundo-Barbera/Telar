@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type { McpServer, NotificationDetail, TurnAttachment } from "@telar/engine-client";
 import { claudeFixedWindowOf } from "../../domains/providers";
-import type { RunCapability } from "../../run/capability";
+import type { RunCapability } from "../../domains/terminal";
 import type { DisplayCapability } from "../../domains/agent-tools";
 import { RELAY_RULE } from "../../domains/turns";
 import type { SessionsCapability } from "../../domains/sessions";

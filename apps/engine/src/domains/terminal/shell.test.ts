@@ -1,25 +1,9 @@
-/**
- * WHAT A RECIPE SAYS ABOUT WHO RUNS IT — and what it deliberately does NOT say.
- *
- * The rule being served is that nothing downstream should have to guess who
- * splits a command line. The way it is served is NOT a stored argv: splitting
- * `a && b` into words destroys it. The recipe keeps the string a human typed
- * and names the program that is handed it, so the spawn is
- * `spawn(file, [...prefix, command])` with no shell flag — nothing splits and
- * nothing guesses, while `a && b` still means `a && b`.
- *
- * THE WIN32 CASES ARE ASSERTED FROM A MAC, which is why `resolveShell` takes a
- * platform rather than reading one. What they prove is that Telar asks
- * `cmd.exe` for the right thing; they cannot and do not claim `cmd.exe` obeys.
- *
- * Every run here is a `sh` command in a `mkdtemp` worktree that exits on its
- * own, and every store is a temp directory that does not survive this file.
- */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RunManager, type StartRunInput } from "./manager";
+import { RunManager } from "./manager";
+import { type StartRunInput } from "./live-run";
 import { resolveShell } from "./shell";
 import { RunStore } from "./store";
 import { redactConfiguration, type RunConfiguration } from "./types";
@@ -42,7 +26,6 @@ afterEach(async () => {
     try {
       await managers.pop()!.shutdown();
     } catch {
-      /* a manager that already failed is not a second failure */
     }
   }
 });
@@ -59,7 +42,6 @@ function input(tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput
   return { projectId: "proj_1", config: cfg, worktreePath: tree, sessionId: "sess_a", ...extra };
 }
 
-/** Matches this file's own ceiling; see `manager.test.ts` for why. */
 async function until(predicate: () => boolean, ms = 6_000): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < ms) {
@@ -69,13 +51,9 @@ async function until(predicate: () => boolean, ms = 6_000): Promise<boolean> {
   return predicate();
 }
 
-// ── which shell, and where the command sits in its argv ────────────────────
-
 test("a recipe with no shell resolves to this platform's own, with the command last and nothing split", () => {
   const posix = resolveShell(config("bun run dev && echo done"), "darwin", {});
   expect(posix.file).toBe("/bin/sh");
-  // The `&&` survives because a shell still evaluates it — it is ONE argument,
-  // not two words a caller had to know how to separate.
   expect(posix.args).toEqual(["-c", "bun run dev && echo done"]);
   expect(posix.args.at(-1)).toBe("bun run dev && echo done");
   expect(posix.windowsVerbatimArguments).toBe(false);
@@ -114,20 +92,11 @@ test("a pinned shell with no args still puts the command last", () => {
 
 test("a pinned shell is what actually gets spawned, not merely what is stored", async () => {
   const manager = runManager();
-  /**
-   * `/bin/echo` IS THE POINT, and a shell would not do. If the pin were
-   * ignored and the default `/bin/sh -c` used instead, the command below is
-   * not a program and the run would fail with `not found` — so this line can
-   * only be produced by the stored program having been spawned with the stored
-   * argv and the command appended to it.
-   */
   const pinned = config("the-command-as-an-argument", { shell: { program: "/bin/echo", args: ["ran-the-pinned-program"] } });
   const run = await manager.start(input(worktree(), pinned));
   expect(await until(() => manager.run(run.runId).status === "exited")).toBe(true);
   expect(manager.output(run.runId).lines.map((line) => line.text)).toEqual(["ran-the-pinned-program the-command-as-an-argument"]);
 }, 15_000);
-
-// ── the migration ──────────────────────────────────────────────────────────
 
 test("a recipe saved before shells were stored still reads, and still runs, with nothing rewritten", async () => {
   const dir = storeDir();
@@ -146,13 +115,9 @@ test("a recipe saved before shells were stored still reads, and still runs, with
   const run = await manager.start(input(worktree(), stored));
   expect(await until(() => manager.run(run.runId).status === "exited")).toBe(true);
   const output = manager.output(run.runId).lines.map((line) => line.text);
-  // `&&` still means `&&`: the recipe was never split into words.
   expect(output).toContain("legacy");
   expect(output).toContain("ok");
 
-  // Reading it did not rewrite the document — an unpinned recipe stays
-  // unpinned, because a resolved `/bin/sh` on disk is this Mac leaking into a
-  // file that has to open elsewhere.
   expect(JSON.parse(fs.readFileSync(path.join(dir, "proj_1.json"), "utf8"))).toEqual(old);
 }, 15_000);
 
@@ -163,8 +128,6 @@ test("a pinned shell round-trips through the store, and a patch that does not me
   expect(created.shell).toEqual({ program: "/bin/bash", args: ["-lc"] });
   expect(new RunStore(dir).get("proj_1", created.id).shell).toEqual({ program: "/bin/bash", args: ["-lc"] });
 
-  // This is what the config editor sends: it has no shell field, so the shallow
-  // merge must not read its absence as "clear it".
   const updated = store.update("proj_1", created.id, { name: "web dev", command: "bun run start", cwd: "apps/web" });
   expect(updated.shell).toEqual({ program: "/bin/bash", args: ["-lc"] });
   expect(updated.command).toBe("bun run start");

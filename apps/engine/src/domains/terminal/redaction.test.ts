@@ -1,31 +1,17 @@
-/**
- * The promise attached to the word "secret": you will not see this value in
- * Telar. It has to hold in the places that are easy to forget — the file on
- * disk, the record after a restart, and a stream that hands us a secret two
- * characters at a time.
- */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { RunJournalFile } from "./journal";
 import type { RunLauncher } from "./launcher";
-import { RunManager, type StartRunInput } from "./manager";
+import { RunManager } from "./manager";
+import { type StartRunInput } from "./live-run";
 import { createOutputSplitter, safeCut } from "./stream";
 import { REDACTED, type RunConfiguration } from "./types";
 
 const temp = (label: string) => track(fs.mkdtempSync(path.join(os.tmpdir(), `telar-run-${label}-`)));
 
 const track = (dir: string): string => (tempDirs.push(dir), dir);
-/**
- * NOTHING THIS FILE STARTS OUTLIVES IT, and nothing it writes stays on disk.
- * Every run here is a real process in a real temp directory: a test that fails
- * midway used to leave a `sleep` holding a process group and a directory in
- * `/tmp`, so the next reader of a failure was also debugging the litter from
- * the last one. Managers are shut down after each test and the directories go
- * at the end — after, not during, because a manager still draining a group
- * needs its cwd to exist.
- */
 const managers: RunManager[] = [];
 const tempDirs: string[] = [];
 
@@ -40,7 +26,6 @@ afterEach(async () => {
     try {
       await managers.pop()!.shutdown();
     } catch {
-      /* a manager that already failed is not a second failure */
     }
   }
 });
@@ -48,7 +33,6 @@ afterEach(async () => {
 afterAll(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
-
 
 const TOKEN = "sk_live_9f3a2b7c";
 
@@ -65,8 +49,6 @@ const config = (extra: Partial<RunConfiguration> = {}): RunConfiguration => ({
 
 const input = (tree: string, cfg: RunConfiguration): StartRunInput => ({ projectId: "proj_1", sessionId: "sess_a", config: cfg, worktreePath: tree });
 
-/** A terminal host that opens nothing, and keeps whatever it opened across a
- *  "restart" — which is what the name tag on disk is for. */
 function keepingHost() {
   const held: Array<{ id: string; pid: number }> = [];
   const launcher: RunLauncher = {
@@ -82,12 +64,7 @@ function keepingHost() {
   return launcher;
 }
 
-// ── the file on disk, and the record after a restart ───────────────────────
-
 test("a secret pasted into the command or the name never reaches the name tag, before OR after a restart", async () => {
-  // A person who marks TOKEN secret and then writes it into the command has put
-  // the same string into a field the tag persists — and a re-listed terminal
-  // whose configuration is gone has no secret list left to scrub it with.
   const dir = temp("journal-secrets");
   const tree = temp("tree");
   const launcher = keepingHost();
@@ -99,8 +76,6 @@ test("a secret pasted into the command or the name never reaches the name tag, b
   expect(onDisk).not.toContain(TOKEN);
   expect(onDisk).toContain(REDACTED);
 
-  // A fresh manager over the same file is the restart — here with the
-  // configuration deleted, so nothing is left to scrub with but the file.
   const next = runManager({ journal: new RunJournalFile(dir), launcher });
   const [recovered] = await next.recover({ configFor: () => undefined });
   expect(recovered).toBeDefined();
@@ -116,9 +91,6 @@ test("a busy port's warning and readiness sentence are scrubbed like every other
   expect(JSON.stringify(run)).not.toContain(TOKEN);
 });
 
-// ── a secret arriving in pieces ────────────────────────────────────────────
-
-/** Feed one string to the splitter in fixed-size slices. */
 function split(text: string, size: number, secrets: string[]): string[] {
   const lines: string[] = [];
   const splitter = createOutputSplitter(secrets, 4000, (line) => lines.push(line));
@@ -128,10 +100,6 @@ function split(text: string, size: number, secrets: string[]): string[] {
 }
 
 test("overlapping secrets survive every chunk partition, in one piece", () => {
-  // THE BUG THIS PINS: scrubbing each chunk as it arrives turns "ABCD" into
-  // «redacted» and lets the following "EFGH" — the tail of the LONGER secret —
-  // straight through. Longest-first ordering cannot help once the evidence has
-  // already been destroyed.
   const secrets = ["ABCDEFGH", "ABCD"];
   const stream = "start ABCDEFGH middle ABCD end\ntail ABCDEFGH\n";
   const whole = split(stream, stream.length, secrets);
@@ -149,7 +117,6 @@ test("a process that never sends a newline is still bounded, and still scrubbed"
   const secrets = ["ABCDEFGH", "ABCD"];
   const lines: string[] = [];
   const splitter = createOutputSplitter(secrets, 16, (line) => lines.push(line));
-  // A secret straddling the forced cut is the case a fixed-width flush breaks.
   for (const chunk of ["0123456789012345678901234ABC", "DEFGH0123456789012345678901234567890"]) splitter.push(chunk);
   splitter.end();
 
@@ -157,15 +124,10 @@ test("a process that never sends a newline is still bounded, and still scrubbed"
   expect(joined).not.toContain("ABCD");
   expect(joined).not.toContain("EFGH");
   expect(joined).toContain(REDACTED);
-  // Bounded: nothing was held indefinitely waiting for a newline that never came.
   expect(lines.length).toBeGreaterThan(1);
 });
 
 test("a long line reads the same whether or not its newline arrived in the same chunk", () => {
-  // THE FLAKE THIS PINS: 20k characters and their trailing newline used to be
-  // one line when the OS handed them over together — and the cap then TRUNCATED
-  // it, dropping 16k characters — while the same bytes split across chunks came
-  // back as five bounded lines. Same output, same input, whatever the kernel did.
   const secrets = ["sk_live_secret"];
   const body = Array.from({ length: 20 }, () => `${"0".repeat(1000)}sk_live_secret`).join("");
   const stream = `${body}\n`;
@@ -185,15 +147,12 @@ test("a long line reads the same whether or not its newline arrived in the same 
 
   expect(atOnce.length).toBeGreaterThan(1);
   for (const line of atOnce) expect(line).not.toContain("sk_live_secret");
-  // Wrapped, not truncated: every character is still accounted for.
   expect(atOnce.join("").replace(/«redacted»/g, "sk_live_secret")).toBe(body);
 });
 
 test("safeCut never leaves half a secret on either side", () => {
   expect(safeCut("aaSECRETbb", ["SECRET"], 4)).toBe(8);
-  // Already outside one: nothing to move.
   expect(safeCut("aaSECRETbb", ["SECRET"], 8)).toBe(8);
-  // Pushing past one lands inside another, so it settles rather than passing once.
   expect(safeCut("aaAAABBBcc", ["AAAB", "ABBB"], 3)).toBe(8);
   expect(safeCut("short", ["SECRET"], 99)).toBe(5);
 });

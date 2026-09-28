@@ -20,7 +20,7 @@ import type {
   RunView,
 } from "./types";
 
-/** Mirrors `MIN_SECRET_CHARS` in `apps/engine/src/run/types.ts`. The engine
+/** Mirrors `MIN_SECRET_CHARS` in `apps/engine/src/domains/terminal/types.ts`. The engine
  *  refuses a shorter secret at save time; this refuses it before the round trip
  *  so the editor can point at the field. The engine remains the authority. */
 const MIN_SECRET_CHARS = 4;

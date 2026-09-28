@@ -1,31 +1,8 @@
-/**
- * Where a project's saved launches live.
- *
- * A FILE PER PROJECT, IN A DIRECTORY THE CALLER NAMES. The engine's state root
- * is flat — `projects.json`, `sessions/`, `mcp-servers.json` — and there is no
- * per-project directory to hang this off, so the store takes its directory as a
- * constructor argument instead of reaching into `statePaths`. That is not
- * squeamishness about a shared file: it is what lets every test in
- * `run-store.test.ts` point at a temp dir and exercise the real write path
- * rather than a mock of it.
- *
- * NOT ON THE PROJECT DOCUMENT. Configurations could have been a field on
- * `Project` in the protocol, and deliberately are not: that document is being
- * restructured elsewhere, and a launch list that grows per project would make
- * every project read carry every recipe. A project's runs are read when a human
- * opens the Run control, not on every listing.
- *
- * READS ARE FORGIVING, WRITES ARE NOT. A file that is missing reads as "no
- * configurations"; a file that is corrupt reads as an error naming the file,
- * because silently returning an empty list there would offer the human a fresh
- * empty editor over the top of work they can still see on disk.
- */
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWrite } from "../platform/fs/atomic";
+import { atomicWrite } from "../../platform/fs/atomic";
 import { RunConfiguration, RunConfigurationInput, RunError, newConfigId } from "./types";
 
-/** Keep a project id from escaping into a path. Same rule as `ds/state-files`. */
 function safeProjectId(projectId: string): string {
   const cleaned = projectId.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 120);
   if (!/[A-Za-z0-9]/.test(cleaned)) throw new RunError("invalid_request", "a project id must contain a letter or digit");
@@ -63,8 +40,6 @@ export class RunStore {
     if (!Array.isArray(configurations)) {
       throw new RunError("invalid_request", `the run configurations file for this project is missing its list (${file})`);
     }
-    // A single unreadable entry should not hide the rest, but it must not be
-    // invented either — parse strictly and name the index that failed.
     return {
       configurations: configurations.map((entry, index) => {
         const result = RunConfiguration.safeParse(entry);
@@ -91,16 +66,12 @@ export class RunStore {
   }
 
   create(projectId: string, input: RunConfigurationInput): RunConfiguration {
-    // Validated HERE as well as at the door: the daemon is not the only caller,
-    // and a `cwd` of `../../etc` must be unsaveable rather than merely unroutable.
     const parsed = RunConfigurationInput.safeParse(input);
     if (!parsed.success) {
       throw new RunError("invalid_request", parsed.error.issues[0]?.message ?? "that run configuration is not valid");
     }
     const valid = parsed.data;
     const document = this.read(projectId);
-    // Names are how a human picks one out of a dropdown; two identical entries
-    // there is a bug report waiting rather than a preference to respect.
     if (document.configurations.some((entry) => entry.name.trim() === valid.name.trim())) {
       throw new RunError("conflict", `this project already has a run configuration called "${valid.name.trim()}"`);
     }
@@ -141,11 +112,6 @@ export class RunStore {
     return validated.data;
   }
 
-  /**
-   * Forget a recipe. It says nothing about a run launched from it: a live run
-   * carries its own copy of the command and name, so deleting the recipe cannot
-   * orphan or silently stop a server.
-   */
   remove(projectId: string, configId: string): void {
     const document = this.read(projectId);
     const next = document.configurations.filter((entry) => entry.id !== configId);

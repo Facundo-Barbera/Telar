@@ -1,31 +1,15 @@
-/**
- * "RUN = A NEW TERMINAL": what replaced the one-deployment-per-project slot.
- *
- * Every start opens a new terminal owned by the session that asked; none of
- * them blocks another; a busy port warns and never refuses; and a readiness
- * claim is still only ever about our own process.
- *
- * MOST OF THIS RUNS ON A LAUNCHER THAT STARTS NOTHING. The rules under test
- * are the manager's — numbering, ownership, warnings — and a fake host that
- * records what it was asked to open is a sharper witness to them than a real
- * process. The one test that needs real output uses the pipe fallback, and
- * stops what it started.
- */
 import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "./launcher";
-import { RunManager, type StartRunInput } from "./manager";
+import { RunManager } from "./manager";
+import { type StartRunInput } from "./live-run";
 import type { RunConfiguration } from "./types";
 
 const worktree = () => track(fs.mkdtempSync(path.join(os.tmpdir(), "telar-run-tree-")));
 
 const track = (dir: string): string => (tempDirs.push(dir), dir);
-/**
- * NOTHING THIS FILE STARTS OUTLIVES IT, and nothing it writes stays on disk.
- * Managers are shut down after each test and the directories go at the end.
- */
 const managers: RunManager[] = [];
 const tempDirs: string[] = [];
 
@@ -40,7 +24,6 @@ afterEach(async () => {
     try {
       await managers.pop()!.shutdown();
     } catch {
-      /* a manager that already failed is not a second failure */
     }
   }
 });
@@ -76,11 +59,6 @@ async function until(predicate: () => boolean, ms = 4000): Promise<boolean> {
   return predicate();
 }
 
-/**
- * A terminal host that opens nothing: it names each terminal, remembers what
- * it was asked for, and ends one when the test says so. Closing one reports
- * the exit the real host would — a hangup, and why it was closing.
- */
 function fakeHost() {
   const opened: Array<{ id: string; request: RunLaunchRequest; events: RunLaunchEvents }> = [];
   const closed: string[] = [];
@@ -107,8 +85,6 @@ function fakeHost() {
   return { launcher, opened, closed };
 }
 
-// ── two presses, two terminals ───────────────────────────────────────────────
-
 test("two starts of one configuration give two terminals, and neither blocks the other", async () => {
   const host = fakeHost();
   const manager = runManager({ launcher: host.launcher });
@@ -122,8 +98,6 @@ test("two starts of one configuration give two terminals, and neither blocks the
   expect(second.status).toBe("running");
   expect(first.title).toBe("web dev");
   expect(second.title).toBe("web dev #2");
-  // THE HOST WAS TOLD — the session that owns each terminal, that it came from
-  // a configuration, and what its tab says.
   expect(host.opened.map((entry) => [entry.request.sessionId, entry.request.origin, entry.request.title])).toEqual([
     ["sess_a", "run", "web dev"],
     ["sess_a", "run", "web dev #2"],
@@ -132,10 +106,6 @@ test("two starts of one configuration give two terminals, and neither blocks the
 });
 
 test("two presses in the same tick still get two different numbers", async () => {
-  /**
-   * THE TITLE IS TAKEN BEFORE THE FIRST AWAIT. Two starts racing through the
-   * readiness baseline must not both come out "web dev".
-   */
   const host = fakeHost();
   const manager = runManager({ launcher: host.launcher, probe: async () => ({ answered: false, serving: false }) });
   const tree = worktree();
@@ -154,7 +124,6 @@ test("a closed instance frees its number, and ended ones keep their record", asy
   await manager.close(first.terminalId, "person");
   const third = await manager.start(input(tree, config("bun run dev")));
   expect(third.title).toBe("web dev");
-  // The closed one is still listed, for its output, with who closed it.
   const closed = manager.run(first.terminalId);
   expect(closed.status).toBe("closed");
   expect(closed.closedBy).toBe("person");
@@ -174,15 +143,7 @@ test("a terminal belongs to the session that opened it, and each session numbers
   expect(manager.terminals("sess_b").map((run) => run.terminalId)).toEqual([theirs.terminalId]);
 });
 
-// ── a busy port warns ────────────────────────────────────────────────────────
-
 test("a port that already answers warns on the terminal, and the terminal still opens", async () => {
-  /**
-   * THE OLD RULE BLOCKED; THIS ONE ONLY SAYS SO. Something already answering
-   * the readiness URL is recorded as a warning a person can read, the launch
-   * goes ahead, and — because a 200 afterwards would be about the stranger —
-   * the terminal can never claim `ready`.
-   */
   const host = fakeHost();
   const manager = runManager({ launcher: host.launcher, probe: async () => ({ answered: true, serving: true }), readyPollMs: 20 });
   const run = await manager.start(input(worktree(), config("bun run dev", { readinessUrl: "http://localhost:3000" })));
@@ -202,8 +163,6 @@ test("a silent port warns about nothing", async () => {
   expect(run.warning).toBeUndefined();
   expect(run.readiness.kind).toBe("pending");
 });
-
-// ── readiness is still about our own process ─────────────────────────────────
 
 test("readiness is only claimed when the URL was silent before this terminal opened", async () => {
   let answers = false;
@@ -229,8 +188,6 @@ test("a terminal without a readiness check never claims ready, however long it l
   expect(manager.run(run.terminalId).readiness).toEqual({ kind: "none" });
 });
 
-// ── output ───────────────────────────────────────────────────────────────────
-
 test("output is a bounded window, and what it dropped is reported rather than hidden", async () => {
   const manager = runManager();
   const run = await manager.start(input(worktree(), config("i=0; while [ $i -lt 2500 ]; do echo line-$i; i=$((i+1)); done")));
@@ -242,6 +199,5 @@ test("output is a bounded window, and what it dropped is reported rather than hi
   expect(output.lines.at(-1)?.text).toBe("line-2499");
   expect(output.cursor).toBe(output.dropped + output.lines.length);
 
-  // A cursor from a previous read returns only what is newer.
   expect(manager.output(run.terminalId, output.cursor).lines).toHaveLength(0);
 }, 30_000);

@@ -12,7 +12,6 @@ const tempDir = () => {
   return dir;
 };
 
-/** Every store here is a real directory; none of them survives the file. */
 afterAll(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -85,7 +84,6 @@ test("secret values are stored for the launch and dropped from every read", () =
     ],
   });
 
-  // The document keeps it — a launch needs the real value.
   expect(config.env?.find((e) => e.key === "STRIPE_KEY")?.value).toBe("sk_live_supersecret");
 
   const view = redactConfiguration(config);
@@ -103,15 +101,11 @@ test("an icon survives the round trip, and a configuration without one stays wit
   const without = store.create("proj_1", { name: "web dev", command: "bun run dev" });
 
   expect(withIcon.icon).toBe("server");
-  // ABSENT, not defaulted at save time: the cockpit draws `play` for an icon
-  // that is not there, so changing the default later must not have to rewrite
-  // every stored document.
   expect(without.icon).toBeUndefined();
   expect("icon" in without).toBe(false);
 
   const reread = new RunStore(dir).list("proj_1");
   expect(reread.map((config) => config.icon)).toEqual(["server", undefined]);
-  // A closed set is not a secret, so it crosses the wire untouched.
   expect(redactConfiguration(reread[0]!).icon).toBe("server");
 });
 
@@ -121,7 +115,6 @@ test("an icon outside the closed set is refused rather than stored unrenderable"
 
   const created = store.create("proj_1", { name: "web dev", command: "bun run dev", icon: DEFAULT_RUN_ICON });
   expect(() => store.update("proj_1", created.id, { icon: "sparkles" } as never)).toThrow(RunError);
-  // The refusal left the stored value alone rather than half-applying the patch.
   expect(store.get("proj_1", created.id).icon).toBe(DEFAULT_RUN_ICON);
 });
 

@@ -38,9 +38,9 @@ import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "
 import { openCodeBriefings, openCodeConfigContent } from "../src/drivers/opencode";
 import { sessionsTools } from "../src/domains/sessions";
 import { notesTools } from "../src/domains/notes";
-import { runTools } from "../src/run/tools";
+import { runTools } from "../src/domains/terminal/tools";
 import { BROWSER_BRIEFING } from "../src/domains/browser";
-import { RUN_BRIEFING } from "../src/run/briefing";
+import { RUN_BRIEFING } from "../src/domains/terminal/briefing";
 import { createClaudeDriver } from "../src/drivers/claude";
 import { EngineStore } from "../src/state";
 import { startEngine, type EngineDaemon } from "../src/daemon";

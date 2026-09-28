@@ -3,7 +3,7 @@ import type { SessionsCapability } from "../domains/sessions";
 import type { NotesCapability } from "../domains/notes";
 import type { PromptsCapability } from "../domains/prompts";
 import type { DisplayCapability } from "../domains/agent-tools";
-import type { RunCapability } from "../run/capability";
+import type { RunCapability } from "../domains/terminal";
 import type { SteerMailbox } from "../domains/turns";
 
 export type { SessionsCapability };
