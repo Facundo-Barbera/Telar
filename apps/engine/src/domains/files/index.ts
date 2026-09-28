@@ -1,3 +1,4 @@
 export { filesRoutes } from "./routes";
-export { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./workspace";
+export { readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./fenced";
+export { listWorkspaceFilesAsync } from "./workspace";
 export { sessionFilesRoutes } from "./session-routes";

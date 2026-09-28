@@ -160,7 +160,7 @@ import { boundedOutline, cohortNotification, context, FIND_SCAN, firstLine, GREP
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
-import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./domains/files";
+import { listWorkspaceFilesAsync, readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
 import { type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
@@ -1332,8 +1332,8 @@ export class EngineStore {
       files: new DsFiles(path.join(sessionDir(this.paths, sessionId), "ds")),
       // A notebook with plots in it passes the editor's 512 KB ceiling in one
       // cell; both fences take the notebook-sized cap instead.
-      readFile: (target) => this.readFenced(workspaceRootOf(session), target, "session workspace", NOTEBOOK_MAX_BYTES),
-      writeFile: (target, text, expected) => this.writeFenced(workspaceRootOf(session), target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
+      readFile: (target) => readFenced(workspaceRootOf(session), target, "session workspace", NOTEBOOK_MAX_BYTES),
+      writeFile: (target, text, expected) => writeFenced(workspaceRootOf(session), target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
       putAttachment: (input) => this.putAttachment(sessionId, input),
       attachmentBytes: (id) => this.attachmentBytes(sessionId, id).data,
       appendEvent: (event) => { this.appendEvent(sessionId, event); },
@@ -1435,7 +1435,7 @@ export class EngineStore {
       const parsed = JSON.parse(line.text.slice(line.text.indexOf("__TELAR_TABLE__") + 15)) as Omit<TableWindow, "offset" | "path">;
       return { path: target, offset: options.offset, ...parsed };
     }
-    const file = this.readFenced(workspaceRootOf(session), target, "session workspace");
+    const file = readFenced(workspaceRootOf(session), target, "session workspace");
     if (file.binary) throw new EngineStateError("invalid_request", "that file is not text");
     return { path: target, ...windowCsv(file.text, /\.tsv$/i.test(target) ? "\t" : ",", options), ...(file.truncated ? { truncated: true } : {}) };
   }
@@ -3775,128 +3775,35 @@ export class EngineStore {
   }
 
   projectFileAsync(projectId: string, target: string): Promise<WorkspaceFile> {
-    return this.readFencedAsync(this.getProject(projectId).root, target, "project");
+    return readFencedAsync(this.getProject(projectId).root, target, "project");
   }
 
   sessionFileAsync(sessionId: string, target: string): Promise<WorkspaceFile> {
-    return this.readFencedAsync(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
+    return readFencedAsync(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
   }
 
-  /**
-   * One file's BYTES — what the cockpit's media viewers (image, PDF, video)
-   * render. The same fence as the text read, because the same client can name
-   * the same paths; only the answer differs: content and a media type instead
-   * of decoded text. Refused past `MAX_RAW_FILE_BYTES` — see files.ts.
-   */
   projectFileBytesAsync(projectId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return this.readFencedBytes(this.getProject(projectId).root, target, "project");
+    return readFencedBytes(this.getProject(projectId).root, target, "project");
   }
 
   sessionFileBytesAsync(sessionId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return this.readFencedBytes(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
+    return readFencedBytes(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
   }
 
-  /**
-   * SAVE A FILE A HUMAN EDITED IN THE COCKPIT.
-   *
-   * `expected` is the hash the editor read. Everything about why this endpoint
-   * takes one — and what it refuses — is in `writeWorkspaceFile`; the store's job
-   * is the fence, which is the same fence as the read and for the same reason.
-   */
+  /** `expected` is the hash the editor read; a stale one is refused rather than overwritten. */
   projectFileWrite(projectId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
     const project = this.getProject(projectId);
-    return this.writeFenced(project.root, target, text, expected, "project");
+    return writeFenced(project.root, target, text, expected, "project");
   }
 
   sessionFileWrite(sessionId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
     const session = this.records.get(sessionId);
-    return this.writeFenced(workspaceRootOf(session), target, text, expected, "session workspace");
+    return writeFenced(workspaceRootOf(session), target, text, expected, "session workspace");
   }
 
-  /**
-   * READ A FILE, INSIDE ONE DIRECTORY AND NOWHERE ELSE.
-   *
-   * The fence is the whole method. A client that can name a path can name
-   * `../../../.ssh/id_ed25519`, and this engine listens on a port with no login
-   * — so the check is here, at the store boundary, rather than at the route: an
-   * in-process caller must not be able to walk past a check that only ran on the
-   * socket. Same rule, same shape, as the patch reads above.
-   *
-   * A DIRECTORY IS NOT A FILE, and saying so beats letting `readFileSync` throw
-   * EISDIR at a surface that would render the errno.
-   */
-  private readFenced(root: string, target: string, label: string, maxBytes?: number): WorkspaceFile {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    const resolved = path.resolve(root, target);
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    let stats: fs.Stats;
-    try {
-      stats = fs.statSync(resolved);
-    } catch {
-      throw new EngineStateError("not_found", "no such file in this workspace");
-    }
-    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
-    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
-    return readWorkspaceFile({ cwd: root, path: path.relative(root, resolved), ...(maxBytes ? { maxBytes } : {}) });
-  }
 
-  private async readFencedAsync(root: string, target: string, label: string): Promise<WorkspaceFile> {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    const resolved = path.resolve(root, target);
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    let stats: fs.Stats;
-    try {
-      stats = await fs.promises.stat(resolved);
-    } catch {
-      throw new EngineStateError("not_found", "no such file in this workspace");
-    }
-    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
-    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
-    return readWorkspaceFileAsync({ cwd: root, path: path.relative(root, resolved) });
-  }
 
-  /** The bytes twin of `readFencedAsync` — same fence, same refusals, whole
-   *  content instead of decoded text. Size errors become `invalid_request` so
-   *  the route answers with the sentence rather than a 500. */
-  private async readFencedBytes(root: string, target: string, label: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    const resolved = path.resolve(root, target);
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    let stats: fs.Stats;
-    try {
-      stats = await fs.promises.stat(resolved);
-    } catch {
-      throw new EngineStateError("not_found", "no such file in this workspace");
-    }
-    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
-    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
-    try {
-      return await readWorkspaceFileBytes({ cwd: root, path: path.relative(root, resolved) });
-    } catch (error) {
-      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : "the file could not be read");
-    }
-  }
 
-  /**
-   * The same fence, for the one write.
-   *
-   * DELIBERATELY NOT SHARED WITH `readFenced` beyond the check itself: a read that
-   * cannot find a file is a 404, while a write that cannot is a REFUSAL the editor
-   * renders inline (`not_found`), so the two disagree about what a missing file
-   * means and merging them would have to invent a third answer.
-   */
-  private writeFenced(root: string, target: string, text: string, expected: string, label: string, maxBytes?: number): WorkspaceWriteResult {
-    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
-    if (!expected.trim()) throw new EngineStateError("invalid_request", "a write must carry the hash it expects on disk");
-    if (text.length > (maxBytes ?? MAX_TEXT_LENGTH * 10)) throw new EngineStateError("invalid_request", "that file is too large to save");
-    const resolved = path.resolve(root, target);
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    return writeWorkspaceFile({ cwd: root, path: path.relative(root, resolved), text, expected, ...(maxBytes ? { maxBytes } : {}) });
-  }
 
   /**
    * Run a synchronous store command with its git questions already answered
