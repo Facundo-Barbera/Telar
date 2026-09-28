@@ -780,11 +780,17 @@ export function SessionRow({
   /**
    * THE SLIM ROW: one line, and it gives its space back.
    *
-   * A settled session is history — you scan the tail when hunting, not when
-   * working — so the mark is dimmed and desaturated at rest and restored on
-   * hover, which is t3's "settled history recedes" behaviour. The status still
-   * appears if there IS one: a settled row can go back to work.
+   * A SHELVED session (settled or snoozed) is history or deferred work — you
+   * scan it when hunting, not when working — so its mark is dimmed and
+   * desaturated at rest and its title quieter, both restored on hover: t3's
+   * "settled history recedes". The status still appears if there IS one.
+   *
+   * ONLY SHELVED ROWS RECEDE. Slim is also the volume of every row inside a
+   * project group, and dimming by volume greyed every unpinned conversation
+   * while pinned cards kept full ink — contrast that said "pinned" rather than
+   * anything about the conversation.
    */
+  const recedes = band === "settled" || band === "snoozed";
   const slimBody = (
     <>
       {wakeMark}
@@ -796,7 +802,7 @@ export function SessionRow({
           is what you scan the tail for; the provider is identity that already
           lives in the hover card. Falls back to the provider mark only when the
           session has no project (a rare orphan). */}
-      <span className="shrink-0 opacity-50 grayscale transition group-hover/session:opacity-100 group-hover/session:grayscale-0">
+      <span className={cn("shrink-0", recedes && "opacity-50 grayscale transition group-hover/session:opacity-100 group-hover/session:grayscale-0")}>
         {session.projectName ? (
           <ProjectAvatar
             name={session.projectName}
@@ -809,7 +815,12 @@ export function SessionRow({
           <ProviderIcon provider={session.driver} size={13} />
         )}
       </span>
-      <span className="min-w-0 flex-1 truncate text-left text-xs-plus text-sidebar-foreground/70 group-hover/session:text-sidebar-foreground">
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-left text-xs-plus text-sidebar-foreground",
+          recedes && "text-sidebar-foreground/70 group-hover/session:text-sidebar-foreground",
+        )}
+      >
         {session.title || "Untitled session"}
       </span>
       {trailingSlot}
