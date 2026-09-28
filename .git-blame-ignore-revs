@@ -1,0 +1,3 @@
+# Mechanical re-indents and moves; see git blame --ignore-revs-file.
+# refactor(engine): make the 28 store commands wrap themselves explicitly
+ba6deab5283e2d15ed34143a8b67026f9dfe26dc
