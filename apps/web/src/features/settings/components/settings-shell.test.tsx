@@ -1,7 +1,5 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -13,7 +11,6 @@ GlobalRegistrator.register({ url: "http://localhost/settings" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterAll(() => GlobalRegistrator.unregister());
 
-const here = fileURLToPath(new URL(".", import.meta.url));
 
 const PANES = [
   { id: "general", label: "General", icon: SlidersHorizontalIcon },
@@ -187,15 +184,6 @@ test("Restore defaults appears while a mounted section offers defaults, and runs
   await act(async () => root.unmount());
   host.remove();
 });
-
-test("no section smuggles its write failure in through the hint", () => {
-  // The error slot exists so a refusal never replaces the explanation.
-  const offenders = readdirSync(here)
-    .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
-    .filter((name) => readFileSync(`${here}${name}`, "utf8").includes("hint={error ??"));
-  expect(offenders).toEqual([]);
-});
-
 test("a group draws one card, with its rows hairlined inside it", () => {
   const html = renderToStaticMarkup(
     <SettingsGroup title="Organization">

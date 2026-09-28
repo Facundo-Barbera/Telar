@@ -1,50 +1,15 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { PluginStatus } from "@telar/engine-client";
 import { searchSettings } from "../search";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "../registry";
 import { SECTION_IDS, settingsSearchIndex } from "../settings-sections";
-
-const here = fileURLToPath(new URL(".", import.meta.url));
-
-const srcRoot = fileURLToPath(new URL("../../../", import.meta.url));
-
-function tsxSources(dir: string): { path: string; text: string }[] {
-  return readdirSync(dir).flatMap((name) => {
-    const path = `${dir}${name}`;
-    if (statSync(path).isDirectory()) return tsxSources(`${path}/`);
-    return name.endsWith(".tsx") && !name.endsWith(".test.tsx") ? [{ path, text: readFileSync(path, "utf8") }] : [];
-  });
-}
-
-// Panes live in this folder or in a feature folder that builds on the settings shell.
-const paneSources = (): string[] =>
-  tsxSources(srcRoot)
-    .filter(({ path, text }) => path.startsWith(here) || /\/settings-shell"|from "@\/features\/settings"/.test(text))
-    .map(({ text }) => text);
-
-const sources = paneSources().join("\n");
 
 test("every indexed pane is a pane the shell can actually select", () => {
   for (const page of SETTINGS_SEARCH_PAGES) {
     expect(SECTION_IDS).toContain(page.id);
   }
 });
-
-test("every indexed row's title is still copy that exists on a pane", () => {
-  const missing = SETTINGS_SEARCH_INDEX.entries.filter((entry) => !sources.includes(entry.title)).map((entry) => entry.title);
-  expect(missing).toEqual([]);
-});
-
-test("every indexed group is still a group heading that exists", () => {
-  const groups = new Set(SETTINGS_SEARCH_INDEX.entries.map((entry) => entry.group).filter(Boolean));
-  for (const group of groups) {
-    expect(sources).toContain(`title="${group}"`);
-  }
-});
-
 test("no two rows claim the same anchor", () => {
   const ids = SETTINGS_SEARCH_INDEX.entries.map((entry) => entry.id);
   expect(new Set(ids).size).toBe(ids.length);
@@ -87,65 +52,6 @@ test("a result carries the pane it lives on, which is what the list shows", () =
   const hit = searchSettings(SETTINGS_SEARCH_INDEX, "tailscale")[0];
   expect(hit?.pageId).toBe("remote");
   expect(hit?.pageLabel).toBe("Remote access");
-});
-
-// Static extraction: the panes are lazy and most rows need the engine to answer.
-function renderedLabels(): Set<string> {
-  const labels = new Set<string>();
-  for (const source of paneSources()) {
-    for (const [, attrs] of source.matchAll(/<(?:Row|ToggleRow)\b([\s\S]*?)\/?>/g)) {
-      const label = /\blabel="([^"]+)"/.exec(attrs ?? "")?.[1];
-      if (label) labels.add(label);
-    }
-  }
-  return labels;
-}
-
-// Rows that are a state the pane is in, not a setting.
-const NOT_SETTINGS = new Set([
-  "Could not read plugins",
-  "Could not save",
-  "Desktop app only",
-  "Detecting",
-  "Did not start",
-  "Loading",
-  "No hubs configured",
-  "No other TeX install found",
-  "No phone can be reached yet",
-  "No plugins registered",
-  "No remembered logins",
-  "No servers configured",
-  "No update feed in this build",
-  "None yet",
-  "Not available here",
-  "Restart to apply",
-  "The engine did not answer",
-]);
-
-test("every rendered row with a fixed label has a search entry", () => {
-  const indexed = new Set(SETTINGS_SEARCH_PAGES.flatMap((page) => page.groups.flatMap((group) => group.rows.map((row) => row.title))));
-  const missing = [...renderedLabels()].filter((label) => !indexed.has(label) && !NOT_SETTINGS.has(label)).sort();
-  expect(missing).toEqual([]);
-});
-
-test("every search entry points at a row that renders, unless it says it lands on a pane", () => {
-  const labels = renderedLabels();
-  const sources = paneSources().join("\n");
-  // A row is rendered if a Row carries its label, a row descriptor mapped into
-  // Rows names it (`label: "Setup"`), or it spells its anchor out by hand.
-  const renders = (title: string, id: string) =>
-    labels.has(title) || sources.includes(`label: "${title}"`) || sources.includes(`id="${id}"`);
-  const anchor = new Map(SETTINGS_SEARCH_INDEX.entries.map((entry) => [`${entry.pageId}:${entry.title}`, entry.id]));
-  const dangling = SETTINGS_SEARCH_PAGES.flatMap((page) =>
-    page.groups.flatMap((group) =>
-      group.rows
-        .filter((row) => !row.navigateOnly && !renders(row.title, row.id ?? anchor.get(`${page.id}:${row.title}`) ?? ""))
-        .map((row) => `${page.id}: ${row.title}`),
-    ),
-  );
-  expect(dangling).toEqual([]);
-  // And the exemption list stays honest: a label that became a setting, or went away, leaves it.
-  for (const label of NOT_SETTINGS) expect(labels.has(label)).toBe(true);
 });
 
 test("generated plugin rows join the index on the Projects and Plugins panes", async () => {

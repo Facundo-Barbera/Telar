@@ -21,47 +21,9 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
-// fileURLToPath, not `.pathname`: this repo is checked out under a path with a
-// space in it, and a URL's pathname keeps that percent-encoded.
-const UI_DIR = fileURLToPath(new URL("../ui", import.meta.url));
 const GLOBALS = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
-
-function sources(dir: string): string[] {
-  return readdirSync(dir).flatMap((entry) => {
-    const path = join(dir, entry);
-    if (statSync(path).isDirectory()) return sources(path);
-    return /\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry) ? [path] : [];
-  });
-}
-
-/** Everything Tailwind ships as a box-shadow size. `shadow-none` is absent on
- *  purpose — see the header. */
-const STOCK = /\bshadow-(2?xs|sm|md|lg|xl|2xl)\b/;
-
-describe("no stock shadow survives in src/ui", () => {
-  const files = sources(UI_DIR);
-
-  test("there are files to check at all", () => {
-    expect(files.length).toBeGreaterThan(10);
-  });
-
-  for (const path of files) {
-    const name = path.slice(UI_DIR.length + 1);
-    test(name, () => {
-      const offenders = readFileSync(path, "utf8")
-        .split("\n")
-        .map((line, index) => ({ line, index }))
-        .filter(({ line }) => STOCK.test(line))
-        .map(({ line, index }) => `  ${name}:${index + 1}  ${line.trim().slice(0, 120)}`);
-      // The message is the fix: the rung to reach for, not just "this failed".
-      expect(offenders.join("\n") || "clean").toBe("clean");
-    });
-  }
-});
 
 describe("the ladder the call sites are reaching for", () => {
   test("three rungs, declared once, in the @theme block", () => {

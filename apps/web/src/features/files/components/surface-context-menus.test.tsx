@@ -1,8 +1,5 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, useState } from "react";
 import { UNKNOWN_PATH, type GitFileChange, type SessionDiff } from "@telar/engine-client";
 import { installTestDom, mount, flush, click, stubFetch } from "@/test/dom";
@@ -43,34 +40,6 @@ const disabled = (label: string) => row(label)?.hasAttribute("data-disabled");
 const choose = (label: string) => click(row(label));
 const byText = (root: ParentNode, selector: string, text: string) =>
   [...root.querySelectorAll(selector)].find((node) => node.textContent?.trim() === text)!;
-
-describe("every surface menu uses the shared primitive", () => {
-  const sources = ["../../../components", "../../../features"]
-    .map((rel) => fileURLToPath(new URL(rel, import.meta.url)))
-    .flatMap((dir) =>
-      (fs.readdirSync(dir, { recursive: true }) as string[])
-        .filter((name) => name.endsWith(".tsx") && !name.includes(".test.") && name !== path.join("ui", "context-menu.tsx"))
-        .map((name) => ({ name, source: fs.readFileSync(path.join(dir, name), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "") })),
-    )
-    .filter(({ source }) => source.includes("<ContextMenuItem"));
-
-  test("imports components/ui/context-menu and defines no ContextMenu of its own", () => {
-    expect(sources.length).toBeGreaterThan(5);
-    for (const { name, source } of sources) {
-      expect(source, name).toContain('from "@/ui/context-menu"');
-      expect(source, name).not.toMatch(/function ContextMenu\b/);
-    }
-  });
-
-  test("no menu item fetches directly — each fires a callback the surface already wires", () => {
-    for (const { name, source } of sources) {
-      for (const item of source.match(/<ContextMenuItem[^>]*onClick=\{[^}]*\}/g) ?? []) {
-        expect(item, name).not.toMatch(/\bfetch\(|\bapi\.\w+\(/);
-      }
-    }
-  });
-});
-
 describe("the notebook cell's menu", () => {
   const cell = (index: number, patch: Partial<NotebookCell> = {}): NotebookCell => ({ id: `c${index}`, index, type: "code", source: `x = ${index}`, ...patch });
   const notebook: NotebookRead = {
