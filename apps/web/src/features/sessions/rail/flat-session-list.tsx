@@ -41,14 +41,14 @@ function FlatEntryItem({ entry, open, onToggle, context }: { entry: FlatEntry; o
     <div>
       <FlatRow session={entry.session} variant="card" context={context} />
       {summary && (
-        <div className="ml-4 space-y-0.5 border-l border-sidebar-border pl-1.5" role="group" aria-label={`Started from ${entry.session.title || "this session"}`}>
+        <div className="ml-3" role="group" aria-label={`Started from ${entry.session.title || "this session"}`}>
           <button
             type="button"
             aria-expanded={open}
             onClick={onToggle}
-            className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-2xs text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+            className="flex min-w-0 items-center gap-1 rounded px-2 py-0.5 text-left text-3xs text-sidebar-foreground/40 hover:text-sidebar-foreground/80"
           >
-            <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
+            <ChevronRightIcon className={cn("size-2.5 shrink-0 transition-transform", open && "rotate-90")} />
             {summary.needsYou > 0 && <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-destructive" />}
             <span className="min-w-0 truncate tabular-nums">{summary.label}</span>
           </button>
