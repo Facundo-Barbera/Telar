@@ -22,3 +22,4 @@ export { holdEventStream, type OpenStream } from "./stream";
 export { sessionAttachmentRoutes } from "./attachments";
 export { SessionAttachments, type AttachmentInput } from "./attachment-store";
 export { sessionsSocketDoor } from "./socket-door";
+export { SessionSubscriptions, TERMINAL_WAKE_KINDS } from "./subscriptions";
