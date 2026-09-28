@@ -1,6 +1,6 @@
 export type RouteAnswer = { status: number; body: unknown };
 
-export type RouteInput = { body: Record<string, unknown>; params: string[]; query: URLSearchParams };
+type RouteInput = { body: Record<string, unknown>; params: string[]; query: URLSearchParams };
 
 /** One `/v2` endpoint. `path` is exact, or a RegExp whose groups become `params`. */
 export type Route = {

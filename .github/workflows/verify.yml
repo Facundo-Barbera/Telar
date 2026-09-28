@@ -174,9 +174,26 @@ jobs:
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint -shellcheck= -pyflakes= .github/workflows/*.yml
 
+  knip:
+    name: knip
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+      - name: knip
+        run: bun run knip
+
   # Report-only until the findings are cleared; not a dependency of verify-passed.
   guards:
-    name: Guards (knip, oxlint; report only)
+    name: Guards (oxlint; report only)
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 10
@@ -190,9 +207,6 @@ jobs:
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
-      - name: knip
-        continue-on-error: true
-        run: bun run knip
       - name: oxlint
         continue-on-error: true
         run: bun run lint:ox
@@ -1069,7 +1083,7 @@ jobs:
     name: Verify passed
     runs-on: ubuntu-latest
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [source, typecheck, lint, test, test-engine, macos, electron, ios-changes, ios]
+    needs: [source, knip, typecheck, lint, test, test-engine, macos, electron, ios-changes, ios]
     timeout-minutes: 5
     steps:
       - name: Report the aggregate
