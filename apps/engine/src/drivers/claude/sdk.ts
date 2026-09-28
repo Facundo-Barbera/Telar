@@ -4,7 +4,7 @@ import { claudeFixedWindowOf } from "../../domains/providers";
 import type { RunCapability } from "../../run/capability";
 import type { DisplayCapability } from "../../domains/agent-tools";
 import { RELAY_RULE } from "../../domains/turns";
-import type { SessionsCapability } from "../../sessions-tools/tools";
+import type { SessionsCapability } from "../../domains/sessions";
 import type { NotesCapability } from "../../domains/notes";
 import type { PromptsCapability } from "../../domains/prompts";
 

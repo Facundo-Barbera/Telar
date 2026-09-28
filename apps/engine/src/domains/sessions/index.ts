@@ -12,3 +12,6 @@ export { createSessionModules } from "./modules";
 export { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./bootstrap";
 export { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 export { ORIENTATION_VERSION, syncTelarSkill, TELAR_ORIENTATION, TELAR_SKILL, TELAR_SKILL_NAME, writeOrientationInstructions } from "./orientation";
+export { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionsSocketConnectCard } from "./tools/socket";
+export { pageEvents, type SessionsCapability } from "./tools/shared";
+export { sessionsTools } from "./tools/tools";

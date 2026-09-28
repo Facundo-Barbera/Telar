@@ -20,8 +20,8 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { collectSessionsWallTools } from "../src/sessions-tools/socket";
-import type { SessionsCapability } from "../src/sessions-tools/tools";
+import { collectSessionsWallTools } from "../src/domains/sessions";
+import type { SessionsCapability } from "../src/domains/sessions";
 import { stubModels } from "./stub-models";
 import { worktreeReady } from "./worktree-ready";
 

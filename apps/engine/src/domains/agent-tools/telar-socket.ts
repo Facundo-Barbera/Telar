@@ -9,7 +9,7 @@ import { notesTools } from "../notes";
 import { pluginToolModules } from "../../plugins/bundled";
 import { promptsTools } from "../prompts";
 import { runTools } from "../../run/tools";
-import { sessionsTools } from "../../sessions-tools/tools";
+import { sessionsTools } from "../sessions";
 
 export type TelarSocketLease = {
   url: string;

@@ -36,7 +36,7 @@ import {
 import { BUNDLED_SKILLS, displayTools, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME, type ToolFactory } from "../src/domains/agent-tools";
 import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/domains/providers";
 import { openCodeBriefings, openCodeConfigContent } from "../src/drivers/opencode";
-import { sessionsTools } from "../src/sessions-tools/tools";
+import { sessionsTools } from "../src/domains/sessions";
 import { notesTools } from "../src/domains/notes";
 import { runTools } from "../src/run/tools";
 import { BROWSER_BRIEFING } from "../src/domains/browser";

@@ -28,7 +28,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, EngineRequest, ProjectNote, Session, Subscription, Turn } from "@telar/engine-client";
-import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
+import { sessionsTools, type SessionsCapability } from "../src/domains/sessions";
 import { notesTools, type NotesCapability } from "../src/domains/notes";
 import { displayTools, MAX_ANSWER_CHARS } from "../src/domains/agent-tools";
 import { TELAR_SKILL } from "../src/domains/sessions";
@@ -358,7 +358,7 @@ function wall() {
 /**
  * EVERY TOOL, WITH THE ARGUMENTS A CALLER ACTUALLY PASSES, and the ceiling each
  * answer may not cross. The ceilings are the shaped bounds the tools set for
- * themselves — see the constants in `sessions-tools/tools.ts` — with room for
+ * themselves — see the constants in `domains/sessions/tools/shared.ts` — with room for
  * the notes and cursors that ride beside the rows.
  *
  * A RUN READ IS THE ONE THAT MAY EXCEED `MAX_ANSWER_CHARS`, and it is the only

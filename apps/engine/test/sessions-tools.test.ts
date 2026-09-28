@@ -31,9 +31,9 @@ import { assertTelarToolNames, parseToolName, qualifyTelarTool, STALLED_AFTER_MS
 import { EngineStore } from "../src/state";
 import { sessionDiffAsync } from "../src/domains/git";
 import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/worktree";
-import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessions-tools/tools";
+import { pageEvents, sessionsTools, type SessionsCapability } from "../src/domains/sessions";
 import { TELAR_SKILL } from "../src/domains/sessions";
-import { collectSessionsWallTools } from "../src/sessions-tools/socket";
+import { collectSessionsWallTools } from "../src/domains/sessions";
 import { toolInputSchema } from "../src/domains/agent-tools";
 
 /**
