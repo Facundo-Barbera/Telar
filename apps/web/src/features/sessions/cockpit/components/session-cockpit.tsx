@@ -1,7 +1,7 @@
 "use client";
 
 import { useNow } from "@/ui/hooks/use-now";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClockIcon, TriangleAlertIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/ui/alert";
@@ -9,7 +9,6 @@ import { WorkspaceInspector } from "@/features/sessions/components/workspace-ins
 import {
   type ClaudeConversation,
   type RequestDecision,
-  type ProviderDriverKind,
   type RuntimeMode,
   type Turn,
   type TurnModelSelection,
@@ -29,7 +28,6 @@ import { newSessionId, withSnooze } from "../../session-mutations";
 import { sessionLink } from "../../session-link";
 import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity } from "../../session-settling";
 import { useInboxPolicy } from "../../inbox-policy";
-import { useSessionDefaults } from "../../session-defaults";
 import { desktopApp } from "@/platform/desktop/desktop-app";
 import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { usePluginPanels, pluginCommands } from "@/features/plugins";
@@ -58,6 +56,7 @@ import { useCockpitPanel } from "../hooks/use-cockpit-panel";
 import { useJournalReactions } from "../hooks/use-journal-reactions";
 import { useSessionBrowser } from "../hooks/use-session-browser";
 import { useCockpitProject } from "../hooks/use-cockpit-project";
+import { useDraftConfig } from "../hooks/use-draft-config";
 import { handOffCanvas } from "../canvas-handoff";
 
 const api = createEngineApi();
@@ -92,67 +91,7 @@ export function SessionCockpit({
   const { projectName, projectResolved, defaults: projectDefaults, enabledPlugins } = useCockpitProject({
     hostId, projectId, serverProjectName, transcriptLanded,
   });
-  const [draftDriver, setDraftDriver] = useState<ProviderDriverKind>("claude");
-  const [draftEnvMode, setDraftEnvMode] = useState<"local" | "worktree">("local");
-  const [envModeTouched, setEnvModeTouched] = useState(false);
-  const { defaults: sessionDefaults, loading: sessionDefaultsLoading } = useSessionDefaults();
-  const [seededEnvMode, setSeededEnvMode] = useState<"local" | "worktree">();
-  const projectAnswered = projectId === undefined || projectDefaults?.projectId === projectId;
-  const envModeSeed = (projectId !== undefined ? projectDefaults?.envMode : undefined) ?? sessionDefaults.envMode;
-  // A render-phase adjustment, not an effect — this app's lint enforces that
-  // for "adjust state when a value changes", and the value here is the
-  // engine's answer arriving.
-  if (!sessionDefaultsLoading && projectAnswered && !envModeTouched && seededEnvMode !== envModeSeed) {
-    setSeededEnvMode(envModeSeed);
-    setDraftEnvMode(envModeSeed);
-  }
-  /** every human pick goes through here, so the seed above can never overwrite
-   *  one — including the implicit pick of choosing a base ref. */
-  const chooseEnvMode = useCallback((next: "local" | "worktree") => {
-    setEnvModeTouched(true);
-    setDraftEnvMode(next);
-  }, []);
-  /** The base-ref picker's create-time choice: what a worktree is cut from,
-   *  and optionally the human's own name for its branch. Only meaningful with
-   *  `envMode: "worktree"` — picking a base is what flips the mode there. */
-  const [draftBase, setDraftBase] = useState<{ baseRef?: string; branchName?: string }>({});
-  const searchParams = useSearchParams();
-  const requestedBase = fresh ? (searchParams.get("base") ?? undefined) : undefined;
-  const [seededBase, setSeededBase] = useState<string>();
-  if (requestedBase !== undefined && seededBase !== requestedBase) {
-    setSeededBase(requestedBase);
-    setDraftBase({ baseRef: requestedBase });
-    chooseEnvMode("worktree");
-  }
-  const [draftRuntimeMode, setDraftRuntimeMode] = useState<RuntimeMode>("auto");
-  const [runtimeModeTouched, setRuntimeModeTouched] = useState(false);
-  const runtimeModeSeed = sessionDefaults.runtimeMode ?? "auto";
-  if (!sessionDefaultsLoading && !runtimeModeTouched && draftRuntimeMode !== runtimeModeSeed) setDraftRuntimeMode(runtimeModeSeed);
-  const [draftModel, setDraftModel] = useState<ModelChoice>({});
-  const [modelTouched, setModelTouched] = useState(false);
-  const [seededModelFor, setSeededModelFor] = useState<string>();
-  // Render-phase, like the envMode seed above. Keyed by project, so a canvas
-  // that moves to another project starts from that project's default.
-  if (!sessionId && !modelTouched && projectDefaults && projectDefaults.projectId === projectId && seededModelFor !== projectId) {
-    setSeededModelFor(projectId);
-    if (projectDefaults.model) {
-      setDraftDriver(projectDefaults.model.driver);
-      setDraftModel(projectDefaults.model.choice);
-    }
-  }
-  /** every human pick of a model knob goes through here, so the seed can never
-   *  overwrite one. Each control sends the whole choice, so changing one knob
-   *  keeps the rest of the project's default. */
-  const chooseDraftModel = useCallback((next: ModelChoice) => {
-    setModelTouched(true);
-    setDraftModel(next);
-  }, []);
-  const draftPick: ModelChoice = modelTouched ? draftModel : {};
-  const chooseDriver = useCallback((next: ProviderDriverKind) => {
-    setModelTouched(true);
-    setDraftDriver(next);
-    setDraftModel({});
-  }, [setDraftModel]);
+  const draftConfig = useDraftConfig({ projectId, fresh, projectDefaults });
   const [draft, setDraft] = useState("");
   /** Files picked but not yet sent. Held as `File`s rather than uploaded on
    *  pick — see the upload loop in `submit` for why. */
@@ -180,7 +119,7 @@ export function SessionCockpit({
   const draftText = useRef(draft);
   const { browser, browserCanStart, browserStart, openBrowser, browserDraftFlight, browserDraftSendPending } = useSessionBrowser({
     hostId, sessionId, projectId, transcriptLanded, events,
-    draft: { driver: draftDriver, envMode: draftEnvMode, base: draftBase, pick: draftPick, runtimeMode: draftRuntimeMode },
+    draft: draftConfig.choices,
     draftText, owner, panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab,
   });
 
@@ -289,9 +228,9 @@ export function SessionCockpit({
         id,
         title,
         driver: "claude",
-        envMode: draftEnvMode,
-        ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),
-        ...(draftEnvMode === "worktree" && draftBase.branchName ? { branchName: draftBase.branchName } : {}),
+        envMode: draftConfig.envMode,
+        ...(draftConfig.envMode === "worktree" && draftConfig.base.baseRef ? { baseRef: draftConfig.base.baseRef } : {}),
+        ...(draftConfig.envMode === "worktree" && draftConfig.base.branchName ? { branchName: draftConfig.base.branchName } : {}),
       });
       target = created.session.id;
       if (target !== id) window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
@@ -535,19 +474,19 @@ export function SessionCockpit({
         const created = await api.createSession(projectId, {
           id,
           title: seedSessionTitle(text, splitImages(files).images.map((file) => file.name)),
-          driver: draftDriver,
-          envMode: draftEnvMode,
-          ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),
-          ...(draftEnvMode === "worktree" && draftBase.branchName ? { branchName: draftBase.branchName } : {}),
+          driver: draftConfig.driver,
+          envMode: draftConfig.envMode,
+          ...(draftConfig.envMode === "worktree" && draftConfig.base.baseRef ? { baseRef: draftConfig.base.baseRef } : {}),
+          ...(draftConfig.envMode === "worktree" && draftConfig.base.branchName ? { branchName: draftConfig.base.branchName } : {}),
         }).catch((cause: unknown) => {
           window.history.replaceState(null, "", canvas);
           throw cause;
         });
         target = created.session.id;
         if (target !== id) window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
-        const model = sessionModelSelection(created.session.providerInstanceId, draftPick);
+        const model = sessionModelSelection(created.session.providerInstanceId, draftConfig.pick);
         const creationPatch = {
-          ...(runtimeModeTouched ? { runtimeMode: draftRuntimeMode } : {}),
+          ...(draftConfig.runtimeModeTouched ? { runtimeMode: draftConfig.runtimeMode } : {}),
           ...(model ? { model } : {}),
         };
         if (Object.keys(creationPatch).length > 0) {
@@ -566,7 +505,7 @@ export function SessionCockpit({
         const stored = await api.uploadAttachment(target, file);
         attachmentIds.push(stored.attachment.id);
       }
-      const pending = session?.model ?? draftPick;
+      const pending = session?.model ?? draftConfig.pick;
       await api.submitTurn(target, {
         runId,
         input: text,
@@ -985,26 +924,20 @@ export function SessionCockpit({
           fresh={fresh}
           {...(fresh
             ? {
-                driver: draftDriver,
-                onDriverChange: chooseDriver,
-                pendingModel: draftModel,
-                envMode: draftEnvMode,
-                onEnvMode: chooseEnvMode,
-                pendingBase: draftBase,
-                // Picking a base IS choosing a worktree: a base for the
-                // shared checkout would mean switching its branch, which the
-                // engine's read-only git surface refuses by construction.
-                onBase: (next: { baseRef?: string; branchName?: string }) => {
-                  setDraftBase(next);
-                  if (next.baseRef || next.branchName) chooseEnvMode("worktree");
-                },
-                ...(draftDriver === "claude" ? { onAdopt: adoptConversation } : {}),
+                driver: draftConfig.driver,
+                onDriverChange: draftConfig.chooseDriver,
+                pendingModel: draftConfig.model,
+                envMode: draftConfig.envMode,
+                onEnvMode: draftConfig.chooseEnvMode,
+                pendingBase: draftConfig.base,
+                onBase: draftConfig.chooseBase,
+                ...(draftConfig.driver === "claude" ? { onAdopt: adoptConversation } : {}),
               }
             : {})}
           busy={Boolean(active)}
           sending={sending}
-          {...(session?.runtimeMode ?? (fresh ? draftRuntimeMode : undefined)
-            ? { runtimeMode: session?.runtimeMode ?? draftRuntimeMode }
+          {...(session?.runtimeMode ?? (fresh ? draftConfig.runtimeMode : undefined)
+            ? { runtimeMode: session?.runtimeMode ?? draftConfig.runtimeMode }
             : {})}
           projectId={session?.projectId ?? projectId}
           {...(projectName ? { projectName } : {})}
@@ -1047,15 +980,12 @@ export function SessionCockpit({
           // are held locally and applied by the one patch that follows creation.
           onRuntimeMode={
             fresh
-              ? (mode) => {
-                  setRuntimeModeTouched(true);
-                  setDraftRuntimeMode(mode);
-                }
+              ? draftConfig.chooseRuntimeMode
               : (mode) => void setRuntimeMode(mode)
           }
           {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void setResumeAfterRateLimit(next) })}
-          {...(sessionDefaults.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimitDefault: sessionDefaults.resumeAfterRateLimit })}
-          onModelChange={fresh ? chooseDraftModel : (next) => void setModel(next)}
+          {...(draftConfig.sessionDefaults.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimitDefault: draftConfig.sessionDefaults.resumeAfterRateLimit })}
+          onModelChange={fresh ? draftConfig.chooseModel : (next) => void setModel(next)}
           // The composer's foot links its change count to the Diff surface —
           // a right-panel tab, so on the solo route the count stays a count
           // rather than becoming a link to nowhere.
