@@ -7,7 +7,7 @@ import { AgentMessageBubble } from "./conversation-message";
 import type { JournalTurn } from "@/platform/engine";
 
 const machine: JournalTurn = { runId: "run_peer", origin: "session", sender: { sessionId: "session_worker" }, prompt: "Internal checkpoint", state: "completed", resultText: "Internal acknowledgement", items: [], tasks: [] };
-const render = (turn: JournalTurn) => renderToStaticMarkup(<SessionTurn turn={turn} requests={[]} sending={false} live={false} onDecide={() => {}} onRetry={() => {}} />);
+const render = (turn: JournalTurn) => renderToStaticMarkup(<SessionTurn turn={turn} requests={[]} sending={false} live={false} onDecide={() => {}} />);
 
 /** Every disclosure a turn draws, counted — the claim in #239 is about HOW MANY
  *  there are, which no `toContain` can state. */

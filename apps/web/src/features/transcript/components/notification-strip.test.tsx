@@ -97,7 +97,7 @@ const wakeTurn = (runId: string, over: Partial<JournalTurn> = {}): JournalTurn =
   turn({ runId, prompt: "[notification: wake · turn_completed]", notification: wakeDetail(`child_${runId}`), items: [openingItem(runId, wakeDetail(`child_${runId}`))], ...over });
 
 const render = (subject: JournalTurn, live = false) =>
-  renderToStaticMarkup(<SessionTurn turn={subject} requests={[]} sending={false} live={live} onDecide={() => {}} onRetry={() => {}} />);
+  renderToStaticMarkup(<SessionTurn turn={subject} requests={[]} sending={false} live={live} onDecide={() => {}} />);
 
 const ids = (groups: readonly (readonly JournalTurn[])[]) => groups.map((group) => group.map((member) => member.runId));
 

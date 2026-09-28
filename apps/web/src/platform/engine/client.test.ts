@@ -1,7 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { Turn } from "@telar/engine-client";
-import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError, OPEN_BUDGET, READ_BUDGET } from "./client";
+import { createEngineApi, newRunId, EngineApiError, OPEN_BUDGET, READ_BUDGET } from "./client";
 import { SessionConnection } from "./session-connection";
 
 /** Counts concurrent requests; each call yields a macrotask so over-budget callers really wait. */
@@ -58,67 +57,6 @@ describe("engine browser adapter", () => {
       expect(error).toBeInstanceOf(EngineApiError);
       expect((error as EngineApiError).code).toBe("engine_unavailable");
     }
-  });
-
-  test("retrying ambiguous work discards it before scheduling an entirely fresh run", async () => {
-    const calls: string[] = [];
-    await retryAmbiguousTurn(
-      {
-        discardAmbiguousTurn: async (sessionId, runId) => {
-          calls.push(`discard:${sessionId}:${runId}`);
-          return { turn: { runId, state: "discarded" } as Turn };
-        },
-        submitTurn: async (sessionId, input) => {
-          calls.push(`submit:${sessionId}:${input.runId}:${input.input}`);
-          return {
-            turn: { runId: input.runId, state: "queued" } as Turn,
-            replayed: false,
-          };
-        },
-      },
-      "session_a",
-      { runId: "uncertain_run", state: "ambiguous", input: "hello" },
-      () => "fresh_run",
-    );
-    expect(calls).toEqual(["discard:session_a:uncertain_run", "submit:session_a:fresh_run:hello"]);
-  });
-
-  test("continuing releases the held run and submits NOTHING — the prompt is never resent", async () => {
-    const calls: string[] = [];
-    await continueAfterAmbiguousTurn(
-      {
-        discardAmbiguousTurn: async (sessionId: string, runId: string) => {
-          calls.push(`discard:${sessionId}:${runId}`);
-          return { turn: { runId, state: "discarded" } as Turn };
-        },
-      },
-      "session_a",
-      { runId: "uncertain_run", state: "ambiguous" },
-    );
-    expect(calls).toEqual(["discard:session_a:uncertain_run"]);
-  });
-
-  test("continue refuses a turn that is not ambiguous", async () => {
-    await expect(
-      continueAfterAmbiguousTurn(
-        { discardAmbiguousTurn: async () => ({ turn: {} as Turn }) },
-        "session_a",
-        { runId: "run_done", state: "completed" },
-      ),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-
-  test("retry refuses to resolve or replay a turn that is not ambiguous", async () => {
-    const calls: string[] = [];
-    await expect(retryAmbiguousTurn(
-      {
-        discardAmbiguousTurn: async () => { calls.push("discard"); return { turn: {} as Turn }; },
-        submitTurn: async () => { calls.push("submit"); return { turn: {} as Turn, replayed: false }; },
-      },
-      "session_a",
-      { runId: "run_done", state: "completed", input: "hello" },
-    )).rejects.toMatchObject({ code: "conflict" });
-    expect(calls).toEqual([]);
   });
 
   test("background reads never spend more than the connection budget (#82)", async () => {

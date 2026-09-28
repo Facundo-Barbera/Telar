@@ -193,7 +193,7 @@ describe("expanding", () => {
       root.render(
         <CohortFold turns={turns} members={4}>
           {turns.map((each) => (
-            <SessionTurn key={each.runId} turn={each} requests={[]} sending={false} live={false} onDecide={() => {}} onRetry={() => {}} />
+            <SessionTurn key={each.runId} turn={each} requests={[]} sending={false} live={false} onDecide={() => {}} />
           ))}
         </CohortFold>,
       );

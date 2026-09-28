@@ -23,7 +23,6 @@ test("the continuation is not the person's bubble, and says it continued after t
       sending: false,
       live: false,
       onDecide: () => {},
-      onRetry: () => {},
     }),
   );
   expect(html).toContain("continued after Telar restarted to update");

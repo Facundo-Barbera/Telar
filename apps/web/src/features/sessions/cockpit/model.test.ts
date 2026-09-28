@@ -18,7 +18,6 @@ const renderTurn = (items: JournalItem[], live = true) =>
       sending: false,
       live,
       onDecide: () => {},
-      onRetry: () => {},
     }),
   );
 

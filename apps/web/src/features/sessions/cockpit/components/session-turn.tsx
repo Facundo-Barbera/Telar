@@ -2,7 +2,7 @@
 
 import { Fragment, memo, useEffect, useRef, useState } from "react";
 import { ChevronRightIcon, Minimize2Icon, ShieldCheckIcon } from "lucide-react";
-import type { EngineRequest, RequestDecision, Turn } from "@telar/engine-client";
+import type { EngineRequest, RequestDecision } from "@telar/engine-client";
 import { isActiveTurn, isCompacting, itemText, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
 import {
   ActivityGroup,
@@ -87,7 +87,6 @@ type SessionTurnProps = {
   roster?: readonly JournalTask[];
   sending: boolean;
   live: boolean;
-  onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
   onResumeNow?: () => void;
 };
 
