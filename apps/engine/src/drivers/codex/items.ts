@@ -1,5 +1,5 @@
 import { canonicalToolName, parseToolName, type ItemDetail, type ItemStatus, type RequestDetail, type RequestKind, type UsageSnapshot, UNKNOWN_PATH } from "@telar/engine-client";
-import { requestKindForTool, titleForToolCall } from "../../driver";
+import { requestKindForTool, titleForToolCall } from "../claude";
 
 type CodexItem = Record<string, unknown>;
 

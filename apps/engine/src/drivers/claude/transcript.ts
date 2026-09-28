@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type { ItemDetail, ItemStatus, ProviderRefs } from "@telar/engine-client";
-import { itemDetailForToolCall, titleForToolCall } from "../../driver";
+import { itemDetailForToolCall, titleForToolCall } from "./mapping";
 
 export type ImportedRow = {
   detail: ItemDetail;

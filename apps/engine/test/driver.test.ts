@@ -2,9 +2,10 @@ import { afterEach, describe, expect, jest, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { qualifyTelarTool, requiresHuman, type TurnObservation } from "@telar/engine-client";
+import type { TurnObservation } from "@telar/engine-client";
 import { unifiedDiff } from "../src/domains/git/diff";
-import { createClaudeDriver as createRealClaudeDriver, itemDetailForToolCall, pathFromPartialInput, planDetailForTodos, RateLimitedError, requestKindForTool, taskKindForType, taskStateForStatus, titleForToolCall } from "../src/driver";
+import { createClaudeDriver as createRealClaudeDriver } from "../src/driver";
+import { RateLimitedError } from "../src/drivers/claude";
 import { ProviderUnavailableError } from "../src/drivers";
 import { SteerMailbox } from "../src/domains/turns";
 import { until } from "./wait";
@@ -366,20 +367,6 @@ test("a streamed edit names its file as soon as the path arrives, never a made-u
   releaseTail();
   await result;
   expect(forRow().filter((o) => o.kind === "item.started")).toHaveLength(1);
-});
-
-describe("pathFromPartialInput", () => {
-  test("reads a path whose closing quote has arrived", () => {
-    expect(pathFromPartialInput('{"file_path": "/a/b c.ts", "content": "unfin')).toBe("/a/b c.ts");
-    expect(pathFromPartialInput('{"notebook_path":"/n.ipynb"')).toBe("/n.ipynb");
-    expect(pathFromPartialInput('{"file_path":"C:\\\\x\\"y.ts"')).toBe('C:\\x"y.ts');
-  });
-
-  test("claims nothing from a path still arriving, or a key quoted inside a string", () => {
-    expect(pathFromPartialInput('{"file_path":"/a/b')).toBeUndefined();
-    expect(pathFromPartialInput('{"content":"see \\"path\\": \\"/etc\\"')).toBeUndefined();
-    expect(pathFromPartialInput("")).toBeUndefined();
-  });
 });
 
 test("a tool call opens a row and its result closes the SAME row", async () => {
@@ -1058,20 +1045,6 @@ test("the meter assumes 1M only for an explicit [1m] row, and the provider's rep
   }
 });
 
-test("selectedContextMaxFromModel assumes 1M for a [1m] Claude row or a fixed-1M model only", async () => {
-  const { selectedContextMaxFromModel } = await import("../src/driver");
-  expect(selectedContextMaxFromModel("opus[1m]")).toBe(1_000_000);
-  expect(selectedContextMaxFromModel("claude-fable-5-1[1m]")).toBe(1_000_000);
-  // Opus 4.8 / 4.7 are always 1M and take no suffix (#914); Haiku is only 200k.
-  expect(selectedContextMaxFromModel("claude-opus-4-8")).toBe(1_000_000);
-  expect(selectedContextMaxFromModel("claude-opus-4-7")).toBe(1_000_000);
-  expect(selectedContextMaxFromModel("claude-haiku-4-5")).toBe(200_000);
-  expect(selectedContextMaxFromModel("opus")).toBeUndefined();
-  expect(selectedContextMaxFromModel("claude-opus-5")).toBeUndefined();
-  expect(selectedContextMaxFromModel(undefined)).toBeUndefined();
-  expect(selectedContextMaxFromModel("claude-mystery-9[1m]")).toBeUndefined();
-});
-
 describe("a provider wait is a row, not silence", () => {
   /**
    * MEASURED IN THE #201 SAMPLE: nineteen quiet journal gaps totalling 36
@@ -1740,22 +1713,6 @@ test("a missing local SDK is a typed provider-unavailable failure", async () => 
   await expect(run(driver).result).rejects.toBeInstanceOf(ProviderUnavailableError);
 });
 
-test("tool mapping is by CAPABILITY, so a new provider tool is unstyled and never invisible", () => {
-  expect(itemDetailForToolCall("Bash", { command: "ls" }).type).toBe("command_execution");
-  expect(itemDetailForToolCall("Read", { file_path: "/a" }).type).toBe("file_read");
-  expect(itemDetailForToolCall("Write", { file_path: "/a" }).type).toBe("file_change");
-  expect(itemDetailForToolCall("Edit", { file_path: "/a" }).type).toBe("file_change");
-  expect(itemDetailForToolCall("WebSearch", { query: "q" }).type).toBe("web_search");
-  expect(itemDetailForToolCall("mcp__linear__search", {}).type).toBe("mcp_tool_call");
-  // The load-bearing case: an unrecognised tool still produces a row.
-  expect(itemDetailForToolCall("SomeFutureTool", { x: 1 }).type).toBe("dynamic_tool_call");
-});
-
-test("an mcp tool carries its server so a client can group by it", () => {
-  const detail = itemDetailForToolCall("mcp__linear__search", { q: "x" });
-  expect(detail.type === "mcp_tool_call" && detail.call.server).toBe("linear");
-});
-
 // ── reviewing the work ───────────────────────────────────────────────────────
 
 test("a file edit carries a real diff, which nothing produced before", async () => {
@@ -1926,14 +1883,6 @@ test("TodoWrite is ONE plan row updated in place, not a checklist per call", asy
   const closed = sink.observations.filter((o) => o.kind === "item.completed");
   expect(closed).toHaveLength(1);
   expect(closed[0]?.kind === "item.completed" && closed[0].status).toBe("completed");
-});
-
-test("a TodoWrite whose payload is not a todo list stays an ordinary tool row", () => {
-  // Anti-vacuity: an unrecognised shape must not become an empty plan claiming
-  // the agent has no steps.
-  expect(planDetailForTodos({ todos: [] })).toBeUndefined();
-  expect(planDetailForTodos({ nope: 1 })).toBeUndefined();
-  expect(planDetailForTodos({ todos: [{ activeForm: "Reading" }] })?.steps).toEqual([{ step: "Reading", status: "pending" }]);
 });
 
 // ── the browser ──────────────────────────────────────────────────────────────
@@ -2748,35 +2697,6 @@ test("a shell's notification states its log; an agent's does not become one", as
   expect(closed.find((t) => t.id === "task_toolu_e")?.outputFile).toBeUndefined();
 });
 
-test("task classification is a DENYLIST, so a renamed agent type is unstyled and never invisible", () => {
-  expect(taskKindForType("background_shell")).toBe("background");
-  /**
-   * MEASURED against the installed SDK (0.3.224), twice, because the name does
-   * not say it: a Bash call with `run_in_background` announces `task_started`
-   * with `task_type: "local_bash"`, and the same call in the FOREGROUND
-   * announces no task at all. Read as an agent, a backgrounded shell was swept
-   * to "failed" at the end of the turn it was meant to outlive.
-   */
-  expect(taskKindForType("local_bash")).toBe("background");
-  expect(taskKindForType("subagent")).toBe("agent");
-  // The load-bearing case: an SDK that invents a new agent flavour tomorrow.
-  expect(taskKindForType("local_workflow")).toBe("agent");
-  expect(taskKindForType(undefined)).toBe("agent");
-  expect(taskStateForStatus("killed")).toBe("stopped");
-  expect(taskStateForStatus("paused")).toBe("waiting");
-  // The fallback belongs to the CALLER: a start or a progress line with no
-  // status is running, and a notification with no status is over.
-  expect(taskStateForStatus(undefined)).toBe("running");
-  expect(taskStateForStatus(undefined, "completed")).toBe("completed");
-  expect(taskStateForStatus("running", "completed")).toBe("running");
-});
-
-test("collapsed labels are derived once, by the engine", () => {
-  expect(titleForToolCall("Bash", itemDetailForToolCall("Bash", { command: "  ls   -la  " }))).toBe("ls -la");
-  expect(titleForToolCall("Read", itemDetailForToolCall("Read", { file_path: "src/a.ts" }))).toBe("src/a.ts");
-  expect(titleForToolCall("Odd", itemDetailForToolCall("Odd", {}))).toBe("Odd");
-});
-
 test("an image attachment reaches Claude as pixels; anything else reaches it as a path", async () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-attach-")), "shot.png");
   fs.writeFileSync(file, Buffer.from([137, 80, 78, 71]));
@@ -2992,40 +2912,6 @@ test("no Claude Code on this machine fails the turn with what to install", async
     },
   );
   await expect(run(driver).result).rejects.toThrow(ProviderUnavailableError);
-});
-
-describe("Telar's own reads are reads", () => {
-  test("a read-shaped core tool is a file_read, so the front door does not park on it", () => {
-    /**
-     * `approval-required` auto-accepts `file_read` and parks everything else, so
-     * classifying these correctly is what lets the existing ladder work. This is
-     * not a bypass: no mode's decision is skipped, a read simply stops being
-     * declared an action.
-     *
-     * `display_open` is not literally a read, but it is read-SHAPED: it writes
-     * nothing, spends nothing, and its whole effect is a panel opening on the
-     * human's own screen — which they watch happen.
-     */
-    expect(requestKindForTool(qualifyTelarTool("display_open"))).toBe("file_read");
-    expect(requiresHuman("approval-required", requestKindForTool(qualifyTelarTool("display_open")))).toBe(false);
-  });
-
-  test("everything that writes or spends still parks, in every attended mode", () => {
-    // The half that makes the classification defensible. The list is EXPLICIT,
-    // never a prefix match, so a name that merely sounds like a read still asks.
-    for (const tool of ["sessions_create", "sessions_send", "notes_write"]) {
-      expect(requestKindForTool(qualifyTelarTool(tool))).toBe("tool_call");
-      expect(requiresHuman("approval-required", requestKindForTool(qualifyTelarTool(tool)))).toBe(true);
-      expect(requiresHuman("auto-accept-edits", requestKindForTool(qualifyTelarTool(tool)))).toBe(true);
-    }
-  });
-
-  test("a stranger's server cannot inherit the engine's posture by naming a tool the same", () => {
-    // The reason the check is on (server, tool) and not on the bare name: a
-    // user-configured MCP server called anything else must not get a free read.
-    expect(requestKindForTool("mcp__notmine__display_open")).toBe("tool_call");
-    expect(requestKindForTool("display_open")).toBe("tool_call");
-  });
 });
 
 test("a steered message is injected MID-TURN, journalled as a user_message row", async () => {

@@ -10,7 +10,7 @@
  */
 import { expect, test } from "bun:test";
 import { BROWSER_TOOLS } from "../src/domains/browser";
-import { itemDetailForToolCall, titleForToolCall } from "../src/driver";
+import { itemDetailForToolCall, titleForToolCall } from "../src/drivers/claude";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
 import type { SessionsCapability } from "../src/sessions-tools/tools";
 import {

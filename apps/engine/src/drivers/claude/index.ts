@@ -28,3 +28,6 @@ export {
   type ListOptions,
 } from "./fork";
 export { describeImport, readClaudeTranscriptFile, type ImportedRow, type TranscriptImport } from "./transcript";
+export { itemDetailForToolCall, requestKindForTool, setPluginReadTools, titleForToolCall } from "./mapping";
+export { claudeNotificationContent } from "./sdk";
+export { RateLimitedError } from "./limits";
