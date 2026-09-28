@@ -72,7 +72,7 @@ export function AppearanceSection() {
   const [homeNotice, setHomeNotice] = useState<string>();
   useEffect(() => {
     const abort = new AbortController();
-    void readAppearanceHome(abort.signal).then((home) => {
+    void readAppearanceHome().then((home) => {
       if (abort.signal.aborted) return;
       if (home.looks.length > 0) writeLooks(mergeById(readLooksNow(), home.looks));
       if (home.unreadable.length > 0) {

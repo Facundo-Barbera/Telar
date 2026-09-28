@@ -83,9 +83,9 @@ export async function request<T>(
   pathname: string,
   body?: unknown,
   signal?: AbortSignal,
-  lane: Gate = reads,
+  lane: Gate | null = reads,
 ): Promise<T> {
-  const budgeted = method === "GET" && signal === undefined;
+  const budgeted = lane !== null && method === "GET" && signal === undefined;
   if (budgeted) await lane.take();
   try {
     return await send<T>(fetcher, method, pathname, body, signal);
@@ -132,11 +132,11 @@ async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?
   return payload as T;
 }
 
-/** Runs the package's per-domain methods through this cockpit's `/api` proxy. */
-export function apiTransport(fetcher: Fetcher): EngineTransport {
+/** Runs the package's per-domain methods through this cockpit's `/api` proxy. `lane: null` skips the read budget. */
+export function apiTransport(fetcher: Fetcher, lane: Gate | null = reads): EngineTransport {
   const apiPath = (pathname: string) => pathname.replace(/^\/v2\//, "/api/");
   return {
-    request: (method, pathname, body, signal) => request(fetcher, method, apiPath(pathname), body, signal),
+    request: (method, pathname, body, signal) => request(fetcher, method, apiPath(pathname), body, signal, lane),
     async readBytes(pathAndQuery) {
       const response = await fetcher(apiPath(pathAndQuery));
       if (!response.ok) throw new EngineApiError("engine_unavailable", "The engine request failed.", response.status, answeringHost(fetcher, response));

@@ -5,9 +5,10 @@ import { TerminalIcon, ServerIcon, GlobeIcon, CircleHelpIcon, CheckIcon, CopyIco
 import { Badge } from "@/ui/badge";
 import { Button } from "@/ui/button";
 import { Input } from "@/ui/input";
-import type { DeviceIdentity, DeviceRole, RemoteDevice, RemoteState } from "@telar/engine-client";
-import type { QrMatrix } from "../qr";
-import { describeServeError, type TailscaleServeError } from "../tailscale-serve";
+import type { RemoteDevice } from "@telar/engine-client";
+import { EngineApiError } from "@/platform/engine";
+import { mintPairing, remoteStatus, revokeDevice, revokeOtherDevices, setRemote, updateDevice, type MintedPairing, type RemoteStatus } from "../api";
+import { describeServeError } from "../tailscale-serve";
 import { fmtAgo } from "@/ui/format";
 import { desktopApp } from "@/platform/desktop/desktop-app";
 import { hostVisible, subscribeHostVisibility } from "@/platform/desktop/host-visibility";
@@ -17,14 +18,6 @@ import { CopyCommand } from "@/ui/copy-command";
 import { PushNotificationsGroup } from "@/features/push";
 import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/features/settings";
 
-type RemoteStatus = RemoteState & {
-  tailscaleServeError?: TailscaleServeError;
-  host?: { name: string; identity?: DeviceIdentity; isCaller?: boolean };
-  callerDeviceId?: string;
-  callerRole?: DeviceRole;
-  endpoints: Array<{ kind: string; label: string; url: string; qrSafe: boolean }>;
-};
-
 const KIND_ICONS: Record<string, typeof MonitorIcon> = {
   browser: GlobeIcon,
   phone: SmartphoneIcon,
@@ -33,12 +26,6 @@ const KIND_ICONS: Record<string, typeof MonitorIcon> = {
   cli: TerminalIcon,
   service: ServerIcon,
 };
-
-interface MintedPairing {
-  code: string;
-  expiresAt: number;
-  qrByUrl: Record<string, QrMatrix>;
-}
 
 const spaced = (code: string) => `${code.slice(0, 4)} ${code.slice(4)}`;
 
@@ -113,9 +100,7 @@ export function RemoteSection() {
 
   const load = useCallback(async () => {
     try {
-      const response = await fetch("/api/remote");
-      if (!response.ok) throw new Error(`status ${response.status}`);
-      setStatus((await response.json()) as RemoteStatus);
+      setStatus(await remoteStatus());
       setError(null);
     } catch {
       setError("The pairing store did not answer.");
@@ -135,12 +120,7 @@ export function RemoteSection() {
     async (next: boolean) => {
       setBusy(true);
       try {
-        const response = await fetch("/api/remote", {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ requireAuth: next }),
-        });
-        if (!response.ok) throw new Error(`status ${response.status}`);
+        await setRemote({ requireAuth: next });
         if (!next) setMinted(null);
         await load();
       } catch {
@@ -157,13 +137,7 @@ export function RemoteSection() {
       setBusy(true);
       setError(null);
       try {
-        const response = await fetch("/api/remote", {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ exposure: next }),
-        });
-        const body = (await response.json()) as { error?: { message?: string } };
-        if (!response.ok) throw new Error(body.error?.message ?? `status ${response.status}`);
+        await setRemote({ exposure: next });
         setRestartNeeded(true);
         await load();
       } catch (cause) {
@@ -180,13 +154,7 @@ export function RemoteSection() {
       setBusy(true);
       setError(null);
       try {
-        const response = await fetch("/api/remote", {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ tailscaleServe: next }),
-        });
-        const body = (await response.json()) as { error?: { message?: string } };
-        if (!response.ok) throw new Error(body.error?.message ?? `status ${response.status}`);
+        await setRemote({ tailscaleServe: next });
         setRestartNeeded(true);
         await load();
       } catch (cause) {
@@ -201,9 +169,7 @@ export function RemoteSection() {
   const mint = useCallback(async () => {
     setBusy(true);
     try {
-      const response = await fetch("/api/remote/pairing", { method: "POST" });
-      if (!response.ok) throw new Error(`status ${response.status}`);
-      setMinted((await response.json()) as MintedPairing);
+      setMinted(await mintPairing());
       await load();
     } catch {
       setError("Could not mint a pairing code.");
@@ -214,7 +180,7 @@ export function RemoteSection() {
 
   const revoke = useCallback(
     async (deviceId: string) => {
-      await fetch(`/api/remote/devices/${deviceId}`, { method: "DELETE" }).catch(() => undefined);
+      await revokeDevice(deviceId).catch(() => undefined);
       await load();
     },
     [load],
@@ -223,20 +189,10 @@ export function RemoteSection() {
   const patchDevice = useCallback(
     async (deviceId: string, body: { name?: string; role?: "full" | "observer" }) => {
       try {
-        const response = await fetch(`/api/remote/devices/${deviceId}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (response.status === 409) {
-          setError("Keep at least one device with full access.");
-        } else if (!response.ok) {
-          setError("Could not update the device.");
-        } else {
-          setError(null);
-        }
-      } catch {
-        setError("Could not update the device.");
+        await updateDevice(deviceId, body);
+        setError(null);
+      } catch (cause) {
+        setError(cause instanceof EngineApiError && cause.status === 409 ? "Keep at least one device with full access." : "Could not update the device.");
       }
       await load();
     },
@@ -244,7 +200,7 @@ export function RemoteSection() {
   );
 
   const revokeOthers = useCallback(async () => {
-    await fetch("/api/remote/devices", { method: "DELETE" }).catch(() => undefined);
+    await revokeOtherDevices().catch(() => undefined);
     await load();
   }, [load]);
 

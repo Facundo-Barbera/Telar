@@ -1,4 +1,5 @@
 import type { LiveSessionRow } from "@telar/engine-client";
+import { createEngineApi } from "@/platform/engine";
 import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { sessionKey, toSidebarSession, type SidebarSession } from "./session-list";
 
@@ -70,28 +71,19 @@ export function newSessionId(): string {
   return `session_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-function sessionFetch(session: Pick<SidebarSession, "hostId">, path: string, init?: RequestInit): Promise<Response> {
-  return hostFetcher(session.hostId ?? LOCAL_HOST_ID)(path, init);
-}
+const engineFor = (session: Pick<SidebarSession, "hostId">) => createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
 
 export async function patchSession(
   session: Pick<SidebarSession, "id" | "hostId">,
   patch: { settledOverride?: "settled" | "active" | null; snoozedUntil?: number | null; title?: string },
 ): Promise<LiveSessionRow> {
-  const response = await sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  if (!response.ok) throw new Error(await patchFailureMessage(response));
-  const payload = (await response.json()) as { session?: LiveSessionRow } | null;
-  if (!payload?.session) throw new Error("The engine answered that change without a session.");
-  return payload.session;
+  const answer = (await engineFor(session).updateSession(session.id, patch)) as { session?: LiveSessionRow } | null;
+  if (!answer?.session) throw new Error("The engine answered that change without a session.");
+  return answer.session;
 }
 
 export async function deleteSession(session: Pick<SidebarSession, "id" | "hostId">): Promise<undefined> {
-  const response = await sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" });
-  if (!response.ok) throw new Error(await patchFailureMessage(response));
+  await engineFor(session).deleteSession(session.id);
   return undefined;
 }
 
@@ -106,21 +98,11 @@ export async function closeRowTerminals({
 }): Promise<void> {
   onRowChanged({ row: without(row, ["terminals"]) });
   try {
-    const response = await sessionFetch(row, `/api/sessions/${encodeURIComponent(row.id)}/terminals/close`, { method: "POST" });
-    if (!response.ok) throw new Error(await patchFailureMessage(response));
+    await engineFor(row).closeSessionTerminals(row.id);
   } catch (cause) {
     onRowChanged({ row });
     report(cause instanceof Error ? cause.message : "The engine could not close those terminals.");
   }
-}
-
-async function patchFailureMessage(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as { error?: { message?: string } } | null;
-    if (payload?.error?.message) return payload.error.message;
-  } catch {
-  }
-  return response.status === 0 ? "The engine is not answering." : `The engine refused (${response.status}).`;
 }
 
 export type MutationReporter = (message: string) => void;

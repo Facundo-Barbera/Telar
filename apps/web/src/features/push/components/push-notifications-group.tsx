@@ -4,31 +4,9 @@ import { useEffect, useState } from "react";
 import { BellIcon, SmartphoneIcon } from "lucide-react";
 import { Badge } from "@/ui/badge";
 import { fmtAgo } from "@/ui/format";
-import type { ActivityReport, NotifyOn } from "@telar/engine-client";
+import type { ActivityReport, NotifyOn, PushRelayStatus } from "@telar/engine-client";
+import { pushNotifyOn, pushRelayStatus, setPushNotifyOn } from "../api";
 import { Dropdown, Row, SettingsGroup } from "@/features/settings";
-
-export interface PushRelayStatus {
-  configured: boolean;
-  pausedUntil?: number;
-  devices: Array<{
-    deviceId: string;
-    name?: string;
-    paired: boolean;
-    topic: string;
-    sandbox: boolean;
-    enabled: boolean;
-    liveActivities: boolean;
-    updatedAt: number;
-    lastDeliveryAt?: number;
-    lastStatus?: number;
-    lastReason?: string;
-    consecutiveFailures: number;
-    parked: boolean;
-    transport?: "v2" | "direct" | "none";
-    test?: { at: number; status: number; reason?: string; relay: boolean };
-    activity?: ActivityReport;
-  }>;
-}
 
 export function relayHeadline(status: PushRelayStatus): { label: string; ok: boolean } {
   return status.configured ? { label: "Ready", ok: true } : { label: "Not ready", ok: false };
@@ -131,15 +109,9 @@ export function PushNotificationsGroup() {
 
   useEffect(() => {
     const task = window.setTimeout(async () => {
-      try {
-        const [relay, notify] = await Promise.all([
-          fetch("/api/mobile/relay", { cache: "no-store" }),
-          fetch("/api/mobile/notify", { cache: "no-store" }),
-        ]);
-        if (relay.ok) setStatus((await relay.json()) as PushRelayStatus);
-        if (notify.ok) setNotifyOn(((await notify.json()) as { notifyOn: NotifyOn }).notifyOn);
-      } catch {
-      }
+      const [relay, notify] = await Promise.allSettled([pushRelayStatus(), pushNotifyOn()]);
+      if (relay.status === "fulfilled") setStatus(relay.value);
+      if (notify.status === "fulfilled") setNotifyOn(notify.value.notifyOn);
     }, 0);
     return () => window.clearTimeout(task);
   }, []);
@@ -149,8 +121,7 @@ export function PushNotificationsGroup() {
     setNotifyOn(next);
     setNotifyError(undefined);
     try {
-      const response = await fetch("/api/mobile/notify", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ notifyOn: next }) });
-      if (!response.ok) throw new Error();
+      await setPushNotifyOn(next);
     } catch {
       setNotifyOn(before);
       setNotifyError("Couldn't save. Try again.");

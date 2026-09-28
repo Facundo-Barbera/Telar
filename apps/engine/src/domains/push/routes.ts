@@ -1,4 +1,4 @@
-import { EngineClientError, type EngineClient } from "@telar/engine-client";
+import { EngineClientError, type EngineClient, type PushRelayStatus } from "@telar/engine-client";
 import { fail, ok, type Route } from "../../platform/http/route";
 import { desktopStream, handleDesktopMessage, isNotifyOn, readNotifyOn, writeNotifyOn } from "./desktop";
 import { activityReport, parseRegistration, pushAvailable, pushConfigured, PushInputError, readPushRecords, saveRegistration } from "./push";
@@ -15,7 +15,7 @@ function activityFor(deviceId: string, topic?: string) {
   return record ? { activity: activityReport(record) } : {};
 }
 
-function relayStatus(pairedDevices: PushRouteDeps["pairedDevices"]) {
+function relayStatus(pairedDevices: PushRouteDeps["pairedDevices"]): PushRelayStatus {
   const paired = new Map(pairedDevices().map((device) => [device.id, device]));
   const direct = pushConfigured();
   const pausedUntil = pushPausedUntil();
