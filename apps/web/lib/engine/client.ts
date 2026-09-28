@@ -106,7 +106,6 @@ import type {
   ProviderUpdateRun,
   PublishedAppearance,
   EngineRequest,
-  ReportCadence,
   ReportWindowStatus,
   RequestDecision,
   RuntimeMode,
@@ -1139,21 +1138,9 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         /** Sit out a usage limit and carry on. `null` returns the session to the
          *  driver's default — see `Session.resumeAfterRateLimit`. */
         resumeAfterRateLimit?: boolean | null;
-        /** Hold routine peer reports and deliver them together on this cadence,
-         *  or `HOLD_REPORTS` to hold them and never take them as a turn at all
-         *  (#784). `null` returns the session to arrival delivery — see
-         *  `Session.reportWindowMinutes`. */
-        reportWindowMinutes?: ReportCadence | null;
       },
     ) => request<{ session: Session; ended?: SessionSettleEnded }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
-    /**
-     * THE CADENCE, AND WHAT IT IS HOLDING — the Agents panel's own read (#723).
-     *
-     * NOT ON `liveSessions`. `LiveSessionRow` omits `reportWindowMinutes` by
-     * contract and the rail is measured against a per-row ceiling; the held
-     * count is not on the session record at all. Two numbers, read only by the
-     * surface that shows them, and only while it is open.
-     */
+    /** How many peer reports the session is holding; not on the session record. */
     sessionReportWindow: (sessionId: string) =>
       request<ReportWindowStatus>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/report-window`),
     /**

@@ -1,16 +1,9 @@
-/**
- * WHAT A CONVERSATION IS HOLDING FROM ITS PEERS — the retired cadence control.
- *
- * Reports never open a turn now (session-tools audit), so the row no longer
- * offers a cadence. It still admits what is held, because a held mailbox that
- * says nothing reads as a lost one.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { HELD_DETAIL, heldLabel, ReportCadenceView } from "./report-cadence";
+import { HELD_DETAIL, heldLabel, HeldReportsView } from "./held-reports";
 
-const view = (held: number) => renderToStaticMarkup(<ReportCadenceView held={held} />);
+const view = (held: number) => renderToStaticMarkup(<HeldReportsView held={held} />);
 
 describe("the held row", () => {
   test("admits what it is holding, and says nothing when it holds nothing", () => {

@@ -13,7 +13,6 @@ import {
   GitPullRequestIcon,
   FileIcon,
   GlobeIcon,
-  LayersIcon,
   Maximize2Icon,
   Minimize2Icon,
   PanelRightCloseIcon,
@@ -65,7 +64,7 @@ import {
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
 import { RelatedConversations } from "@/components/session/related-conversations";
-import { ReportCadence } from "@/components/session/report-cadence";
+import { HeldReports } from "@/components/session/held-reports";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PluginSurface } from "@/components/plugins/surfaces";
@@ -1282,13 +1281,12 @@ function AgentsSurface({
 }) {
   const { agents: loose } = useMemo(() => splitRoster(tasks), [tasks]);
   /**
-   * WHAT THIS CONVERSATION IS HOLDING FROM ITS PEERS introduces the relationship
-   * region — a count of reports waiting for its next turn, directly above the
-   * relationships they came from.
+   * The held-report count introduces the relationship region, directly above
+   * the relationships the reports came from.
    */
   const related = (
     <>
-      <ReportCadence
+      <HeldReports
         {...(sessionId ? { sessionId } : {})}
         {...(hostId ? { hostId } : {})}
         visible={visible}
