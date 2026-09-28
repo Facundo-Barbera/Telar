@@ -15,7 +15,6 @@ import {
   defaultInstanceIdForDriver,
   countsAsActivity,
   isBackgroundWork,
-  isUnstatedEnding,
   type RetentionPolicy,
   type RetentionBucket,
   type JournalRetirement,
@@ -44,7 +43,6 @@ import {
   type LiveSessionRow,
   type SessionSettledBy,
   type PluginPatch,
-  TurnObservation as TurnObservationSchema,
   type BrowserSnapshot,
   type GitCommitEntry,
   type GitHubCheckLog,
@@ -105,7 +103,6 @@ import {
   type SubscribedCohort,
   type Turn,
   type TurnFailureCode,
-  type TurnObservation,
   type WakeKind,
   type WakeReason,
   type WorkerClaim,
@@ -128,7 +125,7 @@ import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, typ
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { type AttachmentInput, awaitsRateLimitSweep, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
-import { FOLDING_INTENTS, heldDelivery, type StoppedClaim, TurnLifecycle, MAX_TEXT_LENGTH, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
+import { FOLDING_INTENTS, heldDelivery, TurnIngest, type StoppedClaim, TurnLifecycle, MAX_TEXT_LENGTH, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -309,22 +306,6 @@ function endedByShutdown(turn: Turn): boolean {
 const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
 
 
-/**
- * Drop explicitly-undefined keys so a spread PATCHES rather than erases.
- *
- * `{ ...known, ...seed }` looks equivalent and is not: a key present with the
- * value `undefined` wins the spread and blanks whatever the earlier object had.
- * Providers send exactly that shape — Claude's `task_updated` patch names only
- * what changed — so without this a progress report would erase the title its
- * start report carried.
- */
-function definedOnly<T extends object>(value: T): Partial<T> {
-  const out: Partial<T> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (entry !== undefined) out[key as keyof T] = entry as T[keyof T];
-  }
-  return out;
-}
 
 
 /**
@@ -624,22 +605,6 @@ export type EngineNotifier = (input: {
   title: string;
 }) => boolean;
 
-/**
- * IS THIS BATCH NOTHING BUT STREAMED TEXT? — the route selector for
- * `ingestObservations`, read off the RAW input before anything validates it.
- *
- * Only ever a route: both paths validate the whole batch with the same schema
- * and refuse the same things, so the worst a lie here can do is send a malformed
- * batch down the path that rejects it slightly sooner. It reads one property per
- * observation and allocates nothing, because it runs per streamed token-chunk.
- */
-function isDeltaOnlyBatch(observations: unknown[]): boolean {
-  if (!Array.isArray(observations) || observations.length === 0) return false;
-  for (const observation of observations) {
-    if ((observation as { kind?: unknown } | null)?.kind !== "content.delta") return false;
-  }
-  return true;
-}
 
 
 /**
@@ -694,6 +659,7 @@ export class EngineStore {
   private readonly queries: SessionQueries;
   private readonly intake: TurnIntake;
   private readonly turnLifecycle: TurnLifecycle;
+  private readonly ingest: TurnIngest;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1523,6 +1489,16 @@ export class EngineStore {
     this.lifecycle = this.createLifecycle();
     this.intake = this.createIntake();
     this.turnLifecycle = this.createTurnLifecycle();
+    this.ingest = new TurnIngest(this.kernel, {
+      records: this.records,
+      items: this.sessionItems,
+      tasks: this.sessionTasks,
+      prefixes: this.prefixes,
+      readQueue: (id) => this.readQueue(id),
+      scanQueue: (id) => this.scanQueue(id),
+      writeQueue: (id, queue) => this.writeQueue(id, queue),
+      requireRunningClaimFromQueue: (queue, runId, token) => this.requireRunningClaimFromQueue(queue, runId, token),
+    });
     this.worktrees = this.worktreeMaintenance();
     ({ dataScienceOps: this.dataScienceOps, latexOps: this.latexOps } = this.createPluginOps());
     this.dictation = new Dictation(this.paths.root, {
@@ -3337,47 +3313,8 @@ export class EngineStore {
     return this.adoption.adopt(sessionId, input);
   }
 
-  /**
-   * TASK REPORTS WITH NO TURN TO CLAIM. Between turns the CLI still speaks
-   * about its background work — the level signal, a notification for a shell
-   * that fired, a Ctrl+B — and until the pump read between turns those frames
-   * waited for the next human message (a monitor's ending sat unheard for ten
-   * hours, measured). They fold onto the rows they name exactly as a turn's
-   * would; the `runId` is the stored row's, since a task belongs to the turn
-   * that started it. A report for a row the store has never seen is dropped
-   * rather than minted under no turn at all — the driver's own `task_started`
-   * inside a turn is the only thing that opens a row.
-   */
   reportSessionTasks(sessionId: string, workerId: string, observations: unknown[]): { accepted: number } {
-    return this.kernel.command("reportSessionTasks", () => {
-      assertId(workerId, "worker id");
-      this.records.require(sessionId);
-      const parsed = TurnObservationSchema.array().safeParse(observations);
-      if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
-      const tasks = this.sessionTasks.read(sessionId);
-      const projection = { items: this.sessionItems.read(sessionId), tasks, itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
-      let accepted = 0;
-      for (const observation of parsed.data) {
-        if (observation.kind === "runtime.warning") {
-          this.appendEvent(sessionId, { type: "runtime.warning", message: observation.message });
-          accepted += 1;
-          continue;
-        }
-        if (observation.kind !== "task.started" && observation.kind !== "task.progress" && observation.kind !== "task.completed") continue;
-        const seed = observation.task;
-        const known =
-          tasks.get(seed.id) ?? (seed.providerTaskId ? [...tasks.values()].find((task) => task.providerTaskId === seed.providerTaskId) : undefined);
-        if (!known) continue;
-        // `journalObservation` takes the owning turn only for its runId.
-        this.journalObservation(sessionId, { runId: known.runId } as Turn, observation, projection);
-        accepted += 1;
-      }
-      if (projection.tasksTouched) {
-        this.sessionTasks.write(sessionId, projection.tasks);
-        this.records.touch(sessionId, this.now());
-      }
-      return { accepted };
-    });
+    return this.ingest.reportSessionTasks(sessionId, workerId, observations);
   }
 
   /** Claims exactly one queued turn. The daemon has one state lock, so two workers cannot claim it twice. */
@@ -3778,111 +3715,12 @@ export class EngineStore {
   }
 
 
-  /**
-   * Journal what a worker saw.
-   *
-   * THE WORKER MINTS NOTHING DURABLE. It supplies item ids that are unique
-   * within its turn and opaque here; this method stamps ownership, assigns the
-   * monotonic event id, and is the only writer. A batch is validated in full
-   * BEFORE any of it is appended, so a malformed tail cannot leave half a
-   * provider message in the journal.
-   */
   ingestObservations(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
-    if (isDeltaOnlyBatch(observations)) return this.ingestDeltas(sessionId, runId, claimToken, observations);
-    return this.kernel.command("ingestObservations", () => this.ingestBatch(sessionId, runId, claimToken, observations));
+    return this.ingest.ingestObservations(sessionId, runId, claimToken, observations);
   }
 
-  /**
-   * A STREAM COSTS ONE TRANSACTION PER FLUSH, NOT ONE PER TOKEN-CHUNK.
-   *
-   * #246 stopped a delta reaching the disk where it was appended; what it could
-   * not touch was the machinery each `ingestObservations` CALL ran around the
-   * append, and the driver makes one call per delta. Measured (`bench:append`,
-   * a 327-item session): 0.078 ms for `ingest, 1 per call` against 0.006 ms for
-   * the append itself — so twelve of every thirteen microseconds a streamed
-   * chunk cost were spent on the call, not the write.
-   *
-   * ALL OF IT IS WORK A DELTA DOES NOT NEED:
-   *
-   *   the transaction   a delta-only batch writes NO row. Every delta goes into
-   *                     the execution store's buffer and reaches sqlite on a
-   *                     later flush, so the BEGIN/COMMIT wrapped around nothing
-   *                     at all — and, with it, the two `total_changes()` probes
-   *                     that decide whether a receipt is owed.
-   *   the task read     a delta cannot touch a task. The document was parsed and
-   *                     validated per chunk to be handed to nobody.
-   *   the items copy    `readItems` hands out a Map of its own over the cached
-   *                     items, which on a 327-item session is 327 entries
-   *                     rebuilt per chunk to answer `items.has(itemId)` once.
-   *   the queue parse   `readQueue` re-parses and re-validates `queue.json` per
-   *                     chunk. Nothing here MUTATES the turn, so the shared
-   *                     read-only copy `scanQueue` already keeps is the right
-   *                     one — the same bargain every other reader makes.
-   *
-   * WHAT IS NOT SKIPPED: the claim check, the schema validation, the ordering.
-   * A caller cannot tell these two paths apart — the journal gets the same
-   * events, with the same ids, in the same order, and `readEvents` answers with
-   * held deltas exactly as it did before.
-   *
-   * ATOMICITY IS THE ONE REAL DIFFERENCE, and it is the trade #246 already made
-   * one layer down. Without a transaction around the batch, a failure PART WAY
-   * through it — which after validation means sqlite failing on a flush — leaves
-   * the deltas before it journalled. That is already true between calls, and a
-   * flush that cannot write is a daemon in trouble either way.
-   */
-  private ingestDeltas(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
-    // First, and against the shared copy: the claim is checked before the batch
-    // is validated, exactly as the command path checks it before parsing.
-    const turn = this.requireRunningClaimFromQueue(this.scanQueue(sessionId), runId, claimToken);
-    // THE SAME SCHEMA THE COMMAND PATH USES, not a narrower copy of the delta
-    // member: one definition, so the two paths cannot drift on what they accept.
-    const parsed = TurnObservationSchema.array().safeParse(observations);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
-    for (const observation of parsed.data) {
-      // `isDeltaOnlyBatch` is what chose this path; this is what tells the compiler.
-      if (observation.kind !== "content.delta") continue;
-      // The one thing the projection was read for. `journalObservation` drops a
-      // delta whose item never opened, and so does this.
-      if (!this.sessionItems.has(sessionId, observation.itemId)) continue;
-      const written = this.appendEvent(
-        sessionId,
-        { type: "content.delta", itemId: observation.itemId, stream: observation.stream, text: observation.text },
-        turn.runId,
-      );
-      // #214: a reader arriving mid-reply still has to see the prefix.
-      this.prefixes.extend(sessionId, observation.itemId, observation.text, written.id);
-    }
-    return { accepted: parsed.data.length };
-  }
 
-  private ingestBatch(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
-    const queue = this.readQueue(sessionId);
-    const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
-    const parsed = TurnObservationSchema.array().safeParse(observations);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
-    const projection = { items: this.sessionItems.read(sessionId), tasks: this.sessionTasks.read(sessionId), itemsTouched: new Set<string>(), tasksTouched: false, turnTouched: false };
-    for (const observation of parsed.data) {
-      this.journalObservation(sessionId, turn, observation, projection);
-    }
-    /**
-     * THE SAME RULE ITEMS WERE THE EXCEPTION TO.
-     *
-     * A `content.delta` deliberately does not touch this projection — that is
-     * why the deltas are journalled and the text folded in at `item.completed`
-     * — and yet every batch rewrote the whole document anyway. On a session
-     * holding 327 items that is 750 KB re-serialised and re-stored per streamed
-     * token-chunk, which measured as the largest single cost of a streaming
-     * turn: 2.09 ms per delta, against 0.11 ms for the journal insert it was
-     * wrapped around.
-     */
-    if (projection.itemsTouched.size > 0) this.sessionItems.write(sessionId, projection.items, projection.itemsTouched);
-    // Most batches carry no task at all — a rewrite per batch would be a file
-    // write per streamed provider message for nothing. Same rule for the
-    // queue: only a `provider.session` observation ever mutates the turn.
-    if (projection.tasksTouched) this.sessionTasks.write(sessionId, projection.tasks);
-    if (projection.turnTouched) this.writeQueue(sessionId, queue);
-    return { accepted: parsed.data.length };
-  }
+
 
   completeTurn(...args: Parameters<TurnLifecycle["completeTurn"]>): Turn {
     return this.turnLifecycle.completeTurn(...args);
@@ -5958,268 +5796,6 @@ export class EngineStore {
     return this.sessionTasks.stopsForWorker(workerId, acknowledged);
   }
 
-  /** One observation → at most one journal record, plus its projection edit. */
-  private journalObservation(
-    sessionId: string,
-    turn: Turn,
-    observation: TurnObservation,
-    projection: { items: Map<string, Item>; tasks: Map<string, Task>; itemsTouched: Set<string>; tasksTouched: boolean; turnTouched: boolean },
-  ): void {
-    const at = this.now();
-    const items = projection.items;
-    if (observation.kind === "usage") {
-      this.appendEvent(sessionId, { type: "usage.updated", usage: observation.usage }, turn.runId);
-      return;
-    }
-    if (observation.kind === "runtime.warning") {
-      // Touches no projection: it is a line in the journal about the runtime,
-      // not a row, a task or a turn field. Stamped with the run so the
-      // transcript shows it where it happened.
-      this.appendEvent(sessionId, { type: "runtime.warning", message: observation.message }, turn.runId);
-      return;
-    }
-    if (observation.kind === "content.delta") {
-      // Deltas do NOT touch the projection. An item's stored text is filled in
-      // by the `item.completed` that closes it; folding every token into
-      // items.json would rewrite the whole document per token.
-      if (!items.has(observation.itemId)) return;
-      const written = this.appendEvent(
-        sessionId,
-        { type: "content.delta", itemId: observation.itemId, stream: observation.stream, text: observation.text },
-        turn.runId,
-      );
-      /**
-       * …BUT A READER ARRIVING MID-REPLY STILL HAS TO SEE THE PREFIX (#214).
-       *
-       * So the text accumulates in memory, watermarked with the id of the
-       * delta that last extended it, and `openItemPrefix` hands it to a
-       * snapshot. A CACHE, NOT THE RECORD: the deltas above are durable, so an
-       * empty map after a restart is rebuilt by re-reading them. That is what
-       * makes it safe to drop this at any time — including when Stop leaves an
-       * item open forever, where the prefix is the only account of what the
-       * reader was shown.
-       */
-      this.prefixes.extend(sessionId, observation.itemId, observation.text, written.id);
-      return;
-    }
-    if (observation.kind === "item.completed") {
-      const existing = items.get(observation.itemId);
-      if (!existing) return;
-      const item: Item = {
-        ...existing,
-        status: observation.status,
-        completedAt: at,
-        ...(observation.detail ? { detail: observation.detail } : {}),
-      };
-      items.set(item.id, item);
-      projection.itemsTouched.add(item.id);
-      this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
-      // The text lives in `detail` from here on, so the accumulator's copy is
-      // dead weight. This is what bounds the map: one entry per OPEN item.
-      this.prefixes.drop(sessionId, observation.itemId);
-      return;
-    }
-    if (observation.kind === "provider.session") {
-      /**
-       * PERSISTED WHILE THE TURN STILL RUNS, which is the whole point: a turn
-       * that is later STOPPED never reaches `completeTurn`, and before this
-       * observation existed that stop erased the session's continuity — the
-       * next turn started a fresh provider session. `completeTurn`'s own
-       * write remains the authoritative end-of-turn value; this is the early
-       * copy that survives an abort. No journal event: the id is metadata,
-       * not something a transcript reader scrolls past.
-       */
-      turn.providerSessionId = observation.providerSessionId;
-      projection.turnTouched = true;
-      this.records.touch(sessionId, at, observation.providerSessionId);
-      return;
-    }
-    if (observation.kind === "browser.state") {
-      // No projection: a browser's tabs are LIVE state, not durable history.
-      // Replaying them from a week-old journal would describe pages that are
-      // long gone, so this rides the stream and nothing else.
-      this.appendEvent(
-        sessionId,
-        { type: "browser.state.changed", provider: observation.provider, tabs: observation.tabs },
-        turn.runId,
-      );
-      return;
-    }
-    if (observation.kind === "display.opened") {
-      // A gesture, not state: the agent asked the cockpit to show one file.
-      // No projection for the same reason browser.state has none — a client
-      // replaying last week's journal must not have last week's panel opened
-      // at it, and the cockpit's own fold guards against exactly that.
-      this.appendEvent(
-        sessionId,
-        { type: "display.opened", path: observation.path, ...(observation.title ? { title: observation.title } : {}) },
-        turn.runId,
-      );
-      return;
-    }
-    if (observation.kind === "prompt.drafted") {
-      // A gesture, not state — the same judgement `display.opened` gets. The
-      // prompt itself is already on the shelf, written through the engine's own
-      // routes; this is the nudge that tells a composer to re-read it, and a
-      // client replaying last week's journal must not be told to go looking for
-      // a prompt that was sent six days ago.
-      this.appendEvent(
-        sessionId,
-        {
-          type: "prompt.drafted",
-          promptId: observation.promptId,
-          title: observation.title,
-          ...(observation.forSessionId ? { forSessionId: observation.forSessionId } : {}),
-        },
-        turn.runId,
-      );
-      return;
-    }
-    if (observation.kind === "task.started" || observation.kind === "task.progress" || observation.kind === "task.completed") {
-      const seed = observation.task;
-      /**
-       * BY CONTRACT ID, THEN BY PROVIDER ID. A task announced in one turn
-       * under `task_<tool_use_id>` is reported on in a LATER turn by the
-       * CLI's `task_notification`, which carries `task_id` and no
-       * `tool_use_id` — so that turn's driver mints `task_<task_id>` for the
-       * same shell. Measured on session_7657b2ef…: monitor b7ohaj89n ended as
-       * `task_toolu_01FD…` (background, stopped) and was then re-created as
-       * `task_b7ohaj89n` (agent, completed) — a second row, on the Agents
-       * surface, for a shell that was already closed. The provider id is the
-       * one handle both turns share.
-       */
-      const known =
-        projection.tasks.get(seed.id) ??
-        (seed.providerTaskId ? [...projection.tasks.values()].find((task) => task.providerTaskId === seed.providerTaskId) : undefined);
-      /**
-       * THE FIRST ENDING IS THE ENDING — the driver's own rule (`emitTask`),
-       * restated at the store because the store outlives the driver's
-       * turn-scoped memory. A task this store already closed (a sweep, a
-       * stop) can be reported on again by a LATER turn's driver, which never
-       * heard of the closing: a backgrounded agent's progress lines arrive
-       * through the next turn's pump. Without this the fold spread the closed
-       * record under a `running` seed and produced a row that was running
-       * AND carried a failure — red, spinning, and wrong twice.
-       */
-      const settled = known !== undefined && (known.state === "completed" || known.state === "failed" || known.state === "stopped");
-      // …except an ending nobody stated (`isUnstatedEnding`): the level signal
-      // closed it, and the notification behind it saying how it went is the
-      // better account. Only a worse outcome may replace it.
-      const corrected = settled && isUnstatedEnding(known) && (seed.state === "failed" || seed.state === "stopped");
-      const kept = settled && !corrected;
-      const state = kept ? known.state : seed.state;
-      const terminal = state === "completed" || state === "failed" || state === "stopped";
-      /**
-       * A SETTLED TASK THAT LEARNS NOTHING NEW IS NOT RE-ANNOUNCED. The fold
-       * above keeps the stored state, but it still appended a `task.completed`
-       * per report — measured: 58 tasks in one session with two or more
-       * closes, and one closed a third time under a turn that had started
-       * zero seconds earlier, because the new turn's pump replayed the CLI's
-       * buffered frames about it. A tailing client folds those as fresh
-       * completions. Only a report that ADDS something (the notification's
-       * summary arriving after a sweep already closed the row) is worth a
-       * row; a bare restatement of the ending is dropped here.
-       */
-      if (kept) {
-        const additions = definedOnly(seed);
-        const changed = Object.entries(additions)
-          .filter(([key, value]) => !(key === "id" || key === "state" || key === "kind" || key === "providerTaskId") && JSON.stringify(known[key as keyof Task]) !== JSON.stringify(value))
-          .map(([key]) => key);
-        if (changed.length === 0) return;
-        /**
-         * THE SUMMARY ARRIVING A FRAME AFTER THE CLOSE IS NOT A SECOND CLOSE.
-         * Measured on the dogfood session: `background_tasks_changed` closes
-         * a shell with no summary, then its `task_notification` carries one —
-         * two `task.completed` events for one ending. The summary is folded
-         * into the row (the projection is right) but not re-announced. Judged
-         * on what CHANGED, not on the seed's key set: the driver repeats the
-         * whole row (title, kind, backgrounded) on every report.
-         */
-        const onlySummary = changed.every((key) => key === "resultText" || key === "usage" || key === "outputFile");
-        if (onlySummary) {
-          projection.tasks.set(known.id, { ...known, ...definedOnly(seed), id: known.id, kind: known.kind, state: known.state, runId: known.runId, startedAt: known.startedAt, updatedAt: at });
-          projection.tasksTouched = true;
-          return;
-        }
-      }
-      /**
-       * THE SEED IS FOLDED OVER WHAT IS ALREADY STORED, not swapped for it.
-       * Providers report tasks incrementally — Claude's `task_updated` carries
-       * a PATCH with only the changed fields, so a straight replace would erase
-       * the `title` and `subagent_type` that only `task_started` ever sent. The
-       * `?? known?.x` chain is what makes a partial report additive.
-       */
-      const task: Task = {
-        ...known,
-        ...definedOnly(seed),
-        // The row's own id, when a provider-id match found one: the later
-        // turn's minted id names the same shell and must not open a second row.
-        id: known?.id ?? seed.id,
-        /**
-         * THE FIRST CLASSIFICATION IS THE CLASSIFICATION, for the same reason
-         * `runId` and `startedAt` below take the stored value: kind is a fact
-         * about what a task IS, and nothing that happens later changes it.
-         *
-         * It cannot be `?? `-ed against an absent field, because `TaskSeed.kind`
-         * is required — a provider seam with nothing to say still has to say
-         * something, and the contract's denylist posture makes that "agent"
-         * (protocol/tasks.ts). The Claude seam's `knownTasks` is TURN-SCOPED, so
-         * a backgrounded shell reaped at teardown is reported in the FOLLOWING
-         * turn by a `task_notification` carrying no `task_type`, against a map
-         * that has never heard of it. Taking the seed there moved every such
-         * shell onto the Agents surface — a delegate that never reported, next
-         * to a killed process reading as a clean "Done".
-         */
-        kind: known?.kind ?? seed.kind,
-        state,
-        sessionId,
-        // A background task belongs to the turn that STARTED it even after that
-        // turn settles, which is the whole meaning of background.
-        runId: known?.runId ?? turn.runId,
-        startedAt: known?.startedAt ?? at,
-        updatedAt: at,
-        ...(settled ? { completedAt: known.completedAt ?? at } : terminal ? { completedAt: at } : {}),
-      };
-      projection.tasks.set(task.id, task);
-      projection.tasksTouched = true;
-      // The EVENT follows the state, not the message that carried it (the
-      // driver's rule again): a late progress line about a settled task is
-      // announced as its completion, not as a resumption.
-      const announced = observation.kind === "task.started" ? "task.started" : terminal ? "task.completed" : "task.progress";
-      this.appendEvent(
-        sessionId,
-        announced === "task.progress"
-          ? { type: "task.progress", task, ...(observation.kind === "task.progress" && observation.message ? { message: observation.message } : {}) }
-          : { type: announced, task },
-        turn.runId,
-      );
-      return;
-    }
-    const seed = observation.item;
-    const started = observation.kind === "item.started";
-    const item: Item = {
-      id: seed.id,
-      runId: turn.runId,
-      sessionId,
-      status: "inProgress",
-      detail: seed.detail,
-      startedAt: started ? at : (items.get(seed.id)?.startedAt ?? at),
-      ...(seed.title ? { title: seed.title } : {}),
-      // A row filed under a task the engine has never heard of is kept filed
-      // anyway: the task event may simply not have arrived yet, and dropping
-      // the link would silently move a sub-agent's work into the parent
-      // timeline — the exact confusion this field exists to prevent.
-      ...(seed.taskId ? { taskId: seed.taskId } : {}),
-      ...(seed.providerRefs ? { providerRefs: seed.providerRefs } : {}),
-    };
-    items.set(item.id, item);
-    projection.itemsTouched.add(item.id);
-    const written = this.appendEvent(sessionId, { type: started ? "item.started" : "item.updated", item }, turn.runId);
-    // AN ITEM THAT JUST OPENED HAS NO EARLIER DELTAS, which is the only moment
-    // the accumulator can know it holds the whole prefix. Every later extend
-    // inherits that; an entry born any other way is rebuilt on read.
-    if (started) this.prefixes.remember(sessionId, item.id, { text: "", through: written.id, sealed: true });
-  }
 
   private appendEvent(sessionId: string, event: JournalEntry, runId?: string): EngineEvent {
     return this.kernel.appendEvent(sessionId, event, runId);

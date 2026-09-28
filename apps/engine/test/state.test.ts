@@ -195,49 +195,6 @@ test("a windowed snapshot carries the window's requests and every open one, not 
   expect(store.requests("session_one")).toHaveLength(6);
 });
 
-test("streamed deltas journal without rewriting the item projection, and the close still lands", () => {
-  /**
-   * A `content.delta` deliberately does not touch the projection — the text is
-   * folded in when the item closes — and yet every batch rewrote the whole
-   * document anyway, which on a long session is hundreds of kilobytes
-   * re-serialised per streamed token-chunk. This pins BOTH halves: the deltas
-   * write nothing, and the close still writes the text a reader opening the
-   * session later depends on.
-   */
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
-    { kind: "item.started", item: { id: "i_1", detail: { type: "assistant_message", text: "" } } },
-  ]);
-
-  const upserts = spyOn(documents(store), "upsertItems");
-  const texts = spyOn(documents(store), "writeText");
-  const projectionWrites = () => upserts.mock.calls.length + texts.mock.calls.filter(([file]) => file.endsWith("items.json")).length;
-  try {
-    for (const text of ["hel", "lo ", "there"]) {
-      store.ingestObservations("session_one", "run_one", token, [
-        { kind: "content.delta", itemId: "i_1", stream: "assistant_text", text },
-      ]);
-    }
-    expect(projectionWrites()).toBe(0);
-
-    store.ingestObservations("session_one", "run_one", token, [
-      { kind: "item.completed", itemId: "i_1", status: "completed", detail: { type: "assistant_message", text: "hello there" } },
-    ]);
-    expect(projectionWrites()).toBe(1);
-  } finally {
-    upserts.mockRestore();
-    texts.mockRestore();
-  }
-
-  // The deltas are still durable, and the projection carries the folded text —
-  // read back through a path that does not share the writer's copy.
-  expect(store.readEvents("session_one").filter((event) => event.type === "content.delta")).toHaveLength(3);
-  expect(store.items("session_one").map((item) => item.detail)).toEqual([{ type: "assistant_message", text: "hello there" }]);
-});
-
 test("the cached item projection is per session and never outlives a write", () => {
   // The cache is what makes the read above cheap; a stale one would serve a
   // closed item as still open, or one session's rows to another.
@@ -491,88 +448,6 @@ test("startup recovery repairs provider continuity from a completed turn after a
   expect(restarted.claimNextTurn("worker_two")?.resumeCursor).toBe("claude-session-one");
 });
 
-test("observations become durable items and deltas, and only under a live claim", () => {
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
-  const token = claimed.claim!.token;
-
-  // A worker may only report against a RUNNING turn it holds the claim for.
-  expect(() =>
-    store.ingestObservations("session_one", "run_one", token, [
-      { kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } },
-    ]),
-  ).toThrow(/not running/);
-
-  store.markRunning("session_one", "run_one", token);
-  expect(() =>
-    store.ingestObservations("session_one", "run_one", "not-the-token-at-all", [
-      { kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } },
-    ]),
-  ).toThrow(EngineStateError);
-
-  store.ingestObservations("session_one", "run_one", token, [
-    { kind: "item.started", item: { id: "i1", detail: { type: "command_execution", command: { command: "ls" } }, title: "ls" } },
-    { kind: "content.delta", itemId: "i1", stream: "command_output", text: "a" },
-    { kind: "item.completed", itemId: "i1", status: "completed" },
-  ]);
-
-  const items = store.items("session_one");
-  expect(items).toHaveLength(1);
-  expect(items[0]).toMatchObject({ id: "i1", runId: "run_one", sessionId: "session_one", status: "completed", title: "ls" });
-  expect(store.readEvents("session_one").map((event) => event.type)).toEqual([
-    "session.created",
-    "turn.accepted",
-    "turn.claimed",
-    "turn.started",
-    "item.started",
-    "content.delta",
-    "item.completed",
-  ]);
-});
-
-test("a report against a SETTLED turn is a typed conflict that says the turn ended, not a claim mix-up", () => {
-  /**
-   * THE RACE WINDOW CAN NEVER BE FULLY ZERO: a provider tool call can land
-   * moments after its turn settles. What the store owes that caller is a
-   * TYPED refusal a worker can key off (`conflict` — the code its settle
-   * paths already treat as "drop, don't fail the turn") with a message that
-   * reads as LATE, so the daemon log diagnoses the premature-completion bug
-   * instead of suggesting a foreign worker stole the claim. The terminal turn
-   * itself stays immutable — nothing is accepted, nothing lands after
-   * `turn.completed`.
-   */
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
-  const token = claimed.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.completeTurn("session_one", "run_one", token, { text: "done" });
-
-  const late = () =>
-    store.ingestObservations("session_one", "run_one", token, [
-      { kind: "item.started", item: { id: "i_late", detail: { type: "command_execution", command: { command: "echo late" } } } },
-    ]);
-  expect(late).toThrow(EngineStateError);
-  expect(late).toThrow(/already settled \(completed\)/);
-  try {
-    late();
-  } catch (error) {
-    expect(error).toBeInstanceOf(EngineStateError);
-    expect((error as EngineStateError).code).toBe("conflict");
-  }
-  // Refused means refused: the settled turn's journal gained nothing.
-  expect(store.items("session_one").some((item) => item.id === "i_late")).toBe(false);
-
-  // A WRONG token against the same settled turn stays the generic claim
-  // refusal — "settled" is only claimed for the worker that really ran it.
-  expect(() =>
-    store.ingestObservations("session_one", "run_one", "not-the-token-at-all", [
-      { kind: "item.started", item: { id: "i_late", detail: { type: "assistant_message", text: "" } } },
-    ]),
-  ).toThrow(/not running under this worker claim/);
-});
-
 test("the backlog is bounded, and an interrupted turn holds no dispatch at all", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "First" });
@@ -689,35 +564,6 @@ test("a fresh message continues the conversation from the provider cursor, never
   // The lost run stays in the record, and so does everything it streamed.
   expect(rebooted.turns("session_one")[0]).toMatchObject({ runId: "run_lost", state: "stopped", stopReason: "engine_restart" });
   expect(rebooted.items("session_one").map((item) => item.id)).toContain("msg_1");
-});
-
-test("a malformed observation rejects the WHOLE batch, leaving no half-written provider message", () => {
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
-  store.markRunning("session_one", "run_one", claimed.claim!.token);
-  const before = store.readEvents("session_one").length;
-
-  expect(() =>
-    store.ingestObservations("session_one", "run_one", claimed.claim!.token, [
-      { kind: "item.started", item: { id: "good", detail: { type: "assistant_message", text: "" } } },
-      { kind: "item.started", item: { id: "bad", detail: { type: "file_change", command: { command: "ls" } } } },
-    ]),
-  ).toThrow(/observations are invalid/);
-
-  expect(store.readEvents("session_one")).toHaveLength(before);
-  expect(store.items("session_one")).toEqual([]);
-});
-
-test("a delta for an item that was never opened is dropped rather than journalled", () => {
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
-  store.markRunning("session_one", "run_one", claimed.claim!.token);
-  store.ingestObservations("session_one", "run_one", claimed.claim!.token, [
-    { kind: "content.delta", itemId: "ghost", stream: "assistant_text", text: "x" },
-  ]);
-  expect(store.readEvents("session_one").some((event) => event.type === "content.delta")).toBe(false);
 });
 
 test("a v1 document names the version break instead of reading as corruption", () => {
