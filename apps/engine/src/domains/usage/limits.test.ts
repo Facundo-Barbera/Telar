@@ -1,20 +1,8 @@
-/**
- * CLIProxyAPI hubs as usage-limit sources.
- *
- * The properties worth pinning are the ones a hub client can silently violate:
- * the management key must never leave the Authorization header, a hub that is
- * down must keep its row rather than disappear, one bad account must not cost
- * the others their bars, and the redacted round trip a settings page makes must
- * not erase the stored key.
- *
- * EVERY TEST STUBS `fetch`. Nothing here contacts a hub, so the suite is the
- * same on a machine with `cliproxyapi` running and one without.
- */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStateError, EngineStore } from "../src/state";
+import { EngineStateError, EngineStore } from "../../state";
 import {
   apiCall,
   claudeWindows,
@@ -27,8 +15,8 @@ import {
   readUsageLimitSource,
   sourceLabel,
   UsageLimitSourceError,
-} from "../src/usage-limits";
-import { stubModels } from "./stub-models";
+} from "./limits";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const root = (): string => {
@@ -47,8 +35,6 @@ const HUB = { url: "http://localhost:8317", managementKey: "sk-hub-secret" };
 
 type Call = { url: string; init: RequestInit };
 
-/** A hub that answers a scripted map of management paths. Records every call so
- *  a test can assert on the headers and body actually sent. */
 function stubHub(routes: Record<string, unknown | ((body: unknown) => unknown)>) {
   const calls: Call[] = [];
   const fetchStub = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -91,12 +77,8 @@ const authFiles = {
   ],
 };
 
-// ── the protocol ───────────────────────────────────────────────────────────
-
 test("management URLs resolve against the origin, and a bad or non-http URL is refused", () => {
   expect(managementUrl("http://localhost:8317", "auth-files")).toBe("http://localhost:8317/v0/management/auth-files");
-  // A trailing slash and a sub-path are the same hub: the path is resolved
-  // against the ORIGIN, so neither can produce a doubled or nested segment.
   expect(managementUrl("http://localhost:8317/", "auth-files")).toBe("http://localhost:8317/v0/management/auth-files");
   expect(managementUrl("https://hub.example.com/ignored", "api-call")).toBe("https://hub.example.com/v0/management/api-call");
   expect(() => managementUrl("not a url", "auth-files")).toThrow(UsageLimitSourceError);
@@ -110,7 +92,6 @@ test("the management key rides the Authorization header and appears nowhere else
   for (const call of hub.calls) {
     const headers = call.init.headers as Record<string, string>;
     expect(headers["Authorization"]).toBe("Bearer sk-hub-secret");
-    // Not in the URL, and not in any body the hub is handed.
     expect(call.url).not.toContain("sk-hub-secret");
     expect(String(call.init.body ?? "")).not.toContain("sk-hub-secret");
   }
@@ -119,9 +100,6 @@ test("the management key rides the Authorization header and appears nowhere else
 test("auth-files drops rows it cannot read rather than failing the whole list", async () => {
   const hub = stubHub({ "auth-files": authFiles });
   const files = await listAuthFiles(HUB, { fetch: hub.fetch });
-  // `junk` has no id/auth_index/provider and is dropped; everything else stays,
-  // disabled and unknown-provider rows included — filtering those is a later
-  // decision, made where the driver is known.
   expect(files.map((file) => file.id)).toEqual(["claude-a", "codex-b", "claude-off", "gemini-c"]);
   expect(files[1]!.id_token?.chatgpt_account_id).toBe("acct-1");
 });
@@ -144,7 +122,6 @@ test("api-call sends the provider's own headers with the hub's $TOKEN$ placehold
   expect(sent.auth_index).toBe("1");
   expect(sent.method).toBe("GET");
   expect(sent.url).toBe("https://example.test/usage");
-  // The hub substitutes the token; Telar never holds a subscription credential.
   expect(sent.header["Authorization"]).toBe("Bearer $TOKEN$");
   expect(sent.header["OpenAI-Beta"]).toBe("codex-1");
   expect(sent.header["Originator"]).toBe("Codex Desktop");
@@ -164,15 +141,11 @@ test("a provider refusal inside a 200 hub answer is still a failure", async () =
   ).rejects.toThrow("HTTP 401");
 });
 
-// ── the two providers' usage shapes ────────────────────────────────────────
-
 test("Claude's usage answer becomes the two standing windows plus model-scoped ones", () => {
   const windows = claudeWindows(claudeBody);
   expect(windows.map((entry) => entry.key)).toEqual(["five_hour", "seven_day", "model:Opus 5"]);
   expect(windows[0]).toEqual({ key: "five_hour", label: "5-hour", usedPercent: 42, resetsAt: Date.parse("2026-09-13T18:00:00.000Z") });
   expect(windows[2]!.label).toBe("Opus 5 weekly");
-  // A `five_hour` entry in `limits` is not a model-scoped limit and is not
-  // re-added as one — the standing window above already reported it.
   expect(windows.filter((entry) => entry.usedPercent === 99)).toHaveLength(0);
 });
 
@@ -189,7 +162,6 @@ test("Codex's windows carry a seconds-based reset scaled to milliseconds, and a 
     { key: "primary", label: "Primary", usedPercent: 30, resetsAt: 1_789_000_000_000 },
     { key: "secondary", label: "Secondary", usedPercent: 61.25 },
   ]);
-  // The account's own plan is the fallback when the usage answer omits one.
   expect(codexUsage(JSON.stringify({ rate_limit: {} }), { id: "b", auth_index: "1", provider: "codex", id_token: { chatgpt_plan_type: "pro" } }).plan).toBe("Pro");
 });
 
@@ -205,8 +177,6 @@ test("a malformed usage answer is an error rather than a silently empty bar", ()
   expect(() => claudeWindows("not json")).toThrow("not JSON");
   expect(() => codexUsage("[]")).toThrow("not an object");
 });
-
-// ── reading a whole hub ────────────────────────────────────────────────────
 
 test("reading a hub skips disabled accounts and providers Telar has no driver for", async () => {
   const hub = stubHub({
@@ -246,7 +216,6 @@ test("a source snapshot never throws: a dead hub keeps its row with an error", a
     { id: "home", kind: "cliproxy", url: "http://localhost:8317", managementKey: "sk-hub-secret" },
     { fetch: offline, now: () => 1_000 },
   );
-  // Configured-and-unreachable and not-configured must not look the same.
   expect(snapshot).toEqual({ id: "home", kind: "cliproxy", label: "localhost:8317", checkedAt: 1_000, accounts: [], error: "The hub did not answer." });
 });
 
@@ -267,8 +236,6 @@ test("a source falls back to the hub's host for its label", () => {
   expect(sourceLabel("home", { label: "   ", url: "not a url" })).toBe("home");
 });
 
-// ── the store slice ────────────────────────────────────────────────────────
-
 test("a saved hub reads back with its key withheld and marked redacted", () => {
   const engine = store();
   const saved = engine.saveUsageLimitSource({ id: "home", url: "http://localhost:8317/", managementKey: "sk-hub-secret", label: "Home hub" });
@@ -276,7 +243,6 @@ test("a saved hub reads back with its key withheld and marked redacted", () => {
   const [listed] = engine.listUsageLimitSources();
   expect(listed!.managementKey).toBe("");
   expect(listed!.keyRedacted).toBe(true);
-  // …and the key is not on the registry document at all, only in its own file.
   expect(fs.readFileSync(engine.paths.usageLimitSources, "utf8")).not.toContain("sk-hub-secret");
   expect(fs.readFileSync(engine.paths.usageLimitSecrets, "utf8")).toContain("sk-hub-secret");
   expect(fs.statSync(engine.paths.usageLimitSecrets).mode & 0o777).toBe(0o600);
@@ -286,8 +252,6 @@ test("saving the redacted shape back keeps the stored key", () => {
   const engine = store();
   engine.saveUsageLimitSource({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
   const redacted = engine.listUsageLimitSources()[0]!;
-  // Exactly what a settings page round-trips: an empty key with the redaction
-  // flag. An empty value means "I did not retype it", never "clear it".
   engine.saveUsageLimitSource({ id: redacted.id, url: redacted.url, managementKey: redacted.managementKey, label: "Renamed" });
   const [resolved] = engine.resolveUsageLimitSources();
   expect(resolved!.managementKey).toBe("sk-hub-secret");
@@ -310,7 +274,6 @@ test("removing a hub forgets its key with it", () => {
   expect(engine.removeUsageLimitSource("home")).toBe(true);
   expect(engine.listUsageLimitSources()).toEqual([]);
   expect(fs.readFileSync(engine.paths.usageLimitSecrets, "utf8")).not.toContain("sk-hub-secret");
-  // A second press is not an error.
   expect(engine.removeUsageLimitSource("home")).toBe(false);
 });
 
@@ -326,21 +289,10 @@ test("a hand-mangled registry costs the list, never the engine's settings read",
   const engine = store();
   engine.saveUsageLimitSource({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
   fs.writeFileSync(engine.paths.usageLimitSources, "{ not json");
-  // Same never-throws rule the inbox policy follows: a malformed preference is
-  // a preference lost, not a settings page that will not open.
   expect(engine.listUsageLimitSources()).toEqual([]);
   expect(engine.resolveUsageLimitSources()).toEqual([]);
 });
 
-// ── the routes ─────────────────────────────────────────────────────────────
-
-/**
- * A daemon whose HUB calls are stubbed and whose own loopback traffic is not.
- *
- * The stub intercepts by URL — anything under `/v0/management/` is the hub, and
- * everything else (the engine client's own requests) goes to the real `fetch`.
- * Restored in `afterEach` so one test's hub cannot answer another's.
- */
 const realFetch = globalThis.fetch;
 let hubCalls = 0;
 function interceptHub(answer: (path: string, body: unknown) => unknown): void {
@@ -365,7 +317,7 @@ afterEach(async () => {
 });
 
 async function engineWithClient() {
-  const { startEngine } = await import("../src/daemon");
+  const { startEngine } = await import("../../daemon");
   const { connectEngine } = await import("@telar/engine-client/node");
   const directory = root();
   fs.mkdirSync(directory, { recursive: true });
@@ -381,7 +333,6 @@ test("the routes save, list and remove a hub without ever handing the key back",
   expect(saved.source).toMatchObject({ id: "home", label: "Home hub", managementKey: "", keyRedacted: true, enabled: true });
   const listed = await client.usageLimitSources();
   expect(JSON.stringify(listed)).not.toContain("sk-hub-secret");
-  // Saving the row straight back is what a settings page does; the key survives.
   await client.saveUsageLimitSource({ id: "home", url: listed.sources[0]!.url, managementKey: "", enabled: false });
   expect((await client.usageLimitSources()).sources[0]).toMatchObject({ enabled: false, keyRedacted: true });
   expect(await client.removeUsageLimitSource("home")).toEqual({ removed: true });
@@ -400,7 +351,6 @@ test("the limits route reads every enabled hub and keeps a failing one's row", a
   const { limits } = await client.usageLimits();
   expect(limits.sources.map((source) => source.id)).toEqual(["home", "nokey"]);
   expect(limits.sources[0]!.accounts.map((account) => account.driver)).toEqual(["claude", "codex"]);
-  // Configured but unusable keeps its row rather than vanishing.
   expect(limits.sources[1]!.error).toBe("No management key is stored for this hub.");
 });
 
@@ -416,7 +366,6 @@ test("a second read is served from cache; ?refresh=1 goes back to the hub", asyn
   const afterFirst = hubCalls;
   expect(afterFirst).toBeGreaterThan(0);
   const second = await client.usageLimits();
-  // Same snapshot, no new outbound traffic: a page repaint must not re-poll.
   expect(second.limits.readAt).toBe(first.limits.readAt);
   expect(hubCalls).toBe(afterFirst);
   const forced = await client.usageLimits({ refresh: true });
@@ -430,7 +379,5 @@ test("a settings change drops the cached snapshot", async () => {
   await client.saveUsageLimitSource({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
   expect((await client.usageLimits()).limits.sources.map((source) => source.id)).toEqual(["home"]);
   await client.removeUsageLimitSource("home");
-  // Not served from the snapshot taken a moment ago: a removed hub must leave
-  // the list at once rather than after the five-minute window.
   expect((await client.usageLimits()).limits.sources).toEqual([]);
 });

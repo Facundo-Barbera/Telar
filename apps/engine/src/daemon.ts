@@ -94,7 +94,7 @@ import {
   writeTheme,
 } from "./appearance-home";
 import { readUsageReport, warmUsageScanCache } from "./usage";
-import { readUsageLimitSource } from "./usage-limits";
+import { readUsageLimitSource } from "./domains/usage";
 import type { SocketTool } from "./mcp-socket";
 import {
   collectSessionsWallTools,

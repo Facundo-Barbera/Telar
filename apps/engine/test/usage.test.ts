@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { flushUsageScanCaches, readUsageReport, resetUsageScanCaches, warmUsageScanCache, type UsageScanRoots } from "../src/usage";
-import { normalizeModelName, priceTokens, resetRatesMemo, type RatesTable } from "../src/usage-pricing";
+import type { RatesTable } from "../src/domains/usage";
 
 const roots: string[] = [];
 const tmp = (): string => {
@@ -16,7 +16,6 @@ afterEach(async () => {
   await flushUsageScanCaches();
   resetUsageScanCaches();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
-  resetRatesMemo();
 });
 
 /** Fixture transcript trees, in the CLIs' own shapes (verified against real
@@ -347,38 +346,6 @@ describe("the scan cache", () => {
     const stored = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { version: number; files: Record<string, { records: unknown[] }> };
     expect(stored.version).toBe(1);
     expect(stored.files[file]!.records).toHaveLength(1);
-  });
-});
-
-describe("pricing", () => {
-  test("one-hour cache writes cost double input, not the 5-minute rate", () => {
-    const tokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 1_000_000 };
-    // All 5m: the table's own cache-creation rate.
-    expect(priceTokens(RATES, "claude-opus-5", tokens)).toBeCloseTo(1_000_000 * 1.25e-5);
-    // All 1h: 2× the input rate.
-    expect(priceTokens(RATES, "claude-opus-5", tokens, { cacheCreate1h: 1_000_000 })).toBeCloseTo(1_000_000 * 2 * 1e-5);
-    // Split prices each slice at its own tier.
-    expect(priceTokens(RATES, "claude-opus-5", tokens, { cacheCreate1h: 400_000 })).toBeCloseTo(600_000 * 1.25e-5 + 400_000 * 2e-5);
-  });
-
-  test("a prefixed duplicate row without cache rates cannot shadow the complete one", async () => {
-    const { loadRates } = await import("../src/usage-pricing");
-    const cachePath = path.join(tmp(), "rates.json");
-    const payload = {
-      "claude-x": { input_cost_per_token: 1e-5, output_cost_per_token: 5e-5, cache_read_input_token_cost: 1e-6 },
-      "anthropic/claude-x": { input_cost_per_token: 1e-5, output_cost_per_token: 5e-5 },
-    };
-    const table = await loadRates(cachePath, () => Promise.resolve(payload));
-    expect(priceTokens(table, "claude-x", { input: 0, output: 0, cacheRead: 1_000_000, cacheCreate: 0 })).toBeCloseTo(1);
-  });
-
-  test("names normalize and bare aliases stay unpriceable", () => {
-    expect(normalizeModelName("anthropic/Claude-Opus-5")).toBe("claude-opus-5");
-    const tokens = { input: 10, output: 10, cacheRead: 0, cacheCreate: 0 };
-    expect(priceTokens(RATES, "haiku", tokens)).toBeUndefined();
-    expect(priceTokens(RATES, "default", tokens)).toBeUndefined();
-    expect(priceTokens(RATES, "unknown-model", tokens)).toBeUndefined();
-    expect(priceTokens(RATES, "Anthropic/claude-opus-5", tokens)).toBeCloseTo(10 * 1e-5 + 10 * 5e-5);
   });
 });
 

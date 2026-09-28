@@ -39,7 +39,7 @@
  *
  * Run: `bun run --cwd apps/engine bench:compaction`
  */
-import { priceTokens, type RatesTable } from "../src/usage-pricing";
+import { priceTokens, type RatesTable } from "../src/domains/usage";
 
 /**
  * LIST PRICE AS RATIOS OF THE INPUT RATE, which is what makes this a fixture
