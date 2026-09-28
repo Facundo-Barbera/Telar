@@ -5,7 +5,7 @@ const { mainSource } = require("../../test/main-source");
 
 const { HOST_HEADER, isOwnServer, attachHostHeader } = require("./host-header");
 
-const hostTokenTs = path.join(__dirname, "..", "..", "..", "web", "src", "lib", "remote", "host-token.ts");
+const hostTokenTs = path.join(__dirname, "..", "..", "..", "web", "src", "features", "remote", "server", "host-token.ts");
 
 describe("the shell and the gate name the same header", () => {
   test("host-token.ts declares the header this module exports", () => {
