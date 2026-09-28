@@ -88,7 +88,6 @@ import {
   type ProviderInstance,
   type ProviderInstanceEnvVar,
   type TurnAttachment,
-  type TurnModelSelection,
   type ProviderDriverKind,
   // The runtime enum too, not just the type: `readProviderInstances` asks it
   // whether a row on disk names a driver this build still has.
@@ -122,8 +121,6 @@ import {
   type WorktreeInventory,
   type WorktreeReclaimItem,
   type WorktreeReclaimResult,
-  seedSessionTitle,
-  turnHasContent,
   CLAUDE_COMPACTION_ENV_NAMES,
   migrateClaudeCompaction,
   type DictationLanguage,
@@ -137,8 +134,8 @@ import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, 
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { ACTIVE_TURN_STATES, type AttachmentInput, awaitsRateLimitSweep, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
-import { heldDelivery, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
+import { type AttachmentInput, awaitsRateLimitSweep, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
+import { FOLDING_INTENTS, heldDelivery, MAX_TEXT_LENGTH, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -153,7 +150,7 @@ import { adoptClaudeConversation, type Adoption, type ClaudeConversation, descri
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
 import { type BootstrapRequest, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, type DsCapability, DsFiles, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type RequirementsSource, type ResolvedLatex, storeDsCapability, storeLatexCapability, type TableWindow, telarVenvDir, type Toolchain, windowCsv } from "./domains/plugins";
 import { ScheduleBook, type ScheduleInput } from "./domains/schedules";
-import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, prepareSessionWorktree, derivedBranchFor, type WorktreePlan, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
+import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { CheckoutSizes, CleanupStore, copyStore, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor } from "./domains/terminal";
@@ -294,15 +291,6 @@ type TurnFailure = TurnFailureShape;
  *  fourth copy of it — see `WorkerTurnFailureCode`. */
 const TURN_FAILURE_CODES = new Set<TurnFailureCode>(WorkerTurnFailureCodeSchema.options);
 
-/**
- * How deep a session's backlog may get.
- *
- * A RUNAWAY-CLIENT GUARD, NOT A PRODUCT LIMIT. A human queueing follow-ups will
- * never approach it; a retry loop with a fresh runId each time would otherwise
- * grow `queue.json` without bound, and the queue is rewritten whole on every
- * turn transition.
- */
-const MAX_QUEUED_TURNS = 16;
 
 /**
  * How old the shell's `planned-restart.json` may be and still mean "this
@@ -338,19 +326,6 @@ function endedByShutdown(turn: Turn): boolean {
   return turn.state === "failed" && turn.failure?.code === "interrupted";
 }
 
-/**
- * THE STATES IN WHICH A RESULT HAS REACHED THE MODEL — issue #919.
- *
- * `queued` is deliberately absent: a result nobody has read is what
- * `mergeIntoWaitingResult` folds the completion into. Every state here means
- * the result's turn was handed to a worker (`claimed`, `running`), has already
- * run (`completed`), or was folded into a turn the model was in the middle of
- * (`steering`, `steered`). A `failed`, `stopped`, `ambiguous` or `discarded`
- * result is one the coordinator did NOT get to read, so its run's completion
- * still wakes.
- */
-/** The intents that speak for the run that sent them — see `messageDeliveredTo`. */
-const FOLDING_INTENTS: ReadonlySet<NonNullable<Turn["agentIntent"]>> = new Set(["report", "result", "blocker"]);
 const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
 
 
@@ -371,7 +346,6 @@ function definedOnly<T extends object>(value: T): Partial<T> {
   return out;
 }
 
-const MAX_TEXT_LENGTH = 200_000;
 
 /**
  * How long a turn's anchor probe may take — issue #741.
@@ -412,8 +386,6 @@ const ANCHOR_PROBE_MS = 5_000;
 export const ENGINE_EXIT_LOCK_HELD = 3;
 
 
-/** Per turn, so one message cannot smuggle 16 × 20 MB past the per-file cap. */
-const MAX_TURN_ATTACHMENTS = 16;
 
 /**
  * How far the DURABLE `Turn.lastProgressAt` may drift behind the in-memory
@@ -500,11 +472,6 @@ function canonicalPath(input: string): string {
   return canonical;
 }
 
-function assertText(value: unknown): asserts value is string {
-  if (typeof value !== "string" || value.trim() === "" || value.length > MAX_TEXT_LENGTH) {
-    throw new EngineStateError("invalid_request", "turn text must be non-empty and within the allowed size");
-  }
-}
 
 /**
  * THE SESSION'S DIRECTORY, OR A REFUSAL — every store call that needs a real
@@ -695,9 +662,6 @@ function isDeltaOnlyBatch(observations: unknown[]): boolean {
   return true;
 }
 
-/** WHO IS SENDING A `sessions_send`, PROVEN: the sending turn's own live claim.
- *  The store reads the sender off the claim, never off the caller's word. */
-export type SenderProof = { sessionId: string; runId: string; claimToken: string };
 
 /**
  * How to read ONE file's patch — the two questions that change what git prints
@@ -749,6 +713,7 @@ export class EngineStore {
   private readonly remounts: ProjectRemounts;
   private readonly attachments: SessionAttachments;
   private readonly queries: SessionQueries;
+  private readonly intake: TurnIntake;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1732,6 +1697,7 @@ export class EngineStore {
     }));
     this.subscriptions = this.createSubscriptions();
     this.lifecycle = this.createLifecycle();
+    this.intake = this.createIntake();
     this.worktrees = this.worktreeMaintenance();
     ({ dataScienceOps: this.dataScienceOps, latexOps: this.latexOps } = this.createPluginOps());
     this.schedules = new ScheduleBook(this.kernel, {
@@ -3306,259 +3272,45 @@ export class EngineStore {
   }
 
 
-  submitTurn(
-    sessionId: string,
-    input: {
-      runId: string;
-      input: string;
-      kind?: "message" | "compact";
-      model?: TurnModelSelection;
-      attachments?: string[];
-      /**
-       * NOT THE PERSON'S WORDS. `origin: "session"` comes two ways and needs
-       * exactly one companion:
-       *   - `wakeReason`: a WAKE, set by `fireSubscriptions` and nobody else.
-       *   - `sender`: a DIRECT MESSAGE from an agent (`sessions_send`), set
-       *     by `submitAgentTurn` after checking the sender's claim.
-       * The HTTP route never reads `origin` or `wakeReason` from a body, so a
-       * cockpit cannot forge a wake; `sender` it accepts only with proof.
-       */
-      agentIntent?: Turn["agentIntent"];
-      agentDelivery?: Turn["agentDelivery"];
-      /** A passive message whose notification was folded into a wake still
-       *  waiting in the queue — see `foldIntoWaitingMessage`. Not mail. */
-      foldedIntoWaitingWake?: boolean;
-      agentSourceRunId?: string;
-      /** See `Turn.corrects`. Set by `submitAgentTurn` only. */
-      corrects?: string;
-      /** The short line the MODEL reads in place of `input` — minted by
-       *  `submitAgentTurn` and by nothing else. See `Turn.agentNotice`. */
-      agentNotice?: string;
-      /**
-       * THIS TURN IS A NOTIFICATION, NOT WORDS — minted by `notification.ts`
-       * for `submitAgentTurn` (a peer's message) and `fireSubscriptions` (a
-       * wake, a parked request), and by nothing else.
-       *
-       * Its presence is what makes the engine write a `notification` item
-       * instead of leaving the turn to be drawn as a bubble, and what tells the
-       * drivers to deliver it off the user channel. See `Turn.notification`.
-       */
-      notification?: NotificationDetail;
-      assignmentScope?: string;
-      origin?: "session" | "schedule" | "restart";
-      wakeReason?: WakeReason;
-      sender?: { sessionId?: string };
-      /** A CLOCK started this turn — issue #543. See the origin enum. */
-      scheduleOrigin?: { scheduleId: string; dueAt: number };
-      /** A PLANNED RESTART cut the last turn off — see `resumeAfterPlannedRestart`. */
-      restartOrigin?: NonNullable<Turn["restartOrigin"]>;
-    },
-  ): { turn: Turn; replayed: boolean } {
-    return this.kernel.command("submitTurn", () => {
-      assertId(input.runId, "run id");
-      // A BLANK MESSAGE WITH SOMETHING ATTACHED is judged below, once the
-      // attachments are resolved and their types known — see `turnHasContent`.
-      const blankWithFiles =
-        typeof input.input === "string" && input.input.trim() === "" && input.kind !== "compact" && (input.attachments?.length ?? 0) > 0;
-      if (!blankWithFiles) assertText(input.input);
-      const companions =
-        Number(input.wakeReason !== undefined) +
-        Number(input.sender !== undefined) +
-        Number(input.scheduleOrigin !== undefined) +
-        Number(input.restartOrigin !== undefined);
-      const wants = input.origin === "session" || input.origin === "schedule" || input.origin === "restart" ? 1 : 0;
-      if (companions !== wants) {
-        throw new EngineStateError("invalid_request", "a session- or schedule-origin turn carries exactly one companion, and only such a turn does");
-      }
-      if (input.origin === "schedule" && input.scheduleOrigin === undefined) {
-        throw new EngineStateError("invalid_request", "a schedule-origin turn names the schedule that started it");
-      }
-      if (input.origin === "restart" && input.restartOrigin === undefined) {
-        throw new EngineStateError("invalid_request", "a restart-origin turn names the restart that started it");
-      }
-      const kind = input.kind === "compact" ? "compact" : undefined;
-      const session = this.records.get(sessionId);
-      // A MESSAGE TO A RELEASED SESSION BRINGS ITS CHECKOUT BACK; the turn waits
-      // on `preparing` like it does for a first cut. Checked on the read already
-      // made, so an ordinary message costs no extra parse of the queue.
-      if (session.workspace.mode === "worktree" && session.workspace.released) this.restoreSessionWorktree(sessionId);
-      if (kind === "compact" && !PROVIDER_CAPABILITIES[session.driver].compaction)
-        throw new EngineStateError("conflict", "this provider does not support manual compaction");
-      const queue = this.readQueue(sessionId);
-      const known = queue.turns.find((turn) => turn.runId === input.runId);
-      if (known) {
-        if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
-        return { turn: structuredClone(known), replayed: true };
-      }
-      if (input.origin === "session" && session.agentMessagesBlocked) {
-        throw new EngineStateError("conflict", "this session was stopped by its user; agent messages cannot restart it. Wait for a new human message.");
-      }
-      if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
-      const passive = input.origin === "session" && input.agentDelivery === "passive";
-      const queued = queue.turns.filter((turn) => turn.state === "queued" || turn.state === "steering").length;
-      if (!passive && queued >= MAX_QUEUED_TURNS) {
-        throw new EngineStateError("conflict", "session already has the maximum number of queued turns");
-      }
-
-      if (kind === "compact" && queue.turns.some((turn) => turn.kind === "compact" && ACTIVE_TURN_STATES.has(turn.state))) {
-        throw new EngineStateError("conflict", "a compaction is already queued or running on this session");
-      }
-      const at = this.now();
-      const turn: Turn = {
-        runId: input.runId,
-        sessionId,
-        sequence: queue.nextSequence++,
-        input: input.input,
-        ...(kind ? { kind } : {}),
-        ...(input.origin === "session" && input.wakeReason ? { origin: "session" as const, wakeReason: input.wakeReason } : {}),
-        ...(input.origin === "session" && input.sender
-          ? { origin: "session" as const, sender: input.sender.sessionId ? { sessionId: input.sender.sessionId } : {} }
-          : {}),
-        // A CLOCK STARTED THIS ONE (#543), named so a transcript can say why it
-        // ran rather than drawing it as something a person typed.
-        ...(input.origin === "schedule" && input.scheduleOrigin ? { origin: "schedule" as const, scheduleOrigin: input.scheduleOrigin } : {}),
-        ...(input.origin === "restart" && input.restartOrigin ? { origin: "restart" as const, restartOrigin: input.restartOrigin } : {}),
-        ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
-        ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
-        ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
-        ...(input.corrects ? { corrects: input.corrects } : {}),
-        ...(input.agentNotice ? { agentNotice: input.agentNotice } : {}),
-        ...(input.notification ? { notification: input.notification } : {}),
-        ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
-        ...(passive ? { completedAt: at, resultText: "" } : {}),
-        state: passive ? "completed" : "queued",
-        acceptedAt: at,
-        updatedAt: at,
-        ...(() => {
-          const ids = input.attachments ?? [];
-          if (ids.length === 0) return {};
-          if (ids.length > MAX_TURN_ATTACHMENTS) throw new EngineStateError("invalid_request", "too many attachments on one turn");
-          const index = this.attachments.index(sessionId);
-          const attachments = ids.map((id) => {
-            const found = index.get(id);
-            // Loud rather than silent: a message that says "look at this" and
-            // arrives with nothing attached is worse than one that fails to send.
-            if (!found) throw new EngineStateError("not_found", "attachment does not exist on this session");
-            return found;
-          });
-          return { attachments };
-        })(),
-        ...(input.model
-          ? {
-              model: {
-                instanceId: session.providerInstanceId,
-                ...(input.model.model ? { model: input.model.model } : {}),
-                ...(input.model.effort ? { effort: input.model.effort } : {}),
-                ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
-                ...(input.model.serviceTier ? { serviceTier: input.model.serviceTier } : {}),
-                ...(input.model.ultracode === undefined ? {} : { ultracode: input.model.ultracode }),
-              },
-            }
-          : {}),
-      };
-      if (!turnHasContent(turn.input, (turn.attachments ?? []).map((attachment) => attachment.mediaType))) {
-        throw new EngineStateError("invalid_request", "a message needs text or an image");
-      }
-      /** Scheduled after the document is written, never before — see `createSession`. */
-      let cut: { projectRoot: string; plan: WorktreePlan; baseSha: string } | undefined;
-      if (session.draft) {
-        if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
-        if (kind === "compact") throw new EngineStateError("conflict", "a browser draft has no conversation to compact");
-        if (session.envMode === "worktree") {
-          if (!session.projectId) throw new EngineStateError("conflict", "a worktree draft requires a project");
-          const project = this.getProject(session.projectId);
-          const planned = prepareSessionWorktree(this.git, {
-            engineRoot: this.paths.root, projectRoot: project.root, projectName: project.name, sessionId,
-            // The send that promotes a draft already went through
-            // `assertProjectAvailable`, so this is that reading rather than a
-            // second one — see the ladder in `createSession`.
-            availability: this.projectAvailability(project),
-            branchSlug: session.draft.branchSlug ?? derivedBranchFor(input.input, sessionId),
-            ...(session.draft.baseRef ? { baseRef: session.draft.baseRef } : {}),
-            ...(session.draft.branchName ? { branchName: session.draft.branchName } : {}),
-          });
-          session.workspace = { mode: "worktree", path: planned.plan.path, branch: planned.plan.branch, baseRef: planned.baseSha };
-          session.preparation = { state: "preparing", at };
-          cut = { projectRoot: project.root, ...planned };
-        }
-        if (session.title === "Browser draft") {
-          const images = (turn.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
-          session.title = seedSessionTitle(input.input, images.map((attachment) => attachment.name)) || session.title;
-        }
-        delete session.draft;
-        this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-        if (cut) this.lifecycle.prepareWorktree(sessionId, cut.projectRoot, cut.plan, cut.baseSha);
-      }
-      if (session.paused && !passive) turn.held = { at, reason: "session_paused" };
-      if (input.origin !== "session" && input.origin !== "restart" && kind !== "compact" && session.agentMessagesBlocked) {
-        delete session.agentMessagesBlocked;
-        delete session.agentMessagesBlockedAt;
-        this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-      }
-      queue.turns.push(turn);
-      this.writeQueue(sessionId, queue);
-      this.records.touch(sessionId, at);
-      // Queueing a message is a human saying they are not done with this after
-      // all, so any shelf or snooze it was under is lifted.
-      if (!passive) this.records.wakeForNewWork(sessionId);
-      // v1 emitted only `{ sequence }` here, which is why the client had to fetch
-      // a snapshot to learn the prompt. The whole turn rides the event now.
-      this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
-      if (passive) {
-        if (turn.notification) this.writeNotificationItem(sessionId, turn);
-        if (turn.notification && !turn.wakeReason && !input.foldedIntoWaitingWake) this.mailbox.hold(sessionId, turn.notification);
-        this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
-        return { turn: structuredClone(turn), replayed: false };
-      }
-      // A compaction is a gesture on the session, not words for the running
-      // model; it always waits its turn.
-      const interrupts = turn.origin !== "session" || turn.agentIntent === "task" || turn.agentIntent === "blocker";
-      if (kind !== "compact" && interrupts && !session.paused && PROVIDER_CAPABILITIES[session.driver].liveSteering) {
-        const steered = this.steerIfRunning(sessionId, turn.runId);
-        if (steered) return { turn: steered, replayed: false };
-      }
-      if (turn.notification) this.writeNotificationItem(sessionId, turn);
-      return { turn: structuredClone(turn), replayed: false };
+  private createIntake(): TurnIntake {
+    return new TurnIntake(this.kernel, {
+      records: this.records,
+      items: this.sessionItems,
+      mailbox: this.mailbox,
+      attachments: this.attachments,
+      git: this.git,
+      readQueue: (id) => this.readQueue(id),
+      writeQueue: (id, queue) => this.writeQueue(id, queue),
+      getProject: (id) => this.getProject(id),
+      availability: (project) => this.projectAvailability(project),
+      assertProjectAvailable: (id) => this.assertProjectAvailable(id),
+      restoreWorktree: (id) => void this.restoreSessionWorktree(id),
+      prepareWorktree: (id, root, plan, baseSha) => this.lifecycle.prepareWorktree(id, root, plan, baseSha),
+      promoteTurn: (id, runId) => this.promoteTurn(id, runId),
+      requireSenderClaim: (proof) => this.requireSenderClaim(proof),
+      hasLiveTurn: (id) => this.hasLiveTurn(id),
+      waitingNotificationTurn: (id) => this.waitingNotificationTurn(id),
+      joinWaitingNotification: (id, waitingRunId, notification) => this.joinWaitingNotification(id, waitingRunId, notification),
+      rewriteNotificationItem: (id, turn) => this.rewriteNotificationItem(id, turn),
+      waitingSubscription: (subscriber, target) =>
+        this.subscriptions.readSubscriptions().some((sub) => sub.subscriberSessionId === subscriber && sub.targetSessionId === target && sub.events.includes("turn_completed")),
+      cohortHolds: (id, sender) => this.subscriptions.cohortHolds(id, sender),
+      recordCohortMessage: (id, sender, intent, runId, text) => this.subscriptions.recordCohortMessage(id, sender, intent, runId, text),
     });
   }
 
-  /**
-   * THE NOTIFICATION'S ROW, WRITTEN AT ACCEPT — issue #550.
-   *
-   * WRITTEN BY THE ENGINE RATHER THAN A DRIVER, which is the difference between
-   * this and every other item in the projection. A driver's rows are what a
-   * provider did; this one is what ARRIVED, and it is true the moment the turn
-   * is accepted — before any worker claims it, and whether or not one ever does.
-   * A notification that only appeared once a provider got round to it would
-   * leave a queued wake invisible in the transcript for as long as the session
-   * was busy, which is exactly when a person is looking.
-   *
-   * OPENED AND CLOSED IN ONE BREATH. Nothing about an arrival is in progress.
-   */
-  private writeNotificationItem(sessionId: string, turn: Turn): void {
-    const detail = turn.notification;
-    if (!detail) return;
-    const at = this.now();
-    const items = this.sessionItems.read(sessionId);
-    const item: Item = {
-      // DERIVED FROM THE RUN, not random: `submitTurn` is idempotent on the run
-      // id, and a replay that minted a second row would put two notifications
-      // on one arrival.
-      id: `notification_${turn.runId}`,
-      runId: turn.runId,
-      sessionId,
-      status: "completed",
-      title: detail.summary,
-      detail: { type: "notification", notification: detail },
-      startedAt: at,
-      completedAt: at,
-    };
-    if (items.has(item.id)) return;
-    items.set(item.id, item);
-    this.sessionItems.write(sessionId, items, new Set([item.id]));
-    this.appendEvent(sessionId, { type: "item.started", item }, turn.runId);
-    this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
+  submitTurn(sessionId: string, input: TurnSubmission): { turn: Turn; replayed: boolean } {
+    return this.intake.submitTurn(sessionId, input);
   }
+
+  submitAgentTurn(...args: Parameters<TurnIntake["submitAgentTurn"]>): { turn: Turn; replayed: boolean } {
+    return this.intake.submitAgentTurn(...args);
+  }
+
+  private writeNotificationItem(sessionId: string, turn: Turn): void {
+    this.intake.writeNotificationItem(sessionId, turn);
+  }
+
 
   /**
    * DEPRECATED — A COMPATIBILITY ALIAS FOR `stopSession`.
@@ -3638,185 +3390,11 @@ export class EngineStore {
     });
   }
 
-  /**
-   * A DIRECT MESSAGE FROM AN AGENT — `sessions_send`, from inside a turn or
-   * from a chat client on the sessions socket.
-   *
-   * THE SENDER IS PROVEN, NOT DECLARED. A turn's `sessions_send` arrives with
-   * the claim token of the turn doing the sending; it names the sender only if
-   * that claim is live. Without proof the message is still an agent's — it
-   * simply has no session to be attributed to (the outward socket's case) —
-   * and it is NEVER recorded as the person's. Measured before this existed:
-   * an orchestrator's `sessions_send` landed on the worker as an ordinary
-   * `submitTurn`, was stored with no origin at all, drew as the human's own
-   * bubble and reached the provider as the user speaking — a peer's report
-   * dressed as an instruction from the person, with nobody having decided
-   * anything.
-   */
-  submitAgentTurn(
-    sessionId: string,
-    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string; corrects?: string },
-    proof?: SenderProof,
-  ): { turn: Turn; replayed: boolean } {
-    return this.kernel.command("submitAgentTurn", () => {
-      let sender: { sessionId?: string } = {};
-      if (proof) {
-        assertId(proof.sessionId, "sender session id");
-        const claimed = this.requireSenderClaim(proof);
-        sender = { sessionId: claimed.sessionId };
-      }
-      const intent = input.intent ?? "report";
-      const waiting = intent === "result" && sender.sessionId
-        ? this.subscriptions.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
-        : undefined;
-      const correction = input.corrects && !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
-        ? this.correctionOf(sessionId, input.corrects, sender.sessionId)
-        : undefined;
-      const cohortHeld = intent === "result" && sender.sessionId !== undefined && this.subscriptions.cohortHolds(sessionId, sender.sessionId);
-      const delivery = !cohortHeld && (intent === "task" || intent === "blocker" || waiting || correction === "read" || correction === "queued")
-        ? "wake"
-        : "passive";
-      const scope = intent === "task" ? input.scope : undefined;
-      const notification = peerNotification({
-        recipientSessionId: sessionId, runId: input.runId, body: input.input, intent,
-        ...(input.corrects ? { corrects: input.corrects } : {}),
-        ...(sender.sessionId ? { sender } : {}),
-        ...(scope ? { scope } : {}),
-      });
-      // Not for a correction: it replaces an earlier message rather than joining it.
-      const folds = !correction && delivery === "wake" && proof && sender.sessionId && FOLDING_INTENTS.has(intent)
-        ? this.waitingMessageFrom(sessionId, sender.sessionId, proof.runId, input.runId)
-        : undefined;
-      const joins = !folds && !correction && delivery === "wake" && FOLDING_INTENTS.has(intent) && !this.hasLiveTurn(sessionId) &&
-        !this.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
-        ? this.waitingNotificationTurn(sessionId)
-        : undefined;
-      const result = this.submitTurn(sessionId, {
-        ...(folds || joins || cohortHeld ? { foldedIntoWaitingWake: true } : {}),
-        runId: input.runId,
-        input: input.input,
-        ...(input.attachments ? { attachments: input.attachments } : {}),
-        origin: "session", sender, agentIntent: intent, agentDelivery: folds || joins ? "passive" : delivery,
-        ...(proof ? { agentSourceRunId: proof.runId } : {}),
-        ...(input.corrects ? { corrects: input.corrects } : {}),
-        notification,
-        agentNotice: notification.body,
-        // Only a TASK carries a scope. A report that named one would read as an
-        // assignment in every surface that folds these turns.
-        ...(scope ? { assignmentScope: scope } : {}),
-      });
-      // A replay of a message already accepted changes nothing, folded or not.
-      if (folds && !result.replayed) this.foldIntoWaitingMessage(sessionId, folds, notification);
-      if (joins && !result.replayed) this.joinWaitingNotification(sessionId, joins, notification);
-      if (!result.replayed && sender.sessionId) this.subscriptions.recordCohortMessage(sessionId, sender.sessionId, intent, input.runId, input.input);
-      // The unread version goes only once its replacement is safely accepted.
-      if (correction === "queued" || correction === "held") this.withdrawCorrected(sessionId, input.corrects!, correction);
-      return result;
-    });
-  }
 
-  /**
-   * WHERE THE MESSAGE BEING CORRECTED STANDS, for this recipient.
-   *
-   *   queued  still waiting as a wake nobody has claimed — unread
-   *   held    passive, and still in the mailbox — unread
-   *   read    anything else: claimed, steered, delivered in a merged notice
-   *
-   * REFUSED, not guessed at, when it names nothing this sender sent here: a
-   * correction that could reach another sender's message would be a way to
-   * withdraw it.
-   */
-  private correctionOf(sessionId: string, correctedRunId: string, senderSessionId: string | undefined): "queued" | "held" | "read" {
-    const corrected = this.readQueue(sessionId).turns.find((turn) => turn.runId === correctedRunId);
-    if (!corrected || corrected.origin !== "session" || !senderSessionId || corrected.sender?.sessionId !== senderSessionId || corrected.notification?.kind !== "peer_message") {
-      throw new EngineStateError("invalid_request", `corrects must name an earlier message you sent to this session; ${correctedRunId} is not one`);
-    }
-    if (corrected.state === "queued") return "queued";
-    const held = this.mailbox.pending(sessionId).some((each) => each.kind === "peer_message" && each.runId === correctedRunId);
-    return corrected.agentDelivery === "passive" && held ? "held" : "read";
-  }
 
-  /** Take an unread corrected message out of the reader's way: a queued wake is
-   *  discarded (its body stays readable on the turn), a held one leaves the
-   *  mailbox. Either way the correction is now the one the reader will meet. */
-  private withdrawCorrected(sessionId: string, correctedRunId: string, where: "queued" | "held"): void {
-    if (where === "held") {
-      this.mailbox.withdrawPeer(sessionId, correctedRunId);
-      return;
-    }
-    const queue = this.readQueue(sessionId);
-    const turn = queue.turns.find((candidate) => candidate.runId === correctedRunId && candidate.state === "queued");
-    if (!turn) return;
-    const at = this.now();
-    turn.state = "discarded";
-    turn.completedAt = at;
-    turn.updatedAt = at;
-    this.writeQueue(sessionId, queue);
-    this.records.touch(sessionId, at);
-    this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
-  }
 
-  /**
-   * The wake a peer's earlier message from THIS run is still waiting in, if
-   * any: queued, unread, a report/result/blocker, from the same sender and run.
-   * Past the delivery cap it is not offered, and the new message takes its own
-   * turn — a row rewritten a third time is one nobody can follow.
-   */
-  private waitingMessageFrom(sessionId: string, senderSessionId: string, sourceRunId: string, runId: string): string | undefined {
-    const turns = this.readQueue(sessionId).turns;
-    // The same run id again is a retried call, not a second message.
-    if (turns.some((candidate) => candidate.runId === runId)) return undefined;
-    const waiting = turns.find(
-      (candidate) =>
-        candidate.state === "queued" &&
-        !candidate.held &&
-        candidate.origin === "session" &&
-        !candidate.wakeReason &&
-        candidate.notification?.kind === "peer_message" &&
-        candidate.agentIntent !== undefined &&
-        FOLDING_INTENTS.has(candidate.agentIntent) &&
-        candidate.sender?.sessionId === senderSessionId &&
-        candidate.agentSourceRunId === sourceRunId,
-    );
-    if (!waiting?.notification) return undefined;
-    return (waiting.notification.deliveries ?? 1) + 1 > MAX_DELIVERIES ? undefined : waiting.runId;
-  }
 
-  /** Merge a peer message's notification into the wake `waitingMessageFrom`
-   *  found — `mergeIntoWaitingResult`'s rewrite, with `mergeNotifications`
-   *  because these are two messages rather than a message and its ending. */
-  private foldIntoWaitingMessage(sessionId: string, waitingRunId: string, notification: NotificationDetail): void {
-    const queue = this.readQueue(sessionId);
-    const waiting = queue.turns.find((candidate) => candidate.runId === waitingRunId);
-    if (!waiting?.notification || waiting.state !== "queued") return;
-    const at = this.now();
-    const merged: NotificationDetail = { ...mergeNotifications([waiting.notification, notification]), deliveries: (waiting.notification.deliveries ?? 1) + 1 };
-    waiting.notification = merged;
-    waiting.agentNotice = merged.body;
-    waiting.updatedAt = at;
-    this.writeQueue(sessionId, queue);
-    this.records.touch(sessionId, at);
-    this.rewriteNotificationItem(sessionId, waiting);
-    this.appendEvent(sessionId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
-  }
 
-  /**
-   * The steer half of `submitTurn`: when a turn is RUNNING, the just-accepted
-   * turn goes straight into it. `promoteTurn` holds the rules (a claim that
-   * is running, no compaction in flight) and its refusals are exactly the
-   * cases that should fall back to `queued`, so they are swallowed here and
-   * nothing else is.
-   */
-  private steerIfRunning(sessionId: string, runId: string): Turn | undefined {
-    const running = this.readQueue(sessionId).turns.some((candidate) => candidate.state === "running" && candidate.claim);
-    if (!running) return undefined;
-    try {
-      return this.promoteTurn(sessionId, runId);
-    } catch (error) {
-      if (error instanceof EngineStateError && error.code === "conflict") return undefined;
-      throw error;
-    }
-  }
 
   claimTurn(sessionId: string, workerId: string): Turn | undefined {
     return this.kernel.command("claimTurn", () => {
