@@ -9,9 +9,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  autoResolution,
-  deadlineResolution,
-  defaultAllowed,
   countsAsActivity,
   isBackgroundWork,
   type RetentionPolicy,
@@ -20,7 +17,6 @@ import {
   workspaceBaseRef,
   workspacePath,
   type UsageLimitSource,
-  EngineRequest as RequestSchema,
   machineAllows,
   type ProjectPlugins,
   assignmentsOf,
@@ -83,12 +79,8 @@ import {
   type Task,
   type Project,
   type EngineRequest,
-  type RequestDecision,
-  type RequestDefault,
-  type RequestDetail,
   type RequestKind,
   type RequestOpenResult,
-  type RequestResolver,
   type Session,
   type SessionSettleEnded,
   type Subscription,
@@ -114,7 +106,7 @@ import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, 
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { type AttachmentInput, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, isPeerMail, newestAssignment, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TERMINAL_WAKE_KINDS } from "./domains/sessions";
+import { type AttachmentInput, type OpenRequestInput, RequestGate, requestTitle, type ResolveRequestInput, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, isPeerMail, newestAssignment, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TERMINAL_WAKE_KINDS } from "./domains/sessions";
 import { FOLDING_INTENTS, heldDelivery, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, wakeNotification, withoutWakesFrom } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
@@ -216,47 +208,12 @@ function wakeMessage(
   return lines.join("\n");
 }
 
-/**
- * WHAT A TIMED-OUT REQUEST TELLS THE MODEL THAT ASKED — issue #541 D.
- *
- * Rides `EngineRequest.reason`, which `resolutionsForWorker` hands back to the
- * worker and the drivers turn into the tool's own answer. Without it a declined
- * default reads to the model exactly like a person saying no, and it adapts to a
- * judgement nobody made; an accepted one reads like approval that was given.
- *
- * AND IT SAYS NOT TO ASK AGAIN THE SAME WAY, for `DECLINED_ANSWER`'s reason one
- * file over: a model that reads a timeout as "that attempt failed" re-opens the
- * identical request, which parks, which times out, which is a loop nobody is
- * watching by construction.
- */
-const TIMEOUT_REASON =
-  "Nobody answered before this request's deadline, so the default stated when it was opened was taken. A person did not decide this. Do not re-open the same request — say what happened and carry on, or ask something the person can answer later.";
-
 /** One clamped line for a wake. A wake is a ping; nothing in it is a payload. */
 function clampWake(text: string): string {
   const trimmed = text.trim();
   return trimmed.length <= MAX_WAKE_LINE_CHARS
     ? trimmed
     : `${trimmed.slice(0, MAX_WAKE_LINE_CHARS)}… [${trimmed.length - MAX_WAKE_LINE_CHARS} more characters — sessions_read has the rest]`;
-}
-
-function requestTitle(detail: RequestDetail): string {
-  switch (detail.kind) {
-    case "command_execution":
-      return detail.command.command;
-    case "file_change":
-      return `${detail.change.kind} ${detail.change.path}`;
-    case "file_read":
-      return detail.read.path;
-    case "tool_call":
-      return detail.call.name;
-    case "user_input":
-      return detail.prompt;
-    case "secret_access":
-      // Origin and nothing else: the notification body may land on a lock
-      // screen, and even item TITLES are more than a passer-by should read.
-      return `Fill login from 1Password — ${detail.secret.origin}`;
-  }
 }
 
 
@@ -583,6 +540,7 @@ export class EngineStore {
   private readonly subscriptions: SessionSubscriptions;
   private readonly lifecycle: SessionLifecycle;
   private readonly schedules: ScheduleBook;
+  private readonly requestGate: RequestGate;
   private readonly sessionTerminals: SessionTerminals;
   private readonly sessionPulls: SessionPulls;
   private readonly adoption: ConversationAdoption;
@@ -1331,6 +1289,13 @@ export class EngineStore {
         this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(session));
         this.appendEvent(session.id, { type: "session.updated", session });
       },
+    });
+    this.requestGate = new RequestGate(this.kernel, this.records, this.sessionRequests, {
+      requireRunningClaim: (sessionId, runId, claimToken) => this.requireRunningClaim(sessionId, runId, claimToken),
+      liveQueueSessionIds: () => this.liveQueueSessionIds(),
+      scanQueue: (sessionId) => this.scanQueue(sessionId),
+      appendEvent: (sessionId, event, runId) => this.appendEvent(sessionId, event, runId),
+      requestOpened: (sessionId, turn, request) => this.fireSubscriptions(sessionId, "request_opened", turn, { request }),
     });
     this.schedules = new ScheduleBook(this.kernel, {
       requireSession: (sessionId) => void this.records.require(sessionId),
@@ -3368,97 +3333,8 @@ export class EngineStore {
     return woken;
   }
 
-  /**
-   * ══ EVERY REQUEST THAT RAN OUT ITS DEADLINE — issue #541 D ══
-   *
-   * THE FOURTH OF THESE, AND IT EXISTS FOR THE SAME REASON AS THE THIRD: a
-   * deadline passing is not an event, so nothing writes at one. `requests.ts`
-   * has said since it was written that a detached run which parks at minute
-   * three and sits until morning "is not autonomous; it is stuck" — this is the
-   * clock that makes the sentence enforceable rather than aspirational.
-   *
-   * ══ A DEADLINE ALONE RESOLVES NOTHING ══
-   *
-   * The whole of that rule is `deadlineResolution`, in the contract, which
-   * answers `null` for a request with no `default`. There is deliberately no
-   * second copy of it here — a reader asking "what stops this from answering a
-   * question nobody left an answer for" should find one function and be done.
-   * The engine never invents an answer; it takes the one the ASKER wrote down.
-   *
-   * ══ WHY THE LIVE QUEUE SET IS THE WHOLE CANDIDATE SET ══
-   *
-   * `openRequest` requires a RUNNING CLAIM, and every path that ends a turn
-   * cancels the requests it left behind (`SessionRequests.closeOpen`). So an open
-   * request implies a live queue, and walking `sessionIds()` the way the two
-   * sweeps above do would read every conversation ever started to find the
-   * nought-to-two a worker is actually blocked on — the fold #545 removed from
-   * this exact data.
-   *
-   * ══ THE WORKER HEARS ABOUT IT FOR FREE ══
-   *
-   * Nothing extra pushes the answer to the blocked provider: `reindexRequests`
-   * keeps a resolved row indexed while its turn is still running, which is
-   * precisely what `resolutionsForWorker` polls on the heartbeat. The worker
-   * sitting inside `canUseTool` unblocks on the next beat exactly as it would
-   * for a human's answer.
-   *
-   * Returns the request ids it resolved, so a caller — and a test — can see the
-   * tick's work without waiting on a timer.
-   */
   sweepRequestDeadlines(): string[] {
-    const now = this.now();
-    const resolved: string[] = [];
-    for (const sessionId of [...this.liveQueueSessionIds()]) {
-      /**
-       * SNAPSHOT FIRST, RESOLVE SECOND. Each resolution rewrites the very index
-       * being read — `resolveRequest` is a wrapped command and `writeRequests`
-       * reindexes inside it — so resolving mid-iteration would be walking a map
-       * that moves underneath.
-       */
-      let due: Array<{ request: EngineRequest; answer: RequestDefault }>;
-      try {
-        due = [...this.sessionRequests.live(sessionId).values()].flatMap((request) => {
-          /**
-           * `=== null` RATHER THAN A TRUTHINESS TEST, and that is not a style
-           * note. A falsy check here would be a SECOND COPY of the no-default
-           * rule — it would filter out an `undefined` the contract should never
-           * have returned, and in doing so hide a broken `deadlineResolution`
-           * from every test in this file. Measured: with the contract's own
-           * `default === undefined` guard deleted, the truthy version of this
-           * line kept the sweep correct and only the unit test went red.
-           */
-          const answer = deadlineResolution(request, now);
-          if (answer === null || request.deadlineMs === undefined) return [];
-          return [{ request, answer }];
-        });
-      } catch {
-        // One unreadable session must not stop the sweep for the rest.
-        continue;
-      }
-      for (const { request, answer } of due) {
-        try {
-          this.resolveRequest(sessionId, request.id, {
-            decision: answer.decision,
-            resolvedBy: "timeout",
-            /**
-             * SAID IN WORDS TO THE MODEL THAT ASKED, not only to the person.
-             * `reason` is fed back through `resolutionsForWorker`, and a worker
-             * told only "declined" reads it as a human's judgement and adapts to
-             * a decision nobody made. This is the one sentence that keeps that
-             * honest.
-             */
-            reason: TIMEOUT_REASON,
-            ...(answer.answers ? { answers: answer.answers } : {}),
-          });
-        } catch {
-          // Resolved, cancelled or gone between the snapshot and here. The
-          // request is settled either way, which is the outcome this wanted.
-          continue;
-        }
-        resolved.push(request.id);
-      }
-    }
-    return resolved;
+    return this.requestGate.sweepDeadlines();
   }
 
   /**
@@ -3969,202 +3845,19 @@ export class EngineStore {
   }
 
   requests(sessionId: string): EngineRequest[] {
-    this.records.require(sessionId);
-    return structuredClone([...this.sessionRequests.read(sessionId).values()]);
+    return this.requestGate.list(sessionId);
   }
 
-  /**
-   * A worker asking whether a tool call may proceed.
-   *
-   * THE ENGINE DECIDES, NOT THE WORKER, and this is the only place the session's
-   * runtime mode is consulted. `autoResolution` lives in the CONTRACT rather
-   * than here precisely so a client can describe a mode's behaviour before a
-   * user picks it; if this method re-implemented the ladder, the settings
-   * screen and the engine could disagree.
-   *
-   * Idempotent on `requestId`: a worker that retries after a dropped response
-   * gets the same answer rather than opening a second request, which matters
-   * because the provider is blocked on the first one.
-   *
-   * `deadlineMs` AND `default` ARE THE ASKER'S OWN TERMS — #541 D. They are
-   * refused here rather than silently dropped, because a caller that believed it
-   * had set a safe fallback and did not is worse off than one that was told no.
-   * See `RequestDefault` and `defaultAllowed` in the contract for what may carry
-   * one; `sweepRequestDeadlines` is what acts on them.
-   */
-  openRequest(
-    sessionId: string,
-    runId: string,
-    claimToken: string,
-    input: {
-      requestId: string;
-      kind: RequestKind;
-      detail: RequestDetail;
-      itemId?: string;
-      providerRefs?: EngineRequest["providerRefs"];
-      deadlineMs?: number;
-      default?: RequestDefault;
-    },
-  ): RequestOpenResult {
-    return this.kernel.command("openRequest", () => {
-      assertId(input.requestId, "request id");
-      if (input.deadlineMs !== undefined && (!Number.isSafeInteger(input.deadlineMs) || input.deadlineMs <= 0)) {
-        throw new EngineStateError("invalid_request", "a request deadline is a positive whole number of milliseconds");
-      }
-      if (input.default !== undefined && !defaultAllowed(input.kind)) {
-        throw new EngineStateError("invalid_request", `a ${input.kind} request may not carry a default — a deadline may not release a secret`);
-      }
-      if (input.default !== undefined && input.deadlineMs === undefined) {
-        throw new EngineStateError("invalid_request", "a request default needs a deadline for anything to take it");
-      }
-      const turn = this.requireRunningClaim(sessionId, runId, claimToken);
-      const session = this.records.get(sessionId);
-      const requests = this.sessionRequests.read(sessionId);
-
-      const known = requests.get(input.requestId);
-      if (known) {
-        return known.state === "resolved"
-          ? { state: "resolved", requestId: known.id, decision: known.decision!, resolvedBy: known.resolvedBy! }
-          : { state: "open", requestId: known.id, notified: known.notified ?? false };
-      }
-
-      const at = this.now();
-      const automatic = autoResolution(session.runtimeMode, input.kind);
-      const request: EngineRequest = {
-        id: input.requestId,
-        runId: turn.runId,
-        sessionId,
-        state: automatic ? "resolved" : "open",
-        detail: input.detail,
-        openedAt: at,
-        ...(input.itemId ? { itemId: input.itemId } : {}),
-        ...(input.providerRefs ? { providerRefs: input.providerRefs } : {}),
-        ...(automatic ? { decision: automatic, resolvedBy: "policy" as const, resolvedAt: at } : {}),
-        ...(!automatic && input.deadlineMs !== undefined ? { deadlineMs: input.deadlineMs } : {}),
-        ...(!automatic && input.default !== undefined ? { default: input.default } : {}),
-      };
-
-      if (!automatic) {
-        // Parked. Tell someone, and record whether anyone was actually reached —
-        // "stuck and nobody was told" has to be a detectable state.
-        const notify = () => this.kernel.notifier?.({ sessionId, runId: turn.runId, requestId: request.id,
-          kind: input.kind, title: requestTitle(input.detail) }) ?? false;
-        request.notified = false;
-        this.kernel.afterCommit(() => {
-          // Best-effort notification is outside the execution transaction. A
-          // crash here leaves an explicitly unnotified, durable open request.
-          try {
-            const latest = this.sessionRequests.read(sessionId);
-            const pending = latest.get(request.id);
-            if (pending?.state !== "open") return;
-            pending.notified = notify();
-            this.sessionRequests.write(sessionId, latest);
-          } catch { /* retain the unnotified request for the next reader */ }
-        });
-      }
-
-      const written = RequestSchema.safeParse(request);
-      if (!written.success) throw new EngineStateError("invalid_request", "invalid request");
-      requests.set(request.id, request);
-      this.sessionRequests.write(sessionId, requests);
-      this.appendEvent(sessionId, { type: "request.opened", request }, turn.runId);
-
-      if (automatic) {
-        this.appendEvent(
-          sessionId,
-          { type: "request.resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" },
-          turn.runId,
-        );
-        return { state: "resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" };
-      }
-      this.records.touch(sessionId, at);
-      this.fireSubscriptions(sessionId, "request_opened", turn, { request });
-      return { state: "open", requestId: request.id, notified: request.notified ?? false };
-    });
+  openRequest(sessionId: string, runId: string, claimToken: string, input: OpenRequestInput): RequestOpenResult {
+    return this.requestGate.open(sessionId, runId, claimToken, input);
   }
 
-  /** A human (or a cancellation) answering a parked request. */
-  resolveRequest(
-    sessionId: string,
-    requestId: string,
-    input: { decision: RequestDecision; resolvedBy?: RequestResolver; reason?: string; answers?: Record<string, unknown> },
-  ): EngineRequest {
-    return this.kernel.command("resolveRequest", () => {
-      assertId(requestId, "request id");
-      const requests = this.sessionRequests.read(sessionId);
-      const request = requests.get(requestId);
-      if (!request) throw new EngineStateError("not_found", "request does not exist");
-      if (request.state === "resolved") {
-        throw new EngineStateError("conflict", "request has already been resolved");
-      }
-      const at = this.now();
-      request.state = "resolved";
-      request.decision = input.decision;
-      request.resolvedBy = input.resolvedBy ?? "human";
-      request.resolvedAt = at;
-      if (input.reason !== undefined) request.reason = input.reason;
-      if (input.answers !== undefined) request.answers = input.answers;
-      requests.set(request.id, request);
-      this.sessionRequests.write(sessionId, requests);
-      this.records.touch(sessionId, at);
-      this.appendEvent(
-        sessionId,
-        {
-          type: "request.resolved",
-          requestId: request.id,
-          decision: request.decision,
-          resolvedBy: request.resolvedBy,
-          ...(request.reason ? { reason: request.reason } : {}),
-        },
-        request.runId,
-      );
-      return structuredClone(request);
-    });
+  resolveRequest(sessionId: string, requestId: string, input: ResolveRequestInput): EngineRequest {
+    return this.requestGate.resolve(sessionId, requestId, input);
   }
 
-  /**
-   * Answered requests a worker is still blocked on.
-   *
-   * Rides the heartbeat for the same reason `cancel` does: the worker is a
-   * plain HTTP client with no inbound socket, so the engine cannot push. A
-   * worker sitting inside `canUseTool` polls here until its answer appears.
-   *
-   * AND IT IS AN INDEX LOOKUP PER CLAIMED SESSION, NOT A 33 MB PARSE — #545.
-   * This was the single hottest path on an idle daemon: `readDocument` under
-   * `readRequests` under here was 12.1% of an 8 s profile, because every beat
-   * re-read and re-validated every request every session had ever opened to
-   * find the nought-to-two a worker was actually blocked on.
-   */
   resolutionsForWorker(workerId: string): WorkerStatus["resolved"] {
-    assertId(workerId, "worker id");
-    return [...this.liveQueueSessionIds()].flatMap((sessionId) => {
-      const turns = this.scanQueue(sessionId).turns;
-      const claimed = new Map(
-        turns
-          .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
-          .map((turn) => [turn.runId, turn] as const),
-      );
-      if (claimed.size === 0) return [];
-      /**
-       * AND THE INDEX IS TRIMMED HERE, where the liveness test is already in
-       * hand. A resolved row stays indexed only while its run can still take
-       * the answer; once the turn is no longer running under a claim, nothing
-       * will ever poll for it again. Without this the map would keep every
-       * resolution of a long-lived daemon — the unbounded growth the whole
-       * change exists to remove. See `reindexRequests`.
-       */
-      this.sessionRequests.trim(sessionId, turns);
-      return [...this.sessionRequests.live(sessionId).values()]
-        .filter((request) => request.state === "resolved" && request.decision && claimed.has(request.runId))
-        .map((request) => ({
-          requestId: request.id,
-          sessionId,
-          runId: request.runId,
-          decision: request.decision!,
-          ...(request.reason ? { reason: request.reason } : {}),
-          ...(request.answers ? { answers: request.answers } : {}),
-        }));
-    });
+    return this.requestGate.resolutionsForWorker(workerId);
   }
 
   /**

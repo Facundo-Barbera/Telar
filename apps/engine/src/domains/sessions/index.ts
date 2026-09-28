@@ -25,3 +25,4 @@ export { sessionsSocketDoor } from "./socket-door";
 export { SessionSubscriptions, TERMINAL_WAKE_KINDS } from "./subscriptions";
 export { SessionLifecycle } from "./lifecycle-store";
 export { ACTIVE_TURN_STATES, SessionQueries } from "./queries";
+export { type OpenRequestInput, RequestGate, requestTitle, type ResolveRequestInput } from "./request-gate";
