@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type { EngineEvent } from "@telar/engine-client";
-import type { ExecutionStore } from "../../execution-store";
+import type { ExecutionStore } from "../db/execution-store";
 import type { EngineStatePaths } from "../../state-paths";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "../db/document-window";
 import { atomicWrite } from "../fs/atomic";

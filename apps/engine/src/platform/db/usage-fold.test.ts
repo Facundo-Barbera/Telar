@@ -1,36 +1,10 @@
-/**
- * A TURN'S `usage.updated` ROWS, FOLDED INTO ONE AGGREGATE — issue #697.
- *
- * A token count is restated after every item, so a turn leaves as many of these
- * rows as it had envelopes and only the last one is ever read. What must not
- * drift, and why each of these is a test rather than a sentence in a PR:
- *
- *   - THE WATERMARK IS ITS OWN. Reusing `journal-compacted/` would start every
- *     already-compacted session past the whole backlog and report success. The
- *     first test compacts the fixture and folds it second; on a shared key it
- *     finds nothing.
- *   - THE AGGREGATE IS A SUM, NOT THE SURVIVOR. A Codex turn emits one row per
- *     CALL and no total at all, so the last row is the last call's tokens and
- *     nothing else. The non-monotonic fixture (1200/400/900) is what tells the
- *     two implementations apart.
- *   - THE FOLD IS INVISIBLE TO THE TRANSCRIPT. Replayed through the production
- *     fold — `apps/web/src/lib/engine/journal.ts`, the same function the cockpit
- *     runs — a folded turn's `usage` must be identical to an unfolded one's.
- *     The fixture whose `contextUsed` DROPS mid-turn is the one that catches a
- *     "keep the biggest" fold: occupancy is not a counter.
- *   - COUNTS AND VALUES, NEVER MARKERS. Every assertion below is a row count, a
- *     token total or a file size. A test that greps for a name it wrote itself
- *     passes when the code does nothing.
- *   - AND A DELETE RETURNS NO BYTES. The sweep alone leaves the file exactly as
- *     big as it was; only Reclaim's VACUUM changes that.
- */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ExecutionStore } from "../src/execution-store";
-import { projectJournal } from "../../web/src/lib/engine/journal";
-import { turnUsage } from "./store-internals";
+import { ExecutionStore } from "./execution-store";
+import { projectJournal } from "../../../../web/src/lib/engine/journal";
+import { turnUsage } from "../../../test/store-internals";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -158,13 +132,6 @@ test("a Codex-shaped turn keeps its spend, which its last row does not hold", ()
   const { root, store } = open("telar-usage-codex-");
   try {
     const write = journal(root, store, "session_one");
-    /**
-     * `codexUsage` reads `tokenUsage.last` — one call's tokens, never the
-     * thread's running total — so these three are three calls and the sequence
-     * is not monotonic. 1200 + 400 + 900 is what the turn spent; 900 is what a
-     * fold that kept the survivor would record, and the difference is the
-     * entire reason the aggregate is a sum.
-     */
     write.usage("run_one", { input: 3_000, output: 1200, cacheRead: 100, reasoning: 64 });
     write.usage("run_one", { input: 4_100, output: 400, cacheRead: 2_900, reasoning: 16 });
     write.usage("run_one", { input: 4_600, output: 900, cacheRead: 4_000, reasoning: 32 });
@@ -236,13 +203,6 @@ test("a turn whose context occupancy drops mid-turn replays identically after th
   const { root, store } = open("telar-usage-replay-");
   try {
     const write = journal(root, store, "session_one");
-    /**
-     * `contextUsed` IS OCCUPANCY, NOT A COUNTER. A provider compaction empties
-     * the window mid-turn, so the third row reports LESS than the second. A
-     * fold that kept the biggest row — a plausible reading of "keep the one
-     * that matters" — would leave 180_000 here and the meter would draw a
-     * window that is not the one the turn ended in.
-     */
     write.usage("run_one", { input: 1_000, output: 10 }, { contextUsed: 90_000, contextMax: 200_000 });
     write.usage("run_one", { input: 2_000, output: 20 }, { contextUsed: 180_000, contextMax: 200_000 });
     write.usage("run_one", { input: 3_000, output: 30 }, { contextUsed: 40_000, contextMax: 200_000 });
@@ -264,10 +224,6 @@ test("a Claude-shaped turn keeps the priced total the transcript reads", () => {
   const { root, store } = open("telar-usage-claude-");
   try {
     const write = journal(root, store, "session_one");
-    // Claude restates: two envelopes, then the `result` message carrying the
-    // authoritative total AND the price. The last row is the turn, and the fold
-    // must not move it — the sum beside it is the restatements added up, which
-    // is why `usage_rows` is stored rather than the number being called a total.
     write.usage("run_one", { input: 1_000, output: 500 });
     write.usage("run_one", { input: 1_600, output: 120 });
     write.usage("run_one", { input: 2_600, output: 620 }, { costUsd: 0.42, contextUsed: 3_220, contextMax: 200_000 });
@@ -340,23 +296,6 @@ test("Reclaim folds the rows the daily sweep has not reached yet", () => {
  * The bound both sweeps open with — issue #894.
  * ------------------------------------------------------------------ */
 
-/**
- * THE FOLD TAKES ITS BOUND FROM THE ROW, NOT FROM THE JOURNAL.
- *
- * `foldUsage` and `compactSession` both used to ask the same question of
- * `events` — `MAX(id) WHERE json_extract(value,'$.type') IN (…)` — which is a
- * JSON parse of the session's entire range, per session, per sweep, and the
- * reason a fully swept store still cost six minutes of CPU after every open.
- * The id is now written by `append` and read from `metadata`.
- *
- * PROVED BY MOVING THE ROW, WHICH IS THE ONLY NON-VACUOUS WAY TO DO IT. A test
- * that folded a normal fixture and passed would pass just as well against the
- * old query — the two agree on every store where nobody has lied to one of
- * them. So the bound is planted BELOW the second turn's ending: a fold reading
- * the row leaves that turn alone, and a fold re-parsing the journal folds it.
- * Then the row is corrected and the same turn folds, so the low value is shown
- * to have been the cause rather than some other refusal.
- */
 const TERMINAL_HIGH = "journal-terminal-high/";
 
 function terminalHighRow(root: string, sessionId: string): string | null {

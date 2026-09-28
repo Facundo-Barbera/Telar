@@ -30,7 +30,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
-import { ExecutionStore } from "../src/execution-store";
+import { ExecutionStore } from "../src/platform/db/execution-store";
 import { toLegacyHome } from "./store-internals";
 
 const roots: string[] = [];
