@@ -203,7 +203,7 @@ function engineRoutes(ctx: RouteContext): Route[] {
     ...aboutRoutes(root),
     ...push.routes,
     ...settingsRoutes(store, syncOrientationSkill),
-    ...dictationRoutes(store, options.dictationFetch),
+    ...dictationRoutes(store.dictation, options.dictationFetch),
     ...browserRoutes(store.paths.root),
     ...computerUseRoutes(computerUseGate, { ...(options.grantComputerUse ? { grant: options.grantComputerUse } : {}), ...(options.resetComputerUse ? { reset: options.resetComputerUse } : {}) }),
     ...storageRoutes(store, storageMeter),
