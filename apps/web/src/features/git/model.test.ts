@@ -1,20 +1,8 @@
-/**
- * TWO DIFF TABS THAT DISAGREE (#335) — the whole acceptance of the issue, as a
- * fold rather than as a screen.
- *
- * The filter is a string in the tab's params, and everything that makes it
- * visible is pure: `reviewUnderFilter` decides which rows the surface draws and
- * what its headline counts, `panelTabSuffix` decides what the strip calls it.
- * So "two Diff tabs show different file lists and different labels, and one
- * with no filter shows everything" is decidable here, without the DOM harness
- * this app does not have — the same instrument `lib/session-review.test.ts`
- * uses on the fold underneath it.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitFileChange, SessionDiff } from "@telar/engine-client";
 import { reconcileReview } from "@/lib/session-review";
-import { reviewUnderFilter, underDiffFilter } from "./diff-surface";
+import { reviewUnderFilter, underDiffFilter } from "./model";
 import { describePanelTabInstance, type PanelTabItem } from "@/components/right-panel";
 
 const file = (path: string, extra: Partial<GitFileChange> = {}): GitFileChange => ({
@@ -25,7 +13,6 @@ const file = (path: string, extra: Partial<GitFileChange> = {}): GitFileChange =
   ...extra,
 });
 
-/** A change that straddles two apps and a doc — the review a filter is for. */
 const diff = (files: GitFileChange[]): SessionDiff =>
   ({
     repository: true,
@@ -47,7 +34,6 @@ const FILES = [
 const review = reconcileReview(diff(FILES), new Map([["apps/engine/src/git.ts", 2]]));
 const paths = (rows: { file: GitFileChange }[]) => rows.map((row) => row.file.path);
 
-/** A tab as the strip holds it, which is the only place the filter lives. */
 const tab = (id: string, filter?: string): PanelTabItem => ({ id, kind: "diff", ...(filter ? { params: { filter } } : { params: {} }) });
 
 describe("two Diff instances, one review", () => {
@@ -65,21 +51,16 @@ describe("two Diff instances, one review", () => {
     const described = (instance: PanelTabItem) => describePanelTabInstance(instance, { duplicate: true }).label;
     expect(described(tab("diff", "apps/web"))).toBe("Diff · apps/web");
     expect(described(tab("diff#2", "apps/engine"))).toBe("Diff · apps/engine");
-    // Nothing to say is not a failure: no dangling separator.
     expect(described(tab("diff#3"))).toBe("Diff");
   });
 
   test("a filter on ONE tab is a label on that tab only — a lone Diff is still Diff", () => {
-    // The suffix appears on both or neither, which is #322's rule and not
-    // something a filter changes.
     expect(describePanelTabInstance(tab("diff", "apps/web")).label).toBe("Diff");
   });
 
   test("no filter shows everything, as the same object", () => {
     const all = reviewUnderFilter(review, undefined);
     expect(paths(all.rows)).toEqual(FILES.map((entry) => entry.path));
-    // Identity, not just equality: an unfiltered Diff is the surface it was
-    // before filters existed.
     expect(all).toBe(review);
     expect(reviewUnderFilter(review, "   ")).toBe(review);
   });
@@ -95,7 +76,6 @@ describe("what a filter matches", () => {
   test("it matches at a SEGMENT boundary, so a neighbour is not dragged in", () => {
     expect(paths(reviewUnderFilter(review, "docs").rows)).toEqual(["docs/review.md"]);
     expect(underDiffFilter("docs-old/review.md", "docs")).toBe(false);
-    // A half-typed folder matches nothing rather than something arbitrary.
     expect(underDiffFilter("apps/web/src/lib/utils.ts", "apps/we")).toBe(false);
   });
 
@@ -117,14 +97,11 @@ describe("the figures follow the list", () => {
     expect(web.filesChanged).toBe(2);
     expect(web.linesAdded).toBe(20);
     expect(web.linesRemoved).toBe(2);
-    // The unfiltered review still reports the repository's own totals.
     expect(review.filesChanged).toBe(5);
     expect(review.linesAdded).toBe(50);
   });
 
   test("the reconciliation is re-derived, so the band describes this tab's rows", () => {
-    // `apps/engine/src/git.ts` is the only reported file; under `apps/web`
-    // every row is unreported, and under `apps/engine` none is.
     expect(reviewUnderFilter(review, "apps/web").unreported.map((entry) => entry.path)).toEqual([
       "apps/web/src/components/session/diff-surface.tsx",
       "apps/web/src/lib/right-panel-tabs.ts",
@@ -143,7 +120,6 @@ describe("the figures follow the list", () => {
     const none = reviewUnderFilter(review, "workers");
     expect(none.rows).toEqual([]);
     expect(none.filesChanged).toBe(0);
-    // …which is why the surface has the whole review to say so with.
     expect(review.rows).toHaveLength(5);
   });
 });

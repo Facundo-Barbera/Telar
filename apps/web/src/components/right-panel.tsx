@@ -111,7 +111,7 @@ import { cn } from "@/lib/utils";
  * before `dynamic` here could shift anything.
  */
 const DesktopBrowserSurface = dynamic(() => import("@/components/browser-live").then((mod) => mod.DesktopBrowserSurface));
-const DiffSurface = dynamic(() => import("@/components/session/diff-surface").then((mod) => mod.DiffSurface));
+const DiffSurface = dynamic(() => import("@/features/git").then((mod) => mod.DiffSurface));
 const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface));
 const FileViewSurface = dynamic(() => import("@/features/files").then((mod) => mod.FileViewSurface));
 const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));
@@ -176,16 +176,6 @@ const SURFACES = [
    * The split is `Task.kind`, which the engine already decides.
    */
   { id: "processes", label: "Processes", icon: TerminalIcon, blurb: "Background shells, watch loops" },
-  /**
-   * DIFF AND FILES, WHICH USED TO BE CHANGES AND GIT — and the old pair was a
-   * duplicate wearing two names. "Changes" folded the journal and "Git" read the
-   * disk, but both drew a list of changed files with `+`/`−` counts and an
-   * expandable patch, one click apart in the same strip. Meanwhile nothing in the
-   * cockpit could show a file that had NOT changed, which is most of a repository.
-   *
-   * So: one tab for what moved, backed by the disk and annotated by the journal
-   * (session/diff-surface.tsx), and one for what is there (session/files-surface.tsx).
-   */
   { id: "diff", label: "Diff", icon: FileDiffIcon, blurb: "What this session changed" },
   /**
    * FILES IS GONE, SUPERSEDED BY EDITOR (EDITOR-001, #193).
@@ -768,22 +758,7 @@ function useLivePages(scopeKeys: readonly string[]): ReadonlyMap<string, LivePag
 
 // ── folds over the session record ──────────────────────────────────────────
 
-/**
- * WHAT THE TRANSCRIPT SAYS THIS SESSION WROTE: path → how many times.
- *
- * A MAP, NOT A LIST OF ROWS. This used to build a full `ChangedFile` — kind,
- * patch, line counts, sort order — because the journal had a surface of its own
- * to render. It does not any more: Changes and Git were the same list twice, so
- * there is one Diff surface and git is its witness (see session/diff-surface.tsx).
- * What survives is the half of the reconciliation only the journal can supply, and
- * the count is the one fact git genuinely cannot state — a file rewritten four
- * times has the same net diff as a file written once.
- *
- * THE KEY IS WHATEVER THE TOOL WROTE DOWN, which is usually an absolute path and
- * is not what git calls the same file. Re-keying happens where the checkout is
- * known — `reconcileReview` has the diff's `workspacePath`, and this fold has
- * only items (#350).
- */
+/** Path → how many times the transcript says this session wrote it. Keys are as the tool wrote them; `reconcileReview` re-keys. */
 export function journalWrites(items: readonly Item[]): Map<string, number> {
   const writes = new Map<string, number>();
   for (const item of items) {

@@ -1,18 +1,3 @@
-/**
- * ARM, THEN CONFIRM — issue #670, the half a static render cannot see.
- *
- * `diff-publish.test.tsx` pins which arms EXIST in which state. This pins the
- * claim that makes them safe to have at all: **one press publishes nothing.**
- * Pushing a branch is outward-facing and only ambiguously recoverable — a
- * branch CI has already built is not un-built by deleting it — and this surface
- * lives in a panel people drag tabs around in. The merge footer took two
- * presses for the same reason; so does this.
- *
- * THE ASSERTION IS ON THE ENGINE CALL LIST, not on the markup. "The button
- * looks armed" is a claim about pixels; "nothing was sent" is the claim that
- * matters, and it is the only one that distinguishes a confirm step from a
- * label that says one.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -23,8 +8,6 @@ import type { GitHubPullCreateResult, GitPushResult } from "@telar/engine-client
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/** Every engine call this surface made, in order — the recording this file is
- *  written around. */
 const sent: Array<{ call: string; input?: unknown }> = [];
 let pushAnswer: GitPushResult = { pushed: true, branch: "telar/670-push", commits: 2 };
 let pullAnswer: GitHubPullCreateResult = {
@@ -34,16 +17,6 @@ let pullAnswer: GitHubPullCreateResult = {
   attribution: { sessionId: "session_one" },
 };
 
-/**
- * THE TWO VERBS, HANDED IN — no module mock anywhere in this file, and that is
- * deliberate rather than incidental. `mock.module("@/lib/engine/client")` is
- * PROCESS-GLOBAL in bun, and this app's suite shares one process (see the
- * `web-test-dom-release` invariant, which exists because of the same hazard):
- * replacing the engine client here replaced it for every other file that had
- * not yet imported it, and the first version of this file took eight unrelated
- * tests red with it. `PublishBox` takes its two verbs as props, so the seam is
- * the component's own and stops at this file.
- */
 const sendPush = async () => {
   sent.push({ call: "push" });
   return pushAnswer;
@@ -53,16 +26,12 @@ const sendPullRequest = async (input: { title: string; body?: string }) => {
   return pullAnswer;
 };
 
-import { PublishBox } from "./diff-surface";
+import { PublishBox } from "./publish-box";
 
 let host: HTMLElement;
 let root: ReturnType<typeof createRoot> | undefined;
 let published = 0;
 
-/** Torn down before the DOM goes away — a root still mounted when
- *  `unregister()` runs reaches for a `window` that is no longer there, which
- *  the web suite's shared-process rule (`web-test-dom-release`) exists to
- *  prevent. */
 afterAll(async () => {
   if (root) act(() => root!.unmount());
   await GlobalRegistrator.unregister();
@@ -99,17 +68,6 @@ function render(props: Record<string, unknown> = {}) {
   });
 }
 
-/**
- * The button whose visible text is exactly this.
- *
- * THROWS RATHER THAN RETURNING NOTHING, so a renamed label fails loudly instead
- * of silently skipping — the shape of vacuous test this repository has been
- * caught by before.
- *
- * `await act(async …)` BECAUSE THE CONFIRMING PRESS IS ASYNCHRONOUS: it sends,
- * awaits the engine and then sets state, and a synchronous `act` returns before
- * any of that lands.
- */
 async function press(label: string) {
   const button = [...host.querySelectorAll("button")].find((each) => each.textContent?.trim() === label);
   if (!button) throw new Error(`no button labelled ${label} — found ${[...host.querySelectorAll("button")].map((b) => b.textContent?.trim())}`);
@@ -142,8 +100,6 @@ describe("the push arm", () => {
     await press("Push");
     await press("Push");
     expect(sent).toEqual([{ call: "push" }]);
-    // The moment the branch changed is the moment to look again — one read,
-    // not a timer that would have found out eventually.
     expect(published).toBe(1);
   });
 
@@ -160,7 +116,6 @@ describe("the push arm", () => {
     await press("Push");
     expect(text()).toContain("Pull or rebase in a terminal first");
     expect(text()).toContain("Telar will not force a push");
-    // git's own words are kept underneath, never replaced with a guess.
     expect(text()).toContain("fetch first");
     expect(published).toBe(0);
     pushAnswer = { pushed: true, branch: "telar/670-push", commits: 2 };
@@ -181,8 +136,6 @@ describe("the pull-request arm", () => {
     render();
     await press("Pull request");
     expect(sent).toEqual([]);
-    // The title is pre-filled from the session's own title, which is the best
-    // one-line summary anybody has — the commit box's reasoning exactly.
     const title = host.querySelector<HTMLInputElement>('input[aria-label="Pull request title"]');
     expect(title?.value).toBe("Push and PR creation from the cockpit");
     expect(text()).toContain("cannot be undone from Telar");

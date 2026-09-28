@@ -1,27 +1,16 @@
 "use client";
 
-/**
- * A NEW REVIEW COMMENT, FROM THE DIFF — issue #1014.
- *
- * Under a selection, beside "Add to message". The pull request's facts are read
- * when the selection is made, not on a timer: whether a line can be placed
- * depends on HEAD, the dirty paths and the pull request's head as they are now,
- * and a read per selection is a `gh` call only somebody selecting lines pays for.
- * `lib/pull-anchor.ts` decides; this only draws the answer.
- */
-
 import { useEffect, useState } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { GitHubLineCommentInput, GitHubLineCommentResult, GitHubPullAnchor } from "@telar/engine-client";
 
 import type { DiffScopeKind } from "@/lib/diff-scope";
-import { anchorPullLines, applyLineComment, type AnchorAnswer, type LineCommentEntry, type PullLineAnchor, type SelectedLines } from "@/lib/pull-anchor";
+import { anchorPullLines, applyLineComment, type AnchorAnswer, type LineCommentEntry, type PullLineAnchor, type SelectedLines } from "../pull-anchor";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
-/** What a Diff tab hands its rows so a selection can become a review comment. */
 export type PullCommentContext = {
   read: () => Promise<GitHubPullAnchor>;
   scope: DiffScopeKind;
@@ -40,23 +29,18 @@ export function PullLineComment({ context, path, patch, range }: { context: Pull
         const answer = anchorPullLines({ scope: context.scope, anchor, ...(context.ahead === undefined ? {} : { ahead: context.ahead }), path, patch, range });
         setRead(answer ? { answer, ...(anchor.pull ? { number: anchor.pull.number } : {}) } : {});
       })
-      // A read that failed offers nothing: an outward-facing write is not
-      // offered on a guess.
       .catch(() => {
         if (!cancelled) setRead({});
       });
     return () => {
       cancelled = true;
     };
-    // The component is keyed by the selection, so one read per selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   if (!read?.answer) return null;
   return <PullLineCommentBody answer={read.answer} {...(read.number ? { number: read.number } : {})} send={context.send} />;
 }
 
-/** The answer, drawn: a sentence when the line cannot be placed, otherwise the
- *  button, the composer and what was sent. Exported for its markup tests. */
 export function PullLineCommentBody({
   answer,
   number,
@@ -82,7 +66,6 @@ export function PullLineCommentBody({
     void applyLineComment({ current: entries, body, now: Date.now(), send: () => send({ ...anchor, body }), draw: setEntries })
       .then((said) => {
         setRefused(said);
-        // The draft survives a refusal; it clears only once GitHub has it.
         if (!said) setDraft(undefined);
       })
       .finally(() => setBusy(false));

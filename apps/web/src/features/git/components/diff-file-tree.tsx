@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * THE REVIEW AS A TREE, BESIDE THE ROWS — issue #855.
- *
- * A THIRD VIEW OF THE SAME ROWS, NOT A SECOND LIST. The paths are the ones the
- * surface already folded (`SessionReview.rows`, after the tab's filter), so the
- * tree can never name a file the list does not have; nothing is read from the
- * engine for it.
- *
- * IT OWNS NOTHING ABOUT WHICH PATCH IS OPEN. Clicking a file calls the surface's
- * own toggle — the same `openPaths` the rows and "collapse all" write — so there
- * is one writer and the tree's selection is simply that set, read back. The one
- * state it does own is which DIRECTORIES are folded, which nothing else has an
- * opinion about.
- *
- * FOLDED, NOT EXPANDED, is what is remembered: a review is small enough to show
- * whole, and a directory that appears on the next poll should arrive open rather
- * than hiding the file that just changed.
- */
-
 import { useMemo, useState } from "react";
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
 
@@ -30,9 +11,6 @@ import { cn } from "@/lib/utils";
 
 const INDENT = 10;
 
-/** The visible rows: every directory open except the ones folded. Exported for
- *  its tests — ordering and chain collapse are `file-tree.ts`'s, and this is the
- *  one place they meet the review's folded set. */
 export function diffTreeRows(paths: readonly string[], folded: ReadonlySet<string>): FileTreeRow[] {
   const tree = buildFileTree(paths);
   return flattenTree(tree, new Set(directoryPaths(tree).filter((path) => !folded.has(path))));
@@ -45,7 +23,6 @@ export function DiffFileTree({
 }: {
   files: readonly GitFileChange[];
   openPaths: ReadonlySet<string>;
-  /** The surface's own row toggle. */
   onSelect: (path: string) => void;
 }) {
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
@@ -75,8 +52,6 @@ export function DiffFileTree({
               aria-selected={directory ? false : openPaths.has(node.path)}
               {...(directory ? { "aria-expanded": expanded } : {})}
               onClick={() => (directory ? fold(node.path) : onSelect(node.path))}
-              // A RENAME READS AS A MOVE here, as it does on the row: the old
-              // path is the one thing the tree's position cannot show.
               title={file?.renamedFrom ? `${file.renamedFrom} → ${node.path}` : node.path}
               style={{ paddingLeft: 6 + depth * INDENT }}
               className={cn(

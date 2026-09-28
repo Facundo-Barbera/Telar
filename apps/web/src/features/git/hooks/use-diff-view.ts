@@ -1,28 +1,20 @@
 "use client";
 
-/**
- * Diff reading preferences, in localStorage rather than tab params: they belong
- * to the person, not the tab. A corrupt record parses to defaults.
- */
-
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 
-import type { DiffLayout } from "@/components/session/diff-code-view";
+import type { DiffLayout } from "../components/diff-code-view";
 
 const STORAGE_KEY = "telar:diff-view";
 
 export type DiffView = {
   layout: DiffLayout;
-  /** Off: wrapping breaks split-diff column alignment. */
   wrap: boolean;
-  /** Off: a whitespace-only change is still a change. */
   ignoreWhitespace: boolean;
   tree: boolean;
 };
 
 export const DEFAULT_DIFF_VIEW: DiffView = { layout: "stacked", wrap: false, ignoreWhitespace: false, tree: true };
 
-/** Total, per field: one bad key doesn't cost the others. */
 export function parseDiffView(raw: string | null): DiffView {
   if (!raw) return DEFAULT_DIFF_VIEW;
   try {
@@ -49,7 +41,6 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-/** Cached by raw string: `useSyncExternalStore` compares by identity, so a fresh object would loop. */
 let cache: { raw: string | null; value: DiffView } | undefined;
 
 function read(): DiffView {
@@ -57,7 +48,7 @@ function read(): DiffView {
   try {
     raw = window.localStorage.getItem(STORAGE_KEY);
   } catch {
-    // Private browsing: the defaults, not an error.
+    // Storage can be unavailable; the defaults stand in.
   }
   if (!cache || cache.raw !== raw) cache = { raw, value: parseDiffView(raw) };
   return cache.value;
@@ -68,7 +59,6 @@ function write(patch: Partial<DiffView>): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
-    // Persistence lost; this tab keeps the choice through the listeners below.
     cache = { raw: null, value: next };
   }
   for (const listener of listeners) listener();

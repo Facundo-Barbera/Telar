@@ -522,12 +522,12 @@ describe("cards must paint", () => {
     expect(offenders).toEqual([]);
   });
 
-  // The reading surfaces: every diff-* module and the whole github feature, matched by
-  // folder or prefix so a component split out of a surface stays covered.
-  const readingSurfaces = [
-    ...sources(["components/session"], /\.tsx?$/).filter((file) => path.basename(file).startsWith("diff-")),
-    ...sources(["features/github"], /\.tsx$/),
-  ].map((file) => ({ file: path.relative(path.join(here, ".."), file), source: withoutProse(file) }));
+  // The reading surfaces: the whole git and github features, by folder so a component
+  // split out of a surface stays covered.
+  const readingSurfaces = sources(["features/git", "features/github"], /\.tsx$/).map((file) => ({
+    file: path.relative(path.join(here, ".."), file),
+    source: withoutProse(file),
+  }));
 
   test("the reading-surface set is not empty, and holds the surfaces #691 brought in", () => {
     // Every assertion below iterates this set: an empty one would report a clean
