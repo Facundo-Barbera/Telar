@@ -33,7 +33,8 @@
     "test:desktop:smoke": "bun run --cwd apps/desktop test:desktop:smoke",
     "test:desktop:e2e": "bun run --cwd apps/desktop test:desktop:e2e",
     "knip": "knip --no-exit-code",
-    "lint:ox": "oxlint -c .oxlintrc.json apps/engine apps/desktop packages/engine-client"
+    "lint:ox": "oxlint -c .oxlintrc.json apps/engine apps/desktop packages/engine-client",
+    "comments:baseline": "bun scripts/comment-ratchet.mjs --write-baseline"
   },
   "devDependencies": {
     "knip": "^6.38.0",

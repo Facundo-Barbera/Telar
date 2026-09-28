@@ -3,15 +3,14 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BASELINE_FILE, addedLines, commentLines, commentRatchetFailures, newCommentRuns, ratioFailures } from "./comment-ratchet.mjs";
+import { BASELINE_FILE, addedLines, commentLines, commentRatchet, countFindings, newCommentRuns } from "./comment-ratchet.mjs";
 
-const linesOf = (source, language = "js") => [...commentLines(source, language).lines].sort((a, b) => a - b);
+const linesOf = (source, language = "js") => [...commentLines(source, language)].sort((a, b) => a - b);
 
 describe("commentLines", () => {
   test("counts line and block comments, not code", () => {
     const source = ["const a = 1; // trailing", "", "/**", " * doc", " */", "call();", "// own line"].join("\n");
     expect(linesOf(source)).toEqual([1, 3, 4, 5, 7]);
-    expect(commentLines(source, "js").nonBlank).toBe(6);
   });
 
   test("ignores comment markers inside strings, templates and regexes", () => {
@@ -78,16 +77,18 @@ describe("newCommentRuns", () => {
   });
 });
 
-describe("ratioFailures", () => {
-  test("fails only above the baseline, and on a missing one", () => {
-    const failures = ratioFailures({ a: 0.3, b: 0.2001, c: 0.1 }, { a: 0.3, b: 0.2 });
-    expect(failures).toHaveLength(2);
-    expect(failures[0]).toContain("b: comment ratio 0.2001 is above its baseline 0.2");
-    expect(failures[1]).toContain("c: no baseline");
+describe("countFindings", () => {
+  test("fails above the baseline or without one, and notes a drop", () => {
+    const { failures, notices } = countFindings({ a: 30, b: 21, c: 5, d: 9 }, { a: 30, b: 20, d: 10 });
+    expect(failures).toEqual([
+      "b: 21 comment lines, above its baseline of 20. Delete comments rather than raising the baseline.",
+      "c: no baseline in scripts/comment-baseline.json. Run `bun run comments:baseline`.",
+    ]);
+    expect(notices).toEqual(["d: 9 comment lines, below its baseline of 10. Run `bun run comments:baseline` to lock that in."]);
   });
 });
 
-describe("commentRatchetFailures", () => {
+describe("commentRatchet", () => {
   const run = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" });
 
   function repo() {
@@ -98,7 +99,7 @@ describe("commentRatchetFailures", () => {
     mkdirSync(join(root, "apps/engine"), { recursive: true });
     mkdirSync(join(root, "scripts"));
     writeFileSync(join(root, "apps/engine/a.ts"), "// one\nconst a = 1;\nconst b = 2;\nconst c = 3;\n");
-    writeFileSync(join(root, BASELINE_FILE), JSON.stringify({ "apps/engine": 0.25 }));
+    writeFileSync(join(root, BASELINE_FILE), JSON.stringify({ "apps/engine": 1 }));
     run(root, "add", ".");
     run(root, "commit", "-qm", "base");
     run(root, "branch", "base");
@@ -106,21 +107,28 @@ describe("commentRatchetFailures", () => {
   }
 
   test("passes a tree at its baseline", () => {
-    expect(commentRatchetFailures(repo(), "base")).toEqual([]);
+    expect(commentRatchet(repo(), "base")).toEqual({ failures: [], notices: [] });
   });
 
-  test("fails a new long comment and the ratio it raises", () => {
+  test("fails a new long comment and the count it raises", () => {
     const root = repo();
     const essay = Array.from({ length: 7 }, (_, k) => `// line ${k}`).join("\n");
     writeFileSync(join(root, "apps/engine/b.ts"), `${essay}\nexport const x = 1;\n`);
     run(root, "add", ".");
     run(root, "commit", "-qm", "essay");
-    const failures = commentRatchetFailures(root, "base");
-    expect(failures.some((f) => f.startsWith("apps/engine: comment ratio"))).toBe(true);
+    const { failures } = commentRatchet(root, "base");
+    expect(failures.some((f) => f.startsWith("apps/engine: 8 comment lines, above its baseline of 1"))).toBe(true);
     expect(failures).toContain("apps/engine/b.ts:1-7: a new 7-line comment. The limit is 6; AGENTS.md allows 3.");
   });
 
+  test("deleting code alone passes, and deleting a comment is a notice", () => {
+    const root = repo();
+    writeFileSync(join(root, "apps/engine/a.ts"), "const a = 1;\n");
+    expect(commentRatchet(root, "base").failures).toEqual([]);
+    expect(commentRatchet(root, "base").notices).toEqual(["apps/engine: 0 comment lines, below its baseline of 1. Run `bun run comments:baseline` to lock that in."]);
+  });
+
   test("names a base it cannot find instead of passing", () => {
-    expect(commentRatchetFailures(repo(), "no-such-ref")[0]).toContain("cannot find the merge base with no-such-ref");
+    expect(commentRatchet(repo(), "no-such-ref").failures[0]).toContain("cannot find the merge base with no-such-ref");
   });
 });

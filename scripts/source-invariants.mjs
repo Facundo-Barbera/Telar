@@ -5,7 +5,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
 import { engineTestFiles, shardOf } from "./engine-shard.mjs";
-import { commentRatchetFailures } from "./comment-ratchet.mjs";
+import { commentRatchet } from "./comment-ratchet.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFile(join(ROOT, path), "utf8");
@@ -2237,8 +2237,12 @@ const CHECKS = [
   },
   {
     name: "comment-ratchet",
-    protects: "no workspace's comment ratio rises above scripts/comment-baseline.json, and no change adds a comment over 6 lines",
-    run: () => commentRatchetFailures(ROOT),
+    protects: "no workspace's comment-line count rises above scripts/comment-baseline.json, and no change adds a comment over 6 lines",
+    run() {
+      const { failures, notices } = commentRatchet(ROOT);
+      for (const notice of notices) console.log(`note  ${notice}`);
+      return failures;
+    },
   },
 ];
 

@@ -25,7 +25,7 @@ const REGEX_AFTER_WORD = new Set(["return", "typeof", "case", "do", "else", "in"
 
 export const languageOf = (file) => LANGUAGES[extname(file)];
 
-/** Line numbers (1-based) that carry comment text, and the count of non-blank lines. */
+/** Line numbers (1-based) that carry comment text. */
 export function commentLines(source, language) {
   const lines = new Set();
   let i = 0;
@@ -135,8 +135,7 @@ export function commentLines(source, language) {
   }
 
   scan(null);
-  const nonBlank = source.split("\n").filter((text) => text.trim() !== "").length;
-  return { lines, nonBlank };
+  return lines;
 }
 
 /** Added line numbers per file, from `git diff -U0` output. */
@@ -173,35 +172,28 @@ export function newCommentRuns(comments, added, max = MAX_NEW_BLOCK_LINES) {
   return runs.filter(([first, last]) => last - first + 1 > max);
 }
 
-export const round4 = (value) => Math.round(value * 10_000) / 10_000;
-
-export function ratioFailures(current, baseline) {
+export function countFindings(current, baseline) {
   const failures = [];
-  for (const [workspace, ratio] of Object.entries(current)) {
+  const notices = [];
+  for (const [workspace, count] of Object.entries(current)) {
     const limit = baseline[workspace];
-    if (limit === undefined) failures.push(`${workspace}: no baseline in ${BASELINE_FILE}. Run \`bun scripts/comment-ratchet.mjs --write-baseline\`.`);
-    else if (ratio > limit) failures.push(`${workspace}: comment ratio ${ratio} is above its baseline ${limit}. Delete comments rather than raising the baseline.`);
+    if (limit === undefined) failures.push(`${workspace}: no baseline in ${BASELINE_FILE}. Run \`bun run comments:baseline\`.`);
+    else if (count > limit) failures.push(`${workspace}: ${count} comment lines, above its baseline of ${limit}. Delete comments rather than raising the baseline.`);
+    else if (count < limit) notices.push(`${workspace}: ${count} comment lines, below its baseline of ${limit}. Run \`bun run comments:baseline\` to lock that in.`);
   }
-  return failures;
+  return { failures, notices };
 }
 
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
 
-export function workspaceRatios(root) {
-  const ratios = {};
+export function workspaceCounts(root) {
+  const counts = {};
   for (const workspace of WORKSPACES) {
-    let comment = 0;
-    let total = 0;
-    for (const file of git(root, ["ls-files", "--", workspace]).split("\n")) {
-      const language = file && languageOf(file);
-      if (!language) continue;
-      const { lines, nonBlank } = commentLines(readFileSync(join(root, file), "utf8"), language);
-      comment += lines.size;
-      total += nonBlank;
-    }
-    if (total > 0) ratios[workspace] = round4(comment / total);
+    const files = git(root, ["ls-files", "--", workspace]).split("\n").filter((file) => file && languageOf(file));
+    if (files.length === 0) continue;
+    counts[workspace] = files.reduce((sum, file) => sum + commentLines(readFileSync(join(root, file), "utf8"), languageOf(file)).size, 0);
   }
-  return ratios;
+  return counts;
 }
 
 export function newBlockFailures(root, baseRef) {
@@ -216,7 +208,7 @@ export function newBlockFailures(root, baseRef) {
   for (const [file, added] of addedLines(diff)) {
     const language = languageOf(file);
     if (!language) continue;
-    const { lines } = commentLines(readFileSync(join(root, file), "utf8"), language);
+    const lines = commentLines(readFileSync(join(root, file), "utf8"), language);
     for (const [first, last] of newCommentRuns(lines, added)) {
       failures.push(`${file}:${first}-${last}: a new ${last - first + 1}-line comment. The limit is ${MAX_NEW_BLOCK_LINES}; AGENTS.md allows 3.`);
     }
@@ -224,18 +216,20 @@ export function newBlockFailures(root, baseRef) {
   return failures;
 }
 
-export function commentRatchetFailures(root, baseRef = process.env.COMMENT_RATCHET_BASE || "origin/main") {
+export function commentRatchet(root, baseRef = process.env.COMMENT_RATCHET_BASE || "origin/main") {
   const baseline = JSON.parse(readFileSync(join(root, BASELINE_FILE), "utf8"));
-  return [...ratioFailures(workspaceRatios(root), baseline), ...newBlockFailures(root, baseRef)];
+  const { failures, notices } = countFindings(workspaceCounts(root), baseline);
+  return { failures: [...failures, ...newBlockFailures(root, baseRef)], notices };
 }
 
 if (import.meta.main) {
   const root = git(process.cwd(), ["rev-parse", "--show-toplevel"]).trim();
   if (process.argv.includes("--write-baseline")) {
-    writeFileSync(join(root, BASELINE_FILE), `${JSON.stringify(workspaceRatios(root), null, 2)}\n`);
+    writeFileSync(join(root, BASELINE_FILE), `${JSON.stringify(workspaceCounts(root), null, 2)}\n`);
     console.log(`wrote ${BASELINE_FILE}`);
   } else {
-    const failures = commentRatchetFailures(root);
+    const { failures, notices } = commentRatchet(root);
+    for (const notice of notices) console.log(notice);
     for (const failure of failures) console.error(failure);
     process.exit(failures.length > 0 ? 1 : 0);
   }
