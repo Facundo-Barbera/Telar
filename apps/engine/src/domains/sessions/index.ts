@@ -1,7 +1,10 @@
-export { newestFirst, parseSession, releaseDelegationSettle, sessionDir, sessionMetadataFile, storedSession } from "./metadata";
-export { isResultTurn, latestProviderSessionId, SessionRecords } from "./records";
+export { parseSession, releaseDelegationSettle, sessionDir, sessionMetadataFile, storedSession } from "./metadata";
+export { latestProviderSessionId, SessionRecords } from "./records";
 export { OpenPrefixes, SessionItems } from "./items";
 export { SessionRequests } from "./requests";
 export { SessionTasks } from "./tasks";
 export { awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, type SessionQueue } from "./queue";
 export { isPeerMail, SessionMailbox } from "./mailbox";
+export { indexRow, rowIsShelved, SessionIndex } from "./session-index";
+export { SessionActivity } from "./activity";
+export { createSessionModules } from "./modules";

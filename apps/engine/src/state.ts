@@ -20,9 +20,6 @@ import {
   countsAsActivity,
   isBackgroundWork,
   isUnstatedEnding,
-  livenessOf,
-  waitingToolOf,
-  type WaitingOn,
   AgentOrientation as AgentOrientationSchema,
   DEFAULT_AGENT_ORIENTATION,
   DEFAULT_INBOX_POLICY,
@@ -195,8 +192,8 @@ import {
   type DictationProviderId,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
-import { assertId, assertStateVersion, EngineStateError, ID, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
-import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, SessionQueues, SessionMailbox, isPeerMail, awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, type SessionQueue, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
+import { assertId, assertStateVersion, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
+import { createSessionModules, latestProviderSessionId, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, SessionQueues, SessionMailbox, isPeerMail, SessionIndex, SessionActivity, indexRow, rowIsShelved, awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, type SessionQueue, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "./domains/turns";
 import { TELAR_ORIENTATION } from "./orientation";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
@@ -1119,60 +1116,7 @@ const liveRow = (session: Session): LiveSessionRow => ({
   ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
 });
 
-/**
- * The same session, narrowed to the scalars the rail DECIDES on — issue #493.
- *
- * The input is a session with its activity already folded (`withActivityFrom`),
- * because `activity` is three documents' worth of question and the whole point
- * of the row is that asking it again costs nothing. See `SessionIndexRow` for
- * the argument about which fields belong here and which stay in the document.
- *
- * SPELLED AS A PICK, like `liveRow` and for the same reason: a field added to
- * `Session` tomorrow does not silently join the index, and one the settling rule
- * starts reading has to be added here deliberately — with a backfill, because
- * every stored row predates it.
- */
-const indexRow = (session: Session): SessionIndexRow => ({
-  id: session.id,
-  ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
-  state: session.state,
-  updatedAt: session.updatedAt,
-  createdAt: session.createdAt,
-  archived: session.state === "archived",
-  draft: session.draft !== undefined,
-  ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
-  ...(session.settledOverride === undefined ? {} : { settledOverride: session.settledOverride }),
-  ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
-  ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
-  ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
-  // Half of `dueSnoozeWakes`'s predicate — see `SessionIndexRow.wokeAt`.
-  ...(session.wokeAt === undefined ? {} : { wokeAt: session.wokeAt }),
-  ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
-  ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
-  ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
-  ...(session.lastTurnFailed === undefined ? {} : { lastTurnFailed: session.lastTurnFailed }),
-  activity: session.activity ?? "idle",
-  ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
-  // The two `find` decides on — see `SessionIndexRow`. A worktree session is the
-  // only one whose branch belongs to the conversation rather than to whatever
-  // the checkout happens to be on, so it is the only one that carries one here.
-  ...(session.title === undefined ? {} : { title: session.title }),
-  ...(session.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {}),
-});
 
-/**
- * IS THIS ROW ON THE SHELF? — the same call `liveSessionRows` makes on a whole
- * `Session`, made on the row instead.
- *
- * ONE FUNCTION, TAKING THE FIELDS BOTH SHAPES HAVE. `SettleableSession` was
- * written to name the fields the rule reads rather than any caller's shape
- * (see its comment), and the index row was chosen to carry exactly those — so
- * this is a call, not a second fold. A row and a record must never disagree
- * here: that is a conversation the engine drops from the list.
- */
-function rowIsShelved(row: SessionIndexRow, at: { now: number; autoSettleAfterHours: number | null }): boolean {
-  return isShelved({ ...row, archived: row.archived, draft: row.draft }, settlingActivityOf(row), at);
-}
 
 /** Copied out, never handed out: the caller gets the arrangement, not a
  *  reference into the document this store will write to next. */
@@ -1257,34 +1201,7 @@ function taskSeedOf(task: Task): TaskSeed {
   return seed;
 }
 
-function lastEndedTurn(turns: readonly Turn[]): Turn | undefined {
-  let latest: Turn | undefined;
-  for (const turn of turns) {
-    if (turn.completedAt === undefined) continue;
-    if (latest?.completedAt === undefined || turn.completedAt >= latest.completedAt) latest = turn;
-  }
-  return latest;
-}
 
-/**
- * The newest turn that left an answer — the one a read receipt may name.
- *
- * CHOSEN BY SEQUENCE, NOT BY `completedAt`, which is the difference that makes
- * the receipt monotonic. Sequence is minted when a turn is accepted and never
- * changes, so "the highest sequence read" can only move forward and a receipt
- * that arrives late (a tab that was scrolled to an old answer, a retry after a
- * dropped response) can never consume a turn that finished after it. Clocks
- * can tie, go backwards over an NTP step, and say nothing about ordering; the
- * one guarantee unread needs is exactly the one the sequence gives.
- */
-function lastResultTurn(turns: readonly Turn[]): Turn | undefined {
-  let latest: Turn | undefined;
-  for (const turn of turns) {
-    if (!isResultTurn(turn)) continue;
-    if (latest === undefined || turn.sequence > latest.sequence) latest = turn;
-  }
-  return latest;
-}
 
 
 
@@ -1451,18 +1368,12 @@ export class EngineStore {
   private readonly sessionTasks: SessionTasks;
   private readonly sessionQueues: SessionQueues;
   private readonly mailbox: SessionMailbox;
+  private readonly sessionIndex: SessionIndex;
+  private readonly activity: SessionActivity;
 
   private registerCacheHooks(): void {
-    this.kernel.onWrite((file, write, written) => {
-      const owner = this.indexedSessionOf(file);
-      this.inRowTransaction(owner, write, written as SessionQueue | undefined);
-      this.bumpRevisionFor(file, owner);
-    });
-    this.kernel.beforeCommit(() => this.flushSessionRows());
     this.kernel.onRollback(() => this.kernel.runProgress.clear());
     this.kernel.onSessionDeleted((id) => this.kernel.runProgress.delete(id));
-    this.kernel.onRollback(() => this.dirtySessionRows.clear());
-    this.kernel.onSessionDeleted((id) => { this.dirtySessionRows.delete(id); this.listRevision = this.nextRevision(); });
     this.kernel.onSessionDeleted((id) => this.dropSubscriptionsOf(id));
   }
   private readDocument(file: string): unknown | undefined {
@@ -1472,301 +1383,8 @@ export class EngineStore {
     this.kernel.writeDocument(file, value, mode);
   }
 
-  /**
-   * WHOSE INDEX ROW DOES THIS DOCUMENT DECIDE? — issue #493, and the whole of
-   * the "written in the same transaction" rule.
-   *
-   * Four documents per session feed the row: the metadata itself, and the three
-   * the activity fold reads. `items.json` is deliberately not one of them — it
-   * is rewritten as an assistant streams, and nothing the rail decides on is
-   * derived from it, which is the same carve-out `liveRevision` makes one line
-   * above and for the same reason.
-   *
-   * MATCHED ON THE PATH, not on the caller, because there are sixteen call
-   * sites that write `session.json` and adding a seventeenth must not be able to
-   * forget this.
-   */
-  private indexedSessionOf(file: string): { id: string; movesActivity: boolean } | undefined {
-    const name = path.basename(file);
-    if (name !== "session.json" && name !== "queue.json" && name !== "requests.json" && name !== "tasks.json") return undefined;
-    const relative = path.relative(this.paths.sessions, path.dirname(file));
-    if (!relative || relative.startsWith("..") || !ID.test(relative)) return undefined;
-    /**
-     * WHICH HALF OF THE ROW THIS WRITE CAN MOVE.
-     *
-     * `activity`, `activityAt` and the three last-turn fields are a fold over
-     * the queue, the open requests and the live tasks — and `storedSession`
-     * strips all five from the metadata document precisely because the queue is
-     * where they live. So a write to `session.json` ALONE cannot have moved any
-     * of them, and the row can be rebuilt by carrying them over from the row
-     * already on file.
-     *
-     * THAT SAVES THE EXPENSIVE READ. Folding the activity costs a whole
-     * `queue.json` parse, which on a long conversation is megabytes; commands
-     * that only touch the metadata — a read receipt, a rename, a settle, a
-     * snooze — are common, and making each of them parse a history they did not
-     * change would be a write-path regression paid to recompute an answer that
-     * cannot have changed.
-     */
-    return { id: relative, movesActivity: name !== "session.json" };
-  }
-
-  /**
-   * Write the document, and make sure its row goes with it.
-   *
-   * INSIDE A COMMAND, THE ROW IS DEFERRED TO THE END OF IT — see
-   * `flushSessionRows`. One command rewrites several of a session's documents
-   * (a completed turn moves the queue, the tasks and the metadata), and the row
-   * is a fold over all of them; recomputing it after each would be three folds
-   * to store the third one's answer. The deferral is still INSIDE the
-   * transaction, which is the part that matters.
-   *
-   * OUTSIDE ONE, THE PAIR IS ITS OWN TRANSACTION. A handful of writes — boot
-   * sweeps, the odd direct update — do not run under `executeCommand`, and a row
-   * that reached the disk without its document (or the other way round) is a
-   * sidebar that disagrees with the conversation behind it.
-   */
-  private inRowTransaction(owner: { id: string; movesActivity: boolean } | undefined, write: () => void, written?: SessionQueue): void {
-    if (owner === undefined) return write();
-    if (this.kernel.inCommand) {
-      write();
-      const owed = this.dirtySessionRows.get(owner.id);
-      this.dirtySessionRows.set(owner.id, {
-        // OR, never overwrite: a command that moved the queue and then the
-        // metadata owes the full fold, whichever of the two it wrote last.
-        movesActivity: (owed?.movesActivity ?? false) || owner.movesActivity,
-        /**
-         * AND THE LATEST QUEUE WINS, WHICH IS THE WHOLE RISK HERE (#547).
-         *
-         * `dirtySessionRows` coalesces every write one command makes to a
-         * session, and a queue carried from the FIRST of two queue writes would
-         * fold a history the second one has already replaced. So a queue write
-         * replaces what is carried and any other write leaves it alone — the
-         * metadata, requests and tasks writes that also mark a row dirty cannot
-         * have moved the turns, so the queue in hand is still the one on disk.
-         */
-        queue: written ?? owed?.queue,
-      });
-      return;
-    }
-    this.kernel.executionStore.atomically(() => {
-      write();
-      this.storeSessionRow(owner.id, owner.movesActivity, undefined, written);
-    });
-  }
-
-  /**
-   * THE ROWS THIS COMMAND MADE STALE, still owed to the transaction it is in.
-   *
-   * Emptied by `flushSessionRows` before the commit, and by `executeCommand`'s
-   * rollback path — a row owed on behalf of a write that did not happen is a row
-   * that would describe a document sqlite no longer has.
-   *
-   * `queue` IS THE DOCUMENT THE COMMAND JUST WROTE, kept so the fold at the end
-   * of it does not fetch and re-parse what is already in memory — see
-   * `storeSessionRow`. Absent when nothing in this command wrote the queue.
-   */
-  private dirtySessionRows = new Map<string, { movesActivity: boolean; queue?: SessionQueue }>();
-
-  /** Fold one session's four documents into its row and store it. The read is
-   *  the same one the live fold used to make per session per poll; it is made
-   *  here instead, once per command that could have moved the answer.
-   *
-   *  `written` is the queue this command already wrote, when it wrote one — see
-   *  `dirtySessionRows`. */
-  private storeSessionRow(sessionId: string, movesActivity = true, at = this.settlingClock(), written?: SessionQueue): void {
-    const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
-    const before = this.kernel.executionStore.sessionRow(sessionId);
-    // The metadata is gone: the session was deleted inside this command, and
-    // `deleteSession` has already taken the row with it. A row that leaves is a
-    // change of membership, so every reader is told.
-    if (stored === undefined) {
-      this.kernel.executionStore.deleteSessionRow(sessionId);
-      if (before) this.listRevision = this.nextRevision();
-      return;
-    }
-    let record: Session;
-    try {
-      record = parseSession(stored);
-    } catch {
-      // Unreadable is SKIPPED, not thrown, exactly as in the fold this feeds:
-      // one corrupt directory must not fail every command that touches it.
-      return;
-    }
-    /**
-     * THE QUEUE IS ONLY READ WHEN THIS WRITE COULD HAVE MOVED IT — see
-     * `indexedSessionOf`. Carrying the five folded fields over from the row on
-     * file is not a cache: they are a function of three documents this command
-     * did not touch, so the stored answer IS the current answer.
-     *
-     * Without a row on file there is nothing to carry, so the fold runs — which
-     * is what the backfill and a session's first write both take.
-     *
-     * AND WHEN THE QUEUE IS THE THING THAT MOVED, IT IS ALREADY IN HAND (#547).
-     * `writeQueue` holds the parsed document it has just serialised, and this
-     * fold used to fetch it back out of sqlite and re-parse it — a second whole
-     * parse of a megabyte the same command wrote, measured at 19 whole-queue
-     * parses per turn on a 400-turn fixture. `writeQueue` carries it through
-     * `dirtySessionRows` instead; the fall back to the read stays for the
-     * commands that moved `requests.json` or `tasks.json` and never touched the
-     * turns, and for the backfill, which has no write to carry anything from.
-     *
-     * THE ONE THING THIS TRUSTS is that a command does not edit its queue after
-     * writing it and then not write again — which would already be a lost
-     * write, on disk, before this line could be wrong about it.
-     */
-    const folded = movesActivity || before === undefined
-      ? this.withActivityFrom(record, (written ?? this.readQueue(sessionId)).turns)
-      : {
-          ...record,
-          activity: before.activity,
-          ...(before.activityAt === undefined ? {} : { activityAt: before.activityAt }),
-          ...(before.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: before.lastTurnEndedAt }),
-          ...(before.lastTurnFailed === undefined ? {} : { lastTurnFailed: before.lastTurnFailed }),
-          ...(before.lastTurnSequence === undefined ? {} : { lastTurnSequence: before.lastTurnSequence }),
-        };
-    const row = indexRow(folded);
-    this.kernel.executionStore.writeSessionRow(row);
-    this.noteSessionRevision(before, row, at);
-  }
-
-  /** The clock and the window every shelving question in one pass is asked
-   *  against — the STORE'S clock, never a wall clock; see `liveSessionRows`. */
-  private settlingClock(): { now: number; autoSettleAfterHours: number | null } {
-    return { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
-  }
-
-  /** Store every row this command owes, inside the command's own transaction.
-   *  ONE CLOCK AND ONE POLICY READ FOR THE WHOLE FLUSH: the rows are being
-   *  compared against each other's `before`, and a window that moved between
-   *  two of them would attribute a write to the wrong counter. */
-  private flushSessionRows(): void {
-    if (this.dirtySessionRows.size === 0) return;
-    const owed = [...this.dirtySessionRows];
-    this.dirtySessionRows.clear();
-    const at = this.settlingClock();
-    for (const [sessionId, row] of owed) this.storeSessionRow(sessionId, row.movesActivity, at, row.queue);
-  }
-
-  /**
-   * A NUMBER THAT CHANGES WHEN THE LIVE LIST WOULD — issue #459.
-   *
-   * The rail cannot be pushed to. There is no global event feed on this engine
-   * (journals are per session, and their ids are per session too), no SSE and no
-   * socket — and #82/#450 decided against adding the cockpit's FIRST long-lived
-   * connection, because six is all a browser has per origin. So the rail still
-   * asks on a timer, and the only thing left to fix is what the ask COSTS.
-   *
-   * This is that: a conditional read. `GET /v2/sessions/live?since=<revision>`
-   * answers `{ revision, unchanged: true }` — about sixty bytes and no fold at
-   * all — when nothing has been written since. On the owner's store that turns
-   * an idle cockpit's tick from 318 KB and a fold over 267 sessions' queues,
-   * requests and tasks into one integer comparison, several times a second,
-   * forever. An ETag by another name, spelled in the body because two proxy hops
-   * sit between this and a browser and neither forwards conditional headers.
-   *
-   * IN MEMORY, AND SEEDED FROM THE CLOCK. One writer, in this process, the same
-   * ground `queueCache` stands on. A restart starts from a new, larger number,
-   * so a client holding a cursor from the last daemon is told "changed" rather
-   * than being handed a false "unchanged" — the one failure mode that would show
-   * as a frozen rail.
-   *
-   * ══ AND IT IS THREE NUMBERS NOW, NOT ONE — issue #493 ══
-   *
-   * It used to be bumped by EVERY document write but `items.json`, on the
-   * argument that over-bumping costs a re-read nobody needed. On the owner's
-   * machine that turned out to cost rather more than that: an OAuth poll, a
-   * usage-limit refresh, a provider secret, an attachment index — none of which
-   * appear anywhere in this answer — each made every connected rail re-read all
-   * 291 sessions. The audit caught the #462 cursor hitting once in five attempts
-   * while the owner worked.
-   *
-   * So the bump is now per SESSION, and the number a reader is given is the
-   * newest one among the things that reader's answer is actually made of:
-   *
-   *   - `listRevision` — the three documents the answer reads beside the rows
-   *     (the project registry, the sidebar arrangement, the settling policy),
-   *     AND every change of MEMBERSHIP: a session created, deleted, archived, or
-   *     crossing between the list and the shelf. `settledCount` moves with this.
-   *   - `unshelvedRevision` — a write to a session that is on the list.
-   *   - `shelvedRevision` — a write to a session that is on the shelf. It is in
-   *     the `?all=1` answer and not in the default one, which is the whole point
-   *     of keeping it apart.
-   *
-   * WHY THREE COUNTERS AND NOT A MAP KEYED BY SESSION. The conditional read has
-   * to answer BEFORE the fold — that is what makes it cheap — so the revision
-   * must be available without reading anything. Three numbers maintained at
-   * write time are O(1) to serve; a max over a map would be O(sessions) on every
-   * idle tick, several times a second, forever.
-   *
-   * WHAT THIS STILL DOES NOT CATCH, unchanged from before: a row that crosses
-   * onto the shelf because TIME PASSED and nothing was written. No counter can
-   * move on an event that does not happen. A rail polls anyway, and the next
-   * write anywhere in the answer corrects it.
-   */
-  private revisionClock = Date.now();
-  private listRevision = this.revisionClock;
-  private unshelvedRevision = this.revisionClock;
-  private shelvedRevision = this.revisionClock;
-  private nextRevision(): number {
-    this.revisionClock += 1;
-    return this.revisionClock;
-  }
-
-  /**
-   * The cursor for one shape of the answer — see the counters above.
-   *
-   * `all` IS PART OF THE QUESTION. The wide answer carries the shelved rows, so
-   * a write to one of them changes it; the default answer does not carry them,
-   * so the same write changes nothing a rail would draw. Handing both readers
-   * one number would mean either lying to the shelf or re-reading the list.
-   */
   sessionsRevision(options: { all?: boolean } = {}): number {
-    const base = Math.max(this.listRevision, this.unshelvedRevision);
-    return options.all === true ? Math.max(base, this.shelvedRevision) : base;
-  }
-
-  /**
-   * MOVE THE COUNTER THIS WRITE BELONGS TO, and only that one.
-   *
-   * A document that is neither a session's nor one of the three the answer
-   * reads moves NOTHING. That is the narrowing this exists for, and it is the
-   * one direction that can be wrong — an answer built from a document not on
-   * this list would go stale silently — so the list is spelled out here beside
-   * the reader that consumes it rather than inferred from a path shape.
-   *
-   * A SESSION'S WRITE IS ATTRIBUTED BY ITS ROW, in `noteSessionRevision`: which
-   * of the two session counters moves depends on which list the session is on,
-   * which is not known until the row has been folded.
-   */
-  private bumpRevisionFor(file: string, owner: { id: string } | undefined): void {
-    if (owner !== undefined) return;
-    // `subscriptions` because a subscription is what makes a session read as
-    // `waiting` (`withActivityFrom`): subscribing must redraw the row.
-    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox || file === this.paths.subscriptions || file === this.paths.cohorts) {
-      this.listRevision = this.nextRevision();
-    }
-  }
-
-  /**
-   * Attribute one session's write, now that its row says which list it is on.
-   *
-   * MEMBERSHIP OUTRANKS CONTENT. A session that crossed between the list and the
-   * shelf — or was created, or archived — changes WHICH rows the default answer
-   * holds and the `settledCount` beside them, so it moves `listRevision` and
-   * every reader is told. A session that merely changed while staying where it
-   * was moves its own side's counter, and the reader who cannot see it is not
-   * woken for it.
-   */
-  private noteSessionRevision(before: SessionIndexRow | undefined, after: SessionIndexRow, at: { now: number; autoSettleAfterHours: number | null }): void {
-    const shelved = after.state !== "active" || rowIsShelved(after, at);
-    const wasShelved = before === undefined ? undefined : before.state !== "active" || rowIsShelved(before, at);
-    if (before === undefined || wasShelved !== shelved) {
-      this.listRevision = this.nextRevision();
-      return;
-    }
-    if (shelved) this.shelvedRevision = this.nextRevision();
-    else this.unshelvedRevision = this.nextRevision();
+    return this.sessionIndex.revision(options.all === true);
   }
 
   /**
@@ -2000,12 +1618,10 @@ export class EngineStore {
     this.terminalCensus = new Map(Object.entries(counts).filter(([, count]) => count > 0));
     // A count is on the row's answer, so a change must move the cursor of the
     // list that row is on, or a conditional read would call it unchanged.
-    const at = this.settlingClock();
+    const at = this.sessionIndex.settlingClock();
     for (const sessionId of changed) {
       try {
-        const row = indexRow(this.records.get(sessionId));
-        if (row.state !== "active" || rowIsShelved(row, at)) this.shelvedRevision = this.nextRevision();
-        else this.unshelvedRevision = this.nextRevision();
+        this.sessionIndex.bumpRow(indexRow(this.records.get(sessionId)), at);
       } catch {
         // A session the host knows and this store does not is not on any list.
       }
@@ -4117,21 +3733,20 @@ export class EngineStore {
       onRetentionSweep: () => { this.sweepRetention(); },
     });
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
-    this.records = new SessionRecords(this.kernel, { withActivity: (session) => this.withActivity(session), readQueue: (sessionId) => this.readQueue(sessionId) });
-    this.sessionItems = new SessionItems(this.kernel);
-    this.sessionRequests = new SessionRequests(this.kernel, () => this.records.ids());
-    this.sessionTasks = new SessionTasks(this.kernel);
-    this.mailbox = new SessionMailbox(this.kernel);
-    this.sessionQueues = new SessionQueues(this.kernel, {
-      sessionIds: () => this.records.ids(),
-      itemsForRuns: (sessionId, runs) => this.sessionItems.forRuns(sessionId, runs),
-      afterWrite: (sessionId, turns) => this.sessionRequests.trim(sessionId, turns),
-      onChanged: options.onQueueChanged,
-    });
-    this.prefixes = new OpenPrefixes(this.kernel, (sessionId) => this.readEvents(sessionId));
+    ({
+      records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
+      activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes,
+    } = createSessionModules(this.kernel, {
+      readQueue: (sessionId) => this.readQueue(sessionId),
+      readEvents: (sessionId) => this.readEvents(sessionId),
+      subscriptionsOf: (sessionId) => this.subscriptionsOf(sessionId),
+      nextWake: (sessionId) => this.nextScheduledWake(sessionId),
+      autoSettleAfterHours: () => this.getInboxPolicy().autoSettleAfterHours,
+      ...(options.onQueueChanged ? { onQueueChanged: options.onQueueChanged } : {}),
+    }));
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
-    this.sessionIndexBackfill = this.backfillSessionRows();
+    this.sessionIndexBackfill = this.sessionIndex.backfill();
     this.turnSummaryBackfill = this.backfillTurnSummaries();
     // Before anything can claim a turn — see the method.
     this.claudeLongWindowMigration = this.migrateBareClaudeIds();
@@ -4302,39 +3917,6 @@ export class EngineStore {
    */
   readonly sessionIndexBackfill?: { built: number; removed: number };
 
-  /**
-   * EVERY SESSION HAS A ROW BY THE TIME THIS RETURNS — the one-time backfill,
-   * which is idempotent and therefore runs on every open.
-   *
-   * IT RECONCILES RATHER THAN REBUILDS. `sessionRowGaps` compares two sets of
-   * keys — no document text on either side — and the answer is empty on every
-   * open but the first, so the ordinary cost is one covering seek and one
-   * primary-key scan. A store that has only ever been written by a binary with
-   * this change never has a gap at all.
-   *
-   * WHY NOT A `metadata` MARKER, LIKE THE IMPORT'S. The table is additive and
-   * `user_version` stays at 1 (see the schema), so an older binary can open this
-   * store, write documents it does not know to index, and hand it back. A marker
-   * would say "done" over rows that had gone stale underneath it. Keys are cheap
-   * enough that asking honestly beats trusting a flag that a downgrade
-   * invalidates.
-   *
-   * IT DOES NOT CATCH A STALE ROW — only a missing or an orphaned one. A row
-   * whose document was rewritten by a binary that did not maintain it stays
-   * wrong until that session is next written to. That is the trade the additive
-   * schema buys, and it is bounded: the rows a downgrade can touch are the
-   * sessions it was used to work in, and working in one writes it again.
-   */
-  private backfillSessionRows(): { built: number; removed: number } {
-    const store = this.kernel.executionStore;
-    const { missing, orphaned } = store.sessionRowGaps();
-    if (missing.length === 0 && orphaned.length === 0) return { built: 0, removed: 0 };
-    this.kernel.command("backfillSessionIndex", () => {
-      for (const id of orphaned) store.deleteSessionRow(id);
-      for (const id of missing) this.storeSessionRow(id);
-    });
-    return { built: missing.length, removed: orphaned.length };
-  }
 
   /**
    * WHAT THE TURN PROJECTION BUILT ON OPEN — issue #516. See
@@ -7788,279 +7370,11 @@ export class EngineStore {
     return this.records.markRead(sessionId, runId);
   }
 
-  /**
-   * What this session is doing, read from the queue and the open requests.
-   *
-   * TWO EXTRA FILE READS PER SESSION, and worth them. Without this a sidebar
-   * can only sort by recency — every row reads the same and "8h ago" is the
-   * most it can say — while the two facts a person actually scans for, "is one
-   * of these waiting on me" and "is one still going", are sitting unread on
-   * disk. The alternative is a client polling each session's queue separately,
-   * which is the same reads plus a round trip each.
-   *
-   * `blocked` OUTRANKS `working` because both are true at once and only one of
-   * them is the reader's to act on. Decided here so every client agrees.
-   */
-  private withActivity(session: Session): Session {
-    return this.withActivityFrom(session, this.readQueue(session.id).turns);
-  }
 
-  /**
-   * THE SAME FOLD, OVER TURNS THE CALLER ALREADY HAS — issue #464.
-   *
-   * The live list read every session's queue TWICE in one pass: once here, for
-   * the activity, and once in `sessionAssignments`, for who the session is
-   * working for. Two sqlite reads, two `JSON.parse`s and two `TurnSchema`
-   * validations of the same document, 291 times, every three seconds per
-   * connected cockpit — and `readQueue` was already 43.9% of a profile taken at
-   * rest for exactly this kind of repetition.
-   *
-   * SPLIT RATHER THAN CACHED, deliberately. `scanQueue`'s cache is bounded by
-   * `liveQueueIndex` — the sessions that concern a worker — and routing this
-   * fold through it would put EVERY conversation's parsed queue in memory for
-   * the life of the daemon, which is the unbounded growth that cache was pruned
-   * to avoid (the engine is already 563 MB resident). Sharing one read within
-   * the pass costs nothing and keeps nothing.
-   */
-  private withActivityFrom(session: Session, turns: Turn[]): Session {
-    /**
-     * THE QUEUE IS NOW READ ON EVERY PATH, including the blocked one that used
-     * to return before reaching it. A blocked session has a history too, and
-     * `lastTurnEndedAt` is read by a rule about a session that is HIDDEN — so
-     * an answer that is present for three activity states and absent for the
-     * fourth would be a field clients could not trust.
-     */
-    const ended = lastEndedTurn(turns);
-    /**
-     * READ OFF A DIFFERENT QUESTION THAN `lastTurnEndedAt`, and the split is
-     * the fix rather than an accident. `lastTurnEndedAt` dates the last thing
-     * that ENDED, which is what the early-wake rule wants. `lastTurnSequence`
-     * names the last thing that left an ANSWER, which is what unread wants —
-     * and a session whose newest ended turn was a steered message or a
-     * discarded recovery would otherwise report a sequence no client can ever
-     * mark read, so it would sit unread forever and never settle.
-     */
-    const result = lastResultTurn(turns);
-    const base: Session = {
-      ...session,
-      ...(ended?.completedAt === undefined ? {} : { lastTurnEndedAt: ended.completedAt }),
-      ...(result === undefined ? {} : { lastTurnSequence: result.sequence }),
-      ...(ended?.state === "failed" ? { lastTurnFailed: true } : {}),
-    };
-    // Only a request whose turn can still take the answer blocks the session;
-    // one left on an ended turn is retired at the next boot sweep meanwhile.
-    const settledRuns = new Set(turns.filter((turn) => turn.state === "completed" || turn.state === "failed" || turn.state === "stopped" || turn.state === "discarded").map((turn) => turn.runId));
-    // FROM THE INDEX, NOT THE DOCUMENT (#545): this fold runs per live session
-    // per live-list read and per `getSession`, and the whole-history parse it
-    // used to make was 3.7% + 3.2% of an idle daemon's profile.
-    const open = [...this.sessionRequests.live(session.id).values()].filter((request) => request.state === "open" && !settledRuns.has(request.runId));
-    if (open.length > 0) {
-      // The OLDEST open request, not the newest: it dates how long this session
-      // has been waiting, which is the number that should embarrass us.
-      const since = Math.min(...open.map((request) => request.openedAt));
-      return { ...base, activity: "blocked", activityAt: since };
-    }
-    const running = turns.find((turn) => turn.state === "running");
-    if (running) {
-      const waitingOn = this.onlyWaitingOn(session.id, running.runId);
-      return {
-        ...base,
-        activity: "working",
-        activityAt: running.startedAt ?? running.updatedAt,
-        ...(waitingOn ? { activityDetail: { kind: "tool" as const, waitingOn } } : {}),
-      };
-    }
-    // A HELD MESSAGE IS NOT "QUEUED": nothing is about to pick it up. A
-    // paused session with a backlog reads as idle to the activity fold; the
-    // pause itself is on the record (`paused`), and clients say so from it.
-    const waiting = turns.find((turn) => (turn.state === "queued" && !turn.held) || turn.state === "claimed");
-    if (waiting) return { ...base, activity: "queued", activityAt: waiting.acceptedAt };
-    /**
-     * A THIRD FILE READ, AND IT CLOSES A HOLE THE CONTRACT ALREADY NAMED.
-     *
-     * `TaskKind` says a background task "continues after the turn that started
-     * it settles. This is why a session can be 'still working' with no active
-     * turn" — and until this read existed, every one of those sessions reported
-     * `idle`. The queue was empty, so the row went quiet while the work went on.
-     *
-     * `livenessOf` IS THE CONTRACT'S OWN FOLD, not a second one written here,
-     * for the reason stated on it: the sidebar pill, the session list and the
-     * notification policy all need the same answer, and three independent folds
-     * over task state is three answers that disagree under load.
-     */
-    const tasks = [...this.sessionTasks.read(session.id).values()];
-    const live = livenessOf(tasks);
-    if (live) {
-      // Dated by the OLDEST live task, matching the blocked path above: the
-      // number worth showing is how long this has been going, not when the most
-      // recent thing joined it. Dated off the SAME predicate that classified it,
-      // or `activityAt` describes a paused task the badge did not count.
-      const counted = tasks.filter(countsAsActivity);
-      const since = Math.min(...counted.map((task) => task.startedAt));
-      if (live === "working") return { ...base, activity: "working", activityAt: since };
-      const background = counted.filter(isBackgroundWork);
-      return {
-        ...base,
-        activity: "monitoring",
-        activityAt: since,
-        activityDetail: { kind: "background", tasks: background.length, agents: background.filter((task) => task.kind === "agent").length },
-      };
-    }
-    /**
-     * WAITING ON ANOTHER SESSION: this one asked to be woken by a session that
-     * is still going. Only a target that is BUSY counts — a subscription to a
-     * session that already finished promises nothing, and a coordinator that
-     * kept one would otherwise read as waiting for ever.
-     */
-    const awaited = this.subscriptionsOf(session.id).flatMap((subscription) => {
-      const busySince = this.busySince(subscription.targetSessionId);
-      return busySince === undefined ? [] : [{ subscription, busySince }];
-    });
-    if (awaited.length > 0) {
-      const longest = awaited.reduce((a, b) => (b.busySince < a.busySince ? b : a));
-      // `busySince` already proved the target exists.
-      const title = this.records.require(longest.subscription.targetSessionId).title;
-      return {
-        ...base,
-        activity: "waiting",
-        // Since this session started waiting, not since the target started work.
-        activityAt: Math.min(...awaited.map((each) => each.subscription.createdAt)),
-        activityDetail: { kind: "session", sessionId: longest.subscription.targetSessionId, ...(title ? { title } : {}), sessions: awaited.length },
-      };
-    }
-    const wake = this.listSchedules(session.id).filter((schedule) => schedule.enabled).reduce<number | undefined>((soonest, schedule) => (soonest === undefined || schedule.nextRunAt < soonest ? schedule.nextRunAt : soonest), undefined);
-    if (wake !== undefined) return { ...base, activity: "scheduled", activityDetail: { kind: "schedule", at: wake } };
-    // `activityAt` is deliberately absent on idle: there is no event to date.
-    // How long ago the session last did anything is `updatedAt`, which every
-    // caller already has.
-    return { ...base, activity: "idle" };
-  }
 
-  /**
-   * When a session's current work began, or `undefined` if it is doing nothing
-   * a subscriber could be woken by.
-   *
-   * NOT `withActivityFrom` on the target, deliberately: that fold reads
-   * subscriptions, so two sessions subscribed to each other would recurse. This
-   * asks the three questions that mean "an answer is still coming" — an open
-   * turn, a live request, live tasks — and none that could loop.
-   */
-  /**
-   * What a running turn is waiting on, when waiting is ALL it is doing.
-   *
-   * Every open row of the turn must be a wait `waitingToolOf` recognises. One
-   * streaming message, one thought or one sub-agent row still open means the
-   * turn is doing something, and it reads as plain Working — a row left open by
-   * mistake errs the same way. Sub-agents' own rows (`taskId`) count too: a
-   * foreground agent at work is work.
-   *
-   * A WINDOW OF ONE RUN, never the projection: this runs on every fold of a
-   * running session, and the session's whole item history is not the question.
-   * So: the cache when it is warm (it is, on any session this engine is
-   * ingesting), the run's own rows when they are indexed, and otherwise NO
-   * ANSWER — a JSON-backed session with a cold cache reads as plain Working
-   * rather than paying a whole-document parse for a label.
-   */
-  private onlyWaitingOn(sessionId: string, runId: string): WaitingOn | undefined {
-    const items = this.sessionItems.peekRun(sessionId, runId);
-    const open = items.filter((item) => item.status === "inProgress");
-    if (open.length === 0) return undefined;
-    const waits = open.map((item) => waitingToolOf(item.detail));
-    return waits.every((wait) => wait !== undefined) ? waits[0] : undefined;
-  }
 
-  private busySince(sessionId: string): number | undefined {
-    let turns: Turn[];
-    try {
-      if (this.records.require(sessionId).state !== "active") return undefined;
-      turns = this.readQueue(sessionId).turns;
-    } catch {
-      return undefined;
-    }
-    const open = turns.filter((turn) => turn.state === "running" || turn.state === "claimed" || turn.state === "steering" || (turn.state === "queued" && !turn.held));
-    if (open.length > 0) return Math.min(...open.map((turn) => turn.startedAt ?? turn.acceptedAt));
-    const tasks = [...this.sessionTasks.read(sessionId).values()].filter(countsAsActivity);
-    if (tasks.length > 0) return Math.min(...tasks.map((task) => task.startedAt));
-    return undefined;
-  }
 
-  /**
-   * THE LIVE LIST'S OWN PASS, WHICH READS EACH QUEUE ONCE — issue #464.
-   *
-   * It used to read every queue TWICE: `getSession` folded the activity out of
-   * one read, and `sessionAssignments` folded the assignments out of a second
-   * read of the same document, moments later. Two sqlite reads, two
-   * `JSON.parse`s and two `TurnSchema` validations per session per pass, 291
-   * times, every three seconds per connected cockpit.
-   *
-   * AND AN ARCHIVED SESSION COSTS NO QUEUE READ AT ALL. The old path folded the
-   * activity of every session on the machine and then threw away everything not
-   * `active` — which is an activity fold, over a whole queue, for a
-   * conversation the answer does not contain. The state is in the metadata
-   * document, so it is answerable before the expensive read rather than after.
-   *
-   * AN UNREADABLE SESSION IS SKIPPED, NOT THROWN, exactly as in `readSessions`:
-   * one corrupt directory must not blank a sidebar.
-   *
-   * AND `only` NARROWS IT TO THE ROWS THE ANSWER WILL CONTAIN — issue #493. The
-   * caller that has an index to decide from (`liveSessionRows`) knows which
-   * sessions survive shelving before it reads a single document, so it names
-   * them and this pays for those alone. On the owner's store that is seven of
-   * 291. Absent, this is the pass over everything it has always been, which is
-   * what the in-process `liveSessions` toolkit still wants.
-   */
-  private foldLiveSessions(only?: Set<string>): { sessions: Session[]; assignments: Record<string, SessionAssignment[]> } {
-    const sessions: Session[] = [];
-    const assignments: Record<string, SessionAssignment[]> = {};
-    for (const id of only ?? this.records.ids()) {
-      const stored = this.readDocument(sessionMetadataFile(this.paths, id));
-      if (stored === undefined) continue;
-      let record: Session;
-      try {
-        record = parseSession(stored);
-      } catch {
-        continue;
-      }
-      if (record.state !== "active") continue;
-      const turns = this.readQueue(id).turns;
-      sessions.push(this.withActivityFrom(structuredClone(record), turns));
-      // A PLAIN cast, for the reason `sessionAssignments` gives: the structural
-      // type names fields a `Turn` really has, so a rename that breaks the fold
-      // is a type error rather than an `undefined` on every assignment (#380).
-      const held = assignmentsOf(turns as AssignmentTurn[]);
-      if (held.length > 0) assignments[id] = held;
-    }
-    sessions.sort(newestFirst);
-    return { sessions, assignments };
-  }
 
-  /**
-   * WHICH ROWS THE RAIL WOULD DRAW, DECIDED WITHOUT READING A CONVERSATION —
-   * issue #493.
-   *
-   * THE RULE IS THE SAME CALL, ON A NARROWER SHAPE. `rowIsShelved` hands the row
-   * to `isShelved` — the clients' own function, imported — exactly as the
-   * document path hands it a `Session`. If those two could disagree, the
-   * disagreement would be a conversation that is on one device's list and on
-   * another's shelf; they cannot, because there is one function and the row
-   * carries the fields it reads.
-   */
-  private shelfFromIndex(inbox: InboxPolicy, all: boolean, keep?: string): { chosen: Set<string>; settledCount: number } {
-    // The store's clock, so a test's counting clock never meets a wall clock.
-    const at = { now: this.now(), autoSettleAfterHours: inbox.autoSettleAfterHours };
-    const chosen = new Set<string>();
-    let settledCount = 0;
-    // `liveSessions` carries the ACTIVE sessions and nothing else, so the read
-    // seeks past the archived rows rather than folding and dropping them.
-    for (const row of this.kernel.executionStore.liveSessionRows()) {
-      if (row.id !== keep && rowIsShelved(row, at)) {
-        settledCount += 1;
-        if (!all) continue;
-      }
-      chosen.add(row.id);
-    }
-    return { chosen, settledCount };
-  }
 
   listSessions(projectId: string): Session[] {
     this.getProject(projectId);
@@ -8151,7 +7465,7 @@ export class EngineStore {
      * AND IT IS ONE PASS NOW, rather than one for the activity and a second for
      * the assignments over the same documents (#464). See `foldLiveSessions`.
      */
-    const { sessions, assignments } = this.foldLiveSessions(only);
+    const { sessions, assignments } = this.activity.foldLive(only);
     return {
       sessions,
       projects: projects.map((project) => ({
@@ -8241,7 +7555,7 @@ export class EngineStore {
      * went with the designation, and every conversation now settles by the same
      * rule.
      */
-    const indexed = this.shelfFromIndex(inbox, options.all === true);
+    const indexed = this.activity.shelf(inbox, options.all === true);
     /**
      * ══ THE INDEXED PATH — issue #493 ══
      *
@@ -8982,7 +8296,7 @@ export class EngineStore {
       const session = this.records.get(sessionId);
       if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
       const { live } = this.stopSession(sessionId);
-      return { session: this.withActivity(structuredClone(this.records.get(sessionId))), ...(live ? { stopped: live } : {}), held: 0, already: false };
+      return { session: this.activity.of(structuredClone(this.records.get(sessionId))), ...(live ? { stopped: live } : {}), held: 0, already: false };
     });
   }
 
@@ -9014,7 +8328,7 @@ export class EngineStore {
   resumeSession(sessionId: string): { session: Session; released: number; already: boolean } {
     return this.kernel.command("resumeSession", () => {
       const session = this.records.get(sessionId);
-      if (!session.paused) return { session: this.withActivity(structuredClone(session)), released: 0, already: true };
+      if (!session.paused) return { session: this.activity.of(structuredClone(session)), released: 0, already: true };
       if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
       const at = this.now();
       const queue = this.readQueue(sessionId);
@@ -9032,7 +8346,7 @@ export class EngineStore {
       for (const turn of released) this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
       this.appendEvent(sessionId, { type: "session.resumed", released: released.length });
       this.appendEvent(sessionId, { type: "session.updated", session });
-      return { session: this.withActivity(structuredClone(session)), released: released.length, already: false };
+      return { session: this.activity.of(structuredClone(session)), released: released.length, already: false };
     });
   }
 
@@ -12233,7 +11547,7 @@ export class EngineStore {
   private async checkSettledTerminalLimit(): Promise<string[]> {
     if (!this.terminals) return [];
     const limit = this.getInboxPolicy().settledTerminalLimit;
-    const at = this.settlingClock();
+    const at = this.sessionIndex.settlingClock();
     const windowMs = (at.autoSettleAfterHours ?? 0) * 60 * 60_000;
     const settled: Array<{ sessionId: string; count: number; since: number }> = [];
     for (const sessionId of this.censusSessions()) {
@@ -12415,6 +11729,10 @@ export class EngineStore {
     return Math.max(dueAt, now) + 1;
   }
 
+  private nextScheduledWake(sessionId: string): number | undefined {
+    return this.listSchedules(sessionId).filter((schedule) => schedule.enabled).reduce<number | undefined>((soonest, schedule) => (soonest === undefined || schedule.nextRunAt < soonest ? schedule.nextRunAt : soonest), undefined);
+  }
+
   listSchedules(sessionId?: string): ScheduleRow[] {
     return this.kernel.executionStore.listSchedules(sessionId);
   }
@@ -12452,7 +11770,7 @@ export class EngineStore {
 
   deleteSchedule(id: string): boolean {
     const deleted = this.kernel.executionStore.deleteSchedule(id);
-    if (deleted) this.listRevision = this.nextRevision();
+    if (deleted) this.sessionIndex.bumpList();
     return deleted;
   }
 
@@ -12464,7 +11782,7 @@ export class EngineStore {
    */
   private writeScheduleRow(store: ExecutionStore, row: ScheduleRow): void {
     store.writeSchedule(row);
-    this.listRevision = this.nextRevision();
+    this.sessionIndex.bumpList();
   }
 
   sweepSnoozeWakes(): string[] {
