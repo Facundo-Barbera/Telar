@@ -70,8 +70,10 @@ concurrency:
 
 jobs:
   source:
-    name: Source invariants
+    name: Check source
     runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.detect.outputs.ios }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 10
     steps:
@@ -102,6 +104,123 @@ jobs:
           echo "${sha}  /tmp/actionlint.tar.gz" | sha256sum -c -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint -shellcheck= -pyflakes= .github/workflows/*.yml
+
+      # Decides whether the iOS job below needs a Mac. It fails towards yes: a diff
+      # it cannot compute reports ios=true, so an iOS change is never silently skipped.
+      # THE MATCHER, EXERCISED ON KNOWN ANSWERS BEFORE IT IS TRUSTED (#721).
+      # A path filter is a regex, regexes are wrong silently, and the failure
+      # mode here is the one that matters: a filter that matches nothing leaves
+      # every iOS change unarchived while this job stays green. So the same
+      # expression the real diff goes through is first run over a table of
+      # paths whose answers are known — including the two anchors, which are
+      # the parts that rot first.
+      - name: The path filter, against paths whose answers are known
+        run: |
+          set -euo pipefail
+          # ONE DEFINITION, USED TWICE. If this and the matcher below were two
+          # copies, the self-test would be testing the copy.
+          source .github/workflows/ios-paths.sh
+
+          failed=0
+          check() { # path expected
+            got=no
+            printf '%s\n' "$1" | ios_paths | /usr/bin/grep -q . && got=yes
+            if [ "$got" != "$2" ]; then
+              echo "::error::the iOS path filter says '$1' is ${got}, expected ${2}"
+              failed=1
+            fi
+          }
+
+          check 'apps/ios/TelarMobile/Features/Sessions/SessionView.swift'   yes
+          check 'apps/ios/TelarMobile.xcodeproj/project.pbxproj' yes
+          check 'apps/ios/nightly.sh'                            yes
+          check 'apps/ios/Config/ActivityInfo.plist'             yes
+          check '.github/workflows/verify.yml'                   no
+          check '.github/workflows/ios-paths.sh'                 yes
+          # The nightly's workflow does not change what compiles; it changes
+          # what publishes. nightly.sh above does, and is in.
+          check '.github/workflows/nightly-ios.yml'              no
+          check 'apps/web/src/App.tsx'                           no
+          check 'docs/operations/dispatch-board.md'              no
+          # THE THREE CASES THAT PIN THE PATTERN, and each fails under exactly
+          # one mutation of it — checked by running the table against those
+          # mutations rather than by reading the regex:
+          #   drop `^`                → the first matches
+          #   drop the trailing `/`   → the second matches
+          #   drop `$`                → the third matches
+          # An earlier draft used `apps/iosextra/…` for the first of these and
+          # it proved nothing: that path fails on the `/` whether or not `^` is
+          # there, so the anchor it was named for was untested.
+          check 'vendor/apps/ios/Thing.swift'                    no
+          check 'apps/iosextra/Thing.swift'                      no
+          check '.github/workflows/ios-paths.sh.bak'             no
+          # A .swift outside apps/ios is not in the Xcode project.
+          check 'packages/whatever/Helper.swift'                 no
+
+          [ "$failed" -eq 0 ] || exit 1
+          echo "the iOS path filter answered all 13 known cases correctly"
+
+      - name: Diff this change against its base
+        id: detect
+        env:
+          # Empty on a push; both present on a pull request.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          # `set +e`, AND IT HAS TO BE `+e` RATHER THAN AN ABSENT `-e`.
+          # GitHub runs a `run:` block as `bash -e {0}`, so errexit is ALREADY
+          # ON before the first line of this script; omitting `set -e` does not
+          # turn it off and `set -uo pipefail` does not either. Several
+          # commands below are meant to come back non-zero — `grep` exits 1 on
+          # no match, and no match is the ORDINARY answer here — so leaving it
+          # on kills this step on exactly the pull requests it is meant to say
+          # "no" on.
+          #
+          # This is #768's trap in a second costume, and it was reproduced on
+          # the way to writing this: the first negative-case probe run
+          # (35505785312) died at `matched=$(… | ios_paths)` with no output at
+          # all, which reads far more like "the runner broke" than like "there
+          # were no matches". The positive case passes either way, which is why
+          # only the negative probe found it.
+          set +e
+          set -uo pipefail
+          source .github/workflows/ios-paths.sh
+
+          run_anyway() { # why
+            echo "::warning::$1 — building iOS rather than guessing"
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            # Three dots: what this branch changed since it left the base, not
+            # what has happened on the base since. A `pull_request` checkout
+            # has both parents of the merge commit, so both SHAs are here.
+            changed=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" 2>&1) \
+              || run_anyway "cannot diff ${BASE_SHA}...${HEAD_SHA}: ${changed}"
+          else
+            git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null \
+              || run_anyway "push event's before-commit ${BEFORE_SHA} is not in this history"
+            changed=$(git diff --name-only "${BEFORE_SHA}" "${GITHUB_SHA}" 2>&1) \
+              || run_anyway "cannot diff ${BEFORE_SHA}..${GITHUB_SHA}: ${changed}"
+          fi
+
+          total=$(printf '%s\n' "$changed" | /usr/bin/grep -c .)
+          matched=$(printf '%s\n' "$changed" | ios_paths)
+          hits=$(printf '%s\n' "$matched" | /usr/bin/grep -c .)
+
+          # A COUNT, NOT A COLOUR. "$hits of $total" is a pair of numbers a
+          # reader can check against the PR's own file list; "iOS: true" is a
+          # claim you would have to take on trust.
+          echo "$hits of $total changed path(s) reach the iOS build"
+          [ "$hits" -gt 0 ] && printf '%s\n' "$matched" | head -40
+
+          if [ "$hits" -gt 0 ]; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios=false" >> "$GITHUB_OUTPUT"
+          fi
 
   knip:
     name: knip
@@ -138,7 +257,7 @@ jobs:
         run: bun run lint:ox
 
   typecheck:
-    name: Typecheck engine-client, engine, and web
+    name: Typecheck
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 15
@@ -155,7 +274,7 @@ jobs:
       - run: bun run typecheck
 
   lint:
-    name: Lint apps/web
+    name: Lint web
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 15
@@ -260,7 +379,7 @@ jobs:
   # Drop this job and it stops executing rather than start failing, which is
   # the quiet kind of coverage loss.
   macos:
-    name: Test desktop on macOS (the ditto swap helper)
+    name: Test desktop (macOS)
     runs-on: macos-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 20
@@ -381,7 +500,7 @@ jobs:
   # a ~100 MB Electron download for one or two seconds of test; the whole list
   # is about 35 seconds serially.
   electron:
-    name: Test the Electron suite (real Electron, real pages)
+    name: Test Electron
     runs-on: macos-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 25
@@ -491,154 +610,6 @@ jobs:
           [ "$failed" -eq 0 ] || exit 1
           echo "every Electron test ran to its end and passed"
 
-  # DOES THIS CHANGE TOUCH ANYTHING THE iOS ARCHIVE COMPILES? Decided once, on
-  # a Linux runner, in seconds — so the Mac below is only ever booted when
-  # there is something for it to compile. #767.
-  #
-  # WHY A JOB AND NOT `on: paths`. The header of this file already says it: a
-  # workflow filtered out by `on: paths` never reports, and a required check
-  # that never reports blocks the pull request for ever. The filter has to live
-  # at the job level, which means something has to compute it, which is this.
-  #
-  # WHY IT DIFFS RATHER THAN ASKS THE API. `git diff` needs only the
-  # `contents: read` this workflow already has, and the answer is derived from
-  # the same objects the archive would compile. Adding `pull-requests: read`
-  # for `gh api .../files` would buy a marginally shorter checkout.
-  #
-  # IT FAILS TOWARDS RUNNING THE ARCHIVE. Every path where the diff cannot be
-  # computed — a base commit that is not in the fetched history, a force-push
-  # that orphaned `github.event.before` — reports `true`. The wrong answer in
-  # that direction costs a macOS runner; the wrong answer in the other
-  # direction is the gap #767 was filed about.
-  ios-changes:
-    name: Does anything here reach the iOS build?
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    timeout-minutes: 5
-    outputs:
-      ios: ${{ steps.detect.outputs.ios }}
-    steps:
-      # fetch-depth: 0 because the diff below reaches back to the merge base,
-      # which a depth-1 checkout does not have. The repository is ~37 MB.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # THE MATCHER, EXERCISED ON KNOWN ANSWERS BEFORE IT IS TRUSTED (#721).
-      # A path filter is a regex, regexes are wrong silently, and the failure
-      # mode here is the one that matters: a filter that matches nothing leaves
-      # every iOS change unarchived while this job stays green. So the same
-      # expression the real diff goes through is first run over a table of
-      # paths whose answers are known — including the two anchors, which are
-      # the parts that rot first.
-      - name: The path filter, against paths whose answers are known
-        run: |
-          set -euo pipefail
-          # ONE DEFINITION, USED TWICE. If this and the matcher below were two
-          # copies, the self-test would be testing the copy.
-          source .github/workflows/ios-paths.sh
-
-          failed=0
-          check() { # path expected
-            got=no
-            printf '%s\n' "$1" | ios_paths | /usr/bin/grep -q . && got=yes
-            if [ "$got" != "$2" ]; then
-              echo "::error::the iOS path filter says '$1' is ${got}, expected ${2}"
-              failed=1
-            fi
-          }
-
-          check 'apps/ios/TelarMobile/Features/Sessions/SessionView.swift'   yes
-          check 'apps/ios/TelarMobile.xcodeproj/project.pbxproj' yes
-          check 'apps/ios/nightly.sh'                            yes
-          check 'apps/ios/Config/ActivityInfo.plist'             yes
-          check '.github/workflows/verify.yml'                   no
-          check '.github/workflows/ios-paths.sh'                 yes
-          # The nightly's workflow does not change what compiles; it changes
-          # what publishes. nightly.sh above does, and is in.
-          check '.github/workflows/nightly-ios.yml'              no
-          check 'apps/web/src/App.tsx'                           no
-          check 'docs/operations/dispatch-board.md'              no
-          # THE THREE CASES THAT PIN THE PATTERN, and each fails under exactly
-          # one mutation of it — checked by running the table against those
-          # mutations rather than by reading the regex:
-          #   drop `^`                → the first matches
-          #   drop the trailing `/`   → the second matches
-          #   drop `$`                → the third matches
-          # An earlier draft used `apps/iosextra/…` for the first of these and
-          # it proved nothing: that path fails on the `/` whether or not `^` is
-          # there, so the anchor it was named for was untested.
-          check 'vendor/apps/ios/Thing.swift'                    no
-          check 'apps/iosextra/Thing.swift'                      no
-          check '.github/workflows/ios-paths.sh.bak'             no
-          # A .swift outside apps/ios is not in the Xcode project.
-          check 'packages/whatever/Helper.swift'                 no
-
-          [ "$failed" -eq 0 ] || exit 1
-          echo "the iOS path filter answered all 13 known cases correctly"
-
-      - name: Diff this change against its base
-        id: detect
-        env:
-          # Empty on a push; both present on a pull request.
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          # `set +e`, AND IT HAS TO BE `+e` RATHER THAN AN ABSENT `-e`.
-          # GitHub runs a `run:` block as `bash -e {0}`, so errexit is ALREADY
-          # ON before the first line of this script; omitting `set -e` does not
-          # turn it off and `set -uo pipefail` does not either. Several
-          # commands below are meant to come back non-zero — `grep` exits 1 on
-          # no match, and no match is the ORDINARY answer here — so leaving it
-          # on kills this step on exactly the pull requests it is meant to say
-          # "no" on.
-          #
-          # This is #768's trap in a second costume, and it was reproduced on
-          # the way to writing this: the first negative-case probe run
-          # (35505785312) died at `matched=$(… | ios_paths)` with no output at
-          # all, which reads far more like "the runner broke" than like "there
-          # were no matches". The positive case passes either way, which is why
-          # only the negative probe found it.
-          set +e
-          set -uo pipefail
-          source .github/workflows/ios-paths.sh
-
-          run_anyway() { # why
-            echo "::warning::$1 — archiving rather than guessing"
-            echo "ios=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            # Three dots: what this branch changed since it left the base, not
-            # what has happened on the base since. A `pull_request` checkout
-            # has both parents of the merge commit, so both SHAs are here.
-            changed=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" 2>&1) \
-              || run_anyway "cannot diff ${BASE_SHA}...${HEAD_SHA}: ${changed}"
-          else
-            git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null \
-              || run_anyway "push event's before-commit ${BEFORE_SHA} is not in this history"
-            changed=$(git diff --name-only "${BEFORE_SHA}" "${GITHUB_SHA}" 2>&1) \
-              || run_anyway "cannot diff ${BEFORE_SHA}..${GITHUB_SHA}: ${changed}"
-          fi
-
-          total=$(printf '%s\n' "$changed" | /usr/bin/grep -c .)
-          matched=$(printf '%s\n' "$changed" | ios_paths)
-          hits=$(printf '%s\n' "$matched" | /usr/bin/grep -c .)
-
-          # A COUNT, NOT A COLOUR. "$hits of $total" is a pair of numbers a
-          # reader can check against the PR's own file list; "iOS: true" is a
-          # claim you would have to take on trust.
-          echo "$hits of $total changed path(s) reach the iOS build"
-          [ "$hits" -gt 0 ] && printf '%s\n' "$matched" | head -40
-
-          if [ "$hits" -gt 0 ]; then
-            echo "ios=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ios=false" >> "$GITHUB_OUTPUT"
-          fi
-
   # THE ARCHIVE THAT WAS MISSING — an iOS build break, caught on the pull
   # request that causes it rather than on the night it takes TestFlight dark.
   # #767, and #758 is the class of thing it is for: a Swift type-check
@@ -670,15 +641,10 @@ jobs:
   # drift apart this gate stops guarding the nightly, which is the one way
   # this can rot.
   #
-  # IT ALSO RUNS THE SWIFT SUITE NOW (#755). The name still says "Archive"
-  # because `verify-passed` is the one required check and renaming jobs here is
-  # free only as long as nobody is pinning them — but the steps below archive
-  # Release, report the type-check floor, and then run TelarMobileTests on a
-  # simulator, in that order. Each has its own step name and its own assertion.
   ios:
-    name: Archive iOS (only when something iOS changed)
-    needs: [ios-changes]
-    runs-on: ${{ needs.ios-changes.outputs.ios == 'true' && 'macos-latest' || 'ubuntu-latest' }}
+    name: Build and test iOS
+    needs: [source]
+    runs-on: ${{ needs.source.outputs.ios == 'true' && 'macos-latest' || 'ubuntu-latest' }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # 30 → 45 with the simulator leg (#755). The job now does a Release archive
     # AND a Debug test build plus a simulator boot, so the ceiling has to cover
@@ -688,10 +654,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        if: needs.ios-changes.outputs.ios == 'true'
+        if: needs.source.outputs.ios == 'true'
 
       - name: Confirm the Xcode
-        if: needs.ios-changes.outputs.ios == 'true'
+        if: needs.source.outputs.ios == 'true'
         run: xcodebuild -version
 
       # THE FIVE SETTINGS COPIED FROM nightly.sh, because they are the ones
@@ -715,7 +681,7 @@ jobs:
       # evidence that the flags above reached the compiler at all — which the
       # step after next asserts rather than assumes.
       - name: Archive TelarMobile, unsigned
-        if: needs.ios-changes.outputs.ios == 'true'
+        if: needs.source.outputs.ios == 'true'
         env:
           DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
         run: |
@@ -754,7 +720,7 @@ jobs:
       # if the extension ever stops building, this reads 1/2 and goes red
       # rather than quietly archiving half the product.
       - name: Assert the archive holds a built app and its extension
-        if: needs.ios-changes.outputs.ios == 'true'
+        if: needs.source.outputs.ios == 'true'
         run: |
           set -euo pipefail
           ARCHIVE="$RUNNER_TEMP/TelarMobile.xcarchive"
@@ -805,7 +771,7 @@ jobs:
       # silently credited `SessionView.swift` with `NewSessionView.swift`'s
       # 171 ms.
       - name: How much type-checker budget is left?
-        if: needs.ios-changes.outputs.ios == 'true'
+        if: needs.source.outputs.ios == 'true'
         run: |
           # `+e` rather than a missing `-e`: GitHub hands this block to
           # `bash -e`, so errexit is on unless something turns it off. Every
@@ -850,7 +816,7 @@ jobs:
       # `-only-testing` fences out TelarMobileUITests, which would hang here
       # without apps/ios/scripts/preview-server.py running.
       - name: Run TelarMobileTests on a simulator
-        if: needs.ios-changes.outputs.ios == 'true'
+        if: needs.source.outputs.ios == 'true'
         env:
           DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
         run: |
@@ -913,7 +879,7 @@ jobs:
       # leaving a bare xcodebuild exit code above. That also covers the
       # compile-failure case, where no bundle is written at all.
       - name: Require that the tests actually ran
-        if: always() && needs.ios-changes.outputs.ios == 'true'
+        if: always() && needs.source.outputs.ios == 'true'
         run: |
           set -euo pipefail
           RESULT_BUNDLE="$RUNNER_TEMP/TelarMobileTests.xcresult"
@@ -963,7 +929,7 @@ jobs:
       # learns which of the two things happened, and neither can be mistaken
       # for the other.
       - name: Nothing here reaches the iOS build
-        if: needs.ios-changes.outputs.ios != 'true'
+        if: needs.source.outputs.ios != 'true'
         run: |
           echo "IOS_ARCHIVE_NOT_NEEDED — no path under apps/ios/ and no change to the gate itself"
           echo "This job took a ${RUNNER_OS} runner and compiled nothing."
@@ -998,16 +964,12 @@ jobs:
   # enforces is unchanged — which is the point, and the reason the extra Linux
   # runner boot is worth paying for.
   #
-  # THE PROPERTY THAT HAS TO HOLD: an iOS file changed and the archive did not
-  # run cannot be green. It holds through `ios-changes` being in this list too.
-  # If detection fails, `ios` is skipped for want of its output AND
-  # `ios-changes` reports `failure` — two reasons this goes red, neither of
-  # which depends on anyone having remembered the first one.
+  # If iOS detection fails, `source` reports failure and `ios` is skipped: both go red here.
   verify-passed:
     name: Verify passed
     runs-on: ubuntu-latest
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [source, knip, oxlint, typecheck, lint, test, test-engine, macos, electron, ios-changes, ios]
+    needs: [source, knip, oxlint, typecheck, lint, test, test-engine, macos, electron, ios]
     timeout-minutes: 5
     steps:
       - name: Report the aggregate

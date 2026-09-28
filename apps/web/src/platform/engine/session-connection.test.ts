@@ -39,6 +39,25 @@ test("a companion snapshot ahead of the tail installs its cursor and excludes re
   expect(next.events).toEqual([]);
 });
 
+test("a task whose turn left the snapshot window still ends when its completion arrives on the tail", async () => {
+  const running = { id: "task_1", sessionId: "session_1", runId: "run_old", kind: "background", backgrounded: true, state: "running", startedAt: 1, updatedAt: 1 };
+  const ended = { ...running, state: "completed", updatedAt: 3, completedAt: 3 };
+  const stale = { ...running, state: "running", updatedAt: 2 };
+  const pages: EngineEvent[][] = [
+    [],
+    [{ id: 4, type: "task.completed", sessionId: "session_1", runId: "run_new", at: 3, task: ended } as EngineEvent],
+    [{ id: 5, type: "task.progress", sessionId: "session_1", runId: "run_new", at: 2, task: stale } as EngineEvent],
+  ];
+  let reads = 0;
+  const connection = new SessionConnection({
+    session: async () => ({ ...initial, tasks: reads++ === 0 ? [running] : [] }) as unknown as SessionSnapshot,
+    events: async () => ({ events: pages.shift() ?? [] }),
+  }, "session_1");
+  expect((await connection.read()).tasks.map((task) => task.state)).toEqual(["running"]);
+  expect((await connection.read()).tasks.map((task) => task.state)).toEqual(["completed"]);
+  expect((await connection.read()).tasks.map((task) => task.state)).toEqual(["completed"]);
+});
+
 test("Swift and web consume the same engine-produced OpenCode prefix fixture", async () => {
   const { Session, Item, Turn } = await import("@telar/engine-client");
   const { projectJournal } = await import("./journal");
