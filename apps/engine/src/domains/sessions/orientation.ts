@@ -86,9 +86,8 @@ It is not this CLI's own notion of a session, and not a chat thread.
   not in a second turn.
 
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
-\`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
-\`sessions_subscribe\`, \`sessions_unsubscribe\`, \`sessions_subscriptions\`,
-\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_schedule\`, and the six reads below.
+\`sessions_status\`, \`sessions_stop\`, \`sessions_settle\`, \`sessions_subscribe\`,
+\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_schedule\`.
 
 ### Reading a peer without spending your context on it
 
@@ -98,17 +97,15 @@ name the exact next call.
 
 - \`sessions_list\` answers the UNSETTLED sessions, 50 at a time. \`settled: true\`
   adds the shelf, \`projectId\` narrows, \`after\` pages. An engine with hundreds
-  of conversations is ordinary and almost all of them are shelved.
+  of conversations is ordinary and almost all of them are shelved. With \`q\` it
+  SEARCHES every session instead — lexical, each hit quoting the line that
+  matched: the cheap first step when you have a phrase and no id.
 - \`sessions_status\` is the cheap "is it finished yet": an activity, a turn
   count, and the last few turns. Ask it before you read anything — but never
   poll it to wait for a peer; subscribe and end your turn instead.
 - \`sessions_read\` FOLDS by default: recent turns, a line each — what it was
   asked, what it did, how it answered — which is what "what has it been doing"
-  means, and a fifth of the size of the journal it stands in for. \`mode:
-  "events"\` is the raw journal, for debugging a run's tool trace; within it,
-  \`from: "start"\` reads from the beginning, \`after\` walks forward from a
-  cursor, and \`verbose: true\` restores the token counts and auto-approved
-  requests that are dropped by default.
+  means, and a fifth of the size of the journal it stands in for.
 - **A wake or a peer's message names a session and a run**, with an excerpt
   inline when there is one. When the excerpt says it was cut,
   \`sessions_read(sessionId, runId)\` fetches the whole thing — the answer, and a
@@ -117,22 +114,25 @@ name the exact next call.
 
 ### Asking a conversation a question instead of paging it
 
-\`sessions_read\` walks a session. These six ASK one, and none of them replays a
-journal to answer — so reach for them first and keep \`sessions_read\` for the raw
-trace.
+\`sessions_read\` takes a \`view\`. These ASK a session, and none of them replays a
+journal to answer — so reach for them before the raw trace.
 
-- \`sessions_find\` — WHICH conversation was this. Lexical, across every session,
-  each hit quoting the line that matched. The cheap first step when you have a
-  phrase and no id.
-- \`sessions_outline\` — scroll ONE conversation: a row per turn, newest first,
+- \`view: "outline"\` — scroll ONE conversation: a row per turn, newest first,
   what was asked and what it concluded. \`before\` pages.
-- \`sessions_answer\` — what one turn concluded, the text alone. The most common
+- \`view: "answer"\` — what one turn concluded, the text alone. The most common
   read after a wake; omit \`runId\` for the latest turn that said anything.
-- \`sessions_steps\` then \`sessions_step\` — what a turn DID. The first lists its
+- \`view: "steps"\` then \`view: "step"\` — what a turn DID. The first lists its
   steps with the BYTE COST of each, so you choose before you spend; the second
   reads the one you chose.
-- \`sessions_grep\` — where a phrase appears in one session's journal. A
+- \`view: "grep"\` — where a \`pattern\` appears in one session's journal. A
   substring, not a regular expression.
+- \`view: "diff"\` — what it changed in its checkout. A \`local\` session shares
+  the project's checkout, so its diff may carry work not its own. Read-only; it
+  approves nothing.
+- \`view: "events"\` — the raw journal, for debugging a run's tool trace;
+  \`from: "start"\` reads from the beginning, \`after\` walks forward from a
+  cursor, and \`verbose: true\` restores the token counts and auto-approved
+  requests that are dropped by default.
 
 ### Waiting for the sessions you tasked: one subscribe, then end your turn
 
@@ -148,7 +148,8 @@ session, do not poll \`sessions_status\`, and do not sleep.
 - A \`blocker\` or a parked request reaches you at once. Answer it; the session
   stays in the wait until it finishes.
 - It expires after \`timeoutMinutes\` (default 240), naming who never sent a
-  result. \`sessions_unsubscribe\` takes its id.
+  result. \`sessions_subscribe({ cancel: id })\` stops it; with no arguments it
+  lists what you hold.
 - ONE task whose answer you need before you can go on: pass \`wait\` (seconds)
   to \`sessions_create\` or \`sessions_send\` instead. Its result comes back in
   the same call; on a timeout nothing is cancelled and you are subscribed, so

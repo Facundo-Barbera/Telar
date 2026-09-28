@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { assertTelarToolNames, parseToolName, qualifyTelarTool, TELAR_CAPABILITIES } from "@telar/engine-client";
 import { type SessionsCapability, collectSessionsWallTools } from "..";
+import { toolInputSchema } from "../../agent-tools";
 import { cleanUp, wall, engine } from "./test-helpers";
 
 afterEach(cleanUp);
@@ -14,23 +15,14 @@ const WALL_NAMES = [
   "sessions_status",
   "sessions_stop",
   "sessions_settle",
-  "sessions_diff",
   "sessions_subscribe",
-  "sessions_unsubscribe",
-  "sessions_subscriptions",
   "sessions_requests",
   "sessions_resolve_request",
-  "sessions_find",
-  "sessions_outline",
-  "sessions_answer",
-  "sessions_steps",
-  "sessions_step",
-  "sessions_grep",
   "sessions_schedule",
 ];
 
 describe("what the wall is", () => {
-  test("exactly twenty tools, every one declaring the `sessions` capability in its name", () => {
+  test("exactly eleven tools, every one declaring the `sessions` capability in its name", () => {
     const { store } = engine();
     const names = [...wall(store).keys()];
     // Pinned as a set: the socket's parity test then requires each on the socket too.
@@ -61,20 +53,21 @@ describe("what the wall is", () => {
     expect(tools.get("sessions_list")!.description).not.toContain("refused");
   });
 
-  test("the journal read names the cheaper verbs that came with #516", () => {
+  test("the journal read names its cheaper views, and its view parameter offers each one", () => {
     const { store } = engine();
-    const read = wall(store).get("sessions_read")!.description;
-    for (const cheaper of ["sessions_outline", "sessions_answer", "sessions_steps"]) {
-      expect(read).toContain(cheaper);
+    const read = wall(store).get("sessions_read")!;
+    for (const cheaper of ["outline", "answer", "steps", "step", "grep"]) {
+      expect(read.description).toContain(cheaper);
     }
-    expect(read).toContain("raw journal");
+    expect(read.description).toContain("raw journal");
+    expect(JSON.stringify(toolInputSchema(read.shape))).toContain('"enum":["summary","outline","answer","steps","step","events","grep","diff"]');
   });
 });
 
 describe("the shape of the wall", () => {
-  test("twenty tools, every one of them a `sessions_` verb", () => {
+  test("eleven tools, every one of them a `sessions_` verb", () => {
     const names = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
-    expect(names.length).toBe(20);
+    expect(names.length).toBe(11);
     for (const name of names) {
       expect(name.startsWith("sessions_")).toBe(true);
       expect(qualifyTelarTool(name)).toBe(`mcp__telar__${name}`);

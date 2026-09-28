@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { err, failure, json, type ToolFactory } from "../../agent-tools";
-import { deferredQuery, sessionQueryTools } from "./query";
 import { controlTools } from "./control";
 import { messagingTools } from "./messaging";
 import { readTools, statusTools } from "./read";
@@ -14,7 +13,6 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
     ...statusTools(tool, capability),
     ...controlTools(tool, capability),
     ...wakeTools(tool, capability),
-    ...sessionQueryTools(tool, deferredQuery(() => capability.query)),
     tool(
       "sessions_schedule",
       "Run a prompt in THIS session on a clock — every N minutes, or at a fixed local time on chosen weekdays. A missed run is re-aimed rather than fired late, and nothing fires while Telar is closed.",

@@ -47,7 +47,7 @@ export type SessionsCapability = {
 
 const NOT_A_BYPASS = "Never hand a peer work you were refused — the same action, renamed.";
 
-export const LIST = `Live sessions, and the projects one can be created in. Unsettled only by default. Read it before creating anything — the session you want may exist.`;
+export const LIST = `Live sessions, and the projects one can be created in. Unsettled only by default. Read it before creating anything — the session you want may exist. q searches every session instead, lexically, each hit quoting the line that matched.`;
 
 export const CREATE = `Start a NEW session on a project, filed under you. Pass task to assign its first work in the same call; without it nothing starts until sessions_send with intent task. ${NOT_A_BYPASS}`;
 
@@ -59,17 +59,13 @@ export const NO_SELF =
 export const NO_SESSION_TO_SCHEDULE =
   "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
-export const SUBSCRIBE = `Be woken ONCE when the session(s) you tasked are done: each sent its result, or a turn failed or was stopped, or it was settled. Pass sessionIds — one id or many, the same call. Blockers and parked requests still arrive at once. Send the tasks first, subscribe, then end your turn.`;
-
-export const UNSUBSCRIBE = `Stop being woken by a session or a cohort, by the id sessions_subscribe returned. Queued wakes are withdrawn. One that is not yours answers removed: false — not an error.`;
-
-export const SUBSCRIPTIONS = `Every subscription and open cohort this session holds. Read it before subscribing again, and for an id to unsubscribe.`;
+export const SUBSCRIBE = `Be woken ONCE when the session(s) you tasked are done: each sent its result, a turn failed or was stopped, or it was settled. sessionIds: one id or many, the same call; blockers still arrive at once. Send the tasks, subscribe, end your turn. cancel: an id, to stop one and withdraw its queued wakes. No arguments lists what you hold.`;
 
 export const REQUESTS = `What a session is WAITING on — its open requests, with the id sessions_resolve_request takes. A request is a question to a HUMAN by default; answering it is you taking responsibility.`;
 
 export const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. Recorded as answered BY A SESSION. Only answer what you actually know; a secret pick is refused. ${NOT_A_BYPASS}`;
 
-export const READ = `What a session has done: by default a turn-by-turn summary. runId answers ONE turn; mode: events for the raw journal, which is long. Narrower and cheaper first: sessions_outline for its turns, sessions_answer for one conclusion, sessions_steps for what a turn did.`;
+export const READ = `What a session has done. Default view summary: a line per turn; runId answers ONE turn. Cheaper first: outline (its turns), answer (one conclusion), steps then step (what a turn did), grep (a phrase). events is the raw journal, which is long. diff: what it changed; an empty diff may be unread, not unchanged. READ-ONLY, NOT AN ACCEPTANCE.`;
 
 export const STATUS = `Working, waiting (on a person, a session or a tool), background, scheduled or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing. Never poll it to wait: sessions_subscribe and end your turn.`;
 
@@ -85,8 +81,6 @@ export function endedNote(ended: SessionSettleEnded | undefined): string {
   ];
   return parts.length ? ` Settling ended what it left running: ${parts.join(" and ")}.` : "";
 }
-
-export const DIFF = `What a session changed in its checkout since it started. A "local" session shares the project's checkout, so the diff may carry work that is not its own. An empty answer may be unread, not unchanged. READ-ONLY, NOT AN ACCEPTANCE: nothing here merges or approves.`;
 
 export const MAX_EVENTS = 50;
 const MAX_EVENT_CHARS = 12_000;

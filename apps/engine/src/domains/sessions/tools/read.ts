@@ -2,7 +2,11 @@ import { z } from "zod";
 import type { EngineEvent, NotificationDetail, Session, Turn } from "@telar/engine-client";
 import { STALLED_AFTER_MS } from "@telar/engine-client";
 import { err, failure, json, type ToolFactory } from "../../agent-tools";
+import { diffView } from "./control";
+import { answerView, CHARS_DEFAULT, CHARS_MAX, grepView, outlineView, stepsView, STEPS_LIMIT_MAX, stepView } from "./query";
 import { LIVE_TURN_STATES, MAX_EVENTS, MAX_RESULT_CHARS, MAX_RUN_ANSWER_CHARS, MAX_RUN_EVENT_CHARS, pageEvents, pageEventsFromEnd, quietNote, READ, readable, type SessionsCapability, STATUS, STATUS_TURNS_DEFAULT, STATUS_TURNS_MAX, summariseOne, summariseTurns, SUMMARY_TURNS_DEFAULT, SUMMARY_TURNS_MAX, TAIL_WINDOW, tailEvents, turnLine, WAITING_PHRASE, wholeNumber, withoutDuplicateBody } from "./shared";
+
+const VIEWS = ["summary", "outline", "answer", "steps", "step", "events", "grep", "diff"] as const;
 
 export function readTools(tool: ToolFactory, capability: SessionsCapability): unknown[] {
   return [
@@ -11,144 +15,182 @@ export function readTools(tool: ToolFactory, capability: SessionsCapability): un
       READ,
       {
         sessionId: z.string().min(1),
+        view: z
+          .enum(VIEWS)
+          .optional()
+          .describe('Default "summary". "outline" a row per turn, newest first; "answer" one turn\'s conclusion; "steps" what a turn did, with each step\'s byte cost; "step" one of them whole; "events" the raw journal; "grep" a phrase; "diff" what it changed.'),
+        runId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("One turn — the id a wake gives you. summary/events: its events, its answer, and a peer message in full. answer: omit for the latest turn that left text. steps, step: required."),
         after: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("A cursor a previous read returned; omit for the latest."),
+          .describe("A cursor a previous read returned. events and a runId read: omit for the latest. steps: the `next` a previous page returned."),
+        before: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("outline, grep: the `next` a previous page returned, so appends cannot shift the window."),
         from: z
           .enum(["start", "end"])
           .optional()
-          .describe('"start" from the beginning; "end" (default) the latest. Ignored with `after`.'),
+          .describe('events: "start" from the beginning; "end" (default) the latest. Ignored with `after`.'),
         limit: z
           .number()
           .int()
           .min(1)
-          .max(MAX_EVENTS)
+          .max(STEPS_LIMIT_MAX)
           .optional()
-          .describe(`Default and max ${MAX_EVENTS}; the byte budget may return fewer.`),
-        verbose: z
-          .boolean()
-          .optional()
-          .describe("Keep usage rows and policy-resolved requests. Settled turns keep only their last usage row and no policy-resolved requests."),
-        mode: z
-          .enum(["events", "summary"])
-          .optional()
-          .describe("Default summary; events is the raw journal."),
+          .describe(`Rows per page. events: default and max ${MAX_EVENTS}, and the byte budget may return fewer. outline, grep: default 20, max 100. steps: default 50, max ${STEPS_LIMIT_MAX}.`),
         turns: z
           .number()
           .int()
           .min(1)
           .max(SUMMARY_TURNS_MAX)
           .optional()
-          .describe(`Default ${SUMMARY_TURNS_DEFAULT}.`),
-        runId: z
-          .string()
-          .min(1)
+          .describe(`summary: default ${SUMMARY_TURNS_DEFAULT}.`),
+        verbose: z
+          .boolean()
           .optional()
-          .describe("One turn — its events, its answer, and a peer message in full. The id a wake gives you."),
+          .describe("events and a runId read: keep usage rows and policy-resolved requests. Settled turns keep only their last usage row and no policy-resolved requests."),
         resultAfter: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("Continue the answer from this offset."),
+          .describe("A runId read, answer: continue the answer from this character offset."),
         messageAfter: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("The same for a peer message's body."),
+          .describe("A runId read: the same for a peer message's body."),
+        step: z
+          .union([z.number().int().min(0), z.string().min(1)])
+          .optional()
+          .describe('step: the index view "steps" gave, or an item id.'),
+        maxChars: z
+          .number()
+          .int()
+          .min(1)
+          .max(CHARS_MAX)
+          .optional()
+          .describe(`step, answer: default ${CHARS_DEFAULT}, which is also the least answer sends; what is cut is marked.`),
+        pattern: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("grep: case-insensitive substring, matched anywhere in an event — not a regular expression."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
-        const askedAfter = wholeNumber(args.after);
-        const after = askedAfter ?? 0;
-        const runId = typeof args.runId === "string" && args.runId.length > 0 ? args.runId : undefined;
-        const mode: "events" | "summary" = args.mode === "events" ? "events" : "summary";
-        const verbose = args.verbose === true;
-        const limit =
-          typeof args.limit === "number" && Number.isSafeInteger(args.limit) && args.limit >= 1 ? Math.min(args.limit, MAX_EVENTS) : MAX_EVENTS;
-        const resultAfter =
-          wholeNumber(args.resultAfter);
-        const messageAfter =
-          wholeNumber(args.messageAfter);
-        const wantsTail = askedAfter === undefined && runId === undefined && args.from !== "start";
-        let events: EngineEvent[];
-        let tailReached = true;
-        try {
-          if (wantsTail) {
-            const found = await tailEvents(capability, sessionId, limit);
-            events = found.events;
-            tailReached = found.reached;
-          } else {
-            events = await capability.read(sessionId, after, runId === undefined ? { limit: TAIL_WINDOW } : undefined);
-          }
-        } catch (error) {
-          return err(`Could not read "${sessionId}": ${failure(error)}`);
+        switch (args.view) {
+          case "outline":
+            return outlineView(capability.query, sessionId, args);
+          case "answer":
+            return answerView(capability.query, sessionId, args);
+          case "steps":
+            return stepsView(capability.query, sessionId, args);
+          case "step":
+            return stepView(capability.query, sessionId, args);
+          case "grep":
+            return grepView(capability.query, sessionId, args);
+          case "diff":
+            return diffView(capability, sessionId);
+          default:
+            return journalView(capability, sessionId, args);
         }
-        if (runId !== undefined) return readOneRun(capability, { sessionId, runId, events, verbose, limit, after, resultAfter, messageAfter });
-        const kept = verbose ? events : events.filter(readable);
-        const quiet = events.length - kept.length;
-        if (mode === "summary") {
-          const wanted =
-            typeof args.turns === "number" && Number.isSafeInteger(args.turns) && args.turns >= 1
-              ? Math.min(args.turns, SUMMARY_TURNS_MAX)
-              : SUMMARY_TURNS_DEFAULT;
-          let turns: Turn[];
-          let turnCount: number;
-          try {
-            const status = await capability.status(sessionId, { recent: wanted });
-            turns = status.turns;
-            turnCount = status.turnCount ?? turns.length;
-          } catch (error) {
-            return err(`Could not summarise "${sessionId}": ${failure(error)}`);
-          }
-          const summary = summariseTurns(turns, kept, wanted);
-          return json({
-            sessionId,
-            mode: "summary",
-            turnCount,
-            turns: summary,
-            cursor: events.at(-1)?.id ?? 0,
-            note:
-              turnCount === 0
-                ? "This session has taken no turns."
-                : `The last ${summary.length} of ${turnCount} turns. "did" lists what a turn's items were called, for turns inside the page this read covered. For a turn's whole answer or its events, call sessions_read with its runId; for raw events, mode: "events".`,
-          });
-        }
-        const paged = wantsTail
-          ? (() => {
-              const tail = pageEventsFromEnd(kept, { limit });
-              return { page: tail.page, cursor: tail.cursor, from: tail.from, more: false, earlier: tail.earlier || !tailReached };
-            })()
-          : (() => {
-              const forward = pageEvents(kept, { limit });
-              return { page: forward.page, cursor: forward.cursor, from: after, more: forward.more, earlier: false };
-            })();
-        const { page, cursor, more } = paged;
-        return json({
-          sessionId,
-          from: paged.from,
-          cursor: page.length > 0 ? cursor : after,
-          more,
-          ...(wantsTail ? { earlier: paged.earlier } : {}),
-          ...(quiet > 0 ? { quietEvents: quiet } : {}),
-          events: page,
-          note: wantsTail
-            ? page.length === 0
-              ? "This session's journal is empty."
-              : `The LATEST ${page.length} events${paged.earlier ? " — there is more behind them" : " (the whole journal)"}. Poll for what happens next with sessions_read(after: ${cursor}); read from the beginning with from: "start"; get a turn-by-turn fold with mode: "summary". Long strings inside an event are clamped and marked where that happened.`
-            : more
-              ? `A PAGE, not the whole journal: ${page.length} events past cursor ${after}, with more behind them. Call sessions_read again with after: ${cursor}. Long strings inside an event are clamped and marked where that happened.`
-              : page.length === 0
-                ? "Nothing has happened past that cursor yet."
-                : "Everything past that cursor, in one page. Long strings inside an event are clamped and marked where that happened.",
-        });
       },
     ),
   ];
+}
+
+async function journalView(capability: SessionsCapability, sessionId: string, args: Record<string, unknown>) {
+  const askedAfter = wholeNumber(args.after);
+  const after = askedAfter ?? 0;
+  const runId = typeof args.runId === "string" && args.runId.length > 0 ? args.runId : undefined;
+  const verbose = args.verbose === true;
+  const limit =
+    typeof args.limit === "number" && Number.isSafeInteger(args.limit) && args.limit >= 1 ? Math.min(args.limit, MAX_EVENTS) : MAX_EVENTS;
+  const resultAfter = wholeNumber(args.resultAfter);
+  const messageAfter = wholeNumber(args.messageAfter);
+  const wantsTail = askedAfter === undefined && runId === undefined && args.from !== "start";
+  let events: EngineEvent[];
+  let tailReached = true;
+  try {
+    if (wantsTail) {
+      const found = await tailEvents(capability, sessionId, limit);
+      events = found.events;
+      tailReached = found.reached;
+    } else {
+      events = await capability.read(sessionId, after, runId === undefined ? { limit: TAIL_WINDOW } : undefined);
+    }
+  } catch (error) {
+    return err(`Could not read "${sessionId}": ${failure(error)}`);
+  }
+  if (runId !== undefined) return readOneRun(capability, { sessionId, runId, events, verbose, limit, after, resultAfter, messageAfter });
+  const kept = verbose ? events : events.filter(readable);
+  const quiet = events.length - kept.length;
+  if (args.view !== "events") {
+    const wanted =
+      typeof args.turns === "number" && Number.isSafeInteger(args.turns) && args.turns >= 1
+        ? Math.min(args.turns, SUMMARY_TURNS_MAX)
+        : SUMMARY_TURNS_DEFAULT;
+    let turns: Turn[];
+    let turnCount: number;
+    try {
+      const status = await capability.status(sessionId, { recent: wanted });
+      turns = status.turns;
+      turnCount = status.turnCount ?? turns.length;
+    } catch (error) {
+      return err(`Could not summarise "${sessionId}": ${failure(error)}`);
+    }
+    const summary = summariseTurns(turns, kept, wanted);
+    return json({
+      sessionId,
+      view: "summary",
+      turnCount,
+      turns: summary,
+      cursor: events.at(-1)?.id ?? 0,
+      note:
+        turnCount === 0
+          ? "This session has taken no turns."
+          : `The last ${summary.length} of ${turnCount} turns. "did" lists what a turn's items were called, for turns inside the page this read covered. For a turn's whole answer or its events, call sessions_read with its runId; for raw events, view: "events".`,
+    });
+  }
+  const paged = wantsTail
+    ? (() => {
+        const tail = pageEventsFromEnd(kept, { limit });
+        return { page: tail.page, cursor: tail.cursor, from: tail.from, more: false, earlier: tail.earlier || !tailReached };
+      })()
+    : (() => {
+        const forward = pageEvents(kept, { limit });
+        return { page: forward.page, cursor: forward.cursor, from: after, more: forward.more, earlier: false };
+      })();
+  const { page, cursor, more } = paged;
+  return json({
+    sessionId,
+    from: paged.from,
+    cursor: page.length > 0 ? cursor : after,
+    more,
+    ...(wantsTail ? { earlier: paged.earlier } : {}),
+    ...(quiet > 0 ? { quietEvents: quiet } : {}),
+    events: page,
+    note: wantsTail
+      ? page.length === 0
+        ? "This session's journal is empty."
+        : `The LATEST ${page.length} events${paged.earlier ? " — there is more behind them" : " (the whole journal)"}. Poll for what happens next with sessions_read(view: "events", after: ${cursor}); read from the beginning with from: "start"; get a turn-by-turn fold with view: "summary". Long strings inside an event are clamped and marked where that happened.`
+      : more
+        ? `A PAGE, not the whole journal: ${page.length} events past cursor ${after}, with more behind them. Call sessions_read again with view: "events", after: ${cursor}. Long strings inside an event are clamped and marked where that happened.`
+        : page.length === 0
+          ? "Nothing has happened past that cursor yet."
+          : "Everything past that cursor, in one page. Long strings inside an event are clamped and marked where that happened.",
+  });
 }
 
 async function readOneRun(

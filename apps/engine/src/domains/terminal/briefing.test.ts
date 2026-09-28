@@ -145,7 +145,7 @@ test("the fixture's first request carries only names for Telar's MCP tools, and 
   expect(captured.servers).toEqual(["telar-browser", "telar"]);
   expect(captured.append).toBe([TELAR_ORIENTATION, BROWSER_BRIEFING, RUN_BRIEFING].join("\n\n"));
   // The wall really was captured, so the name rows are not vacuously small.
-  expect(captured.telar.length).toBeGreaterThan(30);
+  expect(captured.telar.length).toBeGreaterThan(20);
   expect(schemas.telar).toBeGreaterThan(10 * listed(captured.telar.map((tool) => tool.name)));
   // Ceiling on everything Telar adds before the person's first word.
   expect(total).toBeLessThan(10_000);

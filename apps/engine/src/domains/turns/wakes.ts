@@ -34,7 +34,7 @@ function wakeMessage(
         break;
       }
       const where = `sessions_read(sessionId: "${target.id}", runId: "${turn.runId}")`;
-      lines.push(`It answered with ${text.length} characters.`, ...quotedExcerpt(text, where), RELAY_RULE, "—", "The same read has that run's events; its diff is sessions_diff.");
+      lines.push(`It answered with ${text.length} characters.`, ...quotedExcerpt(text, where), RELAY_RULE, "—", 'The same read has that run\'s events; its diff is sessions_read(view: "diff").');
       return lines.join("\n");
     }
     case "turn_failed":
@@ -60,7 +60,7 @@ function wakeMessage(
     "—",
     // THE RETRIEVAL IS DIRECTLY USABLE, and scoped to this run: a coordinator
     // that wants the outcome should not have to page a journal to find it.
-    `Fetch it with sessions_read(sessionId: "${target.id}", runId: "${turn.runId}") — that run's events and its final answer, bounded. Its diff with sessions_diff.`,
+    `Fetch it with sessions_read(sessionId: "${target.id}", runId: "${turn.runId}") — that run's events and its final answer, bounded. Its diff with sessions_read(sessionId: "${target.id}", view: "diff").`,
   );
   return lines.join("\n");
 }

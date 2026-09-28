@@ -6,12 +6,12 @@ import { cleanUp, wall, engine, call } from "./test-helpers";
 afterEach(cleanUp);
 
 describe("subscribing and answering", () => {
-  test("without a self there is nobody to wake: the three subscription tools refuse in words", async () => {
+  test("without a self there is nobody to wake: every subscribe mode refuses in words", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const target = store.lifecycle.createSession({ projectId, title: "a target" });
-    for (const name of ["sessions_subscribe", "sessions_unsubscribe", "sessions_subscriptions"]) {
-      const refused = await call(tools, name, { sessionId: target.id, subscriptionId: "sub_x" });
+    for (const args of [{ sessionIds: [target.id] }, { cancel: "sub_x" }, {}]) {
+      const refused = await call(tools, "sessions_subscribe", args);
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain("no session to wake");
     }
@@ -46,12 +46,35 @@ describe("subscribing and answering", () => {
     const again = await call(tools, "sessions_subscribe", { sessionIds: [two.id, one.id] });
     expect(again.json!.id).toBe(made.json!.id);
     expect(again.json!.note as string).toStartWith(`Already subscribed (${made.json!.id as string})`);
-    const listed = await call(tools, "sessions_subscriptions");
+    const listed = await call(tools, "sessions_subscribe");
     expect(listed.json!.cohorts).toEqual([{ id: made.json!.id, expiresAt: made.json!.expiresAt, pending: [one.id, two.id], members: 2 }]);
-    const removed = await call(tools, "sessions_unsubscribe", { subscriptionId: made.json!.id });
+    const removed = await call(tools, "sessions_subscribe", { cancel: made.json!.id });
     expect(removed.json!.removed).toBe(true);
     expect(store.subscriptions.cohortsFor(host.id)).toHaveLength(0);
-    expect((await call(tools, "sessions_subscribe", {})).isError).toBe(true);
+    expect((await call(tools, "sessions_subscribe", { sessionIds: [] })).isError).toBe(true);
+  });
+
+  test("one mode per call: mixed arguments are refused in words and change nothing", async () => {
+    const { store, projectId } = engine();
+    const host = store.lifecycle.createSession({ projectId, title: "coordinator" });
+    const target = store.lifecycle.createSession({ projectId, title: "worker" });
+    const tools = wall(store, { sessionId: host.id });
+    const made = await call(tools, "sessions_subscribe", { sessionIds: [target.id] });
+
+    const both = await call(tools, "sessions_subscribe", { sessionIds: [target.id], cancel: made.json!.id });
+    expect(both.isError).toBe(true);
+    expect(both.text).toContain("not both");
+    const timedCancel = await call(tools, "sessions_subscribe", { cancel: made.json!.id, timeoutMinutes: 5 });
+    expect(timedCancel.isError).toBe(true);
+    expect(timedCancel.text).toContain("cancel takes only the id");
+    const timedList = await call(tools, "sessions_subscribe", { timeoutMinutes: 5 });
+    expect(timedList.isError).toBe(true);
+    expect(timedList.text).toContain("needs sessionIds");
+    expect(store.subscriptions.cohortsFor(host.id).map((cohort) => cohort.id)).toEqual([made.json!.id as string]);
+
+    const empty = await call(tools, "sessions_subscribe", { cancel: made.json!.id });
+    expect(empty.json!.removed).toBe(true);
+    expect((await call(tools, "sessions_subscribe")).json!.note).toBe("This session is not subscribed to anything.");
   });
 
   test("a peer cannot restart a human-stopped session or add to its history", async () => {
@@ -84,7 +107,7 @@ describe("subscribing and answering", () => {
     expect(subscribed.json).toMatchObject({ subscriberSessionId: host.id, members: [{ sessionId: target.id }] });
     expect(String(subscribed.json!.note)).toContain(`ONE notification when ${target.id} is done`);
 
-    const listed = await call(tools, "sessions_subscriptions");
+    const listed = await call(tools, "sessions_subscribe");
     expect((listed.json!.cohorts as unknown[]).length).toBe(1);
 
     for (const id of [host.id, target.id]) {
@@ -92,9 +115,9 @@ describe("subscribing and answering", () => {
       expect(stored).not.toContain(id === host.id ? target.id : host.id);
     }
 
-    const removed = await call(tools, "sessions_unsubscribe", { subscriptionId: subscribed.json!.id });
+    const removed = await call(tools, "sessions_subscribe", { cancel: subscribed.json!.id });
     expect(removed.json!.removed).toBe(true);
-    const again = await call(tools, "sessions_unsubscribe", { subscriptionId: subscribed.json!.id });
+    const again = await call(tools, "sessions_subscribe", { cancel: subscribed.json!.id });
     expect(again.isError).toBe(false);
     expect(again.json!.removed).toBe(false);
   });

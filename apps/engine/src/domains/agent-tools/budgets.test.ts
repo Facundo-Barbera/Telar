@@ -87,7 +87,7 @@ const session = (index: number): Session =>
     origin: "session",
   }) as unknown as Session;
 
-/** A turn with a real answer on it, because `mode: "summary"` quotes answers
+/** A turn with a real answer on it, because `view: "summary"` quotes answers
  *  and a fixture of empty ones would not exercise the budget. */
 const turn = (index: number): Turn =>
   ({
@@ -372,18 +372,18 @@ const CASES: Array<{ tool: string; args?: Record<string, unknown>; ceiling: numb
   { tool: "sessions_send", args: { sessionId: SESSION_ID, input: "x".repeat(20_000) }, ceiling: 4_000, why: "a receipt, never an echo of the message" },
   // THE BARE CALL FOLDS (#608): the journal is the ask now, not the default.
   { tool: "sessions_read", args: { sessionId: SESSION_ID }, ceiling: 8_000, why: "five turns folded to a line each" },
-  { tool: "sessions_read", args: { sessionId: SESSION_ID, mode: "summary" }, ceiling: 8_000, why: "the same shape, asked for by name" },
-  { tool: "sessions_read", args: { sessionId: SESSION_ID, mode: "events" }, ceiling: 14_000, why: "the latest page, at the 12 KB event budget" },
-  { tool: "sessions_read", args: { sessionId: SESSION_ID, mode: "events", from: "start" }, ceiling: 14_000, why: "the first page, same budget" },
-  { tool: "sessions_read", args: { sessionId: SESSION_ID, mode: "events", verbose: true }, ceiling: 14_000, why: "nothing dropped, same budget" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "summary" }, ceiling: 8_000, why: "the same shape, asked for by name" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "events" }, ceiling: 14_000, why: "the latest page, at the 12 KB event budget" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "events", from: "start" }, ceiling: 14_000, why: "the first page, same budget" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "events", verbose: true }, ceiling: 14_000, why: "nothing dropped, same budget" },
   { tool: "sessions_status", args: { sessionId: SESSION_ID }, ceiling: 2_000, why: "five turns of 685, plus the live one" },
   { tool: "sessions_status", args: { sessionId: SESSION_ID, turns: 20 }, ceiling: 4_000, why: "the most a caller may ask for" },
   { tool: "sessions_stop", args: { sessionId: SESSION_ID }, ceiling: 2_000, why: "a count and a sentence, never the turns" },
   { tool: "sessions_settle", args: { sessionId: SESSION_ID }, ceiling: 1_000, why: "a title and a sentence" },
-  { tool: "sessions_diff", args: { sessionId: SESSION_ID }, ceiling: MAX_ANSWER_CHARS, why: "500 files and 60 commits" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "diff" }, ceiling: MAX_ANSWER_CHARS, why: "500 files and 60 commits" },
   { tool: "sessions_subscribe", args: { sessionIds: [SESSION_ID] }, ceiling: 1_500, why: "one subscription and a sentence" },
-  { tool: "sessions_unsubscribe", args: { subscriptionId: "sub_1" }, ceiling: 500, why: "a boolean" },
-  { tool: "sessions_subscriptions", ceiling: MAX_ANSWER_CHARS, why: "200 subscriptions" },
+  { tool: "sessions_subscribe", args: { cancel: "sub_1" }, ceiling: 500, why: "a boolean" },
+  { tool: "sessions_subscribe", ceiling: MAX_ANSWER_CHARS, why: "200 subscriptions" },
   { tool: "sessions_requests", args: { sessionId: SESSION_ID }, ceiling: MAX_ANSWER_CHARS, why: "200 open questions with their fields" },
   { tool: "sessions_resolve_request", args: { sessionId: SESSION_ID, requestId: "req_1", decision: "accept" }, ceiling: 1_000, why: "one request and a sentence" },
   /**
@@ -410,24 +410,24 @@ const CASES: Array<{ tool: string; args?: Record<string, unknown>; ceiling: numb
    * So this ceiling is the worst case plus a little, stated rather than nudged,
    * and the acceptance number lives in the file that measures acceptance.
    */
-  { tool: "sessions_find", args: { q: "appearance" }, ceiling: 5_000, why: "ten worst-case hits, each quoting a full 200-character line" },
-  { tool: "sessions_find", args: { q: "appearance", limit: 50 }, ceiling: MAX_ANSWER_CHARS, why: "50 hits each quoting a 200-character line" },
+  { tool: "sessions_list", args: { q: "appearance" }, ceiling: 5_000, why: "ten worst-case hits, each quoting a full 200-character line" },
+  { tool: "sessions_list", args: { q: "appearance", limit: 50 }, ceiling: MAX_ANSWER_CHARS, why: "50 hits each quoting a 200-character line" },
   /**
    * THE ISSUE'S OWN NUMBER, ON THE THING THE ISSUE BUDGETS. "Under 6 KB per
-   * page" is asked of `sessions_outline`, and what a caller receives is the
+   * page" is asked of the outline view, and what a caller receives is the
    * pretty-printed answer — 7,048 B measured before this, against 5,918 B
    * leaving the store. See `OUTLINE_ANSWER_CHARS`.
    */
-  { tool: "sessions_outline", args: { sessionId: SESSION_ID }, ceiling: 6_000, why: "the issue's per-page budget, measured on what is delivered" },
-  { tool: "sessions_outline", args: { sessionId: SESSION_ID, limit: 100 }, ceiling: 6_000, why: "the widest ask — the delivered bound holds whatever was asked for" },
-  { tool: "sessions_answer", args: { sessionId: SESSION_ID }, ceiling: 12_000, why: "the 8,000-character floor slice, plus the envelope" },
-  { tool: "sessions_answer", args: { sessionId: SESSION_ID, limit: 64_000 }, ceiling: 66_000, why: "a verbatim slice the backstop may not clip — see ANSWER_MAX_CHARS" },
-  { tool: "sessions_steps", args: { sessionId: SESSION_ID, runId: RUN_ID }, ceiling: MAX_ANSWER_CHARS, why: "50 of a 400-step run" },
-  { tool: "sessions_steps", args: { sessionId: SESSION_ID, runId: RUN_ID, limit: 200 }, ceiling: MAX_ANSWER_CHARS, why: "the widest ask against the longest run" },
-  { tool: "sessions_step", args: { sessionId: SESSION_ID, runId: RUN_ID, step: 12 }, ceiling: 12_000, why: "one step at the 8,000-character default" },
-  { tool: "sessions_step", args: { sessionId: SESSION_ID, runId: RUN_ID, step: 12, maxChars: 64_000 }, ceiling: 66_000, why: "the most a caller may ask one step for" },
-  { tool: "sessions_grep", args: { sessionId: SESSION_ID, pattern: "index.lock" }, ceiling: MAX_ANSWER_CHARS, why: "20 matches with 200 characters of context each" },
-  { tool: "sessions_grep", args: { sessionId: SESSION_ID, pattern: "index.lock", limit: 100 }, ceiling: MAX_ANSWER_CHARS, why: "the widest ask — 100 × 200 characters is past the backstop unbounded" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "outline" }, ceiling: 6_000, why: "the issue's per-page budget, measured on what is delivered" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "outline", limit: 100 }, ceiling: 6_000, why: "the widest ask — the delivered bound holds whatever was asked for" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "answer" }, ceiling: 12_000, why: "the 8,000-character floor slice, plus the envelope" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "answer", maxChars: 64_000 }, ceiling: 66_000, why: "a verbatim slice the backstop may not clip — see SLICE_MAX_CHARS" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "steps", runId: RUN_ID }, ceiling: MAX_ANSWER_CHARS, why: "50 of a 400-step run" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "steps", runId: RUN_ID, limit: 200 }, ceiling: MAX_ANSWER_CHARS, why: "the widest ask against the longest run" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "step", runId: RUN_ID, step: 12 }, ceiling: 12_000, why: "one step at the 8,000-character default" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "step", runId: RUN_ID, step: 12, maxChars: 64_000 }, ceiling: 66_000, why: "the most a caller may ask one step for" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "grep", pattern: "index.lock" }, ceiling: MAX_ANSWER_CHARS, why: "20 matches with 200 characters of context each" },
+  { tool: "sessions_read", args: { sessionId: SESSION_ID, view: "grep", pattern: "index.lock", limit: 100 }, ceiling: MAX_ANSWER_CHARS, why: "the widest ask — 100 × 200 characters is past the backstop unbounded" },
   { tool: "notes_list", args: { projects: true }, ceiling: 2_000, why: "12 projects" },
   { tool: "notes_list", ceiling: MAX_ANSWER_CHARS, why: "200 notes as titles and previews" },
   { tool: "notes_list", args: { noteId: "note_0" }, ceiling: MAX_ANSWER_CHARS, why: "one note, whole — this is the call that carries a body" },
@@ -437,7 +437,7 @@ const CASES: Array<{ tool: string; args?: Record<string, unknown>; ceiling: numb
 
 describe("every tool answer is bounded", () => {
   for (const { tool, args, ceiling, why } of CASES) {
-    const label = args ? `${tool}(${Object.keys(args).join(", ")})` : `${tool}()`;
+    const label = args ? `${tool}(${Object.keys(args).map((key) => (key === "view" ? `view: ${String(args.view)}` : key)).join(", ")})` : `${tool}()`;
     test(`${label} stays under ${ceiling} characters — ${why}`, async () => {
       const text = await wall().call(tool, args ?? {});
       expect(text.length).toBeLessThanOrEqual(ceiling);
@@ -494,9 +494,9 @@ describe("every tool description is short enough to carry", () => {
    * with no capability at all still paid for it. The count and the absence are
    * asserted together so a re-add cannot pass by replacing something else.
    */
-  test("`warp` is not on the wall, and the wall is twenty-three tools", () => {
+  test("`warp` is not on the wall, and the wall is fourteen tools", () => {
     const names = wall().registered.map((entry) => entry.name);
-    expect(names.length).toBe(23);
+    expect(names.length).toBe(14);
     expect(names).not.toContain("warp");
     expect(names.every((name) => name.startsWith("sessions_") || name.startsWith("notes_"))).toBe(true);
   });
