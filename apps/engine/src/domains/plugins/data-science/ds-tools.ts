@@ -18,6 +18,14 @@ const resultText = (outputs: Parameters<typeof describeOutputs>[0]) => describeO
 
 export function dsTools(tool: ToolFactory, capability: DsCapability): unknown[] {
   return [
+    ...kernelTools(tool, capability),
+    ...analysisTools(tool, capability),
+    ...experimentTools(tool, capability),
+  ];
+}
+
+function kernelTools(tool: ToolFactory, capability: DsCapability): unknown[] {
+  return [
     tool(
       "ds_kernel",
       "The session's kernel: its state, which analysis libraries import (pandas, matplotlib, duckdb, pyarrow, polars), and which interpreter. `python` is the environment marked in use; `executable` is what the live kernel reports as sys.executable — they should agree. Cheap. Call it once before leaning on ds_query or ds_plot.",
@@ -153,7 +161,11 @@ ${py("_out")}`;
         }
       },
     ),
+  ];
+}
 
+function analysisTools(tool: ToolFactory, capability: DsCapability): unknown[] {
+  return [
     tool(
       "ds_plot",
       "Render a matplotlib figure and store it as a plot the human sees in the Plots panel. Either give `code` that draws with plt, or describe the chart (`of`, `kind`, `x`, `y`, `hue`) and one is composed. Returns the attachment id. Requires matplotlib.",
@@ -279,7 +291,11 @@ ${target ? `${target} = _res\n${py(`{"stored": ${JSON.stringify(target)}, "shape
         }
       },
     ),
+  ];
+}
 
+function experimentTools(tool: ToolFactory, capability: DsCapability): unknown[] {
+  return [
     tool(
       "ds_checkpoint",
       "Pickle the whole namespace to disk under a name, list checkpoints, or restore one — so a kernel restart does not cost an hour of loads. Objects that will not pickle are skipped and named.",
@@ -380,6 +396,7 @@ ${target ? `${target} = _res\n${py(`{"stored": ${JSON.stringify(target)}, "shape
     ),
   ];
 }
+
 
 function human(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

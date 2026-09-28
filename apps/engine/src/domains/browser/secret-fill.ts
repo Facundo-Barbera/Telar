@@ -132,18 +132,7 @@ export async function runSecretFill(deps: SecretFillDeps, rawArgs: Record<string
   const candidates = reorderByHint(listed.candidates, args.item);
 
   const wants: SecretFieldWant[] = args.fields.map((field) => ({ kind: field.kind, ...(field.label ? { label: field.label } : {}) }));
-  const sessionProfile = deps.profile ? await deps.profile() : null;
-  const profile = target.profileId
-    ? {
-        id: target.profileId,
-        ...(target.profileLabel
-          ? { label: target.profileLabel }
-          : sessionProfile && sessionProfile.id === target.profileId && sessionProfile.label
-            ? { label: sessionProfile.label }
-            : {}),
-        ...(sessionProfile && sessionProfile.id === target.profileId && sessionProfile.account ? { account: sessionProfile.account } : {}),
-      }
-    : null;
+  const profile = fillProfile(target, deps.profile ? await deps.profile() : null);
 
   const authorized = profile && deps.grants ? deps.grants.findAll({ profileId: profile.id, origin, wants }) : [];
   const authorizedCandidates = candidates.filter((candidate) => authorized.some((grant) => grant.itemId === candidate.id));
@@ -209,53 +198,12 @@ export async function runSecretFill(deps: SecretFillDeps, rawArgs: Record<string
 
   let submitted = false;
   if (args.submit) {
-    const beforeSubmit = await confirmTarget(deps.callBrowser, target, { originMustMatchExactly: exactOriginRequired });
-    if (beforeSubmit) {
-      return errorResult(`Filled ${describeFields(args.fields)} from “${chosen.title}” on ${origin}, but did not submit: ${beforeSubmit}`);
-    }
-    if (usedGrant && !stillAuthorizes(deps, usedGrant, wants)) {
-      return errorResult(
-        `Filled ${describeFields(args.fields)} from “${chosen.title}” on ${origin}, but did not submit: that remembered login was revoked.`,
-      );
-    }
-    const click = asToolResult(await deps.callBrowser("browser_click", {
-      tabId: target.index,
-      target: args.submit.target,
-      ...(args.submit.element ? { element: args.submit.element } : {}),
-    }));
-    if (click.isError) {
-      return errorResult(
-        `Filled ${describeFields(args.fields)} from “${chosen.title}” on ${origin}, but pressing the submit control failed: ${scrubSecrets(textOf(click), values)}`,
-      );
-    }
+    const refused = await submitFill(deps, target, args, chosen, values, usedGrant ? { grant: usedGrant, wants } : undefined, exactOriginRequired);
+    if (refused) return refused;
     submitted = true;
   }
 
-  if (rememberThis && profile && deps.grants) {
-    const landed = await readFillTarget(deps.callBrowser);
-    const unmoved =
-      landed !== null &&
-      landed.index === target.index &&
-      landed.uid === target.uid &&
-      landed.profileId === target.profileId &&
-      landed.origin === origin;
-    if (unmoved) {
-      try {
-        deps.grants.remember({
-          profileId: profile.id,
-          ...(profile.label ? { profileLabel: profile.label } : {}),
-          origin,
-          itemId: chosen.id,
-          itemTitle: chosen.title,
-          ...(chosen.vault ? { vault: chosen.vault } : {}),
-          fields: wants.map((want) => ({ kind: want.kind, ...(want.label ? { label: want.label } : {}) })),
-        });
-      } catch {
-      }
-    } else {
-      rememberThis = false;
-    }
-  }
+  if (rememberThis && profile && deps.grants) rememberThis = await rememberIfUnmoved(deps, deps.grants, target, profile, chosen, wants);
   if (usedGrant) {
     try { deps.grants?.touch(usedGrant.id); } catch { }
   }
@@ -270,6 +218,81 @@ export async function runSecretFill(deps: SecretFillDeps, rawArgs: Record<string
       },
     ],
   };
+}
+
+function fillProfile(target: FillTarget, sessionProfile: Awaited<ReturnType<NonNullable<SecretFillDeps["profile"]>>> | null) {
+  if (!target.profileId) return null;
+  const same = sessionProfile && sessionProfile.id === target.profileId ? sessionProfile : undefined;
+  return {
+    id: target.profileId,
+    ...(target.profileLabel ? { label: target.profileLabel } : same?.label ? { label: same.label } : {}),
+    ...(same?.account ? { account: same.account } : {}),
+  };
+}
+
+async function submitFill(
+  deps: SecretFillDeps,
+  target: FillTarget,
+  args: ParsedArgs,
+  chosen: SecretCandidate,
+  values: readonly string[],
+  authorization: { grant: LoginGrant; wants: readonly SecretFieldWant[] } | undefined,
+  exactOriginRequired: boolean,
+): Promise<BrowserToolResult | undefined> {
+  const submit = args.submit!;
+  const origin = target.origin;
+  const beforeSubmit = await confirmTarget(deps.callBrowser, target, { originMustMatchExactly: exactOriginRequired });
+  if (beforeSubmit) {
+    return errorResult(`Filled ${describeFields(args.fields)} from “${chosen.title}” on ${origin}, but did not submit: ${beforeSubmit}`);
+  }
+  if (authorization && !stillAuthorizes(deps, authorization.grant, authorization.wants)) {
+    return errorResult(
+      `Filled ${describeFields(args.fields)} from “${chosen.title}” on ${origin}, but did not submit: that remembered login was revoked.`,
+    );
+  }
+  const click = asToolResult(await deps.callBrowser("browser_click", {
+    tabId: target.index,
+    target: submit.target,
+    ...(submit.element ? { element: submit.element } : {}),
+  }));
+  if (click.isError) {
+    return errorResult(
+      `Filled ${describeFields(args.fields)} from “${chosen.title}” on ${origin}, but pressing the submit control failed: ${scrubSecrets(textOf(click), values)}`,
+    );
+  }
+  return undefined;
+}
+
+async function rememberIfUnmoved(
+  deps: SecretFillDeps,
+  grants: NonNullable<SecretFillDeps["grants"]>,
+  target: FillTarget,
+  profile: NonNullable<ReturnType<typeof fillProfile>>,
+  chosen: SecretCandidate,
+  wants: readonly SecretFieldWant[],
+): Promise<boolean> {
+  const origin = target.origin;
+  const landed = await readFillTarget(deps.callBrowser);
+  const unmoved =
+    landed !== null &&
+    landed.index === target.index &&
+    landed.uid === target.uid &&
+    landed.profileId === target.profileId &&
+    landed.origin === origin;
+  if (!unmoved) return false;
+  try {
+    grants.remember({
+      profileId: profile.id,
+      ...(profile.label ? { profileLabel: profile.label } : {}),
+      origin,
+      itemId: chosen.id,
+      itemTitle: chosen.title,
+      ...(chosen.vault ? { vault: chosen.vault } : {}),
+      fields: wants.map((want) => ({ kind: want.kind, ...(want.label ? { label: want.label } : {}) })),
+    });
+  } catch {
+  }
+  return true;
 }
 
 function describeFields(fields: readonly ParsedField[]): string {

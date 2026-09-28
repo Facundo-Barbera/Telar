@@ -120,6 +120,13 @@ function stepAddress(raw: unknown): number | string | undefined {
 
 export function sessionQueryTools(tool: ToolFactory, capability: SessionsQueryCapability): unknown[] {
   return [
+    ...lookupTools(tool, capability),
+    ...stepTools(tool, capability),
+  ];
+}
+
+function lookupTools(tool: ToolFactory, capability: SessionsQueryCapability): unknown[] {
+  return [
     tool(
       "sessions_find",
       FIND,
@@ -154,6 +161,7 @@ export function sessionQueryTools(tool: ToolFactory, capability: SessionsQueryCa
         }
       },
     ),
+
     tool(
       "sessions_outline",
       OUTLINE,
@@ -189,6 +197,7 @@ export function sessionQueryTools(tool: ToolFactory, capability: SessionsQueryCa
         }
       },
     ),
+
     tool(
       "sessions_answer",
       ANSWER,
@@ -222,6 +231,11 @@ export function sessionQueryTools(tool: ToolFactory, capability: SessionsQueryCa
         }
       },
     ),
+  ];
+}
+
+function stepTools(tool: ToolFactory, capability: SessionsQueryCapability): unknown[] {
+  return [
     tool(
       "sessions_steps",
       STEPS,
@@ -261,6 +275,7 @@ export function sessionQueryTools(tool: ToolFactory, capability: SessionsQueryCa
         }
       },
     ),
+
     tool(
       "sessions_step",
       STEP,
@@ -303,6 +318,7 @@ export function sessionQueryTools(tool: ToolFactory, capability: SessionsQueryCa
         }
       },
     ),
+
     tool(
       "sessions_grep",
       GREP,
@@ -344,3 +360,4 @@ export function sessionQueryTools(tool: ToolFactory, capability: SessionsQueryCa
     ),
   ];
 }
+
