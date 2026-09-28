@@ -102,6 +102,34 @@ test("an item without an editor is listed but cannot be chosen", async () => {
   view.done();
 });
 
+const GROUPS = [
+  { id: "agents", title: "Agents", items: ITEMS.slice(0, 2), footer: <p>Add a login</p> },
+  { id: "usage", title: "Usage", items: [{ id: "usage:hub", label: "HUB", detail: <p>hub editor</p> }] },
+];
+
+test("groups draw their headers and footers, and the items stay in order", async () => {
+  const view = await mount(<MasterDetail title="Providers" param="provider" groups={GROUPS} />);
+  const groups = [...view.host.querySelectorAll('[role="group"]')];
+  expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Agents", "Usage"]);
+  expect(groups[0]!.textContent).toContain("Add a login");
+  expect([...groups[1]!.querySelectorAll('[role="option"]')].map((option) => option.textContent)).toEqual(["HUB"]);
+  expect(view.shown()).toEqual(["alpha editor"]);
+  view.done();
+});
+
+test("up and down cross from one group into the next", async () => {
+  window.history.replaceState(null, "", "/settings?section=providers&provider=beta");
+  const view = await mount(<MasterDetail title="Providers" param="provider" groups={GROUPS} />);
+  view.option("beta").focus();
+  await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  expect(view.shown()).toEqual(["hub editor"]);
+  expect(document.activeElement).toBe(view.option("usage:hub"));
+  expect(new URLSearchParams(window.location.search).get("provider")).toBe("usage:hub");
+  await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true })));
+  expect(view.shown()).toEqual(["beta editor"]);
+  view.done();
+});
+
 test("the split answers to its own named container, so a narrow settings pane stacks it", () => {
   const markup = renderToStaticMarkup(<MasterDetail title="Plugins" param="plugin" items={ITEMS} />);
   expect(markup).toContain("@container/master");

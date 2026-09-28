@@ -30,7 +30,6 @@ const PluginsPage = dynamic(() => import("@/features/plugins/components/plugins-
 const UpdatesSection = dynamic(() => import("@/features/updates/components/updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("@/features/storage/components/store-section").then((mod) => mod.StoreSection));
 const CleanupSection = dynamic(() => import("@/features/worktrees/components/cleanup-section").then((mod) => mod.CleanupSection));
-const UsageProvidersSection = dynamic(() => import("@/features/usage").then((mod) => mod.UsageProvidersSection));
 const WorkspaceSection = dynamic(() => import("@/features/projects/components/workspace-section").then((mod) => mod.WorkspaceSection));
 
 const api = createEngineApi();
@@ -153,12 +152,7 @@ export function SettingsPage() {
           </>
         )}
 
-        {active === "providers" && (
-          <>
-            <ProvidersSection />
-            <UsageProvidersSection />
-          </>
-        )}
+        {active === "providers" && <ProvidersSection />}
 
         {active === "source-control" && <SourceControlPage />}
 

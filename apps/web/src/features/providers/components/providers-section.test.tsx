@@ -30,6 +30,7 @@ beforeEach(() => {
       return json({ providerInstance: INSTANCES[0] });
     }
     if (url.startsWith("/api/provider-instances")) return json({ providerInstances: INSTANCES, probes: PROBES });
+    if (url.startsWith("/api/usage/sources")) return json({ sources: [{ id: "home-hub", label: "Home hub", url: "http://localhost:8317", enabled: true, keyRedacted: "…abcd" }] });
     return json({});
   }) as typeof fetch;
   window.setTimeout = ((fn: () => void) => {
@@ -63,7 +64,7 @@ async function mount() {
 
 test("every login is listed with its status, and the first one's settings sit beside the list", async () => {
   const view = await mount();
-  const labels = [...view.host.querySelectorAll('[role="option"]')].map((option) => option.textContent);
+  const labels = [...view.host.querySelectorAll('[aria-label="Agents"] [role="option"]')].map((option) => option.textContent);
   expect(labels).toHaveLength(3);
   expect(labels.join("|")).toContain("Day job");
   expect(labels.join("|")).toContain("Not installed");
@@ -88,5 +89,25 @@ test("the list switch saves the same enabled patch as before", async () => {
   await act(async () => (view.host.querySelector('[aria-label="Enable Day job"]') as HTMLElement).click());
   for (let i = 0; i < 10; i++) await act(async () => await Promise.resolve());
   expect(saved).toEqual([{ id: "claude_work", enabled: false }]);
+  view.done();
+});
+
+test("agents and usage hubs are two groups of one list, and nothing sits below it", async () => {
+  const view = await mount();
+  const groups = [...view.host.querySelectorAll('[role="group"]')];
+  expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Agents", "Usage"]);
+  expect(groups[1]!.textContent).toContain("Home hub");
+  expect(groups[1]!.textContent).toContain("Add hub");
+  const section = view.host.querySelector("section")!;
+  expect([...view.host.children].filter((child) => child !== section && child.textContent)).toEqual([]);
+  expect(view.host.textContent).not.toContain("Usage providers");
+  view.done();
+});
+
+test("a deep link to a usage hub opens its settings", async () => {
+  window.history.replaceState(null, "", "/settings?section=providers&provider=usage:home-hub");
+  const view = await mount();
+  expect(view.shown()).toEqual(["usage:home-hub"]);
+  expect(view.host.querySelector('[data-detail-for="usage:home-hub"] #providers-usage-hub-home-hub')).not.toBeNull();
   view.done();
 });

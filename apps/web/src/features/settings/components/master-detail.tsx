@@ -16,6 +16,14 @@ export type MasterDetailItem = {
   detail?: ReactNode;
 };
 
+export type MasterDetailGroup = {
+  id: string;
+  title?: string;
+  items: readonly MasterDetailItem[];
+  empty?: ReactNode;
+  footer?: ReactNode;
+};
+
 function readParam(param: string): string | null {
   return new URLSearchParams(window.location.search).get(param);
 }
@@ -29,7 +37,8 @@ function writeParam(param: string, value: string) {
 export function MasterDetail({
   title,
   description,
-  items,
+  items = [],
+  groups: grouped,
   param,
   empty,
   footer,
@@ -37,7 +46,8 @@ export function MasterDetail({
 }: {
   title: string;
   description?: ReactNode;
-  items: readonly MasterDetailItem[];
+  items?: readonly MasterDetailItem[];
+  groups?: readonly MasterDetailGroup[];
   param: string;
   empty?: ReactNode;
   footer?: ReactNode;
@@ -46,7 +56,9 @@ export function MasterDetail({
   const [chosen, setChosen] = useState<string>();
   const list = useRef<HTMLDivElement>(null);
   const pending = usePendingReveal();
-  const withDetail = items.filter((item) => item.detail !== undefined);
+  const groups = grouped ?? [{ id: "all", items, empty, footer }];
+  const all = groups.flatMap((group) => group.items);
+  const withDetail = all.filter((item) => item.detail !== undefined);
   const selected = withDetail.find((item) => item.id === chosen) ?? withDetail[0];
 
   useEffect(() => {
@@ -88,6 +100,44 @@ export function MasterDetail({
     list.current?.querySelector<HTMLElement>(`[data-master-item="${CSS.escape(next.id)}"]`)?.focus();
   };
 
+  const renderItem = (item: MasterDetailItem) => {
+    const on = item === selected;
+    return (
+      <div key={item.id} className={cn("flex items-start gap-2 px-3 py-2.5 transition-colors", on ? "bg-muted" : item.detail !== undefined && "hover:bg-muted/40")}>
+        <button
+          type="button"
+          role="option"
+          aria-selected={on}
+          data-master-item={item.id}
+          tabIndex={on || (!selected && item === all[0]) ? 0 : -1}
+          disabled={item.detail === undefined}
+          onClick={() => choose(item.id)}
+          className={cn(
+            "flex min-w-0 flex-1 items-start gap-2.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            item.detail === undefined && "cursor-default",
+            item.dimmed && "opacity-60",
+          )}
+        >
+          {item.icon && <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground/80">{item.icon}</span>}
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className={cn("truncate text-sm text-foreground", on && "font-medium")}>{item.label}</span>
+              {item.badge}
+            </span>
+            {(item.unavailable ?? item.description) && (
+              <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">{item.unavailable ?? item.description}</span>
+            )}
+          </span>
+        </button>
+        {item.control && (
+          <span inert={item.unavailable ? true : undefined} className={cn("flex shrink-0 items-center", item.unavailable && "opacity-50")}>
+            {item.control}
+          </span>
+        )}
+      </div>
+    );
+  };
+
   return (
     <section className="@container/master mb-6 last:mb-0">
       <div className="mb-2 px-4">
@@ -96,47 +146,20 @@ export function MasterDetail({
       </div>
       <div className={cn("grid gap-6", withDetail.length > 0 && "@min-[44rem]/master:grid-cols-[15rem_minmax(0,1fr)] @min-[44rem]/master:items-start")}>
         <div className="overflow-hidden rounded-xl border border-border bg-card shadow-1 @min-[44rem]/master:sticky @min-[44rem]/master:top-0">
-          <div ref={list} role="listbox" aria-label={title} onKeyDown={onKeyDown} className="divide-y divide-border/60">
-            {items.length === 0 && <div className="px-4">{empty}</div>}
-            {items.map((item) => {
-              const on = item === selected;
-              return (
-                <div key={item.id} className={cn("flex items-start gap-2 px-3 py-2.5 transition-colors", on ? "bg-muted" : item.detail !== undefined && "hover:bg-muted/40")}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={on}
-                    data-master-item={item.id}
-                    tabIndex={on || (!selected && item === items[0]) ? 0 : -1}
-                    disabled={item.detail === undefined}
-                    onClick={() => choose(item.id)}
-                    className={cn(
-                      "flex min-w-0 flex-1 items-start gap-2.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      item.detail === undefined && "cursor-default",
-                      item.dimmed && "opacity-60",
-                    )}
-                  >
-                    {item.icon && <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground/80">{item.icon}</span>}
-                    <span className="min-w-0 flex-1">
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <span className={cn("truncate text-sm text-foreground", on && "font-medium")}>{item.label}</span>
-                        {item.badge}
-                      </span>
-                      {(item.unavailable ?? item.description) && (
-                        <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">{item.unavailable ?? item.description}</span>
-                      )}
-                    </span>
-                  </button>
-                  {item.control && (
-                    <span inert={item.unavailable ? true : undefined} className={cn("flex shrink-0 items-center", item.unavailable && "opacity-50")}>
-                      {item.control}
-                    </span>
-                  )}
+          <div ref={list} role="listbox" aria-label={title} onKeyDown={onKeyDown}>
+            {groups.map((group) => (
+              <div key={group.id} role="group" {...(group.title ? { "aria-label": group.title } : {})} className="border-b border-border/60 last:border-b-0">
+                {group.title && (
+                  <div className="px-3 pt-3 pb-1 text-3xs font-medium tracking-wider text-muted-foreground/70 uppercase">{group.title}</div>
+                )}
+                <div className="divide-y divide-border/60">
+                  {group.items.length === 0 && <div className="px-4">{group.empty}</div>}
+                  {group.items.map((item) => renderItem(item))}
                 </div>
-              );
-            })}
+                {group.footer && <div className="border-t border-border/60 px-4">{group.footer}</div>}
+              </div>
+            ))}
           </div>
-          {footer && <div className="border-t border-border/60 px-4">{footer}</div>}
         </div>
         {withDetail.length > 0 && (
           <div className="min-w-0">

@@ -25,6 +25,7 @@ import { Switch } from "@/ui/switch";
 import { binaryKey, useProviderInstances, type UpdateReport } from "../hooks/use-provider-instances";
 import { announceProviderInstancesChanged } from "../provider-instance-cache";
 import { MasterDetail, Row, SettingsGroup, type MasterDetailItem } from "@/features/settings";
+import { useUsageProviderGroup } from "@/features/usage";
 
 const api = createEngineApi();
 
@@ -196,7 +197,7 @@ export function ProvidersSection() {
   const [added, setAdded] = useState<string>();
 
   const probeFor = (id: string) => probes.find((probe) => probe.instanceId === id);
-  const missing = probes.filter((probe) => !probe.installed);
+  const usage = useUsageProviderGroup();
 
   const items = (providers.unreachable ? [] : (instances ?? [])).map((instance): MasterDetailItem => {
     const probe = probeFor(instance.id);
@@ -211,7 +212,17 @@ export function ProvidersSection() {
         <Switch checked={instance.enabled} onCheckedChange={(checked) => void providers.patch(instance, { enabled: Boolean(checked) })} aria-label={`Enable ${title}`} />
       ),
       detail: (
-        <ProviderInstanceCard
+        <>
+          {probe && !probe.installed && (
+            <SettingsGroup>
+              <Row
+                label={`${DRIVER_LABEL[probe.driver]} is not installed`}
+                hint={probe.message ?? "Install the CLI to use this login."}
+                control={<Badge variant="outline">Missing</Badge>}
+              />
+            </SettingsGroup>
+          )}
+          <ProviderInstanceCard
           instance={instance}
           {...(probe ? { probe } : {})}
           signInCommand={signInCommand(instance)}
@@ -229,55 +240,49 @@ export function ProvidersSection() {
           onUpdateCli={() => void providers.runUpdate(instance)}
           updating={updating === binaryKey(instance)}
           error={errors[instance.id] ?? null}
-        />
+          />
+        </>
       ),
     };
   });
 
   return (
     <>
-      <MasterDetail
-        title="Logins"
-        description="Each row is one configured login."
-        param="provider"
-        items={items}
-        {...(added ? { select: added } : {})}
-        empty={
-          providers.unreachable ? (
-            <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
-          ) : (
-            <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
-          )
-        }
-        footer={
-          <div className="flex flex-wrap items-center gap-2 py-3">
-            <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
-              <PlusIcon />
-              Add a login
-            </Button>
-            <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => void providers.recheck()}>
-              <RotateCwIcon className={rechecking ? "animate-spin" : ""} />
-              Re-check
-            </Button>
-          </div>
-        }
-      />
-
       {updateReport && <UpdateReportCard report={updateReport} />}
 
-      {missing.length > 0 && (
-        <SettingsGroup title="Not on this machine">
-          {missing.map((probe) => (
-            <Row
-              key={probe.instanceId}
-              label={`${DRIVER_LABEL[probe.driver]} is not installed`}
-              hint={probe.message ?? "Install the CLI to use this login."}
-              control={<Badge variant="outline">Missing</Badge>}
-            />
-          ))}
-        </SettingsGroup>
-      )}
+      <MasterDetail
+        title="Providers"
+        description="Agent logins, and the hubs whose remaining quota Usage reads."
+        param="provider"
+        {...(added ? { select: added } : {})}
+        groups={[
+          {
+            id: "agents",
+            title: "Agents",
+            items,
+            empty: providers.unreachable ? (
+              <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
+            ) : (
+              <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
+            ),
+            footer: (
+              <div className="flex flex-wrap items-center gap-2 py-3">
+                <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+                  <PlusIcon />
+                  Add a login
+                </Button>
+                <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => void providers.recheck()}>
+                  <RotateCwIcon className={rechecking ? "animate-spin" : ""} />
+                  Re-check
+                </Button>
+              </div>
+            ),
+          },
+          usage.group,
+        ]}
+      />
 
+      {usage.dialog}
       <AddInstanceDialog
         open={adding}
         onOpenChange={setAdding}

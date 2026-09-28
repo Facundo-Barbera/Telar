@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
 import type { UsageLimitSource } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
@@ -17,7 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/ui/dialog";
-import { Row, SettingsGroup } from "@/features/settings";
+import { Row, SettingsGroup, type MasterDetailGroup, type MasterDetailItem } from "@/features/settings";
 
 const api = createEngineApi();
 
@@ -151,56 +151,31 @@ function AddHubDialog({
   );
 }
 
-function HubRow({ source, onChange }: { source: UsageLimitSource; onChange: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-
-  const patch = async (next: { enabled?: boolean }) => {
-    setError(null);
-    try {
-      // Omitting the key keeps the stored one.
-      await api.saveUsageLimitSource({ id: source.id, ...next });
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause.message : "That change was not saved.");
-    }
-    onChange();
-  };
-
-  const remove = async () => {
-    if (!window.confirm(`Remove "${source.label ?? source.url}"? Its management key is forgotten with it.`)) return;
-    setError(null);
-    try {
-      await api.removeUsageLimitSource(source.id);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause.message : "That hub could not be removed.");
-    }
-    onChange();
-  };
-
+function HubDetail({ source, error, onRemove }: { source: UsageLimitSource; error: string | null; onRemove: () => void }) {
+  const name = source.label ?? source.url;
   return (
-    <Row
-      id={`providers-usage-hub-${source.id}`}
-      icon={ServerIcon}
-      label={source.label ?? source.url}
-      hint={source.url}
-      status={source.keyRedacted ? undefined : <Badge variant="outline">No key</Badge>}
-      error={error}
-      control={
-        <div className="flex items-center gap-2">
-          <Switch
-            checked={source.enabled}
-            onCheckedChange={(next: boolean) => void patch({ enabled: next })}
-            aria-label={`Read quota from ${source.label ?? source.url}`}
-          />
-          <Button size="icon-sm" variant="ghost" aria-label={`Remove ${source.label ?? source.url}`} onClick={() => void remove()}>
+    <SettingsGroup title={name} description="A hub that pools subscription accounts. Its remaining quota shows under Limits on the Usage page.">
+      <Row
+        id={`providers-usage-hub-${source.id}`}
+        icon={ServerIcon}
+        label="Management API"
+        hint={source.url}
+        status={source.keyRedacted ? undefined : <Badge variant="outline">No key</Badge>}
+        error={error}
+        control={
+          <Button size="sm" variant="ghost" aria-label={`Remove ${name}`} onClick={onRemove}>
             <Trash2Icon />
+            Remove
           </Button>
-        </div>
-      }
-    />
+        }
+      />
+    </SettingsGroup>
   );
 }
 
-export function UsageProvidersSection() {
+const USAGE_ITEM_PREFIX = "usage:";
+
+export function useUsageProviderGroup(): { group: MasterDetailGroup; dialog: ReactNode } {
   const [sources, setSources] = useState<UsageLimitSource[]>();
   const [unreachable, setUnreachable] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -219,38 +194,71 @@ export function UsageProvidersSection() {
     return () => window.clearTimeout(task);
   }, [load]);
 
-  return (
-    <>
-      <SettingsGroup
-        title="Usage providers"
-        description="Hubs that pool subscription accounts. Their remaining quota shows under Limits on the Usage page."
-        {...(adding
-          ? {}
-          : {
-              action: (
-                <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
-                  <PlusIcon className="size-3.5" />
-                  Add hub
-                </Button>
-              ),
-            })}
-      >
-        {unreachable ? (
-          <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
-        ) : sources === undefined ? (
-          <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
-        ) : sources.length === 0 ? (
-          <Row
-            icon={ServerIcon}
-            label="No hubs configured"
-            hint="Without one, Usage reports what this Mac spent and nothing about how much of a pooled plan is left."
-          />
-        ) : (
-          sources.map((source) => <HubRow key={source.id} source={source} onChange={() => void load()} />)
-        )}
-      </SettingsGroup>
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const reload = () => void load();
+  const setError = (id: string, error: string | null) => setErrors((current) => ({ ...current, [id]: error }));
 
-      <AddHubDialog open={adding} onOpenChange={setAdding} taken={(sources ?? []).map((source) => source.id)} onAdded={() => void load()} />
-    </>
+  const patch = async (source: UsageLimitSource, next: { enabled?: boolean }) => {
+    setError(source.id, null);
+    try {
+      // Omitting the key keeps the stored one.
+      await api.saveUsageLimitSource({ id: source.id, ...next });
+    } catch (cause) {
+      setError(source.id, cause instanceof EngineApiError ? cause.message : "That change was not saved.");
+    }
+    reload();
+  };
+
+  const remove = async (source: UsageLimitSource) => {
+    if (!window.confirm(`Remove "${source.label ?? source.url}"? Its management key is forgotten with it.`)) return;
+    setError(source.id, null);
+    try {
+      await api.removeUsageLimitSource(source.id);
+    } catch (cause) {
+      setError(source.id, cause instanceof EngineApiError ? cause.message : "That hub could not be removed.");
+    }
+    reload();
+  };
+  const items = (unreachable ? [] : (sources ?? [])).map(
+    (source): MasterDetailItem => ({
+      id: `${USAGE_ITEM_PREFIX}${source.id}`,
+      label: source.label ?? source.url,
+      icon: <ServerIcon className="size-4" />,
+      description: source.url,
+      ...(source.keyRedacted ? {} : { badge: <Badge variant="outline">No key</Badge> }),
+      dimmed: !source.enabled,
+      control: (
+        <Switch
+          checked={source.enabled}
+          onCheckedChange={(next: boolean) => void patch(source, { enabled: next })}
+          aria-label={`Read quota from ${source.label ?? source.url}`}
+        />
+      ),
+      detail: <HubDetail source={source} error={errors[source.id] ?? null} onRemove={() => void remove(source)} />,
+    }),
   );
+
+  return {
+    group: {
+      id: "usage",
+      title: "Usage",
+      items,
+      empty: unreachable ? (
+        <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
+      ) : sources === undefined ? (
+        <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
+      ) : (
+        <Row icon={ServerIcon} label="No hubs configured" hint="Without one, Usage reports what this Mac spent and nothing about how much of a pooled plan is left." />
+      ),
+      footer: (
+        <div className="py-3">
+          <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+            <PlusIcon className="size-3.5" />
+            Add hub
+          </Button>
+        </div>
+      ),
+    },
+    dialog: <AddHubDialog open={adding} onOpenChange={setAdding} taken={(sources ?? []).map((source) => source.id)} onAdded={reload} />,
+  };
 }
