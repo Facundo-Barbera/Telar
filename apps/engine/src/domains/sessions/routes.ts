@@ -1,8 +1,16 @@
+import { AgentTurnInput } from "@telar/engine-client";
 import { HttpError, matchesETag } from "../../platform/http/http";
 import { positiveParam, stringValue } from "../../platform/http/params";
 import { notModified, ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { sessionsStreamRoute, type OpenStream } from "./stream";
+
+function senderProof(value: unknown): AgentTurnInput["proof"] {
+  if (value === undefined) return undefined;
+  const parsed = AgentTurnInput.shape.proof.safeParse(value);
+  if (!parsed.success) throw new HttpError(400, "invalid_request", "proof is invalid");
+  return parsed.data;
+}
 
 const FIND_LIMIT_DEFAULT = 10;
 const FIND_LIMIT_MAX = 50;
@@ -70,7 +78,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
       method: "POST",
       path: "/v2/sessions",
       auth: "engine",
-      // The store validates every field; only `origin: "session"` and a `ceilingFrom` session are forwarded as provenance.
+      // The store validates every field; `origin: "session"`, `ceilingFrom` and a verified `proof` are the only provenance.
       handle: async ({ body }) => ({
         status: 201,
         body: {
@@ -88,7 +96,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
             ...(typeof body.providerInstanceId === "string" ? { providerInstanceId: body.providerInstanceId } : {}),
             ...(body.origin === "session" ? { origin: "session" as const } : {}),
             ...(typeof body.ceilingFrom === "string" ? { ceilingFrom: body.ceilingFrom } : {}),
-          }),
+          }, senderProof(body.proof)),
         },
       }),
     },

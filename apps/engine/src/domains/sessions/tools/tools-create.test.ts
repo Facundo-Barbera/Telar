@@ -4,8 +4,10 @@ import path from "node:path";
 import { workspacePath } from "@telar/engine-client";
 import { worktreeReady } from "../../../../test/worktree-ready";
 import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner } from "../../../platform/git/runner";
-import { TELAR_SKILL } from "..";
-import { cleanUp, capabilityOver, wall, engine, call } from "./test-helpers";
+import type { EngineStore } from "../../../state";
+import { TELAR_SKILL, sessionsTools } from "..";
+import { sessionsCapability, storeReads, storeSessionsPort } from "../capability";
+import { cleanUp, capabilityOver, wall, engine, call, type Registered } from "./test-helpers";
 
 afterEach(cleanUp);
 
@@ -34,16 +36,13 @@ describe("creating a session", () => {
     expect(created.json!.branch).toBeUndefined();
   });
 
-  test("NOTHING records who created it — no parent, no child, no link", async () => {
+  test("a door with no calling session records no parent", async () => {
     const { store, projectId } = engine();
-    const tools = wall(store);
-    const creator = store.lifecycle.createSession({ projectId, title: "the one doing the asking" });
-    const created = await call(tools, "sessions_create", { projectId, envMode: "local" });
-    const madeId = created.json!.id as string;
+    const created = await call(wall(store), "sessions_create", { projectId, envMode: "local" });
+    const made = store.records.get(created.json!.id as string);
 
-    const stored = fs.readFileSync(path.join(store.paths.sessions, madeId, "session.json"), "utf8");
-    expect(stored).not.toContain(creator.id);
-    expect(store.records.get(madeId).origin).toBe("session");
+    expect(made.origin).toBe("session");
+    expect(made.startedFrom).toBeUndefined();
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
       "cohorts", "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "unsubscribe",
     ]);
@@ -145,5 +144,61 @@ describe("a session whose checkout failed", () => {
     const note = String(status.json!.note);
     expect(note).toContain("still being made");
     expect(note).not.toContain(CUT_FAILURE);
+  });
+});
+
+describe("a session created by a session", () => {
+  function caller(store: EngineStore, projectId: string) {
+    const parent = store.lifecycle.createSession({ projectId, title: "the orchestrator" });
+    store.intake.submitTurn(parent.id, { runId: "run_parent", input: "dispatch" });
+    const claimToken = store.claims.claimTurn(parent.id, "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning(parent.id, "run_parent", claimToken);
+    const tools = new Map<string, Registered>();
+    sessionsTools(
+      (name, description, shape, run) => {
+        tools.set(name, { name, description, shape, run });
+        return { name };
+      },
+      sessionsCapability(storeSessionsPort(store), { sessionId: parent.id, proof: () => ({ runId: "run_parent", claimToken }) }, storeReads(store)),
+    );
+    return { parent, tools };
+  }
+
+  test("is born with the caller and its run as its parent", async () => {
+    const { store, projectId } = engine();
+    const { parent, tools } = caller(store, projectId);
+    const created = await call(tools, "sessions_create", { projectId, envMode: "local", title: "builder" });
+
+    expect(store.records.get(created.json!.id as string).startedFrom).toEqual({ sessionId: parent.id, runId: "run_parent" });
+    expect(store.records.get(parent.id).startedFrom).toBeUndefined();
+  });
+
+  test("with a task, gets exactly the one assignment create-then-send would give", async () => {
+    const { store, projectId } = engine();
+    const { parent, tools } = caller(store, projectId);
+    const created = await call(tools, "sessions_create", { projectId, envMode: "local", title: "one call", task: "port the parser" });
+    const oneCall = created.json!.id as string;
+    const twoCalls = (await call(tools, "sessions_create", { projectId, envMode: "local", title: "two calls" })).json!.id as string;
+    await call(tools, "sessions_send", { sessionId: twoCalls, intent: "task", input: "port the parser" });
+
+    const shape = (id: string) =>
+      store.queries.turns(id).map((turn) => ({ state: turn.state, input: turn.input, intent: turn.agentIntent, delivery: turn.agentDelivery, sender: turn.sender, source: turn.agentSourceRunId }));
+    expect(shape(oneCall)).toEqual([{ state: "queued", input: "port the parser", intent: "task", delivery: "wake", sender: { sessionId: parent.id }, source: "run_parent" }]);
+    expect(shape(oneCall)).toEqual(shape(twoCalls));
+    expect(store.queries.assignments(oneCall)).toHaveLength(1);
+    expect(store.queries.assignments(oneCall)[0]).toMatchObject({ fromSessionId: parent.id });
+    expect(created.json!.runId).toBe(store.queries.turns(oneCall)[0]!.runId);
+    expect(created.json!.taskState).toBe("queued");
+  });
+
+  test("without a task, nothing is assigned or queued", async () => {
+    const { store, projectId } = engine();
+    const { tools } = caller(store, projectId);
+    const created = await call(tools, "sessions_create", { projectId, envMode: "local" });
+    const id = created.json!.id as string;
+
+    expect(store.queries.turns(id)).toEqual([]);
+    expect(store.queries.assignments(id)).toEqual([]);
+    expect(created.json!.runId).toBeUndefined();
   });
 });

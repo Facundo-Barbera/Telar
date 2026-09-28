@@ -4,6 +4,11 @@ import type { Session } from "@telar/engine-client";
 import { err, failure, fillWithin, json, type ToolFactory } from "../../agent-tools";
 import { CREATE, LIST, LIST_CHARS, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, SEND, type SessionsCapability, summarise, summariseOne } from "./shared";
 
+const runIdFor = (tool: string, toolCallId: string | undefined): string =>
+  toolCallId
+    ? `run_${crypto.createHash("sha256").update(`${tool}:${toolCallId}`).digest("hex").slice(0, 32)}`
+    : `run_${crypto.randomUUID().replaceAll("-", "")}`;
+
 export function messagingTools(tool: ToolFactory, capability: SessionsCapability): unknown[] {
   return [
     tool(
@@ -71,51 +76,7 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
         });
       },
     ),
-    tool(
-      "sessions_create",
-      CREATE,
-      {
-        projectId: z.string().min(1).describe("From sessions_list's `projects`."),
-        title: z
-          .string()
-          .optional()
-          .describe("A few words. Write one — an untitled session is unidentifiable an hour later."),
-        envMode: z
-          .enum(["local", "worktree"])
-          .describe(
-            '"worktree" for anything that edits files: a checkout of its own. "local" shares the project\'s checkout with every other local session and the user\'s editor. No safe default.',
-          ),
-        driver: z
-          .enum(["claude", "codex"])
-          .optional()
-          .describe("Omit unless the user asked for one."),
-      },
-      async (args) => {
-        const projectId = String(args.projectId ?? "");
-        const envMode = args.envMode === "worktree" ? "worktree" : "local";
-        let session: Session;
-        try {
-          session = await capability.create({
-            projectId,
-            ...(typeof args.title === "string" && args.title.trim() ? { title: args.title } : {}),
-            envMode,
-            ...(args.driver === "claude" || args.driver === "codex" ? { driver: args.driver } : {}),
-          });
-        } catch (error) {
-          return err(`Could not create a session on "${projectId}": ${failure(error)}`);
-        }
-        const names = new Map<string, string>();
-        return json({
-          ...summariseOne(session, names),
-          note:
-            session.workspace.mode === "worktree"
-              ? `Created with a checkout of its own on branch ${session.workspace.branch}. Nothing is queued and nothing has started — send it a message with intent: task to give it work.`
-              : `Created against the project's own checkout, which it shares with anything else working there. Nothing is queued and nothing has started — send it a message with intent: task to give it work.`,
-          note2: "This session is a peer, not yours: it does not report back, and nothing records that you created it.",
-          access: `${session.runtimeMode} — never wider than your own, so if you have to ask about something, so does it.`,
-        });
-      },
-    ),
+    createTool(tool, capability),
     tool(
       "sessions_send",
       SEND,
@@ -130,9 +91,7 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
         const text = String(args.input ?? "");
         const corrects = typeof args.corrects === "string" && args.corrects.length > 0 ? args.corrects : undefined;
         const intent = args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report";
-        const runId = context?.toolCallId
-          ? `run_${crypto.createHash("sha256").update(`sessions_send:${context.toolCallId}`).digest("hex").slice(0, 32)}`
-          : `run_${crypto.randomUUID().replaceAll("-", "")}`;
+        const runId = runIdFor("sessions_send", context?.toolCallId);
         try {
           const { turn } = await capability.send(sessionId, { runId, input: text, intent, ...(corrects ? { corrects } : {}) });
           return json({
@@ -153,4 +112,65 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
       },
     ),
   ];
+}
+
+function createTool(tool: ToolFactory, capability: SessionsCapability): unknown {
+  return tool(
+    "sessions_create",
+    CREATE,
+    {
+      projectId: z.string().min(1).describe("From sessions_list's `projects`."),
+      title: z
+        .string()
+        .optional()
+        .describe("A few words. Write one — an untitled session is unidentifiable an hour later."),
+      envMode: z
+        .enum(["local", "worktree"])
+        .describe(
+          '"worktree" for anything that edits files: a checkout of its own. "local" shares the project\'s checkout with every other local session and the user\'s editor. No safe default.',
+        ),
+      driver: z
+        .enum(["claude", "codex"])
+        .optional()
+        .describe("Omit unless the user asked for one."),
+      task: z.string().min(1).optional().describe("A brief to assign at once, as sessions_send intent task would. It cannot see this conversation."),
+    },
+    async (args, context) => {
+      const projectId = String(args.projectId ?? "");
+      const envMode = args.envMode === "worktree" ? "worktree" : "local";
+      let session: Session;
+      try {
+        session = await capability.create({
+          projectId,
+          ...(typeof args.title === "string" && args.title.trim() ? { title: args.title } : {}),
+          envMode,
+          ...(args.driver === "claude" || args.driver === "codex" ? { driver: args.driver } : {}),
+        });
+      } catch (error) {
+        return err(`Could not create a session on "${projectId}": ${failure(error)}`);
+      }
+      const where = session.workspace.mode === "worktree"
+        ? `Created with a checkout of its own on branch ${session.workspace.branch}.`
+        : "Created against the project's own checkout, which it shares with anything else working there.";
+      const answer = {
+        ...summariseOne(session, new Map<string, string>()),
+        note: `${where} Nothing is queued and nothing has started — send it a message with intent: task to give it work.`,
+        note2: "It is filed under you, but it reports back only when you task it.",
+        access: `${session.runtimeMode} — never wider than your own, so if you have to ask about something, so does it.`,
+      };
+      if (typeof args.task !== "string" || !args.task) return json(answer);
+      try {
+        const { turn } = await capability.send(session.id, { runId: runIdFor("sessions_create", context?.toolCallId), input: args.task, intent: "task" });
+        return json({
+          ...answer,
+          runId: turn.runId,
+          taskState: turn.state,
+          ...(turn.agentNotice ? { recipientSees: turn.agentNotice } : {}),
+          note: `${where} Your task is queued as ${turn.runId}; its model was handed the notice above. Subscribe and end your turn.`,
+        });
+      } catch (error) {
+        return err(`Created ${session.id}, but the task was not delivered: ${failure(error)}. Send it with sessions_send intent task.`);
+      }
+    },
+  );
 }

@@ -313,10 +313,8 @@ test("a running turn is handed the toolkit, and what it creates is stamped as an
   // The engine agrees, read back through the ordinary API.
   const { session } = await client.session(made!.id);
   expect(session.origin).toBe("session");
-  // The list the turn saw held both, as peers — the session doing the asking is
-  // on it exactly as the one it made is, with nothing linking them.
   expect(listed!.sessions.map((each) => each.id).sort()).toEqual([hostId, made!.id].sort());
-  expect(JSON.stringify(session)).not.toContain(hostId);
+  expect(session.startedFrom).toEqual({ sessionId: hostId, runId: "run_one" });
 });
 
 /**
@@ -350,10 +348,8 @@ test("a session that has to ask cannot create one that does not — over the wir
   // The engine agrees, read back through the ordinary API rather than from the
   // tool's own answer.
   expect((await client.session(made!.id)).session.runtimeMode).toBe("approval-required");
-  // AND NOTHING WAS LINKED BY IT. The ceiling is read once at creation and
-  // stored nowhere — it is not `startedFrom`, and it confers no standing
-  // authority. The host's id must not appear in the child's record.
-  expect(JSON.stringify((await client.session(made!.id)).session)).not.toContain(hostId);
+  // The ceiling is read once at creation and stored nowhere; only the parent link is.
+  expect(JSON.stringify({ ...(await client.session(made!.id)).session, startedFrom: undefined })).not.toContain(hostId);
 });
 
 test("a session with full access still creates a detached peer at the posture's own default", async () => {

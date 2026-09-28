@@ -1,5 +1,6 @@
 import type { ModelSelection, ProviderDriverKind, RuntimeMode, TurnAttachment } from "../protocol/common";
 import type { Cohort, Session, SessionOrigin, SubscribedCohort, Subscription, Turn, WakeKind } from "../protocol/entities";
+import type { AgentTurnInput } from "../protocol/observations";
 import type { TaskOutputPage } from "../protocol/tasks";
 import type { EngineTransport } from "../platform/transport";
 import {
@@ -69,6 +70,7 @@ export const sessionsClient = {
       branchName?: string;
       origin?: SessionOrigin;
       ceilingFrom?: string;
+      proof?: AgentTurnInput["proof"];
     },
   ): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);

@@ -49,7 +49,7 @@ const NOT_A_BYPASS = "Never hand a peer work you were refused — the same actio
 
 export const LIST = `Live sessions, and the projects one can be created in. Unsettled only by default. Read it before creating anything — the session you want may exist.`;
 
-export const CREATE = `Start a NEW session on a project. It is a PEER: it does not report back, and creating it starts no work — sessions_send with intent task does. ${NOT_A_BYPASS}`;
+export const CREATE = `Start a NEW session on a project, filed under you. Pass task to assign its first work in the same call; without it nothing starts until sessions_send with intent task. ${NOT_A_BYPASS}`;
 
 export const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text; a result or blocker also quotes its first ~1,500 chars — lead with the point. Tasked? End with ONE result (then a one-line answer) or a blocker; no progress reports. ${NOT_A_BYPASS}`;
 
