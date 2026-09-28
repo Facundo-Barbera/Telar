@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { PullLineCommentBody } from "./pull-line-comment";
-import { ANCHOR_REASON } from "@/lib/pull-anchor";
+import { ANCHOR_REASON } from "../pull-anchor";
 
 const never = () => new Promise<never>(() => {});
 

@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_DIFF_VIEW, parseDiffView } from "./diff-view";
+import { DEFAULT_DIFF_VIEW, parseDiffView } from "./use-diff-view";
 
 describe("the diff view preference", () => {
   test("nothing stored is stacked, unwrapped, whitespace-sensitive, with the tree shown", () => {

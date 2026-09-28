@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { filePatchQuery, parseFilePatchQuery } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
-import { DEFAULT_DIFF_VIEW, type DiffView } from "@/lib/diff-view";
+import { DEFAULT_DIFF_VIEW, type DiffView } from "../hooks/use-diff-view";
 import { DiffToolbar, patchRequestFor } from "./diff-surface";
 
 const toolbar = (view: Partial<DiffView> = {}, extra: { anyOpen?: boolean; expandable?: boolean } = {}) =>

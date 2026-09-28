@@ -15,7 +15,7 @@ import { ExternalLinkIcon } from "lucide-react";
 import type { GitHubLineCommentInput, GitHubLineCommentResult, GitHubPullAnchor } from "@telar/engine-client";
 
 import type { DiffScopeKind } from "@/lib/diff-scope";
-import { anchorPullLines, applyLineComment, type AnchorAnswer, type LineCommentEntry, type PullLineAnchor, type SelectedLines } from "@/lib/pull-anchor";
+import { anchorPullLines, applyLineComment, type AnchorAnswer, type LineCommentEntry, type PullLineAnchor, type SelectedLines } from "../pull-anchor";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";

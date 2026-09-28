@@ -12,7 +12,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { GitFileChange, GitFilePatch } from "@telar/engine-client";
-import { DEFAULT_DIFF_VIEW } from "@/lib/diff-view";
+import { DEFAULT_DIFF_VIEW } from "../hooks/use-diff-view";
 import { DiffFileTree, diffTreeRows } from "./diff-file-tree";
 import { ReviewFileRow, toggleOpen } from "./diff-surface";
 

@@ -13,7 +13,7 @@ import type { DiffTab } from "@/lib/diff-scope";
 import { messagePlainText, quoteForComposer } from "@/components/ui/message";
 import { NotebookSurface } from "./session/notebook-surface";
 import { TableSurface } from "./session/table-surface";
-import { DiffSurface, ReviewFileRow } from "./session/diff-surface";
+import { DiffSurface, ReviewFileRow } from "@/features/git";
 import { TranscriptItem } from "./transcript";
 import { Composer } from "./composer";
 import { DesktopBrowserSurface, type DesktopBrowserBridge, type DesktopBrowserPanelState, type DesktopBrowserTab } from "./browser-live";

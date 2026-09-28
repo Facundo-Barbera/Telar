@@ -111,7 +111,7 @@ import { cn } from "@/lib/utils";
  * before `dynamic` here could shift anything.
  */
 const DesktopBrowserSurface = dynamic(() => import("@/components/browser-live").then((mod) => mod.DesktopBrowserSurface));
-const DiffSurface = dynamic(() => import("@/components/session/diff-surface").then((mod) => mod.DiffSurface));
+const DiffSurface = dynamic(() => import("@/features/git").then((mod) => mod.DiffSurface));
 const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface));
 const FileViewSurface = dynamic(() => import("@/features/files").then((mod) => mod.FileViewSurface));
 const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));

@@ -7,7 +7,7 @@
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 
-import type { DiffLayout } from "@/components/session/diff-code-view";
+import type { DiffLayout } from "../components/diff-code-view";
 
 const STORAGE_KEY = "telar:diff-view";
 

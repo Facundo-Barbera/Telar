@@ -97,13 +97,13 @@ import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { PULL_CREATE_REFUSAL, PUSH_REFUSAL } from "@/lib/github-forge";
 import { fmtAgo } from "@/lib/format";
 import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD, unreportedFiles, type SessionReview } from "@/lib/session-review";
-import { useDiffView, type DiffView } from "@/lib/diff-view";
+import { useDiffView, type DiffView } from "../hooks/use-diff-view";
 import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
 import { fileReference, lineRangeReference, startReferenceDrag, type LineSide } from "@/lib/drag-reference";
-import { DiffCodeView, readPatchShape, toLineRange, type PatchReading } from "@/components/session/diff-code-view";
-import { PullLineComment, type PullCommentContext } from "@/components/session/pull-line-comment";
-import { DiffFileTree } from "@/components/session/diff-file-tree";
+import { DiffCodeView, readPatchShape, toLineRange, type PatchReading } from "./diff-code-view";
+import { PullLineComment, type PullCommentContext } from "./pull-line-comment";
+import { DiffFileTree } from "./diff-file-tree";
 import {
   DropdownMenu,
   DropdownMenuContent,
