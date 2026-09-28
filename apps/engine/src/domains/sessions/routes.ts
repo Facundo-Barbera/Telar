@@ -74,7 +74,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
       handle: async ({ body }) => ({
         status: 201,
         body: {
-          session: await store.createSessionAsync({
+          session: await store.requestPath.createSession({
             ...(body.draft === true ? { draft: true } : {}),
             id: stringValue(body.id, "session id", true),
             projectId: stringValue(body.projectId, "project id")!,

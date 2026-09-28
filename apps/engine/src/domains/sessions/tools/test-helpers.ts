@@ -24,7 +24,7 @@ export const tmp = (prefix: string): string => {
 export const openStores: EngineStore[] = [];
 
 export function cleanUp(): void {
-  for (const store of openStores.splice(0)) store.closeExecutionStore();
+  for (const store of openStores.splice(0)) store.kernel.executionStore.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 }
 
@@ -52,8 +52,8 @@ export function capabilityOver(store: EngineStore, self?: { sessionId: string })
   return {
     ...(self ? { self } : {}),
     list: async () => store.live.all(),
-    create: async (input) => store.createSessionAsync({ ...input, origin: "session" }),
-    send: async (sessionId, input) => store.submitAgentTurnAsync(sessionId, input),
+    create: async (input) => store.requestPath.createSession({ ...input, origin: "session" }),
+    send: async (sessionId, input) => store.requestPath.submitAgentTurn(sessionId, input),
     read: async (sessionId, after) => store.queries.readEvents(sessionId, after),
     status: async (sessionId) => ({
       session: store.records.get(sessionId),
@@ -64,7 +64,7 @@ export function capabilityOver(store: EngineStore, self?: { sessionId: string })
     settle: async (sessionId, settled) => {
       const session = store.lifecycle.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
       if (!settled) return session;
-      const ended = await store.endSessionLeftovers(sessionId);
+      const ended = await store.settler.endLeftovers(sessionId);
       return { ...store.records.get(sessionId), ended };
     },
     diff: async (sessionId) => store.workspaceReads.sessionDiff(sessionId),

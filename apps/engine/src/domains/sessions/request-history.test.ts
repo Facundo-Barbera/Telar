@@ -146,7 +146,7 @@ test("the boot sweep trims documents written before the window existed", () => {
   expect(kept[0]!.id).toBe("old_0250");
 
   // Idempotent: a second boot has nothing left to trim.
-  booted.closeExecutionStore();
+  booted.kernel.executionStore.close();
   const again = new EngineStore(directory, () => 9_100, { notifier: () => true });
   again.recovery.recover();
   expect(again.requestGate.list("session_one")).toEqual(kept);

@@ -65,7 +65,7 @@ test("a failed command does not take already-accepted deltas with it", () => {
   }
   const cursor = store.queries.eventCursor("session_one");
 
-  expect(() => store.executeCommand("broken", () => {
+  expect(() => store.kernel.command("broken", () => {
     store.ingest.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "rolled-back " }]);
     throw new Error("injected disk failure");
   })).toThrow("injected disk failure");
@@ -76,7 +76,7 @@ test("a failed command does not take already-accepted deltas with it", () => {
     .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
 
   // And a clean close is what puts them on the disk, ids still contiguous.
-  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
   const stored = streamed(home);
   expect(stored.map((row) => Number(row.id))).toEqual(stored.map((_, n) => n + 1));
   const reopened = new EngineStore(home); stores.push(reopened);

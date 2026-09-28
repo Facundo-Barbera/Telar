@@ -28,7 +28,7 @@ import type { GhResult } from "./gh";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterAll(() => {
-  for (const store of stores) store.closeExecutionStore();
+  for (const store of stores) store.kernel.executionStore.close();
   for (const home of homes) fs.rmSync(home, { recursive: true, force: true });
 });
 

@@ -47,7 +47,7 @@ const root = (): string => {
 
 afterEach(() => {
   for (const store of stores.splice(0)) {
-    try { store.closeExecutionStore(); } catch { /* the test closed it itself */ }
+    try { store.kernel.executionStore.close(); } catch { /* the test closed it itself */ }
   }
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });

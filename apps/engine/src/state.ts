@@ -2,20 +2,13 @@
 // explicit `<TELAR_HOME>/engine` root.  This module never imports legacy Telar
 // storage, so starting the daemon cannot create a `chats.json`, cutover marker,
 // or any other legacy mutation by accident.
-import { ExecutionStore, type ExecutionHousekeeping } from "./platform/db/execution-store";
+import { ExecutionStore } from "./platform/db/execution-store";
 import fs from "node:fs";
 import {
-  type InboxPolicy,
   type EngineEvent,
   type ProviderDriverKind,
-  type Project,
   type RequestKind,
-  type Session,
-  type SessionSettleEnded,
   type Turn,
-  type WorkerClaim,
-  type WorkspaceFile,
-  type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { ProjectProbes, ProjectRegistry, ProjectRemounts, WorkspaceConfigStore } from "./domains/projects";
 import { EngineStateError, Kernel, type JournalEntry } from "./platform/kernel";
@@ -26,11 +19,10 @@ import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli } fr
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources } from "./domains/usage";
 import { SessionQueries, LiveSessions, SessionSettler, createSessionModules, SessionAttachments, workspaceRootOf, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, RequestGate } from "./domains/sessions";
-import { requireRunningClaimFromQueue, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake } from "./domains/turns";
+import { requireRunningClaimFromQueue, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, RequestPath } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
-import { type ProjectIcon } from "./domains/appearance";
-import { readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
+import { WorkspaceFiles } from "./domains/files";
 import { SessionGit, WorkspaceReads } from "./domains/git";
 import { SessionBrowser } from "./domains/browser";
 import { GitHubStore, defaultGhRunner, SessionPulls, type GhRunner } from "./domains/github";
@@ -39,8 +31,9 @@ import { BUNDLED_MANIFEST, type ModelManifest, readModelCatalogue } from "./doma
 import { PluginDoors, JobRunner } from "./domains/plugins";
 import { ScheduleBook } from "./domains/schedules";
 import { derivedBranchFor, prepareSessionWorktree, WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, SETUP_STOP_GRACE_MS, WorktreeSetups } from "./domains/worktrees";
-import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
-import { backfillTurnSummaries, CheckoutSizes, CleanupStore, copyStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
+import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitRunner } from "./platform/git/runner";
+import { PrefetchedGit } from "./platform/git/prefetch";
+import { backfillTurnSummaries, CheckoutSizes, CleanupStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
 import { type VolumeDeps } from "./platform/fs/volumes";
 
@@ -61,23 +54,6 @@ export type EngineNotifier = (input: {
   title: string;
 }) => boolean;
 
-/**
- * `DiffBaseOption` AND `FilePatchOptions` COME FROM THE CONTRACT, not from
- * here — `protocol/diff-query.ts` owns the shape, its query builder and its
- * parser together, because a fourth hand-written copy of this is precisely
- * what dropped the ignore-whitespace flag in silence. Re-exported so the
- * engine's own callers need not reach past their own module boundary.
- */
-
-/** One git question, as `EngineStore.prefetchedGit` keys it. */
-const prefetchKey = (cwd: string, args: string[]): string => JSON.stringify([cwd, args]);
-
-/** What `resolveWorktreeBase` would pass to `rev-parse` — and only a ref the
- *  store's own validation would let through, so a prefetch never puts an
- *  unvalidated argument on a git command line. */
-const prefetchableRef = (ref: string | undefined): string | undefined =>
-  ref === undefined ? "HEAD" : /^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(ref) ? ref : undefined;
-
 export class EngineStore {
   readonly kernel: Kernel<EngineNotifier>;
   readonly settings: SettingsStore;
@@ -92,10 +68,12 @@ export class EngineStore {
   readonly github: GitHubStore;
   readonly browser: SessionBrowser;
   readonly worktrees: WorktreeMaintenance;
-  private readonly remounts: ProjectRemounts;
+  readonly remounts: ProjectRemounts;
   readonly attachments: SessionAttachments;
   readonly queries: SessionQueries;
   readonly live: LiveSessions;
+  readonly files: WorkspaceFiles;
+  readonly requestPath: RequestPath;
   readonly intake: TurnIntake;
   readonly turnLifecycle: TurnLifecycle;
   readonly ingest: TurnIngest;
@@ -141,41 +119,8 @@ export class EngineStore {
     this.kernel.writeDocument(file, value, mode);
   }
 
-  /**
-   * WHAT THE EXECUTION STORE SWEPT WHEN IT OPENED — issue #457, step 4.
-   *
-   * Command receipts past their retention, and the JSON the sqlite import
-   * replaced once sqlite has owned the store a week. Surfaced so the daemon can
-   * SAY it: both sweeps delete things nothing can reach, so without a line in
-   * the log the only evidence a person has that a quarter of a gigabyte went
-   * away is that it is gone.
-   */
-  executionHousekeeping(): ExecutionHousekeeping | undefined {
-    return this.kernel.executionStore.housekeeping;
-  }
-
-  /**
-   * COMPACT THE JOURNAL AND GIVE THE PAGES BACK — issue #646, and only on ask.
-   *
-   * The sweep runs itself; the VACUUM behind this does not, because it rewrites
-   * the database under an exclusive lock (7 s on the owner's gigabyte) to
-   * return space that accrues over a month. See `ExecutionStore.reclaim`.
-   */
-  reclaimExecutionStore(): { before: number; after: number; deltas: number; starts: number; sessions: number; usage: number } {
-    return this.kernel.executionStore.reclaim();
-  }
-
-  get readAccounting(): Kernel["readAccounting"] {
-    return this.kernel.readAccounting;
-  }
-
   private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>, written?: SessionQueue): void {
     this.kernel.writeIndexedDocument(file, indexFile, value, property, rows, written);
-  }
-
-  closeExecutionStore(): void { this.kernel.executionStore.close(); }
-  executeCommand<T>(command: string, action: () => T, commandId?: string): T {
-    return this.kernel.command(command, action, commandId);
   }
 
   readonly paths: EngineStatePaths;
@@ -190,21 +135,7 @@ export class EngineStore {
   private readonly onTurnsStopped?: (cancellations: StoppedClaim[]) => void;
   /** See the constructor: daemon-injected, absent means no computer use. */
   private readonly computerUse?: (() => ResolvedComputerUse | undefined) | undefined;
-  /** The injected SYNCHRONOUS runner. Reached only through `git` below. */
-  private readonly syncGit: GitRunner;
-  /**
-   * ANSWERS ALREADY READ OFF THE POOL, for the one synchronous call in flight.
-   *
-   * `createSession` and a draft's promotion in `submitTurn` stay synchronous —
-   * they are sqlite commands, and a command cannot span an await — but the few
-   * `rev-parse`s they ask are refusals the caller must hear, so they cannot move
-   * behind the response either. `withPrefetchedGit` reads them through the pool
-   * FIRST and sets this for exactly the synchronous call that follows; only a
-   * question nobody prefetched falls through to the blocking runner.
-   */
-  private prefetchedGit: Map<string, GitResult> | undefined;
-  private readonly git: GitRunner = (cwd, args, options) =>
-    this.prefetchedGit?.get(prefetchKey(cwd, args)) ?? this.syncGit(cwd, args, options);
+  private readonly prefetch: PrefetchedGit;
   private readonly asyncGit: AsyncGitRunner;
   /** The cuts and removals, on a pool the rail's polls do not share — see
    *  `defaultWorktreeGitRunner`. The same runner when a caller injected one. */
@@ -265,42 +196,6 @@ export class EngineStore {
 
   /** Compile and tlmgr jobs: a sibling runner, so a compile never queues behind pip installs. */
   readonly latexJobs = new JobRunner(() => this.now());
-
-  setInboxPolicy(patch: { autoSettleAfterHours?: unknown; settleDelegatedAfterHours?: unknown; settledTerminalLimit?: unknown }): InboxPolicy {
-    const next = this.settings.setInbox(patch);
-    // A lower limit applies now rather than at the next sweep.
-    if (patch.settledTerminalLimit !== undefined && this.sessionTerminals.attached) {
-      void Promise.resolve().then(() => this.sessionTerminals.enforceLimit()).catch(() => undefined);
-    }
-    return next;
-  }
-
-  /** A consistent copy of this store, without the reproducible tier, to open instead of the live one. */
-  copyStoreTo(destination: string): { root: string; files: number; bytes: number } {
-    return copyStore(this.paths.root, this.kernel.executionStore, destination);
-  }
-
-  /**
-   * Attaches the managed bearer to each claimed server with a stored grant, after the claim so a slow
-   * token refresh never runs under the state lock. A hand-written `Authorization` header wins.
-   */
-  async authorizeClaimedMcpServers(claim: WorkerClaim, fetchImpl?: typeof fetch): Promise<WorkerClaim> {
-    if (!claim.mcpServers?.length) return claim;
-    const mcpServers = await Promise.all(
-      claim.mcpServers.map(async (server) => {
-        if (server.spec.transport === "stdio") return server;
-        const headers = server.spec.headers ?? {};
-        if (Object.keys(headers).some((name) => name.toLowerCase() === "authorization")) return server;
-        // The grant is keyed by the scope the SERVER came from, which for a
-        // project-scoped server is that project — not the session's, which for
-        // a global server would be a key nothing was ever stored under.
-        const token = await this.mcpOAuth.resolveToken(server.id, server.projectId, fetchImpl);
-        if (!token) return server;
-        return { ...server, spec: { ...server.spec, headers: { ...headers, Authorization: `Bearer ${token}` } } };
-      }),
-    );
-    return { ...claim, mcpServers };
-  }
 
   // ── provider instances ────────────────────────────────────────────────────
   //
@@ -398,8 +293,8 @@ export class EngineStore {
   ) {
     this.onTurnsStopped = options.onTurnsStopped;
     this.computerUse = options.computerUse;
-    this.syncGit = options.git ?? defaultGitRunner;
     this.asyncGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultAsyncGitRunner);
+    this.prefetch = new PrefetchedGit(options.git ?? defaultGitRunner, this.asyncGit);
     this.workspaceReads = new WorkspaceReads(this.asyncGit, {
       now: () => this.now(),
       getSession: (sessionId) => this.records.get(sessionId),
@@ -479,17 +374,17 @@ export class EngineStore {
       scanQueue: (id) => this.scanQueue(id),
       liveQueueSessionIds: () => this.liveQueueSessionIds(),
       stopSession: (id) => this.turnLifecycle.stopSession(id),
-      assertProjectAvailable: (id) => this.assertProjectAvailable(id),
+      assertProjectAvailable: (id) => this.projectRegistry.assertAvailable(id),
     });
     this.settler = new SessionSettler(this.kernel, {
       records: this.records,
       scanQueue: (id) => this.scanQueue(id),
       settleDelegatedAfterHours: () => this.settings.inbox().settleDelegatedAfterHours,
       reviewCohorts: () => this.subscriptions.reviewCohorts(),
-      // A shelf that just grew keeps its terminals (#883); enforced after the command, never inside it.
-      onShelfGrew: () => {
-        if (this.sessionTerminals.attached) void Promise.resolve().then(() => this.sessionTerminals.enforceLimit()).catch(() => undefined);
-      },
+      onShelfGrew: () => this.enforceTerminalLimitSoon(),
+      stopBackgroundTasks: (id, reason) => this.worker.stopBackgroundTasks(id, reason),
+      releaseBrowser: (id, reason) => this.browser.release(id, reason),
+      closeTerminals: (id) => this.sessionTerminals.closeForSettle(id),
     });
     this.wakes = new TurnWakes(this.kernel, {
       records: this.records,
@@ -584,6 +479,18 @@ export class EngineStore {
       submitTurn: (sessionId, input) => this.intake.submitTurn(sessionId, input),
       bumpList: () => this.sessionIndex.bumpList(),
     });
+    this.files = new WorkspaceFiles({
+      projectRoot: (id) => this.projectRegistry.get(id).root,
+      sessionRoot: (id) => workspaceRootOf(this.records.get(id)),
+    });
+    this.requestPath = new RequestPath({
+      records: this.records,
+      lifecycle: this.lifecycle,
+      intake: this.intake,
+      git: this.prefetch,
+      getProject: (id) => this.projectRegistry.get(id),
+      availability: (project) => this.projectProbes.availability(project),
+    });
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
     this.sessionIndexBackfill = this.sessionIndex.backfill();
@@ -611,13 +518,18 @@ export class EngineStore {
     }
   }
 
+  // A shelf that grew or a lower limit keeps its terminals (#883): enforced after the command, never inside it.
+  private enforceTerminalLimitSoon(): void {
+    if (this.sessionTerminals.attached) void Promise.resolve().then(() => this.sessionTerminals.enforceLimit()).catch(() => undefined);
+  }
+
   private createLifecycle(): SessionLifecycle {
     return new SessionLifecycle(this.kernel, this.records, this.subscriptions, {
-      git: this.git,
+      git: this.prefetch.run,
       worktreeGit: this.worktreeGit,
       worktreeQueue: this.worktreeQueue,
       getProject: (projectId) => this.projectRegistry.get(projectId),
-      assertProjectAvailable: (projectId) => this.assertProjectAvailable(projectId),
+      assertProjectAvailable: (projectId) => this.projectRegistry.assertAvailable(projectId),
       projectAvailability: (project) => this.projectProbes.availability(project),
       projectOfSession: (session) => this.workspaceReads.projectOf(session),
       sessionDefaults: () => this.settings.sessionDefaults(),
@@ -630,10 +542,7 @@ export class EngineStore {
       forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
       startSetup: (sessionId, worktree) => this.startWorktreeSetup(sessionId, worktree),
       releaseBrowser: (sessionId, reason) => this.browser.release(sessionId, reason),
-      releasePlugins: (sessionId, reason) => {
-        this.pluginRelease?.(sessionId, reason);
-        this.pluginDoors.disposeKernel(sessionId, reason);
-      },
+      releasePlugins: (sessionId, reason) => this.pluginDoors.release(sessionId, reason),
       releasesArchivedCheckouts: () => this.cleanup.policy().archived,
     });
   }
@@ -658,7 +567,7 @@ export class EngineStore {
 
   /** The per-document stores that sit beside the sessions modules, built on the kernel. */
   private leafStores(options: { models?: typeof readModelCatalogue; cliVersion?: (driver: ProviderDriverKind) => Promise<InstalledCli>; manifest?: ModelManifest }) {
-    const settings = new SettingsStore(this.kernel);
+    const settings = new SettingsStore(this.kernel, () => this.enforceTerminalLimitSoon());
     const appearance = new AppearanceStore(this.kernel);
     const mcpOAuth = new McpOAuthStore(this.kernel);
     const mcpServers = new McpServers(this.kernel, { requireProject: (id) => void this.projectRegistry.get(id), forgetGrant: (id, projectId) => mcpOAuth.delete(id, projectId) });
@@ -709,15 +618,6 @@ export class EngineStore {
   /** What the turn projection built on open, reported like the index backfill. */
   readonly turnSummaryBackfill?: { sessions: number; turns: number };
 
-  /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
-   *  project has none rather than guessing. */
-  async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
-    const project = this.projectRegistry.get(projectId);
-    const icon = await this.projectProbes.icon(project);
-    if (!icon) throw new EngineStateError("not_found", "this project has no icon");
-    return icon;
-  }
-
   /**
    * WHICH MOUNT CONFIGURATION EACH AWAY PROJECT HAS ALREADY BEEN SEARCHED FOR.
    *
@@ -729,69 +629,6 @@ export class EngineStore {
 
   private forgetGitReadsUnder(root: string): void {
     this.workspaceReads.forgetUnder(root);
-  }
-
-  /**
-   * ASK EVERY PROJECT'S DISK NOW, rather than waiting for somebody to look.
-   *
-   * TWO CALLERS, ONE PROBE. The daemon runs this once at start, so an engine
-   * that came up with a drive already unplugged knows it before the first
-   * listing rather than on it; and `POST /v2/projects/reprobe` runs it when the
-   * desktop shell notices a mount or an unmount, which is what turns "within ten
-   * seconds" into "immediately". Neither is a second opinion — both go through
-   * `projectAvailability`, and the poll stays the floor under both.
-   *
-   * REMOVED PROJECTS ARE SKIPPED. A put-away project is on no surface that could
-   * show a drive badge, and probing it would be three `stat`s for a row nobody
-   * is drawing.
-   */
-  reprobeProjects(): { projects: number; changed: number; recovered: number } {
-    const projects = this.projectRegistry.read().projects.filter((project) => project.removedAt === undefined);
-    let changed = 0;
-    let recovered = 0;
-    for (const project of projects) {
-      const before = this.projectProbes.lastAvailability(project.id);
-      let availability = this.projectProbes.availability(project);
-      /**
-       * A DRIVE MOUNTED SOMEWHERE ELSE IS STILL THIS DRIVE — see
-       * `ProjectRemounts.recover`. Attempted only when the project cannot be
-       * read, which is what keeps the `diskutil` it costs off the poll path, and
-       * HERE rather than inside the probe because this is the call that happens
-       * when a disk has just appeared.
-       */
-      if (availability !== "available" && this.remounts.recover(project) !== undefined) {
-        recovered += 1;
-        availability = this.projectProbes.availability(this.projectRegistry.get(project.id));
-      }
-      if (availability !== before) changed += 1;
-    }
-    return { projects: projects.length, changed, recovered };
-  }
-
-  /**
-   * Refuses new work (a session, a turn or wake, a settings change) on a removed project or an unplugged
-   * drive. Reads stay open, so a removed project's history still answers.
-   */
-  private assertProjectAvailable(projectId: string): void {
-    const project = this.projectRegistry.get(projectId);
-    if (project.removedAt !== undefined) {
-      throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
-    }
-    // Probed fresh, and `unmounted` only: a missing folder is refused by the worker, in the conversation,
-    // and an unplugged drive needs a cable rather than a re-registration that would mint a new project id.
-    if (this.projectProbes.availability(project) === "unmounted") {
-      throw new EngineStateError("conflict", `The drive holding ${project.name} is not connected. Plug it back in and this will work again.`);
-    }
-  }
-
-  /**
-   * Where a departure is announced. One subscriber — the plugin host — so a
-   * plugin with per-session state gives it back without the store naming it.
-   */
-  private pluginRelease: ((sessionId: string, reason: string) => void) | undefined;
-
-  attachPluginRelease(release: (sessionId: string, reason: string) => void): void {
-    this.pluginRelease = release;
   }
 
   private createPluginOps(): { dataScienceOps: DataScienceOps; latexOps: LatexOps } {
@@ -807,120 +644,6 @@ export class EngineStore {
       }),
       latexOps: new LatexOps(this.toolchains, this.latexJobs, (projectId) => this.projectRegistry.get(projectId)),
     };
-  }
-
-  projectFileAsync(projectId: string, target: string): Promise<WorkspaceFile> {
-    return readFencedAsync(this.projectRegistry.get(projectId).root, target, "project");
-  }
-
-  sessionFileAsync(sessionId: string, target: string): Promise<WorkspaceFile> {
-    return readFencedAsync(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
-  }
-
-  projectFileBytesAsync(projectId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return readFencedBytes(this.projectRegistry.get(projectId).root, target, "project");
-  }
-
-  sessionFileBytesAsync(sessionId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return readFencedBytes(workspaceRootOf(this.records.get(sessionId)), target, "session workspace");
-  }
-
-  /** `expected` is the hash the editor read; a stale one is refused rather than overwritten. */
-  projectFileWrite(projectId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
-    const project = this.projectRegistry.get(projectId);
-    return writeFenced(project.root, target, text, expected, "project");
-  }
-
-  sessionFileWrite(sessionId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
-    const session = this.records.get(sessionId);
-    return writeFenced(workspaceRootOf(session), target, text, expected, "session workspace");
-  }
-
-  /**
-   * Run a synchronous store command with its git questions already answered
-   * off the pool — see `prefetchedGit`. The answers live for exactly `work`:
-   * it is synchronous, so nothing else can run while they are set.
-   */
-  private async withPrefetchedGit<T>(cwd: string, questions: string[][], work: () => T): Promise<T> {
-    // De-duplicated BEFORE spawning: a default base is `rev-parse HEAD`, which a
-    // local session's own base asks too.
-    const unique = new Map(questions.map((args) => [prefetchKey(cwd, args), args]));
-    const answers = new Map<string, GitResult>(
-      await Promise.all([...unique].map(async ([key, args]) => [key, await this.asyncGit(cwd, args)] as const)),
-    );
-    this.prefetchedGit = answers;
-    try {
-      return work();
-    } finally {
-      this.prefetchedGit = undefined;
-    }
-  }
-
-  /** The `rev-parse`s a worktree cut's refusals ask (`prepareSessionWorktree`). */
-  private static cutQuestions(baseRef: string | undefined): string[][] {
-    const base = prefetchableRef(baseRef);
-    return [["rev-parse", "--is-inside-work-tree"], ...(base ? [["rev-parse", base]] : [])];
-  }
-
-  /**
-   * `createSession` FOR THE REQUEST PATH — the same command, with its git
-   * questions (`isGitWorkTree`, the cut's base, a local session's HEAD) read
-   * through the pool first instead of on the engine's only thread. Measured on
-   * an external disk: 2.4 s of a frozen daemon per new session, before this.
-   *
-   * A project that is not there skips the prefetch: `createSession` refuses it
-   * before asking git anything, and asking git about an unplugged drive is the
-   * thing #534 took out.
-   */
-  async createSessionAsync(input: Parameters<SessionLifecycle["createSession"]>[0]): Promise<Session> {
-    let project: Project | undefined;
-    try {
-      project = input.projectId === undefined ? undefined : this.projectRegistry.get(input.projectId);
-    } catch {
-      // `createSession` refuses this itself, in its own order and words.
-      return this.lifecycle.createSession(input);
-    }
-    if (project === undefined || this.projectProbes.availability(project) !== "available") return this.lifecycle.createSession(input);
-    const questions = [...EngineStore.cutQuestions(input.baseRef), ["rev-parse", "HEAD"]];
-    return this.withPrefetchedGit(project.root, questions, () => this.lifecycle.createSession(input));
-  }
-
-  /**
-   * `submitTurn` FOR THE REQUEST PATH. Only the first send to a WORKTREE DRAFT
-   * asks git anything — it promotes the draft and plans its cut — so every
-   * other send is the synchronous command exactly as it was.
-   */
-  async submitTurnAsync(...args: Parameters<TurnIntake["submitTurn"]>): Promise<ReturnType<TurnIntake["submitTurn"]>> {
-    return this.promotingDraft(args[0], () => this.intake.submitTurn(...args));
-  }
-
-  /** `submitAgentTurn` for the request path and the `sessions` tools — an
-   *  agent's message to a worktree draft promotes it exactly as a person's does. */
-  async submitAgentTurnAsync(...args: Parameters<TurnIntake["submitAgentTurn"]>): Promise<ReturnType<TurnIntake["submitAgentTurn"]>> {
-    return this.promotingDraft(args[0], () => this.intake.submitAgentTurn(...args));
-  }
-
-  /**
-   * Prefetch a worktree draft's cut questions, then run `work`. Anything that
-   * is not a promotable draft — including a session that does not resolve — is
-   * handed straight to `work`, so every refusal keeps its original order.
-   */
-  private async promotingDraft<T>(sessionId: string, work: () => T): Promise<T> {
-    let root: string | undefined;
-    let baseRef: string | undefined;
-    try {
-      const session = this.records.require(sessionId);
-      if (session.draft && session.envMode === "worktree" && session.projectId) {
-        const project = this.projectRegistry.get(session.projectId);
-        if (this.projectProbes.availability(project) === "available") {
-          root = project.root;
-          baseRef = session.draft.baseRef;
-        }
-      }
-    } catch {
-      // Refused by `work` below, in its own words.
-    }
-    return root === undefined ? work() : this.withPrefetchedGit(root, EngineStore.cutQuestions(baseRef), work);
   }
 
   private createClaims(): TurnClaims {
@@ -958,7 +681,7 @@ export class EngineStore {
       readQueue: (id) => this.readQueue(id),
       writeQueue: (id, queue) => this.writeQueue(id, queue),
       requireRunningClaimFromQueue: (queue, runId, token) => requireRunningClaimFromQueue(queue, runId, token),
-      assertProjectAvailable: (id) => this.assertProjectAvailable(id),
+      assertProjectAvailable: (id) => this.projectRegistry.assertAvailable(id),
       anchorTurn: (id, runId, side) => this.anchors.anchor(id, runId, side),
       fireSubscriptions: (id, kind, turn, context) => this.fireSubscriptions(id, kind, turn, context),
       flushPendingNotifications: (id) => this.flushPendingNotifications(id),
@@ -974,12 +697,12 @@ export class EngineStore {
       items: this.sessionItems,
       mailbox: this.mailbox,
       attachments: this.attachments,
-      git: this.git,
+      git: this.prefetch.run,
       readQueue: (id) => this.readQueue(id),
       writeQueue: (id, queue) => this.writeQueue(id, queue),
       getProject: (id) => this.projectRegistry.get(id),
       availability: (project) => this.projectProbes.availability(project),
-      assertProjectAvailable: (id) => this.assertProjectAvailable(id),
+      assertProjectAvailable: (id) => this.projectRegistry.assertAvailable(id),
       restoreWorktree: (id) => void this.worktrees.restore(id),
       prepareWorktree: (id, root, plan, baseSha) => this.lifecycle.prepareWorktree(id, root, plan, baseSha),
       planWorktree: prepareSessionWorktree,
@@ -1001,10 +724,6 @@ export class EngineStore {
     this.intake.writeNotificationItem(sessionId, turn);
   }
 
-  pauseSession(sessionId: string, _by: "human" | "session" = "human"): { session: Session; stopped?: Turn; held: number; already: boolean } {
-    return this.worker.pauseSession(sessionId);
-  }
-
   private requeueUndeliveredSteers(queue: { turns: Turn[] }, runId: string, at: number): Turn[] {
     return this.turnLifecycle.requeueUndeliveredSteers(queue, runId, at);
   }
@@ -1015,35 +734,6 @@ export class EngineStore {
 
   private evaluateDelegationSettling(sessionId: string): void {
     this.settler.evaluate(sessionId);
-  }
-
-  /**
-   * A PERSON SETTLED THIS SESSION: END WHAT IT LEFT RUNNING — issue #883.
-   *
-   * Called for an EXPLICIT settle only — the person's Settle, or an agent's
-   * `sessions_settle` — and never for the clock's, which waits
-   * `SETTLED_TERMINAL_GRACE_MS` (see `sweepSettledTerminals`). The settle itself
-   * is already written; nothing here can refuse it, and each part is
-   * best-effort so a host out of reach does not stop the rest.
-   *
-   * - Every terminal the session owns, whoever opened it, recorded as closed
-   *   by Telar — so its agent is not told the person closed them.
-   * - Its background tasks, the chip's own Stop.
-   * - Its browser pages.
-   *
-   * Un-settling brings none of it back. Answers the counts, which is what the
-   * settle reports.
-   */
-  async endSessionLeftovers(sessionId: string): Promise<SessionSettleEnded> {
-    let backgroundTasks = 0;
-    try {
-      backgroundTasks = this.worker.stopBackgroundTasks(sessionId, "stopped when the session was settled");
-    } catch {
-      // A session that cannot be read has no tasks this can stop.
-    }
-    void this.browser.release(sessionId, "The session was settled.")?.catch(() => undefined);
-    const terminals = await this.sessionTerminals.closeForSettle(sessionId);
-    return { terminals, backgroundTasks };
   }
 
   private waitingNotificationTurn(sessionId: string): string | undefined {

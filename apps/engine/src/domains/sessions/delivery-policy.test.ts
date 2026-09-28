@@ -5,7 +5,7 @@ import path from "node:path";
 import { EngineStore } from "../../state";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
-afterEach(() => { for (const s of stores.splice(0)) s.closeExecutionStore(); for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true }); });
+afterEach(() => { for (const s of stores.splice(0)) s.kernel.executionStore.close(); for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true }); });
 function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-delivery-")); homes.push(home);
   // A resolvable model, so `claimNextTurn` can build a claim (held mail rides its notes).
@@ -40,7 +40,7 @@ test("routine reports are durable activity, never a claimed run or a notificatio
   expect(store.claims.claimTurn("session_host", "worker_three")).toBeUndefined();
   expect(store.queries.turns("session_observer")).toHaveLength(0);
   expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(1);
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   const reopened = new EngineStore(home); stores.push(reopened);
   expect(reopened.queries.turns("session_host").find((turn) => turn.runId === "run_report")?.agentDelivery).toBe("passive");
 });

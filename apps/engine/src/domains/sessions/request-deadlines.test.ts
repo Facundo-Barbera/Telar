@@ -30,7 +30,7 @@ const homes: string[] = [];
 const stores: EngineStore[] = [];
 
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -294,7 +294,7 @@ test("a deadline survives a restart, and the reopened store sweeps it", () => {
     deadlineMs: 60_000,
     default: { decision: "decline" },
   });
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
 
   now = OPENED_AT + 120_000;
   const reopened = new EngineStore(home, () => now);

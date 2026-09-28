@@ -31,7 +31,7 @@ export function projectCheckoutRoutes(store: EngineStore, providerSkills: Provid
       auth: "engine",
       // `?v=` only busts caches; `?format=png` is for clients that cannot decode SVG.
       async handle({ params, query }) {
-        const served = await readProjectIconBytes(await store.projectIconFileAsync(params[0]!));
+        const served = await readProjectIconBytes(await store.projectRegistry.iconFile(params[0]!));
         const png = served && query.get("format") === "png";
         const bytes = png ? await iconPng(served) : served?.bytes;
         if (!served || !bytes) throw new HttpError(404, "not_found", "this project has no icon");
@@ -64,7 +64,7 @@ export function projectCheckoutRoutes(store: EngineStore, providerSkills: Provid
       auth: "engine",
       async handle({ params, query }) {
         const target = query.get("path");
-        if (target) return ok({ file: await store.projectFileAsync(params[0]!, target) });
+        if (target) return ok({ file: await store.files.project(params[0]!, target) });
         return ok({ listing: await store.workspaceReads.projectFiles(params[0]!) });
       },
     },
@@ -77,7 +77,7 @@ export function projectCheckoutRoutes(store: EngineStore, providerSkills: Provid
         const target = query.get("path");
         if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
         const input = await body(request);
-        return ok(store.projectFileWrite(params[0]!, target, stringValue(input.text, "file text")!, stringValue(input.expectedSha256, "expected hash")!));
+        return ok(store.files.writeProject(params[0]!, target, stringValue(input.text, "file text")!, stringValue(input.expectedSha256, "expected hash")!));
       },
     },
     {
@@ -108,7 +108,7 @@ export function projectCheckoutRoutes(store: EngineStore, providerSkills: Provid
       async handle({ params, query }) {
         const target = query.get("path");
         if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
-        const raw = await store.projectFileBytesAsync(params[0]!, target);
+        const raw = await store.files.projectBytes(params[0]!, target);
         // Unlike an attachment, a workspace file changes under its own name.
         return { status: 200, body: null, bytes: raw.data, headers: { "content-type": raw.mediaType, "content-length": String(raw.data.byteLength), "cache-control": "no-store" } };
       },

@@ -33,7 +33,7 @@ import { EngineStore } from "../../state";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -114,7 +114,7 @@ test("a second reader, hours later and on its own clock, is handed the same mome
   store.lifecycle.updateSession("session_one", { snoozedUntil: until });
   clock.now = until + MINUTE;
   store.settler.sweepSnoozeWakes();
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   stores.splice(stores.indexOf(store), 1);
 
   // THE CLAUSE THE WHOLE DESIGN IS FOR. This reader's `now` is six hours past

@@ -31,7 +31,7 @@ export function sessionFilesRoutes(store: EngineStore): Route[] {
         // Opening a released session's files brings its checkout back, as a message does.
         store.worktrees.restore(sessionId!);
         const target = query.get("path");
-        if (target) return ok({ file: await store.sessionFileAsync(sessionId!, target) });
+        if (target) return ok({ file: await store.files.session(sessionId!, target) });
         return ok({ listing: await store.workspaceReads.sessionFiles(sessionId!) });
       },
     },
@@ -40,7 +40,7 @@ export function sessionFilesRoutes(store: EngineStore): Route[] {
       path: sessionRoute("/files/raw"),
       auth: "engine",
       async handle({ params: [sessionId], query }) {
-        const raw = await store.sessionFileBytesAsync(sessionId!, requiredPath(query));
+        const raw = await store.files.sessionBytes(sessionId!, requiredPath(query));
         return {
           status: 200,
           body: null,
@@ -57,7 +57,7 @@ export function sessionFilesRoutes(store: EngineStore): Route[] {
       async handle({ params: [sessionId], query, request }) {
         const target = requiredPath(query);
         const input = await body(request);
-        return ok(store.sessionFileWrite(sessionId!, target, stringValue(input.text, "file text")!, stringValue(input.expectedSha256, "expected hash")!));
+        return ok(store.files.writeSession(sessionId!, target, stringValue(input.text, "file text")!, stringValue(input.expectedSha256, "expected hash")!));
       },
     },
     {

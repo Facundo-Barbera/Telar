@@ -120,7 +120,7 @@ test("an explicit settle closes every terminal of the session through /close-ses
   const other = await open("session_two");
 
   store.lifecycle.updateSession("session_one", { settledOverride: "settled" });
-  const ended = await store.endSessionLeftovers("session_one");
+  const ended = await store.settler.endLeftovers("session_one");
 
   expect(host.sessionCloses).toEqual(["session_one"]);
   expect(ended).toEqual({ terminals: 3, backgroundTasks: 0 });
@@ -135,7 +135,7 @@ test("an explicit settle closes every terminal of the session through /close-ses
 test("settling a session with nothing open closes nothing and still answers", async () => {
   const { host, store } = await scene();
   store.lifecycle.updateSession("session_one", { settledOverride: "settled" });
-  expect(await store.endSessionLeftovers("session_one")).toEqual({ terminals: 0, backgroundTasks: 0 });
+  expect(await store.settler.endLeftovers("session_one")).toEqual({ terminals: 0, backgroundTasks: 0 });
   expect(host.sessionCloses).toEqual(["session_one"]);
 });
 
@@ -184,7 +184,7 @@ test("live background work holds the clock off (#965), so its terminals stay; an
   expect(manager.run(run.terminalId).status).toBe("running");
 
   store.lifecycle.updateSession("session_one", { settledOverride: "settled" });
-  expect(await store.endSessionLeftovers("session_one")).toEqual({ terminals: 1, backgroundTasks: 1 });
+  expect(await store.settler.endLeftovers("session_one")).toEqual({ terminals: 1, backgroundTasks: 1 });
   expect(manager.run(run.terminalId)).toMatchObject({ status: "closed", closedBy: "telar" });
   expect(store.records.get("session_one").activity).toBe("idle");
 });
@@ -212,7 +212,7 @@ test("a host out of reach does not fail the settle, and leaves the records as th
     },
   });
   store.lifecycle.updateSession("session_one", { settledOverride: "settled" });
-  expect(await store.endSessionLeftovers("session_one")).toEqual({ terminals: 0, backgroundTasks: 0 });
+  expect(await store.settler.endLeftovers("session_one")).toEqual({ terminals: 0, backgroundTasks: 0 });
   expect(store.records.get("session_one").settledOverride).toBe("settled");
   expect(manager.run(run.terminalId).status).toBe("running");
 });

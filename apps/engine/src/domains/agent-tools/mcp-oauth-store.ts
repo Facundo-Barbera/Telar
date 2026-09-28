@@ -1,3 +1,4 @@
+import type { WorkerClaim } from "@telar/engine-client";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { SECRET_KEY_SEPARATOR, STATE_VERSION, type Kernel } from "../../platform/kernel";
 
@@ -85,6 +86,23 @@ export class McpOAuthStore {
     delete flows[state];
     this.kernel.writeDocument(this.kernel.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
     return flow;
+  }
+
+  /** Attaches the bearer to each claimed server with a stored grant, after the claim so a slow refresh never runs under the state lock. */
+  async authorizeClaim(claim: WorkerClaim, fetchImpl?: typeof fetch): Promise<WorkerClaim> {
+    if (!claim.mcpServers?.length) return claim;
+    const mcpServers = await Promise.all(
+      claim.mcpServers.map(async (server) => {
+        if (server.spec.transport === "stdio") return server;
+        const headers = server.spec.headers ?? {};
+        if (Object.keys(headers).some((name) => name.toLowerCase() === "authorization")) return server;
+        // Keyed by the scope the server came from: its project for a project server, not the session's.
+        const token = await this.resolveToken(server.id, server.projectId, fetchImpl);
+        if (!token) return server;
+        return { ...server, spec: { ...server.spec, headers: { ...headers, Authorization: `Bearer ${token}` } } };
+      }),
+    );
+    return { ...claim, mcpServers };
   }
 
   /** The token to run with, refreshed near expiry. A failed refresh returns the old token rather than failing the turn. */

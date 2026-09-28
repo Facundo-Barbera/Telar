@@ -85,7 +85,7 @@ test("a wake landing on a RUNNING subscriber is queued, never steered, and keeps
   expect(requeued).toMatchObject({ state: "queued", origin: "session", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
 
   // AND ACROSS A PAUSE. A held wake is still a wake when the human resumes.
-  store.pauseSession("session_one");
+  store.worker.pauseSession("session_one");
   const held = store.queries.turns("session_one").find((turn) => turn.runId === wake!.runId)!;
   expect(held.origin).toBe("session");
   expect(held.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_two" });

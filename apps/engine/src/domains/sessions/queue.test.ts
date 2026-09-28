@@ -45,7 +45,7 @@ const root = (): string => {
 
 afterEach(() => {
   for (const store of stores.splice(0)) {
-    try { store.closeExecutionStore(); } catch { /* the test closed it itself */ }
+    try { store.kernel.executionStore.close(); } catch { /* the test closed it itself */ }
   }
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -73,9 +73,9 @@ function seeded(store: EngineStore, turns: number, sessionId = "session_one"): E
 
 /** Whole-queue parses made by `action`, which is the number #547 is about. */
 function queueParses(store: EngineStore, action: () => void): number {
-  const before = store.readAccounting.queueParses;
+  const before = store.kernel.readAccounting.queueParses;
   action();
-  return store.readAccounting.queueParses - before;
+  return store.kernel.readAccounting.queueParses - before;
 }
 
 // ── the instrument, falsified before anything is proved with it ──────────────
@@ -93,21 +93,21 @@ test("a whole-queue read is accounted for, bytes and all", () => {
   const store = seeded(open(root()), 4);
   const turns = store.queries.turns("session_one");
 
-  store.readAccounting.documentBytes = 0;
-  store.readAccounting.documentReads = 0;
-  store.readAccounting.queueParses = 0;
+  store.kernel.readAccounting.documentBytes = 0;
+  store.kernel.readAccounting.documentReads = 0;
+  store.kernel.readAccounting.queueParses = 0;
   // `turns()` is one `readQueue` and nothing else, which is what makes the
   // count below exactly one rather than "at least one".
   expect(store.queries.turns("session_one")).toEqual(turns);
 
-  expect(store.readAccounting.documentReads).toBe(1);
-  expect(store.readAccounting.queueParses).toBe(1);
+  expect(store.kernel.readAccounting.documentReads).toBe(1);
+  expect(store.kernel.readAccounting.queueParses).toBe(1);
 
   // AND THE BYTES ARE THE DOCUMENT'S BYTES: larger than the turns it holds, and
   // not by much — the rest is a version, a session id and a sequence.
   const rows = Buffer.byteLength(JSON.stringify(turns), "utf8");
-  expect(store.readAccounting.documentBytes).toBeGreaterThanOrEqual(rows);
-  expect(store.readAccounting.documentBytes).toBeLessThan(rows + 200);
+  expect(store.kernel.readAccounting.documentBytes).toBeGreaterThanOrEqual(rows);
+  expect(store.kernel.readAccounting.documentBytes).toBeLessThan(rows + 200);
 });
 
 test("a session whose queue document is missing is not counted as a read", () => {
@@ -117,11 +117,11 @@ test("a session whose queue document is missing is not counted as a read", () =>
   toLegacyHome(seeded(open(directory), 1), directory);
   fs.rmSync(path.join(directory, "sessions", "session_one", "queue.json"));
   const store = open(directory);
-  store.readAccounting.documentReads = 0;
-  store.readAccounting.queueParses = 0;
+  store.kernel.readAccounting.documentReads = 0;
+  store.kernel.readAccounting.queueParses = 0;
   expect(store.queries.turns("session_one")).toEqual([]);
-  expect(store.readAccounting.documentReads).toBe(0);
-  expect(store.readAccounting.queueParses).toBe(0);
+  expect(store.kernel.readAccounting.documentReads).toBe(0);
+  expect(store.kernel.readAccounting.queueParses).toBe(0);
 });
 
 // ── step 2: the row's fold reads nothing the command already wrote ───────────
@@ -234,7 +234,7 @@ test("a malformed turn in the store is refused at the write, not let through", (
   const first = seeded(open(directory), 2);
   const seededTurns = first.queries.turns("session_one");
   const queue = { version: 2, sessionId: "session_one", nextSequence: 9, turns: [...seededTurns, malformedTurn("session_one", 8)] };
-  first.closeExecutionStore();
+  first.kernel.executionStore.close();
   stores.splice(stores.indexOf(first), 1);
 
   injectQueue(directory, "session_one", queue);
@@ -250,7 +250,7 @@ test("a malformed turn in the store is refused at the write, not let through", (
   // …and a well-formed turn in the same position is accepted, so this is a
   // guard rather than a store that has stopped writing.
   const clean = { ...queue, turns: seededTurns };
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   stores.splice(stores.indexOf(store), 1);
   injectQueue(directory, "session_one", clean);
   const healthy = open(directory);
@@ -265,7 +265,7 @@ test("a structurally broken turn is refused on read", () => {
   const directory = root();
   const first = seeded(open(directory), 2);
   const turns = first.queries.turns("session_one");
-  first.closeExecutionStore();
+  first.kernel.executionStore.close();
   stores.splice(stores.indexOf(first), 1);
 
   for (const broken of [
@@ -277,7 +277,7 @@ test("a structurally broken turn is refused on read", () => {
     injectQueue(directory, "session_one", { version: 2, sessionId: "session_one", nextSequence: 3, turns: [broken] });
     const store = open(directory);
     expect(() => store.queries.turns("session_one")).toThrow(/invalid session queue/);
-    store.closeExecutionStore();
+    store.kernel.executionStore.close();
     stores.splice(stores.indexOf(store), 1);
   }
 

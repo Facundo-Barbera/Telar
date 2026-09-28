@@ -12,7 +12,7 @@ const stores: EngineStore[] = [];
 let restore: { config?: string } | undefined;
 
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   if (restore) {
     if (restore.config === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = restore.config;

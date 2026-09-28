@@ -18,7 +18,7 @@ const tmp = (prefix: string): string => {
 };
 
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -57,7 +57,7 @@ function fixture() {
   start(healthy, "run_healthy", "worker_three");
 
   const scannedAt = now + 60_000;
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   stores.splice(stores.indexOf(store), 1);
   return { root, scannedAt, ids: { stranded, wedged, finished, healthy } };
 }

@@ -38,6 +38,7 @@ export type KernelState = "starting" | "idle" | "busy" | "restarting" | "dead";
 export class PluginDoors {
   /** Absent means every kernel verb refuses with "no kernel host": the store must build in a test without spawning Python. */
   private kernels?: KernelHost;
+  private pluginRelease?: (sessionId: string, reason: string) => void;
   /** The last compile per session, for `latex_status` and the surface. */
   private readonly latexCompiles = new Map<string, CompileStatus>();
 
@@ -53,6 +54,16 @@ export class PluginDoors {
 
   disposeKernel(sessionId: string, reason: string): void {
     void this.kernels?.dispose(sessionId, reason);
+  }
+
+  /** The plugin host's per-session release, so a plugin gives back its state without the store naming it. */
+  attachRelease(release: (sessionId: string, reason: string) => void): void {
+    this.pluginRelease = release;
+  }
+
+  release(sessionId: string, reason: string): void {
+    this.pluginRelease?.(sessionId, reason);
+    this.disposeKernel(sessionId, reason);
   }
 
   /** Resolves the interpreter with the worktree rule; the refusal names which switch is off, the Mac's or the project's. */

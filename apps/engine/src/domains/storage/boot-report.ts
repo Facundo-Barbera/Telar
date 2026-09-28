@@ -10,7 +10,7 @@ const count = (value: number) => value.toLocaleString("en-US");
  * happened: a log that says "removed nothing" on every start trains its reader past the start that matters.
  */
 export function reportBootHousekeeping(store: EngineStore, now: () => number, say: (line: string) => void): void {
-  const swept = store.executionHousekeeping();
+  const swept = store.kernel.executionStore.housekeeping;
   if (swept) {
     const parts: string[] = [];
     if (swept.receipts > 0) parts.push(`${count(swept.receipts)} spent command receipts`);

@@ -101,4 +101,24 @@ export class ProjectRemounts {
       this.deps.prepareWorktree(session.id, projectRoot, plan, baseSha);
     }
   }
+
+  /**
+   * Asks every project's disk now: at start, and when the shell sees a mount change. A project that cannot be read
+   * gets the remount search here, off the poll path. Removed projects are on no surface, so they are skipped.
+   */
+  reprobe(): { projects: number; changed: number; recovered: number } {
+    const projects = this.deps.registry.read().projects.filter((project) => project.removedAt === undefined);
+    let changed = 0;
+    let recovered = 0;
+    for (const project of projects) {
+      const before = this.deps.probes.lastAvailability(project.id);
+      let availability = this.deps.probes.availability(project);
+      if (availability !== "available" && this.recover(project) !== undefined) {
+        recovered += 1;
+        availability = this.deps.probes.availability(this.deps.registry.get(project.id));
+      }
+      if (availability !== before) changed += 1;
+    }
+    return { projects: projects.length, changed, recovered };
+  }
 }

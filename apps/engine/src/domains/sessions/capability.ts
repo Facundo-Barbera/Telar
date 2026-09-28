@@ -86,14 +86,14 @@ export function storeReads(store: EngineStore): SessionsReads {
 export function storeSessionsPort(store: EngineStore): SessionsPort {
   return {
     liveSessions: async (options) => store.live.rows(options),
-    createSession: async (input) => ({ session: await store.createSessionAsync(input) }),
-    submitAgentTurn: async (id, { proof, ...input }) => store.submitAgentTurnAsync(id, input, proof),
+    createSession: async (input) => ({ session: await store.requestPath.createSession(input) }),
+    submitAgentTurn: async (id, { proof, ...input }) => store.requestPath.submitAgentTurn(id, input, proof),
     events: async (id, after, limit) => ({ events: store.queries.readEvents(id, after, limit) }),
     stopSession: async (id, by) => store.turnLifecycle.stopSession(id, by),
     settleSession: async (id, settled) => {
       const session = store.lifecycle.updateSession(id, { settledOverride: settled ? "settled" : "active" });
       if (!settled) return { session };
-      const ended = await store.endSessionLeftovers(id);
+      const ended = await store.settler.endLeftovers(id);
       return { session: store.records.get(id), ended };
     },
     sessionDiff: async (id) => ({ diff: await store.workspaceReads.sessionDiff(id) }),

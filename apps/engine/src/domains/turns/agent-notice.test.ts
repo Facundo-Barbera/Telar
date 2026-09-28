@@ -23,7 +23,7 @@ import { codexNotificationInstruction } from "../../drivers/codex";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -348,7 +348,7 @@ test("an agent turn stored before notices existed still frames as a peer's own w
 test("the notice survives a restart, because it is stored rather than derived", () => {
   const { store, home, proof } = setup();
   const minted = store.intake.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof).turn.agentNotice;
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   const reopened = new EngineStore(home);
   stores.push(reopened);
   const turn = reopened.queries.turns("session_host")[0]!;

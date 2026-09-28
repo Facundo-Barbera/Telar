@@ -35,7 +35,7 @@ test("a request left open on an already-ended turn is retired at boot; one on an
   editDocument(store, stateRoot, "queue.json", (queue) => {
     Object.assign(queue.turns[0], { state: "failed", completedAt: 90, failure: { code: "driver_failed", message: "old build" } });
   });
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
 
   const reopened = new EngineStore(stateRoot, () => 200);
   // Read alone already refuses to call the session blocked...
@@ -128,7 +128,7 @@ test("the boot sweep closes every terminal turn's leftovers in one pass over eac
       Object.assign(turn, { state: "failed", completedAt: 90, failure: { code: "driver_failed", message: "old build" } });
     });
   }
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
 
   const reopened = new EngineStore(stateRoot, () => 300);
   reopened.recovery.recover();

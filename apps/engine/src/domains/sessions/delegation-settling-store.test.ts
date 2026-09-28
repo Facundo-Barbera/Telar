@@ -307,7 +307,7 @@ test("A CONSUMED WAKE IS DELIVERY, and a wake that also re-tasked is not", () =>
 
 test("GRACE null → OFF. Nothing settles by itself, however long it has been", () => {
   const fixture = scene();
-  fixture.store.setInboxPolicy({ settleDelegatedAfterHours: null });
+  fixture.store.settings.setInbox({ settleDelegatedAfterHours: null });
   handOver(fixture, "run_task");
   deliver(fixture, "run_task");
 
@@ -316,7 +316,7 @@ test("GRACE null → OFF. Nothing settles by itself, however long it has been", 
   expect(worker(fixture).settledOverride).toBeUndefined();
 
   // …and turning it back on settles the row that was waiting all along.
-  fixture.store.setInboxPolicy({ settleDelegatedAfterHours: 1 });
+  fixture.store.settings.setInbox({ settleDelegatedAfterHours: 1 });
   expect(fixture.store.settler.sweepDelegated()).toEqual(["session_worker"]);
 });
 
@@ -343,10 +343,10 @@ test("A SESSION NOBODY DELEGATED TO IS NEVER TOUCHED", () => {
 test("the delegation grace is its own setting, and survives a reload beside the quiet window", () => {
   const fixture = scene();
   expect(fixture.store.settings.inbox()).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 1, settledTerminalLimit: 5 });
-  fixture.store.setInboxPolicy({ settleDelegatedAfterHours: 6 });
+  fixture.store.settings.setInbox({ settleDelegatedAfterHours: 6 });
   expect(fixture.store.settings.inbox()).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 6, settledTerminalLimit: 5 });
   // Changing one leaves the other exactly where it was.
-  fixture.store.setInboxPolicy({ autoSettleAfterHours: null });
+  fixture.store.settings.setInbox({ autoSettleAfterHours: null });
   expect(fixture.store.settings.inbox()).toEqual({ autoSettleAfterHours: null, settleDelegatedAfterHours: 6, settledTerminalLimit: 5 });
-  expect(() => fixture.store.setInboxPolicy({ settleDelegatedAfterHours: 0 })).toThrow();
+  expect(() => fixture.store.settings.setInbox({ settleDelegatedAfterHours: 0 })).toThrow();
 });

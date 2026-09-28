@@ -31,7 +31,7 @@ function build(plan: (engine: EngineStore, set: (at: number) => void) => void): 
     events[session.id] = engine.queries.readEvents(session.id).length;
     cursors[session.id] = engine.queries.eventCursor(session.id);
   }
-  engine.closeExecutionStore();
+  engine.kernel.executionStore.close();
   return { home, exportTo: path.join(home, "exports"), events, cursors };
 }
 
@@ -67,7 +67,7 @@ function reopen(built: Built): ExecutionStore {
 
 function reopenEngine(built: Built, now: number): EngineStore {
   const engine = new EngineStore(built.home, () => now);
-  closers.push(() => engine.closeExecutionStore());
+  closers.push(() => engine.kernel.executionStore.close());
   return engine;
 }
 
@@ -277,7 +277,7 @@ test("the default is never, and a window with nowhere to export is refused", () 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-retention-policy-"));
   homes.push(home);
   const engine = new EngineStore(home, () => START);
-  closers.push(() => engine.closeExecutionStore());
+  closers.push(() => engine.kernel.executionStore.close());
   expect(engine.settings.retention()).toEqual({ idleAfterDays: null, exportTo: null });
   // A DELETE MUST NOT BE REACHABLE BY ACCIDENT. Enabling a window with no copy
   // to fall back on is the one shape the approved design rules out, so it is a
@@ -294,7 +294,7 @@ test("a hand-edited retention document costs the preference and never the histor
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-retention-broken-"));
   homes.push(home);
   const engine = new EngineStore(home, () => START);
-  closers.push(() => engine.closeExecutionStore());
+  closers.push(() => engine.kernel.executionStore.close());
   for (const document of ["{ not json at all", JSON.stringify({ idleAfterDays: "soon", exportTo: 7 })]) {
     fs.writeFileSync(path.join(home, "retention.json"), document);
     expect(engine.settings.retention()).toEqual({ idleAfterDays: null, exportTo: null });
@@ -306,7 +306,7 @@ test("with the default in place the sweep reads nothing and takes nothing", () =
   homes.push(home);
   let clock = START;
   const engine = new EngineStore(home, () => clock);
-  closers.push(() => engine.closeExecutionStore());
+  closers.push(() => engine.kernel.executionStore.close());
   engine.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
   conversation(engine, "session_one");
   const before = engine.queries.readEvents("session_one").length;
@@ -324,7 +324,7 @@ test("the configured window sweeps through the policy, end to end", () => {
   homes.push(home);
   let clock = START;
   const engine = new EngineStore(home, () => clock);
-  closers.push(() => engine.closeExecutionStore());
+  closers.push(() => engine.kernel.executionStore.close());
   engine.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
   conversation(engine, "session_one");
   const before = engine.queries.readEvents("session_one").length;

@@ -36,7 +36,7 @@ function build(turns = 3): string {
     ]);
     engine.turnLifecycle.completeTurn("session_one", runId, token, { text: `answer ${turn}` });
   }
-  engine.closeExecutionStore();
+  engine.kernel.executionStore.close();
   return home;
 }
 

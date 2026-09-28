@@ -254,7 +254,7 @@ test("a held notification survives a restart — it is a file, not a field on a 
   expect(store.wakes.pendingNotifications("session_host")).toHaveLength(1);
 
   const home = store.paths.root;
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   const reopened = reopenStore(home);
   expect(reopened.wakes.pendingNotifications("session_host").map((each) => each.runId)).toEqual(["run_a"]);
   // And the reopened store delivers it when the turn it was waiting on ends.

@@ -73,7 +73,7 @@ export function projectRoutes(store: EngineStore, plugins: ProjectPlugins): Rout
       handle: ({ query }) => ok({ projects: store.projectRegistry.list({ includeRemoved: query.get("includeRemoved") === "1" }) }),
     },
     // Re-probes every project's disk; the poll in `projectMetadata` is the floor, this only makes it sooner.
-    { method: "POST", path: "/v2/projects/reprobe", auth: "engine", body: "raw", handle: () => ok(store.reprobeProjects()) },
+    { method: "POST", path: "/v2/projects/reprobe", auth: "engine", body: "raw", handle: () => ok(store.remounts.reprobe()) },
     {
       method: "POST",
       path: "/v2/projects/clone",

@@ -83,7 +83,7 @@ export function createWorkerRegistry(store: EngineStore, { now, leaseMs, onRetir
         if (seq !== worker.claimSeq + 1) throw new HttpError(400, "invalid_request", "claim sequence out of order");
         // The claim is synchronous under the state lock; attaching OAuth bearers is a network call.
         const claimed = store.claims.claimNextTurn(workerId);
-        const authorized = claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined;
+        const authorized = claimed ? await store.mcpOAuth.authorizeClaim(claimed) : undefined;
         if (active(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
         worker.claimSeq = seq;
         worker.claimResult = authorized;

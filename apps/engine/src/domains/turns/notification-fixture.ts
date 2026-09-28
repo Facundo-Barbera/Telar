@@ -8,7 +8,7 @@ const stores: EngineStore[] = [];
 
 /** Closes every store opened through this fixture; pass to `afterEach`. */
 export function closeStores(): void {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 }
 

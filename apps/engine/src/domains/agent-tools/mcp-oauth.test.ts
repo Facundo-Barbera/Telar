@@ -344,7 +344,7 @@ test("a signed-in server rides the claim with its bearer, and the list never sho
   });
   engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
 
-  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!);
+  const claim = await engine.mcpOAuth.authorizeClaim(engine.claims.claimNextTurn("worker_one")!);
   const spec = claim.mcpServers![0]!.spec as { headers?: Record<string, string> };
   expect(spec.headers?.Authorization).toBe("Bearer the-access-token");
 
@@ -367,7 +367,7 @@ test("a header somebody typed wins over the managed token", async () => {
   });
   engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
 
-  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!);
+  const claim = await engine.mcpOAuth.authorizeClaim(engine.claims.claimNextTurn("worker_one")!);
   expect((claim.mcpServers![0]!.spec as { headers: Record<string, string> }).headers).toEqual({ authorization: "Bearer mine" });
 });
 
@@ -380,7 +380,7 @@ test("a server nobody signed in to is handed over untouched", async () => {
   engine.mcpServers.save({ id: "local", spec: { transport: "stdio", command: "node" } });
   engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
 
-  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!);
+  const claim = await engine.mcpOAuth.authorizeClaim(engine.claims.claimNextTurn("worker_one")!);
   expect(claim.mcpServers!.map((server) => server.spec)).toEqual([
     { transport: "http", url: "https://mcp.example.com/mcp", oauth: { clientId: "declared-but-unused" } },
     { transport: "stdio", command: "node" },
@@ -406,7 +406,7 @@ test("an expiring token is refreshed before the turn, and a failed refresh still
       status: 200,
       headers: { "content-type": "application/json" },
     })) as unknown as typeof fetch;
-  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!, rotated);
+  const claim = await engine.mcpOAuth.authorizeClaim(engine.claims.claimNextTurn("worker_one")!, rotated);
   expect((claim.mcpServers![0]!.spec as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer fresh");
   expect(engine.mcpOAuth.get("linear")?.tokens.refreshToken).toBe("r2");
 
@@ -429,6 +429,6 @@ test("a refresh that fails still lets the turn run", async () => {
   const offline = (async () => {
     throw new Error("ECONNREFUSED");
   }) as unknown as typeof fetch;
-  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!, offline);
+  const claim = await engine.mcpOAuth.authorizeClaim(engine.claims.claimNextTurn("worker_one")!, offline);
   expect((claim.mcpServers![0]!.spec as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer stale");
 });

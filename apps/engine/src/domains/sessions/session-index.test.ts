@@ -34,7 +34,7 @@ function indexed(directory = root(), clock?: () => number): EngineStore {
 
 afterEach(() => {
   for (const store of stores.splice(0)) {
-    try { store.closeExecutionStore(); } catch { /* already closed by the test */ }
+    try { store.kernel.executionStore.close(); } catch { /* already closed by the test */ }
   }
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -102,7 +102,7 @@ test("a session deleted takes its row with it, and the next open finds no orphan
   const store = indexed(home);
   seed(store);
   expect(store.lifecycle.deleteSession("session_aaaa")).toBe(true);
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
 
   // The backfill on open reconciles: nothing to build, nothing to drop.
   const reopened = indexed(home);
@@ -114,7 +114,7 @@ test("the backfill builds the rows a binary without the index left behind", asyn
   const home = root();
   const store = indexed(home);
   seed(store);
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
 
   /**
    * WHAT A DOWNGRADE LOOKS LIKE FROM HERE: the documents are all there and the
@@ -139,7 +139,7 @@ test("a command that throws leaves neither the document nor the row", () => {
   seed(store);
   const before = store.live.rows({ all: true }).sessions.find((session) => session.id === "session_aaaa");
 
-  expect(() => store.executeCommand("deliberate failure", () => {
+  expect(() => store.kernel.command("deliberate failure", () => {
     store.lifecycle.updateSession("session_aaaa", { title: "written inside a doomed command" });
     throw new Error("rolled back");
   })).toThrow("rolled back");
@@ -300,6 +300,6 @@ test("a document the live answer never reads moves no cursor at all", () => {
   expect(store.live.revision({ all: true })).toBe(before);
 
   // But the three it DOES read still move it.
-  store.setInboxPolicy({ autoSettleAfterHours: 12 });
+  store.settings.setInbox({ autoSettleAfterHours: 12 });
   expect(store.live.revision()).toBeGreaterThan(before);
 });

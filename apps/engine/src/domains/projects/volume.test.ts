@@ -231,11 +231,11 @@ test("git comes back on its own when the drive does", async () => {
 test("reprobe answers how many projects it asked about and how many moved", () => {
   const { store, mounts } = onADrive();
 
-  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 1, recovered: 0 });
-  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 0, recovered: 0 });
+  expect(store.remounts.reprobe()).toEqual({ projects: 1, changed: 1, recovered: 0 });
+  expect(store.remounts.reprobe()).toEqual({ projects: 1, changed: 0, recovered: 0 });
 
   mounts.unmount("TelarVR");
-  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 1, recovered: 0 });
+  expect(store.remounts.reprobe()).toEqual({ projects: 1, changed: 1, recovered: 0 });
 });
 
 test("restoring a project re-reads the drive rather than trusting what was stored", () => {
@@ -374,7 +374,7 @@ test("a remount at `<name> 1` keeps the project id and moves its root in place",
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.mkdirSync(path.join(moved, "project"), { recursive: true });
 
-  expect(store.reprobeProjects()).toMatchObject({ recovered: 1 });
+  expect(store.remounts.reprobe()).toMatchObject({ recovered: 1 });
 
   const after = store.projectRegistry.get("project_one");
   expect(after.id).toBe("project_one");
@@ -391,7 +391,7 @@ test("a local session's workspace moves with the project — the same id, a work
 
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.mkdirSync(path.join(moved, "project"), { recursive: true });
-  store.reprobeProjects();
+  store.remounts.reprobe();
 
   const session = store.records.get("session_one");
   expect(session.id).toBe("session_one");
@@ -420,7 +420,7 @@ test("a WORKTREE session is left alone — its checkout never moved", () => {
 
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.mkdirSync(path.join(moved, "project"), { recursive: true });
-  store.reprobeProjects();
+  store.remounts.reprobe();
 
   expect(store.records.get("session_tree").workspace).toEqual(cut);
   expect(store.projectRegistry.get("project_one").root).toBe(path.join(moved, "project"));
@@ -435,7 +435,7 @@ test("a drive that came back WITHOUT the project's folder is not a rename", () =
   // at a path that is not there either.
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.rmSync(path.join(moved, "project"), { recursive: true, force: true });
-  expect(store.reprobeProjects()).toMatchObject({ recovered: 0 });
+  expect(store.remounts.reprobe()).toMatchObject({ recovered: 0 });
   expect(store.projectRegistry.get("project_one").root).toBe(before);
 });
 
@@ -449,7 +449,7 @@ test("a different drive with the same name is NOT this project — the match is 
   const impostor = mounts.mount("TelarVR", "FAKE-UUID-SOMEBODY-ELSES-DISK");
   fs.mkdirSync(path.join(impostor, "project"), { recursive: true });
 
-  expect(store.reprobeProjects()).toMatchObject({ recovered: 0 });
+  expect(store.remounts.reprobe()).toMatchObject({ recovered: 0 });
   expect(store.projectRegistry.get("project_one").root).toBe(before);
 });
 
@@ -471,7 +471,7 @@ test("an unplugged drive that stays unplugged is searched for ONCE, not on every
 
   mounts.unmount("TelarVR");
   const registered = searches;
-  for (let pass = 0; pass < 10; pass += 1) store.reprobeProjects();
+  for (let pass = 0; pass < 10; pass += 1) store.remounts.reprobe();
   expect(searches).toBe(registered);
 });
 
@@ -505,7 +505,7 @@ test("a worktree cut that failed while the drive was away is retried once on rec
   repositoryReadable = true;
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.mkdirSync(path.join(moved, "project"), { recursive: true });
-  store.reprobeProjects();
+  store.remounts.reprobe();
 
   expect(await until(() => cuts > failedAfter)).toBe(true);
   expect(await until(() => store.records.get("session_tree").preparation === undefined)).toBe(true);

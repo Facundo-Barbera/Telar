@@ -219,7 +219,7 @@ test("a blocker, a pin and a draft all survive the filter — the rows it must n
   // An hour is the shortest window the policy allows, and every session below
   // is stamped `now`, so NOTHING is stale: this isolates the guards from the
   // clock. The clock's own case is the 267-session test above.
-  store.setInboxPolicy({ autoSettleAfterHours: 1 });
+  store.settings.setInbox({ autoSettleAfterHours: 1 });
 
   const make = (suffix: string, draft = false): string => {
     const id = `session_${suffix.padEnd(30, "0")}`;

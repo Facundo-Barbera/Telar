@@ -72,7 +72,7 @@ const stores: EngineStore[] = [];
 /** Every variable that must point inside the sandbox, with what it was. */
 let restore: Array<[string, string | undefined]> = [];
 afterEach(() => {
-  for (const store of stores.splice(0)) { try { store.closeExecutionStore(); } catch { /* already closed */ } }
+  for (const store of stores.splice(0)) { try { store.kernel.executionStore.close(); } catch { /* already closed */ } }
   for (const [name, was] of restore.splice(0)) { if (was === undefined) delete process.env[name]; else process.env[name] = was; }
   for (const directory of scratch.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -165,7 +165,7 @@ function drive(engineRoot: string): EngineStore {
 test("a representative workload leaves nothing at the store root that nothing declared", () => {
   const { engineRoot } = sandbox();
   const store = drive(engineRoot);
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   stores.splice(stores.indexOf(store), 1);
   // A SECOND BOOT OVER THE SAME HOME, because several things are written only
   // on open — the legacy fence, the backup sweep, the reconciles — and a test

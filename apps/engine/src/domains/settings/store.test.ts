@@ -15,17 +15,17 @@ test("the inbox policy is one document, defaulted rather than absent", () => {
   const grace = { settleDelegatedAfterHours: 1, settledTerminalLimit: 5 };
   expect(store.settings.inbox()).toEqual({ autoSettleAfterHours: 72, ...grace });
 
-  expect(store.setInboxPolicy({ autoSettleAfterHours: 14 })).toEqual({ autoSettleAfterHours: 14, ...grace });
+  expect(store.settings.setInbox({ autoSettleAfterHours: 14 })).toEqual({ autoSettleAfterHours: 14, ...grace });
   expect(store.settings.inbox()).toEqual({ autoSettleAfterHours: 14, ...grace });
 
   // `null` IS THE OFF SWITCH, and it is a value rather than an omission:
   // "never" is an answer, not a very large duration.
-  expect(store.setInboxPolicy({ autoSettleAfterHours: null })).toEqual({ autoSettleAfterHours: null, ...grace });
+  expect(store.settings.setInbox({ autoSettleAfterHours: null })).toEqual({ autoSettleAfterHours: null, ...grace });
   // An empty patch changes nothing rather than resetting anything.
-  expect(store.setInboxPolicy({})).toEqual({ autoSettleAfterHours: null, ...grace });
+  expect(store.settings.setInbox({})).toEqual({ autoSettleAfterHours: null, ...grace });
 
   for (const bad of [0, 90 * 24 + 1, 3.5, "7", Number.NaN]) {
-    expect(() => store.setInboxPolicy({ autoSettleAfterHours: bad })).toThrow(EngineStateError);
+    expect(() => store.settings.setInbox({ autoSettleAfterHours: bad })).toThrow(EngineStateError);
   }
   // …and the refusal left the stored answer alone.
   expect(store.settings.inbox()).toEqual({ autoSettleAfterHours: null, ...grace });

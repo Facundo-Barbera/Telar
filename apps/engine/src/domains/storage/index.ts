@@ -4,6 +4,5 @@ export { DIRECTORY_CATEGORIES, measureDirectory } from "./measure";
 export { type ReapCandidate } from "./node-modules-reap";
 export { detectCacheDedup, type CacheDedupVerdict } from "./package-caches";
 export { createStorageMeter, storageRoutes } from "./routes";
-export { copyStore } from "./copy";
 export { reportBootHousekeeping } from "./boot-report";
 export { backfillTurnSummaries, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen } from "./open-migrations";

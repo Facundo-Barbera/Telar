@@ -300,7 +300,7 @@ test("resolving a secret_access carries the item pick in answers, and the journa
 
   // Everything the engine persisted, read raw off disk: no file may hold the
   // vault value. The orchestrator-side half lives in secret-fill.test.ts.
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   const files: string[] = [];
   const walk = (directory: string): void => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {

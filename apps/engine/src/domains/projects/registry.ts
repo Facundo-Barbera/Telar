@@ -18,6 +18,7 @@ import {
 import { assertId, assertStateVersion, EngineStateError, STATE_VERSION, type Kernel } from "../../platform/kernel";
 import { volumeForRoot, type VolumeDeps } from "../../platform/fs/volumes";
 import { ensureTelarGitignore } from "../git";
+import type { ProjectIcon } from "../appearance";
 import type { ProjectProbes } from "./probes";
 
 export type ProjectRegistryDocument = { version: typeof STATE_VERSION; projects: Project[] };
@@ -96,6 +97,24 @@ export class ProjectRegistry {
   }
 
   /** Registers a folder; one a removed project had restores that project, same id. The disk's volume is recorded here, once. */
+  /** Refuses new work on a removed project or an unplugged drive; reads stay open. A missing folder is the worker's to refuse. */
+  assertAvailable(projectId: string): void {
+    const project = this.get(projectId);
+    if (project.removedAt !== undefined) {
+      throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
+    }
+    if (this.deps.probes.availability(project) === "unmounted") {
+      throw new EngineStateError("conflict", `The drive holding ${project.name} is not connected. Plug it back in and this will work again.`);
+    }
+  }
+
+  /** The icon's bytes-on-disk; refuses when the project has none rather than guessing. */
+  async iconFile(projectId: string): Promise<ProjectIcon> {
+    const icon = await this.deps.probes.icon(this.get(projectId));
+    if (!icon) throw new EngineStateError("not_found", "this project has no icon");
+    return icon;
+  }
+
   register(input: { id?: string; name: string; root: string }): Project {
     if (input.id !== undefined) assertId(input.id, "project id");
     if (typeof input.name !== "string" || input.name.trim() === "") throw new EngineStateError("invalid_request", "project name must be non-empty");

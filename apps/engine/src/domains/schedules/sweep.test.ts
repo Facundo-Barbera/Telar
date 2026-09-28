@@ -21,7 +21,7 @@ import { EngineStore } from "../../state";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -142,7 +142,7 @@ test("a schedule survives a restart, and fires for the reader that comes back (#
   // row is a sqlite table rather than a Map.
   const { store, home } = setup();
   store.schedules.put({ sessionId: "session_one", prompt: "after the restart", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
 
   const later = reopen(home, START + 5 * HOUR);
   expect(later.schedules.sweep()).toHaveLength(1);

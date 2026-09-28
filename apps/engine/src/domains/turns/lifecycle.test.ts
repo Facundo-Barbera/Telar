@@ -125,7 +125,7 @@ describe("stop is stop — there is no pause to resume", () => {
   test("stop ends the live turn AND settles what was queued behind it", () => {
     const { store } = busy();
     store.intake.submitTurn("session_one", { runId: "run_steered", input: "also this" });
-    store.pauseSession("session_one"); // the deprecated alias — same verb now
+    store.worker.pauseSession("session_one"); // the deprecated alias — same verb now
     const states = new Map(store.queries.turns("session_one").map((turn) => [turn.runId, turn]));
     expect(states.get("run_live")).toMatchObject({ state: "stopped", stopReason: "user" });
     expect(states.get("run_steered")).toMatchObject({ state: "stopped", stopReason: "user" });
@@ -227,7 +227,7 @@ describe("stop is stop — there is no pause to resume", () => {
     store.intake.submitTurn("session_one", { runId: "run_held", input: "keep these words" });
     editDocument(store, directory, "queue.json", (queue) => { queue.turns[0].held = { at: 100, reason: "session_paused" }; });
     editDocument(store, directory, "session.json", (metadata) => { metadata.paused = { at: 100, by: "human" }; });
-    store.closeExecutionStore();
+    store.kernel.executionStore.close();
     const legacy = new EngineStore(directory, () => 200);
     legacy.turnLifecycle.stopSession("session_one");
     expect(legacy.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", input: "keep these words" });
@@ -299,7 +299,7 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
   const claim = store.claims.claimTurn("session_one", "worker_one")!;
   store.turnLifecycle.markRunning("session_one", "run_lost", claim.claim!.token);
   store.intake.submitTurn("session_one", { runId: "run_held", input: "before the crash" });
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   const rebooted = new EngineStore(stateRoot, () => 200);
   rebooted.recovery.recover();
 
@@ -311,7 +311,7 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
   editDocument(rebooted, stateRoot, "queue.json", (queue) => {
     Object.assign(queue.turns.find((turn: Turn) => turn.runId === "run_held"), { state: "stopped", completedAt: 150 });
   });
-  rebooted.closeExecutionStore();
+  rebooted.kernel.executionStore.close();
   const withStale = new EngineStore(stateRoot, () => 300);
   expect(() => withStale.turnLifecycle.releaseHeldTurn("session_one", "run_held")).toThrow(/only a queued turn can be released/);
 
@@ -320,7 +320,7 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
   const { store: away, root: awayRoot } = readyStore();
   away.intake.submitTurn("session_one", { runId: "run_held", input: "before the crash" });
   editDocument(away, awayRoot, "queue.json", (queue) => { queue.turns[0].held = { at: 100, reason: "engine_restart" }; });
-  away.closeExecutionStore();
+  away.kernel.executionStore.close();
   const registryFile = path.join(awayRoot, "projects.json");
   const registry = JSON.parse(fs.readFileSync(registryFile, "utf8"));
   registry.projects[0].removedAt = 150;

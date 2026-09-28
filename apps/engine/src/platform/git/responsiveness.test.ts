@@ -195,15 +195,15 @@ test("a pending session create, draft promotion, diff and overview leave the eve
   });
   store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
   // Made while the gate is open: the session whose stream the test appends to.
-  await store.createSessionAsync({ id: "session_live", projectId: "project_one", envMode: "local" });
-  await store.createSessionAsync({ id: "session_draft", projectId: "project_one", envMode: "worktree", draft: true });
+  await store.requestPath.createSession({ id: "session_live", projectId: "project_one", envMode: "local" });
+  await store.requestPath.createSession({ id: "session_draft", projectId: "project_one", envMode: "worktree", draft: true });
 
   git.shut();
   const before = git.calls.length;
   const pending = Promise.all([
-    store.createSessionAsync({ id: "session_new", projectId: "project_one", envMode: "local" }),
-    store.createSessionAsync({ id: "session_cut", projectId: "project_one", envMode: "worktree" }),
-    store.submitTurnAsync("session_draft", { runId: "run_draft", input: "promote me" }),
+    store.requestPath.createSession({ id: "session_new", projectId: "project_one", envMode: "local" }),
+    store.requestPath.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" }),
+    store.requestPath.submitTurn("session_draft", { runId: "run_draft", input: "promote me" }),
     store.workspaceReads.sessionDiff("session_live"),
     store.workspaceReads.projectOverview("project_one"),
   ]);
@@ -239,7 +239,7 @@ test("two concurrent identical status reads spawn one git, and the engine's own 
   const git = gatedGit();
   const store = new EngineStore(root(), () => 1, { asyncGit: git.runner });
   store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
-  await store.createSessionAsync({ id: "session_one", projectId: "project_one", envMode: "local" });
+  await store.requestPath.createSession({ id: "session_one", projectId: "project_one", envMode: "local" });
   const statuses = () => git.calls.filter((call) => call.startsWith("status ")).length;
 
   const start = git.calls.length;

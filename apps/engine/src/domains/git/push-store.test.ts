@@ -34,7 +34,7 @@ const tmp = (prefix: string): string => {
   return directory;
 };
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const directory of made.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 

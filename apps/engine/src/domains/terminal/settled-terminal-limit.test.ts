@@ -110,7 +110,7 @@ async function scene() {
 
 test("past the limit, the session settled longest ago closes first, as Telar, and says so", async () => {
   const { host, manager, store, closedByPerson, open, settle } = await scene();
-  store.setInboxPolicy({ settledTerminalLimit: 3 });
+  store.settings.setInbox({ settledTerminalLimit: 3 });
   const run = await open("session_one");
   host.personShell("session_two");
   host.personShell("session_two");
@@ -152,13 +152,13 @@ test("the setting is the limit: five by default, lowering it applies it, and a b
   expect(await store.sessionTerminals.enforceLimit()).toEqual([]);
   expect(host.sessionCloses).toEqual([]);
 
-  store.setInboxPolicy({ settledTerminalLimit: 1 });
+  store.settings.setInbox({ settledTerminalLimit: 1 });
   expect(await store.sessionTerminals.enforceLimit()).toEqual(["session_one", "session_two"]);
   expect(host.sessionCloses).toEqual(["session_one", "session_two"]);
   expect(host.held("session_three")).toBe(1);
 
-  expect(() => store.setInboxPolicy({ settledTerminalLimit: -1 })).toThrow(/settled terminal limit/);
-  expect(() => store.setInboxPolicy({ settledTerminalLimit: 2.5 })).toThrow(/settled terminal limit/);
+  expect(() => store.settings.setInbox({ settledTerminalLimit: -1 })).toThrow(/settled terminal limit/);
+  expect(() => store.settings.setInbox({ settledTerminalLimit: 2.5 })).toThrow(/settled terminal limit/);
   expect(store.settings.inbox().settledTerminalLimit).toBe(1);
 });
 
@@ -192,7 +192,7 @@ test("the counts include the person's shells: what Settle would close, and what 
   expect(store.live.revision()).toBeGreaterThan(before);
 
   store.lifecycle.updateSession("session_one", { settledOverride: "settled" });
-  expect(await store.endSessionLeftovers("session_one")).toEqual({ terminals: 2, backgroundTasks: 0 });
+  expect(await store.settler.endLeftovers("session_one")).toEqual({ terminals: 2, backgroundTasks: 0 });
   expect(store.live.rows({ all: true }).terminals).toEqual({ session_three: 1 });
 });
 

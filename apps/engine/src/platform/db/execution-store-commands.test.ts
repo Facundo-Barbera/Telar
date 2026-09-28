@@ -10,9 +10,9 @@ afterEach(cleanup);
 test("SQLite commits projections, events and a receipt together; a lost response is replayed", () => {
   const { store } = setup();
   const action = () => store.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
-  const first = store.executeCommand("submit:session_one:run_one", action, "command_one");
+  const first = store.kernel.command("submit:session_one:run_one", action, "command_one");
   const cursor = store.queries.eventCursor("session_one");
-  const again = store.executeCommand<typeof first>("submit:session_one:run_one", () => { throw new Error("must not repeat"); }, "command_one");
+  const again = store.kernel.command<typeof first>("submit:session_one:run_one", () => { throw new Error("must not repeat"); }, "command_one");
   expect(again).toEqual(first);
   expect(store.queries.eventCursor("session_one")).toBe(cursor);
   expect(store.queries.turns("session_one")).toHaveLength(1);
@@ -20,7 +20,7 @@ test("SQLite commits projections, events and a receipt together; a lost response
 test("an interrupted transaction rolls back both journal and queue and invalidates caches", () => {
   const { store } = setup();
   const before = store.queries.eventCursor("session_one");
-  expect(() => store.executeCommand("broken", () => {
+  expect(() => store.kernel.command("broken", () => {
     store.intake.submitTurn("session_one", { runId: "run_rollback", input: "never accepted" });
     throw new Error("injected disk failure");
   })).toThrow("injected disk failure");
@@ -37,7 +37,7 @@ test("migration preserves history and keeps a backup", () => {
   expect(migrated.queries.turns("session_one")[0]?.input).toBe("keep me");
   expect(fs.existsSync(path.join(home, "execution-json-backup", "session_one", "queue.json"))).toBe(true);
   migrated.turnLifecycle.stopSession("session_one");
-  migrated.closeExecutionStore(); stores.splice(stores.indexOf(migrated), 1);
+  migrated.kernel.executionStore.close(); stores.splice(stores.indexOf(migrated), 1);
   const reopened = new EngineStore(home); stores.push(reopened);
   expect(reopened.queries.turns("session_one")[0]?.state).toBe("stopped");
   expect(reopened.queries.readEvents("session_one").some((event) => event.type === "turn.stopped")).toBe(true);
@@ -46,7 +46,7 @@ test("migration preserves history and keeps a backup", () => {
 test("a replayed Stop receipt cannot cancel a new message submitted afterward", () => {
   const { store } = setup();
   store.intake.submitTurn("session_one", { runId: "run_first", input: "first" });
-  const stop = () => store.executeCommand("stop:session_one", () => store.turnLifecycle.stopSession("session_one"), "command_stop");
+  const stop = () => store.kernel.command("stop:session_one", () => store.turnLifecycle.stopSession("session_one"), "command_stop");
   stop();
   store.intake.submitTurn("session_one", { runId: "run_new", input: "new instruction" });
   stop();
@@ -65,7 +65,7 @@ test("task-stop deliveries survive reopening and only their owner can acknowledg
   const pending = store.sessionTasks.stopsForWorker("worker_one");
   expect(pending).toHaveLength(1);
   expect(store.sessionTasks.stopsForWorker("worker_other", [pending[0]!.deliveryId!])).toEqual([]);
-  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
   const reopened = new EngineStore(home); stores.push(reopened);
   expect(reopened.sessionTasks.stopsForWorker("worker_one")).toEqual(pending);
   expect(reopened.sessionTasks.stopsForWorker("worker_one", [pending[0]!.deliveryId!])).toEqual([]);
@@ -74,7 +74,7 @@ test("task-stop deliveries survive reopening and only their owner can acknowledg
 test("SIGKILL between projection and commit leaves no accepted turn or journal fragment", async () => {
   const { store, home } = setup();
   const cursor = store.queries.eventCursor("session_one");
-  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
   const child = Bun.spawn([process.execPath, "-e", `
     import { EngineStore } from ${JSON.stringify(path.resolve(import.meta.dir, "../../state.ts"))};
     const store = new EngineStore(process.argv[1]);
@@ -95,7 +95,7 @@ test("export retains post-migration history and re-imports on open", async () =>
   const { home, store } = setup();
   store.intake.submitTurn("session_one", { runId: "run_export", input: "after migration" });
   store.turnLifecycle.stopSession("session_one");
-  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
   const destination = `${home}-export`; homes.push(destination);
   const child = Bun.spawn([process.execPath, path.resolve(import.meta.dir, "../../../scripts/export-execution.ts"), home, destination], { stdout: "ignore", stderr: "pipe" });
   expect(await child.exited).toBe(0);
@@ -106,7 +106,7 @@ test("export retains post-migration history and re-imports on open", async () =>
 
 test("internal command receipts do not retain resolved provider credentials", async () => {
   const { store, home } = setup();
-  store.executeCommand("claim-like", () => {
+  store.kernel.command("claim-like", () => {
     store.intake.submitTurn("session_one", { runId: "run_private", input: "hello" });
     return { providerInstance: { env: [{ name: "API_KEY", value: "private-fixture-token" }] } };
   });
@@ -118,13 +118,13 @@ test("internal command receipts do not retain resolved provider credentials", as
 
 test("human Stop keeps agent traffic blocked across restart until a fresh human message", () => {
   const { home, store } = setup();
-  store.executeCommand("stop", () => store.turnLifecycle.stopSession("session_one", "user"), "stop_guard");
-  store.closeExecutionStore();
+  store.kernel.command("stop", () => store.turnLifecycle.stopSession("session_one", "user"), "stop_guard");
+  store.kernel.executionStore.close();
   const reopened = new EngineStore(home, Date.now); stores.push(reopened);
   expect(() => reopened.intake.submitAgentTurn("session_one", { runId: "run_noise", input: "checkpoint" })).toThrow("stopped by its user");
   expect(reopened.queries.turns("session_one")).toHaveLength(0);
   reopened.intake.submitTurn("session_one", { runId: "run_human", input: "new task" });
-  reopened.executeCommand("stop", () => reopened.turnLifecycle.stopSession("session_one", "user"), "stop_guard");
+  reopened.kernel.command("stop", () => reopened.turnLifecycle.stopSession("session_one", "user"), "stop_guard");
   expect(reopened.records.get("session_one").agentMessagesBlocked).toBeUndefined();
   expect(reopened.intake.submitAgentTurn("session_one", { runId: "run_fresh", input: "new report" }).replayed).toBe(false);
 });
@@ -165,7 +165,7 @@ test("a rolled-back stop is not reported to the worker that would have acted on 
   store.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
   store.claims.claimTurn("session_one", "worker_one");
   expect(store.recovery.cancellationsForWorker("worker_one")).toEqual([]);
-  expect(() => store.executeCommand("broken-stop", () => {
+  expect(() => store.kernel.command("broken-stop", () => {
     store.turnLifecycle.stopSession("session_one", "user");
     throw new Error("injected disk failure");
   })).toThrow("injected disk failure");

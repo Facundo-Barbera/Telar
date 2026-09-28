@@ -66,11 +66,11 @@ test("an icon added to a checkout becomes visible without waiting out a long TTL
   // repo and watches the sidebar. The "no icon" answer is the one they are in
   // the middle of falsifying, so it is held for seconds, not minutes.
   const { store, projectRoot, tick } = ready();
-  await expect(store.projectIconFileAsync("project_one")).rejects.toThrow(EngineStateError);
+  await expect(store.projectRegistry.iconFile("project_one")).rejects.toThrow(EngineStateError);
   fs.mkdirSync(path.join(projectRoot, "public"), { recursive: true });
   fs.writeFileSync(path.join(projectRoot, "public/icon.png"), png());
   tick(16_000);
-  expect((await store.projectIconFileAsync("project_one")).contentType).toBe("image/png");
+  expect((await store.projectRegistry.iconFile("project_one")).contentType).toBe("image/png");
 });
 
 test("a replaced icon gets a new etag on the very next read, inside the positive TTL", async () => {
@@ -80,19 +80,19 @@ test("a replaced icon gets a new etag on the very next read, inside the positive
   const { store, projectRoot, tick } = ready();
   const file = path.join(projectRoot, "icon.png");
   fs.writeFileSync(file, png("one"));
-  const first = (await store.projectIconFileAsync("project_one")).etag;
+  const first = (await store.projectRegistry.iconFile("project_one")).etag;
   fs.writeFileSync(file, png("two-much-longer"));
   tick(1_000); // well inside the five-minute positive TTL
-  expect((await store.projectIconFileAsync("project_one")).etag).not.toBe(first);
+  expect((await store.projectRegistry.iconFile("project_one")).etag).not.toBe(first);
 });
 
 test("a deleted icon falls back at once rather than serving a path that is gone", async () => {
   const { store, projectRoot, tick } = ready();
   fs.writeFileSync(path.join(projectRoot, "icon.png"), png());
-  expect((await store.projectIconFileAsync("project_one"))).toBeDefined();
+  expect((await store.projectRegistry.iconFile("project_one"))).toBeDefined();
   fs.rmSync(path.join(projectRoot, "icon.png"));
   tick(1_000);
-  await expect(store.projectIconFileAsync("project_one")).rejects.toThrow(EngineStateError);
+  await expect(store.projectRegistry.iconFile("project_one")).rejects.toThrow(EngineStateError);
 });
 
 test("a deleted icon is replaced by the next candidate down, not just dropped", async () => {
@@ -100,10 +100,10 @@ test("a deleted icon is replaced by the next candidate down, not just dropped", 
   fs.writeFileSync(path.join(projectRoot, "icon.png"), png("explicit"));
   fs.mkdirSync(path.join(projectRoot, "assets"), { recursive: true });
   fs.writeFileSync(path.join(projectRoot, "assets/icon.png"), png("fallback"));
-  expect((await store.projectIconFileAsync("project_one")).path.endsWith("icon.png")).toBe(true);
+  expect((await store.projectRegistry.iconFile("project_one")).path.endsWith("icon.png")).toBe(true);
   fs.rmSync(path.join(projectRoot, "icon.png"));
   tick(1_000);
-  expect((await store.projectIconFileAsync("project_one")).path.endsWith(path.join("assets", "icon.png"))).toBe(true);
+  expect((await store.projectRegistry.iconFile("project_one")).path.endsWith(path.join("assets", "icon.png"))).toBe(true);
 });
 
 /* ------------------------------------------------------------------ *
@@ -118,14 +118,14 @@ test("a deleted icon is replaced by the next candidate down, not just dropped", 
 test("a higher-priority icon added later is found, however often the old one was polled", async () => {
   const { store, projectRoot, tick } = ready();
   fs.writeFileSync(path.join(projectRoot, "favicon.ico"), ico());
-  const first = (await store.projectIconFileAsync("project_one"));
+  const first = (await store.projectRegistry.iconFile("project_one"));
   expect(first.path.endsWith("favicon.ico")).toBe(true);
 
   // The sidebar's poll, for eleven minutes. Every one of these is a cache hit
   // that confirms the same untouched file.
   for (let elapsed = 0; elapsed < 660_000; elapsed += 10_000) {
     tick(10_000);
-    expect((await store.projectIconFileAsync("project_one")).path.endsWith("favicon.ico")).toBe(true);
+    expect((await store.projectRegistry.iconFile("project_one")).path.endsWith("favicon.ico")).toBe(true);
   }
 
   // Now the project states its own choice, which outranks every convention.
@@ -136,7 +136,7 @@ test("a higher-priority icon added later is found, however often the old one was
   let found = false;
   for (let i = 0; i < 32 && !found; i++) {
     tick(10_000);
-    found = (await store.projectIconFileAsync("project_one")).path.endsWith(path.join(".telar", "icon.svg"));
+    found = (await store.projectRegistry.iconFile("project_one")).path.endsWith(path.join(".telar", "icon.svg"));
   }
   expect(found).toBe(true);
 });
@@ -150,17 +150,17 @@ test("a declared href that moves to a different file is picked up too", async ()
   fs.writeFileSync(path.join(projectRoot, "public/old.svg"), svg("<rect/>"));
   fs.writeFileSync(path.join(projectRoot, "public/new.svg"), svg("<circle/>"));
   fs.writeFileSync(path.join(projectRoot, "index.html"), `<link rel="icon" href="/old.svg">`);
-  expect((await store.projectIconFileAsync("project_one")).path.endsWith("old.svg")).toBe(true);
+  expect((await store.projectRegistry.iconFile("project_one")).path.endsWith("old.svg")).toBe(true);
 
   for (let elapsed = 0; elapsed < 600_000; elapsed += 10_000) {
     tick(10_000);
-    (await store.projectIconFileAsync("project_one"));
+    (await store.projectRegistry.iconFile("project_one"));
   }
   fs.writeFileSync(path.join(projectRoot, "index.html"), `<link rel="icon" href="/new.svg">`);
   let found = false;
   for (let i = 0; i < 32 && !found; i++) {
     tick(10_000);
-    found = (await store.projectIconFileAsync("project_one")).path.endsWith("new.svg");
+    found = (await store.projectRegistry.iconFile("project_one")).path.endsWith("new.svg");
   }
   expect(found).toBe(true);
 });
@@ -170,11 +170,11 @@ test("polling does not re-walk the checkout on every hit — the cache still ear
   // resolution touches the candidate list; a confirmed hit touches one file.
   const { store, projectRoot, tick } = ready();
   fs.writeFileSync(path.join(projectRoot, "favicon.ico"), ico());
-  (await store.projectIconFileAsync("project_one"));
+  (await store.projectRegistry.iconFile("project_one"));
   const before = reads();
   for (let i = 0; i < 10; i++) {
     tick(10_000);
-    (await store.projectIconFileAsync("project_one"));
+    (await store.projectRegistry.iconFile("project_one"));
   }
   // Ten polls resolve nothing: no candidate that does not exist is probed.
   expect(reads() - before).toBeLessThan(10 * 5);

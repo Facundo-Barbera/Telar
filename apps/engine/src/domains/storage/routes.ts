@@ -3,6 +3,7 @@ import { HttpError } from "../../platform/http/http";
 import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf } from "../worktrees";
+import { copyStore } from "./copy";
 import { checkoutRootsOf, measureStore, withCheckouts } from "./measure";
 
 export type StorageMeter = {
@@ -54,7 +55,7 @@ export function storageRoutes(store: EngineStore, meter: StorageMeter): Route[] 
       path: "/v2/storage/journal/reclaim",
       auth: "engine",
       handle() {
-        const reclaimed = store.reclaimExecutionStore();
+        const reclaimed = store.kernel.executionStore.reclaim();
         if (!reclaimed) return { status: 409, body: { error: "this engine is not running on SQLite, so there is nothing to vacuum" } };
         meter.forget();
         return ok({ reclaimed });
@@ -66,7 +67,7 @@ export function storageRoutes(store: EngineStore, meter: StorageMeter): Route[] 
       auth: "engine",
       handle({ body }) {
         if (typeof body.destination !== "string" || !body.destination.trim()) throw new HttpError(400, "invalid_request", "name a folder for Telar to create the copy in");
-        return ok({ copy: store.copyStoreTo(body.destination.trim()) });
+        return ok({ copy: copyStore(store.paths.root, store.kernel.executionStore, body.destination.trim()) });
       },
     },
     {

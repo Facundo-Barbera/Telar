@@ -27,14 +27,14 @@ const open = (home: string): EngineStore => {
 };
 
 const close = (store: EngineStore): void => {
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   const at = stores.indexOf(store);
   if (at >= 0) stores.splice(at, 1);
 };
 
 afterEach(async () => {
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 

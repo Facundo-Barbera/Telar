@@ -35,7 +35,7 @@ const open = (home: string): EngineStore => {
 };
 
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -71,7 +71,7 @@ function conversation(turns: number, itemsPerTurn = 3): string {
     ]));
     store.turnLifecycle.completeTurn("session_one", runId, token, { text: `answer ${index}` });
   }
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   stores.splice(stores.indexOf(store), 1);
   return home;
 }
@@ -86,10 +86,10 @@ test("opening a 120-turn session reads its tail, not its history", () => {
   const whole = JSON.stringify(everyItem).length + JSON.stringify(measured.queries.turns("session_one")).length;
 
   const cold = open(home);
-  cold.readAccounting.documentBytes = 0;
-  cold.readAccounting.documentReads = 0;
+  cold.kernel.readAccounting.documentBytes = 0;
+  cold.kernel.readAccounting.documentReads = 0;
   const window = cold.queries.snapshotWindow("session_one", { limit: 10 });
-  const touched = cold.readAccounting.documentBytes;
+  const touched = cold.kernel.readAccounting.documentBytes;
 
   // THE ANSWER IS THE SAME ANSWER. The window is what it always was; only the
   // route to it changed.
@@ -119,9 +119,9 @@ test("a conversation migrated into SQLite reads correctly before it is indexed a
   fs.writeFileSync(path.join(home, "sessions", "session_one", "items.json"), JSON.stringify({ items }));
 
   const migrated = open(home);
-  migrated.readAccounting.documentBytes = 0;
+  migrated.kernel.readAccounting.documentBytes = 0;
   expect(migrated.queries.snapshotWindow("session_one", { limit: 8 })).toEqual(before);
-  const whole = migrated.readAccounting.documentBytes;
+  const whole = migrated.kernel.readAccounting.documentBytes;
   expect(whole).toBeGreaterThan(JSON.stringify(before.items).length * 2);
 
   // One write rebuilds both indexes against sqlite's own text, and the next
@@ -136,10 +136,10 @@ test("a conversation migrated into SQLite reads correctly before it is indexed a
   migrated.turnLifecycle.completeTurn("session_one", "run_next", token, { text: "done" });
 
   const warm = open(home);
-  warm.readAccounting.documentBytes = 0;
+  warm.kernel.readAccounting.documentBytes = 0;
   const after = warm.queries.snapshotWindow("session_one", { limit: 8 });
   expect(after.turns.map((turn) => turn.runId)).toEqual([...before.turns.slice(1).map((turn) => turn.runId), "run_next"]);
-  expect(warm.readAccounting.documentBytes).toBeLessThan(whole / 2);
+  expect(warm.kernel.readAccounting.documentBytes).toBeLessThan(whole / 2);
 });
 
 test("a windowed read still pages, and an unsettled turn still rides along", () => {

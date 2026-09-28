@@ -59,7 +59,10 @@ function boolean(value: unknown, message: string): boolean {
  * `unknown`, validates against the schema, and patches only the keys present.
  */
 export class SettingsStore {
-  constructor(private readonly kernel: Kernel) {}
+  constructor(
+    private readonly kernel: Kernel,
+    private readonly onTerminalLimitChanged: () => void = () => {},
+  ) {}
 
   inbox(): InboxPolicy {
     try {
@@ -101,6 +104,7 @@ export class SettingsStore {
       next.settledTerminalLimit = parsed.data;
     }
     this.kernel.writeDocument(this.kernel.paths.inbox, { version: STATE_VERSION, ...next });
+    if (patch.settledTerminalLimit !== undefined) this.onTerminalLimitChanged();
     return { ...next };
   }
 

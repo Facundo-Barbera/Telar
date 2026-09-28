@@ -18,7 +18,7 @@ import { EngineStateError, EngineStore } from "../../state";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 

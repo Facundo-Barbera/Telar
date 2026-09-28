@@ -28,7 +28,7 @@ export function sessionTurnRoutes(store: EngineStore, { execution, requireWorker
         const parsed = AgentTurnInput.safeParse(body);
         if (!parsed.success) throw new HttpError(400, "invalid_request", "agent turn payload is invalid");
         const { proof, ...message } = parsed.data;
-        return submitted(await store.submitAgentTurnAsync(sessionId!, message, proof));
+        return submitted(await store.requestPath.submitAgentTurn(sessionId!, message, proof));
       },
     },
     {
@@ -42,7 +42,7 @@ export function sessionTurnRoutes(store: EngineStore, { execution, requireWorker
         if (body.model !== undefined && !model.success) throw new HttpError(400, "invalid_request", "turn model selection is invalid");
         // Refreshed off the critical path: the claim reads the remembered default and must not wait on a CLI.
         if (store.claims.claudeAdmissionNeedsCatalogue(sessionId!, model.success ? model.data : undefined)) void store.catalogues.prepareClaude();
-        const accepted = await store.submitTurnAsync(sessionId!, {
+        const accepted = await store.requestPath.submitTurn(sessionId!, {
           runId: stringValue(body.runId, "run id")!,
           input: stringValue(body.input, "turn input")!,
           ...(body.kind === "compact" ? { kind: "compact" as const } : {}),
@@ -67,7 +67,7 @@ export function sessionTurnRoutes(store: EngineStore, { execution, requireWorker
         if (by !== "user" && by !== "agent") throw new HttpError(400, "invalid_request", 'by must be "user" or "agent" when given');
         const commandId = stringValue(body.commandId, "command id", true);
         if (scope !== "session") return ok(store.turnLifecycle.stopTurn(sessionId!, runId));
-        return ok(store.executeCommand(JSON.stringify({ operation: "stopSession", sessionId, by }), () => store.turnLifecycle.stopSession(sessionId!, by), commandId));
+        return ok(store.kernel.command(JSON.stringify({ operation: "stopSession", sessionId, by }), () => store.turnLifecycle.stopSession(sessionId!, by), commandId));
       },
     },
     {

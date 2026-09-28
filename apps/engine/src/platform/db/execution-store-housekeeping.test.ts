@@ -53,7 +53,7 @@ test("a restart retires the claim on a stopped turn without disturbing the sessi
   store.turnLifecycle.stopSession("session_one", "user");
   expect(store.queries.turns("session_one")[0]?.claim?.workerId).toBe("worker_one");
   const before = store.records.get("session_one").updatedAt;
-  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
 
   const reopened = new EngineStore(home, Date.now); stores.push(reopened);
   reopened.recovery.recover(); // what the daemon runs at boot
@@ -80,12 +80,12 @@ test("the pre-SQLite backup is kept for its week and then swept, and the sweep s
   expect(fs.existsSync(path.join(backup, "session_one", "queue.json"))).toBe(true);
   // INSIDE ITS WEEK IT STAYS, and the report says so rather than nothing: a
   // migration that went wrong this morning still has its undo.
-  const held = migrated.executionHousekeeping()?.backup;
+  const held = migrated.kernel.executionStore.housekeeping?.backup;
   expect(held?.removed).toBe(false);
   expect(held!.files).toBeGreaterThan(0);
   expect(held!.bytes).toBeGreaterThan(0);
   expect(fs.existsSync(backup)).toBe(true);
-  migrated.closeExecutionStore(); stores.splice(stores.indexOf(migrated), 1);
+  migrated.kernel.executionStore.close(); stores.splice(stores.indexOf(migrated), 1);
 
   // A WEEK LATER, ON THE ORDINARY START. Not a command anybody has to know to
   // run: the backlog this exists for is on machines nobody is administering.
@@ -114,6 +114,6 @@ test("a store with no migration behind it has no backup to consider", () => {
   const { store } = setup();
   // Born on sqlite: `importLegacy` never ran, so there is nothing to age and
   // nothing to say about it.
-  expect(store.executionHousekeeping()?.backup).toBeUndefined();
-  expect(store.executionHousekeeping()?.receipts).toBe(0);
+  expect(store.kernel.executionStore.housekeeping?.backup).toBeUndefined();
+  expect(store.kernel.executionStore.housekeeping?.receipts).toBe(0);
 });

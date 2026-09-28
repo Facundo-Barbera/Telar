@@ -17,7 +17,7 @@ export function settingsRoutes(store: EngineStore, syncOrientationSkill: (policy
       path: "/v2/inbox",
       auth: "engine",
       handle: ({ body }) =>
-        ok({ inbox: store.setInboxPolicy(present(body, ["autoSettleAfterHours", "settleDelegatedAfterHours", "settledTerminalLimit"])) }),
+        ok({ inbox: store.settings.setInbox(present(body, ["autoSettleAfterHours", "settleDelegatedAfterHours", "settledTerminalLimit"])) }),
     },
     { method: "GET", path: "/v2/orientation", auth: "engine", handle: () => ok({ orientation: store.settings.orientation(), text: TELAR_ORIENTATION }) },
     {
