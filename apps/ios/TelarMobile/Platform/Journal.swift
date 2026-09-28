@@ -1,30 +1,16 @@
 import Foundation
 
-/// Port of `apps/web/lib/engine/journal.ts` — the client-side fold over the
-/// session's event journal. Like the web, the fold is RECOMPUTED from
-/// (turns, items, events, tasks) rather than applied incrementally: the event
-/// list is bounded per session, the recompute is the oracle the web tests pin,
-/// and an incremental fold is a second implementation that can drift.
-///
-/// The TS fold leans on JS reference semantics — the object in `seenItems`
-/// IS the object in the rendered list, so a delta append lands in both. The
-/// Swift port keeps that with internal reference boxes and materialises value
-/// types at the end.
-
 struct JournalItem: Identifiable, Equatable {
     var item: Item
-    /// Deltas accumulated in arrival order. Empty for items that never stream.
+
     var streamedText: String
-    /// The event id that opened this item — the sort key, never timestamps:
-    /// two events can share a millisecond; the id is monotonic by construction.
+
     var openedBy: Int
 
     var id: EngineID { item.id }
     var status: ItemStatus { item.status }
     var detail: ItemDetail { item.detail }
 
-    /// Streamed deltas win over the stored detail while live — the engine only
-    /// folds text into the item when it closes. Once closed the two agree.
     var text: String {
         if !streamedText.isEmpty { return streamedText }
         switch item.detail {
@@ -39,8 +25,6 @@ struct JournalItem: Identifiable, Equatable {
         }
     }
 
-    /// One-line label for a collapsed row, preferring what the engine stored —
-    /// the engine owns collapsed-row labels; clients must not invent them.
     var label: String {
         if let title = item.title, !title.isEmpty { return title }
         switch item.detail {
@@ -62,11 +46,6 @@ struct JournalItem: Identifiable, Equatable {
         }
     }
 
-    // MARK: what a row's menu is about
-
-    /// The path this row is about, whatever happened to it — the web's
-    /// `rowPath`. A DELETED FILE STILL HAS ONE: its path can be copied and
-    /// referenced; only "Open file in the Editor" has nothing to open.
     var rowPath: String? {
         switch item.detail {
         case .fileChange(let change): return change.path
@@ -75,16 +54,11 @@ struct JournalItem: Identifiable, Equatable {
         }
     }
 
-    /// The command a command row ran, for "Copy command".
     var rowCommand: String? {
         guard case .commandExecution(let command) = item.detail, !command.command.isEmpty else { return nil }
         return command.command
     }
 
-    /// The body under the row: the patch when there is one, otherwise whatever
-    /// the tool printed — the web's `change?.unifiedDiff ?? toolOutput(item)`.
-    /// Streamed deltas win while the row is live, the way the detail sheet
-    /// reads it; the engine only folds them into the item when it closes.
     var rowBody: String? {
         if case .fileChange(let change) = item.detail, let diff = change.unifiedDiff { return diff }
         let output = streamedText.isEmpty ? toolOutput : streamedText
@@ -92,14 +66,11 @@ struct JournalItem: Identifiable, Equatable {
         return output
     }
 
-    /// Whether that body is a patch, which is the only thing that changes the
-    /// menu's wording: "Copy patch" rather than "Copy output".
     var rowBodyIsPatch: Bool {
         guard case .fileChange(let change) = item.detail else { return false }
         return change.unifiedDiff != nil
     }
 
-    /// The output body of a finished tool call, when it has one.
     var toolOutput: String? {
         switch item.detail {
         case .commandExecution(let command):
@@ -124,68 +95,42 @@ struct JournalTask: Identifiable, Equatable {
 
 struct JournalTurn: Identifiable, Equatable {
     var runId: EngineID
-    /// THE ENGINE'S OWN ORDERING of turns in this session, carried because the
-    /// read receipt compares against it: unread is `lastTurnSequence >
-    /// lastReadTurnSequence`, so a client that picked "the newest answer" any
-    /// other way — array position, a timestamp — would confirm a turn that
-    /// leaves the session still unread. Zero for a turn folded from an older
-    /// snapshot that carried no sequence, which simply never wins the
-    /// comparison.
+
     var sequence: Int = 0
     var prompt: String
-    /// The compaction gesture — a system row, not a bubble.
+
     var isCompactGesture: Bool = false
     var state: TurnState
-    /// The MAIN LOOP's timeline only — sub-agent rows live on `tasks`.
+
     var items: [JournalItem]
     var tasks: [JournalTask]
     var startedAt: Timestamp?
-    /// When anything last happened — deltas included. What "gone quiet" is
-    /// measured from; only a gap since the LAST event can tell slow from stuck.
+
     var lastActivityAt: Timestamp?
     var resultText: String
     var failure: String?
     var usage: UsageSnapshot?
-    /// Who sent this turn and what they meant by it — carried from `Turn` so
-    /// the transcript can tell a person's message from a peer's report and a
-    /// wake-up from either.
+
     var origin: String?
     var sender: MessageSender?
     var agentIntent: String?
     var assignmentScope: String?
     var wakeReason: WakeReason?
     var agentNotice: String?
-    /// This turn is a NOTIFICATION — see `NotificationDetail` (#550).
+
     var notification: NotificationDetail?
     var providerReason: ProviderReason?
 
     var id: EngineID { runId }
 
-    /// A turn another session sent. A wake is one too, but it is drawn as a
-    /// system line rather than as a message, so it is asked about separately.
     var isFromAgent: Bool { origin == "session" && wakeReason == nil }
 
-    /// A turn the model woke itself into. `origin` alone is not enough: a peer
-    /// can send into a session and the engine stamps the same origin.
     var isWake: Bool { wakeReason != nil && origin != "user" }
 
-    /// A turn THE PROVIDER started, with nobody's words in it: a background
-    /// task ending woke the model. Its `input` is empty, so drawing it as a
-    /// message produced an empty right-aligned bubble.
     var isProviderStarted: Bool { origin == "provider" }
 
-    /// A turn the engine opened only so a sub-agent that outlived its turn has
-    /// somewhere to have a tool call decided (#891). Nobody spoke in it, and it
-    /// is not a transcript row (#912) — its approval, if any, is an open
-    /// request, drawn from `openRequests` like every other.
     var isBackgroundClaim: Bool { providerReason?.kind == "background_task" }
 
-    /// A peer HANDING WORK OVER rather than talking. A fact about the turn, not
-    /// a switch on how it draws: every peer message is the collapsed notice row
-    /// now, and the intent is its label — a task rendered in full let a peer
-    /// decide how much of someone else's prose sat in this conversation.
-
-    /// An open `context_compaction` item — the provider squeezing right now.
     var isCompacting: Bool {
         items.contains { item in
             if case .contextCompaction = item.detail { return item.status == .inProgress }
@@ -194,20 +139,12 @@ struct JournalTurn: Identifiable, Equatable {
     }
 }
 
-/// The turns the transcript draws. Queued and steering messages live in the
-/// strip under the composer; a STEERED one's content already appears inside
-/// the host turn as a user_message item — rendering the turn too is the double
-/// bubble. A background claim is not a row either: one per burst of a
-/// sub-agent's calls read as a column of "The provider resumed on its own."
-/// between the person's messages (#912). (Web rule, 1:1 — `transcriptRows`.)
 func transcriptTurns(_ turns: [JournalTurn]) -> [JournalTurn] {
     turns.filter {
         $0.state != .queued && $0.state != .steering && $0.state != .steered && !$0.isBackgroundClaim
     }
 }
 
-/// Strips `mcp__server__` framing — addressing, not meaning. The rest-join
-/// matters: `mcp__github__fetch__pr` names a tool called `fetch__pr`.
 func displayToolName(_ name: String) -> String {
     guard name.hasPrefix("mcp__") else { return name }
     let parts = name.split(separator: "__", omittingEmptySubsequences: false).map(String.init)
@@ -215,7 +152,6 @@ func displayToolName(_ name: String) -> String {
     return parts.dropFirst(2).joined(separator: "__")
 }
 
-/// Merges a cursor page without duplicating durable journal records.
 func appendJournalEvents(_ existing: [EngineEvent], _ incoming: [EngineEvent]) -> [EngineEvent] {
     var byId = [Int: EngineEvent]()
     for event in existing { byId[event.id] = event }
@@ -226,8 +162,6 @@ func appendJournalEvents(_ existing: [EngineEvent], _ incoming: [EngineEvent]) -
 func journalCursor(_ events: [EngineEvent]) -> Int {
     events.reduce(0) { max($0, $1.id) }
 }
-
-// MARK: - the fold
 
 private final class ItemBox {
     var item: Item
@@ -267,7 +201,7 @@ private final class TurnBox {
     var assignmentScope: String?
     var wakeReason: WakeReason?
     var agentNotice: String?
-    /// This turn is a NOTIFICATION — see `NotificationDetail` (#550).
+
     var notification: NotificationDetail?
     var providerReason: ProviderReason?
     init(turn: Turn) {
@@ -306,8 +240,6 @@ func projectJournal(
     func upsertTask(_ task: AgentTask) {
         guard let turn = byRun[task.runId] else { return }
         if let existing = seenTasks[task.id] {
-            // Items already collected survive: every task event repeats the
-            // whole task, and a replace would empty the list each time.
             existing.task = task
         } else {
             let box = TaskBox(task: task)
@@ -327,11 +259,7 @@ func projectJournal(
                 existing.streamedText = item.streamed ?? ""
             }
             existing.item = item
-            // openedBy and streamedText survive item.updated/completed.
-            // If the row was parked on the main timeline because its task had
-            // not been met yet, move it home now (the web keeps a stale copy
-            // and lets the next snapshot repair it; a move is the same repair
-            // without the duplicate row).
+
             if let owner, !owner.items.contains(where: { $0 === existing }) {
                 turn.items.removeAll { $0 === existing }
                 owner.items.append(existing)
@@ -339,20 +267,14 @@ func projectJournal(
         } else {
             let box = ItemBox(item: item, openedBy: openedBy)
             seenItems[item.id] = box
-            // A row filed under a task the fold has not met stays on the MAIN
-            // timeline rather than being dropped — an invisible row is worse
-            // than a misplaced one.
+
             if let owner { owner.items.append(box) } else { turn.items.append(box) }
         }
     }
 
-    // The snapshot first: opening a long session must not replay its journal.
-    // openedBy 0 is not a real id, so snapshot rows sort before anything the
-    // tail opens. Tasks BEFORE items, so sub-agent rows find their owner.
     for task in tasks { upsertTask(task) }
     for item in items { upsert(item, openedBy: 0) }
-    // The quiet clock, seeded so a page opened onto a running turn does not
-    // start by claiming it has been silent since it began.
+
     for runId in runOrder {
         guard let turn = byRun[runId] else { continue }
         var latest = turn.startedAt ?? 0
@@ -363,8 +285,7 @@ func projectJournal(
 
     for event in events {
         let turn = event.runId.flatMap { byRun[$0] }
-        // ANY event on the turn is activity, deltas included — item timestamps
-        // do not move while text streams.
+
         if let turn { turn.lastActivityAt = max(turn.lastActivityAt ?? 0, event.at) }
 
         switch event.payload {
@@ -389,9 +310,7 @@ func projectJournal(
         case .turnPlanUpdated(let item):
             upsert(item, openedBy: event.id)
         case .contentDelta(let itemId, _, let text):
-            // A delta for an unseen item is DROPPED, not buffered: the fold is
-            // missing the row that opened it, and a placeholder would render a
-            // message with no idea what kind of row it belongs to.
+
             if let held = seenItems[itemId], event.id > (held.streamedThrough ?? -1) {
                 held.streamedText += text
                 held.streamedThrough = event.id
@@ -401,9 +320,7 @@ func projectJournal(
         case .usageUpdated(let usage):
             turn?.usage = usage
         case .browserControlChanged(let controller):
-            // The §6 marker row, mirrored from the web fold: a takeover lands
-            // inside the turn it interrupted as a one-line unknown-detail row.
-            // Between turns (no runId) the live badge is the story, not history.
+
             guard let runId = event.runId, controller != "idle" else { break }
             upsert(
                 Item(
@@ -421,14 +338,10 @@ func projectJournal(
             )
         case .requestOpened, .requestResolved, .sessionUpdated, .displayOpened,
              .kernelStateChanged, .notebookCellOutput:
-            // The kernel's two events are not TIMELINE rows — a cell's output
-            // belongs to the notebook, not to the conversation. They are
-            // folded separately, into the revisions the panel's surfaces
-            // watch (`foldKernelSignals`).
+
             break
         case .none:
-            // State transitions the payload enum does not carry ride the type
-            // string — same outcomes as the web fold's switch arms.
+
             guard let turn else { break }
             switch event.type {
             case "turn.claimed": turn.state = .claimed

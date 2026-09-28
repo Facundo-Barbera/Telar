@@ -1,7 +1,5 @@
 import SwiftUI
 
-/// The provider's mark, from t3's own SVGs: Claude keeps its brand color,
-/// the OpenAI knot is a template so it follows the ink.
 struct ProviderIconView: View {
     let driver: String
     var size: CGFloat = 16
@@ -15,9 +13,6 @@ struct ProviderIconView: View {
                 .frame(width: size, height: size)
                 .foregroundStyle(Theme.text)
         } else if driver == "opencode" {
-            // Proportional to its own square, like ProjectAvatar's glyphs:
-            // `size` is the caller's, so a bigger badge is asked for rather
-            // than derived. Correct as it stands, not waiting on #674.
             Text("OC").font(.system(size: size * 0.65, weight: .semibold)).frame(width: size, height: size)
         } else {
             Image("ProviderClaude")
@@ -28,8 +23,6 @@ struct ProviderIconView: View {
     }
 }
 
-/// What will run the next turn, whole: provider, model, effort, window, fast
-/// mode, service tier, ultracode — the web cockpit's fused control, phone-sized.
 struct ModelChoice: Equatable {
     var driver: String
     var model: String?
@@ -38,34 +31,21 @@ struct ModelChoice: Equatable {
     var serviceTier: String? = nil
     var ultracode: Bool? = nil
 
-    /// Anything beyond the provider's own defaults — worth sending.
     var isTouched: Bool {
         model != nil || effort != nil || fastMode != nil || serviceTier != nil || ultracode != nil
     }
 }
 
-/// ONE pill for provider + model + per-turn knobs. The menu lists model
-/// FAMILIES (the window is a setting, not a row), then Reasoning, Context
-/// window, Fast mode and Service tier — each only when the chosen model
-/// publishes it, with the provider's default marked "Default".
 struct ModelPillView: View {
-    /// Catalogues by driver. The pill shows what has loaded; menus say
-    /// "Loading…" for the rest.
     let catalogues: [String: ModelCatalogue]
     let choice: ModelChoice
-    /// Before a session exists the provider is still a choice; after, it
-    /// is not — the picker then lists one driver's families only.
+
     let driversSwitchable: Bool
     let onChange: (ModelChoice) -> Void
 
-    /// The capsule grows with the words in it (#674) — the label converted in
-    /// #248 but its frame did not, so at large text sizes it clipped the model
-    /// name it exists to show. Same seeds and same style as
-    /// `ComposerPillLabel`, which is the same control on the other screen.
     @ScaledMetric(relativeTo: .subheadline) private var height: CGFloat = 44
     @ScaledMetric(relativeTo: .subheadline) private var cap: CGFloat = 200
-    /// The provider mark is an image, not a glyph in a box, so it takes the
-    /// caller's `size` — scaled here so it keeps pace with the label.
+
     @ScaledMetric(relativeTo: .subheadline) private var badge: CGFloat = 16
 
     private var models: [ProviderModel] {
@@ -74,8 +54,7 @@ struct ModelPillView: View {
     private var families: [ModelFamilies.Family] {
         ModelFamilies.group(models).filter { !$0.hidden }
     }
-    /// An absent model still SELECTS a row: the provider's default is what
-    /// will run, and a menu with nothing ticked reads as broken.
+
     private var selectedRow: ProviderModel? {
         ModelFamilies.row(of: models, id: choice.model)
             ?? models.first { $0.isDefault }
@@ -88,10 +67,6 @@ struct ModelPillView: View {
         selectedRow.map { ModelFamilies.contextWindow(of: $0) } ?? .standard
     }
 
-    /// "Opus 4.6 · High · 1M" / "Fable 5.1 · High · 200k" — the window is
-    /// named whenever there is a choice, the same rule the web pill follows:
-    /// bare "High" on a model with a 1M variant read as "already 1M" to a
-    /// person who was on 200k. A single-window model still prints nothing.
     private var label: String {
         var parts: [String] = [selectedFamily?.label ?? "Model"]
         if let level = ModelOptions.levelLabel(choice: choice, row: selectedRow) { parts.append(level) }
@@ -119,13 +94,7 @@ struct ModelPillView: View {
         } label: {
             HStack(spacing: 8) {
                 ProviderIconView(driver: choice.driver, size: badge)
-                // THIS PILL AND SESSIONVIEW'S TWIN NOW MATCH (#674). Both are
-                // icon + label + chevron in a height-fixed, width-CAPPED
-                // capsule, so neither was ever fixed in both dimensions and
-                // both convert under the sweep's rule; #449 had grouped
-                // SessionView's with the fixed 44pt hit targets, which is the
-                // one place that grouping did not hold. They were resolved by
-                // converting that one, not by reverting this one.
+
                 Text(label)
                     .font(.system(Theme.subhead, weight: .semibold))
                     .lineLimit(1)
@@ -226,8 +195,6 @@ struct ModelPillView: View {
         }
     }
 
-    /// A menu row: title (with "· Default" on the provider's default), an
-    /// optional subtitle the menu draws beneath it, and a tick when chosen.
     @ViewBuilder private func option(_ title: String, subtitle: String? = nil,
                                      isDefault: Bool = false, selected: Bool) -> some View {
         let text = isDefault ? "\(title) · Default" : title
@@ -250,8 +217,7 @@ struct ModelPillView: View {
 
     private func change(_ mutate: (inout ModelChoice) -> Void) {
         var next = choice
-        // Writing any knob pins the model it applies to — the provider's
-        // default can move, and the knob was chosen against THIS row.
+
         if next.model == nil { next.model = selectedRow?.id }
         mutate(&next)
         onChange(next)

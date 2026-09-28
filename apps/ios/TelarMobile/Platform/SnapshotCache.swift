@@ -1,32 +1,8 @@
 import Foundation
 
-/// THE LAST THING RECORDED, kept on the phone.
-///
-/// Every byte this app shows comes from a Mac over the network, and when the
-/// Mac goes away — the cockpit restarts, the tailnet drops, the laptop lid
-/// closes — the transcript went with it: a spinner where the conversation had
-/// been a second earlier. t3 mobile keeps a per-environment snapshot and
-/// renders it while the real read is in flight; this is that, for both the
-/// inbox and an open session.
-///
-/// RAW BYTES, NOT MODELS. The wire types are `Decodable` with hand-written
-/// decoders (denylist enums, skippable rows) and no encoders, and giving each
-/// of them an encoder would be a second copy of the protocol to keep in step.
-/// The cockpit's own JSON is already the durable form; it is written as
-/// received and decoded on the way back out by the same decoders the network
-/// path uses, so a cached snapshot can never disagree with a live one about
-/// what a field means.
-///
-/// PER HOST, PER SESSION. Two Macs can mint the same session id, so the host
-/// is the first directory. Files sit under Application Support, excluded from
-/// backup — a cache is rebuilt by opening the app, and iCloud should not carry
-/// somebody's transcripts around for it.
 struct SnapshotCache: Sendable {
     let root: URL
 
-    /// Newest-first eviction bound per host. Thirty is more sessions than a
-    /// phone shows without scrolling twice, and a session snapshot is tens of
-    /// kilobytes, so the cap is about tidiness rather than space.
     static let sessionsPerHost = 30
 
     static let `default` = SnapshotCache(
@@ -36,11 +12,9 @@ struct SnapshotCache: Sendable {
 
     struct Entry: Equatable {
         var data: Data
-        /// Milliseconds since the epoch — the protocol's own clock.
+
         var savedAt: Timestamp
     }
-
-    // MARK: sessions
 
     func readSession(host: HostID, id: EngineID) -> Entry? {
         read(sessionFile(host, id))
@@ -55,8 +29,6 @@ struct SnapshotCache: Sendable {
         try? FileManager.default.removeItem(at: sessionFile(host, id))
     }
 
-    // MARK: inbox
-
     func readInbox(host: HostID) -> Entry? {
         read(hostDir(host).appending(path: "inbox.json"))
     }
@@ -65,18 +37,13 @@ struct SnapshotCache: Sendable {
         write(hostDir(host).appending(path: "inbox.json"), data)
     }
 
-    /// Forgetting a Mac forgets what it said.
     func dropHost(_ host: HostID) {
         try? FileManager.default.removeItem(at: hostDir(host))
     }
 
-    // MARK: files
-
     private func hostDir(_ host: HostID) -> URL { root.appending(path: host.uuidString) }
     private func sessionsDir(_ host: HostID) -> URL { hostDir(host).appending(path: "sessions") }
     private func sessionFile(_ host: HostID, _ id: EngineID) -> URL {
-        // A session id is the engine's own token — path-safe by construction
-        // (`session_<hex>`) — but a defensive encode costs nothing.
         let name = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id
         return sessionsDir(host).appending(path: "\(name).json")
     }
@@ -97,14 +64,12 @@ struct SnapshotCache: Sendable {
             values.isExcludedFromBackup = true
             var rootURL = root
             try? rootURL.setResourceValues(values)
-            // Atomic: a half-written snapshot is worse than the previous one.
+
             try data.write(to: file, options: .atomic)
         } catch {
-            // A full disk or a sandbox refusal loses the cache, not the app.
         }
     }
 
-    /// Keep the newest `sessionsPerHost` files by modification date.
     private func prune(_ dir: URL) {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.contentModificationDateKey]
@@ -119,8 +84,6 @@ struct SnapshotCache: Sendable {
     }
 }
 
-/// One Mac's slice of the cache — what a store bound to a host holds, so it
-/// never has to carry the host id beside every call.
 struct HostSnapshotCache: Sendable {
     let cache: SnapshotCache
     let hostId: HostID
@@ -132,7 +95,6 @@ struct HostSnapshotCache: Sendable {
     func writeInbox(_ data: Data) { cache.writeInbox(host: hostId, data: data) }
 }
 
-/// "Recorded at 12:40" — the one clock a stale banner shows.
 func recordedAtLabel(_ savedAt: Timestamp) -> String {
     Date(timeIntervalSince1970: TimeInterval(savedAt) / 1000).formatted(date: .omitted, time: .shortened)
 }

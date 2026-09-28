@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// One cell output, one arm per kind — the desktop's `CellOutputView`. An
-/// image comes as attachment bytes or inline base64; HTML shows its source
-/// (no web view on the phone in this pass); an unknown kind names itself.
 struct CellOutputView: View {
     let output: CellOutput
     let api: any PanelAPI
@@ -31,11 +28,7 @@ struct CellOutputView: View {
         case .dataframe(let columns, let dtypes, let rows, let shape, let truncated):
             DataframeGrid(columns: columns, dtypes: dtypes, rows: rows, shape: shape, truncated: truncated)
         case .html(let html, let truncated):
-            // THE FAST PATH FIRST. A pandas repr is the most common HTML a
-            // notebook produces, and a native grid is selectable, cheap, and
-            // identical to the `dataframe` kind the engine emits for runs it
-            // made itself — without it the same table looks like two different
-            // things depending on who ran the cell.
+
             if let table = parsePandasHtmlTable(html) {
                 DataframeGrid(
                     columns: table.columns,
@@ -57,15 +50,9 @@ struct CellOutputView: View {
     }
 }
 
-/// LONG OUTPUT IS CLAMPED, NOT HIDDEN. A cell that printed a thousand lines
-/// used to push every cell after it off the screen, and the only remedy was a
-/// "Hide outputs" item buried in an ellipsis menu — all or nothing, per cell,
-/// out of sight. Twelve lines is enough to see what happened; the rest is one
-/// tap away and says how much it is holding.
 struct ClampedLines: View {
     let text: String
-    /// JupyterLab clamps around this too. Enough for a traceback's head and a
-    /// dataframe's first rows.
+
     static let limit = 12
 
     @State private var expanded = false
@@ -74,11 +61,6 @@ struct ClampedLines: View {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         let hidden = max(0, lines.count - Self.limit)
         VStack(alignment: .leading, spacing: 2) {
-            // ONE SIZE, BECAUSE THE TWO THIS TOOK WERE THE SAME SIZE. Stream
-            // output asked for 11 and a traceback for 10, and both land on
-            // `Theme.caption` — the point between them was never deliberate,
-            // so the parameter that carried it is gone rather than left as a
-            // knob with one setting.
             Text(expanded || hidden == 0 ? text : lines.prefix(Self.limit).joined(separator: "\n"))
                 .font(.system(Theme.caption, design: .monospaced))
                 .textSelection(.enabled)
@@ -98,7 +80,6 @@ struct ClampedLines: View {
     }
 }
 
-/// ANSI colour codes IPython puts in tracebacks.
 func stripAnsi(_ text: String) -> String {
     text.replacingOccurrences(of: "\u{1B}\\[[0-9;]*m", with: "", options: .regularExpression)
 }
@@ -122,11 +103,6 @@ private struct OutputImage: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .onTapGesture { if let attachmentId { onOpen?(attachmentId) } }
             } else if attachmentId != nil || dataB64 != nil {
-                // NOT A #717 SITE, and checked rather than missed. This height
-                // reserves room for an IMAGE that is about to land, not for
-                // text — type has no opinion about how tall a figure is, so
-                // scaling it with the reader's setting would move the spinner
-                // for no reason and then snap back when the picture arrives.
                 ProgressView().frame(height: 60)
             } else {
                 Text("[image]").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
@@ -142,22 +118,6 @@ private struct OutputImage: View {
     }
 }
 
-/// THE GRID SCALES AS A UNIT (#674) — width and both heights together, which
-/// is why it could not be swept site by site. Every cell is pinned to one
-/// width so the columns line up across a horizontal scroll, so a cell that
-/// grew while its neighbours did not would not merely clip, it would break the
-/// alignment the grid is for. One `@ScaledMetric` seed per dimension, all off
-/// `.caption` — the style the text inside them now takes — keeps the columns
-/// square at every content size.
-///
-/// THIS IS THE ONE PLACE IN #674 THAT MOVES AT THE DEFAULT TEXT SIZE, and it
-/// is unavoidable rather than careless. The cells took a 10 and an 8; the ramp
-/// they belong on starts at `.caption` (12) and `.caption2` (11), because
-/// `.caption2` is the floor of Apple's ramp and an 8 can go nowhere else. Text
-/// two points bigger needs a box bigger than 30 to sit in and a column wider
-/// than 96 to finish a name in, so the header went 30 → 34, the rows 22 → 24
-/// and the columns 96 → 108. A reader who has not moved the slider sees a
-/// slightly roomier table; every other site in #674 they cannot see at all.
 private struct DataframeGrid: View {
     let columns: [String]
     let dtypes: [String]
@@ -165,20 +125,10 @@ private struct DataframeGrid: View {
     let shape: [Int]
     let truncated: Bool
 
-    /// One column width and the two row heights, seeded with the figures above
-    /// and scaled off the same style the cells are drawn in.
     @ScaledMetric(relativeTo: .caption) private var columnWidth: CGFloat = 108
     @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 34
     @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 24
 
-    /// THE SECOND DECLARATION ON #764's LIST, and the one that shows why a
-    /// millisecond threshold would not have worked. This body is byte-identical
-    /// across three CI archives that measured it below 500 ms, then 518 ms, then
-    /// 658 ms — green, red, red on unchanged source with no commit in between.
-    /// Doubly-nested `ForEach(Array(…enumerated()), id: \.offset)` with
-    /// literal-heavy `.frame`/`.padding` is a small expression that the solver
-    /// is nonetheless slow on, and it sits inside the measurement's own error
-    /// bars. Cutting it takes it off the list rather than out of the noise.
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -195,7 +145,6 @@ private struct DataframeGrid: View {
         }
     }
 
-    /// The column names and their dtypes.
     private var headerRow: some View {
         HStack(spacing: 0) {
             ForEach(Array(columns.enumerated()), id: \.offset) { i, column in
@@ -209,8 +158,6 @@ private struct DataframeGrid: View {
         .background(Theme.subtle)
     }
 
-    /// One row of cells. `index` is the row's offset, and it is here for the
-    /// banding — the zebra fill is a function of the position, not of the data.
     private func dataRow(_ row: [JSONValue], index: Int) -> some View {
         HStack(spacing: 0) {
             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
@@ -235,8 +182,6 @@ private struct DataframeGrid: View {
     }
 }
 
-/// Attachment bytes are immutable per id, so they are kept on disk beside
-/// the snapshot cache and decoded once — the project-icon pattern.
 @MainActor final class AttachmentImageCache {
     static let shared = AttachmentImageCache()
     private var images: [String: UIImage] = [:]

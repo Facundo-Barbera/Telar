@@ -1,62 +1,25 @@
 import PhotosUI
 import SwiftUI
 
-/// t3 mobile's creation flow, ported: two steps, both in the sheet's stack.
-/// Step 1 — the palette: every project on every paired Mac, in one searchable
-/// list. Step 2 — the draft: a composer-first screen; the auto-focused prompt
-/// owns the whole sheet, every setting is a chip at the bottom you MAY touch,
-/// and the arrow creates the session, sends the prompt as its first turn, and
-/// drops you straight into the live conversation.
-
-/**
- ONE FLAT LIST, THIS PHONE'S DEFAULT MAC FIRST — the Mac's palette (#332).
-
- WHAT THIS REPLACES, AND WHY. The picker used to ask for the Mac FIRST, as a
- menu above a per-Mac list. That made the host a MODE rather than a fact: the
- reachable set was one Mac at a time, so "start this on the mini" needed a
- change of mode before it was even visible, and the order of the list was
- whatever that one Mac happened to return. Naming the Mac on each row costs one
- line of muted text and removes the question — the same argument the dialog on
- the Mac makes about its own local/remote sections.
-
- THE DEFAULT MAC IS FIRST because the phone's host book is ordered by when each
- was paired, and the first one is the Mac this phone was set up against. That is
- the closest thing a phone has to the cockpit's "this Mac", and it is the one
- most rows belong to.
-
- THE ROOT PATH IS UNDER THE NAME, which is the whole answer to "which of my two
- clones is that" — and the reason a search over paths is worth having.
-
- NO KEYBOARD LEGEND. The Mac's footer explains ⌘1..⌘9 to a reader whose hands
- are already on a keyboard; a phone has none to explain, and a strip of key caps
- on a touch screen is chrome. The shortcuts themselves stay, for the iPad.
- */
 struct NewSessionView: View {
     let settings: AppSettings
-    /// Called with the created session's scoped ref — the caller navigates
-    /// into it on the right Mac.
+
     let onCreated: (ScopedSessionID) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var targets: [NewConversationTarget] = []
     @State private var query = ""
     @State private var loading = true
-    /// The Macs that did not answer this read, by name. ONE MAC GOING DARK
-    /// MUST NOT BLANK THE LIST — the merged inbox's rule, and the same one
-    /// applies to a palette drawn from every Mac at once.
+
     @State private var unreachable: [String] = []
-    /// `-newSessionProject <id>` launch arg, and the resumed draft — both jump
-    /// straight past the palette into the draft.
+
     @State private var autoTarget: NewConversationTarget?
     @State private var addingProject = false
-    /// The palette row's project avatar, off the project name's own style
-    /// (`.callout`) so the mark keeps pace with the words it labels (#718).
+
     @ScaledMetric(relativeTo: .callout) private var targetMark: CGFloat = 27
-    /// Which Mac the `+` registers a folder on. Nil until the sheet opens.
+
     @State private var addHostId: HostID?
-    /// The branch a "New session on `<branch>`" carried in, handed to the
-    /// draft so the worktree is cut from where the session that offered it
-    /// works (#326). Nil for every other way in, which means HEAD.
+
     @State private var draftBaseRef: String?
 
     init(settings: AppSettings, draft: MobileDraft? = nil, onCreated: @escaping (ScopedSessionID) -> Void) {
@@ -70,8 +33,6 @@ struct NewSessionView: View {
 
     private var matches: [NewConversationTarget] { matchNewConversationTargets(targets, query: query) }
 
-    /// The Mac a newly registered folder lands on: the one the `+` named, or
-    /// the default when there is only one to name.
     private var addHost: Host? {
         settings.host(addHostId ?? settings.hosts.first?.id ?? HostID()) ?? settings.hosts.first
     }
@@ -87,15 +48,7 @@ struct NewSessionView: View {
                 if matches.isEmpty {
                     VStack(spacing: 12) {
                         if loading { ProgressView() }
-                        // THE ONE INEXACT RUNG IN THE WHOLE RAMP. Every other
-                        // size lands on a style that matches it at the default
-                        // text size — 16 is `.callout`, 17 is `.body`, 20 is
-                        // `.title3`. An 18 has none: `.headline` is 17 and
-                        // `.title3` is 20, so it had to move. It moves DOWN,
-                        // because one point is a smaller change than two and
-                        // `.headline` is what this is — a heading over the
-                        // sentence beneath it. The `.bold` is the call site's
-                        // own and is kept.
+
                         Text(loading ? "Loading projects" : targets.isEmpty ? "No projects found" : "No project matches that")
                             .font(.system(.headline, weight: .bold))
                             .foregroundStyle(Theme.text)
@@ -116,11 +69,7 @@ struct NewSessionView: View {
                     ForEach(Array(matches.enumerated()), id: \.element.id) { index, target in
                         NavigationLink(value: target) { targetRow(target) }
                             .buttonStyle(.plain)
-                            // ⌘1..⌘9 TAKE THE FIRST NINE ROWS AS FILTERED,
-                            // which is what makes them useful with a query
-                            // typed: the number is the row's place in front of
-                            // you, not its place in an unfiltered registry.
-                            // Inert on a phone, which is why nothing draws them.
+
                             .modifier(QuickPick(index: index))
                         if index < matches.count - 1 {
                             Rectangle().fill(Theme.borderSubtle).frame(height: 1)
@@ -148,8 +97,6 @@ struct NewSessionView: View {
                 Button("Cancel") { dismiss() }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                // WHICH MAC IS A QUESTION ONLY WHEN THERE ARE TWO. With one
-                // paired the `+` is the button it always was.
                 if settings.hosts.count > 1 {
                     Menu {
                         ForEach(settings.hosts) { host in
@@ -173,7 +120,7 @@ struct NewSessionView: View {
                         addingProject = false
                         let target = NewConversationTarget(hostId: host.id, hostName: host.name, project: project)
                         if !targets.contains(where: { $0.id == target.id }) { targets.append(target) }
-                        // Straight into the draft for the folder just added.
+
                         autoTarget = target
                     }
                     .toolbar {
@@ -184,8 +131,7 @@ struct NewSessionView: View {
                 }
             }
         }
-        // RE-READ WHEN THE HOST BOOK CHANGES, not when a picker moves: there
-        // is no picker any more, and the list is every Mac's at once.
+
         .task(id: settings.book.membershipFingerprint) { await load() }
     }
 
@@ -204,15 +150,8 @@ struct NewSessionView: View {
         }
     }
 
-    /// THE HOST IS A FACT ON THE ROW, not a heading above a section — a reader
-    /// scrolling a mixed list should not have to remember which section they
-    /// passed. The path is the second line, in a monospaced face because it is
-    /// something you compare character by character rather than read.
     private func targetRow(_ target: NewConversationTarget) -> some View {
         HStack(spacing: 12) {
-            // The avatar scales with the project name beside it (#718) —
-            // `ProjectAvatar` is proportional to whatever `size` it is given,
-            // so the literal at the call site was the only thing pinning it.
             ProjectAvatar(name: target.project.name, projectId: target.project.id, hostId: target.hostId,
                           icon: target.project.icon, api: settings.api(for: target.hostId), size: targetMark)
             VStack(alignment: .leading, spacing: 2) {
@@ -244,10 +183,6 @@ struct NewSessionView: View {
         .contentShape(Rectangle())
     }
 
-    /// EVERY PAIRED MAC AT ONCE, in the host book's order so the default Mac
-    /// leads. Read concurrently and assembled in that order afterwards: a slow
-    /// Mac must not decide where its projects sit, and a dead one must not
-    /// hold up the ones that answered.
     private func load() async {
         loading = true
         defer { loading = false }
@@ -270,8 +205,6 @@ struct NewSessionView: View {
         }
     }
 
-    /// The registration entry INSIDE the card, not only the nav-bar `+` —
-    /// a control at the end of the list you are already reading.
     @ViewBuilder private var addProjectRow: some View {
         if settings.hosts.count > 1 {
             Menu {
@@ -291,7 +224,6 @@ struct NewSessionView: View {
 
     private var addProjectLabel: some View {
         HStack(spacing: 12) {
-            // The 27pt square and its glyph scale together (#674).
             Image(systemName: "plus.circle.fill")
                 .foregroundStyle(Theme.accent)
                 .scaledGlyphBox(27, glyph: 17)
@@ -309,8 +241,6 @@ struct NewSessionView: View {
     }
 }
 
-/// ⌘1..⌘9 on the first nine rows, and nothing at all on the tenth — a
-/// modifier rather than an inline `if` so the row itself stays one expression.
 private struct QuickPick: ViewModifier {
     let index: Int
     func body(content: Content) -> some View {
@@ -322,25 +252,16 @@ private struct QuickPick: ViewModifier {
     }
 }
 
-/// Step 2: the composer-first draft. Prompt fills the sheet at 18pt; the
-/// bottom control block (hairline on top) holds the chip bar and the 44pt
-/// primary start button.
 struct NewSessionDraftView: View {
     let api: any EngineAPI
     let project: ProjectRef
-    /// Which Mac runs this session — shown as a quiet chip when the phone
-    /// knows more than one. Not a control here: switching after the project
-    /// is chosen would only invalidate the choice.
+
     var hostId: HostID
     var hostName: String?
-    /// The branch this draft was opened ON, when it came from a session that
-    /// has one ("New session on `<branch>`"). Seeds `baseRef` once, at appear;
-    /// the workspace chip owns it from there.
+
     var baseRefSeed: String?
     let onCreated: (EngineID) -> Void
 
-    /// A photo held locally until the session exists — uploads need a
-    /// session id, and the draft has none yet.
     struct DraftAttachment: Identifiable, Equatable {
         let id = UUID()
         let data: Data
@@ -350,13 +271,13 @@ struct NewSessionDraftView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var prompt = ""
-    /// Optional subject line; empty = derived from the message (web's rule).
+
     @State private var title = ""
     @State private var choice = ModelChoice(driver: "claude")
     @State private var envMode = "worktree"
-    /// nil = the checkout's HEAD, which is also what absent always meant.
+
     @State private var baseRef: String?
-    /// The worktree's own branch name; empty = the engine invents one.
+
     @State private var branchName = ""
     @State private var namingBranch = false
     @State private var branchDraft = ""
@@ -369,15 +290,13 @@ struct NewSessionDraftView: View {
     @State private var pickingBranch = false
     @State private var showingStash = false
     @State private var error: String?
-    /// A file the intake turned away — said out loud, never swallowed.
+
     @State private var intakeNote: String?
     @State private var dropping = false
-    /// Set the moment the create succeeds: a retry after a failed upload or
-    /// turn must resume this session, never create a second one.
+
     @State private var createdSessionId: EngineID?
     @State private var submissionRunId = RunID.newRunId()
-    /// Plain state rather than `@FocusState`: the prompt is a `UITextView`
-    /// now (see `ComposerTextView`), which mirrors its own first responder.
+
     @State private var focused = false
 
     private func saveTextDraft() {
@@ -390,8 +309,6 @@ struct NewSessionDraftView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // A subject line, not a rival composer: one quiet row above the
-            // prompt. Left empty, the message's first line becomes the title.
             TextField("Title — optional, taken from your message", text: $title)
                 .font(.system(Theme.subhead))
                 .foregroundStyle(Theme.text)
@@ -399,8 +316,7 @@ struct NewSessionDraftView: View {
                 .padding(.vertical, 10)
             Rectangle().fill(Theme.borderSubtle).frame(height: 1)
                 .padding(.horizontal, 20)
-            // The same UIKit field the session's composer uses, for the same
-            // reason: a screenshot on the clipboard has to have a Paste to tap.
+
             ComposerTextView(
                 text: $prompt,
                 placeholder: "Describe a coding task in \(project.name)",
@@ -414,8 +330,7 @@ struct NewSessionDraftView: View {
                 .padding(.top, 8)
                 .contentShape(Rectangle())
                 .onTapGesture { focused = true }
-                // The whole message area takes a drag, not just a small target:
-                // on an iPad the drop lands wherever the finger lets go.
+
                 .onDrop(of: ComposerIntake.accepted, isTargeted: $dropping) { providers in
                     intake(providers)
                     return true
@@ -455,9 +370,6 @@ struct NewSessionDraftView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
-                                // The composer's circles scale with their
-                                // glyphs, exactly as SessionView's do (#674):
-                                // one ratio, so 16-in-44 holds at every size.
                                 Image(systemName: "plus")
                                     .foregroundStyle(Theme.text)
                                     .scaledGlyphBox(44, glyph: 16)
@@ -517,8 +429,6 @@ struct NewSessionDraftView: View {
                                 .background(Theme.subtleStrong)
                                 .clipShape(Circle())
                         } else {
-                            // Send: the same circle as the attach button
-                            // above, scaling for the same reason.
                             Image(systemName: "arrow.up")
                                 .foregroundStyle(canStart ? Theme.primaryGlyph : Theme.textMuted)
                                 .scaledGlyphBox(44, glyph: 16, weight: .semibold)
@@ -536,10 +446,6 @@ struct NewSessionDraftView: View {
         }
         .background(Theme.sheet)
         .onAppear {
-            // THE SEED LOSES TO THE SAVED DRAFT, which is the ordering every
-            // other field here already has: a branch picked in this draft and
-            // left behind is a decision, and the row that opened it is only a
-            // starting point.
             baseRef = baseRefSeed
             if let saved = MobileDrafts.shared.draft(host: hostId, project: project.id) {
                 prompt = saved.prompt; title = saved.title
@@ -553,17 +459,12 @@ struct NewSessionDraftView: View {
         .navigationTitle(project.name)
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            // `-newSessionPrompt <text>` — automation affordance like
-            // -openSession: seeds the draft and starts it, so the whole
-            // create-and-enter path is drivable headlessly. Inert in normal use.
             if prompt.isEmpty, let seeded = UserDefaults.standard.string(forKey: "newSessionPrompt") {
                 prompt = seeded
                 await start()
                 return
             }
-            // FocusState set at push time fires before the field is installed
-            // on real devices and silently does nothing — the keyboard never
-            // appears and the screen reads as dead. Wait out the push.
+
             try? await Task.sleep(for: .milliseconds(500))
             focused = true
         }
@@ -610,9 +511,6 @@ struct NewSessionDraftView: View {
         }
     }
 
-    /// A paste or a drop, through the same rules the session composer uses.
-    /// Nothing is uploaded here: this sheet has no session id until the arrow
-    /// is pressed, so the bytes wait in the draft.
     private func intake(_ providers: [NSItemProvider]) {
         Task {
             let (files, refusals) = await composerFiles(from: providers)
@@ -623,8 +521,6 @@ struct NewSessionDraftView: View {
         }
     }
 
-    /// The composer's 72×72 strip, held locally: uploads need the session id,
-    /// which doesn't exist until the arrow is pressed.
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
@@ -632,7 +528,7 @@ struct NewSessionDraftView: View {
                     AttachmentChip(
                         name: attachment.name,
                         mediaType: attachment.mediaType,
-                        // Nothing is uploaded yet, so the bytes are right here.
+
                         preview: attachment.data.count <= ComposerIntake.previewCap ? attachment.data : nil,
                         onRemove: { draftAttachments.removeAll { $0.id == attachment.id } }
                     )
@@ -641,8 +537,6 @@ struct NewSessionDraftView: View {
         }
     }
 
-    /// t3's workspace label: "New worktree · main" / "Current checkout".
-    /// A named branch outranks the base ref, mirroring the web draft chip.
     private var workspaceLabel: String {
         let mode = envMode == "worktree" ? "New worktree" : "Current"
         if envMode == "worktree", !branchName.isEmpty { return "\(mode) · \(branchName)" }
@@ -661,8 +555,6 @@ struct NewSessionDraftView: View {
                 Button { envMode = "local"; baseRef = nil } label: { menuRow("Current checkout", selected: envMode == "local") }
             }
             if envMode == "worktree" {
-                // The branch list is a SHEET, not a submenu — a menu cannot
-                // search, and a real repo has too many branches to scroll.
                 Button {
                     pickingBranch = true
                 } label: {
@@ -678,7 +570,6 @@ struct NewSessionDraftView: View {
         }
     }
 
-    /// Both drivers' catalogues — the fused pill lists them side by side.
     private func loadCatalogues() async {
         for driver in ["claude", "codex", "opencode"] where catalogues[driver] == nil {
             catalogues[driver] = try? await api.models(driver: driver)
@@ -713,10 +604,6 @@ struct NewSessionDraftView: View {
         }
     }
 
-    /// Create the session, then send the prompt as its FIRST TURN — the
-    /// arrow means "start the work", not "make an empty room". The created
-    /// id is remembered the moment it exists: a retry after a failed upload
-    /// or turn RESUMES that session rather than minting a duplicate.
     private func start() async {
         submitting = true
         defer { submitting = false }
@@ -740,8 +627,7 @@ struct NewSessionDraftView: View {
                 sessionId = session.id
                 createdSessionId = session.id
                 saveTextDraft()
-                // createSession takes neither a model nor a runtime mode —
-                // they are session PATCHes, applied before the first turn runs.
+
                 let modelTouched = choice.isTouched
                 if modelTouched || runtimeMode != nil {
                     var patch = SessionPatch()
@@ -756,9 +642,7 @@ struct NewSessionDraftView: View {
                     try? await api.patchSession(session.id, patch: patch)
                 }
             }
-            // Every photo lands before the message that refers to it; a
-            // failed upload stops the send and NAMES the file — silently
-            // dropping something the human picked is the worst outcome.
+
             var attachmentIds: [EngineID] = []
             for attachment in draftAttachments {
                 do {
@@ -776,8 +660,7 @@ struct NewSessionDraftView: View {
                 sessionId, runId: submissionRunId, input: prompt,
                 attachments: attachmentIds.isEmpty ? nil : attachmentIds
             )
-            // The caller closes the sheet and replaces it with the live
-            // conversation — no back-stack detour (t3's replace()).
+
             MobileDrafts.shared.remove(host: hostId, project: project.id)
             onCreated(sessionId)
         } catch {

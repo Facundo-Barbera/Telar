@@ -1,16 +1,5 @@
 import Foundation
 
-/// Mirrors for the right panel's surfaces — `packages/engine-client/src/
-/// protocol/entities.ts` (workspace files, LaTeX) and `apps/web/lib/ds.ts`
-/// (the kernel, notebooks, tables). Decode-only, like every wire type here.
-///
-/// The conventions are the transcript's: a closed shape is synthesised, a
-/// discriminated shape is hand-written with a fallback that RENDERS rather
-/// than throws, an enum on the wire falls to `.unknown`, and a value the
-/// contract leaves open is a `JSONValue`.
-
-// MARK: - the project, as far as the panel needs it
-
 struct DataScienceConfig: Decodable, Equatable {
     var enabled: Bool
 }
@@ -20,15 +9,6 @@ struct LatexConfig: Decodable, Equatable {
     var mainFile: String?
 }
 
-/// A plugin id, as the map keys it — a route segment and a config key, NOT a
-/// tool prefix. Data Science is one plugin (`data-science`) that owns two tool
-/// prefixes (`ds_`, `notebook_`), which is why the two namespaces are kept
-/// apart in `packages/engine-client/src/protocol/plugins.ts`.
-///
-/// AN OPEN SET. A Mac may run a plugin this build has never heard of; its id is
-/// carried like any other and simply finds nothing in `PluginUI` — no tab, no
-/// viewer, no crash. The two bundled ids are named for the call sites that
-/// mean them.
 struct PluginID: RawRepresentable, Hashable, Codable, Sendable {
     let rawValue: String
     init(rawValue: String) { self.rawValue = rawValue }
@@ -38,21 +18,10 @@ struct PluginID: RawRepresentable, Hashable, Codable, Sendable {
     static let latex = PluginID("latex")
 }
 
-/// One plugin's per-project state — that file's `PluginConfig`. `settings` is
-/// the owning plugin's business and is validated at the host; nothing here
-/// needs to know what a LaTeX toolchain choice looks like.
 struct PluginConfig: Decodable, Equatable {
     var enabled: Bool
 }
 
-/// THE MAP, AND ITS DURABLE MARKER. `version`'s PRESENCE is the fact that this
-/// project has been migrated, and that fact is what makes the map the whole
-/// truth: a plugin absent from `entries` is OFF, and the legacy blocks are
-/// never read again.
-///
-/// A per-key fallback to legacy is the resurrection bug, not a kindness:
-/// disabling Data Science deletes the map entry, the next read falls back to
-/// a stale legacy block, and the feature turns itself back on.
 struct ProjectPlugins: Decodable, Equatable {
     var version: Int
     var entries: [String: PluginConfig]
@@ -65,21 +34,11 @@ struct ProjectPlugins: Decodable, Equatable {
     }
 }
 
-/// Whether a project's files can be read right now — the engine's `availability`
-/// (issue #534). The phone decides nothing here: the Mac's engine probes the
-/// disk, and this is the answer it published.
-///
-/// DECODED LENIENTLY, AND THAT IS THE LOAD-BEARING PART. A Mac newer than this
-/// build may name a state this one has never heard of, and the default decode of
-/// a raw-value enum THROWS on one — which, inside a project record, does not cost
-/// a badge: it costs the whole project, which vanishes from the phone's rail. So
-/// an unrecognised value becomes `unknown`, which every surface here treats
-/// exactly as it treats "nobody said": draw what you always drew.
 enum ProjectAvailability: String, Codable, Equatable {
     case available
     case unmounted
     case missing
-    /// Anything a newer engine names. Never sent by an engine; never a badge.
+
     case unknown
 
     init(from decoder: Decoder) throws {
@@ -87,27 +46,18 @@ enum ProjectAvailability: String, Codable, Equatable {
         self = ProjectAvailability(rawValue: raw) ?? .unknown
     }
 
-    /// The drive is here and the folder is on it. A state this build does not
-    /// recognise counts as readable, because refusing on a word we cannot read
-    /// would be the phone overruling a Mac that knows more than it does.
     var isReadable: Bool { self != .unmounted && self != .missing }
 }
 
-/// `GET /api/projects` — the record the cockpit reads to decide which panel
-/// tabs a session gets. The plugin map, and the two legacy opt-ins an older
-/// engine may still send; a current engine never writes them.
 struct Project: Decodable, Identifiable, Equatable {
     var id: EngineID
     var name: String
     var root: String?
     var dataScience: DataScienceConfig?
     var latex: LatexConfig?
-    /// Present once the project has been migrated; absent on one that never
-    /// was, and on one an older engine stripped on its way past.
+
     var plugins: ProjectPlugins?
-    /// Absent on an older engine and on a removed project, which is read as
-    /// "nobody said" rather than as a fourth state — so a phone paired with a
-    /// Mac that predates this draws exactly what it always did.
+
     var availability: ProjectAvailability?
 
     private enum CodingKeys: String, CodingKey { case id, name, root, dataScience, latex, plugins, availability }
@@ -118,11 +68,9 @@ struct Project: Decodable, Identifiable, Equatable {
         root = try? c.decodeIfPresent(String.self, forKey: .root)
         dataScience = try? c.decodeIfPresent(DataScienceConfig.self, forKey: .dataScience)
         latex = try? c.decodeIfPresent(LatexConfig.self, forKey: .latex)
-        // A map that will not parse is NOT a migrated project: fall through to
-        // the legacy blocks rather than dropping the project from the list.
+
         plugins = try? c.decodeIfPresent(ProjectPlugins.self, forKey: .plugins)
-        // `try?` for the same reason: a state this build has never heard of must
-        // cost a badge, never the whole project row.
+
         availability = try? c.decodeIfPresent(ProjectAvailability.self, forKey: .availability)
     }
 
@@ -140,9 +88,6 @@ struct Project: Decodable, Identifiable, Equatable {
         self.availability = availability
     }
 
-    /// What a header badge says, or nothing when the disk is fine. Phrased here
-    /// rather than at each call site so the phone and the cockpit cannot end up
-    /// describing one cable two ways.
     var awayLabel: String? {
         switch availability {
         case .unmounted: return "Drive away"
@@ -151,13 +96,8 @@ struct Project: Decodable, Identifiable, Equatable {
         }
     }
 
-    /// Whether a plugin is on for this project — the engine's one read path
-    /// (`readProjectPlugins`), stated here because the phone reads the same
-    /// record and must not disagree about it.
     func pluginEnabled(_ id: PluginID) -> Bool { enabledPlugins.contains(id) }
 
-    /// Every plugin this project has on, known to this build or not. The map
-    /// when there is one; otherwise the two legacy blocks an older engine sends.
     var enabledPlugins: Set<PluginID> {
         if let plugins { return Set(plugins.entries.filter { $0.value.enabled }.keys.map { PluginID($0) }) }
         var legacy = Set<PluginID>()
@@ -177,8 +117,6 @@ struct ProjectList: Decodable {
     }
 }
 
-// MARK: - the checkout
-
 enum WorkspaceListingSource: String, Decodable {
     case git, walk
     case unknown
@@ -192,7 +130,7 @@ enum WorkspaceListingSource: String, Decodable {
 struct WorkspaceListing: Decodable, Equatable {
     var workspacePath: String
     var repository: Bool
-    /// Repo-relative, forward slashes — a FLAT list; the tree is built here.
+
     var files: [String]
     var source: WorkspaceListingSource
     var truncated: Bool
@@ -201,12 +139,11 @@ struct WorkspaceListing: Decodable, Equatable {
 
 struct WorkspaceFile: Decodable, Equatable {
     var path: String
-    /// Empty for a binary file.
+
     var text: String
-    /// The REAL size, even when `text` was cut.
+
     var bytes: Int
-    /// Of the WHOLE file on disk, even when truncated — the precondition a
-    /// write sends back.
+
     var sha256: String
     var binary: Bool
     var truncated: Bool
@@ -225,8 +162,6 @@ enum WorkspaceWriteRefusal: String, Decodable {
     }
 }
 
-/// A refusal is a 200 with `written: false`, never an error — the current
-/// hash rides along so an editor can offer a re-read without a second trip.
 enum WorkspaceWriteResult: Decodable, Equatable {
     case written(WorkspaceFile)
     case refused(WorkspaceWriteRefusal, sha256: String?)
@@ -246,7 +181,6 @@ enum WorkspaceWriteResult: Decodable, Equatable {
     }
 }
 
-/// `GET /api/sessions/:id/data/table` — one window over a CSV/TSV/Parquet.
 struct TableWindow: Decodable, Equatable {
     var path: String
     var columns: [String]
@@ -257,8 +191,6 @@ struct TableWindow: Decodable, Equatable {
     var truncated: Bool?
 }
 
-// MARK: - the kernel
-
 enum KernelState: String, Decodable {
     case starting, idle, busy, restarting, dead, none
     case unknown
@@ -268,7 +200,6 @@ enum KernelState: String, Decodable {
         self = KernelState(rawValue: raw) ?? .unknown
     }
 
-    /// Something is running or could — Interrupt makes sense.
     var isLive: Bool { self != .none && self != .dead && self != .unknown }
 }
 
@@ -295,8 +226,6 @@ struct KernelError: Decodable, Equatable {
     var traceback: [String]
 }
 
-/// One cell's output — `apps/web/lib/ds.ts` `CellOutput`. An unknown kind
-/// renders as its label rather than dropping the cell.
 enum CellOutput: Decodable, Equatable {
     case text(stream: String, text: String, truncated: Bool)
     case html(String, truncated: Bool)
@@ -378,7 +307,7 @@ struct NotebookCell: Decodable, Identifiable, Equatable {
     var index: Int
     var type: NotebookCellType
     var source: String
-    /// A number, JSON `null`, or absent — all three mean "not yet run" when nil.
+
     var executionCount: Int?
     var outputs: [CellOutput]?
 
@@ -415,9 +344,6 @@ struct NotebookRead: Decodable, Equatable {
         cells = try c.decode([Skippable<NotebookCell>].self, forKey: .cells).compactMap(\.value)
     }
 
-    /// For the client-side read — an .ipynb parsed from its own bytes lands in
-    /// the same shape the engine's `notebook/read` answers with, so one set of
-    /// views draws both. See `parseNotebookFile`.
     init(path: String, sha256: String, cellCount: Int, cells: [NotebookCell]) {
         self.path = path; self.sha256 = sha256; self.cellCount = cellCount; self.cells = cells
     }
@@ -468,8 +394,6 @@ struct PackageList: Decodable {
     }
 }
 
-// MARK: - LaTeX
-
 enum LatexSeverity: String, Decodable {
     case error, warning
     case unknown
@@ -494,8 +418,7 @@ struct LatexDiagnostic: Decodable, Identifiable, Equatable {
 
 enum LatexJobStatus: String, Decodable {
     case running, ok, failed, cancelled
-    /// Nothing has been compiled in this session — the cockpit's `{status:
-    /// "never"}` arm, folded in so one enum covers the whole answer.
+
     case never
     case unknown
 
@@ -505,7 +428,6 @@ enum LatexJobStatus: String, Decodable {
     }
 }
 
-/// `latex/status` — a full record after a compile, or only `status: never`.
 struct LatexCompileStatus: Decodable, Equatable {
     var status: LatexJobStatus
     var path: String?
@@ -537,8 +459,6 @@ struct LatexCompileStatus: Decodable, Equatable {
     }
 }
 
-/// `latex/compile` — the compile's own answer, which the surface folds into
-/// a status by re-reading; only `error` is used directly.
 struct LatexCompileAnswer: Decodable {
     var ok: Bool
     var path: String?

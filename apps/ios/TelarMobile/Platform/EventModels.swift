@@ -1,21 +1,6 @@
 import Foundation
 
-/// Mirror of `packages/engine-client/src/protocol/events.ts` — one
-/// append-only, monotonically-numbered stream per session; every client state
-/// is a fold over it.
-///
-/// STRUCTURED DIFFERENTLY FROM THE TS UNION, deliberately. The envelope keeps
-/// `type` as a plain `String` alongside a `payload` enum that only carries the
-/// cases the fold consumes. Two contract rules fall out for free:
-///  - an unknown event type decodes to `.none` and the fold's `default:`
-///    ignores it — the stream never dies on a newer engine;
-///  - `needsSessionSnapshot` matches on the type STRING, so queue-changing
-///    events this build carries no payload for still trigger the refetch.
-/// A recognised type whose payload fails to decode also lands on `.none`:
-/// worse than having the data, better than losing the stream, and the next
-/// snapshot refetch heals it.
 struct EngineEvent {
-    /// Engine-assigned, strictly increasing per session — the replay cursor.
     var id: Int
     var at: Timestamp
     var sessionId: EngineID
@@ -40,19 +25,15 @@ struct EngineEvent {
         case taskCompleted(task: AgentTask)
         case sessionUpdated(session: Session)
         case usageUpdated(usage: UsageSnapshot)
-        /// The §6 shared-browser control model: whose hands are on the wheel.
+
         case browserControlChanged(controller: String)
-        /// The agent asked the cockpit to show a file — the panel opens it.
+
         case displayOpened(path: String, title: String?)
-        /// THE KERNEL SPOKE. Without these two the panel only re-read when a
-        /// TURN settled, so cells the agent ran mid-turn showed nothing until
-        /// it finished — the "tables don't render until you refresh the
-        /// kernel" the user hit on a fresh session.
+
         case kernelStateChanged(state: KernelState, reason: String?)
-        /// One output from one cell execution. `producer` names the notebook
-        /// it belongs to, or a scratch door like `ds_plot`.
+
         case notebookCellOutput(execId: String, cellId: String?, producer: String?, output: CellOutput?)
-        /// Everything else — recognised-but-unused and unknown alike.
+
         case none
     }
 }
@@ -129,14 +110,11 @@ extension EngineEvent: Decodable {
         case "display.opened":
             payload = (try? c.decode(String.self, forKey: .path)).map { .displayOpened(path: $0, title: try? c.decodeIfPresent(String.self, forKey: .title)) } ?? .none
         case "kernel.state.changed":
-            // An unrecognised state already decodes to `.unknown`, so a newer
-            // engine's vocabulary still moves the revision.
+
             payload = (try? c.decode(KernelState.self, forKey: .state))
                 .map { .kernelStateChanged(state: $0, reason: try? c.decodeIfPresent(String.self, forKey: .reason)) } ?? .none
         case "notebook.cell.output":
-            // The OUTPUT is optional: a body this build cannot read is still
-            // an execution that happened, and the revision it bumps is what
-            // makes the surface re-read.
+
             payload = (try? c.decode(String.self, forKey: .execId)).map {
                 .notebookCellOutput(
                     execId: $0,
@@ -151,17 +129,12 @@ extension EngineEvent: Decodable {
     }
 }
 
-/// A page of journal rows plus the cursor to resume from.
 struct EventPage: Decodable {
     var events: [EngineEvent]
-    /// The highest id in `events`, repeated by the server so a client need
-    /// not scan for it — and so skipped rows cannot stall replay.
+
     var cursor: Int
     var more: Bool
-    /// The `after` for the next page, sent exactly when `more` is true (#494).
-    /// It equals `cursor`; a client that pages may read either, and one that
-    /// only tails stores `cursor` and ignores this. Absent from an engine older
-    /// than the paged route, where `more` was always false.
+
     var next: Int?
 
     private enum CodingKeys: String, CodingKey { case events, cursor, more, next }
@@ -185,24 +158,15 @@ struct EngineHealth: Decodable {
     var worker: Worker
 }
 
-/// Mirror of `SnapshotPage` in packages/engine-client: where a windowed read
-/// continues. `before` is JSON `null` once the page reaches the session's
-/// start — decodeIfPresent maps both null and absent to nil, which is right,
-/// because either way there is nothing above.
 struct SnapshotPage: Decodable {
-    /// Oldest settled turn on this page — the `before` for the next page up.
     var before: EngineID?
-    /// Are there settled turns above this page?
+
     var more: Bool
 }
 
-/// `GET /api/sessions/:id` — snapshot plus everything the fold seeds from.
 struct SessionSnapshot: Decodable {
-    /// The journal position this snapshot reflects — where a client tails
-    /// from. Absent from an engine older than the field.
     var cursor: Int?
-    /// Present when the read was windowed (`?turns=N`); absent from an older
-    /// engine or an unwindowed read.
+
     var page: SnapshotPage?
     var session: Session
     var turns: [Turn]
@@ -217,10 +181,7 @@ struct SessionSnapshot: Decodable {
         cursor = try c.decodeIfPresent(Int.self, forKey: .cursor)
         page = try? c.decodeIfPresent(SnapshotPage.self, forKey: .page)
         session = try c.decode(Session.self, forKey: .session)
-        // SKIPPABLE HIDES OUR OWN MISTAKES TOO. A row whose shape this build
-        // does not know is meant to drop; a row whose field WE declared with
-        // the wrong type drops identically and just as quietly. Before
-        // changing a type here, read the note on `Skippable`.
+
         turns = try c.decode([Skippable<Turn>].self, forKey: .turns).compactMap(\.value)
         items = try c.decode([Skippable<Item>].self, forKey: .items).compactMap(\.value)
         requests = try c.decode([Skippable<EngineRequest>].self, forKey: .requests).compactMap(\.value)

@@ -1,21 +1,5 @@
 import SwiftUI
 
-/// A text file: read-only monospace with line numbers for code, an editor
-/// for prose. The editor's contract is the desktop's, kept exactly:
-///
-/// THE SHA256 PRECONDITION CHAIN. A write carries the hash the text was
-/// edited against; the engine refuses when disk moved. On success the
-/// baseline advances to the written file's hash, or the second keystroke
-/// after a save is refused as a conflict with itself.
-///
-/// A REFUSAL IS A 200, not an error, and only `conflict` offers a re-read:
-/// the others describe a file that is no longer editable at all.
-///
-/// DRAFTS OUTLIVE THE VIEW. Text is stashed with its baseline on every
-/// keystroke, so a re-open writes against the hash the text was edited
-/// against rather than the fresh read's. The debounced write FLUSHES on
-/// disappear rather than being cancelled: the write that matters most is
-/// the one that lands after the person has moved on.
 struct TextFileView: View {
     let api: any PanelAPI
     let sessionId: EngineID
@@ -23,8 +7,7 @@ struct TextFileView: View {
     let path: String
     let active: Bool
     let editable: Bool
-    /// The checkout's absolute path, for "Copy path". Nil until the tree's
-    /// listing has landed.
+
     var root: String?
     let onSaveState: (FilesSurface.SaveState?) -> Void
 
@@ -36,15 +19,11 @@ struct TextFileView: View {
     @State private var dirty = false
     @State private var saveTask: Task<Void, Never>?
     @AppStorage("telar.editor.wrap") private var wrap = false
-    /// The read-only view's colours, one entry per line. Nil until the pass
-    /// lands, and nil forever for a language nothing knows.
+
     @State private var highlighted: [AttributedString]?
-    /// The read-only view's own size, so content narrower than it can be
-    /// pinned to the top left rather than floating — see `codeView`.
+
     @State private var viewport: CGSize = .zero
-    /// How far the code has been scrolled off its leading edge. Two things read
-    /// it: the gutter, which rides it back so the line numbers stay put, and the
-    /// back-swipe, which stands down while there is somewhere to scroll back to.
+
     @State private var sideways: CGFloat = 0
     @Environment(\.colorScheme) private var scheme
     @Environment(\.panel) private var panel
@@ -76,30 +55,6 @@ struct TextFileView: View {
         .onDisappear { flush() }
     }
 
-    // MARK: read-only code
-
-    /// READ-ONLY CODE, AND THE TWO AXES IT SCROLLS ON — issue #405.
-    ///
-    /// THE CONTENT WIDTH IS KNOWN BEFORE THE FIRST ROW IS LAID OUT. It used to
-    /// be discovered: the lazy stack held rows fixed at their natural width, so
-    /// the scroll view's horizontal extent was whatever the rows it had realised
-    /// happened to need, and it CHANGED as you scrolled down. A long line coming
-    /// into view widened the content under your finger, the axis the view could
-    /// scroll kept changing, and the gesture locked to whichever axis had moved
-    /// first. `CodeLayout` measures the widest line off the string — monospaced,
-    /// so the width is arithmetic — and the stack is given it as a floor, which
-    /// is what makes the extent stable from the first frame.
-    ///
-    /// A FLOOR, NOT A CUT. The rows keep their own width, so a line the measure
-    /// misjudges still draws whole rather than truncating: the worst an
-    /// imperfect measure can do is give back the jitter, on that one file.
-    ///
-    /// THE GUTTER DOES NOT SCROLL SIDEWAYS. Line numbers that slide off the left
-    /// edge are line numbers you then cannot read, which is most of what they are
-    /// for — so the gutter rides the horizontal offset back, drawn over the code
-    /// that passes beneath it. It stays inside the scrolled content (an overlay
-    /// outside it would have to re-derive every row's vertical position), and
-    /// `offset` does not lay out, so the content width is untouched by it.
     private func codeView(_ file: WorkspaceFile) -> some View {
         let lines = file.text.split(separator: "\n", omittingEmptySubsequences: false)
         let gutter = CGFloat(String(lines.count).count) * 7 + 12
@@ -116,18 +71,12 @@ struct TextFileView: View {
                             .foregroundStyle(Theme.textMuted)
                             .frame(width: gutter, alignment: .trailing)
                             .padding(.trailing, 8)
-                            // Opaque, FULL ROW HEIGHT, and above the line beside
-                            // it: the code slides UNDER the numbers rather than
-                            // through them. The height matters — a background
-                            // sized to the digits alone leaves a sliver below
-                            // each one for a wrapped line to show through.
+
                             .frame(maxHeight: .infinity, alignment: .top)
                             .background(Theme.codeBackground)
                             .offset(x: wrap ? 0 : sideways)
                             .zIndex(1)
-                        // The colours arrive a beat after the text and replace
-                        // it in place; nothing waits on the highlighter to draw
-                        // a first frame, and an unknown language stays plain.
+
                         if let coloured = highlighted?[safe: index] {
                             Text(coloured)
                                 .font(.system(Theme.footnote, design: .monospaced))
@@ -142,19 +91,7 @@ struct TextFileView: View {
                         }
                     }
                     .frame(minHeight: 18)
-                    // A ROW IS AS WIDE AS ITS LINE. Inside a two-axis scroll
-                    // view the lazy stack hands every row the VIEWPORT's width,
-                    // and a long line answered that by wrapping — far enough
-                    // that a notebook's `"cells"` came down the screen one
-                    // character per row. Fixed horizontally, each row takes its
-                    // natural width and the content scrolls sideways instead,
-                    // which is the whole reason the horizontal axis is there.
-                    // The stack stays lazy, so a 10K-line file stays cheap.
-                    //
-                    // WRAPPING IS THAT RULE TURNED OFF ON PURPOSE: the row
-                    // takes the viewport's width again and grows downward, and
-                    // the horizontal axis goes with it so there is nothing left
-                    // to scroll sideways into.
+
                     .fixedSize(horizontal: !wrap, vertical: false)
                 }
                 if file.truncated {
@@ -165,12 +102,7 @@ struct TextFileView: View {
                 }
             }
             .padding(10)
-            // THE MEASURED WIDTH, OR THE VIEWPORT'S, WHICHEVER IS LARGER. The
-            // first is what makes the horizontal extent stable; the second pins
-            // a file too short or too narrow to fill the view to the top left
-            // rather than letting it float — the same pin TableSurface needed
-            // for the same reason. Wrapping wants neither: the rows take the
-            // viewport's width and there is no horizontal axis left.
+
             .frame(minWidth: wrap ? viewport.width : max(content, viewport.width),
                    minHeight: viewport.height, alignment: .topLeading)
         }
@@ -178,8 +110,7 @@ struct TextFileView: View {
         .onScrollGeometryChange(for: CGFloat.self) { max(0, $0.contentOffset.x) } action: { _, offset in
             sideways = offset
         }
-        // A drag from the left edge is the reader coming back to column zero,
-        // not the reader leaving — see `InteractivePopGate`.
+
         .interactivePopDisabled(!wrap && sideways > 0)
         .background(Theme.codeBackground)
         .task(id: "\(path):\(file.sha256):\(scheme == .dark)") {
@@ -188,8 +119,6 @@ struct TextFileView: View {
             )
         }
     }
-
-    // MARK: the editor
 
     private var editor: some View {
         TextEditor(text: $text)
@@ -210,18 +139,6 @@ struct TextFileView: View {
             }
     }
 
-    // MARK: the address row's menu
-
-    /// The desktop's `FileViewMenu`, minus what a phone cannot honour.
-    ///
-    /// REVEAL IN FINDER AND "OPEN IN <app>" ARE ABSENT, not greyed: they reach
-    /// for a Mac this app is not running on, and a disabled row is a promise
-    /// restated on every long press. Rendered/Source has no counterpart either
-    /// — prose opens in the editor here and there is no source view to swap to.
-    ///
-    /// ON THE ROW, NOT THE WHOLE BODY: the text below is selectable, and a
-    /// long press there belongs to the selection. The address row is the one
-    /// piece of this surface that is chrome.
     @ViewBuilder private var addressMenu: some View {
         if let absolute = workspaceFilePath(root, path) {
             Button("Copy path", systemImage: "doc.on.doc") { UIPasteboard.general.string = absolute }
@@ -254,7 +171,6 @@ struct TextFileView: View {
         .background(Theme.statusRed.opacity(0.08))
     }
 
-    /// The desktop's four sentences, word for word.
     private func refusalCopy(_ refusal: WorkspaceWriteRefusal) -> String {
         switch refusal {
         case .conflict: "This file changed on disk while you were editing — most likely the agent wrote it. Your text has not been saved."
@@ -264,8 +180,6 @@ struct TextFileView: View {
         case .unknown: "The engine refused the write."
         }
     }
-
-    // MARK: reads and writes
 
     private func read(discardingDraft: Bool = false) async {
         do {
@@ -280,9 +194,6 @@ struct TextFileView: View {
                 refusal = nil
                 onSaveState(nil)
             } else if let data = UserDefaults.standard.data(forKey: draftKey), let draft = try? JSONDecoder().decode(Draft.self, from: data) {
-                // THE STASHED BASELINE, not the fresh hash: the draft was
-                // edited against that file, and writing it with a newer hash
-                // would turn a refusal into an overwrite.
                 if draft.text == fresh.text {
                     UserDefaults.standard.removeObject(forKey: draftKey)
                     text = fresh.text
@@ -318,7 +229,6 @@ struct TextFileView: View {
         }
     }
 
-    /// The pending write goes out now rather than being dropped.
     private func flush() {
         guard dirty, saveTask != nil else { return }
         saveTask?.cancel()
@@ -335,8 +245,7 @@ struct TextFileView: View {
         do {
             switch try await api.writeSessionFile(sessionId, path: path, text: written, expectedSha256: baseline) {
             case .written(let fresh):
-                // ADVANCE THE BASELINE, or the next keystroke is a conflict
-                // with the save that just landed.
+
                 self.baseline = fresh.sha256
                 file = fresh
                 refusal = nil

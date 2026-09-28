@@ -2,9 +2,6 @@ import CryptoKit
 import DeviceCheck
 import Foundation
 
-/// What a Mac needs to send to this phone through the push relay: which
-/// registration, and the key that signs its requests. Handed to each paired
-/// Mac inside `PUT /api/mobile/push`; the relay holds the APNs tokens.
 struct RelayCredential: Encodable, Equatable {
     var url: String
     var handle: String
@@ -12,8 +9,6 @@ struct RelayCredential: Encodable, Equatable {
     var sendKey: String
 }
 
-/// The tokens the relay holds for this phone. A Live Activity is named by its
-/// session id, which is how a Mac refers to it when it sends.
 struct RelayTokens: Codable, Equatable {
     struct Activity: Codable, Equatable {
         var id: String
@@ -24,7 +19,6 @@ struct RelayTokens: Codable, Equatable {
     var activities: [Activity]
 }
 
-/// `DCAppAttestService`, behind a seam so the tests can stand in for it.
 protocol AppAttesting {
     var isSupported: Bool { get }
     func generateKey() async throws -> String
@@ -33,28 +27,6 @@ protocol AppAttesting {
 }
 extension DCAppAttestService: AppAttesting {}
 
-/**
- REGISTERING THIS PHONE WITH THE PUSH RELAY.
-
- The phone registers itself, proving with App Attest that it is a genuine
- Telar build, and gives each paired Mac its own send key. After pairing, the
- only thing left for a person to do is allow notifications.
-
- - Register once: challenge → attest a fresh key → `POST /v2/devices` → handle.
- - Keep the relay's copy of the tokens current: `PUT` whenever they change.
- - Mint one key per paired Mac (`POST …/keys`), and revoke it on unpair.
-
- Every request after registration carries an App Attest assertion over
- `"<METHOD> <path>\n<body>"`. A registration the relay no longer knows is
- started over, which also rotates every Mac's key.
-
- WITHOUT APP ATTEST THERE IS NO PUSH. The simulator, a device that does not
- support it, an unknown bundle, or a relay that refuses the attestation: this
- answers nil, `unavailable` turns true, and it stays true until the next
- launch — no sync spends another attestation or request on it. Everything
- else in the app works as before; only a Mac with its own developer APNs key
- can still reach such a phone.
- */
 @MainActor final class PushRelayClient {
     struct State: Codable, Equatable {
         var attestKeyId: String?
@@ -68,13 +40,12 @@ extension DCAppAttestService: AppAttesting {}
         }
     }
     struct RelayError: Error { var status: Int }
-    /// The relay rejected this phone's attestation: not something a retry fixes.
+
     struct AttestationRefused: Error {}
 
     typealias Transport = (URLRequest) async throws -> (Data, URLResponse)
     nonisolated static let bundles: Set<String> = ["io.github.novarix.telar", "io.github.novarix.telar.dev"]
-    /// Compiled in, and overridable through Info.plist (`TelarPushRelayURL`) so
-    /// the relay can move to its own account or domain without a code change.
+
     nonisolated static var defaultURL: URL {
         (Bundle.main.object(forInfoDictionaryKey: "TelarPushRelayURL") as? String).flatMap(URL.init(string:))
             ?? URL(string: "https://telar-push-relay.facundo-barbera.workers.dev")!
@@ -82,9 +53,9 @@ extension DCAppAttestService: AppAttesting {}
     static let shared = PushRelayClient()
 
     private(set) var state: State
-    /// This phone cannot register with the relay, so push is unavailable on it.
+
     var unavailable: Bool { refused || !attest.isSupported || !Self.bundles.contains(bundle) }
-    /// Held for this launch only: an OS update may bring App Attest with it.
+
     private var refused = false
     private let url: URL
     private let bundle: String
@@ -120,9 +91,6 @@ extension DCAppAttestService: AppAttesting {}
         #endif
     }
 
-    /// This Mac's credential, registering or refreshing first as needed. Nil
-    /// when this phone cannot register (see `unavailable`) or the relay could
-    /// not be reached; the next sync tries again only in the second case.
     func credential(for host: String, tokens: RelayTokens) async -> RelayCredential? {
         guard !unavailable else { return nil }
         do {
@@ -139,16 +107,11 @@ extension DCAppAttestService: AppAttesting {}
         }
     }
 
-    /// THE RELAY HAS LOST SOMETHING THIS PHONE THINKS IT SENT: a Mac's start came
-    /// back `not_registered`, typically because the relay dropped the push-to-start
-    /// token. The next sync re-sends the tokens even though they look unchanged
-    /// here; otherwise the daily short-circuit kept it missing for up to 24 hours.
     func forceRefresh() {
         state.refreshedAt = nil
         persist(state)
     }
 
-    /// Unpairing: the Mac's key stops working at the relay, not just here.
     func revoke(host: String) async {
         guard let key = state.keys[host] else { return }
         state.keys[host] = nil
@@ -158,8 +121,6 @@ extension DCAppAttestService: AppAttesting {}
         }
     }
 
-    /// The relay forgets a registration left unrefreshed for 60 days, so an
-    /// unchanged one is still refreshed once a day.
     nonisolated static let refreshInterval: TimeInterval = 86400
 
     private func synchronize(_ tokens: RelayTokens) async throws {
@@ -171,7 +132,7 @@ extension DCAppAttestService: AppAttesting {}
             state.registered = tokens
             state.refreshedAt = now()
             persist(state)
-        // Forgotten (404/410) or no longer accepting this key (401): start over.
+
         case 401, 404, 410:
             try await register(tokens)
         default:
@@ -192,7 +153,7 @@ extension DCAppAttestService: AppAttesting {}
         let (created, answer) = try await request("POST", "/v2/devices", body: body)
         if created == 401 { throw AttestationRefused() }
         guard created == 201, let handle = try JSONDecoder().decode([String: String].self, from: answer)["handle"] else { throw RelayError(status: created) }
-        // A new registration: every Mac's old key belonged to the old one.
+
         state = State(attestKeyId: keyId, handle: handle, registered: tokens, refreshedAt: now())
         persist(state)
     }
@@ -233,13 +194,11 @@ extension DCAppAttestService: AppAttesting {}
         return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
     }
 
-    /// Exactly what the relay recomputes: the method, the path and the body bytes sent.
     nonisolated static func clientData(method: String, path: String, body: Data) -> String {
         "\(method) \(path)\n\(String(decoding: body, as: UTF8.self))"
     }
     nonisolated static func sha256(_ text: String) -> Data { Data(SHA256.hash(data: Data(text.utf8))) }
 
-    // The send keys are secrets, so the state lives in the Keychain.
     private nonisolated static let account = "pushRelay"
     nonisolated static func loadState() -> State? {
         KeychainStore.read(account: account).flatMap { try? JSONDecoder().decode(State.self, from: Data($0.utf8)) }

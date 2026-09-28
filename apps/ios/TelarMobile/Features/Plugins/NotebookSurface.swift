@@ -1,15 +1,5 @@
 import SwiftUI
 
-/// A notebook as cells, over the session's kernel — the desktop's
-/// `NotebookSurface`. Every verb is a POST to the same `ds/` door the
-/// agent's tools use, so a cell run here and one the model ran land in the
-/// same kernel and write the same file.
-///
-/// FOUR STATES THAT ARE NOT INTERCHANGEABLE, and the one that matters most:
-/// `classifyNotebookRead` treats a 404 as "no such notebook" ONLY when the
-/// engine's own sentence says the file is missing. A 404 from a missing
-/// plugin route used to render "No notebook here yet" with a Create button
-/// over somebody's existing file.
 struct NotebookSurface: View {
     let api: any PanelAPI
     let sessionId: EngineID
@@ -28,25 +18,17 @@ struct NotebookSurface: View {
     @State private var drafts: [String: String] = [:]
     @State private var saveTasks: [String: Task<Void, Never>] = [:]
     @State private var lightbox: EngineID?
-    /// The cell gutter, as wide as the run button it holds. Same seed and the
-    /// same reference style as `scaledGlyphBox`, so the column and the square
-    /// inside it grow by one ratio (#674).
+
     @ScaledMetric(relativeTo: .body) private var gutter: CGFloat = 44
-    /// THE SELECTED CELL — JupyterLab's command mode, sized for touch. Tap
-    /// selects, tap the selected one edits. Without it every tap landed a
-    /// caret, and a notebook you could not scroll without typing in it.
+
     @State private var selected: String?
-    /// Cells whose outputs are folded away. A VIEW, NOT AN EDIT: the file
-    /// still holds them, and "Clear outputs" below it is the one that writes.
+
     @State private var collapsedOutputs: Set<String> = []
     @FocusState private var focusedCell: String?
-    /// Set the moment a draft lands, cleared when the last one flushes: the
-    /// header's dot and tick.
+
     @State private var saved = false
     @Environment(\.kernelSignals) private var signals
-    /// The one-shot kernel read happens on the way in only; after that the
-    /// events are the truth. It also gates the debounce, so opening a notebook
-    /// is immediate and only later bursts are coalesced.
+
     @State private var didFirstRead = false
 
     var body: some View {
@@ -59,10 +41,7 @@ struct NotebookSurface: View {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(notebook.cells) { cell in
                             cellView(cell)
-                            // BETWEEN CELLS ONLY WHEN ONE IS SELECTED. A row of
-                            // buttons between every pair is noise in a notebook
-                            // you are reading; it is exactly what you want in
-                            // the one you are editing.
+
                             if selected == cell.id { insertBar(after: cell.id) }
                         }
                         addBar
@@ -92,36 +71,24 @@ struct NotebookSurface: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // THE KERNEL SPEAKING IS THE SIGNAL, not a turn settling. A cell the
-        // agent runs mid-turn used to change nothing here until the whole turn
-        // finished — which is what "tables don't render until you refresh the
-        // kernel" was. This notebook follows ITS OWN producer, so another
-        // notebook's cell does not reload it.
+
         .task(id: "\(path):\(active):\(signals.notebookRevision[path] ?? 0):\(signals.kernelRevision)") {
-            // COALESCED. A cell emitting six outputs bumps the revision six
-            // times in a second; restarting the task cancels this sleep, so
-            // the burst costs one read rather than six.
             if didFirstRead { try? await Task.sleep(for: .milliseconds(250)) }
             guard !Task.isCancelled else { return }
             await read()
-            // Only on the way in: after that the kernel's own events are the
-            // truth, and asking again would race them.
+
             if !didFirstRead {
                 didFirstRead = true
                 await readKernel()
             }
         }
         .onDisappear { flushAll() }
-        // A markdown cell's `<img src="fig.png">` points into the checkout,
-        // and a Markdown image provider has no way to be handed an API — so
-        // the read is put where it can reach one.
+
         .environment(\.workspaceImages) { [api, sessionId] path in
             guard let raw = try? await api.sessionFileRaw(sessionId, path: path) else { return nil }
             return UIImage(data: raw.data)
         }
-        // THE CELL TOOLBAR RIDES THE KEYBOARD. Everything you do to a cell
-        // while typing in it was behind an ellipsis menu you had to dismiss
-        // the keyboard to reach.
+
         .toolbar {
             if let cell = selectedCell {
                 ToolbarItemGroup(placement: .keyboard) {
@@ -151,9 +118,7 @@ struct NotebookSurface: View {
                 }
             }
         }
-        // A HARDWARE KEYBOARD RUNS CELLS, the two chords every notebook uses.
-        // Zero-sized buttons rather than `onKeyPress`, so they are shortcuts
-        // and not controls in the layout.
+
         .background {
             ZStack {
                 Button("") { if let cell = selectedCell { Task { await runAndAdvance(cell) } } }
@@ -171,15 +136,12 @@ struct NotebookSurface: View {
 
     private struct LightboxItem: Identifiable { let id: EngineID }
 
-    // MARK: header
-
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "text.book.closed").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
             Text(path).font(.system(Theme.caption, design: .monospaced)).foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.head)
             Spacer(minLength: 4)
-            // UNSAVED WORK IS VISIBLE. A debounced autosave with no sign of
-            // itself is indistinguishable from one that is broken.
+
             if !drafts.isEmpty {
                 Circle().fill(Theme.accent).frame(width: 6, height: 6)
                     .accessibilityLabel("Saving")
@@ -236,8 +198,6 @@ struct NotebookSurface: View {
         .background(Theme.statusAmber.opacity(0.08))
     }
 
-    // MARK: cells
-
     private func insertBar(after: String) -> some View {
         HStack(spacing: 10) {
             Rectangle().fill(Theme.borderSubtle).frame(height: 1)
@@ -252,9 +212,6 @@ struct NotebookSurface: View {
         .padding(.horizontal, 10)
     }
 
-    /// ALWAYS THERE, at the end. Adding the first cell to an empty notebook,
-    /// or one more at the bottom, should never require selecting something
-    /// first.
     private var addBar: some View {
         HStack(spacing: 10) {
             Button {
@@ -280,12 +237,6 @@ struct NotebookSurface: View {
         HStack(alignment: .top, spacing: 6) {
             VStack(spacing: 2) {
                 if cell.type == .code {
-                    // A 44pt TARGET. An 11pt glyph is a dart-throw on a
-                    // touchscreen, and running a cell is the thing you do most.
-                    //
-                    // THE SQUARE SCALES WITH ITS GLYPH (#674), and the gutter
-                    // below scales with the square — a 44 that grew inside a
-                    // column that did not would clip against the cell body.
                     Button { Task { await run(cell) } } label: {
                         Image(systemName: running.contains(cell.id) ? "hourglass" : "play.fill")
                             .scaledGlyphBox(44, glyph: 14)
@@ -296,8 +247,6 @@ struct NotebookSurface: View {
                     Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]")
                         .font(.system(Theme.captionTiny, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 } else {
-                    // The markdown marker sits in the same square as the run
-                    // button above and scales the same way.
                     Image(systemName: "text.alignleft").foregroundStyle(Theme.textMuted)
                         .scaledGlyphBox(44, glyph: 12)
                 }
@@ -310,18 +259,6 @@ struct NotebookSurface: View {
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { editing = cell.id }
                 } else if cell.type == .code && editing != cell.id {
-                    // A CELL AT REST IS READ, NOT TYPED IN. A `TextEditor` per
-                    // cell means no colour and a caret wherever you touch; the
-                    // editor now appears when you ask for it, and until then
-                    // the code is coloured like every other code in the app.
-                    //
-                    // HORIZONTALLY SCROLLED, NOT WRAPPED — #405. A source line
-                    // is a line, and a cell at rest wrapped its long ones while
-                    // the read-only notebook beside it scrolled the same source
-                    // sideways: two views of one file that disagreed about what
-                    // a line is. The axis is the cell's own, inset past the run
-                    // gutter, so it never reaches the screen's left edge and
-                    // never argues with the panel's back-swipe.
                     ScrollView(.horizontal, showsIndicators: false) {
                         HighlightedCode(text: drafts[cell.id] ?? cell.source, language: "python")
                             .padding(6)
@@ -342,9 +279,7 @@ struct NotebookSurface: View {
                         .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
                         .focused($focusedCell, equals: cell.id)
                 }
-                // A long output CLAMPS with its own expander, so outputs are
-                // shown by default; the menu's "Collapse outputs" folds the
-                // whole block away for a cell whose results are in the way.
+
                 if let outputs = cell.outputs, !outputs.isEmpty, !collapsedOutputs.contains(cell.id) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(outputs.enumerated()), id: \.offset) { _, output in
@@ -357,9 +292,7 @@ struct NotebookSurface: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        // THE SELECTED CELL IS VISIBLE. A ring and a wash, the way JupyterLab
-        // marks command mode — without it "tap again to edit" is a rule with
-        // nothing on screen to hang it on.
+
         .background(selected == cell.id ? Theme.accent.opacity(0.05) : .clear)
         .overlay(alignment: .leading) {
             Rectangle()
@@ -368,8 +301,6 @@ struct NotebookSurface: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            // Tap selects; tap the selected one edits. Markdown keeps its
-            // double tap as well, which is the gesture people already know.
             if selected == cell.id { beginEditing(cell) } else { select(cell) }
         }
         .contextMenu { cellMenu(cell) }
@@ -388,8 +319,7 @@ struct NotebookSurface: View {
         Button("Run all", systemImage: "forward.end.fill") { Task { await runAll() } }
             .disabled(runningAll)
         Divider()
-        // THE DESKTOP'S WORDING, because the two surfaces describe the same
-        // edit and "Make text" was a third name for it.
+
         Button(cell.type == .code ? "Change to Markdown" : "Change to Code", systemImage: "arrow.left.arrow.right") {
             Task { await setType(cell, cell.type == .code ? "markdown" : "code") }
         }
@@ -400,8 +330,7 @@ struct NotebookSurface: View {
         Button("Move down", systemImage: "arrow.down") { Task { await move(cell, by: 1) } }
         Button("Delete cell", systemImage: "trash", role: .destructive) { Task { await delete(cell) } }
         Divider()
-        // WHAT IS ON SCREEN, draft and all: copying a cell you have been
-        // typing in and getting the version on disk is the surprise.
+
         Button("Copy source", systemImage: "doc.on.doc") { UIPasteboard.general.string = drafts[cell.id] ?? cell.source }
         if cell.type == .code, let outputs = cell.outputs, !outputs.isEmpty {
             Divider()
@@ -409,13 +338,10 @@ struct NotebookSurface: View {
             Button(hidden ? "Expand outputs" : "Collapse outputs", systemImage: hidden ? "chevron.down" : "chevron.up") {
                 if hidden { collapsedOutputs.remove(cell.id) } else { collapsedOutputs.insert(cell.id) }
             }
-            // CLEARING IS AN EDIT TO THE FILE, collapsing is not — they read
-            // as a pair and only one of them writes.
+
             Button("Clear outputs", systemImage: "eraser") { Task { await clearOutputs(cell) } }
         }
     }
-
-    // MARK: selection
 
     private var selectedCell: NotebookCell? {
         guard let selected else { return nil }
@@ -423,8 +349,6 @@ struct NotebookSurface: View {
     }
 
     private func select(_ cell: NotebookCell) {
-        // Selecting away from a cell being edited ends that edit, so a draft
-        // is never left open behind a selection somewhere else.
         if let editing, editing != cell.id, let previous = notebook?.cells.first(where: { $0.id == editing }) {
             endEditing(previous)
         }
@@ -443,9 +367,6 @@ struct NotebookSurface: View {
         flush(cell.id)
     }
 
-    /// Run, then select the next cell — Shift-Return's half that is not the
-    /// run. At the end it stays put rather than wrapping, which is what
-    /// JupyterLab does when there is nothing after.
     private func runAndAdvance(_ cell: NotebookCell) async {
         await run(cell)
         editing = nil
@@ -453,14 +374,6 @@ struct NotebookSurface: View {
         if let next = notebookNext(cell.id, in: (notebook?.cells ?? []).map(\.id)) { selected = next }
     }
 
-    /// MOVE IS THE ENGINE'S JOB. Doing it here as delete-then-insert would
-    /// throw away the cell's outputs and its execution count, which is the
-    /// history of what actually ran.
-    ///
-    /// `to` is the ABSOLUTE index the cell occupies afterwards, which is the
-    /// shape the engine's edit takes. Out of range is refused there with its
-    /// own sentence and the file left untouched; this does not send one, so
-    /// the banner stays for things the reader can do something about.
     private func move(_ cell: NotebookCell, by offset: Int) async {
         guard let cells = notebook?.cells,
               let to = notebookMove(cell.id, by: offset, in: cells.map(\.id)) else { return }
@@ -475,13 +388,11 @@ struct NotebookSurface: View {
         }
     }
 
-    // MARK: reads
-
     private func read() async {
         do {
             notebook = try await api.notebookRead(sessionId, path: path)
             failure = nil
-            // Adopt any draft whose cell still exists; what is on screen wins.
+
             drafts = drafts.filter { id, _ in notebook?.cells.contains { $0.id == id } == true }
         } catch {
             failure = classifyNotebookRead(error)
@@ -491,8 +402,6 @@ struct NotebookSurface: View {
     private func readKernel() async {
         kernel = (try? await api.kernel(sessionId))?.state ?? .none
     }
-
-    // MARK: edits — debounced, flushed on disappear and before a run
 
     private func edit(_ cell: NotebookCell, _ text: String) {
         drafts[cell.id] = text
@@ -527,8 +436,6 @@ struct NotebookSurface: View {
         for id in drafts.keys { flush(id) }
     }
 
-    /// `after` is the engine's own anchor: a cell id, or the index `-1` that
-    /// means the very top. Nil appends, which is what the bar at the end does.
     private func insert(after: JSONValue?, type: String) async {
         var edit: [String: JSONValue] = ["kind": .string("insert"), "source": .string(""), "cellType": .string(type)]
         if let after { edit["after"] = after }
@@ -539,17 +446,12 @@ struct NotebookSurface: View {
         }
     }
 
-    /// ABOVE IS AFTER THE ONE BEFORE IT — and at the very top the engine's own
-    /// sentinel, `after: -1`, which splices at index 0. No cell id can say
-    /// "before everything".
     private func insert(above cell: NotebookCell, type: String) async {
         let ids = (notebook?.cells ?? []).map(\.id)
         guard let index = ids.firstIndex(of: cell.id) else { return }
         await insert(after: index == 0 ? .number(-1) : .string(ids[index - 1]), type: type)
     }
 
-    /// The cell's results and its execution count, thrown away; its source
-    /// stays. The engine writes the file, so this is undone only by re-running.
     private func clearOutputs(_ cell: NotebookCell) async {
         do {
             notebook = try await api.notebookEdit(
@@ -587,8 +489,6 @@ struct NotebookSurface: View {
             problem = describe(error)
         }
     }
-
-    // MARK: runs — pending drafts land first, so the kernel runs what is on screen
 
     private func run(_ cell: NotebookCell) async {
         for id in drafts.keys { saveTasks[id]?.cancel(); await save(id) }
@@ -637,17 +537,6 @@ struct NotebookSurface: View {
     }
 }
 
-/// A NOTEBOOK WITHOUT A KERNEL — the .ipynb parsed from its own bytes and
-/// drawn the way the live surface draws it, minus every verb.
-///
-/// This is what an `.ipynb` gets in a project that has not turned Data Science
-/// on. Before it, the file opened in the code view as raw nbformat JSON, which
-/// is the one thing a notebook is not: the plugin buys a KERNEL, not the right
-/// to read what is already on disk.
-///
-/// THE RAW ROUTE, NOT THE TEXT ONE. `sessionFile` cuts at 512 KB, and a real
-/// notebook is past that more often than not — a cut read is not JSON at all,
-/// so the parse would fail on exactly the files worth opening.
 struct ReadOnlyNotebookView: View {
     let api: any PanelAPI
     let sessionId: EngineID
@@ -695,9 +584,6 @@ struct ReadOnlyNotebookView: View {
         return "\(count) cell\(count == 1 ? "" : "s")\(bytes.map { " · \(humanBytes($0))" } ?? "")"
     }
 
-    /// ONE LINE, SAID ONCE. What is missing is the kernel, and where it is
-    /// turned on is the Mac — anything shorter leaves the reader wondering
-    /// why there is no Run button.
     private var kernelNote: some View {
         HStack(spacing: 8) {
             Image(systemName: "eye").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
@@ -732,9 +618,6 @@ struct ReadOnlyNotebookView: View {
                     MarkdownText(text: cell.source, source: .notebookCell(path: path))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    // HORIZONTALLY SCROLLED, not wrapped — a source line is a
-                    // line, and the fenced-code block in the transcript has
-                    // read this way all along.
                     ScrollView(.horizontal, showsIndicators: false) {
                         HighlightedCode(text: cell.source, language: cell.type == .code ? "python" : nil)
                             .padding(6)
@@ -760,8 +643,7 @@ struct ReadOnlyNotebookView: View {
         do {
             let raw = try await api.sessionFileRaw(sessionId, path: path)
             bytes = raw.data.count
-            // The hash the engine would have sent is not needed here — nothing
-            // writes this file — so the path stands in as the notebook's name.
+
             guard let parsed = parseNotebookFile(raw.data, path: path, sha256: "") else {
                 error = "This file is not nbformat JSON — there are no cells in it to show."
                 return
@@ -779,8 +661,6 @@ enum NotebookReadFailure: Equatable {
     case unreadable(String)
 }
 
-/// THE ALLOWLIST, NOT A DENYLIST. `missing` only when the engine said the
-/// FILE is missing, in its own words, and did not say the door is.
 func classifyNotebookRead(_ error: Error) -> NotebookReadFailure {
     guard let apiError = error as? EngineAPIError, case .engine(let code, let message, _) = apiError else {
         return .unreadable(describe(error))
@@ -788,8 +668,7 @@ func classifyNotebookRead(_ error: Error) -> NotebookReadFailure {
     let missingFile = message.range(of: "no such file in this workspace", options: .caseInsensitive) != nil
     let notTheFile = message.range(of: "\\b(method|plugin|endpoint|has no|route)\\b", options: [.regularExpression, .caseInsensitive]) != nil
     if code == "not_found", missingFile, !notTheFile { return .missing }
-    // The engine's OWN sentence, not the generic "no longer exists": which
-    // door refused is the whole point of showing it.
+
     return .unreadable(message)
 }
 
@@ -817,7 +696,6 @@ struct KernelPill: View {
     }
 }
 
-/// A figure, large: pinch to zoom, drag to pan, over the attachment bytes.
 struct ImageLightbox: View {
     let api: any PanelAPI
     let sessionId: EngineID
@@ -856,23 +734,11 @@ struct ImageLightbox: View {
     }
 }
 
-/// WHERE SHIFT-RETURN LANDS. The cell after this one, or nowhere: at the end
-/// it stays put rather than wrapping to the top, which is what JupyterLab
-/// does and what anyone running a notebook top to bottom expects.
 func notebookNext(_ id: String, in ids: [String]) -> String? {
     guard let index = ids.firstIndex(of: id), ids.indices.contains(index + 1) else { return nil }
     return ids[index + 1]
 }
 
-/// WHERE A MOVED CELL ENDS UP — the ABSOLUTE index it occupies afterwards,
-/// which is what the engine's `move` edit takes. Up is one less, down is one
-/// more, and that is the whole rule; the earlier "put it after that one"
-/// phrasing needed a special case for reaching the front and this does not.
-///
-/// Off either end returns nil and nothing is sent: the engine would refuse it
-/// ("move target N is out of range") and leave the file alone, but a refusal
-/// the reader cannot act on does not belong in the problem banner. Moving
-/// nowhere is nil for the same reason — it is a byte-identical no-op there.
 func notebookMove(_ id: String, by offset: Int, in ids: [String]) -> Int? {
     guard offset != 0, let index = ids.firstIndex(of: id) else { return nil }
     let target = index + offset

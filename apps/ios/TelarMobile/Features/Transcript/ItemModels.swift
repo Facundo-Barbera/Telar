@@ -1,12 +1,5 @@
 import Foundation
 
-/// Mirror of `packages/engine-client/src/protocol/items.ts`.
-///
-/// The contract's rule for unknown item types is RENDER, not skip — "a
-/// silently missing row is worse than an ugly one" — so `ItemDetail` falls
-/// back to `.unknown(label:)` instead of throwing, and every enum here decodes
-/// with a fallback.
-
 enum ItemStatus: String, Codable {
     case inProgress, completed, failed, declined
     case unknown
@@ -34,8 +27,7 @@ struct CommandExecutionDetail: Codable, Equatable {
     var command: String
     var cwd: String?
     var exitCode: Int?
-    /// Truncated for transport — a preview, not the output. The full text
-    /// streams as `command_output` deltas.
+
     var outputPreview: String?
     var durationMs: Int?
 }
@@ -55,8 +47,6 @@ struct FileReadDetail: Codable, Equatable {
     var toLine: Int?
 }
 
-/// `input`/`output` are unknown by contract (MCP schemas belong to the user's
-/// servers), carried as raw JSON for generic rendering.
 struct ToolCallDetail: Equatable {
     var name: String
     var server: String?
@@ -98,37 +88,18 @@ struct ErrorDetail: Codable, Equatable {
     var kind: String?
 }
 
-/// A MESSAGE THAT LANDED MID-TURN, and WHO PUT IT THERE.
-///
-/// A struct rather than a bare `text`, because authorship is what decides how
-/// the row is drawn and this decoded the text alone: a peer's 3 KB report
-/// arrived as `user_message` and was drawn as the reader's own bubble, on the
-/// right of the screen, as though they had typed it.
-///
-/// Every field but `text` is optional and lenient, like `Turn`'s: they come
-/// from an engine that may be older than this build, and an item without them
-/// is exactly the item this app already drew.
 struct UserMessageDetail: Equatable {
     var text: String
-    /// The files sent with it, so the transcript can show them the way it
-    /// shows a queued turn's. Absent on every row written before the steer
-    /// channel carried attachments.
+
     var attachments: [TurnAttachment]? = nil
-    /// Present when an AGENT sent this message (`sessions_send`). Stamped by
-    /// the engine from a claim token, so a model cannot assert it.
+
     var sender: MessageSender? = nil
-    /// The engine's short announcement of that message — sender, run, size and
-    /// opening line — which is ALSO what the recipient's model was handed in
-    /// place of `text`. The collapsed label; expanding shows what was sent.
+
     var notice: String? = nil
-    /// Present when the ENGINE ITSELF wrote this message: a wake, from a
-    /// session this one subscribed to. STRUCTURAL, never the `[wake: …]` text
-    /// — a person is free to type those characters and must not become a wake
-    /// for it. Exactly one of `sender`/`wakeReason` is ever present.
+
     var wakeReason: WakeReason? = nil
 }
 
-/// ONE HAPPENING INSIDE A NOTIFICATION — the cohort merge's unit.
 struct NotificationEntry: Codable, Equatable {
     var kind: String
     var sessionId: EngineID? = nil
@@ -139,42 +110,24 @@ struct NotificationEntry: Codable, Equatable {
     var summary: String
 }
 
-/// WHAT REACHED THIS SESSION THAT NOBODY TYPED — issue #550.
-///
-/// A peer's `sessions_send`, a wake from a session this one subscribed to, or a
-/// request one of them parked. All three used to arrive as a turn whose `input`
-/// was engine-authored prose on the channel that is otherwise the person's, so
-/// the phone drew the engine's words in the reader's own bubble.
-///
-/// LENIENT PER FIELD like everything else here: this comes from an engine that
-/// may be newer than this build, and `kind` is a String rather than an enum for
-/// `WakeReason.kind`'s reason — a kind this build has not heard of must render
-/// as an unfamiliar notification, not fail the row.
 struct NotificationDetail: Codable, Equatable {
-    /// `peer_message` | `wake` | `request`, or whatever a newer engine says.
     var kind: String
-    /// The session this is ABOUT — the peer that sent, or the one that acted.
+
     var sessionId: EngineID? = nil
     var runId: EngineID? = nil
     var requestId: EngineID? = nil
     var wakeKind: String? = nil
     var intent: String? = nil
-    /// One line. What the collapsed row shows.
-    var summary: String
-    /// The whole notice the recipient's model was handed.
-    var body: String
-    /// Present only when several happenings were folded into one.
-    var entries: [NotificationEntry]? = nil
-    /// How many times this has been handed to a model. The engine's cap; the
-    /// phone does not act on it, and decodes it so a reader can see it.
-    var deliveries: Int? = nil
 
-    /// THE FETCH CALL IS DELIBERATELY NOT MODELLED. It names the
-    /// `sessions_read` a MODEL would make; nothing on this phone can make one,
-    /// and a decoded field nothing reads is a field that drifts.
+    var summary: String
+
+    var body: String
+
+    var entries: [NotificationEntry]? = nil
+
+    var deliveries: Int? = nil
 }
 
-/// The contract's discriminated union on `type`.
 enum ItemDetail: Equatable {
     case userMessage(UserMessageDetail)
     case notification(NotificationDetail)
@@ -205,14 +158,11 @@ extension ItemDetail: Decodable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let type = try c.decode(String.self, forKey: .type)
-        // A recognised type whose payload fails to decode is treated as
-        // unknown rather than thrown: the row survives, ugly.
+
         func fallback() -> ItemDetail { .unknown(label: type) }
         switch type {
         case "user_message":
-            // LENIENT PER FIELD, not all-or-nothing: an attachment shape this
-            // build cannot read must not cost the row its `sender`, which is
-            // the whole difference between a peer's report and your own words.
+
             if let text = try? c.decode(String.self, forKey: .text) {
                 var message = UserMessageDetail(text: text)
                 message.attachments = try? c.decodeIfPresent([TurnAttachment].self, forKey: .attachments)
@@ -224,11 +174,7 @@ extension ItemDetail: Decodable {
                 self = fallback()
             }
         case "notification":
-            // ALL-OR-NOTHING HERE, unlike `user_message` above, and for the
-            // opposite reason: there is no useful half of a notification. Its
-            // whole payload IS the announcement, so a detail that will not
-            // decode is an unknown row rather than a notification missing the
-            // thing it announced.
+
             self = (try? c.decode(NotificationDetail.self, forKey: .notification)).map { .notification($0) } ?? fallback()
         case "assistant_message":
             self = (try? c.decode(String.self, forKey: .text)).map { .assistantMessage(text: $0) } ?? fallback()
@@ -272,8 +218,6 @@ extension ItemDetail: Decodable {
     }
 }
 
-/// One timeline row. `title` is engine-produced — the client must not invent
-/// collapsed-row labels.
 struct Item: Identifiable, Equatable {
     var id: EngineID
     var runId: EngineID
@@ -283,8 +227,7 @@ struct Item: Identifiable, Equatable {
     var detail: ItemDetail
     var startedAt: Timestamp
     var completedAt: Timestamp?
-    /// Set when produced inside a sub-agent — filed under that task, not the
-    /// main timeline.
+
     var taskId: EngineID?
     var streamed: String? = nil
     var streamedThrough: Int? = nil
@@ -311,8 +254,6 @@ extension Item: Decodable {
     }
 }
 
-/// Arbitrary JSON, for the tool-call payloads the contract deliberately
-/// leaves unknown.
 enum JSONValue: Equatable {
     case null
     case bool(Bool)
@@ -348,7 +289,6 @@ extension JSONValue: Codable {
         }
     }
 
-    /// Pretty text for a generic tool-payload view.
     var prettyPrinted: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

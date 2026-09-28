@@ -1,12 +1,5 @@
 import Foundation
 
-/// The checkout as a tree, built on the phone from the engine's FLAT path
-/// list — `apps/web/lib/file-tree.ts`, ported rule for rule.
-///
-/// Directories before files, then natural order (`step-2` before `step-10`,
-/// and `README.md` beside `package.json` rather than above every lowercase
-/// name). Single-child directory chains collapse into one row, so a monorepo's
-/// `src/main/java/com` reads as one line rather than four.
 indirect enum FileTreeNode: Equatable, Identifiable {
     case file(path: String, name: String)
     case directory(path: String, name: String, children: [FileTreeNode])
@@ -76,7 +69,6 @@ private func compareNodes(_ left: FileTreeNode, _ right: FileTreeNode) -> Bool {
     return order == .orderedAscending
 }
 
-/// A directory whose only child is a directory folds into it: `a/b/c`.
 private func collapse(_ node: FileTreeNode) -> FileTreeNode {
     guard case .directory(let path, let name, let children) = node else { return node }
     let collapsed = children.map(collapse)
@@ -92,7 +84,6 @@ struct FileTreeRow: Identifiable, Equatable {
     var id: String { node.path }
 }
 
-/// The rows a list draws: open directories recurse, closed ones do not.
 func flattenTree(_ nodes: [FileTreeNode], expanded: Set<String>, depth: Int = 0) -> [FileTreeRow] {
     var rows: [FileTreeRow] = []
     for node in nodes {
@@ -104,13 +95,8 @@ func flattenTree(_ nodes: [FileTreeNode], expanded: Set<String>, depth: Int = 0)
     return rows
 }
 
-/// How many matches a search draws. Typing one letter matches most of a
-/// repository; the cap is reported so the surface can say what it dropped.
 let maxSearchMatches = 400
 
-/// The paths a query keeps — matched on the WHOLE path, case-insensitively,
-/// as a plain substring: a person typing into a file search is remembering a
-/// fragment, not writing a pattern.
 func matchFiles(_ paths: [String], query: String) -> (matches: [String], dropped: Int) {
     let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
     guard !needle.isEmpty else { return (paths, 0) }
@@ -122,7 +108,6 @@ func matchFiles(_ paths: [String], query: String) -> (matches: [String], dropped
     return (matches, dropped)
 }
 
-/// Every directory on the way to each path — what a search expands.
 func ancestorsOf(_ paths: [String]) -> Set<String> {
     var result = Set<String>()
     for path in paths {
@@ -137,8 +122,6 @@ func ancestorsOf(_ paths: [String]) -> Set<String> {
     return result
 }
 
-/// Every directory in the tree, for "expand all" and for mapping a collapsed
-/// chain's ancestors back to the row that shows them.
 func directoryPaths(_ nodes: [FileTreeNode]) -> [String] {
     var out: [String] = []
     for node in nodes where node.isDirectory {

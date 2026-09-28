@@ -1,12 +1,5 @@
 import SwiftUI
 
-/// THE LATEX TAB: the last compile, its diagnostics, and the log tail. The
-/// PDF is not rendered here — the compile writes it beside its source and
-/// Open PDF opens a file in Files, the way every other file opens.
-///
-/// Diagnostics are tappable: an error knows its file, and the fix lives
-/// there. A status read that fails is SHOWN — a Mac with the plugin off
-/// should say so rather than look like a project that never compiled.
 struct LatexSurface: View {
     let api: any PanelAPI
     let sessionId: EngineID

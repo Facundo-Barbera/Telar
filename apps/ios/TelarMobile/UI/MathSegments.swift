@@ -1,25 +1,5 @@
 import Foundation
 
-/// TeX in a conversation, cut out of the Markdown BEFORE the Markdown parser
-/// sees it — the phone's half of what `apps/web/lib/markdown-math.ts` and
-/// remark-math do together on the web.
-///
-/// THE WEB'S RULES, PORTED:
-///   `$$…$$` across its own lines is a DISPLAY equation.
-///   `$$…$$` opening and closing on one line is INLINE math — unless that
-///   line is the whole paragraph, in which case it is promoted to display
-///   (models write standalone equations on one line far more often than
-///   they spread them over three).
-///   Single `$…$` is NOT math: "$5 to $10" is money.
-///   Nothing inside a ``` fence or a `code` span is math.
-///
-/// WHY A PRE-PASS AND NOT A PARSER PLUGIN: MarkdownUI has no extension point
-/// for a new inline node. So the text is split into Markdown runs and math
-/// runs first; each Markdown run is rendered by the library and each math
-/// run by the TeX engine. The cost is that an inline `$$…$$` mid-sentence
-/// breaks the paragraph into two Markdown views around the equation, which
-/// is visible only as a line break — the honest limit of the approach, and
-/// far better than pipes and backslashes on the screen.
 enum MathSegment: Equatable {
     case markdown(String)
     case display(String)
@@ -44,7 +24,6 @@ func splitMath(_ text: String) -> [MathSegment] {
         let line = lines[index]
         let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-        // A fence toggles; nothing inside is math.
         if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
             inFence.toggle()
             markdown += line + "\n"
@@ -57,7 +36,6 @@ func splitMath(_ text: String) -> [MathSegment] {
             continue
         }
 
-        // A line that is exactly `$$` opens a multi-line display block.
         if trimmed == "$$" {
             var body: [String] = []
             var close = index + 1
@@ -71,14 +49,12 @@ func splitMath(_ text: String) -> [MathSegment] {
                 index = close + 1
                 continue
             }
-            // Unclosed: it is text.
+
             markdown += line + "\n"
             index += 1
             continue
         }
 
-        // `$$…$$` on ONE line. The whole-paragraph case promotes to display;
-        // otherwise the line is split around each equation.
         if line.contains("$$") {
             let pieces = splitInlineMath(line, codeOpen: &inlineCodeOpen)
             let onlyMath = pieces.count == 1 && { if case .inline = pieces[0] { return true } else { return false } }()
@@ -105,7 +81,6 @@ func splitMath(_ text: String) -> [MathSegment] {
             continue
         }
 
-        // Track backtick spans across lines so a `$$` inside one stays text.
         inlineCodeOpen = trackInlineCode(line, open: inlineCodeOpen)
         markdown += line + "\n"
         index += 1
@@ -114,8 +89,6 @@ func splitMath(_ text: String) -> [MathSegment] {
     return segments
 }
 
-/// One line, cut around every `$$…$$` pair that is not inside a backtick
-/// span. An odd `$$` (no closer on the line) is left as text.
 private func splitInlineMath(_ line: String, codeOpen: inout Bool) -> [MathSegment] {
     var pieces: [MathSegment] = []
     var run = ""
@@ -149,7 +122,6 @@ private func splitInlineMath(_ line: String, codeOpen: inout Bool) -> [MathSegme
         i += 1
     }
     if inMath {
-        // Unclosed on this line: the `$$` was text after all.
         run += "$$" + tex
     }
     if !run.isEmpty { pieces.append(.markdown(run)) }

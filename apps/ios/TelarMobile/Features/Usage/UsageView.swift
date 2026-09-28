@@ -1,42 +1,17 @@
 import SwiftUI
 
-/// WHAT THIS MAC SPENT — the desktop's Usage page, reduced to the part a phone
-/// can carry (#404).
-///
-/// WHAT IS HERE: the window, the headline figure, and one row per provider. That
-/// is the fold the desktop leads with (`usage-page.tsx`), and it is the whole of
-/// what this screen answers.
-///
-/// WHAT IS NOT, AND WHY. THE CHART is a shape you read at a glance across thirty
-/// columns; at this width it is thirty columns three pixels wide, which is a
-/// picture of a chart rather than a chart. THE MODEL BREAKDOWN is a four-column
-/// table — a phone renders it as four lines per model, and a page of that is a
-/// worse answer than the provider split it would elaborate. THE HUB QUOTA panel
-/// (`UsageLimitsSection`) is configuration a person does on the Mac. Each of
-/// those is a screen of its own if it is ever wanted; none of them is this one
-/// drawn small.
-///
-/// ONE MAC, NEVER A SUM. The report is derived by scanning one machine's
-/// provider transcripts, so two paired Macs are two ledgers of two machines'
-/// work — see `UsageReport`. With more than one paired, the Mac is picked rather
-/// than added up.
 struct UsageView: View {
     let settings: AppSettings
-    /// Which Mac's ledger, seeded from the rail's own filter. Nil only when
-    /// nothing is paired, which the rail's footer already refuses to open.
+
     var hostId: HostID?
 
     @State private var window: UsageWindow = .week
     @State private var selected: HostID?
-    /// The report, and the window it answers — so a switch shows a spinner
-    /// rather than last window's figures wearing this window's label.
+
     @State private var loaded: (window: UsageWindow, report: UsageReport)?
     @State private var error: String?
     @State private var loading = false
 
-    /// THE THREE WINDOWS #404 NAMES, which are the desktop's first three. Its
-    /// 90-day window is left there: at that range the interesting answer is the
-    /// shape over time, and the shape is the chart this screen does not draw.
     enum UsageWindow: String, CaseIterable, Identifiable {
         case day = "24h", week = "7d", month = "30d"
         var id: String { rawValue }
@@ -47,10 +22,7 @@ struct UsageView: View {
             case .month: 30 * 86_400_000
             }
         }
-        /// The engine buckets a day's worth by hour and anything longer by day —
-        /// the desktop's pairing. Nothing here draws the buckets; the resolution
-        /// still rides so the two surfaces ask the same question and the Mac's
-        /// cache answers both.
+
         var resolution: String { self == .day ? "hour" : "day" }
     }
 
@@ -114,12 +86,6 @@ struct UsageView: View {
         .task(id: "\(window.rawValue):\(host?.uuidString ?? "-")") { await load(force: false) }
     }
 
-    // MARK: the figures
-
-    /// THE HEADLINE IS COST, with the tokens under it rather than beside it —
-    /// the desktop offers a Cost/Tokens switch because it has a chart to redraw;
-    /// here both figures fit, so a control that shows one of two things a reader
-    /// can have at once would be a control that hides one.
     private func headline(_ fold: UsageFold) -> some View {
         SettingsCard {
             VStack(alignment: .leading, spacing: 4) {
@@ -130,9 +96,7 @@ struct UsageView: View {
                 Text("\(formatTokens(fold.total.processed)) tokens · \(fold.sessions) session\(fold.sessions == 1 ? "" : "s") · API estimate")
                     .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
-                // A FLOOR IS STILL WORTH SHOWING, and saying it is a floor is
-                // the desktop's own sentence: a model with no known rate counts
-                // its tokens and not its money.
+
                 if !fold.total.priced {
                     Text("Some models have no known rate; their cost is not counted.")
                         .font(.system(Theme.footnote))
@@ -161,8 +125,7 @@ struct UsageView: View {
                         Text(formatShare(provider.share))
                             .font(.system(Theme.footnote)).monospacedDigit()
                             .foregroundStyle(Theme.textMuted)
-                        // THE DASH IS "NO COST KNOWN AT ALL", never "$0.00" —
-                        // Codex reports none, and a zero would read as free.
+
                         Text(provider.totals.costUsd > 0 ? formatUsd(provider.totals.costUsd) : "—")
                             .font(.system(Theme.subhead, weight: .medium)).monospacedDigit()
                             .foregroundStyle(Theme.text)
@@ -177,8 +140,6 @@ struct UsageView: View {
         }
     }
 
-    /// The four-way token split and the request count — the desktop's Totals
-    /// tiles, as rows because a phone has one column.
     private func totals(_ fold: UsageFold) -> some View {
         VStack(spacing: 0) {
             SettingsSectionLabel("Totals")
@@ -206,8 +167,6 @@ struct UsageView: View {
         .padding(.vertical, 12)
     }
 
-    /// WHERE THE NUMBERS CAME FROM — a provider this Mac has never installed
-    /// must read as "not scanned", never as "spent nothing".
     private func scanned(_ report: UsageReport) -> some View {
         SettingsFootnote(
             report.sources.map { source in
@@ -218,8 +177,6 @@ struct UsageView: View {
             + (report.pricing == "unavailable" ? " · Rate table unreachable — unreported costs are not counted." : "")
         )
     }
-
-    // MARK: the read
 
     private func load(force: Bool) async {
         guard let host, let api = settings.api(for: host) else {
@@ -235,9 +192,7 @@ struct UsageView: View {
                 sinceMs: until - window.milliseconds,
                 untilMs: until,
                 resolution: window.resolution,
-                // The READER's zone, not the Mac's: a day boundary is a fact
-                // about the person looking, and the engine buckets to whatever
-                // zone it is handed.
+
                 timeZone: TimeZone.current.identifier
             )
             loaded = (window, report)

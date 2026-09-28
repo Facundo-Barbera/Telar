@@ -1,22 +1,11 @@
 import Foundation
 
-/// GET /api/remote — the cockpit's pairing panel, as the phone sees it.
-/// `callerDeviceId` is how "This iPhone" is badged: the server names the
-/// caller from its own credential, so the app never stores its own device id.
-///
-/// THE ADDITIVE RULE (version tolerance, both directions): a field this
-/// build doesn't know is ignored by JSONDecoder for free; a field an OLDER
-/// cockpit doesn't send yet must never be fatal — anything added after the
-/// type first shipped decodes with `decodeIfPresent` + a default. Arrays of
-/// records go through `Skippable` so one alien row skips instead of killing
-/// the page. Never add a bare `let newField: T` to a shipped model.
 struct RemoteStatus: Decodable, Equatable {
     var requireAuth: Bool
     var devices: [RemoteDevice]
     var callerDeviceId: String?
     var callerRole: String?
-    /// Every address the Mac answers on, as the Remote access panel lists
-    /// them — where a paired phone refreshes its failover list (#832).
+
     var endpoints: [RemoteEndpoint]
 
     enum CodingKeys: String, CodingKey {
@@ -32,16 +21,13 @@ struct RemoteStatus: Decodable, Equatable {
         self.endpoints = endpoints
     }
 
-    /// The addresses worth keeping: never one the Mac marks unsafe to hand a
-    /// phone (loopback — from here it dials the phone itself).
     var dialableAddresses: [String] {
         endpoints.filter { $0.qrSafe && $0.kind != "loopback" }.map(\.url)
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        // Fail CLOSED: an answer that doesn't say the gate is off is treated
-        // as the gate being on.
+
         requireAuth = try container.decodeIfPresent(Bool.self, forKey: .requireAuth) ?? true
         devices = try container.decodeIfPresent([Skippable<RemoteDevice>].self, forKey: .devices)?
             .compactMap(\.value) ?? []
@@ -52,8 +38,6 @@ struct RemoteStatus: Decodable, Equatable {
     }
 }
 
-/// One row of the cockpit's `listEndpoints`: "loopback" | "lan" | "tailnet" |
-/// "magicdns". `qrSafe` missing reads as unsafe — fail closed.
 struct RemoteEndpoint: Decodable, Equatable {
     var kind: String
     var url: String
@@ -80,11 +64,9 @@ struct RemoteDevice: Decodable, Identifiable, Equatable {
     var name: String
     var createdAt: Timestamp?
     var lastSeenAt: Timestamp?
-    /// "full" | "observer" — observer may read everything and change nothing.
-    /// Cockpits older than roles omit it: everything was full then.
+
     var role: String
-    /// "ios" | "browser", self-declared at pair time; nil for devices paired
-    /// before the field existed.
+
     var platform: String?
 
     enum CodingKeys: String, CodingKey {

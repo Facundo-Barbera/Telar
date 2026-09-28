@@ -2,19 +2,6 @@ import Foundation
 import Observation
 import SwiftUI
 
-/// Which surface the panel shows — the three the phone always carries, plus
-/// whatever an enabled plugin contributes (`PluginUI`: Data, LaTeX).
-///
-/// A STRING, NOT A CLOSED ENUM, so a plugin tab is a registry entry rather than
-/// a case here. It encodes as its raw value, so a saved arrangement written when
-/// this was an enum ("data", "latex") restores unchanged.
-///
-/// AGENTS IS NOT ONE OF THOSE TWO — issue #390. Who is working for this
-/// conversation is a fact about the conversation, not about a plugin, so the
-/// tab is always there and says "nobody" when that is the answer. It sits
-/// after the other two unconditional surfaces rather than first (where the
-/// desktop puts it) so that the tabs a reader always has stay together, and
-/// the strip does not reorder itself when a project turns a plugin on.
 struct PanelTab: RawRepresentable, Codable, Hashable, Identifiable, Sendable {
     let rawValue: String
     init(rawValue: String) { self.rawValue = rawValue }
@@ -23,11 +10,10 @@ struct PanelTab: RawRepresentable, Codable, Hashable, Identifiable, Sendable {
     static let diff = PanelTab(rawValue: "diff")
     static let files = PanelTab(rawValue: "files")
     static let agents = PanelTab(rawValue: "agents")
-    /// The bundled plugins' tabs, named for `PluginUI` and the views that mean them.
+
     static let data = PanelTab(rawValue: "data")
     static let latex = PanelTab(rawValue: "latex")
 
-    /// The tabs every session has, in strip order.
     static let always: [PanelTab] = [.diff, .files, .agents]
 
     var label: String {
@@ -49,22 +35,14 @@ struct PanelTab: RawRepresentable, Codable, Hashable, Identifiable, Sendable {
     }
 }
 
-/// How a file is looked at — the web's `EditorView`. Decided once by
-/// `panelView(for:enabled:)` when the file is opened, the way the
-/// desktop's `editorFileForPath` decides it.
 enum FileView: String, Codable {
     case code, notebook, table, pdf
-    /// A notebook in a project that has not turned Data Science on: the same
-    /// cells, read from the file itself, with no kernel behind them.
+
     case notebookReadOnly
 
-    /// Both notebook views, wherever the difference does not matter — pinning,
-    /// mostly, which is about what a notebook IS and not about who can run it.
     var isNotebook: Bool { self == .notebook || self == .notebookReadOnly }
 }
 
-/// A file open in the Files tab. ONE preview slot: a single tap opens a file
-/// into it and the next single tap replaces it; a pinned file stays.
 struct OpenFile: Codable, Equatable, Identifiable {
     var path: String
     var view: FileView
@@ -72,7 +50,6 @@ struct OpenFile: Codable, Equatable, Identifiable {
     var id: String { path }
 }
 
-/// The Files tab's own arrangement — the web's `EditorState`.
 struct EditorState: Codable, Equatable {
     var files: [OpenFile] = []
     var activePath: String?
@@ -82,15 +59,12 @@ struct EditorState: Codable, Equatable {
 
     var active: OpenFile? { files.first { $0.path == activePath } }
 
-    /// A notebook is always pinned: it holds a kernel's work and is never
-    /// something you glance at and move past.
     mutating func open(_ path: String, view: FileView, pin: Bool) {
         let pinned = pin || view.isNotebook
         if let index = files.firstIndex(where: { $0.path == path }) {
             files[index].view = view
             if pinned { files[index].pinned = true }
         } else if !pinned, let slot = files.firstIndex(where: { !$0.pinned }) {
-            // The preview slot is replaced IN PLACE, so the strip does not jump.
             files[slot] = OpenFile(path: path, view: view, pinned: false)
         } else {
             files.append(OpenFile(path: path, view: view, pinned: pinned))
@@ -104,8 +78,6 @@ struct EditorState: Codable, Equatable {
         files[index].pinned = true
     }
 
-    /// The right neighbour takes focus, falling back to the last — the web's
-    /// `closePanelTab` rule.
     mutating func close(_ path: String) {
         guard let index = files.firstIndex(where: { $0.path == path }) else { return }
         files.remove(at: index)
@@ -114,10 +86,6 @@ struct EditorState: Codable, Equatable {
         }
     }
 
-    /// The strip's other three closes. EACH LANDS ON `close`, one path at a
-    /// time, so the focus rule above stays the only one there is — closing
-    /// everything but a file has to leave that file active, and re-deriving
-    /// that here would be a second rule to keep in step.
     mutating func closeOthers(_ path: String) {
         for other in files.map(\.path) where other != path { close(other) }
     }
@@ -133,14 +101,6 @@ struct EditorState: Codable, Equatable {
     }
 }
 
-/// The desktop's `panelTabForPath`: a table needs the kernel, so without data
-/// science it opens as text; a PDF is a document and always opens as one.
-///
-/// A NOTEBOOK IS ALWAYS A NOTEBOOK. Without the plugin it opens read-only,
-/// parsed from the file's own JSON — the kernel is what Data Science buys, not
-/// the ability to read what is on disk. Routing it to the code view meant a
-/// 730 KB `.ipynb` opened as raw nbformat, which is the one thing a notebook
-/// is not.
 func panelView(for path: String, enabled: Set<PluginID>) -> FileView {
     let ext = (path as NSString).pathExtension.lowercased()
     switch ext {
@@ -151,34 +111,18 @@ func panelView(for path: String, enabled: Set<PluginID>) -> FileView {
     }
 }
 
-/// THE PANEL, for one session on one Mac. Which tab is up, which files are
-/// open, whether it is showing — and the enabled plugins that decide which
-/// tabs exist. Persisted per host AND session, which the web does not do;
-/// two Macs can mint the same session id.
-///
-/// Reached through the environment (`\.panel`) so a transcript row can ask
-/// for a file to be opened without a closure threaded through four views.
 @MainActor @Observable final class PanelModel {
     private(set) var isOpen = false
-    /// Filling the window rather than sharing it. THE MODEL IS THE TRUTH for
-    /// this too, so moving between the column and full screen carries the tab,
-    /// the open files and their drafts with it — the surfaces never unmount
-    /// into a different owner.
+
     private(set) var isFullScreen = false
     private(set) var active: PanelTab = .diff
     private(set) var editor = EditorState()
-    /// Off until the project record has been read — the same rule the web
-    /// applies, so no tab is offered that would 404.
+
     private(set) var enabledPlugins: Set<PluginID> = []
     private(set) var pluginsRead = false
-    /// A file the transcript asked for while the panel was closed on a
-    /// compact width: the push happens once the view is on screen.
+
     private(set) var generation = 0
-    /// A REFERENCE ON ITS WAY TO THE COMPOSER. The box lives in `SessionView`
-    /// and the surfaces offering "Insert as a reference" are three views deep
-    /// inside the panel, so the model they already share carries it: set here,
-    /// taken by the session, cleared. NEVER PERSISTED — a draft fragment that
-    /// outlived the app would arrive from nowhere three days later.
+
     private(set) var pendingReference: String?
 
     let hostId: HostID?
@@ -190,8 +134,7 @@ func panelView(for path: String, enabled: Set<PluginID>) -> FileView {
         var isOpen: Bool
         var active: PanelTab
         var editor: EditorState
-        /// Optional: a save written before full screen existed decodes with
-        /// the panel merely open, which is the honest reading of it.
+
         var isFullScreen: Bool?
     }
 
@@ -214,22 +157,15 @@ func panelView(for path: String, enabled: Set<PluginID>) -> FileView {
     func setPlugins(_ enabled: Set<PluginID>) {
         enabledPlugins = enabled
         pluginsRead = true
-        // A restored tab the project no longer offers falls back to Diff.
+
         if !tabs.contains(active) { active = .diff }
-        // A FILE OPENED BEFORE THE PROJECT RECORD LANDED was typed against
-        // no plugins on — the read-only notebook rather than the live
-        // one, the code view rather than the grid. The desktop re-decides on
-        // every render; here the view is decided once, at open, so the arrival
-        // of the record is the moment to decide it again.
+
         for index in editor.files.indices {
             editor.files[index].view = panelView(for: editor.files[index].path, enabled: enabledPlugins)
         }
         persist()
     }
 
-    /// Every setter here writes only what changes: an observable that is set
-    /// to the value it holds still notifies, and a view that reads it and
-    /// writes it back would loop.
     func open(_ tab: PanelTab? = nil) {
         if let tab, active != tab { active = tab }
         if !isOpen { isOpen = true }
@@ -240,18 +176,11 @@ func panelView(for path: String, enabled: Set<PluginID>) -> FileView {
     func close() {
         guard isOpen || isFullScreen else { return }
         if isOpen { isOpen = false }
-        // Closing is closing. Coming back to a panel that reopens filling the
-        // window, because that is how it was left three days ago, is the
-        // surprise this guards against. Guarded like every other setter here:
-        // an unconditional write notified `isFullScreen`'s watcher on every
-        // close, and on the pop path that is one more update pass than the
-        // close needed.
+
         if isFullScreen { isFullScreen = false }
         persist()
     }
 
-    /// Fill the window, or come back to the column. Opening full screen opens
-    /// the panel, so the two flags can never disagree about whether it shows.
     func setFullScreen(_ full: Bool) {
         guard full != isFullScreen else { return }
         isFullScreen = full
@@ -267,16 +196,6 @@ func panelView(for path: String, enabled: Set<PluginID>) -> FileView {
         persist()
     }
 
-    /// A path from anywhere — a transcript chip, a diagnostic, the tree, or
-    /// the agent's own `display.opened`.
-    ///
-    /// THE RAISE IS `open`'s, never a second copy of it. Opening a file used to
-    /// write `isOpen` itself, so a tap on the session menu and a file arriving
-    /// from the agent raised the panel down two paths that only happened to
-    /// agree — and the unguarded write here broke this file's one rule, that a
-    /// setter writes only what changes. One path, and `generation` goes up on
-    /// every open, which is what a view watches to re-raise a presentation
-    /// against a panel the model already calls open.
     func openFile(_ path: String, pin: Bool = true) {
         editor.open(path, view: panelView(for: path, enabled: enabledPlugins), pin: pin)
         open(.files)
@@ -312,7 +231,6 @@ func panelView(for path: String, enabled: Set<PluginID>) -> FileView {
         persist()
     }
 
-    /// Hand a reference to the composer. The session is watching.
     func insertReference(_ text: String) { pendingReference = text }
 
     func clearReference() { pendingReference = nil }
@@ -342,23 +260,16 @@ private struct ColumnVisibilityKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// The open session's panel, or nil outside a session.
     var panel: PanelModel? {
         get { self[PanelModelKey.self] }
         set { self[PanelModelKey.self] = newValue }
     }
 
-    /// WHAT THE KERNEL HAS SAID, handed to the panel so its surfaces can
-    /// re-read when a cell runs rather than only when a turn settles. Handed
-    /// down rather than re-created: there is one sync engine per session and
-    /// the panel must watch that one.
     var kernelSignals: KernelSignals {
         get { self[KernelSignalsKey.self] }
         set { self[KernelSignalsKey.self] = newValue }
     }
 
-    /// The split view's sidebar visibility, handed down so a session can
-    /// hide the sidebar when its panel needs the room. Nil outside the split.
     var columnVisibility: Binding<NavigationSplitViewVisibility>? {
         get { self[ColumnVisibilityKey.self] }
         set { self[ColumnVisibilityKey.self] = newValue }

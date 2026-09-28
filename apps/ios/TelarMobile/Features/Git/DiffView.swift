@@ -1,20 +1,14 @@
 import SwiftUI
 
-/// The session's review, from the phone: what it has done to the repository
-/// since it started — committed and uncommitted together, from the recorded
-/// base. File rows open one patch at a time (the list is light, patches are
-/// not). Read-only on purpose: committing stays a desk decision.
 struct DiffView: View {
     let api: any EngineAPI
     let sessionId: EngineID
 
     @State private var diff: SessionDiff?
     @State private var error: String?
-    /// Files whose patch is open UNDER their row — the desktop's expand, which
-    /// is how a diff is read there: several files at once, in place. A tap
-    /// still pushes the full-page patch; this is the menu's half.
+
     @State private var expanded: Set<String> = []
-    /// The status letter's column, off the letter's own style (#674).
+
     @ScaledMetric(relativeTo: .footnote) private var statusColumn: CGFloat = 14
     @Environment(\.panel) private var panel
 
@@ -64,11 +58,6 @@ struct DiffView: View {
                         }
                     }
                     if diff.files.isEmpty && diff.commits.isEmpty {
-                        // "NO CHANGES YET" IS A CLAIM ABOUT THE CHECKOUT (#654),
-                        // and it is only safe when the reads that would have
-                        // contradicted it answered. A diff the engine killed
-                        // under load arrived here empty and this row read as a
-                        // session that had done no work.
                         Text(diff.filesIncomplete == nil ? "No changes yet." : "Nothing was listed — which is not the same as nothing having changed.")
                             .font(.system(Theme.subhead))
                             .foregroundStyle(diff.filesIncomplete == nil ? Theme.textMuted : Theme.statusAmber)
@@ -127,14 +116,7 @@ struct DiffView: View {
                     .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.statusAmber)
             }
-            /// WHAT GIT DID NOT ANSWER (#654), above the rows rather than in
-            /// place of them: the files that arrived are real changes worth
-            /// reading, and the counts beside them are honest sums over those.
-            /// Three sentences because they are three different doubts — a
-            /// `git log` that was killed says nothing about the file list.
-            ///
-            /// PULL TO REFRESH IS THIS SCREEN'S "ask git again", and a timeout
-            /// is the failure that clears on its own, so it is named.
+
             ForEach(unknowns(diff), id: \.self) { sentence in
                 Text(sentence)
                     .font(.system(Theme.footnote))
@@ -171,9 +153,6 @@ struct DiffView: View {
         return sentences
     }
 
-    /// The desktop's diff-row menu. A DELETED FILE HAS NOTHING TO OPEN, so
-    /// that row is absent on one rather than greyed — its path is still worth
-    /// copying and still worth handing to the agent.
     @ViewBuilder private func fileMenu(_ file: GitFileChange) -> some View {
         if let panel, file.status != "deleted" {
             Button("Open in Editor", systemImage: "sidebar.trailing") { panel.openFile(file.path) }
@@ -194,11 +173,6 @@ struct DiffView: View {
 
     private func fileRow(_ file: GitFileChange) -> some View {
         HStack(spacing: 10) {
-            // THE STATUS LETTER'S COLUMN SCALES WITH THE LETTER (#674). The
-            // frame is width-only, so the sweep converted the font under the
-            // both-dimensions rule and was right to — but one dimension is
-            // still a dimension, and at the accessibility sizes a bold M in
-            // 14 points of column clips sideways. Same style as the letter.
             Text(statusLetter(file.status))
                 .font(.system(Theme.footnote, design: .monospaced, weight: .bold))
                 .foregroundStyle(statusColor(file.status))
@@ -250,7 +224,6 @@ struct DiffView: View {
     }
 }
 
-/// One file's patch, colorized by line prefix on the code background.
 struct PatchView: View {
     let api: any EngineAPI
     let sessionId: EngineID
@@ -262,10 +235,6 @@ struct PatchView: View {
     var body: some View {
         Group {
             if let patch {
-                // GIT DID NOT ANSWER IS NOT A FACT ABOUT THE FILE (#654). An
-                // unread patch used to arrive as the empty string, and an empty
-                // non-binary patch drew as a blank page — or, on the row below,
-                // as "binary".
                 if let incomplete = patch.incomplete {
                     ContentUnavailableView(
                         "git did not read this patch",
@@ -299,15 +268,11 @@ struct PatchView: View {
             }
         }
     }
-
 }
 
-/// A patch, colorized by line prefix. Shared by the pushed page and the
-/// inline expand so the two cannot drift into two ideas of what a `+` is.
 struct PatchLines: View {
     let patch: String
-    /// How many lines to draw before saying how many were left — nil for all
-    /// of them, which is what the page with the screen to itself asks for.
+
     var limit: Int?
 
     var body: some View {
@@ -331,9 +296,6 @@ struct PatchLines: View {
     }
 }
 
-/// THE PATCH UNDER ITS OWN ROW. Capped rather than scrolled: a scroll view
-/// inside a list row steals the list's own gesture, and a patch long enough to
-/// need one is a patch worth opening on its own page.
 private struct InlinePatch: View {
     let api: any EngineAPI
     let sessionId: EngineID
@@ -347,7 +309,6 @@ private struct InlinePatch: View {
     var body: some View {
         Group {
             if let patch {
-                // Same three cases the pushed page tells apart — see `PatchView`.
                 if let incomplete = patch.incomplete {
                     Text(incomplete == "timeout" ? "git did not answer in time — try again." : "git could not produce a diff for this file.")
                         .font(.system(Theme.caption))

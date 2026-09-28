@@ -2,24 +2,9 @@ import SwiftUI
 import MarkdownUI
 import SwiftMath
 
-/// The agent's prose: GitHub-flavoured Markdown with tables, lists, headings,
-/// block quotes and fenced code through MarkdownUI, and TeX through
-/// SwiftMath — the web's Streamdown + KaTeX pairing, phone-sized.
-///
-/// MATH IS CUT OUT FIRST (`splitMath`), because MarkdownUI has no hook for a
-/// new inline node; each run then goes to the renderer that owns it. The
-/// web's policy carries over: `$$` only, single dollars are money, a failed
-/// equation renders its own source in the muted colour rather than throwing.
 struct MarkdownText: View {
     let text: String
-    /// WHERE THE PROSE CAME FROM, which decides how much HTML it may be.
-    ///
-    /// A notebook markdown cell is the user's own file: an HTML block in it
-    /// renders, in the same cage the panel's HTML outputs use. A TRANSCRIPT IS
-    /// MODEL OUTPUT and never spawns a web view — text a model wrote is not
-    /// something to hand a renderer, however caged. Both get inline `<img>`,
-    /// because that is an image either way and goes through the image provider
-    /// a Markdown image already used.
+
     var source: MarkdownSource = .transcript
 
     var body: some View {
@@ -54,32 +39,21 @@ struct MarkdownText: View {
     }
 }
 
-/// Whose words these are.
 enum MarkdownSource: Equatable {
     case transcript
-    /// A notebook markdown cell, and the notebook it belongs to — needed to
-    /// resolve a relative `<img src>` against the right directory.
+
     case notebookCell(path: String)
 }
 
-/// A segment that is NOTHING BUT an HTML block, which is the only shape worth
-/// handing to a web view. Prose with a `<div>` in the middle of it stays
-/// Markdown: rendering the whole paragraph as HTML would lose the Markdown
-/// around the tag, which is the more common intent.
 func soleHtmlBlock(_ markdown: String) -> String? {
     let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.hasPrefix("<"), trimmed.hasSuffix(">") else { return nil }
-    // A block, not a lone inline tag: `<span>x</span>` on its own line is
-    // still prose, and `<img>` has already been rewritten by the pre-pass.
+
     guard trimmed.range(of: "^<(div|table|details|figure|section|article|blockquote|ul|ol|dl|pre|iframe|video|audio|p|h[1-6])\\b",
                         options: [.regularExpression, .caseInsensitive]) != nil else { return nil }
     return trimmed
 }
 
-/// One equation, typeset once and cached by source. SwiftMath's label is a
-/// UIView; rendering to an image keeps the transcript a plain SwiftUI tree
-/// and lets a long conversation hold a hundred equations as bitmaps rather
-/// than a hundred live views.
 private struct MathBlock: View {
     let tex: String
     let display: Bool
@@ -91,8 +65,6 @@ private struct MathBlock: View {
             Image(uiImage: image)
                 .accessibilityLabel(tex)
         } else {
-            // THE SOURCE, in the muted colour — never a crashed row. A half-
-            // streamed `\frac{1}{` lands here until the closing brace arrives.
             Text(display ? "$$\(tex)$$" : "$$\(tex)$$")
                 .font(Theme.mono)
                 .foregroundStyle(Theme.textMuted)
@@ -127,15 +99,7 @@ private struct MathBlock: View {
     }
 }
 
-/// Images in a message are attachment URLs relative to the cockpit, and the
-/// cockpit is paired: a plain `AsyncImage` would be refused at the gate.
-/// The provider fetches through the API the surface already holds.
-///
-/// NOT YET WIRED TO A SESSION: without an API in the environment a relative
-/// URL renders as its alt text. Absolute `https://` images load directly.
 struct AttachmentImageProvider: ImageProvider, InlineImageProvider {
-    /// Set for a notebook cell: a relative `src` is resolved against this
-    /// file's directory and read through the workspace's raw-file route.
     var notebookPath: String?
 
     func makeImage(url: URL?) -> some View {
@@ -160,9 +124,6 @@ struct AttachmentImageProvider: ImageProvider, InlineImageProvider {
     }
 }
 
-/// A picture that lives in the checkout, read through the same raw-file route
-/// the Files tab uses. The panel's API is reached through the environment
-/// because a Markdown image provider has no way to be handed one.
 private struct WorkspaceImage: View {
     let path: String?
     @Environment(\.workspaceImages) private var loader
@@ -188,8 +149,6 @@ private struct WorkspaceImagesKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// How a workspace-relative image is fetched, when there is a session to
-    /// fetch it from. Nil in the transcript, where every image is a URL.
     var workspaceImages: (@Sendable (String) async -> UIImage?)? {
         get { self[WorkspaceImagesKey.self] }
         set { self[WorkspaceImagesKey.self] = newValue }
@@ -197,9 +156,6 @@ extension EnvironmentValues {
 }
 
 extension MarkdownUI.Theme {
-    /// MarkdownUI's GitHub theme in Telar's colours and type: the same
-    /// 14pt body and 5pt leading the old renderer used, code blocks on the
-    /// code surface, tables with the hairline border.
     static let telar = MarkdownUI.Theme()
         .text {
             ForegroundColor(TelarMobile.Theme.text)
@@ -231,10 +187,6 @@ extension MarkdownUI.Theme {
         }
         .codeBlock { configuration in
             ScrollView(.horizontal, showsIndicators: false) {
-                // A FENCE THAT NAMES ITS LANGUAGE GETS COLOURED. MarkdownUI's
-                // own label is used whenever it does not — an unfenced block,
-                // or one whose info string nothing knows — so a block never
-                // renders worse than it did before.
                 if let language = CodeLanguage.fenced(configuration.language) {
                     HighlightedCode(text: configuration.content, language: language,
                                     font: .system(Theme.footnote, design: .monospaced))
@@ -283,7 +235,6 @@ extension MarkdownUI.Theme {
         }
 }
 
-/// Fenced code outside a message — tool output, plan text. Unchanged.
 struct CodeBlockView: View {
     let code: String
 

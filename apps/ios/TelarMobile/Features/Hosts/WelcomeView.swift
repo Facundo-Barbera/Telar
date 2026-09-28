@@ -1,10 +1,5 @@
 import SwiftUI
 
-/// The front door. An unconfigured app should welcome, not interrogate:
-/// one hero, one headline gesture (scan the Mac's pairing code — the whole
-/// multi-device story in a single tap), and manual setup as a quiet second
-/// path for open cockpits and simulators. ConnectView remains the full
-/// configuration surface; this screen only gets you through the door.
 struct WelcomeView: View {
     let settings: AppSettings
     @State private var scanning = false
@@ -13,34 +8,15 @@ struct WelcomeView: View {
     @State private var manual = false
     @State private var busy = false
     @State private var error: String?
-    /// THE WORDMARK KEEPS ITS 40, AND SCALES ANYWAY. Every other size in this
-    /// app maps onto a Dynamic Type style, because a 13 or a 16 is an
-    /// approximation of a rung somebody reached for. 40 is not: Apple's ramp
-    /// stops at `.largeTitle` (34), so there is no rung to land on, and
-    /// mapping it down would shrink the first thing a new reader sees by six
-    /// points — a brand change smuggled in under an accessibility sweep.
-    ///
-    /// `@ScaledMetric(relativeTo:)` is the exception the rest of the sweep
-    /// deliberately avoids: it keeps the literal and still grows with the
-    /// reader's setting, which is the whole point of #248. It is right HERE
-    /// and wrong almost everywhere else — if you are reading this because you
-    /// are "finishing the sweep", this site is finished. Do not turn it into
-    /// `.largeTitle`.
+
     @ScaledMetric(relativeTo: .largeTitle) private var wordmark: CGFloat = 40
-    /// THE MARK SCALES WITH THE WORD UNDER IT (#674). Giving the wordmark a
-    /// `@ScaledMetric` and leaving the logo on a hard 112 made a composition
-    /// that came apart at the reader's setting: at the largest sizes the word
-    /// "Telar" grew past the mark it is supposed to sit under. Same reference
-    /// style as the wordmark, so the ratio between them is fixed and the hero
-    /// stays one object — which is the only thing a logo and its word have to
-    /// do together.
+
     @ScaledMetric(relativeTo: .largeTitle) private var mark: CGFloat = 112
 
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
 
-            // The hero: your Mac and this phone, one pair.
             TelarMark(color: Theme.accent)
                 .frame(width: mark, height: mark)
                 .padding(.bottom, 28)
@@ -81,7 +57,6 @@ struct WelcomeView: View {
                         scanning = true
                     }
                 } else {
-                    // Simulator / no camera: the paste path leads.
                     PrimaryActionButton(title: "Paste pairing link", busy: busy) {
                         pastedLink = ""
                         pasting = true
@@ -129,16 +104,12 @@ struct WelcomeView: View {
             ConnectView(settings: settings)
         }
         .task {
-            // `-pairingLink <url>` — the automation affordance ConnectView
-            // honors, honored here too since this screen is now the root.
             if let seeded = UserDefaults.standard.string(forKey: "pairingLink"), settings.deviceToken == nil {
                 await pair(link: seeded)
             }
         }
     }
 
-    /// The same exchange ConnectView runs, minus the form: success configures
-    /// the app and the root swaps to the inbox on its own (settings.api).
     private func pair(link: String) async {
         guard let parsed = Pairing.parsePairingURL(link) else {
             error = "That doesn't look like a Telar pairing link."
@@ -151,20 +122,14 @@ struct WelcomeView: View {
                 base: parsed.base, token: parsed.token,
                 deviceName: UIDevice.current.name
             )
-            // ADDS a host (or refreshes a known one) — never evicts others.
+
             settings.upsert(baseURLString: parsed.base.absoluteString, token: paired.deviceToken, addresses: paired.addresses ?? [])
-            // AND ASKS FOR NOTIFICATION PERMISSION, ONCE (#579) — see
-            // `promptAfterPairing`. This is the first pairing on a fresh
-            // install, which is the one that used to leave the app absent from
-            // iOS's Notifications list entirely.
+
             await MobileNotifications.shared.promptAfterPairing()
             error = nil
         } catch let apiError as EngineAPIError {
             error = apiError.errorDescription ?? "Pairing failed."
         } catch {
-            // Name the address — "couldn't reach 192.168.x" and "couldn't
-            // reach 100.x" point at different fixes (Local Network permission
-            // / same wifi vs. the Tailscale VPN toggle).
             let where_ = parsed.base.host() ?? "the cockpit"
             self.error = "Couldn't reach \(where_). If that's a local address, check this phone is on the same wifi and Telar may use the local network; if it's a 100.x address, check Tailscale is connected on this phone."
         }

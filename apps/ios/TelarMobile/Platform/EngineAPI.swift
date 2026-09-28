@@ -1,80 +1,19 @@
 import Foundation
 
-/// The cockpit's `/api/**` surface — a mirror of the browser client in
-/// `apps/web/lib/engine/client.ts`. The app NEVER talks to the engine daemon
-/// directly: it binds loopback with a per-boot token, by design. The Next
-/// cockpit holds that token server-side and is what Tailscale reaches.
 protocol EngineAPI: Sendable {
     func health() async throws -> EngineHealth
     func liveSessions() async throws -> LiveSessions
-    /// THE SAME READ, WIDE — every session, settled ones included (#457).
-    ///
-    /// The Mac's default answer is the UNSETTLED rows alone: 7 of 291 on the
-    /// owner's store, where it used to fold and serialise all 291 every three
-    /// seconds for every device attached to it. This is what the settled shelf
-    /// asks with, and `LiveSessions.settledCount` on the narrow answer is what
-    /// draws the shelf that does the asking.
-    ///
-    /// DECLARED HERE AND DEFAULTED BELOW, like `liveSessions(since:)`: a
-    /// conformer that does not implement it (the test doubles) falls back to
-    /// the plain read, which on a Mac too old to filter IS the whole list.
+
     func liveSessions(all: Bool) async throws -> LiveSessions
-    /// THE SAME READ, CONDITIONAL ON AN ETAG (#457) — what the inbox poll uses.
-    ///
-    /// `liveSessions(since:)` below is this in the body and is still served;
-    /// the tag is what the poll sends, because the tag carries the MODE as well
-    /// as the revision. A cursor is a number about the Mac's store, so one
-    /// earned against the unsettled list and spent against `all` is answered
-    /// "unchanged" — and the settled shelf a reader has just opened stays empty
-    /// until something else happens over there. A 304 also carries no body at
-    /// all, where the cursor's cheapest answer is sixty bytes.
-    ///
-    /// `live == nil` MEANS NOT MODIFIED: keep what you have. Distinct from a
-    /// `LiveSessions` with no rows, which would empty the list.
-    ///
-    /// AND IT CARRIES THE BYTES (#499), which is what the cache is written from
-    /// now. The store used to warm it with a SECOND full read of this same
-    /// route immediately after this one — 318 KB on the owner's Mac, for rows
-    /// it had just been handed. One read serves the screen and the cache.
-    ///
-    /// `since` IS THE LEGACY CURSOR, offered here so that path returns bytes
-    /// too. It is mutually exclusive with `etag` in every caller: only the
-    /// NARROW read may use a cursor, for the reason above.
-    ///
-    /// DECLARED HERE AND DEFAULTED BELOW: a conformer that does not implement
-    /// it (the test doubles) falls back to an unconditional read, which is also
-    /// what a Mac too old to mint a tag leaves this phone with.
+
     func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead
-    /// THE SAME READ, CONDITIONALLY (#459) — what the inbox poll should use.
-    ///
-    /// Hand back the `revision` from last time and a Mac with nothing new
-    /// answers `unchanged` in about sixty bytes, instead of every row this
-    /// phone is already drawing. It was 318 KB a read on the owner's store, and
-    /// this phone asks every three seconds while anything is live.
-    ///
-    /// DECLARED HERE AND DEFAULTED BELOW, like `usageReport`: a conformer that
-    /// does not implement it (the test doubles) falls back to the full read,
-    /// and the real client's override still dispatches dynamically because the
-    /// requirement is on the protocol rather than only in the extension.
+
     func liveSessions(since: Int) async throws -> LiveSessions
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot
-    /// THE SAME READ, KEEPING THE BYTES (#499) — what the phone records for
-    /// when the Mac is away (SnapshotCache). The wire types decode only, so the
-    /// durable form is the cockpit's own JSON.
-    ///
-    /// ONE READ, NOT TWO. The sync engine used to hydrate a WINDOWED snapshot
-    /// for the screen and then fetch the same session UNWINDOWED — the whole
-    /// run, up to 4.5 MB — purely to warm that cache. The window the screen
-    /// asked for is the window the cache keeps, and it is the same answer, so
-    /// the second read is gone rather than merely shrunk.
-    ///
-    /// DECLARED HERE AND DEFAULTED BELOW: a conformer that does not implement
-    /// it makes the plain read and reports no bytes, which simply leaves it
-    /// with nothing to record.
+
     func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead
     func events(_ id: EngineID, after: Int) async throws -> EventPage
-    /// The bytes behind `ProjectRef.icon`. `icon` rides as `?v=` so the
-    /// cockpit's immutable cache header is honest; the route does not read it.
+
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult
     func stopSession(_ id: EngineID) async throws
@@ -84,111 +23,56 @@ protocol EngineAPI: Sendable {
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
     ) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
-    /// A SHORT-LIVED TRANSCRIPTION TOKEN (#544). The phone holds no Deepgram
-    /// key; it asks the Mac for one dictation's worth of credential and opens
-    /// its own socket with it — the audio never passes through the cockpit.
-    ///
-    /// DECLARED HERE AND DEFAULTED BELOW, like `sidebarLayout`: a double that
-    /// models the transcript has no business minting credentials, and should
-    /// not have to implement one to compile.
+
     func dictationToken() async throws -> DictationTokenAnswer
-    /// WHY THE LAST DICTATION FAILED (#711). Asked AFTER a socket has dropped,
-    /// never before one opens: this phone cannot read why its own socket was
-    /// refused, and the Mac holds the key that can ask.
-    ///
-    /// DEFAULTED BELOW TO A THROW, like `dictationToken`: a double has nothing
-    /// to diagnose, and every caller already has to survive this failing.
+
     func dictationDiagnosis() async throws -> DictationDiagnosisAnswer
-    /// WHETHER THAT MAC DICTATES AT ALL, read before the mic button is drawn.
-    /// `provider` is `off` by default and there is no button until it is
-    /// something else — the phone's own keyboard dictation already works on the
-    /// composer, so an uninvited one would be Telar claiming a job somebody may
-    /// have given elsewhere.
-    ///
-    /// DEFAULTED BELOW TO `off`, which is the honest answer for a double and
-    /// for a Mac too old to serve the route: no button either way.
+
     func dictation() async throws -> DictationAnswer
-    /// Choose a provider on that Mac, choose a language, or paste its key.
-    ///
-    /// EVERY FIELD BY PRESENCE: a patch naming no provider must not switch
-    /// dictation off, one naming no language must not reset it, and one naming
-    /// no key must not clear it. The key goes DOWN only — nothing ever sends it
-    /// back, so the phone's field shows whether one is saved and never what it
-    /// is.
-    ///
-    /// `vocabulary` IS THE WHOLE LIST, EVERY TIME (#581) — it is a box of
-    /// terms rather than a row of fields, so a save is what it now contains and
-    /// an EMPTY ARRAY clears it. Absent still means "leave it alone".
-    ///
-    /// DEFAULTED BELOW TO A REFUSAL rather than a lie: a double that quietly
-    /// accepted a write would have a settings screen report a change that
-    /// never happened.
+
     func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer
-    /// REMOVE A SESSION AND EVERYTHING IT OWNS — transcript included. No undo,
-    /// and the engine refuses while a turn is in flight (`EngineStore
-    /// .deleteSession` throws a conflict on a queued, claimed or running one),
-    /// which is why the row that calls this is disabled there rather than
-    /// offered and then rejected.
+
     func deleteSession(_ id: EngineID) async throws
-    /// A HUMAN WAS SHOWN THIS TURN'S ANSWER. Moves the engine's
-    /// `lastReadTurnSequence` forward and stamps `readAt`, which is what clears
-    /// the unread dot on every device — the phone used to send this NEVER, so a
-    /// session read on the phone stayed unread on the Mac, and once the
-    /// settling rule started honouring unread it would have stayed in the list
-    /// forever. Returns the session as the engine now has it.
+
     func markSessionRead(_ id: EngineID, runId: String) async throws -> Session
-    /// SEND NOW: a queued turn is promoted into the RUNNING turn — the model
-    /// hears it without stopping. The engine validates queued-into-running.
+
     func promoteTurn(_ id: EngineID, runId: String) async throws
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session
-    /// The auto-settle window — engine-scoped, one answer per machine, so the
-    /// phone bands its inbox the same way the Mac's sidebar does.
+
     func inboxPolicy() async throws -> InboxPolicy
-    /// The rail's arrangement — engine-scoped like the policy above.
-    ///
-    /// THE FALLBACK, NOT THE PATH. The layout rides `liveSessions()`, so a Mac
-    /// new enough to send it is never asked for this; it is here for one that
-    /// is not, where a rail with no arrangement at all would be the regression.
+
     func sidebarLayout() async throws -> SidebarLayout
-    /// WHO THIS SESSION HAS ASKED TO BE WOKEN BY. Read for the PINNED handful
-    /// only and never per row of the list: pinned is what a person keeps in
-    /// view, so this stays a bounded read rather than an N+1 over the inbox.
+
     func sessionSubscriptions(_ id: EngineID) async throws -> [Subscription]
-    /// One file's bytes, uploaded BEFORE the message that refers to it.
+
     func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment
-    /// The provider's own model list for a driver.
+
     func models(driver: String) async throws -> ModelCatalogue
-    /// Provider instances — a model change must name the instance that runs it.
+
     func providerInstances() async throws -> [ProviderInstance]
-    /// What the session has done to the repository since it started.
+
     func sessionDiff(_ id: EngineID) async throws -> SessionDiff
-    /// One file's patch, opened on demand.
+
     func filePatch(_ id: EngineID, path: String, untracked: Bool) async throws -> FilePatch
-    /// Directories on the Mac — the phone's folder picker.
+
     func listDirectories(path: String?) async throws -> DirectoryListing
     func registerProject(name: String, root: String) async throws -> ProjectRef
-    /// Branches for the draft's base-ref picker.
+
     func projectGit(_ projectId: EngineID) async throws -> GitOverview
-    /// The cockpit's paired-device panel — who may reach the Mac, from here.
-    /// Spend over time, folded from THIS Mac's provider transcripts — see
-    /// `UsageReport`. The window rides through verbatim; the engine owns the
-    /// validation, and re-checking it here would be a second copy of the rule.
+
     func usageReport(sinceMs: Timestamp, untilMs: Timestamp, resolution: String, timeZone: String) async throws -> UsageReport
 
     func remoteStatus() async throws -> RemoteStatus
     func renameDevice(_ id: String, name: String) async throws -> RemoteDevice
     func setDeviceRole(_ id: String, role: String) async throws -> RemoteDevice
     func revokeDevice(_ id: String) async throws
-    /// Revoke every device except this one (the server keeps the caller).
+
     func revokeOtherDevices() async throws -> Int
 }
 
-/// Mirror of `SnapshotWindow` in packages/engine-client: how much of a
-/// session to read. Nil = the whole thing.
 struct SnapshotWindow: Sendable {
-    /// Newest N settled turns (unsettled ones always ride along).
     var turns: Int
-    /// Page cursor from a previous read's `page.before`.
+
     var before: EngineID?
 
     init(turns: Int, before: EngineID? = nil) {
@@ -197,67 +81,36 @@ struct SnapshotWindow: Sendable {
     }
 }
 
-/// ONE LIVE-LIST READ, SERVING BOTH THE SCREEN AND THE CACHE (#499).
-///
-/// The store used to poll this route and then immediately read it again,
-/// whole, to warm the phone's copy. `data` is why it no longer does: the
-/// cockpit's own bytes, kept exactly as they arrived, so the durable form
-/// stays the protocol's rather than a second encoding of it.
 struct LiveSessionsRead: Sendable {
-    /// NIL MEANS NOT MODIFIED — keep what you have. Never "there is nothing".
     var live: LiveSessions?
-    /// What to send back as `If-None-Match` next time. Restated by the Mac on
-    /// a 304, so a caller that dropped it there would pay for a full read.
+
     var etag: String?
-    /// The body as the Mac sent it. Nil on a 304 (there is no body) and from a
-    /// conformer that cannot hand its bytes over — both mean "nothing new to
-    /// record", never "record emptiness".
+
     var data: Data?
 }
 
-/// The same bargain for one session's snapshot (#499): the window the screen
-/// asked for, and the bytes to record it with.
 struct SessionRead: Sendable {
     var snapshot: SessionSnapshot
-    /// Nil from a conformer that cannot hand its bytes over; the cache then
-    /// keeps whatever it last held.
+
     var data: Data?
 }
 
 extension EngineAPI {
-    /// The unwindowed read older call sites mean.
     func session(_ id: EngineID) async throws -> SessionSnapshot {
         try await session(id, window: nil)
     }
 
-    /// A double that models the transcript and not the rail answers "nobody has
-    /// arranged anything", which is a real arrangement and not an error.
     func sidebarLayout() async throws -> SidebarLayout { SidebarLayout() }
 
-    /// A DOUBLE CANNOT MINT A CREDENTIAL, and must not pretend to: every other
-    /// default here answers with a real, empty state, but there is no empty
-    /// token — one would be handed to a websocket and fail at the handshake
-    /// with nothing explaining why. So this refuses in the sentence a Mac with
-    /// no key would use, which is also what the button already knows how to
-    /// show.
     func dictationToken() async throws -> DictationTokenAnswer {
         throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
     }
 
-    /// AND A DOUBLE HAS NOTHING TO DIAGNOSE. It throws for `dictationToken`'s
-    /// reason, and every caller of this already has to survive it failing — a
-    /// Mac too old for the route answers 404 and the honest sentence stands.
     func dictationDiagnosis() async throws -> DictationDiagnosisAnswer {
         throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
     }
 
-    /// OFF IS THE ORDINARY ANSWER, so a double says it rather than throwing —
-    /// and so does a cockpit too old to serve the route. Either way there is no
-    /// mic button, which is the right outcome in both cases.
     func dictation() async throws -> DictationAnswer {
-        // NO LANGUAGES RATHER THAN A GUESSED LIST: they are the Mac's to name,
-        // and a double that invented some would have a picker offering choices
-        // nothing could honour.
         DictationAnswer(
             dictation: DictationAnswer.State(
                 provider: DictationProvider.off, configured: false, language: DictationLanguages.automatic, languages: []
@@ -269,68 +122,37 @@ extension EngineAPI {
         throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot change dictation settings.", status: 409)
     }
 
-    /// A double that models no registry has nothing to remove, and says so by
-    /// returning rather than throwing: a test standing in for one endpoint
-    /// should not have to implement every other one to compile.
     func deleteSession(_ id: EngineID) async throws {}
 
-    /// And "this session follows nobody", which is the ordinary answer rather
-    /// than an error — a cockpit too old to serve the route says the same.
     func sessionSubscriptions(_ id: EngineID) async throws -> [Subscription] { [] }
 
-    /// A double that models the transcript has no ledger to read, and says so
-    /// with an empty window rather than by throwing.
     func usageReport(sinceMs: Timestamp, untilMs: Timestamp, resolution: String, timeZone: String) async throws -> UsageReport {
         UsageReport.empty
     }
 
-    /// And a conformer that has not learned the conditional read just makes the
-    /// full one — which is what a Mac too old to count would force anyway.
     func liveSessions(since: Int) async throws -> LiveSessions {
         try await liveSessions()
     }
 
-    /// Likewise the WIDE read (#457): a conformer that has not learned to ask
-    /// for the settled rows makes the plain read, which against a Mac too old
-    /// to hold any back is already every row there is.
     func liveSessions(all: Bool) async throws -> LiveSessions {
         try await liveSessions()
     }
 
-    /// And likewise the conditional one: a conformer that cannot send a tag
-    /// makes the unconditional read and reports no tag, so the caller never
-    /// has one to hand back and every read stays a full one. No bytes either,
-    /// which leaves it with nothing to record — the right answer, since the
-    /// alternative is recording a snapshot nobody can vouch for.
     func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead {
         if let since { return LiveSessionsRead(live: try await liveSessions(since: since), etag: nil, data: nil) }
         return LiveSessionsRead(live: try await liveSessions(all: all), etag: nil, data: nil)
     }
 
-    /// And the session snapshot: a conformer that cannot hand its bytes over
-    /// still answers the screen, and simply records nothing.
     func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead {
         SessionRead(snapshot: try await session(id, window: window), data: nil)
     }
 }
 
-/// A raw read that keeps the content type: the PDF viewer and the image
-/// viewer need to know what the bytes are, and the route says so.
 struct RawFile: Sendable {
     var data: Data
     var contentType: String?
 }
 
-/// THE PANEL'S API — the checkout, the kernel, notebooks and LaTeX. A second
-/// protocol rather than more methods on `EngineAPI`, so the two test doubles
-/// that stand in for the transcript's needs keep compiling, and so a view
-/// that only reads files can say so in its type.
-///
-/// `ds` and `latex` are catch-all doors: every verb is a POST to one path,
-/// the same door the agent's own tools use, so a cell run from here and one
-/// the model ran land in the same kernel. Their answers decode to the caller's
-/// type; a body this build does not model decodes to `JSONValue`, never to
-/// the "very different versions" error a snapshot mismatch earns.
 protocol PanelAPI: Sendable {
     func projects() async throws -> [Project]
     func sessionFiles(_ id: EngineID) async throws -> WorkspaceListing
@@ -376,25 +198,19 @@ extension PanelAPI {
 }
 
 struct InboxPolicy: Decodable, Equatable {
-    /// `nil` = the clock is off: nothing settles by neglect, only by decision.
     var autoSettleAfterHours: Double?
 }
 
-/// Mirror of `createSession`'s input in apps/web/lib/engine/client.ts. The
-/// engine validates driver/envMode against the contract's own lists.
 struct NewSessionInput: Encodable {
     var title: String?
     var driver: String?
     var envMode: String?
-    /// Worktree base — any name from `GitOverview.refs`. Absent = HEAD.
+
     var baseRef: String?
-    /// The worktree's own branch name. Absent = the engine invents one.
+
     var branchName: String?
 }
 
-/// The shapes a `user_input` answer takes (`UserInputField.kind`
-/// text/secret/choice all answer with a string; boolean with a bool; a
-/// `choice` field marked `multiple` with an array of the chosen labels).
 enum AnswerValue: Encodable, Equatable {
     case text(String)
     case bool(Bool)
@@ -414,11 +230,9 @@ struct SessionPatch: Encodable {
     var title: String?
     var settledOverride: String?
     var snoozedUntil: Timestamp?
-    /// "approval-required" | "auto-accept-edits" | "auto" | "full-access" —
-    /// engine-validated; the composer's Configuration pill.
+
     var runtimeMode: String?
-    /// Must belong to the session's provider instance — the engine rejects
-    /// anything else. The composer's Model pill.
+
     var model: ModelSelection?
     var clearSettledOverride = false
     var clearSnooze = false
@@ -436,13 +250,10 @@ struct SessionPatch: Encodable {
 }
 
 enum EngineAPIError: Error, LocalizedError {
-    /// The cockpit answered with a typed engine error.
     case engine(code: String, message: String, status: Int)
-    /// The cockpit answered, but not with the contract's error body.
+
     case badResponse(status: Int)
-    /// A 2xx whose body didn't decode: the URL IS a cockpit — the two ends
-    /// are just on very different versions. Distinct from badResponse so
-    /// skew is never misdiagnosed as a wrong address.
+
     case incompatible(status: Int)
     case transport(Error)
 
@@ -468,23 +279,17 @@ enum EngineAPIError: Error, LocalizedError {
         return false
     }
 
-    /// The cockpit's pairing gate said no — this phone holds no valid device
-    /// token. The fix is a fresh pairing code, not a retry.
     var isUnauthorized: Bool {
         if case .engine(let code, _, _) = self { return code == "cockpit_unauthorized" }
         return false
     }
 
-    /// Paired, but view-only: the gate admits reads and refuses writes.
     var isForbidden: Bool {
         if case .engine(let code, _, _) = self { return code == "cockpit_forbidden" }
         return false
     }
 }
 
-/// Idempotency keys, mirroring `newRunId` in apps/web/lib/engine/client.ts:
-/// `run_` + uuid without dashes. The SAME id retried is what makes a resend
-/// after a dropped response safe.
 enum RunID {
     static func newRunId() -> String {
         "run_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -493,15 +298,10 @@ enum RunID {
 
 struct HTTPEngineAPI: EngineAPI {
     let baseURL: URL
-    /// The pairing credential, attached to every request when present. Lives
-    /// in the Keychain (KeychainStore); nil against an open cockpit.
+
     let deviceToken: String?
     let session: URLSession
-    /// WHERE TO GO WHEN THIS ADDRESS STOPS ANSWERING (#832): given the base
-    /// that just failed in transport, another address of the same Mac that
-    /// answered a probe, or nil. Nil for a client bound to one address (the
-    /// pairing screen's test). Asked only after a failure, so a healthy
-    /// address costs nothing extra per request.
+
     let failover: (@Sendable (URL) async -> URL?)?
 
     init(baseURL: URL, deviceToken: String? = nil, session: URLSession? = nil,
@@ -513,11 +313,9 @@ struct HTTPEngineAPI: EngineAPI {
             self.session = session
         } else {
             let config = URLSessionConfiguration.default
-            // 30, not 15: creating a worktree session checks out the whole
-            // repo, and a big one blows a 15s window — the create "fails" on
-            // the phone while succeeding on the Mac.
+
             config.timeoutIntervalForRequest = 30
-            // Fail fast when off the tailnet instead of queueing silently.
+
             config.waitsForConnectivity = false
             self.session = URLSession(configuration: config)
         }
@@ -529,17 +327,6 @@ struct HTTPEngineAPI: EngineAPI {
         return reply.layout
     }
 
-    /// ONE FIELD PER WRITE, and the engine leaves an absent one alone.
-    ///
-    /// The phone used to send the whole `projectOrder` it happened to be
-    /// holding, which meant a drop here silently republished a minute-old copy
-    /// of the OTHER two arrangements' neighbour — and, once the Mac grew row
-    /// order (#301), any reorder made there in between. Naming only the field
-    /// that moved is what makes last-write-wins mean "the field you dragged"
-    /// rather than "the document you loaded".
-    ///
-    /// Returns the layout as the engine now holds it, so the caller applies the
-    /// Mac's answer rather than its own guess at it.
     func setSidebarLayout(
         projectOrder: [String]? = nil,
         sessionOrder: [String: [String]]? = nil,
@@ -566,64 +353,29 @@ struct HTTPEngineAPI: EngineAPI {
         try await send("PUT", "api/mobile/push", body: registration)
     }
 
-
     func health() async throws -> EngineHealth {
         try await get("api/health")
     }
 
-    /// THE UNSETTLED ROWS (#457) — 7 of 291 on the owner's store, where this
-    /// route used to fold and serialise all 291 every three seconds for every
-    /// device attached to the Mac. `LiveSessions.settledCount` says how many it
-    /// held back, which is what draws the shelf that asks for them.
     func liveSessions() async throws -> LiveSessions {
         try await get("api/sessions/live")
     }
 
-    /// And every row, settled ones included — what the settled shelf asks with.
-    ///
-    /// SPELLED AS ITS OWN METHOD rather than a defaulted argument on the one
-    /// above: a default argument does not witness a protocol requirement that
-    /// takes no argument, and both spellings are requirements here.
     func liveSessions(all: Bool) async throws -> LiveSessions {
         try await get("api/sessions/live", query: all ? [URLQueryItem(name: "all", value: "1")] : [])
     }
 
-    /// THE SAME LIST, CONDITIONALLY — and always the NARROW one. `all` is
-    /// deliberately not offered here: the revision counts writes, so it does not
-    /// move when a reader opens the shelf, and a cursor earned against one list
-    /// and spent against the other would be answered "unchanged" and leave the
-    /// shelf empty. The wide ask pays for itself; see the engine's route.
     func liveSessions(since: Int) async throws -> LiveSessions {
         try await get("api/sessions/live", query: [URLQueryItem(name: "since", value: String(since))])
     }
 
-    /// THE POLL'S READ (#457): conditional on an `ETag`, which — unlike the
-    /// cursor above — carries the MODE, so it is safe for the wide list too.
-    ///
-    /// A 304 IS NOT AN ERROR, and that is why this does not go through
-    /// `perform`: that envelope treats anything outside 2xx as a failure and
-    /// decodes a body, and the cheapest answer here has neither a 2xx nor a
-    /// body. `nil` back means "keep what you have" — never "there is nothing".
-    ///
-    /// THE TAG COMES BACK EVEN ON A 304, because the Mac restates it, and a
-    /// caller that dropped it there would make the next tick a full read.
-    ///
-    /// AND THE BYTES COME BACK WITH IT (#499). They are already in hand here;
-    /// handing them over is what let the store stop re-reading this whole route
-    /// a second time just to warm its cache.
-    ///
-    /// `since` IS THE LEGACY CURSOR, carried so that path keeps its bytes too.
-    /// Callers send one or the other, never both — a cursor is a number about
-    /// the Mac's store and cannot be spent on the wide list.
     func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead {
         var query: [URLQueryItem] = []
         if all { query.append(URLQueryItem(name: "all", value: "1")) }
         if let since { query.append(URLQueryItem(name: "since", value: String(since))) }
         var request = makeRequest(url("api/sessions/live", query: query))
         if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
-        // The URL cache stays out of this: the tag bookkeeping is the store's
-        // own, and a cache revalidating underneath it would answer from a copy
-        // this code never saw.
+
         request.cachePolicy = .reloadIgnoringLocalCacheData
         let (data, response) = try await exchange(request)
         let http = response as? HTTPURLResponse
@@ -636,23 +388,14 @@ struct HTTPEngineAPI: EngineAPI {
             }
             throw EngineAPIError.badResponse(status: status)
         }
-        // DECODED OFF THE CALLER'S EXECUTOR, exactly as `perform` does it and
-        // for the same reason: the only caller is `@MainActor`, and this is the
-        // list of every unsettled session on the Mac, parsed every three
-        // seconds while anything is live. Going around `perform` to read a 304
-        // must not also go around that.
-        //
-        // A 2xx that does not decode is version skew, not a wrong address —
-        // `incompatible`, exactly as `perform` classifies it.
+
         let live = try await Task.detached(priority: .userInitiated) {
             guard let live = try? JSONDecoder().decode(LiveSessions.self, from: data) else {
                 throw EngineAPIError.incompatible(status: status)
             }
             return live
         }.value
-        // NOT THE BYTES OF AN `unchanged` ANSWER. The cursor's cheap reply is a
-        // 200 carrying no rows, and recording it would replace the phone's copy
-        // with emptiness — the one thing the cache exists not to show.
+
         return LiveSessionsRead(live: live, etag: fresh, data: live.unchanged ? nil : data)
     }
 
@@ -660,18 +403,9 @@ struct HTTPEngineAPI: EngineAPI {
         try await get("api/sessions/\(escape(id))", query: sessionQuery(window))
     }
 
-    /// THE SAME READ, KEEPING THE BYTES (#499) — one request that answers the
-    /// screen and records the phone's copy.
-    ///
-    /// The window is whatever the caller asked for, so the cache holds exactly
-    /// what the transcript opened on. It used to hold the UNWINDOWED run — a
-    /// separate GET of up to 4.5 MB, fired straight after a hydrate that had
-    /// deliberately asked for ten turns.
     func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead {
         let (data, status) = try await raw(makeRequest(url("api/sessions/\(escape(id))", query: sessionQuery(window))))
-        // Decoded off the caller's executor, exactly as `perform` does it: every
-        // caller here is `@MainActor`, and a session's tool outputs are the
-        // largest parse this app makes.
+
         let snapshot: SessionSnapshot = try await Task.detached(priority: .userInitiated) {
             do {
                 return try JSONDecoder().decode(SessionSnapshot.self, from: data)
@@ -692,10 +426,6 @@ struct HTTPEngineAPI: EngineAPI {
     }
 
     func events(_ id: EngineID, after: Int) async throws -> EventPage {
-        // NO `limit` SENT: the engine's own default (200) is the page size this
-        // phone wants, and naming it here would only be a second opinion to
-        // drift from it. The radio is the reason paging matters at all —
-        // 36.5 MB of journal over cellular was the cost #494 removed.
         try await get("api/sessions/\(escape(id))/events", query: [URLQueryItem(name: "after", value: String(after))])
     }
 
@@ -704,7 +434,6 @@ struct HTTPEngineAPI: EngineAPI {
     }
 
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]? = nil) async throws -> TurnSubmissionResult {
-        // 202 fresh and 200 replayed are BOTH success — the idempotent retry.
         var body: [String: AnyEncodable] = ["runId": AnyEncodable(runId), "input": AnyEncodable(input)]
         if let attachments, !attachments.isEmpty { body["attachments"] = AnyEncodable(attachments) }
         return try await post("api/sessions/\(escape(id))/turns", body: body)
@@ -734,35 +463,18 @@ struct HTTPEngineAPI: EngineAPI {
         let _: IgnoredBody = try await send("PATCH", "api/sessions/\(escape(id))", body: patch)
     }
 
-    // ── DICTATION (#544) ─────────────────────────────────────────────────────
-
-    /// POST because it MINTS: every call spends a round trip against the
-    /// transcription service and produces a new credential, and a GET that did
-    /// that would be cached by something eventually. The refusals arrive as
-    /// themselves — 409 is "no key on that Mac", 502 is the service refusing —
-    /// so the button has a sentence rather than a status.
     func dictationToken() async throws -> DictationTokenAnswer {
         try await post("api/dictation/token", body: [:])
     }
 
-    /// POST for the mint's reason: it spends a handshake against the service
-    /// every time it is called. ASKED AFTER A SOCKET DROPS, never before one
-    /// opens — the Mac is not on this phone's network and a pre-flight would
-    /// answer about a different request (#711).
     func dictationDiagnosis() async throws -> DictationDiagnosisAnswer {
         try await post("api/dictation/diagnose", body: [:])
     }
 
-    /// GET because it MINTS NOTHING: it reads a setting and whether a key is
-    /// there. The key never comes back over this wire — `configured` is the
-    /// whole of what is said about it.
     func dictation() async throws -> DictationAnswer {
         try await get("api/dictation")
     }
 
-    /// BY PRESENCE, every field — an absent one is "leave it alone", which is
-    /// what lets the provider picker, the language picker and the key field be
-    /// three separate saves on one screen without any of them undoing another.
     func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer {
         var patch: [String: AnyEncodable] = [:]
         if let provider { patch["provider"] = AnyEncodable(provider) }
@@ -788,10 +500,6 @@ struct HTTPEngineAPI: EngineAPI {
         return wrapped.session
     }
 
-    /// WHICH OF THESE SESSIONS' ALERTS ARE STALE on this Mac, by the engine's
-    /// own read state — the launch reconcile (`ReadSync.reconcile`). Ids in,
-    /// ids out. A Mac too old to serve the route throws, and the phone keeps
-    /// its alerts.
     func readState(_ ids: [EngineID]) async throws -> [EngineID] {
         struct Answer: Decodable { var cleared: [EngineID] }
         let answer: Answer = try await get("api/mobile/read-state", query: [URLQueryItem(name: "ids", value: ids.joined(separator: ","))])
@@ -810,8 +518,6 @@ struct HTTPEngineAPI: EngineAPI {
         return wrapped.inbox
     }
 
-    /// Raw bytes, one file per request — a failed upload loses one file, not
-    /// the whole selection. The filename travels percent-encoded in a header.
     func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment {
         var request = makeRequest(url("api/sessions/\(escape(id))/attachments"))
         request.httpMethod = "POST"
@@ -915,8 +621,6 @@ struct HTTPEngineAPI: EngineAPI {
         return wrapped.revoked
     }
 
-    // MARK: transport
-
     private func escape(_ id: String) -> String {
         id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
     }
@@ -927,8 +631,6 @@ struct HTTPEngineAPI: EngineAPI {
         return components.url!
     }
 
-    /// EVERY request funnels through here, so no endpoint can forget the
-    /// pairing credential.
     private func makeRequest(_ url: URL) -> URLRequest {
         var request = URLRequest(url: url)
         if let deviceToken {
@@ -941,12 +643,6 @@ struct HTTPEngineAPI: EngineAPI {
         try await perform(makeRequest(url(path, query: query)))
     }
 
-    /// EVERY BYTE FROM THE MAC comes through here, so every route fails over
-    /// the same way (#832). A transport failure asks `failover` for another
-    /// address; the host book moves to it, so the next request — and every
-    /// client rebuilt from the book — starts there. Only a READ is replayed on
-    /// the new address: a write whose answer was lost may already have landed,
-    /// and replaying it is the caller's call (sends carry a run id for that).
     private func exchange(_ request: URLRequest) async throws -> (Data, URLResponse) {
         do {
             return try await session.data(for: request)
@@ -966,18 +662,6 @@ struct HTTPEngineAPI: EngineAPI {
         }
     }
 
-    /// THE CONNECTIVITY PROBE: is a Telar cockpit answering at `base`?
-    ///
-    /// THREE SECONDS. /api/ping is a few bytes with no auth and no engine
-    /// work, so a reachable Mac answers in well under a second on a LAN and in
-    /// one or two over a cold tailnet path (DERP relay setup). A dead address
-    /// is the other case: another network's LAN IP often gets no reply at all
-    /// and would sit out TCP's own timeout, which is over a minute. Three
-    /// seconds covers the slow-but-alive tailnet with margin while keeping a
-    /// full failover pass — all addresses are probed at once — at three.
-    ///
-    /// NO TOKEN rides a probe: an address is not sent the device credential
-    /// until it has answered as a cockpit and become the one in use.
     static let probeTimeout: TimeInterval = 3
 
     private static let probeSession: URLSession = {
@@ -997,9 +681,6 @@ struct HTTPEngineAPI: EngineAPI {
         return pong.ok
     }
 
-    /// Pre-pairing reachability: the one route that answers strangers. Also
-    /// the version signature — `proto`/`appVersion` are absent on cockpits
-    /// older than the field (treat missing proto as 1).
     func ping() async throws -> Pong {
         try await perform(makeRequest(url("api/ping")))
     }
@@ -1016,7 +697,6 @@ struct HTTPEngineAPI: EngineAPI {
         return try await perform(request)
     }
 
-    /// A raw read that keeps the response's content type.
     private func rawFile(_ request: URLRequest) async throws -> RawFile {
         let (data, response) = try await exchange(request)
         let http = response as? HTTPURLResponse
@@ -1030,11 +710,6 @@ struct HTTPEngineAPI: EngineAPI {
         return RawFile(data: data, contentType: http?.value(forHTTPHeaderField: "content-type"))
     }
 
-    /// DECODED OFF THE CALLER'S EXECUTOR. Every store that calls this is
-    /// `@MainActor`, and a struct method inherits the caller's isolation, so
-    /// a session snapshot with its tool outputs was being parsed on the main
-    /// thread — on a reconnect, at the same moment as the inbox's. The bytes
-    /// go to a detached task and only the value comes back.
     private func perform<T: Decodable & Sendable>(_ request: URLRequest) async throws -> T {
         let (data, status) = try await raw(request)
         return try await Task.detached(priority: .userInitiated) {
@@ -1050,9 +725,6 @@ struct HTTPEngineAPI: EngineAPI {
         try await raw(request).0
     }
 
-    /// The transport half of `perform`: the bytes of a 2xx, or the engine's
-    /// typed error. Split out so the snapshot cache can keep what the cockpit
-    /// sent without parsing it.
     private func raw(_ request: URLRequest) async throws -> (Data, Int) {
         let (data, response) = try await exchange(request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -1138,11 +810,7 @@ extension HTTPEngineAPI: PanelAPI {
         try await door("latex", id, method: method, body: body)
     }
 
-    /// The plugin doors. A decode failure here is a body this build does not
-    /// model, not a cockpit on another version, so it surfaces as its own
-    /// sentence rather than the snapshot's "very different versions".
     private func door<T: Decodable & Sendable>(_ door: String, _ id: EngineID, method: String, body: JSONValue) async throws -> T {
-        // `method` may carry a slash (`notebook/run`); each segment is its own path part.
         let path = "api/sessions/\(escape(id))/\(door)/" + method.split(separator: "/").map { escape(String($0)) }.joined(separator: "/")
         var request = makeRequest(url(path))
         request.httpMethod = "POST"
@@ -1159,20 +827,17 @@ extension HTTPEngineAPI: PanelAPI {
     }
 }
 
-/// GET /api/ping — reachability plus the cockpit's version signature.
 struct Pong: Decodable {
     var ok: Bool
-    /// Pairing-protocol number; nil on cockpits older than the field = 1.
+
     var proto: Int?
     var appVersion: String?
 }
 
-/// Some calls only care that the server said yes.
 struct IgnoredBody: Decodable {
     init(from decoder: Decoder) {}
 }
 
-/// Heterogeneous JSON bodies without a bespoke Encodable per endpoint.
 struct AnyEncodable: Encodable {
     private let encodeFn: (Encoder) throws -> Void
     init<T: Encodable>(_ value: T) {

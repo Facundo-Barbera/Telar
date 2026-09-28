@@ -1,13 +1,6 @@
 import Foundation
 import Observation
 
-/// Connection settings — now a BOOK of hosts, not a singleton. Base URLs are
-/// addresses, not secrets: they stay in UserDefaults ("telar.hosts"). The
-/// device tokens ARE secrets and live in the Keychain, one account per host
-/// ("deviceToken.<hostId>") via TokenVault.
-///
-/// There is no "active host": t3's model, ported. All hosts are usable at
-/// once; views ask for `api(for:)` and the inbox merges across them.
 @MainActor @Observable final class AppSettings {
     private(set) var book: HostBook
     private let defaults: UserDefaults
@@ -35,30 +28,19 @@ import Observation
         }
     }
 
-    // MARK: addresses (#832)
-
-    /// The connectivity probe. Swappable so a test answers without a network.
     @ObservationIgnored var probe: @Sendable (URL) async -> Bool = { await HTTPEngineAPI.probe($0) }
-    /// One probe pass per host at a time: a poll, a transcript and a panel
-    /// that all lose the Mac together share the one answer.
+
     @ObservationIgnored private var probes: [HostID: Task<URL?, Never>] = [:]
 
-    /// A request to `failed` could not reach the Mac: find the address that
-    /// can. The winner becomes the host's address in use and is persisted, so
-    /// every rebuilt client — and the next launch — starts there.
     func failover(_ id: HostID, from failed: URL) async -> URL? {
         guard let host = book.host(id) else { return nil }
-        // Someone else already moved this host while our request was failing.
+
         if let current = host.baseURL, HostBook.normalize(current.absoluteString) != HostBook.normalize(failed.absoluteString) {
             return current
         }
         return await reprobe(id, order: HostAddresses.failoverOrder(host, failed: failed.absoluteString))
     }
 
-    /// FOREGROUND: the phone may have changed network while it slept. Probe
-    /// every host's addresses, the one in use first, then ask each reachable
-    /// Mac what it answers on now. Probes carry no token; the status read is
-    /// the gated GET /api/remote, so only a paired phone learns addresses.
     func refreshAddresses() async {
         for host in hosts {
             guard await reprobe(host.id, order: host.addresses) != nil,
@@ -80,15 +62,10 @@ import Observation
         return winner
     }
 
-    /// Changes when the host's address or credential changes — the rebuild
-    /// key for anything bound to one Mac.
     func apiFingerprint(_ id: HostID) -> String {
         (book.host(id)?.baseURLString ?? "") + "|" + (token(for: id) ?? "")
     }
 
-    /// Pairing/adding ADDS a host; a re-pair of a known address replaces its
-    /// token and keeps its identity (and so its scoped data). Never evicts
-    /// other hosts.
     @discardableResult
     func upsert(baseURLString: String, token: String?, addresses: [String] = [], name: String? = nil) -> HostID {
         let result = book.upsert(baseURLString: baseURLString, addresses: addresses, name: name)
@@ -110,7 +87,7 @@ import Observation
         } else {
             vault.delete(account: HostMigration.tokenAccount(id))
         }
-        // Token lives in the vault, but observers key off the book — nudge it.
+
         persist()
     }
 
@@ -124,8 +101,6 @@ import Observation
         persist()
     }
 
-    /// Removing a Mac clears everything scoped to it: credential and
-    /// pending-send drafts.
     func remove(_ id: HostID) {
         let pushAPI = api(for: id)
         vault.delete(account: HostMigration.tokenAccount(id))
@@ -143,9 +118,6 @@ import Observation
     private func persist() {
         HostMigration.persist(book, defaults: defaults)
     }
-
-    // MARK: single-host compatibility shim — first host stands in for "the"
-    // host until every call site is host-aware. Deleted with the merged inbox.
 
     var baseURLString: String {
         get { hosts.first?.baseURLString ?? "" }
@@ -173,8 +145,6 @@ import Observation
         hosts.first.flatMap { api(for: $0.id) }
     }
 
-    /// Where this phone keeps what a Mac last said (SnapshotCache). Nil in
-    /// tests and previews that build settings without a disk.
     var snapshots: SnapshotCache? = .default
 
     func snapshotCache(for id: HostID) -> HostSnapshotCache? {

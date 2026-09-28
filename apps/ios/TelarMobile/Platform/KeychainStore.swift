@@ -1,21 +1,7 @@
 import Foundation
 import Security
 
-/// The cockpit device tokens. Keychain rather than UserDefaults because they
-/// ARE secrets — unlike the base URLs, which stay in UserDefaults per
-/// AppSettings' own comment. AfterFirstUnlock so a background refresh can
-/// authenticate while the phone is locked.
-///
-/// Accounts are host-scoped ("deviceToken.<hostId>") — one phone holds one
-/// credential PER MAC. The unscoped account "deviceToken" is the pre-multi-
-/// host singleton, read only by the migration.
 enum KeychainStore {
-    /// SCOPED TO THIS FLAVOR'S OWN BUNDLE ID, not a shared literal. The
-    /// nightly and Telar Dev are separate apps with separate cockpits'
-    /// worth of trust; a hard-coded service made every flavor read as
-    /// "paired" the moment any one of them was — including a pairing
-    /// inherited from a long-deleted install, because the keychain outlives
-    /// the app that wrote it.
     private static let service = Bundle.main.bundleIdentifier ?? "io.github.novarix.telar"
     private static let legacyService = "com.telar.mobile"
     private static let legacyAccount = "deviceToken"
@@ -55,9 +41,6 @@ enum KeychainStore {
         SecItemDelete(query(service: service, account: account) as CFDictionary)
     }
 
-    /// The pre-multi-host singleton, including the pre-flavor-split hop:
-    /// own service first, then the shared literal (migrating it over).
-    /// Reachable only from HostMigration; steady state never reads it.
     static func readLegacySingle() -> String? {
         if let token = read(service: service, account: legacyAccount) { return token }
         guard service != legacyService,

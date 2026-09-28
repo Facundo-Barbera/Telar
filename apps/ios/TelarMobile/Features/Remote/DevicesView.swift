@@ -1,14 +1,5 @@
 import SwiftUI
 
-/// The cockpit's paired-device panel, from the phone: every device that may
-/// reach the Mac, with rename, role, and revocation. "This iPhone" is badged
-/// via callerDeviceId — the server names the caller from its credential, so
-/// the app never stores its own device id. A view-only phone sees the list
-/// read-only; management is a write like any other.
-///
-/// SettingsKit cards, not a Form: each device is a row with a platform
-/// glyph, a role chip that opens the management menu, and the lost-phone
-/// button under its own card.
 struct DevicesView: View {
     let api: EngineAPI
     @State private var status: RemoteStatus?
@@ -154,8 +145,6 @@ struct DevicesView: View {
     @ViewBuilder
     private func deviceRow(_ device: RemoteDevice, isSelf: Bool) -> some View {
         HStack(spacing: 12) {
-            // The row's 27pt square scales with its glyph (#674), the same
-            // icon column as SettingsKit's rows.
             Image(systemName: platformSymbol(device.platform))
                 .foregroundStyle(Theme.textMuted)
                 .scaledGlyphBox(27, glyph: 17)
@@ -218,7 +207,6 @@ struct DevicesView: View {
         .padding(.vertical, 14)
     }
 
-    /// The role as a chip — the same capsule idiom as the composer's pills.
     private func roleChip(_ role: String) -> some View {
         HStack(spacing: 5) {
             Image(systemName: role == "observer" ? "eye" : "checkmark.shield")
@@ -265,7 +253,6 @@ struct DevicesView: View {
             try await operation()
             error = nil
         } catch let apiError as EngineAPIError {
-            // A 409 on the last full device arrives as its typed message.
             error = apiError.errorDescription
         } catch {
             self.error = error.localizedDescription

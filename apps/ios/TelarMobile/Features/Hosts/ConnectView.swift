@@ -1,17 +1,6 @@
 import SwiftUI
 
-/// Host + port → base URL, with a probe that validates the WHOLE chain:
-/// Next.js up → TELAR_HOME set → engine reachable → worker registered.
-/// When the cockpit requires pairing, the probe says so and the pairing-link
-/// field (Settings → Remote access → copy the link under the QR) completes
-/// the exchange; the device token lands in the Keychain.
-///
-/// Styled with the SettingsKit card idiom — this screen doubles as the
-/// app's front door (the root view before a cockpit is configured), so it
-/// wears the same clothes as the rest of the app, not a stock Form.
 struct ConnectView: View {
-    /// Which Mac this screen configures: a NEW one (fields empty, pairing
-    /// adds a host) or an EXISTING one (fields seeded, forget scoped to it).
     enum Target: Hashable {
         case new
         case existing(HostID)
@@ -37,7 +26,7 @@ struct ConnectView: View {
 
     enum ProbeResult: Equatable {
         case ok(daemonId: String, workerRegistered: Bool)
-        /// Reachable, but the pairing gate refused us.
+
         case unpaired
         case failed(String)
     }
@@ -66,9 +55,7 @@ struct ConnectView: View {
                             )
                             CardDivider()
                         }
-                        // Camera scanning needs the Neural Engine — real
-                        // hardware. The paste field below is the simulator
-                        // (and automation) path.
+
                         if QRScannerView.isUsable {
                             Button {
                                 scanning = true
@@ -95,9 +82,7 @@ struct ConnectView: View {
                         }
                         if let hostRecord = targetHost, targetToken != nil {
                             CardDivider()
-                            // The other half of pairing: without this, the
-                            // only way to shed a credential was revoking it
-                            // from the Mac. Scoped to THIS Mac only.
+
                             Button {
                                 settings.setToken(nil, for: hostRecord.id)
                                 probeResult = nil
@@ -132,8 +117,6 @@ struct ConnectView: View {
                             )
                             CardDivider()
                             Button {
-                                // ADDS (or updates) a host — open cockpits
-                                // need no credential.
                                 settings.upsert(baseURLString: AppSettings.normalize(host: host, port: port), token: nil)
                             } label: {
                                 CardRow(icon: "arrow.right.circle.fill", iconColor: Theme.accent, title: "Use this cockpit", titleColor: Theme.accent) { EmptyView() }
@@ -170,20 +153,12 @@ struct ConnectView: View {
             }
         }
         .onAppear {
-            // Seed the fields from the TARGET Mac; a .new screen starts blank.
             if let url = targetHost?.baseURL {
                 host = url.host() ?? ""
                 port = url.port.map(String.init) ?? (url.scheme == "https" ? "443" : "3000")
             }
         }
         .task {
-            // `simctl launch … -pairingLink <url>` — the automation affordance,
-            // same shape as -openSession: seeds the field and runs the
-            // exchange, so the whole pairing path is drivable headlessly.
-            // Inert in normal use.
-            // Already-paired guard: the seeded link is one-time; re-running it
-            // on every appearance would paint an "already used" error on a
-            // phone that is in fact paired.
             if pairingLink.isEmpty, settings.hosts.isEmpty,
                let seeded = UserDefaults.standard.string(forKey: "pairingLink") {
                 pairingLink = seeded
@@ -206,8 +181,6 @@ struct ConnectView: View {
             probeResult = .ok(daemonId: health.daemonId, workerRegistered: health.worker.registered)
         } catch let error as EngineAPIError {
             if error.isUnauthorized {
-                // The gate said no. Reachability is still worth confirming so
-                // "wrong network" and "needs pairing" read differently.
                 probeResult = (try? await api.ping())?.ok == true
                     ? .unpaired
                     : .failed("No answer. Is this phone on the tailnet?")
@@ -235,14 +208,9 @@ struct ConnectView: View {
                 base: parsed.base, token: parsed.token,
                 deviceName: UIDevice.current.name
             )
-            // ADDS a host (or refreshes a known one) — never evicts others.
+
             settings.upsert(baseURLString: parsed.base.absoluteString, token: paired.deviceToken, addresses: paired.addresses ?? [])
-            // AND ASKS FOR NOTIFICATION PERMISSION, ONCE (#579). Pairing is the
-            // moment this app first has something to notify anybody about, and
-            // it is the moment nothing used to happen: the only path to the
-            // system prompt was a toggle in Settings ▸ Notifications, so a
-            // phone that never visited that screen never appeared in iOS's own
-            // Notifications list at all.
+
             await MobileNotifications.shared.promptAfterPairing()
             pairingLink = ""
             host = parsed.base.host() ?? host

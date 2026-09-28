@@ -1,9 +1,5 @@
 import SwiftUI
 
-/// A CSV, TSV or Parquet as a grid, WINDOWED the desktop's way: 200-row
-/// pages aligned to page boundaries, fetched as the scroll reaches them, an
-/// in-flight set so a page is never asked for twice, a sticky header, and a
-/// tap on a column that cycles ascending → descending → none.
 struct TableSurface: View {
     let api: any PanelAPI
     let sessionId: EngineID
@@ -12,25 +8,13 @@ struct TableSurface: View {
 
     static let page = 200
 
-    /// THE GRID IS THE UNIT (#674). Every figure a column's geometry is built
-    /// from scales off `.caption`, the style the cells are drawn in, so the
-    /// whole grid grows by one ratio and the columns stay square across a
-    /// two-axis scroll. Scaling any of these alone would break the alignment
-    /// the fixed sizes existed to hold.
-    ///
-    /// The seeds are nudged up on what was here — 32 → 34, 24 → 26, and a
-    /// column's estimate from 8-per-character on 24 of padding to 9 on 26 —
-    /// because the cells moved from an 11 and a 9 onto `.caption` (12) and
-    /// `.caption2` (11). The clamp band keeps its 80 and 260 and scales with
-    /// the rest. Same default-size widening `DataframeGrid` takes, same reason.
     @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 34
     @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 26
     @ScaledMetric(relativeTo: .caption) private var columnPerCharacter: CGFloat = 9
     @ScaledMetric(relativeTo: .caption) private var columnPadding: CGFloat = 26
     @ScaledMetric(relativeTo: .caption) private var columnMinimum: CGFloat = 80
     @ScaledMetric(relativeTo: .caption) private var columnMaximum: CGFloat = 260
-    /// The fallback width for a cell with no column above it — scaled with the
-    /// rest so a malformed row cannot pin one column to an absolute 100.
+
     @ScaledMetric(relativeTo: .caption) private var columnFallback: CGFloat = 100
 
     @State private var meta: TableWindow?
@@ -93,19 +77,12 @@ struct TableSurface: View {
                     .overlay(alignment: .bottom) { Divider().overlay(Theme.border) }
                 }
             }
-            // A TWO-AXIS ScrollView CENTRES content smaller than its viewport,
-            // so a short table floated in the middle of the panel with its
-            // header adrift. A MINIMUM of the viewport pins the grid to the
-            // top left; a longer table still grows past it and scrolls.
+
             .frame(minWidth: viewport.width, minHeight: viewport.height, alignment: .topLeading)
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
     }
 
-    /// The desktop's header menu: the same three sort states the tap cycles
-    /// through, named rather than guessed at, plus the column's own name.
-    /// Radio groups have no context-menu shape on iOS, so the state that is on
-    /// wears the checkmark — the pattern the composer's menus already use.
     @ViewBuilder private func headerMenu(_ column: String) -> some View {
         Button { sort = (column, false) } label: {
             sortRow("Sort ascending", on: sort?.column == column && sort?.desc == false)
@@ -124,13 +101,6 @@ struct TableSurface: View {
         if on { Label(label, systemImage: "checkmark") } else { Text(label) }
     }
 
-    /// THIS GRID SCALES AS A UNIT (#674) — all five sites, not four. The `…`
-    /// placeholder below is the fifth: its frame is height-only, so the sweep
-    /// COULD have converted it on its own, and deliberately did not. A row
-    /// that has not loaded yet scaling while the loaded rows beside it did not
-    /// is a worse answer than either state on its own, and it stays the fifth
-    /// member of this unit now for the same reason — it takes the same
-    /// `rowHeight` and the same token as the cells it stands in for.
     private func row(_ index: Int, widths: [CGFloat]) -> some View {
         HStack(spacing: 0) {
             if let cells = rows[index] {
@@ -139,11 +109,7 @@ struct TableSurface: View {
                         .padding(.horizontal, 8)
                         .frame(width: widths[safe: i] ?? columnFallback, height: rowHeight, alignment: .leading)
                         .contentShape(Rectangle())
-                        // ONE CELL, AND THE ONE THING ANYBODY WANTS FROM IT. A
-                        // cell is clipped to its column's width, so the value
-                        // you can SEE is often not the value that is there —
-                        // which is why this copies the whole string rather than
-                        // the rendered text.
+
                         .contextMenu {
                             Button("Copy value", systemImage: "doc.on.doc") {
                                 UIPasteboard.general.string = tableCellValue(cell)
@@ -164,9 +130,7 @@ struct TableSurface: View {
         case .number, .bool: Theme.text
         default: Theme.textMuted
         }
-        // AN EMPTY STRING IS DRAWN, NOT COPIED, as `""`: a blank cell is
-        // indistinguishable from a missing one on screen, and two quote marks
-        // on the clipboard are not what was in the column.
+
         let label: String = if case .string(let s) = cell, s.isEmpty { "\"\"" } else { tableCellValue(cell) }
         return Text(label)
             .font(.system(Theme.caption, design: .monospaced))
@@ -174,8 +138,6 @@ struct TableSurface: View {
             .italic(cell == .null)
             .lineLimit(1)
     }
-
-    // MARK: windowing
 
     private func reset() async {
         rows = [:]
@@ -185,7 +147,6 @@ struct TableSurface: View {
         await fetch(offset: 0)
     }
 
-    /// A row coming on screen asks for its page, aligned to the page size.
     private func ensure(_ index: Int) {
         let offset = (index / Self.page) * Self.page
         guard rows[offset] == nil, !inflight.contains(offset) else { return }
@@ -212,9 +173,6 @@ struct TableSurface: View {
     }
 }
 
-/// One cell as text — what the grid draws and what "Copy value" writes. A
-/// whole number keeps its integer shape (`3`, not `3.0`), which is the one
-/// place a grid of floats reads as data rather than as arithmetic.
 func tableCellValue(_ cell: JSONValue) -> String {
     switch cell {
     case .null: "null"

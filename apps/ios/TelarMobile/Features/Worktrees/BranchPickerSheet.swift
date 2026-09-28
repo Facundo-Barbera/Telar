@@ -1,16 +1,8 @@
 import SwiftUI
 
-/// The base-ref picker as a searchable sheet — a nested menu cannot search,
-/// and a repo with a hundred branches makes a flat list unusable.
-///
-/// Browsing shows the three answers most picks want pinned on top (Current
-/// HEAD, the remote's default, the branch you are on), then locals with
-/// same-named `origin/` twins folded away. SEARCHING SUSPENDS THE FOLD:
-/// a typed query means "show me everything that matches", including the
-/// shadowed remote that may be ahead. Same rules as the web's picker.
 struct BranchPickerSheet: View {
     let git: GitOverview?
-    /// nil = the checkout's HEAD.
+
     let selected: String?
     let onPick: (String?) -> Void
 
