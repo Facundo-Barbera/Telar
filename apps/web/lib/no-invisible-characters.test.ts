@@ -73,7 +73,6 @@ const DELIBERATE = new Set([
   "apps/engine/src/platform/git/parse.ts", // U+001E/U+001F — git --format record and field separators
   "apps/engine/src/domains/github/detail.ts", // U+FEFF — strips a BOM off `gh` output
   "apps/engine/src/domains/github/detail.test.ts", // U+FEFF — the fixture that proves it
-  "apps/engine/src/cli-updates.ts", // U+0000 — joins id + binary path into a cache key
   "apps/engine/src/provider-instances.ts", // U+0000 — same, for an instance key
   "apps/web/lib/composer-completions.ts", // U+0000 — tie-breaker key join
 ]);

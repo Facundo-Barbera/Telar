@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
-import { refuseCliSpawnUnderTest, requireCli, resolveCliAsync } from "../../cli-resolution";
+import { refuseCliSpawnUnderTest, requireCli, resolveCliAsync } from "./cli";
 import { CodexAppServer, resolveCodexBinary } from "../../codex/app-server";
 import { readCodexWindows, withCodexLongRows, type CodexWindow } from "../../codex/windows";
 

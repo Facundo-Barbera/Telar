@@ -48,7 +48,7 @@ import {
   readProjectPlugins,
   workspacePath,
 } from "@telar/engine-client";
-import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
+import { runCliUpdate, type CliUpdateRun } from "./domains/providers";
 import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, type ComputerUseGate } from "./domains/computer-use";
 import { bearerIsValid } from "./http-auth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
