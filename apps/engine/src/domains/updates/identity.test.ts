@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { matchRoute } from "../../platform/http/route";
+import { matchRoute } from "../../platform/http/router";
 import { buildIdentity, locateWebRoot } from "./identity";
 import { aboutRoutes } from "./routes";
 
