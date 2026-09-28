@@ -34,7 +34,7 @@ Use these words. When you name things in code, use them too.
 ## Where code lives
 
 - `apps/engine`: engine and worker (Bun, TypeScript).
-- `apps/web`: the cockpit (Next.js, React). Today its `/api/**` routes proxy the engine; they are being replaced by one client.
+- `apps/web`: the cockpit (Next.js, React). Features call the engine through typed clients; the `/api/**` routes that forward those calls go away when the cockpit is static.
 - `apps/desktop`: the Electron shell. It hosts the cockpit, the integrated browser, terminals, packaging and self-update.
 - `apps/ios`: the native SwiftUI iPhone app and its Live Activity.
 - `packages/engine-client`: the engine's protocol (zod schemas) and typed HTTP client. It is the only contract between the apps.
@@ -46,7 +46,9 @@ Every feature belongs to a **domain**: one folder, with the same name in every a
 - Contract: `packages/engine-client/src/<name>/`.
 - iOS: `Features/<Name>/`.
 
-Code that is not a feature goes in `platform/` (kernel, db, http, git, process) or `ui/` (design system). A domain is imported only through its `index.ts`. If the folder you need doesn't exist yet, create it with that shape. Don't add a file to a directory root or to an old monolith.
+The cockpit also has four UI-only features with no domain: `commands`, `composer`, `transcript`, `panel`.
+
+Code that is not a feature goes in `platform/` (kernel, db, http, git, process), `ui/` (design system), or the engine's `drivers/` and `worker/`. A domain is imported only through its `index.ts`, or its `server.ts` for Node-only web code. If the folder you need doesn't exist yet, create it with that shape. Don't add a file to a directory root or to `state.ts`.
 
 ## The ways to hurt yourself
 

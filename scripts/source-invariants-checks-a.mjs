@@ -19,7 +19,7 @@ export const CHECKS_SCANS = [
             `${file}:${call.line}: \`${call.call}(…)\` is missing ${missing}. A synchronous child wait blocks the JS thread in wait4, ` +
               "where bun's per-test ceiling — an event-loop timer — can never reach it, so a child that does not exit is a test that never " +
               "fails and a `bun test` that never ends. Give this call site a ceiling it knows is generous for what it spawns, and SIGKILL " +
-              "so the ceiling reaches a child that has stopped answering. See src/worktree.ts's sync git runner for the shape.",
+              "so the ceiling reaches a child that has stopped answering. See src/platform/git/runner.ts's sync git runner for the shape.",
           );
         }
       }
