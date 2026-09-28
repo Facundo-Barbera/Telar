@@ -157,7 +157,7 @@ export function selectedContextMaxFromModel(model: string | undefined): number |
   return /\[1m\]$/i.test(model) && isClaudeLongContextFamily(model) ? 1_000_000 : claudeFixedWindowOf(model);
 }
 
-type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 const CLAUDE_EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
 export const claudeEffort = (value: string | undefined): ClaudeEffort | undefined =>
   value !== undefined && CLAUDE_EFFORTS.has(value) ? (value as ClaudeEffort) : undefined;

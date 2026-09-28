@@ -7,15 +7,7 @@ export {
   fieldDigests,
   resolveChildEnv,
 } from "./identity";
-export {
-  ClaudeRuntimeStore,
-  MessageFeed,
-  UNATTENDED_BACKGROUND_WORK_MS,
-  taskMemoryFrom,
-  type ClaudeSessionRuntime,
-  type RuntimeBindings,
-  type RuntimeQuery,
-} from "./runtime";
+export { ClaudeRuntimeStore, UNATTENDED_BACKGROUND_WORK_MS } from "./runtime";
 export {
   claudeProjectSlug,
   claudeProjectsRoot,
@@ -31,4 +23,4 @@ export { describeImport, readClaudeTranscriptFile, type ImportedRow, type Transc
 export { itemDetailForToolCall, requestKindForTool, setPluginReadTools, titleForToolCall } from "./mapping";
 export { claudeNotificationContent } from "./sdk";
 export { RateLimitedError } from "./limits";
-export { readTaskOutput, resolveTaskOutputFile, taskOutputFileFrom } from "./task-output";
+export { readTaskOutput, resolveTaskOutputFile } from "./task-output";
