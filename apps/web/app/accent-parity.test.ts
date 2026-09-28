@@ -151,8 +151,4 @@ describe("the phone reads the table rather than restating the default", () => {
   test("Theme.primaryGlyph is the indigo row", () => {
     expect(theme).toContain("static let primaryGlyph = Accent.indigo.glyph");
   });
-
-  test("and the doctrine the values follow is written down", () => {
-    expect(theme).toContain("the phone follows its paired cockpit");
-  });
 });

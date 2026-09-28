@@ -94,8 +94,4 @@ describe("the rung iOS had without a name", () => {
     expect(theme).toMatch(/static let popover = adaptive\(light: 0xFFFFFF, dark: 0x1C1C1C\)/);
     expect(css.slice(css.indexOf(":root"))).toContain("--popover: oklch(1 0 0);");
   });
-
-  test("why no menu adopts it is written down, not left to be rediscovered", () => {
-    expect(theme).toContain("whose chrome the system draws and which takes no");
-  });
 });

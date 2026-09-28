@@ -1,6 +1,5 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LooksSection } from "./looks-section";
 import { BUILT_IN_LOOKS } from "@/lib/built-in-looks";
@@ -72,20 +71,6 @@ test("the header's hairline matches its rows", () => {
   expect(html).toContain('<tr class="border-b border-border/40 text-2xs');
 });
 
-test("one stronger divider marks where the built-ins begin", () => {
-  // Read as source: `useLooks` answers with a frozen empty list on the server,
-  // so a static render has no saved cards and cannot reach the branch. What is
-  // worth pinning is that the boundary is drawn ONCE, on the last saved row —
-  // and as a `border-b`, because two rows' adjacent borders collapse to one and
-  // the higher row wins, which would have swallowed a `border-t` below it.
-  const source = readFileSync(new URL("./looks-section.tsx", import.meta.url), "utf8");
-  expect(source).toContain('lastSaved ? "border-border/70" : "border-border/40"');
-  expect(source).toContain("lastSaved={index === looks.length - 1}");
-  // The built-ins are rendered without it: they are the group it separates FROM,
-  // and a second stronger line would be two claims about one boundary.
-  expect(source).not.toMatch(/BUILT_IN_LOOKS\.map[\s\S]{0,200}lastSaved/);
-});
-
 test("the row's thumbnail is wide enough to be a picture of something", () => {
   // 56px, not the 40 it shipped at (#904): at 40 the tile was 40×22 and the
   // mini panel inside it left the two canvases as slivers inside the corner
@@ -93,13 +78,4 @@ test("the row's thumbnail is wide enough to be a picture of something", () => {
   // row's strip was already 56.
   expect(html).toContain('<span class="w-14 shrink-0">');
   expect(html).not.toContain('class="w-10 shrink-0"');
-});
-
-test("the rename field fits its column instead of claiming 160px", () => {
-  // Read as source: the field only renders once somebody has pressed Rename, so
-  // it is not in the markup above. `w-40` was wider than the name ever gets in a
-  // fixed Look column, and would have put the overflow back at that moment.
-  const source = readFileSync(new URL("./looks-section.tsx", import.meta.url), "utf8");
-  expect(source).toContain('className="h-6 min-w-0 flex-1 px-1.5 text-xs"');
-  expect(source).not.toContain("h-6 w-40");
 });

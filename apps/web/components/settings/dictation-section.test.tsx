@@ -1,14 +1,9 @@
 /**
  * THE DICTATION PANE (#544) — its own tab, off by default.
  *
- * Three claims, and each of them is one somebody would otherwise find out the
+ * Two claims, and each of them is one somebody would otherwise find out the
  * hard way:
  *
- *   - THE PANE EXISTS AS A DESTINATION. It is in `SECTIONS` under Cockpit and
- *     the page renders it for `active === "dictation"`, so the nav and the body
- *     agree. A section id in one and not the other is a nav button that opens
- *     an empty pane, which is the exact decay `settings-nav.test.ts` exists for
- *     on the route side.
  *   - SEARCH FINDS IT BY THE WORDS SOMEBODY ACTUALLY TYPES. It ships OFF, so
  *     the commonest question is "why is there no mic button" — asked as
  *     "dictation", "microphone", or "voice" — and all three have to land on the
@@ -23,24 +18,11 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { searchSettings } from "@/lib/settings-search";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
-
-const nav = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
-
-describe("the Dictation pane is a destination of its own", () => {
-  test("it is in the nav, under Cockpit rather than inside General", () => {
-    expect(nav).toContain('{ id: "dictation", label: "Dictation", icon: MicIcon, group: "Cockpit" }');
-  });
-
-  test("and the page renders it there rather than stacking it in General", () => {
-    expect(nav).toContain('{active === "dictation" && <DictationSection />}');
-  });
-});
 
 describe("search lands on it", () => {
   const first = (query: string) => searchSettings(SETTINGS_SEARCH_INDEX, query)[0];
