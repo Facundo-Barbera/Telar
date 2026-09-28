@@ -10,8 +10,7 @@ import { FrontDoor } from "./front-door";
  * somewhere you could type; the screen a person wanted was three clicks past the
  * screen they got.
  *
- * The table moved to `/projects` and has now been RETIRED, along with that
- * route. It was the destination of four different actions — a delete, a
+ * The table is RETIRED, along with its `/projects` route. It was the destination of four different actions — a delete, a
  * breadcrumb, a menu item, a dropdown glyph — none of which meant to send
  * anybody to a management screen, and being a real URL it survived reloads. So
  * the app kept resuming on a page nobody had chosen. Every one of those actions
