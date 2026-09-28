@@ -1,0 +1,30 @@
+{
+  "id": "tally",
+  "api": 1,
+  "name": "Tally",
+  "version": "0.1.0",
+  "description": "Counts named things for a project, as an example of an installed plugin.",
+  "icon": "hash",
+  "command": ["bun", "server.mjs"],
+  "toolPrefix": "tally",
+  "tools": [
+    {
+      "name": "tally_count",
+      "description": "Add to a named counter for this project and return its new value.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "label": { "type": "string", "description": "What is being counted." } },
+        "required": ["label"]
+      }
+    }
+  ],
+  "briefing": "The tally_count tool keeps named counters for this project. Use it when asked to count or tally something across a conversation.",
+  "settingsSchema": {
+    "type": "object",
+    "properties": {
+      "step": { "type": "integer", "minimum": 1, "maximum": 100, "title": "Step", "description": "How much each count adds." }
+    }
+  },
+  "routes": { "session": ["counts", "reset"] },
+  "panels": [{ "id": "counts", "label": "Counts", "verb": "counts" }]
+}
