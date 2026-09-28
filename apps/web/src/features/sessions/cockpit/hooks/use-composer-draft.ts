@@ -52,6 +52,10 @@ export function useComposerDraft({ sessionId, projectId }: { sessionId: string |
     if (caption) insertIntoComposer(caption);
   }, [insertIntoComposer]);
 
+  const claim = useCallback((next: DraftOwner) => {
+    owner.current = next;
+  }, []);
+
   // A recalled draft stops being that turn's retry the moment it is edited.
   const changeDraft = (next: string) => {
     setDraft(next);
@@ -59,6 +63,6 @@ export function useComposerDraft({ sessionId, projectId }: { sessionId: string |
   };
 
   return {
-    draft, setDraft, changeDraft, attachments, setAttachments, draftRunId, setDraftRunId, owner, draftText, insertIntoComposer, attachFromPanel,
+    draft, setDraft, changeDraft, attachments, setAttachments, draftRunId, setDraftRunId, claim, draftText, insertIntoComposer, attachFromPanel,
   };
 }

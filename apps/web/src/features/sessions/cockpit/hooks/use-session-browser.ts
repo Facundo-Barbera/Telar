@@ -12,6 +12,7 @@ import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { sessionHref } from "../../session-list";
 import { newSessionId } from "../../session-mutations";
 import { handOffCanvas } from "../canvas-handoff";
+import type { DraftOwner } from "./use-composer-draft";
 
 export type DraftChoices = {
   driver: ProviderDriverKind;
@@ -21,18 +22,15 @@ export type DraftChoices = {
   runtimeMode: RuntimeMode;
 };
 
-type Owner = { sessionId: string | undefined; projectId: string | undefined };
-
 /** The session's browser: whether it can start, and opening it — which first turns a fresh canvas into a draft session. */
-export function useSessionBrowser({ hostId, sessionId, projectId, transcriptLanded, events, draft, draftText, owner, panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab }: {
+export function useSessionBrowser(args: {
   hostId: string;
   sessionId: string | undefined;
   projectId: string | undefined;
   transcriptLanded: boolean;
   events: EngineEvent[];
   draft: DraftChoices;
-  draftText: RefObject<string>;
-  owner: RefObject<Owner>;
+  composer: { draftText: RefObject<string>; claim: (owner: DraftOwner) => void };
   panel: PanelTabState<PanelTab>;
   editors: Record<string, EditorState>;
   setSession: (session: Session) => void;
@@ -40,6 +38,7 @@ export function useSessionBrowser({ hostId, sessionId, projectId, transcriptLand
   showSessionBrowser: () => void;
   showPanelTab: (tab: PanelTab) => void;
 }) {
+  const { hostId, sessionId, projectId, transcriptLanded, events, draft, composer, panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab } = args;
   /** Folded once here so the panel and the pinned summary cannot disagree about which tabs are open. */
   const browser = useMemo(() => latestBrowserState(events), [events]);
 
@@ -91,10 +90,10 @@ export function useSessionBrowser({ hostId, sessionId, projectId, transcriptLand
       const patched = await draftApi.updateSession(id, { runtimeMode: draft.runtimeMode, ...(model ? { model } : {}) });
       // Keep the durable draft, but never navigate over a different conversation.
       if (window.location.pathname !== origin) return id;
-      writeDraft(id, projectId, draftText.current);
+      writeDraft(id, projectId, composer.draftText.current);
       writeDraft(undefined, projectId, "");
       handOffCanvas(id, projectId, { panel, editors }, { clearCanvas: true });
-      owner.current = { sessionId: id, projectId };
+      composer.claim({ sessionId: id, projectId });
       setSession(patched.session);
       setCreatedSessionId(id);
       const destination = sessionHref({ id, projectId, hostId });

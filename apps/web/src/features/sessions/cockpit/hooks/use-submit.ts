@@ -46,7 +46,7 @@ export function useSubmit(args: Args) {
   const landOn = (target: string, projectId: string) => {
     handOffCanvas(target, projectId, args.canvas, { clearCanvas: false });
     args.clearTranscript();
-    composer.owner.current = { sessionId: target, projectId };
+    composer.claim({ sessionId: target, projectId });
     args.setCreatedSessionId(target);
   };
 

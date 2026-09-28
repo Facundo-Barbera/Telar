@@ -71,8 +71,8 @@ export function SessionCockpit({
   const { panel, editors, updatePanel, showPanelTab, showSessionBrowser } = panelState;
   const panelPresence = usePanelPresence(!solo && panel.open);
   const browser = useSessionBrowser({
-    hostId, sessionId, projectId, transcriptLanded, events, draft: draftConfig.choices, draftText: composer.draftText,
-    owner: composer.owner, panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab,
+    hostId, sessionId, projectId, transcriptLanded, events, draft: draftConfig.choices, composer,
+    panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab,
   });
   useCockpitCommands({
     solo, enabledPlugins, panel: panelState,
