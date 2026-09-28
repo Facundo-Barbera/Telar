@@ -66,6 +66,19 @@ test("the POSIX group leads its own process group and signals all of it", () => 
   ]);
 });
 
+test("signalling a group that only has unreaped members is not an error, but any other refusal is", () => {
+  expect(() =>
+    posixProcessGroup(() => {
+      throw errno("EPERM");
+    }).stop(5, true),
+  ).not.toThrow();
+  expect(() =>
+    posixProcessGroup(() => {
+      throw errno("EINVAL");
+    }).stop(5, false),
+  ).toThrow("EINVAL");
+});
+
 test("a close's one look: ESRCH is the only answer that means the group is empty", () => {
   expect(
     posixProcessGroup(() => {

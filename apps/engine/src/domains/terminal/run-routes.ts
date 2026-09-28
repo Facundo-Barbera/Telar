@@ -8,10 +8,7 @@ import { holdEventStream, type OpenStream } from "../sessions";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
-/**
- * A session's runs. `/run/stream` holds an SSE feed of this session's terminals only;
- * every other `/run…` tail is `runMount`'s, and one it doesn't serve is the engine's 404.
- */
+/** `/run/stream` feeds this session's terminals only; every other `/run…` tail is `runMount`'s, or the engine's 404. */
 export function runRoutes(store: EngineStore, runMount: RunMount, openStreams: Set<OpenStream>): Route[] {
   const context = (sessionId: string) => () => {
     const record = store.getSession(sessionId);
