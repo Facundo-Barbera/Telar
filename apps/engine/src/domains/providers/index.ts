@@ -20,14 +20,7 @@ export {
   resolveCliAsync,
 } from "./cli";
 export { type CliUpdateRun } from "./cli-updates";
-export {
-  createProviderProber,
-  inheritedOwnedEnv,
-  providerEnvIsCredential,
-  providerOwnsEnv,
-  providerProcessEnv,
-  type VersionProbe,
-} from "./instances";
+export { providerProcessEnv, type VersionProbe } from "./instances";
 export {
   codexHome,
   loadClaudeCommandSdk,

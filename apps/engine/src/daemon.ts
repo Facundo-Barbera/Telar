@@ -17,7 +17,6 @@ import {
   type ComputerUseGrant,
   type EngineDiscovery,
   type EngineHealth,
-  type WorkerClaim,
   machineAllows,
   pluginSettings,
   readProjectPlugins,
@@ -27,7 +26,7 @@ import { computerUseRoutes, createComputerUseGate, type ComputerUseGate } from "
 import { bearerIsValid } from "./platform/http/auth";
 import { type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS, type SocketTool } from "./domains/agent-tools";
-import { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionBootstrap, type SessionBootstrapWindow, sessionsCapability, sessionSnapshot, sessionsSocketConnectCard, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
+import { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionsCapability, sessionsSocketConnectCard, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
 import { browserRoutes, browserSessionRoutes, createLoginGrantStore } from "./domains/browser";
 import {
   acquireDaemonLock,
@@ -83,34 +82,13 @@ import { aboutRoutes } from "./domains/updates";
 import { createPushService } from "./domains/push";
 import { errorFor as httpErrorFor, HttpError } from "./platform/http/http";
 import { router } from "./platform/http/router";
+import { startSweepers } from "./platform/process/sweepers";
+import { createWorkerRegistry } from "./worker/registry";
 import type { Route } from "./platform/http/route";
-import { stringValue } from "./platform/http/params";
 import { sessionAttachmentRoutes, sessionLifecycleRoutes, sessionReadRoutes, sessionsRoutes } from "./domains/sessions";
 import { schedulesRoutes } from "./domains/schedules";
 import { sessionTurnRoutes, turnRoutes, workerRoutes } from "./domains/turns";
 
-/**
- * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
- *
- * A claim whose response is lost must be repeatable without allocating a second
- * turn, and a random request id cannot do that safely: A is delayed, its retry
- * resolves, B replaces the record, and the original A finally arrives with an
- * id nobody remembers — so it allocates again. An ordered sequence has no such
- * window. Equal to the watermark returns the cached outcome (including a cached
- * "nothing to claim"); older is refused without allocating; only the next
- * number allocates, and only once the current op is definitive.
- */
-type RegisteredWorker = {
-  workerId: string;
-  registeredAt: number;
-  heartbeatAt: number;
-  claimSeq: number;
-  claimResult: WorkerClaim | undefined;
-  /** Serialises check+claim+cache for this worker ACROSS AWAITS: the claim
-   *  branch authorizes MCP servers over the network before replying, and two
-   *  concurrent requests interleaving there would both allocate. */
-  claimBusy: Promise<void> | undefined;
-};
 
 export type EngineDaemonOptions = {
   /** The background checkout sizer's seams (`checkout-sizes.ts`). Tests only. */
@@ -130,7 +108,7 @@ export type EngineDaemonOptions = {
    */
   dictationFetch?: typeof fetch;
   /** Worker liveness is deliberately short; a lost running turn is stopped
-   *  rather than replayed or left claimed. See `retireWorker`. */
+   *  rather than replayed or left claimed. See `worker/registry.ts`. */
   workerLeaseMs?: number;
   /** Testable cadence for pruning workers that can no longer heartbeat. */
   workerPruneIntervalMs?: number;
@@ -185,7 +163,7 @@ export type EngineDaemonOptions = {
   /**
    * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
    * ending that worker's claims happens on the default path inside
-   * `retireWorker` whether or not this is passed, because a deployment that
+   * `workers.retire` whether or not this is passed, because a deployment that
    * passed nothing would otherwise keep a stale claim for ever.
    */
   onWorkerRetired?: (workerId: string) => void;
@@ -710,196 +688,37 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   store.attachPluginRelease((sessionId, reason) => void pluginHost.releaseSession(sessionId, reason));
   const token = crypto.randomBytes(32).toString("base64url");
   const startedAt = (options.now ?? Date.now)();
-  const workers = new Map<string, RegisteredWorker>();
-  // Only the registration established by our own supervisor gets process-lifetime
-  // ownership. An HTTP client cannot opt into this by choosing a worker id.
-  let embeddedRegistration: RegisteredWorker | undefined;
   const now = options.now ?? Date.now;
   const workerLeaseMs = options.workerLeaseMs ?? 15_000;
-  /**
-   * WHAT THE EMBEDDED WORKER'S LOOP SLOWS TO WITH NOTHING TO DO.
-   *
-   * A tenth of the fast rate, and it costs nothing a person can feel because
-   * the store rings `wake()` the instant a queue moves — a message, a Stop, a
-   * claim — so the interval is only ever this long while genuinely nothing is
-   * happening. The one thing that does NOT ring it is stopping a background
-   * task in a session with no live turn (`task-stops.json` is not a queue), so
-   * that single action can take up to a second longer than it used to.
-   * Comfortably inside the lease either way: the watchdog runs at lease/3.
-   */
+  // The embedded loop's idle poll: the store rings `wake()` whenever a queue moves, so this only paces true idleness.
   const DEFAULT_EMBEDDED_IDLE_POLL_MS = 1_000;
-  /**
-   * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
-   * ending the work it held are the same event, so they are the same function
-   * and `workers.delete` is not called anywhere else. A path that forgot the
-   * second half would leave a claim held by a worker that no longer exists:
-   * the session's dispatch blocked behind it for ever, and the stale claim
-   * token still able to start a provider through `markTurnRunning` — a turn
-   * beginning after the thing that owned it was stopped.
-   *
-   * Both halves are fenced by ending the turn: `markRunning` takes only a
-   * `claimed` turn, so once this has run the old token is refused.
-   *
-   * Scoped per worker. A retiring registration says nothing about any other
-   * worker's claims, and sweeping theirs would stop work nobody touched.
-   */
-  const retireWorker = (workerId: string): void => {
-    // Idempotent: a registration already gone is a no-op, and the store finds
-    // no live claims to settle, so a second call journals nothing. That is what
-    // makes it safe to call from every path that might be the one that noticed.
-    workers.delete(workerId);
-    store.retireWorkerRegistration(workerId);
-    /**
-     * THE OBSERVER RUNS LAST, AND IS NOT THE CLEANUP. `onWorkerRetired` lets a
-     * caller (a test, the desktop shell) hear about a retirement; it is
-     * optional and unbound by default, so nothing that matters may depend on
-     * it. Terminalization happened above, on the default `startEngine` path,
-     * with no wiring required — a retirement whose cleanup lived in an
-     * optional callback would leave a stale claim blocking the session, and
-     * its token still able to start a provider, on every deployment that did
-     * not pass one.
-     */
-    options.onWorkerRetired?.(workerId);
-  };
-  const pruneWorkers = (): void => {
-    // The BACKSTOP for a worker that died without saying so — a directly
-    // constructed one, or a crash. The lease bounds how long its claim can sit
-    // there; nothing waits on it for ever.
-    const expired = [...workers.values()].filter((worker) => worker !== embeddedRegistration && now() - worker.heartbeatAt > workerLeaseMs);
-    for (const worker of expired) retireWorker(worker.workerId);
-  };
-  const activeWorker = (workerId: string): RegisteredWorker => {
-    pruneWorkers();
-    const worker = workers.get(workerId);
-    if (!worker) throw new HttpError(503, "worker_unavailable", "worker is not registered or its lease expired");
-    return worker;
-  };
-  const workerPruner = setInterval(pruneWorkers, options.workerPruneIntervalMs ?? Math.max(10, Math.floor(workerLeaseMs / 3)));
-  workerPruner.unref();
-  /**
-   * THE GRACE NEEDS SOMETHING THAT TICKS — issue #378.
-   *
-   * A delegate becomes settleable the moment its coordinator takes delivery,
-   * and then an hour has to pass with, typically, nothing happening at all.
-   * There is no engine-side settling clock to ride: the quiet window is folded
-   * by each client. `claimNextTurn` is the only other periodic pass and it
-   * walks the LIVE queue index, which by construction excludes exactly the
-   * finished conversations this is about.
-   *
-   * A THROW HERE MUST NOT TAKE THE DAEMON DOWN. The sweep already skips a
-   * session it cannot read; this is the backstop for anything else.
-   */
-  const delegationSweeper = setInterval(() => {
-    try {
-      store.sweepDelegatedSettling();
-    } catch {
-      /* the next tick tries again */
-    }
-  }, options.delegationSweepIntervalMs ?? 5 * 60_000);
-  delegationSweeper.unref();
-  /**
-   * AND A CLOCK-SETTLED SESSION'S TERMINALS NEED ONE — issue #883. Nothing
-   * writes when the inactivity window passes, and nothing when the grace after
-   * it does; see `sweepSettledTerminals`. Its own promise catches, so a tick
-   * that fails waits for the next.
-   */
-  const settledTerminalSweeper = setInterval(() => {
-    void store.sweepSettledTerminals().catch(() => undefined);
-  }, options.settledTerminalSweepIntervalMs ?? 5 * 60_000);
-  settledTerminalSweeper.unref();
-  // A minute is the shortest cohort timeout, so this ticks faster than that.
-  const cohortSweeper = setInterval(() => {
-    try {
-      store.sweepCohorts();
-    } catch {
-      /* the next tick tries again */
-    }
-    try {
-      store.sweepSubscriptions();
-    } catch {
-      /* the next tick tries again */
-    }
-  }, options.cohortSweepIntervalMs ?? 30_000);
-  cohortSweeper.unref();
-  const snoozeWakeSweeper = setInterval(() => {
-    try {
-      store.sweepSnoozeWakes();
-    } catch {
-      /* the next tick tries again */
-    }
-  }, options.snoozeWakeSweepIntervalMs ?? 60_000);
-  snoozeWakeSweeper.unref();
-  // 30 s because the shortest schedule interval is 60 s; a 60 s tick would double it.
-  /**
-   * THE AUTOMATIC CLEANUP: once five minutes after start, then every thirty.
-   * With every switch off, a sweep reads one small document and stops.
-   */
-  const sweepCleanup = () => {
-    void store
-      .runCleanup()
-      .then(() => {
-        storageMeter.forget();
-      })
-      .catch(() => {
-        /* the next tick tries again */
-      });
-  };
-  const cleanupFirst = setTimeout(sweepCleanup, options.cleanupFirstDelayMs ?? 5 * 60 * 1000);
-  cleanupFirst.unref();
-  /**
-   * THE MODEL CATALOGUES, REFRESHED ONCE SOON AFTER START — so the first picker
-   * opened today answers from a list read today. Late enough not to compete
-   * with the start itself; one provider at a time inside the store; never on a
-   * request path. A picker opened before it runs still answers at once, from
-   * the catalogue persisted by the last run.
-   */
-  const modelPrefetch = options.modelPrefetchDelayMs === null
-    ? undefined
-    : setTimeout(() => void store.prefetchModelCatalogues().catch(() => undefined), options.modelPrefetchDelayMs ?? 5_000);
-  modelPrefetch?.unref();
-  const cleanupSweeper = setInterval(sweepCleanup, options.cleanupIntervalMs ?? 30 * 60 * 1000);
-  cleanupSweeper.unref();
-  const scheduleSweeper = setInterval(() => {
-    try {
-      store.sweepSchedules();
-    } catch {
-      /* the next tick tries again */
-    }
-  }, options.scheduleSweepIntervalMs ?? 30_000);
-  scheduleSweeper.unref();
-  /**
-   * AND A REQUEST DEADLINE NEEDS ONE — issue #541 D.
-   *
-   * The fourth instance of the gap the three above describe, and the one with a
-   * person's evening in it: `requests.ts` has said since it was written that a
-   * detached session which parks an approval at minute three and sits there
-   * until morning "is not autonomous; it is stuck, and worse, it is stuck
-   * silently". Nothing writes when a deadline passes, so this is the write.
-   *
-   * 15 s, AND THE FLOOR IS FINER THAN THE THREE ABOVE ON PURPOSE. Their clocks
-   * are presets — an hour's snooze, a minute's window — and this one's is
-   * whatever the asker wrote down. A tick coarser than the shortest deadline
-   * anyone sets would quietly BECOME the deadline, which is the class of bug
-   * where a feature works and its number is a fiction.
-   *
-   * A THROW HERE MUST NOT TAKE THE DAEMON DOWN, as above. The sweep already
-   * skips a session it cannot read; this is the backstop for anything else.
-   */
-  const requestDeadlineSweeper = setInterval(() => {
-    try {
-      store.sweepRequestDeadlines();
-    } catch {
-      /* the next tick tries again */
-    }
-  }, options.requestDeadlineSweepIntervalMs ?? 15_000);
-  requestDeadlineSweeper.unref();
-  const stopTimers = () => {
-    for (const timer of [workerPruner, delegationSweeper, settledTerminalSweeper, cohortSweeper, snoozeWakeSweeper, scheduleSweeper, requestDeadlineSweeper, cleanupSweeper]) {
-      clearInterval(timer);
-    }
-    clearTimeout(cleanupFirst);
-    if (modelPrefetch) clearTimeout(modelPrefetch);
-  };
+  const workers = createWorkerRegistry(store, { now, leaseMs: workerLeaseMs, ...(options.onWorkerRetired ? { onRetired: options.onWorkerRetired } : {}) });
+  const sweepCleanup = () => store.runCleanup().then(() => storageMeter.forget());
+  const sweepers = startSweepers([
+    { every: options.workerPruneIntervalMs ?? Math.max(10, Math.floor(workerLeaseMs / 3)), run: workers.prune },
+    // Nothing writes when a delegate's hour of quiet passes, a settled session's grace ends or a deadline expires; these are those writes.
+    { every: options.delegationSweepIntervalMs ?? 5 * 60_000, run: () => store.sweepDelegatedSettling() },
+    { every: options.settledTerminalSweepIntervalMs ?? 5 * 60_000, run: () => store.sweepSettledTerminals() },
+    // A minute is the shortest cohort timeout, so this ticks faster than that.
+    {
+      every: options.cohortSweepIntervalMs ?? 30_000,
+      run: () => {
+        try {
+          store.sweepCohorts();
+        } finally {
+          store.sweepSubscriptions();
+        }
+      },
+    },
+    { every: options.snoozeWakeSweepIntervalMs ?? 60_000, run: () => store.sweepSnoozeWakes() },
+    { every: options.scheduleSweepIntervalMs ?? 30_000, run: () => store.sweepSchedules() },
+    // Finer than the rest: a tick coarser than the shortest deadline someone sets would become the deadline.
+    { every: options.requestDeadlineSweepIntervalMs ?? 15_000, run: () => store.sweepRequestDeadlines() },
+    { once: options.cleanupFirstDelayMs ?? 5 * 60 * 1000, run: sweepCleanup },
+    { every: options.cleanupIntervalMs ?? 30 * 60 * 1000, run: sweepCleanup },
+    // Refreshed once soon after start, off every request path, so the first picker today reads today's list.
+    { once: options.modelPrefetchDelayMs === null ? null : (options.modelPrefetchDelayMs ?? 5_000), run: () => store.prefetchModelCatalogues() },
+  ]);
 
   // Read once: it names the Mac to another cockpit (`.local` dropped — it is
   // mDNS's suffix, not the name), and a name that flickered per request
@@ -910,13 +729,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     daemonId,
     ...(hostname ? { hostname } : {}),
     startedAt,
-    ...(() => {
-      pruneWorkers();
-      const first = workers.values().next().value as RegisteredWorker | undefined;
-      return first
-        ? { worker: { registered: true, workerId: first.workerId, activeWorkers: workers.size } }
-        : { worker: { registered: false, activeWorkers: 0 } };
-    })(),
+    worker: workers.health(),
     // Every registered plugin and what its startup did. Additive on every
     // client: one that predates the host decodes the keys it knows.
     ...(pluginStatuses.length > 0 ? { plugins: pluginHost.statuses() } : {}),
@@ -946,65 +759,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
 
 
 
-  const execution = createExecutionPort(store, {
-    registerWorker: async (workerId) => {
-        stringValue(workerId, "worker id");
-        if (!/^[A-Za-z0-9_-]+$/.test(workerId)) throw new HttpError(400, "invalid_request", "worker id is unsafe");
-        pruneWorkers();
-        if (workers.has(workerId)) throw new HttpError(409, "conflict", "worker id is already registered");
-        const at = now();
-        workers.set(workerId, { workerId, registeredAt: at, heartbeatAt: at, claimSeq: 0, claimResult: undefined, claimBusy: undefined });
-        return { worker: { workerId }, heartbeatIntervalMs: Math.max(50, Math.floor(workerLeaseMs / 3)) };
-
-    },
-    workerHeartbeat: async (workerId, _signal, acknowledgedTaskStops) => {
-      const worker = activeWorker(workerId);
-      worker.heartbeatAt = now();
-      return { workerId, heartbeatAt: worker.heartbeatAt,
-        cancel: store.cancellationsForWorker(workerId), resolved: store.resolutionsForWorker(workerId),
-        steer: store.steerForWorker(workerId), stopTask: store.taskStopsForWorker(workerId, acknowledgedTaskStops) };
-    },
-    claimTurn: async (workerId, seq) => {
-      const worker = activeWorker(workerId);
-      worker.heartbeatAt = now();
-
-          if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
-            throw new HttpError(400, "invalid_request", "claim sequence must be a positive integer");
-          }
-          // One at a time per worker, so the authorize await below cannot let a
-          // duplicate interleave between the watermark check and the cache.
-          const previous = worker.claimBusy ?? Promise.resolve();
-          let release!: () => void;
-          worker.claimBusy = new Promise<void>((resolve) => {
-            release = resolve;
-          });
-          await previous;
-          try {
-            // This request may have waited behind an authorization call while
-            // its registration retired. Never allocate for that old generation.
-            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
-            // An already-answered sequence replays its outcome — never a second
-            // allocation, and `undefined` is a cached answer like any other.
-            if (seq === worker.claimSeq) {
-              return { claim: worker.claimResult };
-            }
-            // A straggler from a superseded op. Refused WITHOUT allocating:
-            // answering it would hand out a turn nobody is waiting for.
-            if (seq < worker.claimSeq) throw new HttpError(409, "conflict", "claim sequence superseded");
-            if (seq !== worker.claimSeq + 1) throw new HttpError(400, "invalid_request", "claim sequence out of order");
-            // The claim itself is synchronous and under the state lock;
-            // attaching managed OAuth bearers is a network call.
-            const claimed = store.claimNextTurn(workerId);
-            const authorized = claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined;
-            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
-            worker.claimSeq = seq;
-            worker.claimResult = authorized;
-            return { claim: authorized };
-          } finally {
-            release();
-          }
-    },
-  }, activeWorker);
+  const execution = createExecutionPort(store, workers.registration, workers.active);
 
   const authorize = (auth: Route["auth"], request: http.IncomingMessage): void => {
     if (auth === "engine" && !bearerIsValid(request.headers.authorization, token)) {
@@ -1030,11 +785,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...browserSessionRoutes(store), ...pluginSessionRoutes((id) => pluginHost.ready(id)), ...runRoutes(store, runMount, openStreams), ...sessionAttachmentRoutes(store),
     ...sessionTurnRoutes(store, {
       execution,
-      activeWorker,
-      requireWorker: () => {
-        pruneWorkers();
-        if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no worker is registered");
-      },
+      activeWorker: workers.active,
+      requireWorker: workers.requireAny,
       retitle: (sessionId, input) => setImmediate(() => void maybeRetitleSession(store, sessionId, input)),
     }),
   );
@@ -1126,7 +878,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         connect: async () => {
           return withDirectExecution(new EngineClient(discovery), { ...execution, registerWorker: async (id) => {
             const result = await execution.registerWorker(id);
-            embeddedRegistration = workers.get(id);
+            workers.setEmbedded(id);
             return result;
           } }, (error) => {
             const normalized = errorFor(error);
@@ -1151,7 +903,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             loginGrants: createLoginGrantStore(store.paths.root),
             ...(telarSocket ? { telarSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
-            // TRUSTED, and in-process: this is the registration `pruneWorkers`
+            // TRUSTED, and in-process: this is the registration `workers.prune`
             // excludes, so the worker must not expire itself on a clock the
             // engine does not hold it to. Not derivable from any response.
             leaseExempt: true,
@@ -1180,7 +932,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           worker.stop = async (reason) => {
             // A stopped/replaced generation must not leave an immortal entry,
             // nor clear the ownership of a later generation.
-            if (embeddedRegistration?.workerId === ownedWorkerId) embeddedRegistration = undefined;
+            if (workers.embeddedId() === ownedWorkerId) workers.setEmbedded(undefined);
             // Same fence for the doorbell: a retired generation must not keep
             // receiving nudges, and must not silence its replacement's.
             if (wakeEmbeddedWorker === wakeThisGeneration) wakeEmbeddedWorker = undefined;
@@ -1198,7 +950,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
              * the named seam it wires into, and it is scoped to THIS
              * generation's id so no unrelated session can be touched through it.
              */
-            retireWorker(ownedWorkerId);
+            workers.retire(ownedWorkerId);
             // Forwarded, so a replaced generation's turns are told they were
             // replaced rather than that Telar shut down — see #208.
             await stop(reason);
@@ -1279,7 +1031,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         for (const stream of openStreams) (stream.end ?? stream)();
         openStreams.clear();
         await closeServer(server);
-        stopTimers();
+        sweepers.stop();
         store.checkoutSizes.stop();
         // No worktree setup outlives the engine that started it; a cleanup
         // deletes, so it does not tick against a store that is closing.
@@ -1290,7 +1042,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       },
     };
   } catch (error) {
-    stopTimers();
+    sweepers.stop();
     server.close();
     store.closeExecutionStore();
     lock.release();
