@@ -1,0 +1,9 @@
+{
+  "apps/engine": 0.3472,
+  "apps/web": 0.3317,
+  "apps/desktop": 0.2594,
+  "apps/ios": 0.2638,
+  "packages/engine-client": 0.5637,
+  "workers/push-relay": 0.1635,
+  "workers/updates-proxy": 0.2375
+}
