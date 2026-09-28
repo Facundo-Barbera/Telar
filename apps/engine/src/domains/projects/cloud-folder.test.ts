@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../../state";
-import { probeAvailability, volumeForRoot } from "../../volumes";
+import { probeAvailability, volumeForRoot } from "../../platform/fs/volumes";
 import { createAsyncGitRunner, defaultGitRunner } from "../../platform/git/runner";
 import { createSessionWorktreeAsync, defaultWorktreesRoot, isGitWorkTree, prepareSessionWorktree } from "../worktrees";
 

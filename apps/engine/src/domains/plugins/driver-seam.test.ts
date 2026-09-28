@@ -22,8 +22,7 @@ import {
   parseToolName,
 } from "@telar/engine-client";
 import { codexApprovalRequest, codexItemDetail, MCP_ELICITATION } from "../../drivers/codex";
-import { createClaudeDriver } from "../../drivers/claude";
-import { requestKindForTool, setPluginReadTools } from "../../drivers/claude";
+import { createClaudeDriver, requestKindForTool, setPluginReadTools } from "../../drivers/claude";
 import { bundledPluginToolModules, setPluginToolModules } from "./bundled";
 import { helloToolModule } from "./hello";
 import { HOST_RATIFIED_READ_TOOLS } from "./policy";

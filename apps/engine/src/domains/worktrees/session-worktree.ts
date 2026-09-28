@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { ProjectAvailability } from "../../volumes";
+import type { ProjectAvailability } from "../../platform/fs/volumes";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "./location";
 import { detectCacheDedup, type CacheDedupVerdict } from "../storage";
 import type { GitRunner, AsyncGitRunner } from "../../platform/git/runner";

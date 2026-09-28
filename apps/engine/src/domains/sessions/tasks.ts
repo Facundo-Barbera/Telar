@@ -1,7 +1,7 @@
 import path from "node:path";
 import { isBackgroundWork, Task, type ProviderDriverKind } from "@telar/engine-client";
 import { EngineStateError, STATE_VERSION, type Kernel } from "../../platform/kernel";
-import type { EngineStatePaths } from "../../state-paths";
+import type { EngineStatePaths } from "../../platform/fs/state-paths";
 import { sessionDir } from "./metadata";
 
 export type TaskStopDelivery = { deliveryId: string; sessionId: string; providerTaskId: string; workerId: string; driver: ProviderDriverKind };

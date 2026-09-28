@@ -7,3 +7,4 @@ export { clampLimit, err, failure, fillWithin, json, MAX_ANSWER_CHARS, ok, type 
 export { McpOAuthStore, type PendingMcpOAuth } from "./mcp-oauth-store";
 export { McpServers } from "./mcp-servers";
 export { mcpSocketRoute } from "./socket-routes";
+export { type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Turn, TurnState, type Item } from "@telar/engine-client";
 import { assertId, assertStateVersion, EngineStateError, STATE_VERSION, type Kernel } from "../../platform/kernel";
-import type { EngineStatePaths } from "../../state-paths";
+import type { EngineStatePaths } from "../../platform/fs/state-paths";
 import { summariseTurn } from "../turns";
 import { sessionDir } from "./metadata";
 

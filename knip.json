@@ -13,7 +13,6 @@
     },
     "apps/engine": {
       "entry": [
-        "src/*-main.ts",
         "bench/*.ts",
         "scripts/*.{ts,mjs}"
       ],

@@ -3,10 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Turn } from "@telar/engine-client";
-import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv } from "../src/state";
+import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, engineRootFromEnv } from "../src/state";
+import { statePaths } from "../src/platform/fs/state-paths";
 import type { ExecutionStore } from "../src/platform/db/execution-store";
-import { INLINE_CHARS } from "../src/domains/turns/agent-notice";
-import { RELAY_RULE } from "../src/domains/turns";
+import { INLINE_CHARS, RELAY_RULE } from "../src/domains/turns";
 import { forgetOpenPrefixes, openPrefixCount } from "./store-internals";
 
 const roots: string[] = [];
@@ -1284,7 +1284,7 @@ test("concurrent stale-lock breakers elect exactly one replacement owner", async
   fs.mkdirSync(paths.root, { recursive: true });
   fs.writeFileSync(paths.lock, JSON.stringify({ pid: -1, token: "dead" }));
   const source = path.resolve(import.meta.dir, "../src/state.ts");
-  const program = `import { acquireDaemonLock, statePaths } from ${JSON.stringify(source)};
+  const program = `import { acquireDaemonLock } from ${JSON.stringify(source)}; import { statePaths } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/platform/fs/state-paths.ts"))};
 const lock = acquireDaemonLock(statePaths(${JSON.stringify(stateRoot)}));
 setTimeout(() => { lock.release(); process.exit(0); }, 1_000);`;
   const left = Bun.spawn([process.execPath, "-e", program], { stdout: "ignore", stderr: "ignore" });

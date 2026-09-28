@@ -1,5 +1,5 @@
 import { resolveMcpServers, type McpOAuthStatus, type McpServer } from "@telar/engine-client";
-import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "../../mcp-oauth";
+import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { fail, ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 

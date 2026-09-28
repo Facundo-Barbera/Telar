@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { EngineEvent } from "@telar/engine-client";
 import { atomicWrite } from "../fs/atomic";
-import { statePaths } from "../../state-paths";
+import { statePaths } from "../fs/state-paths";
 import type { ExecutionHousekeeping, ExecutionStore } from "./execution-store";
 
 const FILES = ["session.json", "queue.json", "items.json", "requests.json", "tasks.json"];

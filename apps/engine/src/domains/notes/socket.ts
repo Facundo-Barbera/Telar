@@ -1,7 +1,7 @@
 import path from "node:path";
 import { collectTools, connectCard, ensureSecretFile, handleSocketMessage as handleMessage, type SocketTool } from "../agent-tools";
 import { notesTools, type NotesCapability } from "./tools";
-import type { EngineStatePaths } from "../../state";
+import type { EngineStatePaths } from "../../platform/fs/state-paths";
 
 const NOTES_SERVER = { name: "telar-notes", version: "1.0.0" };
 

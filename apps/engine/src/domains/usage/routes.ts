@@ -2,7 +2,7 @@ import type { UsageLimits } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
 import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
-import { readUsageReport } from "../../usage";
+import { readUsageReport } from "./scan";
 import { readUsageLimitSource } from "./limits";
 
 const LIMITS_TTL_MS = 5 * 60_000;

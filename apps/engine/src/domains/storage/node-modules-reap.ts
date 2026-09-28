@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { statePaths } from "../../state-paths";
+import { statePaths } from "../../platform/fs/state-paths";
 
 const REAP_EVERY_MS = 24 * 60 * 60 * 1000;
 

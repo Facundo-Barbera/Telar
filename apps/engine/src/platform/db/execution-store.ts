@@ -3,7 +3,7 @@ import path from "node:path";
 import type { EngineEvent } from "@telar/engine-client";
 import type { TurnSummary } from "../../domains/turns";
 import { atomicWrite } from "../fs/atomic";
-import { statePaths } from "../../state-paths";
+import { statePaths } from "../fs/state-paths";
 import { maybeBarrier } from "./durability";
 import {
   COMPACT_WATERMARK_PREFIX, reclaim, rehydrate, pruneReceipts, REQUEST_PRUNE_WATERMARK_PREFIX, SLIM_WATERMARK_PREFIX,

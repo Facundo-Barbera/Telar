@@ -16,7 +16,7 @@ import {
   type Project,
 } from "@telar/engine-client";
 import { assertId, assertStateVersion, EngineStateError, STATE_VERSION, type Kernel } from "../../platform/kernel";
-import { volumeForRoot, type VolumeDeps } from "../../volumes";
+import { volumeForRoot, type VolumeDeps } from "../../platform/fs/volumes";
 import { ensureTelarGitignore } from "../git";
 import type { ProjectProbes } from "./probes";
 

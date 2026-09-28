@@ -2,7 +2,7 @@ import path from "node:path";
 import { Item } from "@telar/engine-client";
 import type { EngineEvent } from "@telar/engine-client";
 import { EngineStateError, type Kernel } from "../../platform/kernel";
-import type { EngineStatePaths } from "../../state-paths";
+import type { EngineStatePaths } from "../../platform/fs/state-paths";
 import { sessionDir } from "./metadata";
 
 const ITEMS_CACHE_LIMIT = 8;

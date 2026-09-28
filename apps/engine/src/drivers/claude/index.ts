@@ -16,3 +16,4 @@ export { claudeNotificationContent } from "./sdk";
 export { RateLimitedError } from "./limits";
 export { readTaskOutput, resolveTaskOutputFile } from "./task-output";
 export { createClaudeDriver } from "./run";
+export { adoptClaudeConversation, type Adoption, describeAdoption, listAdoptableConversations } from "./adopt";

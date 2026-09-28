@@ -1,19 +1,7 @@
-/**
- * WHICH DISK A PROJECT IS ON, and whether it is here — `src/volumes.ts`.
- *
- * The module under test is the one owner of both questions, so this file is
- * where the answers are pinned: what counts as an external volume (a short list
- * of mount roots, NOT a device-number walk, which every APFS Mac would fail),
- * what a mount point is (a device of its own, which an empty folder left behind
- * does not have), and the three states a project's files can be in.
- *
- * Every case runs against `fakeMounts()` — real directories, a synthesized
- * device and uuid. Nothing here mounts or unmounts a real volume.
- */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { fakeMounts, type FakeMounts } from "../test/fake-mount";
+import { fakeMounts, type FakeMounts } from "../../../test/fake-mount";
 import { findVolumeMount, isMountPoint, mountPointForRoot, mountRootsFor, parseVolumeUuid, probeAvailability, volumeForRoot } from "./volumes";
 
 const drives: FakeMounts[] = [];
@@ -25,10 +13,6 @@ const fixture = (): FakeMounts => {
 afterEach(() => {
   for (const drive of drives.splice(0)) drive.cleanup();
 });
-
-/* ------------------------------------------------------------------ *
- * What counts as a volume
- * ------------------------------------------------------------------ */
 
 test("the mount roots are the platform's, and nothing anywhere else is external", () => {
   expect(mountRootsFor("darwin")).toEqual(["/Volumes"]);
@@ -43,9 +27,6 @@ test("a path under a mount root belongs to the volume one segment down", () => {
 });
 
 test("an ordinary home-directory project is NOT on a volume — the APFS trap", () => {
-  // On every modern Mac `~` sits on a Data volume with a different `st_dev`
-  // than `/`, so a device-number walk would call this external. The mount-root
-  // list is what keeps it internal.
   const deps = { platform: "darwin" as const, mounts: ["/Volumes"] };
   expect(mountPointForRoot("/Users/someone/code/thing", deps)).toBeUndefined();
   expect(mountPointForRoot("/Volumes", deps)).toBeUndefined();
@@ -72,8 +53,6 @@ test("a volume identity is the mount AND the uuid, and absent without a uuid", (
 
   expect(volumeForRoot(root, drives.deps)).toEqual({ mount, uuid: drives.uuidOf("TelarVR") });
 
-  // A drive `diskutil` has no VolumeUUID for — a share, an odd filesystem —
-  // keeps today's behaviour rather than half of this feature.
   expect(volumeForRoot(root, { ...drives.deps, volumeUuid: () => undefined })).toBeUndefined();
 });
 
@@ -83,10 +62,6 @@ test("VolumeUUID is read out of diskutil's plist, and absent when it is not ther
   ).toBe("1B2C-3D4E");
   expect(parseVolumeUuid("<dict><key>VolumeName</key><string>TelarVR</string></dict>")).toBeUndefined();
 });
-
-/* ------------------------------------------------------------------ *
- * The one probe
- * ------------------------------------------------------------------ */
 
 test("a project on this machine's own disk is available, and missing once deleted", () => {
   const drives = fixture();
@@ -119,9 +94,6 @@ test("an unplugged drive is UNMOUNTED, not missing — the difference is a cable
 });
 
 test("a RECREATED EMPTY MOUNTPOINT is unmounted, however readable it looks", () => {
-  // The worst case in #534: macOS leaves `/Volumes/<name>` behind as an
-  // ordinary folder, a `stat` on it succeeds, and a provider would otherwise
-  // be spawned in an empty directory that disappears on the next remount.
   const drives = fixture();
   const mount = drives.mount("TelarVR");
   const root = path.join(mount, "project");
@@ -145,10 +117,6 @@ test("a folder deleted from a drive that IS here is missing, not unmounted", () 
   fs.rmSync(root, { recursive: true });
   expect(probeAvailability({ root, volume }, drives.deps)).toBe("missing");
 });
-
-/* ------------------------------------------------------------------ *
- * Finding a drive again
- * ------------------------------------------------------------------ */
 
 test("a drive is found by uuid wherever macOS mounted it this time", () => {
   const drives = fixture();
