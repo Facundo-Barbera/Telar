@@ -85,20 +85,18 @@ test("the list has one row per registered plugin, with the Mac switch as it stan
   expect(visible(latex) && visible(hello)).toBe(true);
   expect(latex.getAttribute("aria-checked")).toBe("false");
   expect(hello.getAttribute("aria-checked")).toBe("true");
-  expect(visible(host.querySelector('[aria-label="LaTeX on this Mac"]'))).toBe(false);
   expect(visible([...host.querySelectorAll("button")].find((button) => button.textContent === "Copy…")!)).toBe(true);
   done();
 });
 
-test("choosing a row opens that plugin's page, and back returns to the list", async () => {
+test("choosing a row shows that plugin's page beside the list", async () => {
   const { host, done } = await mount();
-  await act(async () => (host.querySelector('[aria-label="Open Hello"]') as HTMLElement).click());
+  expect(visible(host.querySelector('[aria-label="LaTeX on this Mac"]'))).toBe(true);
+  await act(async () => (host.querySelector('[data-master-item="hello"]') as HTMLElement).click());
   expect(visible(host.querySelector('[aria-label="Hello on this Mac"]'))).toBe(true);
-  expect(visible(host.querySelector('[aria-label="LaTeX enabled on this Mac"]'))).toBe(false);
-  const page = host.querySelector('[data-plugin-page="hello"]')!;
-  expect(page.textContent).toContain("Nothing to configure");
-  await act(async () => ([...page.querySelectorAll("button")].find((button) => button.textContent === "Plugins") as HTMLElement).click());
+  expect(visible(host.querySelector('[aria-label="LaTeX on this Mac"]'))).toBe(false);
   expect(visible(host.querySelector('[aria-label="LaTeX enabled on this Mac"]'))).toBe(true);
+  expect(host.querySelector('[data-detail-for="hello"]')!.textContent).toContain("Nothing to configure");
   done();
 });
 
@@ -106,7 +104,6 @@ test("the switch sends the same Mac patch from the list and from the page", asyn
   const { host, done } = await mount();
   await act(async () => (host.querySelector('[aria-label="LaTeX enabled on this Mac"]') as HTMLElement).click());
   await flush();
-  await act(async () => (host.querySelector('[aria-label="Open LaTeX"]') as HTMLElement).click());
   await act(async () => (host.querySelector('[aria-label="LaTeX on this Mac"]') as HTMLElement).click());
   await flush();
   expect(patches).toEqual([{ latex: { enabled: true } }, { latex: { enabled: false } }]);

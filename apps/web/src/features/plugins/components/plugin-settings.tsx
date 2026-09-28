@@ -9,7 +9,6 @@ import { pluginEnabled, pluginSettings, readProjectPlugins } from "@telar/engine
 import { Badge } from "@/ui/badge";
 import { Switch } from "@/ui/switch";
 import { GeneratedSettingsRows } from "./generated-settings";
-import { NothingToConfigure } from "./plugin-browser";
 import { settingsFields } from "../settings-form";
 import { Row, SettingsGroup } from "@/features/settings";
 
@@ -109,4 +108,8 @@ export function PluginSettings({
       )}
     </SettingsGroup>
   );
+}
+
+export function NothingToConfigure({ hint }: { hint: string }) {
+  return <p className="py-3 text-xs text-muted-foreground">Nothing to configure. {hint}</p>;
 }

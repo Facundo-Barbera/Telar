@@ -11,10 +11,10 @@ import { chooseDirectory } from "@/platform/desktop/choose-directory";
 import { Switch } from "@/ui/switch";
 import { machineBlocksFor } from "./settings-panes";
 import { GeneratedSettingsRows, pluginIcon } from "./generated-settings";
-import { NothingToConfigure, PluginBrowser, type PluginListItem } from "./plugin-browser";
+import { NothingToConfigure } from "./plugin-settings";
 import { generatedGroupTitle, settingsFields } from "../settings-form";
 import { machineSettingsPatch } from "../sections";
-import { Row, SettingsGroup } from "@/features/settings";
+import { MasterDetail, Row, SettingsGroup, type MasterDetailItem } from "@/features/settings";
 
 const api = createEngineApi();
 
@@ -139,7 +139,7 @@ export function PluginsPage() {
     );
   }
 
-  const items = plugins.map((status): PluginListItem => {
+  const items = plugins.map((status): MasterDetailItem => {
     const allowed = machineAllows(machine, status.meta.id);
     const failed = status.state === "failed";
     const hint = failed ? (status.error ?? "This plugin did not start.") : status.meta.blurb;
@@ -152,13 +152,14 @@ export function PluginsPage() {
         aria-label={label}
       />
     );
+    const Icon = pluginIcon(status.meta.icon);
     return {
       id: status.meta.id,
-      name: status.meta.name,
-      icon: pluginIcon(status.meta.icon),
-      hint,
+      label: status.meta.name,
+      icon: <Icon className="size-4" />,
+      description: hint,
       control: control(`${status.meta.name} enabled on this Mac`),
-      page: (
+      detail: (
         <MachinePluginPage
           status={status}
           hint={hint}
@@ -181,8 +182,9 @@ export function PluginsPage() {
   });
 
   return (
-    <PluginBrowser
+    <MasterDetail
       title="Plugins"
+      param="plugin"
       description="Turning one off here makes it unavailable in every project on this Mac."
       items={items}
       empty={<Row icon={BlocksIcon} label="No plugins registered" control={<Badge variant="outline">None</Badge>} />}

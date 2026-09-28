@@ -82,12 +82,12 @@ test("one row per registered plugin, each switch showing the project's own state
   view.done();
 });
 
-test("choosing a registry-only plugin opens its page, which has nothing to configure", async () => {
+test("choosing a registry-only plugin shows its page, which has nothing to configure", async () => {
   const view = await mount(<ProjectPluginList project={project({}, "hello")} plugins={[LATEX, HELLO]} onChange={() => {}} />);
-  await click(view.host.querySelector('[aria-label="Open Hello"]'));
-  const page = view.host.querySelector('[data-plugin-page="hello"]')!;
+  await click(view.host.querySelector('[data-master-item="hello"]'));
+  const page = view.host.querySelector('[data-detail-for="hello"]')!;
   expect(visible(page)).toBe(true);
-  expect(visible(view.host.querySelector('[aria-label="Hello for this project"]'))).toBe(false);
+  expect(visible(view.host.querySelector('[data-detail-for="latex"]'))).toBe(false);
   expect(page.textContent).toContain("Nothing to configure");
   expect(visible(page.querySelector('[aria-label="Hello enabled"]'))).toBe(true);
   view.done();
@@ -116,7 +116,7 @@ test("the list switch sends the patch the plugin's own switch sends", async () =
 test("without a project, or on another Mac, the switches are inert and nothing opens", () => {
   const none = renderToStaticMarkup(<ProjectPluginList plugins={[LATEX]} />);
   expect(none).toContain("Select a project to turn LaTeX on for it.");
-  expect(none).not.toContain('aria-label="Open LaTeX"');
+  expect(none).not.toContain("data-detail-for");
   const far = renderToStaticMarkup(<ProjectPluginList project={project({ hostId: "host_mini", hostName: "mini" })} plugins={[LATEX]} />);
   expect(far).toContain("Registered on mini");
   expect(far).toContain("inert");

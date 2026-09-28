@@ -7,10 +7,9 @@ import { machineAllows, pluginEnabled, readProjectPlugins } from "@telar/engine-
 import { createEngineApi } from "@/platform/engine";
 import { Badge } from "@/ui/badge";
 import { Switch } from "@/ui/switch";
-import { Row } from "@/features/settings";
+import { MasterDetail, Row, type MasterDetailItem } from "@/features/settings";
 import { projectPluginSections } from "../sections";
 import { pluginIcon } from "./generated-settings";
-import { PluginBrowser, type PluginListItem } from "./plugin-browser";
 import { machineOffReason, PluginSettings } from "./plugin-settings";
 import { projectPaneFor, projectTogglePatch } from "./settings-panes";
 
@@ -69,7 +68,7 @@ export function ProjectPluginList({
     }
   };
 
-  const items = (plugins ?? []).map((status): PluginListItem => {
+  const items = (plugins ?? []).map((status): MasterDetailItem => {
     const { id, name } = status.meta;
     const failed = status.state === "failed";
     const reason = !project
@@ -81,11 +80,12 @@ export function ProjectPluginList({
           : !machineAllows(machine, id)
             ? machineOffReason(name)
             : undefined;
+    const Icon = pluginIcon(status.meta.icon);
     return {
       id,
-      name,
-      icon: pluginIcon(status.meta.icon),
-      hint: status.meta.blurb ?? "Sessions in this project get its tools; turning it off lets running work finish.",
+      label: name,
+      icon: <Icon className="size-4" />,
+      description: status.meta.blurb ?? "Sessions in this project get its tools; turning it off lets running work finish.",
       control: (
         <Switch
           checked={project ? pluginEnabled(readProjectPlugins(project).plugins, id) : false}
@@ -93,18 +93,19 @@ export function ProjectPluginList({
           aria-label={`${name} for this project`}
         />
       ),
-      ...(busy === id ? { status: <Badge variant="outline">Saving</Badge> } : {}),
+      ...(busy === id ? { badge: <Badge variant="outline">Saving</Badge> } : {}),
       ...(reason ? { unavailable: reason } : {}),
       ...(local && onChange
-        ? { page: projectPluginPage(status, local, machine, onChange) }
+        ? { detail: projectPluginPage(status, local, machine, onChange) }
         : {}),
     };
   });
 
   return (
-    <PluginBrowser
+    <MasterDetail
       key={project?.id}
       title="Plugins"
+      param="plugin"
       description="Which of this Mac's plugins this project has opted into."
       items={items}
       empty={<Row icon={BlocksIcon} label="No plugins registered" control={<Badge variant="outline">None</Badge>} />}

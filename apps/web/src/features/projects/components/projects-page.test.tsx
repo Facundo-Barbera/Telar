@@ -115,8 +115,8 @@ const press = async (element: Element | undefined) => {
   await flush();
 };
 
-const options = () => [...document.querySelectorAll('[role="option"]')].map((option) => option.textContent?.trim());
-const option = (label: string) => [...document.querySelectorAll('[role="option"]')].find((candidate) => candidate.textContent?.trim() === label);
+const options = () => [...document.querySelectorAll('[role="option"]:not([data-master-item])')].map((option) => option.textContent?.trim());
+const option = (label: string) => [...document.querySelectorAll('[role="option"]:not([data-master-item])')].find((candidate) => candidate.textContent?.trim() === label);
 
 async function rename(input: HTMLInputElement, value: string) {
   await act(async () => {

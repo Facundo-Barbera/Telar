@@ -5,7 +5,7 @@ import { PlusIcon, RotateCwIcon } from "lucide-react";
 import type { ProviderDriverKind } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { cn } from "@/ui/utils";
-import { DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, signInCommand, suggestInstanceId } from "../provider-instances";
+import { displayNameOf, DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, providerSummary, signInCommand, suggestInstanceId, versionLabel } from "../provider-instances";
 import { Badge } from "@/ui/badge";
 import { Button } from "@/ui/button";
 import { Input } from "@/ui/input";
@@ -20,9 +20,11 @@ import {
 } from "@/ui/dialog";
 import { ProviderIcon } from "./provider-icon";
 import { ProviderInstanceCard } from "./provider-instance-card";
+import { instanceStatus, ProviderMark } from "./provider-instance-header";
+import { Switch } from "@/ui/switch";
 import { binaryKey, useProviderInstances, type UpdateReport } from "../hooks/use-provider-instances";
 import { announceProviderInstancesChanged } from "../provider-instance-cache";
-import { Row, SettingsGroup } from "@/features/settings";
+import { MasterDetail, Row, SettingsGroup, type MasterDetailItem } from "@/features/settings";
 
 const api = createEngineApi();
 
@@ -190,57 +192,76 @@ function UpdateReportCard({ report }: { report: UpdateReport }) {
 export function ProvidersSection() {
   const providers = useProviderInstances();
   const { instances, probes, inheritance, updating, errors, rechecking, updateReport, setInherited } = providers;
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [adding, setAdding] = useState(false);
+  const [added, setAdded] = useState<string>();
 
   const probeFor = (id: string) => probes.find((probe) => probe.instanceId === id);
   const missing = probes.filter((probe) => !probe.installed);
 
+  const items = (providers.unreachable ? [] : (instances ?? [])).map((instance): MasterDetailItem => {
+    const probe = probeFor(instance.id);
+    const title = displayNameOf(instance);
+    return {
+      id: instance.id,
+      label: title,
+      icon: <ProviderMark instance={instance} status={instanceStatus(instance, probe)} />,
+      description: [providerSummary(probe), versionLabel(probe?.version)].filter(Boolean).join(" · "),
+      dimmed: !instance.enabled,
+      control: (
+        <Switch checked={instance.enabled} onCheckedChange={(checked) => void providers.patch(instance, { enabled: Boolean(checked) })} aria-label={`Enable ${title}`} />
+      ),
+      detail: (
+        <ProviderInstanceCard
+          instance={instance}
+          {...(probe ? { probe } : {})}
+          signInCommand={signInCommand(instance)}
+          onPatch={(next) => void providers.patch(instance, next)}
+          {...(inheritance[instance.id]?.length
+            ? {
+                inheritance: {
+                  names: inheritance[instance.id]!,
+                  onCarryOver: () => void providers.carryOver(instance, inheritance[instance.id]!),
+                  onDismiss: () => setInherited(instance.id, undefined),
+                },
+              }
+            : {})}
+          {...(isDefaultInstance(instance) ? {} : { onRemove: () => void providers.remove(instance) })}
+          onUpdateCli={() => void providers.runUpdate(instance)}
+          updating={updating === binaryKey(instance)}
+          error={errors[instance.id] ?? null}
+        />
+      ),
+    };
+  });
+
   return (
     <>
-      <SettingsGroup title="Logins" description="Each row is one configured login.">
-        {providers.unreachable ? (
-          <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
-        ) : instances === undefined ? (
-          <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
-        ) : (
-          instances.map((instance) => (
-            <ProviderInstanceCard
-              key={instance.id}
-              instance={instance}
-              {...(probeFor(instance.id) ? { probe: probeFor(instance.id)! } : {})}
-              signInCommand={signInCommand(instance)}
-              expanded={Boolean(expanded[instance.id])}
-              onExpandedChange={(next) => setExpanded((current) => ({ ...current, [instance.id]: next }))}
-              onPatch={(next) => void providers.patch(instance, next)}
-              {...(inheritance[instance.id]?.length
-                ? {
-                    inheritance: {
-                      names: inheritance[instance.id]!,
-                      onCarryOver: () => void providers.carryOver(instance, inheritance[instance.id]!),
-                      onDismiss: () => setInherited(instance.id, undefined),
-                    },
-                  }
-                : {})}
-              {...(isDefaultInstance(instance) ? {} : { onRemove: () => void providers.remove(instance) })}
-              onUpdateCli={() => void providers.runUpdate(instance)}
-              updating={updating === binaryKey(instance)}
-              error={errors[instance.id] ?? null}
-            />
-          ))
-        )}
-      </SettingsGroup>
-
-      <div className="mb-6 flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
-          <PlusIcon />
-          Add a login
-        </Button>
-        <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => void providers.recheck()}>
-          <RotateCwIcon className={rechecking ? "animate-spin" : ""} />
-          Re-check
-        </Button>
-      </div>
+      <MasterDetail
+        title="Logins"
+        description="Each row is one configured login."
+        param="provider"
+        items={items}
+        {...(added ? { select: added } : {})}
+        empty={
+          providers.unreachable ? (
+            <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
+          ) : (
+            <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
+          )
+        }
+        footer={
+          <div className="flex flex-wrap items-center gap-2 py-3">
+            <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+              <PlusIcon />
+              Add a login
+            </Button>
+            <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => void providers.recheck()}>
+              <RotateCwIcon className={rechecking ? "animate-spin" : ""} />
+              Re-check
+            </Button>
+          </div>
+        }
+      />
 
       {updateReport && <UpdateReportCard report={updateReport} />}
 
@@ -261,11 +282,9 @@ export function ProvidersSection() {
         open={adding}
         onOpenChange={setAdding}
         taken={(instances ?? []).map((instance) => instance.id)}
-        onAdded={(added) => {
-          if (added.stoppedInheriting?.length) {
-            setInherited(added.id, added.stoppedInheriting);
-            setExpanded((current) => ({ ...current, [added.id]: true }));
-          }
+        onAdded={(next) => {
+          if (next.stoppedInheriting?.length) setInherited(next.id, next.stoppedInheriting);
+          setAdded(next.id);
           void providers.load();
           announceProviderInstancesChanged();
         }}

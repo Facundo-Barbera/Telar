@@ -83,7 +83,7 @@ const buttons = (host: HTMLElement, label: string) => [...host.querySelectorAll(
 
 test("only an installed plugin's page offers Remove", async () => {
   const { host, done } = await mount();
-  expect(buttons(host, "Remove").map((button) => button.closest("[data-plugin-page]")?.getAttribute("data-plugin-page"))).toEqual(["echo"]);
+  expect(buttons(host, "Remove").map((button) => button.closest("[data-detail-for]")?.getAttribute("data-detail-for"))).toEqual(["echo"]);
   done();
 });
 
@@ -112,7 +112,7 @@ test("Remove asks first, and a declined confirm removes nothing", async () => {
     asked = message ?? "";
     return false;
   };
-  await act(async () => (host.querySelector('[aria-label="Open Echo"]') as HTMLElement).click());
+  await act(async () => (host.querySelector('[data-master-item="echo"]') as HTMLElement).click());
   await act(async () => buttons(host, "Remove")[0]!.click());
   await flush();
   expect(asked).toContain("your folder stays");
