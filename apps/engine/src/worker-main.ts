@@ -4,7 +4,7 @@ import { registerPluginToolPrefixes } from "@telar/engine-client";
 import { connectEngine } from "@telar/engine-client/node";
 import { BrowserRuntime } from "./browser";
 import { createBrowserToolSocket, createDefaultDrivers } from "./drivers";
-import { hydrateHostPath } from "./host-path";
+import { hydrateHostPath } from "./platform/process/host-path";
 import { TelarToolSocket } from "./telar-socket";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { bundledPluginToolModules, setPluginToolModules } from "./plugins/bundled";
