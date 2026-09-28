@@ -116,7 +116,7 @@ import { dictationProvider } from "./dictation/provider";
 import * as notebook from "./domains/notes";
 import * as shelf from "./prompts";
 import { PreparedPromptsError } from "./prompts";
-import type { GhRunner } from "./github";
+import type { GhRunner } from "./domains/github";
 import { checkoutRootsOf, measureStore, reapNodeModules, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, withCheckouts, type CheckoutSizesOptions } from "./domains/storage";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./worktrees-location";
