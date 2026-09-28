@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BASELINE_FILE, addedLines, commentLines, commentRatchet, countFindings, newCommentRuns } from "./comment-ratchet.mjs";
+import { addedLines, commentLines, commentRatchet, countFailures, newCommentRuns } from "./comment-ratchet.mjs";
 
 const linesOf = (source, language = "js") => [...commentLines(source, language)].sort((a, b) => a - b);
 
@@ -77,14 +77,12 @@ describe("newCommentRuns", () => {
   });
 });
 
-describe("countFindings", () => {
-  test("fails a rise over the merge base, and notes a count below the baseline", () => {
-    const { failures, notices } = countFindings({ a: 30, b: 21, c: 5, d: 9 }, { a: 30, b: 20, d: 9 }, { a: 30, b: 25, d: 10 });
-    expect(failures).toEqual([
+describe("countFailures", () => {
+  test("fails only a rise over the merge base", () => {
+    expect(countFailures({ a: 30, b: 21, c: 5, d: 8 }, { a: 30, b: 20, d: 9 })).toEqual([
       "b: this change adds 1 comment lines (20 → 21). Delete comments rather than adding them.",
       "c: this change adds 5 comment lines (0 → 5). Delete comments rather than adding them.",
     ]);
-    expect(notices).toEqual(["d: 9 comment lines, below the baseline of 10. Run `bun run comments:baseline` to lock that in."]);
   });
 });
 
@@ -99,15 +97,14 @@ describe("commentRatchet", () => {
     mkdirSync(join(root, "apps/engine"), { recursive: true });
     mkdirSync(join(root, "scripts"));
     writeFileSync(join(root, "apps/engine/a.ts"), "// one\nconst a = 1;\nconst b = 2;\nconst c = 3;\n");
-    writeFileSync(join(root, BASELINE_FILE), JSON.stringify({ "apps/engine": 1 }));
     run(root, "add", ".");
     run(root, "commit", "-qm", "base");
     run(root, "branch", "base");
     return root;
   }
 
-  test("passes a tree at its baseline", () => {
-    expect(commentRatchet(repo(), "base")).toEqual({ failures: [], notices: [] });
+  test("passes an unchanged tree", () => {
+    expect(commentRatchet(repo(), "base")).toEqual([]);
   });
 
   test("fails a new long comment and the count it raises", () => {
@@ -116,38 +113,36 @@ describe("commentRatchet", () => {
     writeFileSync(join(root, "apps/engine/b.ts"), `${essay}\nexport const x = 1;\n`);
     run(root, "add", ".");
     run(root, "commit", "-qm", "essay");
-    const { failures } = commentRatchet(root, "base");
+    const failures = commentRatchet(root, "base");
     expect(failures).toContain("apps/engine: this change adds 7 comment lines (1 → 8). Delete comments rather than adding them.");
     expect(failures).toContain("apps/engine/b.ts:1-7: a new 7-line comment. The limit is 6; AGENTS.md allows 3.");
   });
 
-  test("deleting code alone passes, and deleting a comment is a notice", () => {
+  test("deleting code and comments passes", () => {
     const root = repo();
     writeFileSync(join(root, "apps/engine/a.ts"), "const a = 1;\n");
-    expect(commentRatchet(root, "base").failures).toEqual([]);
-    expect(commentRatchet(root, "base").notices).toEqual(["apps/engine: 0 comment lines, below the baseline of 1. Run `bun run comments:baseline` to lock that in."]);
+    expect(commentRatchet(root, "base")).toEqual([]);
   });
 
-  test("raising the committed baseline does not let a change add comments", () => {
+  test("one added comment line fails", () => {
     const root = repo();
     writeFileSync(join(root, "apps/engine/a.ts"), "// one\n// two\nconst a = 1;\n");
-    writeFileSync(join(root, BASELINE_FILE), JSON.stringify({ "apps/engine": 2 }));
     run(root, "commit", "-qam", "more");
-    expect(commentRatchet(root, "base").failures).toEqual(["apps/engine: this change adds 1 comment lines (1 → 2). Delete comments rather than adding them."]);
+    expect(commentRatchet(root, "base")).toEqual(["apps/engine: this change adds 1 comment lines (1 → 2). Delete comments rather than adding them."]);
   });
 
-  test("a stale committed baseline does not fail a change that adds no comments", () => {
+  test("comments main added since the branch point do not fail a change that adds none", () => {
     const root = repo();
     run(root, "checkout", "-qb", "main-moved");
     writeFileSync(join(root, "apps/engine/c.ts"), "// main's own\nexport const c = 1;\n");
     run(root, "add", ".");
     run(root, "commit", "-qm", "main moved");
     writeFileSync(join(root, "apps/engine/a.ts"), "// one\nconst a = 1;\n");
-    run(root, "commit", "-qam", "pr: code only, baseline left at 1");
-    expect(commentRatchet(root, "main-moved~1").failures).toEqual([]);
+    run(root, "commit", "-qam", "pr: code only");
+    expect(commentRatchet(root, "main-moved~1")).toEqual([]);
   });
 
   test("names a base it cannot find instead of passing", () => {
-    expect(commentRatchet(repo(), "no-such-ref").failures[0]).toContain("cannot find the merge base with no-such-ref");
+    expect(commentRatchet(repo(), "no-such-ref")[0]).toContain("cannot find the merge base with no-such-ref");
   });
 });
