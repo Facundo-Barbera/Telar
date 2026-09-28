@@ -70,7 +70,7 @@ import Testing
         #expect(folded.pinned[0].family?.needsYou == 1)
         #expect(folded.projects.map { ids($0.rows) } == [["mine"]])
         let open = SessionNesting.bands(model, assignments: assignments, expanded: [SessionNesting.foldKey(key("orchestrator"))], selected: nil)
-        #expect(ids(open.pinned) == ["orchestrator", "  builder", "  stuck"])
+        #expect(ids(open.pinned) == ["orchestrator", "  stuck", "  builder"])
     }
 
     @Test func aChildWhoseParentIsNotListedStaysInItsGroup() throws {
