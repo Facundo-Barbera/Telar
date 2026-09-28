@@ -25,7 +25,7 @@ import { installPageApi } from "@/lib/page-api";
  * costs that route nothing it can see. `ssr: false` would have bought a little
  * more and paid for it with a frame of missing rail on every conversation.
  */
-const AppSidebar = dynamic(() => import("./app-sidebar").then((mod) => mod.AppSidebar));
+const AppSidebar = dynamic(() => import("@/features/sessions/rail/app-sidebar").then((mod) => mod.AppSidebar));
 
 /**
  * SETTINGS SCREENS CARRY NO APP RAIL. They bring a full-height side-nav of

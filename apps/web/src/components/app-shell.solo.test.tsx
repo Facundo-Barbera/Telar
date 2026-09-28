@@ -34,7 +34,7 @@ mock.module("next/navigation", () => ({
  *  module. Zero on a route that does not draw one is the claim the issue is
  *  about; the chunk is not requested because the import is never evaluated. */
 let railLoads = 0;
-mock.module("./app-sidebar", () => {
+mock.module("@/features/sessions/rail/app-sidebar", () => {
   railLoads += 1;
   return { AppSidebar: () => <div data-testid="app-rail">rail</div> };
 });
