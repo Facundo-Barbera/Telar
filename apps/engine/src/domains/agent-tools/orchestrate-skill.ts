@@ -54,6 +54,9 @@ Write each worker a self-contained brief. It will not see this conversation.
   woken once, when every worker has sent its result (or failed, was stopped
   or settled); a blocker reaches you at once. Their progress reports never
   interrupt you — they arrive with your next turn.
+- A single quick task whose answer you need now: give \`sessions_create\` a
+  \`wait\` in seconds and read the result in the same call. Never wait on one
+  worker of a wave; that stalls the rest.
 - Respect the project's concurrency or load cap: dispatch in waves if there is
   one.
 

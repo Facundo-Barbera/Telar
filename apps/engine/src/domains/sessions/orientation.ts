@@ -149,6 +149,10 @@ session, do not poll \`sessions_status\`, and do not sleep.
   stays in the wait until it finishes.
 - It expires after \`timeoutMinutes\` (default 240), naming who never sent a
   result. \`sessions_unsubscribe\` takes its id.
+- ONE task whose answer you need before you can go on: pass \`wait\` (seconds)
+  to \`sessions_create\` or \`sessions_send\` instead. Its result comes back in
+  the same call; on a timeout nothing is cancelled and you are subscribed, so
+  end your turn. Several tasks: the cohort above, never one wait each.
 
 ### Nothing interrupts you but a person, a task or a blocker
 

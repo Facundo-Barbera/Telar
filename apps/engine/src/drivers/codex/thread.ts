@@ -6,6 +6,7 @@ import { claimHasComputerUse } from "../../domains/computer-use";
 import { pluginBriefings } from "../../domains/plugins";
 import type { DriverRun } from "../contract";
 import { RUN_BRIEFING } from "../../domains/terminal";
+import { TELAR_TOOL_CALL_TIMEOUT_MS } from "../../domains/agent-tools";
 
 export type CodexThreadConfig = {
   approvalPolicy: "untrusted" | "on-request" | "never";
@@ -94,7 +95,7 @@ function codexConfigOverlay(run: DriverRun, windowConfig: Record<string, number>
   const mcpServers = {
     ...codexMcpServers(run.mcpServers),
     ...(run.browserSocket ? { [TELAR_BROWSER_MCP_SERVER]: bearer(run.browserSocket) } : {}),
-    ...(run.telarSocketLease ? { [TELAR_MCP_SERVER]: bearer(run.telarSocketLease) } : {}),
+    ...(run.telarSocketLease ? { [TELAR_MCP_SERVER]: { ...bearer(run.telarSocketLease), tool_timeout_sec: TELAR_TOOL_CALL_TIMEOUT_MS / 1_000 } } : {}),
   };
   const hasMcpServers = Object.keys(mcpServers).length > 0;
   const overlay = {
