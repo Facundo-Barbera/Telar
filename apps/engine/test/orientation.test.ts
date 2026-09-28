@@ -32,7 +32,7 @@ import {
   syncTelarSkill,
   telarSkillDigest,
   writeOrientationInstructions,
-} from "../src/orientation";
+} from "../src/domains/sessions/orientation";
 import { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "../src/orchestrate-skill";
 import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/domains/providers";
 import { openCodeBriefings, openCodeConfigContent } from "../src/drivers/opencode";

@@ -32,7 +32,7 @@ import { EngineStore } from "../src/state";
 import { sessionDiffAsync } from "../src/domains/git";
 import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessions-tools/tools";
-import { TELAR_SKILL } from "../src/orientation";
+import { TELAR_SKILL } from "../src/domains/sessions";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
 import { toolInputSchema } from "../src/mcp-socket";
 

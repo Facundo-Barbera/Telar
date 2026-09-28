@@ -53,9 +53,8 @@ import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, 
 import { bearerIsValid } from "./http-auth";
 import { createProviderProber, readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS } from "./orchestrate-skill";
-import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
+import { sessionBootstrap, type SessionBootstrapWindow, sessionSnapshot, syncTelarSkill, TELAR_ORIENTATION } from "./domains/sessions";
 import { createLoginGrantStore } from "./domains/browser";
-import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
 import {
   acquireDaemonLock,
   EngineStateError,

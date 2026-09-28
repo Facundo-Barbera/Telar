@@ -1,64 +1,12 @@
-/**
- * WHAT THE AGENT IS TOLD ABOUT WHERE IT IS.
- *
- * Nothing in a provider's context said the agent was running inside Telar. What
- * it had was tool names (`mcp__telar__*`, `telar-browser`) and one MCP
- * instruction block about the browser — so "the browser" read as this Mac's
- * Chrome, "session" as the CLI's own history, and "the panel", "the rail",
- * "Looks", "a surface" meant nothing at all. The confusion was
- * structural: the harness never stated where the agent was, so every session
- * re-derived it from tool names or got it wrong. The owner's words for the
- * failure: "when I say browser I most of the time mean the Telar browser and
- * not the actual computer browser."
- *
- * TWO THINGS LIVE HERE, AND THEY ARE DIFFERENT SIZES ON PURPOSE:
- *
- *   - `TELAR_ORIENTATION` — a paragraph, injected into EVERY turn through the
- *     seam each driver already uses for `BROWSER_BRIEFING` / `RUN_BRIEFING`.
- *     It is short because it is paid for on every turn of every session: it
- *     buys the vocabulary and nothing else.
- *   - `TELAR_SKILL` — the depth, written to disk ONCE and read only when the
- *     model decides it needs it. A skill is the right shape for "the panel has
- *     these tabs, a peer session settles like that, the browser shares its tabs
- *     with you": nobody
- *     pays for it until somebody asks.
- *
- * BOTH ARE BEHIND A TOGGLE (`AgentOrientation`), because this is Telar putting
- * words in the agent's mouth and a person is entitled to say no. Off means
- * NOTHING Telar-authored is injected or installed. The per-surface briefings
- * are not covered by it: those are tool contracts — how to drive tabs a session
- * actually has — rather than orientation.
- *
- * VERSIONED so the disclosure in Settings, the skill on disk and the paragraph
- * in a transcript can be told apart across releases.
- */
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-/** Bumped whenever the words below change. The skill's front matter carries it,
- *  so a file on disk says which release wrote it. */
 export const ORIENTATION_VERSION = 9;
 
-/** The skill's name, which is also its directory and the `$telar` a person or a
- *  model types. One constant so the writer, the remover and the preamble that
- *  points at it cannot drift. */
 export const TELAR_SKILL_NAME = "telar";
 
-/**
- * THE PARAGRAPH, and every sentence in it earns its place by naming a word that
- * has been read wrong.
- *
- * IT TEACHES VOCABULARY, NOT BEHAVIOUR. There is no "always do X" here: a
- * standing instruction injected into every turn of every session is a way to
- * quietly change how an agent works, and that is not what this is for. It says
- * what the words mean and where to read more.
- *
- * IT ENDS BY SAYING "ASK". The failure this exists to fix is an agent acting
- * confidently on the wrong reading; the cheapest fix for the residue is one
- * question.
- */
 export const TELAR_ORIENTATION =
   "You are running inside Telar, an agent cockpit — a desktop app the person you are talking to is looking at right now. " +
   "Read their words in Telar's vocabulary rather than your own. " +
@@ -68,19 +16,6 @@ export const TELAR_ORIENTATION =
   '"Looks" are the cockpit\'s themes. ' +
   `The \`${TELAR_SKILL_NAME}\` skill has the detail. When one of these words could mean two things here, ask which.`;
 
-/**
- * THE DEPTH, as a skill file.
- *
- * WHY EVERY TOOL NAME IS SPELLED OUT. `orientation.test.ts` builds each core
- * toolkit with a recording factory and asserts that every name it reports
- * appears below — so a tool added, renamed or removed fails the suite instead
- * of leaving a reference that quietly lies. That test is the reason this is a
- * list rather than prose about "the notebook verbs".
- *
- * THE FRONT MATTER CARRIES `telar:` — the marker `syncTelarSkill` checks before
- * it overwrites or deletes anything. A person who wrote their own `telar` skill
- * keeps it; Telar declines to touch a file it did not write.
- */
 export const TELAR_SKILL = `---
 name: ${TELAR_SKILL_NAME}
 description: What Telar is and what its words mean — the cockpit's panel, rail and surfaces, sessions and how they are assigned and settled, the integrated browser's tab rules, and the project notebook. Read this when a request uses a word like "the browser", "the panel", "a session" or "a Look" and you are not certain it means what you would assume outside Telar.
@@ -335,32 +270,18 @@ only where the project turned them on, the session is told about each one it
 has, and each tool's own description carries its contract.
 `;
 
-/** The content hash the installer compares against. Exported so a test and the
- *  installer agree on what "changed" means. */
 export function telarSkillDigest(text: string = TELAR_SKILL): string {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
-/**
- * THE MARKER THAT MAKES THIS SAFE TO OVERWRITE AND SAFE TO DELETE.
- *
- * `~/.claude/skills/telar/SKILL.md` is a path a person could have written
- * themselves. Telar rewrites or removes only a file that says Telar wrote it,
- * so the worst case for somebody who already had a `telar` skill is that ours
- * is not installed — never that theirs is gone.
- */
 const GENERATED_MARKER = "\ntelar: generated v";
 
 export function isTelarGenerated(text: string): boolean {
   return text.includes(GENERATED_MARKER);
 }
 
-/* ------------------------------------------------------------------ *
- * Installing it.
- * ------------------------------------------------------------------ */
-
 type SkillSyncOutcome = "written" | "unchanged" | "removed" | "absent" | "foreign" | "failed";
-export type SkillSyncResult = { root: string; file: string; outcome: SkillSyncOutcome };
+type SkillSyncResult = { root: string; file: string; outcome: SkillSyncOutcome };
 
 const skillFile = (root: string, name: string): string => path.join(root, name, "SKILL.md");
 
@@ -372,22 +293,9 @@ async function readOrUndefined(file: string): Promise<string | undefined> {
   }
 }
 
-/**
- * Put the skill where each provider reads skills from, or take it away.
- *
- * WRITTEN ONLY WHEN THE CONTENT HASH MOVED. This runs on every engine start,
- * and rewriting an identical file each time would churn the directory mtime
- * that `provider-skills.ts` caches its menu against — every launch would
- * invalidate every session's `$` menu for no reason.
- *
- * A ROOT THAT CANNOT BE WRITTEN IS NOT AN ERROR. A provider that is not
- * installed has no home directory, and the engine must start anyway; the
- * outcome says `failed` for that root and the others still install.
- */
 export async function syncTelarSkill(input: {
   install: boolean;
   roots: readonly string[];
-  /** Another Telar-authored skill; the `telar` one when omitted. */
   name?: string;
   text?: string;
 }): Promise<SkillSyncResult[]> {
@@ -397,8 +305,6 @@ export async function syncTelarSkill(input: {
     input.roots.map(async (root): Promise<SkillSyncResult> => {
       const file = skillFile(root, name);
       const existing = await readOrUndefined(file);
-      // SOMEBODY ELSE'S FILE UNDER OUR NAME. Left exactly as it is, in both
-      // directions: not overwritten when installing, not deleted when removing.
       if (existing !== undefined && !isTelarGenerated(existing)) return { root, file, outcome: "foreign" };
       if (!input.install) {
         if (existing === undefined) return { root, file, outcome: "absent" };
@@ -409,9 +315,7 @@ export async function syncTelarSkill(input: {
           return { root, file, outcome: "failed" };
         }
       }
-      if (existing !== undefined && telarSkillDigest(existing) === telarSkillDigest(text)) {
-        return { root, file, outcome: "unchanged" };
-      }
+      if (existing === text) return { root, file, outcome: "unchanged" };
       try {
         await fs.mkdir(path.dirname(file), { recursive: true });
         await fs.writeFile(file, text, "utf8");
@@ -423,45 +327,15 @@ export async function syncTelarSkill(input: {
   );
 }
 
-/* ------------------------------------------------------------------ *
- * The OpenCode instructions file.
- * ------------------------------------------------------------------ */
-
-/**
- * WHERE THE OPENCODE PREAMBLE IS WRITTEN.
- *
- * OpenCode has no per-turn instructions parameter the way Claude Code and Codex
- * do. What it has is `instructions` in its config: a list of FILES whose
- * contents it prepends. So the preamble has to exist as a file, and that file
- * must be Telar's — never a line appended to the user's own `opencode.json`,
- * and never a file dropped in their checkout.
- *
- * MIRRORS `engineRootFromEnv`'s LAYOUT (`<TELAR_HOME>/engine`) WITHOUT
- * IMPORTING THE STORE. This module is read by the drivers, which run in the
- * worker and deliberately hold no store handle. A worker started without
- * `TELAR_HOME` (a test) gets a temporary directory instead of a throw: the
- * preamble is worth a file in `/tmp`, never a turn that cannot start.
- */
 export function engineOwnedRoot(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.TELAR_HOME?.trim();
   return home && path.isAbsolute(home) ? path.join(home, "engine") : path.join(os.tmpdir(), "telar-engine");
 }
 
-/**
- * NAMED BY ITS OWN CONTENT, and that is what makes one path safe for every
- * session. A single `TELAR.md` would be rewritten by each OpenCode session as
- * it started, and two sessions with different capabilities carry different
- * briefings — so one would have been reading the other's file while the server
- * it was starting for read a third. A content address makes the write
- * idempotent, the read stable, and identical briefings share one file.
- */
 export function orientationInstructionsPath(text: string, env: NodeJS.ProcessEnv = process.env): string {
   return path.join(engineOwnedRoot(env), "orientation", `${telarSkillDigest(text).slice(0, 16)}.md`);
 }
 
-/** Put the briefings on disk for a provider that can only read them from a
- *  file, and hand back the path. Idempotent: identical text is the same path,
- *  already written. */
 export async function writeOrientationInstructions(text: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const file = orientationInstructionsPath(text, env);
   await fs.mkdir(path.dirname(file), { recursive: true });
