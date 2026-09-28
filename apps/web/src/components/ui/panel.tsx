@@ -97,12 +97,25 @@ export function PanelRow({ active, className, ...props }: ComponentProps<"div"> 
 }
 
 /** Names what is missing rather than drawing a shape that implies a feature. */
-export function PanelEmpty({ icon, title, children }: { icon?: ReactNode; title: string; children?: ReactNode }) {
+export function PanelEmpty({
+  icon,
+  title,
+  children,
+  action,
+  compact = false,
+}: {
+  icon?: ReactNode;
+  title: string;
+  children?: ReactNode;
+  action?: ReactNode;
+  compact?: boolean;
+}) {
   return (
-    <div className="flex flex-col items-center gap-1.5 px-4 py-10 text-center">
+    <div className={cn("flex flex-col items-center text-center", compact ? "gap-1 px-3 py-6" : "gap-1.5 px-4 py-10")}>
       {icon && <span className="text-muted-foreground/60 [&_svg]:size-5">{icon}</span>}
-      <p className="text-sm font-medium">{title}</p>
-      {children && <p className="max-w-64 text-xs text-muted-foreground">{children}</p>}
+      <p className={cn("font-medium", compact ? "text-xs" : "text-sm")}>{title}</p>
+      {children && <p className={cn("max-w-64 text-muted-foreground", compact ? "text-2xs" : "text-xs")}>{children}</p>}
+      {action && <div className="mt-1.5">{action}</div>}
     </div>
   );
 }

@@ -53,6 +53,7 @@
  * uses — so the palette and the pane cannot disagree about what a setting is.
  */
 
+import { useListNav } from "@/ui/hooks/use-list-nav";
 import { useState } from "react";
 // The conversation rows' own glyph — a kind of row, not a command, so it is
 // named here rather than looked up through the registry's icon map.
@@ -502,32 +503,19 @@ function QuickPage({
   onBack: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [index, setIndex] = useState(0);
   const needle = query.trim().toLocaleLowerCase();
   const shown = needle ? rows.filter((row) => `${row.title} ${row.hint ?? ""}`.toLocaleLowerCase().includes(needle)) : [...rows];
-  const at = shown.length === 0 ? -1 : Math.min(index, shown.length - 1);
+  const nav = useListNav({ count: shown.length, onPick: (at) => onPick(shown[at]!.key), idPrefix: "command-palette-quick" });
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      if (shown.length === 0) return;
-      event.preventDefault();
-      const delta = event.key === "ArrowDown" ? 1 : -1;
-      setIndex(((at < 0 ? 0 : at) + delta + shown.length) % shown.length);
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      const row = shown[at];
-      if (row) onPick(row.key);
-      return;
-    }
     // Only on an empty field: the field is the dialog's title, so Backspace is
     // a text key first and taking it mid-word would throw the page away.
     if (event.key === "Backspace" && query === "") {
       event.preventDefault();
       onBack();
+      return;
     }
+    nav.onKeyDown(event);
   };
 
   return (
@@ -541,14 +529,14 @@ function QuickPage({
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
-            setIndex(0);
+            nav.setActive(0);
           }}
           placeholder={placeholder}
           aria-label={placeholder}
           role="combobox"
           aria-expanded={shown.length > 0}
           aria-controls="command-palette-quick-results"
-          aria-activedescendant={at >= 0 ? `command-palette-quick-${at}` : undefined}
+          aria-activedescendant={nav.activeId}
           className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         />
       </div>
@@ -557,10 +545,10 @@ function QuickPage({
         {shown.map((row, rowAt) => (
           <Row
             key={row.key}
-            id={`command-palette-quick-${rowAt}`}
-            on={rowAt === at}
+            id={nav.optionProps(rowAt).id}
+            on={rowAt === nav.active}
             onPick={() => onPick(row.key)}
-            onHover={() => setIndex(rowAt)}
+            onHover={() => nav.setActive(rowAt)}
             glyph={row.glyph}
             title={row.title}
             {...(row.hint ? { hint: row.hint } : {})}
