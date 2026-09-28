@@ -3,7 +3,7 @@
  * no test here reaches GitHub.
  */
 import { describe, expect, test } from "bun:test";
-import { porcelainPaths } from "../src/git";
+import { porcelainPaths } from "../src/platform/git/parse";
 import {
   commentOnPullLine,
   hunkRanges,

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { createReadStream, promises as fsAsync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, type Dirent } from "node:fs";
 import path from "node:path";
 import type { WorkspaceFile, WorkspaceListing } from "@telar/engine-client";
-import { nulFields } from "../../git.js";
+import { nulFields } from "../../platform/git/parse";
 import type { AsyncGitRunner } from "../../worktree.js";
 
 export const MAX_WORKSPACE_FILES = 5_000;

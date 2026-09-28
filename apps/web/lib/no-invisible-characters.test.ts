@@ -70,7 +70,7 @@ const SOURCE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
  * file this test was written to protect — it is.
  */
 const DELIBERATE = new Set([
-  "apps/engine/src/git.ts", // U+001E/U+001F — git --format record and field separators
+  "apps/engine/src/platform/git/parse.ts", // U+001E/U+001F — git --format record and field separators
   "apps/engine/src/github.ts", // U+FEFF — strips a BOM off `gh` output
   "apps/engine/test/github.test.ts", // U+FEFF — the fixture that proves it
   "apps/engine/src/cli-updates.ts", // U+0000 — joins id + binary path into a cache key

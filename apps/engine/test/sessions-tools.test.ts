@@ -29,7 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import { assertTelarToolNames, parseToolName, qualifyTelarTool, STALLED_AFTER_MS, TELAR_CAPABILITIES } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
-import { sessionDiff } from "../src/git";
+import { sessionDiffAsync } from "../src/domains/git";
 import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessions-tools/tools";
 import { TELAR_SKILL } from "../src/orientation";
@@ -572,7 +572,7 @@ describe("driving a session", () => {
         ? { status: 0, stdout: "true\n", stderr: "" }
         : { status: GIT_TIMEOUT_STATUS, stdout: "", stderr: "git did not finish within 30000ms and was killed", timedOut: true };
     const tools = wall(store, undefined, async (sessionId) =>
-      sessionDiff(killed, { cwd: store.getSession(sessionId).workspace.path, baseRef: "base000" }),
+      await sessionDiffAsync(async (cwd, args) => killed(cwd, args), { cwd: store.getSession(sessionId).workspace.path, baseRef: "base000" }),
     );
 
     const diff = await call(tools, "sessions_diff", { sessionId: id });
