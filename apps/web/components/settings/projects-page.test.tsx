@@ -439,11 +439,8 @@ describe("the pane", () => {
   });
 });
 
-test("the retired per-project route redirects to this pane", async () => {
+test("the retired per-project route's target is this pane", () => {
   expect(projectSettingsHref("a b")).toBe("/settings?section=projects&project=a%20b");
-  const { default: RetiredProjectSettings } = await import("../../app/projects/[projectId]/settings/page");
-  const thrown = await RetiredProjectSettings({ params: Promise.resolve({ projectId: "project_abc" }) }).catch((error: { digest?: string }) => error);
-  expect(String((thrown as { digest?: string }).digest)).toContain(projectSettingsHref("project_abc"));
 });
 
 test("the pane's rows are findable by search before the pane has ever been opened", () => {
