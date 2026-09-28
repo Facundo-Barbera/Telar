@@ -8,6 +8,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 import {
   BUNDLED_PLUGIN_TOOL_PREFIXES,
@@ -19,7 +20,6 @@ import {
   parseForgeQuery,
   PluginInstallInput,
   registerPluginToolPrefixes,
-  RequestOpenInput,
   AgentTurnInput,
   ProviderDriverKind,
   ProviderTurnOpenInput,
@@ -27,8 +27,6 @@ import {
   resolveMcpServers,
   TurnModelSelection,
   WakeKind as WakeKindSchema,
-  WorkerTurnFailure,
-  WorkerTurnFailureCode,
   type WakeKind,
   type ComputerUseGrant,
   type EngineDiscovery,
@@ -122,6 +120,10 @@ import { aboutRoutes } from "./domains/updates";
 import { createPushService } from "./domains/push";
 import { body, errorFor as httpErrorFor, HttpError, matchesETag, writeError, writeJson } from "./platform/http/http";
 import { router } from "./platform/http/router";
+import { positiveParam, stringValue } from "./platform/http/params";
+import { sessionsRoutes } from "./domains/sessions";
+import { schedulesRoutes } from "./domains/schedules";
+import { turnRoutes, workerRoutes } from "./domains/turns";
 
 /**
  * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
@@ -353,24 +355,6 @@ function domainError(error: unknown): HttpError | undefined {
 const errorFor = (error: unknown): HttpError => httpErrorFor(error, domainError);
 
 /**
- * THE LIVE LIST'S ETAG — the revision cursor (#462) spelled the way HTTP spells
- * it, so a client that knows nothing about `?since=` still gets the cheap tick.
- *
- * THE MODE IS IN THE TAG, and that is what the query cursor could not do. A
- * `?since=` earned against the unsettled list and spent against `?all=1` would
- * be answered "unchanged" and leave a shelf empty, because the revision counts
- * WRITES and does not move when a reader opens one — which is why the wide read
- * refuses to be conditional on it. Two modes, two tags, and the wide read can
- * be conditional too.
- *
- * WEAK, because the claim is semantic. Two answers at one revision carry the
- * same rows; nothing here promises the same bytes, and `W/` is how that is said.
- */
-function liveSessionsETag(revision: number, all: boolean): string {
-  return `W/"live-${revision}-${all ? "all" : "lean"}"`;
-}
-
-/**
  * THE SESSION TAIL'S OWN TAG — issue #586, and the largest single loop in the
  * cockpit.
  *
@@ -498,12 +482,6 @@ function appearanceEtag(updatedAt: number): string {
   return `"a${updatedAt.toString(36)}"`;
 }
 
-function stringValue(value: unknown, label: string, optional = false): string | undefined {
-  if (value === undefined && optional) return undefined;
-  if (typeof value !== "string") throw new HttpError(400, "invalid_request", `${label} must be a string`);
-  return value;
-}
-
 function sessionPath(pathname: string): { sessionId: string; tail: string } | undefined {
   const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
   if (!match) return undefined;
@@ -617,26 +595,10 @@ const OUTLINE_PAGE_DEFAULT = 20;
 const OUTLINE_PAGE_MAX = 100;
 const GREP_PAGE_DEFAULT = 20;
 const GREP_PAGE_MAX = 100;
-const FIND_LIMIT_DEFAULT = 10;
-const FIND_LIMIT_MAX = 50;
 const ITEM_CHARS_DEFAULT = 8_000;
 const ITEM_CHARS_MAX = 64_000;
 const ANSWER_SLICE_DEFAULT = 8_000;
 const ANSWER_SLICE_MAX = 64_000;
-
-/**
- * A NON-NEGATIVE INTEGER QUERY PARAMETER, clamped — or refused.
- *
- * REFUSED RATHER THAN DEFAULTED when it is not a number, on `eventPageLimit`'s
- * argument: `?limit=all` is a bug in the caller, and quietly serving it the
- * default would hide the bug behind an answer that looks right.
- */
-function positiveParam(raw: string | null, fallback: number, ceiling: number, label: string): number {
-  if (raw === null) return fallback;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 0) throw new HttpError(400, "invalid_request", `${label} must be a non-negative integer`);
-  return Math.min(value, ceiling);
-}
 
 /**
  * `/runs/:runId/items` and `/runs/:runId/items/:step` — one shape, because the
@@ -656,28 +618,6 @@ function runItemsPath(tail: string): { runId: string; step?: number | string } |
   return { runId: decodeURIComponent(match[1]), step: Number.isSafeInteger(index) && index >= 0 ? index : decodeURIComponent(raw) };
 }
 
-type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "resume" | "promote" | "steer-ack";
-
-function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
-  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard|release|resume|promote|steer-ack)$/.exec(pathname);
-  if (!match) return undefined;
-  return { sessionId: decodeURIComponent(match[1]), runId: decodeURIComponent(match[2]), action: match[3] as TurnAction };
-}
-
-/** `POST /v2/sessions/:id/requests/:requestId` — a human answering. */
-function requestPath(pathname: string): { sessionId: string; requestId: string } | undefined {
-  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/requests\/([A-Za-z0-9_-]+)$/.exec(pathname);
-  if (!match) return undefined;
-  return { sessionId: decodeURIComponent(match[1]), requestId: decodeURIComponent(match[2]) };
-}
-
-/** `DELETE /v2/subscriptions/:id` — top-level, because a subscription spans
- *  two sessions and belongs to neither path. */
-function subscriptionPath(pathname: string): { subscriptionId: string } | undefined {
-  const match = /^\/v2\/subscriptions\/([A-Za-z0-9_-]+)$/.exec(pathname);
-  if (!match) return undefined;
-  return { subscriptionId: decodeURIComponent(match[1]) };
-}
 
 
 function writeDiscovery(store: EngineStore, discovery: EngineDiscovery): void {
@@ -2713,12 +2653,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
-      if (request.method === "GET" && url.pathname === "/v2/sessions") {
-        const projectId = url.searchParams.get("projectId");
-        if (!projectId) throw new HttpError(400, "invalid_request", "projectId is required");
-        writeJson(response, 200, { sessions: store.listSessions(projectId) });
-        return;
-      }
       /**
        * EVERY LIVE SESSION, ACROSS PROJECTS, plus the project registry beside
        * it — what `sessions_list` answers with, and the only read in this file
@@ -2788,522 +2722,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { machine });
         return;
       }
-      /**
-       * THE RAIL'S ONE READ — and it answers ROWS, not whole sessions (#459).
-       *
-       * This is the most-served route on the engine: every cockpit polls it on a
-       * timer, for every paired host, for as long as it is open. On the owner's
-       * store it was 318 KB and 200 ms for 267 sessions, which is why the engine
-       * sat at 70% CPU with two devices attached. `liveSessionRows` serializes
-       * only what a row draws; `LiveSessionRow` argues it field by field.
-       *
-       * IT IS ALSO THE WHOLE OF WHAT A RAIL ASKS PER PASS. The sidebar used to
-       * fan out three ways here — this list, `/v2/health` for the engine's id
-       * and `/v2/inbox` for the settling window — three concurrent reads, per
-       * paired host, per tick, of which two answered one field each and changed
-       * only when somebody opened Settings. `daemonId` is stamped on here rather
-       * than in the store because it belongs to the running daemon, not to the
-       * documents: two reads that reached ONE engine (a Mac paired with itself,
-       * or under two addresses) are folded on it.
-       *
-       * `?full=1` IS THE ONE-RELEASE ESCAPE HATCH, for a client built against
-       * the old shape — a paired Mac on last week's nightly, a script. It is not
-       * a mode anything of ours asks for, and it is meant to be deleted.
-       *
-       * AND THE DEFAULT IS NOW THE UNSETTLED ROWS ALONE (#457). Re-measured on
-       * the owner's store after #459: 276 KB and 2.33 s per read, three seconds
-       * apart, per connected cockpit — for 291 sessions of which SEVEN were not
-       * settled. `?all=1` is the whole list and is what the cockpit's shelf
-       * sends when a reader opens it; `settledCount` rides the default answer so
-       * the shelf header that asks for them is drawn without them. The rule is
-       * the clients' own (`isShelved`), so the engine cannot drop a row a rail
-       * would have shown. `?full=1` is unfiltered, because its entire contract
-       * is "the old answer, verbatim".
-       */
-      if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
-        if (url.searchParams.get("full") === "1") {
-          writeJson(response, 200, store.liveSessions());
-          return;
-        }
-        const all = url.searchParams.get("all") === "1";
-        /**
-         * `If-None-Match` — THE SAME CONDITIONAL READ, SPELLED IN HEADERS.
-         *
-         * `?since=` (#462) is this in the body, and it stays: two proxy hops sit
-         * between this engine and a browser, and the cockpit's own route
-         * RE-COMPOSES the answer rather than streaming it, so a cursor a route
-         * handler can read is the thing that works everywhere. What the header
-         * adds is three things the body cursor cannot:
-         *
-         *   - A 304 HAS NO BODY AT ALL, against the cursor's sixty-odd bytes.
-         *   - THE WIDE READ CAN BE CONDITIONAL. The mode is inside the tag, so a
-         *     tag earned against the unsettled list simply does not match an
-         *     `?all=1` ask — where a `?since=` would have matched and answered
-         *     the shelf with "unchanged". See `liveSessionsETag`.
-         *   - IT IS THE STANDARD SPELLING, so a script, a cache or a client that
-         *     has never heard of `?since=` gets the cheap tick for free.
-         *
-         * BEFORE THE CURSOR, because it is the cheaper of the two and because a
-         * client sending both means both.
-         */
-        /**
-         * THE CURSOR IS PER SHAPE OF ANSWER NOW (#493). A write to a session on
-         * the shelf moves the wide answer and not the default one, so the two
-         * ask for different numbers — see `sessionsRevision`. The tag already
-         * carried the mode for the same reason; the number behind it now does
-         * too, which is what stops a settled conversation's background task from
-         * invalidating every rail on the machine.
-         */
-        const etag = liveSessionsETag(store.sessionsRevision({ all }), all);
-        if (matchesETag(request.headers["if-none-match"], etag)) {
-          response.writeHead(304, { etag, "cache-control": "no-store" });
-          response.end();
-          return;
-        }
-        /**
-         * `?since=<revision>` — THE CONDITIONAL READ, and the reason this route
-         * stopped being the engine's largest cost (#459).
-         *
-         * A rail cannot be pushed to: there is no global event feed here, and a
-         * new long-lived connection is what #82 exists to avoid. So it still
-         * asks on a timer, and this makes the ask nearly free — a cursor that
-         * matches means nothing has been written since, and the answer is one
-         * integer instead of a fold over every session's queue, requests and
-         * tasks followed by 318 KB of rows.
-         *
-         * `daemonId` RIDES THE UNCHANGED ANSWER TOO. A rail that had not cached
-         * it (a fresh tab whose first read happened to be conditional) would
-         * otherwise have to go back to `/v2/health` for it — which is the
-         * request this route just absorbed.
-         *
-         * An unparseable cursor is not an error: it is a client that has no
-         * useful cursor, which is exactly the full answer's case.
-         *
-         * `?all=1` IS NEVER CONDITIONAL, and that is a correctness rule rather
-         * than an oversight (#457). The revision counts WRITES, so it does not
-         * move when a reader opens the Settled shelf — a cursor earned against
-         * the default list, spent against `all=1`, would be answered "unchanged"
-         * and the shelf would stay empty for as long as nothing else happened on
-         * the machine. Making the wide ask always pay for itself is the version
-         * of this that cannot be got wrong: the shelf is opened by hand and for
-         * a moment, and the state this issue is about is the other one.
-         */
-        const since = Number(url.searchParams.get("since"));
-        if (!all && Number.isSafeInteger(since) && since === store.sessionsRevision()) {
-          // The default shape, which is the only one this cursor serves.
-          writeJson(response, 200, { revision: since, unchanged: true, daemonId }, { etag });
-          return;
-        }
-        writeJson(response, 200, { ...store.liveSessionRows({ all }), projects: store.listProjects(), daemonId }, { etag });
-        return;
-      }
-      /**
-       * WHEN EACH PROJECT WAS LAST WORKED IN — issue #490.
-       *
-       * A LITERAL PATH UNDER `/v2/sessions/`, up here with `/live` and `/find`
-       * and for their reason: `sessionPath` below matches `activity` as happily
-       * as it matches a session id.
-       *
-       * IT IS THE FRONT DOOR'S READ, and it exists because that surface was
-       * making `/live?all=1` instead — 101.6 KB and 291 sessions, measured on
-       * the owner's store, to choose ONE project to redirect to. It renders
-       * nothing from the answer. This is the aggregate that choice is actually
-       * made on, answered off the `sessions` index: one row per project, a
-       * `projectId` and an `updatedAt`, and no document opened.
-       *
-       * A NEW ROUTE RATHER THAN A WIDER `/live`. The rail's list and a ranking
-       * are different questions, and #457 is the whole argument for not letting
-       * one answer serve both — a field added there is paid for by every rail on
-       * the machine, every tick.
-       *
-       * NOT CONDITIONAL, and it does not need to be: it is read ONCE per launch,
-       * on a cold start, by a screen that then leaves. There is no timer behind
-       * it to make cheap.
-       */
-      /**
-       * EVERY SESSION'S EVENTS, ON ONE CONNECTION — issue #586.
-       *
-       * ────────────────────────────────────────────────────────────────────
-       * WHY A FEED AT ALL. Every liveness surface in this app polls, because
-       * there has never been anything to subscribe to: the mobile push worker
-       * asks `liveSessionsMatching` every ten seconds whether anything needs a
-       * notification, and the answer is almost always no. What a person feels
-       * is the LATENCY — a request parked for approval is up to ten seconds
-       * late — and what a relay would pay for is the request count.
-       *
-       * A FRAME IS NEVER THE RECORD. Each one names a fact the reader can
-       * re-derive from a cursor'd read of `/events`, which is what keeps this a
-       * latency optimisation over a poll rather than a second source of truth.
-       * A phone asleep when a frame went out loses nothing by asking. Any
-       * future frame must meet that bar or it does not belong here.
-       *
-       * SO THE FRAME IS THIN ON PURPOSE: which session, which event id, what
-       * kind. A reader that cares pages `/events` from the id — the same
-       * contract every other read here has. Putting the event's BODY on the
-       * wire would make this the record, and a client that missed a frame
-       * would have lost something.
-       * ────────────────────────────────────────────────────────────────────
-       *
-       * THE ENGINE'S SSE PATTERN, which `/run/stream` follows too: the
-       * `: open` first, the 25 s `: beat` (a stream silent for twenty minutes
-       * is one a proxy closes), and the `openStreams` registration. Each has
-       * its reason written out below.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/sessions/stream") {
-        response.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache, no-transform",
-          Connection: "keep-alive",
-        });
-        const frame = (event: { sessionId: string; id: number; type: string }) => {
-          try {
-            response.write(`data: ${JSON.stringify({ sessionId: event.sessionId, id: event.id, type: event.type })}\n\n`);
-          } catch {
-            // The socket has gone; the close handler below unsubscribes.
-          }
-        };
-        /**
-         * THE FLUSH, AND IT IS NOT POLITENESS. Measured (on the retired Agent
-         * stream, #531): `writeHead` alone does not put headers on the wire,
-         * so the QUIETEST feed hangs longest. A machine with nothing
-         * happening is exactly when a client most needs to be told it is
-         * connected.
-         */
-        response.write(": open\n\n");
-        /**
-         * ── THERE IS NO `?after=` REPLAY HERE, AND THAT IS A FINDING ────────
-         *
-         * #586 asked for a replay from a cursor inside the same response. IT
-         * CANNOT HAVE IT: an event id in
-         * this engine is per session — `PRIMARY KEY(session_id, id)` in
-         * `execution-store.ts` — so there is no machine-wide cursor for a
-         * caller to hold or for this route to replay from. Accepting an
-         * `?after=` that silently meant nothing would be worse than not
-         * offering one, and synthesising a global ordering would mean a scan
-         * across every session's journal on every connect, which is precisely
-         * the whole-store pass this feed exists to remove.
-         *
-         * SO THE FEED IS LIVE-ONLY, AND ITS READERS ARE ALREADY BUILT FOR
-         * THAT. The rule this issue settles on is that a frame never IS the
-         * record: it names a fact re-derivable from a cursor'd read, so a
-         * reader that missed one loses latency and nothing else. The mobile
-         * worker keeps its ten-minute reconcile for exactly this, and that
-         * reconcile — not a replay — is what closes a gap after a disconnect.
-         */
-        const stop = store.watch(frame);
-        const beat = setInterval(() => {
-          try {
-            response.write(": beat\n\n");
-          } catch {
-            /* the close handler is what actually tidies up */
-          }
-        }, 25_000);
-        beat.unref();
-        const finish = () => {
-          clearInterval(beat);
-          stop();
-          openStreams.delete(finish);
-        };
-        // THE SHUTDOWN HAS TO BE ABLE TO END THIS, or `server.close()` waits
-        // for ever on a connection that by design never ends. `close()` ends
-        // every `openStreams` entry before asking the server to shut, so the
-        // client sees a clean end of stream and reconnects to what comes back.
-        openStreams.add(finish);
-        request.on("close", finish);
-        response.on("close", finish);
-        (finish as { end?: () => void }).end = () => {
-          finish();
-          try {
-            response.end();
-          } catch {
-            /* already gone */
-          }
-        };
-        return;
-      }
-      /**
-       * SCHEDULES — issue #543.
-       *
-       * A flat CRUD door on the one table, in this file's own `if` chain. The
-       * session a row fires into is named in the BODY and validated by the
-       * store rather than taken on trust here, exactly as every other write
-       * route in this file does it.
-       *
-       * NO "RUN NOW". It looks like a kindness and it is a second way to start
-       * a turn, with none of the sweep's re-aiming — a person who pressed it
-       * twice would get two turns and a row whose `nextRunAt` meant nothing.
-       * Sending the prompt is what the composer is for.
-       */
-      if (url.pathname === "/v2/schedules") {
-        if (request.method === "GET") {
-          const sessionId = url.searchParams.get("sessionId") ?? undefined;
-          writeJson(response, 200, { schedules: store.listSchedules(sessionId) });
-          return;
-        }
-        if (request.method === "POST") {
-          const input = await body(request);
-          writeJson(response, 200, {
-            schedule: store.putSchedule({
-              ...(typeof input.id === "string" ? { id: input.id } : {}),
-              sessionId: String(input.sessionId ?? ""),
-              prompt: String(input.prompt ?? ""),
-              rule: input.rule as never,
-              zone: String(input.zone ?? "UTC"),
-              ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
-            }),
-          });
-          return;
-        }
-      }
-      if (url.pathname.startsWith("/v2/schedules/")) {
-        const id = decodeURIComponent(url.pathname.slice("/v2/schedules/".length));
-        if (request.method === "GET") {
-          const row = store.readSchedule(id);
-          if (!row) throw new HttpError(404, "not_found", "schedule does not exist");
-          writeJson(response, 200, { schedule: row });
-          return;
-        }
-        if (request.method === "DELETE") {
-          writeJson(response, 200, { deleted: store.deleteSchedule(id) });
-          return;
-        }
-      }
-      if (request.method === "GET" && url.pathname === "/v2/sessions/activity") {
-        writeJson(response, 200, { projects: store.projectActivity() });
-        return;
-      }
-      /**
-       * THE SESSIONS SOCKET'S CONNECT CARD — where it listens and its dedicated
-       * secret. BEHIND THE NORMAL BEARER, exactly as the notebook's is: the card
-       * mints and reveals the socket's credential, so only something already
-       * holding engine access may read it.
-       */
-      /**
-       * WHICH CONVERSATION WAS THIS — issue #516.
-       *
-       * A LITERAL PATH UNDER `/v2/sessions/`, so it lives up here with `/live`
-       * and for the identical reason: `sessionPath` matches `find` as happily as
-       * it matches a session id, and below the block this route would be "no
-       * session by that id".
-       *
-       * READ-ONLY AND BOUNDED: ten rows by default, each one id, title, project,
-       * activity, `updatedAt` and a quoted `why`. `index` says whether this
-       * engine's sqlite answered from FTS5 or from the scan, because a caller
-       * comparing two engines' results deserves to know which they got.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/sessions/find") {
-        const q = url.searchParams.get("q");
-        if (!q || !q.trim()) throw new HttpError(400, "invalid_request", "q is required");
-        const settled = url.searchParams.get("settled");
-        writeJson(response, 200, store.findSessions({
-          q,
-          ...(url.searchParams.get("projectId") ? { projectId: url.searchParams.get("projectId")! } : {}),
-          ...(settled === null ? {} : { settled: settled === "1" || settled === "true" }),
-          ...(url.searchParams.get("since") ? { since: positiveParam(url.searchParams.get("since"), 0, Number.MAX_SAFE_INTEGER, "since") } : {}),
-          limit: positiveParam(url.searchParams.get("limit"), FIND_LIMIT_DEFAULT, FIND_LIMIT_MAX, "limit"),
-        }));
-        return;
-      }
-      if (request.method === "GET" && url.pathname === "/v2/sessions/mcp-info") {
-        const bound = server.address();
-        const port = bound && typeof bound === "object" ? bound.port : 0;
-        writeJson(response, 200, {
-          mcp: sessionsSocketConnectCard(`http://127.0.0.1:${port}/v2/sessions/mcp`, sessionsSecret()),
-        });
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/sessions") {
-        const input = await body(request);
-        writeJson(response, 201, {
-          session: await store.createSessionAsync({
-            ...(input.draft === true ? { draft: true } : {}),
-            id: stringValue(input.id, "session id", true),
-            projectId: stringValue(input.projectId, "project id")!,
-            title: stringValue(input.title, "session title", true),
-            ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
-            ...(input.envMode === "worktree" || input.envMode === "local" ? { envMode: input.envMode } : {}),
-            ...(typeof input.branchSlug === "string" ? { branchSlug: input.branchSlug } : {}),
-            // The base-ref picker's two knobs. Validated in the store and in
-            // worktree.ts, for the same one-wall reason as `driver` below.
-            ...(typeof input.baseRef === "string" ? { baseRef: input.baseRef } : {}),
-            ...(typeof input.branchName === "string" ? { branchName: input.branchName } : {}),
-            // Validated in the store rather than here, so the HTTP surface and
-            // any in-process caller reject the same set of drivers.
-            ...(typeof input.driver === "string" ? { driver: input.driver as "claude" | "codex" } : {}),
-            // Naming an instance also names the driver, so the store ignores
-            // `driver` when this is present rather than refusing the pair.
-            ...(typeof input.providerInstanceId === "string" ? { providerInstanceId: input.providerInstanceId } : {}),
-            /**
-             * WHO ASKED — provenance. Forwarded rather than ignored because the
-             * OUT-OF-PROCESS worker reaches this route to build the toolkit's
-             * `create`: the capability is assembled out of client calls in one
-             * deployment and out of `store.*` calls in the other, and both must
-             * stamp the same provenance.
-             *
-             * ONLY `"session"` IS HONOURED. Anything else — including a literal
-             * "human" — falls through to absent, which IS human; two spellings
-             * of the same state is how the two drift.
-             */
-            ...(input.origin === "session" ? { origin: "session" as const } : {}),
-            /**
-             * THE PRIVILEGE CEILING (#541 G1), forwarded for `origin`'s reason:
-             * the OUT-OF-PROCESS worker reaches this route to build the
-             * toolkit's `create`, so both deployments must apply the same rule.
-             *
-             * NOT VALIDATED HERE. The store reads the mode off the named
-             * session and refuses an id that resolves to nothing — and because
-             * a ceiling can only NARROW, a caller that names the wrong session
-             * gives its own new session less access, never more.
-             */
-            ...(typeof input.ceilingFrom === "string" ? { ceilingFrom: input.ceilingFrom } : {}),
-          }),
-        });
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/workers/register") {
-        const input = await body(request);
-        writeJson(response, 200, await execution.registerWorker(stringValue(input.workerId, "worker id")!));
-        return;
-      }
-      const workerMatch = /^\/v2\/workers\/([A-Za-z0-9_-]+)\/(heartbeat|claim)$/.exec(url.pathname);
-      if (workerMatch && request.method === "POST") {
-        const workerId = decodeURIComponent(workerMatch[1]);
-        if (workerMatch[2] === "heartbeat") {
-          const input = await body(request);
-          const ack = input.acknowledgedTaskStops;
-          if (ack !== undefined && (!Array.isArray(ack) || ack.some((id) => typeof id !== "string")))
-            throw new HttpError(400, "invalid_request", "task stop acknowledgments must be strings");
-          writeJson(response, 200, await execution.workerHeartbeat(workerId, undefined, ack as string[] | undefined));
-        } else {
-          const input = await body(request);
-          writeJson(response, 200, await execution.claimTurn(workerId, input.claimSeq as number));
-        }
-        return;
-      }
-
-      const turn = turnPath(url.pathname);
-      if (turn && request.method === "POST") {
-        if (turn.action === "release") {
-          // A HUMAN gesture, like discard: no claim token, because the person
-          // re-reading a held message is not a worker reporting on a run.
-          writeJson(response, 200, { turn: store.releaseHeldTurn(turn.sessionId, turn.runId) });
-          return;
-        }
-        if (turn.action === "resume") {
-          // A HUMAN gesture like release: no claim token, and no clock check —
-          // the person pressing this knows something the reset time does not.
-          writeJson(response, 200, { turn: store.resumeRateLimitedTurn(turn.sessionId, turn.runId) });
-          return;
-        }
-        if (turn.action === "discard") {
-          await body(request);
-          writeJson(response, 200, { turn: store.discardAmbiguousTurn(turn.sessionId, turn.runId) });
-          return;
-        }
-        // A HUMAN gesture like discard, so no claim token: send this queued
-        // message into the running turn.
-        if (turn.action === "promote") {
-          await body(request);
-          writeJson(response, 200, { turn: store.promoteTurn(turn.sessionId, turn.runId) });
-          return;
-        }
-        const input = await body(request);
-        const claimToken = stringValue(input.claimToken, "claim token")!;
-        if (turn.action === "running") {
-          writeJson(response, 200, await execution.markTurnRunning(turn.sessionId, turn.runId, claimToken));
-        } else if (turn.action === "steer-ack") {
-          // The runId in the path is the PROMOTED turn; the claim token proves
-          // the worker holds the running turn it was steered into.
-          writeJson(response, 200, await execution.ackSteer(turn.sessionId, turn.runId, claimToken));
-        } else if (turn.action === "request") {
-          const parsed = RequestOpenInput.safeParse(input);
-          if (!parsed.success) throw new HttpError(400, "invalid_request", "request payload is invalid");
-          writeJson(
-            response,
-            200,
-            await execution.openRequest(turn.sessionId, turn.runId, parsed.data.claimToken, {
-              requestId: parsed.data.requestId,
-              kind: parsed.data.kind,
-              detail: parsed.data.detail,
-              ...(parsed.data.itemId ? { itemId: parsed.data.itemId } : {}),
-              ...(parsed.data.providerRefs ? { providerRefs: parsed.data.providerRefs } : {}),
-              // Forwarded rather than validated here, on this route's standing
-              // rule: the store owns what a kind may carry (`defaultAllowed`),
-              // so the HTTP door and an in-process caller refuse the same set.
-              ...(parsed.data.deadlineMs !== undefined ? { deadlineMs: parsed.data.deadlineMs } : {}),
-              ...(parsed.data.default !== undefined ? { default: parsed.data.default } : {}),
-            }),
-          );
-        } else if (turn.action === "observe") {
-          if (!Array.isArray(input.observations)) {
-            throw new HttpError(400, "invalid_request", "observations must be an array");
-          }
-          // The store re-validates against the contract schema. This only
-          // rejects a shape that is not even an array, so the error names the
-          // request rather than the first malformed element inside it.
-          writeJson(response, 200, await execution.reportObservations(turn.sessionId, turn.runId, claimToken, input.observations));
-        } else if (turn.action === "complete") {
-          writeJson(response, 200, await execution.completeTurn(turn.sessionId, turn.runId, claimToken, {
-              text: stringValue(input.text, "text")!,
-              providerSessionId: stringValue(input.providerSessionId, "provider session id", true),
-              usage: input.usage as never,
-            }));
-        } else {
-          // FROM THE CONTRACT'S LIST, not a hand-written copy of it. This was
-          // one of three places spelling the same codes out, and adding
-          // `interrupted` found them by watching two accept it while the third
-          // still refused. `WorkerTurnFailureCode` is the single definition.
-          const parsedCode = WorkerTurnFailureCode.safeParse(stringValue(input.code, "failure code"));
-          if (!parsedCode.success) {
-            throw new HttpError(400, "invalid_request", "failure code is invalid");
-          }
-          const code = parsedCode.data;
-          // `rate_limited` carries the two facts the sweep schedules from. Read
-          // through the contract's own schema rather than cast: `resumeAt`
-          // arrives over HTTP as whatever the body held, and a NaN reaching the
-          // store would be a turn that never resumes and never says why.
-          const parsedFailure = WorkerTurnFailure.safeParse({
-            code,
-            message: stringValue(input.message, "failure message")!,
-            ...(input.resumeAt === undefined ? {} : { resumeAt: input.resumeAt }),
-            ...(input.limitType === undefined ? {} : { limitType: input.limitType }),
-          });
-          if (!parsedFailure.success) throw new HttpError(400, "invalid_request", "turn failure is invalid");
-          writeJson(response, 200, await execution.failTurn(turn.sessionId, turn.runId, claimToken, parsedFailure.data));
-        }
-        return;
-      }
-
-      const humanRequest = requestPath(url.pathname);
-      if (humanRequest && request.method === "POST") {
-        const input = await body(request);
-        const decision = stringValue(input.decision, "decision")!;
-        if (!["accept", "acceptForSession", "decline", "cancel"].includes(decision)) {
-          throw new HttpError(400, "invalid_request", "decision is invalid");
-        }
-        writeJson(response, 200, {
-          request: store.resolveRequest(humanRequest.sessionId, humanRequest.requestId, {
-            decision: decision as "accept" | "acceptForSession" | "decline" | "cancel",
-            reason: stringValue(input.reason, "reason", true),
-            ...(input.answers && typeof input.answers === "object" ? { answers: input.answers as Record<string, unknown> } : {}),
-            // ONLY `"session"` IS HONOURED — the out-of-process worker names
-            // it when the `sessions` toolkit answers on a peer's behalf.
-            // Anything else falls through to absent, which IS human; the
-            // same construction as `origin` on session creation.
-            ...(input.resolvedBy === "session" ? { resolvedBy: "session" as const } : {}),
-          }),
-        });
-        return;
-      }
-
-      const subscription = subscriptionPath(url.pathname);
-      if (subscription && request.method === "DELETE") {
-        const input = await body(request);
-        const subscriber = stringValue(input.subscriberSessionId, "subscriber session id", true);
-        writeJson(response, 200, { removed: store.unsubscribe(subscription.subscriptionId, subscriber) });
-        return;
-      }
-
       const session = sessionPath(url.pathname);
       if (session) {
         if (request.method === "GET" && session.tail === "") {
@@ -4167,6 +3585,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       writeError(response, errorFor(error));
     }
   };
+  domainRoutes.push(
+    ...sessionsRoutes(store, { daemonId, openStreams, mcpInfo: () => sessionsSocketConnectCard(`http://127.0.0.1:${(server.address() as AddressInfo | null)?.port ?? 0}/v2/sessions/mcp`, sessionsSecret()) }),
+    ...schedulesRoutes(store), ...workerRoutes(execution), ...turnRoutes(store, execution),
+  );
   const server = http.createServer(router(domainRoutes, { authorize, errorFor, fallback: legacyRoutes }));
 
   try {

@@ -15,3 +15,4 @@ export { ORIENTATION_VERSION, syncTelarSkill, TELAR_ORIENTATION, TELAR_SKILL, TE
 export { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionsSocketConnectCard } from "./tools/socket";
 export { pageEvents, type SessionsCapability } from "./tools/shared";
 export { sessionsTools } from "./tools/tools";
+export { sessionsRoutes } from "./routes";
