@@ -7,12 +7,10 @@ import { planDispatches } from "../dispatch";
 import { CohortFold, foldCohortTurns } from "./cohort-fold";
 import { DispatchBlockView, type SessionDirectory } from "./dispatch-block";
 
-/** Every turn, folded into cohorts, notification strips and one block per dispatch. */
 export function TranscriptTurns({ turns, activeRunId, keep, renderTurn, directory, hostId, projectId }: {
   turns: readonly JournalTurn[];
   activeRunId?: string;
   keep: ReadonlySet<string>;
-  /** `absorbed`: the turn's arrival is a line of a dispatch block, so it draws nothing of its own. */
   renderTurn: (turn: JournalTurn, absorbed: boolean) => ReactNode;
   directory: SessionDirectory;
   hostId?: string;

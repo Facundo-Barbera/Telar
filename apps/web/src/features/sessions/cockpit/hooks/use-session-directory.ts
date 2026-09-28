@@ -8,7 +8,6 @@ import type { SessionDirectory } from "../components/dispatch-block";
 
 const EMPTY: SessionDirectory = new Map();
 
-/** Titles and projects of the sessions this conversation tasked, read once per set of them. */
 export function useSessionDirectory(hostId: string, turns: readonly JournalTurn[]): SessionDirectory {
   const tasked = [...new Set(turns.flatMap((turn) => dispatchedFrom(turn.items)))].sort().join(",");
   const [directory, setDirectory] = useState<SessionDirectory>(EMPTY);

@@ -52,7 +52,6 @@ function WorkerLine({ worker, directory, hostId, projectId }: { worker: Dispatch
   );
 }
 
-/** The sessions one turn tasked: a count, then a line per session that its later arrivals update. */
 export function DispatchBlockView({ block, directory, hostId, projectId }: { block: DispatchBlock; directory: SessionDirectory; hostId?: string; projectId?: string }) {
   return (
     <section className="mx-auto w-full min-w-0 max-w-[50rem] rounded-md border border-border/60 py-1" aria-label="Dispatched sessions">

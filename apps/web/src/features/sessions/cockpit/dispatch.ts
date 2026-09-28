@@ -7,7 +7,6 @@ export type DispatchWorker = { sessionId: string; state: WorkerState; message?: 
 
 export type DispatchBlock = { dispatchRunId: string; workers: DispatchWorker[] };
 
-/** A `sessions_send` this turn made, as `{ to, intent }`. */
 export function sends(items: readonly JournalItem[]): { to?: string; intent?: string }[] {
   return items.flatMap((item) => {
     const call = "call" in item.detail ? item.detail.call : undefined;
@@ -21,7 +20,6 @@ function taskedFrom(items: readonly JournalItem[]): string[] {
   return [...new Set(sends(items).flatMap((send) => (send.intent === "task" && send.to ? [send.to] : [])))];
 }
 
-/** The sessions one turn tasked, when it tasked more than one. */
 export function dispatchedFrom(items: readonly JournalItem[]): string[] {
   const tasked = taskedFrom(items);
   return tasked.length > 1 ? tasked : [];
@@ -42,10 +40,6 @@ function arrival(turn: JournalTurn): { from: string; state: WorkerState; message
   return undefined;
 }
 
-/**
- * Workers tasked from one turn become one block, drawn where the first of their arrivals lands.
- * A bare arrival folds into its line; a blocker, or an arrival the session answered, keeps its row.
- */
 export function planDispatches(turns: readonly JournalTurn[], activeRunId?: string): { blocks: Map<string, DispatchBlock>; absorbed: Set<string> } {
   const blocks = new Map<string, DispatchBlock>();
   const absorbed = new Set<string>();
