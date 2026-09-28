@@ -15,9 +15,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { matchPluginRoute } from "../src/domains/plugins/scoped-routes";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { matchPluginRoute } from "./scoped-routes";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];

@@ -18,9 +18,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, type EngineClientError } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { EngineStore } from "../src/state";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { EngineStore } from "../../state";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const stores: EngineStore[] = [];

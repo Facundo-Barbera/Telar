@@ -15,9 +15,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine } from "../src/daemon";
-import { EngineStore } from "../src/state";
-import { stubModels } from "./stub-models";
+import { startEngine } from "../../daemon";
+import { EngineStore } from "../../state";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const root = (): string => {

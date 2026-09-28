@@ -7,9 +7,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { WorkspaceConfigStore, readWorkspaceProposal } from "../src/workspace-config";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { WorkspaceConfigStore, readWorkspaceProposal } from "../../workspace-config";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];

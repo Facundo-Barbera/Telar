@@ -7,11 +7,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import type { TurnDriver } from "../src/drivers";
-import { EngineWorker } from "../src/worker";
-import { stubModels } from "./stub-models";
-import { until } from "./wait";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import type { TurnDriver } from "../../drivers";
+import { EngineWorker } from "../../worker";
+import { stubModels } from "../../../test/stub-models";
+import { until } from "../../../test/wait";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];

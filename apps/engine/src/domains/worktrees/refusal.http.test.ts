@@ -19,7 +19,7 @@
  *
  * THE UNMOUNTED ARM IS NOT HERE. It never reached `WorktreeError` over HTTP —
  * `assertProjectAvailable` refuses first with `conflict` — and
- * `projects-availability-http.test.ts` already pins that sentence. Asserting it
+ * `domains/projects/availability.http.test.ts` already pins that sentence. Asserting it
  * again here would pin the same behaviour to the wrong cause.
  */
 import { afterEach, expect, test } from "bun:test";
@@ -28,8 +28,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];

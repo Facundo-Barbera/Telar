@@ -13,9 +13,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { stubModels } from "./stub-models";
-import { fakeMounts, type FakeMounts } from "./fake-mount";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { stubModels } from "../../../test/stub-models";
+import { fakeMounts, type FakeMounts } from "../../../test/fake-mount";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
