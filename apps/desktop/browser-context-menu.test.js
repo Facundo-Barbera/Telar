@@ -4,7 +4,6 @@ const path = require("node:path");
 
 const { browserContextMenuTemplate, SPELLING_SUGGESTION_LIMIT } = require("./browser-context-menu");
 
-/** Ids only, separators marked — what the menu SAYS, without its wording. */
 function ids(template) {
   return template.map((entry) => (entry.type === "separator" ? "—" : entry.id));
 }
@@ -13,7 +12,6 @@ function find(template, id) {
   return template.find((entry) => entry.id === id);
 }
 
-/** A right-click on the page itself: nothing under the pointer. */
 const BARE = { x: 40, y: 60, pageURL: "https://example.com/article" };
 
 describe("the page's context menu", () => {
@@ -32,7 +30,7 @@ describe("the page's context menu", () => {
     const nowhere = browserContextMenuTemplate(BARE, {});
     expect(find(nowhere, "back").enabled).toBe(false);
     expect(find(nowhere, "forward").enabled).toBe(false);
-    // Reload always works — there is always a page to reload.
+
     expect(find(nowhere, "reload").enabled).toBe(true);
     const both = browserContextMenuTemplate(BARE, { canGoBack: true, canGoForward: true });
     expect(find(both, "back").enabled).toBe(true);
@@ -55,8 +53,6 @@ describe("the page's context menu", () => {
   });
 
   test("View Page Source is offered only where there is a web page to view", () => {
-    // `view-source:` wraps http(s) and nothing else; a row that opened a tab on
-    // an error would be this menu lying about what it can do.
     expect(ids(browserContextMenuTemplate({ pageURL: "about:blank" }, {}))).not.toContain("view-source");
     expect(ids(browserContextMenuTemplate({ pageURL: "file:///tmp/guide.html" }, {}))).not.toContain("view-source");
     expect(ids(browserContextMenuTemplate({}, {}))).not.toContain("view-source");
@@ -64,8 +60,6 @@ describe("the page's context menu", () => {
   });
 
   test("NAVIGATION IS FOR THE PAGE, not for the thing you right-clicked", () => {
-    // Chrome's rule, and the one people notice only when it is broken: three
-    // navigation rows above "Copy Link" is a menu that forgot what it was asked.
     for (const params of [
       { ...BARE, linkURL: "https://example.com/other" },
       { ...BARE, hasImageContents: true, srcURL: "https://example.com/cat.png" },
@@ -86,8 +80,6 @@ describe("a link, an image, a selection", () => {
   });
 
   test("an image needs REAL image contents, not merely a srcURL", () => {
-    // `srcURL` is set for any media element; `hasImageContents` is Chromium's
-    // answer to "is there a bitmap here to copy or save".
     const media = browserContextMenuTemplate({ ...BARE, srcURL: "https://example.com/clip.mp4" }, {});
     expect(ids(media)).not.toContain("copy-image");
     const picture = browserContextMenuTemplate({ ...BARE, hasImageContents: true, srcURL: "https://example.com/cat.png" }, {});
@@ -116,7 +108,7 @@ describe("a link, an image, a selection", () => {
   test("a selection copies and searches, and the label quotes it on one line", () => {
     const template = browserContextMenuTemplate({ ...BARE, selectionText: "  quantum\n  foam  " }, {});
     expect(ids(template)).toEqual(["copy", "search-web", "—", "view-source", "inspect"]);
-    // The VALUE is the selection as typed; only the LABEL is flattened.
+
     expect(find(template, "search-web").value).toBe("quantum\n  foam");
     expect(find(template, "search-web").label).toBe("Search the web for “quantum foam”");
   });
@@ -125,7 +117,7 @@ describe("a link, an image, a selection", () => {
     const long = "the quick brown fox jumps over the lazy dog";
     const label = find(browserContextMenuTemplate({ ...BARE, selectionText: long }, {}), "search-web").label;
     expect(label).toBe("Search the web for “the quick brown fox jump…”");
-    // Whole, though, is what actually gets searched.
+
     expect(find(browserContextMenuTemplate({ ...BARE, selectionText: long }, {}), "search-web").value).toBe(long);
   });
 
@@ -180,8 +172,6 @@ describe("an editable field", () => {
   });
 
   test("a misspelling with nothing to suggest SAYS SO rather than going quiet", () => {
-    // A word silently missing its correction reads as a spell-checker that is
-    // switched off — which is a different thing, and not the true one.
     const template = browserContextMenuTemplate({ ...BARE, isEditable: true, misspelledWord: "zzxq", dictionarySuggestions: [] }, {});
     const none = find(template, "no-spelling-suggestions");
     expect(none).toMatchObject({ label: "No spelling suggestions", enabled: false });
@@ -202,14 +192,12 @@ describe("an editable field", () => {
 
 describe("the template is data the manager can actually run", () => {
   test("every id the fold can emit is handled in browser-manager's one switch", () => {
-    // THE FAILURE THIS PREVENTS: a row added here and nowhere else is a menu
-    // item that opens, highlights, and does nothing at all.
     const source = fs.readFileSync(path.join(__dirname, "browser-context-menu.js"), "utf8");
     const emitted = new Set([...source.matchAll(/\brow\("([a-z-]+)"/g)].map((match) => match[1]));
     expect(emitted.size).toBeGreaterThan(10);
-    const manager = fs.readFileSync(path.join(__dirname, "browser-manager.js"), "utf8");
+    const manager = ["browser-manager.js", ...fs.readdirSync(path.join(__dirname, "browser")).map((f) => path.join("browser", f))].map((f) => fs.readFileSync(path.join(__dirname, f), "utf8")).join("\n");
     const handled = new Set([...manager.matchAll(/case "([a-z-]+)":/g)].map((match) => match[1]));
-    // The disabled row is the one that deliberately does nothing.
+
     expect([...emitted].filter((id) => id !== "no-spelling-suggestions" && !handled.has(id))).toEqual([]);
   });
 
@@ -227,8 +215,7 @@ describe("the template is data the manager can actually run", () => {
       expect(entry.label.length).toBeGreaterThan(0);
       expect(typeof entry.enabled).toBe("boolean");
     }
-    // Never a leading, trailing or doubled separator — an empty section is
-    // dropped whole rather than leaving a rule with nothing under it.
+
     expect(template[0].type).not.toBe("separator");
     expect(template.at(-1).type).not.toBe("separator");
     expect(ids(template).join(",")).not.toContain("—,—");
