@@ -219,6 +219,15 @@ function terminalTools(tool: ToolFactory, capability: RunCapability, h: ReturnTy
 }
 
 function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
+  const forget = async (configId: unknown) => {
+    if (typeof configId !== "string" || !configId) return err("delete needs the configId to forget.");
+    try {
+      await capability.removeConfiguration(configId);
+      return ok("Removed that run configuration.");
+    } catch (error) {
+      return err(`Could not remove that run configuration: ${failure(error)}`);
+    }
+  };
   return [
     tool(
       "run_configs",
@@ -240,6 +249,7 @@ function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
       "Save a run configuration on the PROJECT, shown in its Run menu, or edit one by passing its configId. You can set up an empty Run menu yourself. The cwd is relative to the worktree it is opened from. Give a readinessUrl only if the command really serves it.",
       {
         configId: z.string().min(1).optional().describe("Edit this configuration instead of creating one."),
+        delete: z.boolean().optional().describe("Forget configId. A terminal already opened from it keeps running."),
         name: z.string().min(1).max(120).optional().describe("What a human picks in the Run menu, e.g. 'web dev'."),
         icon: RunIcon.optional().describe("The glyph the Run menu draws before the name. Default: 'play'."),
         command: z.string().min(1).optional().describe("The shell command, e.g. 'bun run dev'."),
@@ -254,6 +264,7 @@ function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
         readinessUrl: z.string().url().optional().describe("A URL that answers once the service is up, e.g. 'http://localhost:3000'."),
       },
       async (args) => {
+        if (args.delete === true) return await forget(args.configId);
         const patch = {
           ...(typeof args.name === "string" ? { name: args.name } : {}),
           ...(RunIcon.safeParse(args.icon).success ? { icon: args.icon as RunIcon } : {}),
@@ -273,20 +284,6 @@ function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
           return ok(`Saved "${created.name}" (${created.id}): ${created.command}${created.cwd ? ` in ${created.cwd}` : ""}.`);
         } catch (error) {
           return err(`Could not save that run configuration: ${failure(error)}`);
-        }
-      },
-    ),
-
-    tool(
-      "run_delete_config",
-      "Forget a saved run configuration. It closes nothing: a terminal already opened from it keeps its own copy of the command and keeps running.",
-      { configId: z.string().min(1).describe("The configuration to remove.") },
-      async (args) => {
-        try {
-          await capability.removeConfiguration(String(args.configId));
-          return ok("Removed that run configuration.");
-        } catch (error) {
-          return err(`Could not remove that run configuration: ${failure(error)}`);
         }
       },
     ),

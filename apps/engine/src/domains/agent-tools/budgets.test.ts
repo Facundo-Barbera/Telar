@@ -428,9 +428,9 @@ const CASES: Array<{ tool: string; args?: Record<string, unknown>; ceiling: numb
   { tool: "sessions_step", args: { sessionId: SESSION_ID, runId: RUN_ID, step: 12, maxChars: 64_000 }, ceiling: 66_000, why: "the most a caller may ask one step for" },
   { tool: "sessions_grep", args: { sessionId: SESSION_ID, pattern: "index.lock" }, ceiling: MAX_ANSWER_CHARS, why: "20 matches with 200 characters of context each" },
   { tool: "sessions_grep", args: { sessionId: SESSION_ID, pattern: "index.lock", limit: 100 }, ceiling: MAX_ANSWER_CHARS, why: "the widest ask — 100 × 200 characters is past the backstop unbounded" },
-  { tool: "notes_projects", ceiling: 2_000, why: "12 projects" },
+  { tool: "notes_list", args: { projects: true }, ceiling: 2_000, why: "12 projects" },
   { tool: "notes_list", ceiling: MAX_ANSWER_CHARS, why: "200 notes as titles and previews" },
-  { tool: "notes_read", args: { noteId: "note_0" }, ceiling: MAX_ANSWER_CHARS, why: "one note, whole — this is the call that carries a body" },
+  { tool: "notes_list", args: { noteId: "note_0" }, ceiling: MAX_ANSWER_CHARS, why: "one note, whole — this is the call that carries a body" },
   { tool: "notes_write", args: { title: "t", body: "b" }, ceiling: MAX_ANSWER_CHARS, why: "the note it wrote, echoed back" },
   { tool: "notes_delete", args: { noteId: "note_1" }, ceiling: 500, why: "a sentence" },
 ];
@@ -494,9 +494,9 @@ describe("every tool description is short enough to carry", () => {
    * with no capability at all still paid for it. The count and the absence are
    * asserted together so a re-add cannot pass by replacing something else.
    */
-  test("`warp` is not on the wall, and the wall is twenty-five tools", () => {
+  test("`warp` is not on the wall, and the wall is twenty-three tools", () => {
     const names = wall().registered.map((entry) => entry.name);
-    expect(names.length).toBe(25);
+    expect(names.length).toBe(23);
     expect(names).not.toContain("warp");
     expect(names.every((name) => name.startsWith("sessions_") || name.startsWith("notes_"))).toBe(true);
   });

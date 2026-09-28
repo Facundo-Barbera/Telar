@@ -45,7 +45,7 @@ function build(capability: Partial<PromptsCapability> = {}) {
 
 describe("the wall", () => {
   test("is exactly four tools — no rename, no reorder, no fifth slipped in", () => {
-    expect([...build().names].sort()).toEqual(["prompt_draft", "prompt_drop", "prompt_list", "prompt_read"]);
+    expect([...build().names].sort()).toEqual(["prompt_draft", "prompt_drop", "prompt_list"]);
   });
 
   test("every tool declares the prompt capability in its name", () => {
@@ -143,11 +143,12 @@ describe("listing", () => {
     expect(answer.text).toMatch(/Nothing is on this project's shelf/);
   });
 
-  test("prompt_read gives the one whole message a listing withheld", async () => {
+  test("prompt_list with a promptId gives the one whole message a listing withheld", async () => {
     const long = "x".repeat(400);
     const wall = build({ list: async () => [prompt({ text: long })] });
-    expect((await wall.call("prompt_read", { promptId: "q-1" })).text).toContain(long);
-    expect((await wall.call("prompt_read", { promptId: "nope" })).isError).toBe(true);
+    expect((await wall.call("prompt_list")).text).not.toContain(long);
+    expect((await wall.call("prompt_list", { promptId: "q-1" })).text).toContain(long);
+    expect((await wall.call("prompt_list", { promptId: "nope" })).isError).toBe(true);
   });
 });
 

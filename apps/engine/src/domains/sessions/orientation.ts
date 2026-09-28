@@ -242,11 +242,11 @@ write one when the person asks you to keep something, not to log what you did.
 - A note you write is stamped as an agent's, permanently.
 - \`notes_delete\` removes only notes an agent wrote. The person's own are
   theirs; say so rather than asking another session to delete one for you.
-- \`notes_list\` shows titles and the first 120 characters. \`notes_read\` gives
-  one note whole — ask for the ones you actually need.
+- \`notes_list\` shows titles and the first 120 characters; \`notes_list({ noteId })\`
+  gives one note whole — ask for the ones you actually need. \`projects: true\`
+  lists the notebooks you can use.
 
-Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
-\`notes_projects\`.
+Tools: \`notes_list\`, \`notes_write\`, \`notes_delete\`.
 
 ## Showing and running
 
@@ -266,7 +266,7 @@ Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
 - The Run menu — a project's saved commands. A project with no run
   configuration can be given one rather than being told it lacks the
   capability; open one with \`terminal_open({configId})\`. Tools:
-  \`run_configs\`, \`run_save_config\`, \`run_delete_config\`.
+  \`run_configs\`, \`run_save_config\` (\`delete: true\` forgets one).
 
 A project may also turn on plugins, which add toolkits of their own. They exist
 only where the project turned them on, the session is told about each one it
