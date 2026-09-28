@@ -114,7 +114,7 @@ describe("the wall rides along whole", () => {
     const inSession = (notesTools(((name: string) => ({ name })) as never, {} as NotesCapability) as Array<{ name: string }>).map((t) => t.name);
     expect(result.tools.map((tool) => tool.name).sort()).toEqual([...wallNames].sort());
     expect([...wallNames].sort()).toEqual([...inSession].sort());
-    expect(wallNames.sort()).toEqual(["notes_delete", "notes_list", "notes_projects", "notes_read", "notes_write"]);
+    expect(wallNames.sort()).toEqual(["notes_delete", "notes_list", "notes_write"]);
 
     for (const tool of result.tools) {
       expect(tool.description.length).toBeGreaterThan(40);
@@ -126,7 +126,7 @@ describe("the wall rides along whole", () => {
     const { daemon, secret } = await connected();
     const refused = await callTool(daemon, secret, "notes_list", {});
     expect(refused.isError).toBe(true);
-    expect(refused.text).toMatch(/notes_projects/);
+    expect(refused.text).toMatch(/projects: true/);
   });
 });
 
@@ -141,10 +141,10 @@ describe("the store's rules ride along too", () => {
 
     expect((await client.projectNotes(projectId)).notes.map((row) => row.title)).toEqual(["Deploy"]);
 
-    const read = await callTool(daemon, secret, "notes_read", { noteId: note.id });
+    const read = await callTool(daemon, secret, "notes_list", { noteId: note.id });
     expect(JSON.parse(read.text).body).toBe("bun run ship");
 
-    const projects = await callTool(daemon, secret, "notes_projects", {});
+    const projects = await callTool(daemon, secret, "notes_list", { projects: true });
     expect(JSON.parse(projects.text)).toEqual([{ id: projectId, name: "aurora" }]);
   });
 

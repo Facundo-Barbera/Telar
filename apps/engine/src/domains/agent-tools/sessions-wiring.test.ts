@@ -180,18 +180,9 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_status",
     "sessions_stop",
     "sessions_settle",
-    "sessions_diff",
     "sessions_subscribe",
-    "sessions_unsubscribe",
-    "sessions_subscriptions",
     "sessions_requests",
     "sessions_resolve_request",
-    "sessions_find",
-    "sessions_outline",
-    "sessions_answer",
-    "sessions_steps",
-    "sessions_step",
-    "sessions_grep",
     // #543, appended at the END so the wall GROWS rather than reorders.
     "sessions_schedule",
   ]);
@@ -202,9 +193,9 @@ test("the sessions toolkit registers under the SAME one server, and only when th
 
   // …and without one the sessions tools are GONE, and nothing is left to
   // register: the server itself does not appear. Anti-vacuity for the list
-  // above is the COUNT — twenty names, not zero — rather than a tool that
+  // above is the COUNT — eleven names, not zero — rather than a tool that
   // happened to be unconditional.
-  expect(names.length).toBe(20);
+  expect(names.length).toBe(11);
   names.length = 0;
   await claudeDriver(sdk).run({
     prompt: "prompt",

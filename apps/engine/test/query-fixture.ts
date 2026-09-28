@@ -74,7 +74,7 @@ export const MEASURED_TURNS = 30;
  *  worst case the byte table should be reporting. */
 export const ANSWER_CHARS = 4_000;
 
-/** Items on each measured turn — what `sessions_steps` lists and what its byte
+/** Items on each measured turn — what `sessions_read` view "steps" lists and what its byte
  *  number is the size OF. Exported so the assertion that the answer carries
  *  them names the fixture's number rather than repeating a literal that would
  *  quietly stop matching. */

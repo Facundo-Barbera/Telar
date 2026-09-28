@@ -63,7 +63,8 @@ Write each worker a self-contained brief. It will not see this conversation.
 ## 4. Integrate
 
 When results arrive (each is quoted in the notice; call \`sessions_read\`
-only if it was cut, and never reply just to acknowledge one):
+only if it was cut, with \`view: "diff"\` for what a worker changed; never
+reply just to acknowledge one):
 
 - **Verify before merging.** Checks must belong to the PR's CURRENT head SHA,
   all completed and green. Merge pinned to that head commit, so a push that

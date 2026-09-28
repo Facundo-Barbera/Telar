@@ -368,14 +368,24 @@ describe("the owned browser runtime", () => {
     await browser.close();
   });
 
-  test("rewrites the tab-list alias into the call Playwright actually understands", async () => {
+  test("each mode of a merged tool reaches Playwright as the call it understands", async () => {
     const fake = fakeBrowser();
     const browser = runtime(fake.spawn);
-    await browser.call("session:a", "browser_list_tabs");
-    expect(fake.children[0]!.requests[2]!.params).toEqual({
-      name: "browser_tabs",
-      arguments: { action: "list" },
-    });
+    await browser.call("session:a", "browser_tabs");
+    await browser.call("session:a", "browser_navigate", { url: "back", tabId: 1 });
+    await browser.call("session:a", "browser_snapshot", { screenshot: true, type: "jpeg" });
+    await browser.call("session:a", "browser_logs", { kind: "console", all: true });
+    await browser.call("session:a", "browser_logs", { kind: "network", filter: "/api" });
+    await browser.call("session:a", "browser_type", { key: "Enter" });
+    expect(fake.children[0]!.requests.slice(2).map((request) => request.params)).toEqual([
+      { name: "browser_tabs", arguments: { action: "list" } },
+      { name: "browser_navigate_back", arguments: {} },
+      { name: "browser_take_screenshot", arguments: { type: "jpeg", scale: "css" } },
+      { name: "browser_console_messages", arguments: { level: "info", all: true } },
+      { name: "browser_network_requests", arguments: { static: false, filter: "/api" } },
+      { name: "browser_press_key", arguments: { key: "Enter" } },
+    ]);
+    await expect(browser.call("session:a", "browser_list_tabs")).rejects.toThrow(/Unknown browser tool/);
     await browser.close();
   });
 

@@ -153,7 +153,7 @@ describe("driving a session", () => {
     await worktreeReady(store, id);
     fs.writeFileSync(path.join(workspacePath(store.records.get(id).workspace)!, "new-file.txt"), "written by the session\n");
 
-    const diff = await call(tools, "sessions_diff", { sessionId: id });
+    const diff = await call(tools, "sessions_read", { sessionId: id, view: "diff" });
     expect((diff.json!.files as Array<{ path: string }>).map((file) => file.path)).toContain("new-file.txt");
     expect(String(diff.json!.note)).toContain("Nothing here merges, lands or approves");
     expect(diff.json!.filesIncomplete).toBeUndefined();
@@ -172,7 +172,7 @@ describe("driving a session", () => {
       await sessionDiffAsync(async (cwd, args) => killed(cwd, args), { cwd: workspacePath(store.records.get(sessionId).workspace)!, baseRef: "base000" }),
     );
 
-    const diff = await call(tools, "sessions_diff", { sessionId: id });
+    const diff = await call(tools, "sessions_read", { sessionId: id, view: "diff" });
     expect(diff.isError).toBe(false);
     expect(diff.json!).toMatchObject({ filesIncomplete: "timeout", commitsIncomplete: "timeout", baseUnverified: "timeout", askAgain: true });
     expect(diff.json!.fileCount).toBe(0);
@@ -180,14 +180,14 @@ describe("driving a session", () => {
     expect(note).not.toContain("changed nothing in its checkout");
     expect(note).toContain("do not report this session as having changed nothing");
     expect(note).toContain("read it again");
-    expect(tools.get("sessions_diff")!.description).toContain("An empty answer may be unread, not unchanged");
+    expect(tools.get("sessions_read")!.description).toContain("an empty diff may be unread, not unchanged");
   });
 
   test("a session that does not exist refuses identically on every verb", async () => {
     const { store } = engine();
     const tools = wall(store);
-    for (const name of ["sessions_send", "sessions_read", "sessions_status", "sessions_diff"]) {
-      const refused = await call(tools, name, { sessionId: "session_nope", input: "x" });
+    for (const [name, view] of [["sessions_send"], ["sessions_read"], ["sessions_status"], ["sessions_read", "diff"]] as const) {
+      const refused = await call(tools, name, { sessionId: "session_nope", input: "x", ...(view ? { view } : {}) });
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain("session does not exist");
     }

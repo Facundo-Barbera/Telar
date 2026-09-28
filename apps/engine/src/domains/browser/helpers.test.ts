@@ -1,33 +1,81 @@
 import { describe, expect, test } from "bun:test";
 import { headlessCanvasCall } from "./canvas";
-import { browserErrorText, fileUrlViolation, headlessBrowserToolCall, imageDataUrlOf, isReadOnlyBrowserCall, MUTATING_TOOLS, normalizeBrowserToolCall, parseBrowserTabs, textOf } from "./helpers";
+import { browserErrorText, browserOperation, fileUrlViolation, headlessBrowserToolCall, imageDataUrlOf, isReadOnlyBrowserCall, parseBrowserTabs, textOf } from "./helpers";
 import { ScopedRuntimePool } from "./pool";
 import { BROWSER_TOOLS, BrowserToolInputError, BrowserToolResult, parseBrowserToolInput } from "./tools";
 
+const operationOf = (name: string, args: Record<string, unknown> = {}) => browserOperation(name, parseBrowserToolInput(name, args));
+
 describe("browser tool routing", () => {
-  test("maps the read-only tab-list alias to Playwright's overloaded tabs tool", () => {
-    expect(normalizeBrowserToolCall("browser_list_tabs", {})).toEqual({
+  test("listing is the default arm of the tabs tool", () => {
+    expect(operationOf("browser_tabs")).toEqual({ name: "browser_tabs", args: { action: "list" } });
+    expect(operationOf("browser_tabs", { action: "new", url: "https://a.example/" })).toEqual({
       name: "browser_tabs",
-      args: { action: "list" },
+      args: { action: "new", url: "https://a.example/" },
     });
   });
 
-  test("leaves every other call untouched, including its arguments", () => {
-    const args = { target: "button-1", element: "Save" };
-    expect(normalizeBrowserToolCall("browser_click", args)).toEqual({ name: "browser_click", args });
-    expect(normalizeBrowserToolCall("browser_list_tabs_v2", args)).toEqual({ name: "browser_list_tabs_v2", args });
+  test("navigate to \"back\" goes back in the tab named, and any other url navigates", () => {
+    expect(operationOf("browser_navigate", { url: "back", tabId: 2 })).toEqual({ name: "browser_navigate_back", args: { tabId: 2 } });
+    expect(operationOf("browser_navigate", { url: "back" })).toEqual({ name: "browser_navigate_back", args: {} });
+    expect(operationOf("browser_navigate", { url: "https://example.com/" })).toEqual({ name: "browser_navigate", args: { url: "https://example.com/" } });
+  });
+
+  test("a snapshot with screenshot: true captures an image with its own options; without, it drops them", () => {
+    expect(operationOf("browser_snapshot", { screenshot: true, fullPage: true, tabId: 1 })).toEqual({
+      name: "browser_take_screenshot",
+      args: { type: "png", scale: "css", fullPage: true, tabId: 1 },
+    });
+    expect(operationOf("browser_snapshot", { screenshot: true, type: "jpeg", scale: "device" })).toEqual({
+      name: "browser_take_screenshot",
+      args: { type: "jpeg", scale: "device" },
+    });
+    expect(operationOf("browser_snapshot", { depth: 2, fullPage: true })).toEqual({ name: "browser_snapshot", args: { depth: 2 } });
+    expect(() => parseBrowserToolInput("browser_snapshot", { screenshot: true, type: "webp" })).toThrow(BrowserToolInputError);
+  });
+
+  test("logs reads the console or the network, each with only its own options", () => {
+    expect(operationOf("browser_logs", { kind: "console", all: true, filter: "/api" })).toEqual({
+      name: "browser_console_messages",
+      args: { level: "info", all: true },
+    });
+    expect(operationOf("browser_logs", { kind: "network", filter: "/api", level: "error", tabId: 3 })).toEqual({
+      name: "browser_network_requests",
+      args: { static: false, filter: "/api", tabId: 3 },
+    });
+    expect(() => parseBrowserToolInput("browser_logs", {})).toThrow(/kind/);
+  });
+
+  test("type with a key presses it; with text it types, and it takes exactly one of the two", () => {
+    expect(operationOf("browser_type", { key: "Control+A", tabId: 1 })).toEqual({ name: "browser_press_key", args: { key: "Control+A", tabId: 1 } });
+    expect(operationOf("browser_type", { target: "e1", text: "hi", submit: true })).toEqual({
+      name: "browser_type",
+      args: { target: "e1", text: "hi", submit: true },
+    });
+    expect(() => parseBrowserToolInput("browser_type", { text: "hi", key: "Enter" })).toThrow(/not both/);
+    expect(() => parseBrowserToolInput("browser_type", { target: "e1" })).toThrow(BrowserToolInputError);
+    expect(() => parseBrowserToolInput("browser_type", { key: "" })).toThrow(BrowserToolInputError);
+  });
+
+  test("the merged tools are no longer advertised by their old names", () => {
+    const names = BROWSER_TOOLS.map((tool) => String(tool.name));
+    expect(names).toContain("browser_logs");
+    for (const old of ["browser_list_tabs", "browser_navigate_back", "browser_take_screenshot", "browser_console_messages", "browser_network_requests", "browser_press_key"]) {
+      expect(names).not.toContain(old);
+      expect(() => parseBrowserToolInput(old, {})).toThrow(/Unknown browser tool/);
+    }
   });
 
   test("a resize's preset and mode reach the desktop host as themselves — fit must not become a fixed standard size", () => {
-    expect(normalizeBrowserToolCall("browser_resize", { mode: "fit" })).toEqual({ name: "browser_resize", args: { mode: "fit" } });
-    expect(normalizeBrowserToolCall("browser_resize", { preset: "phone" })).toEqual({ name: "browser_resize", args: { preset: "phone" } });
+    expect(operationOf("browser_resize", { mode: "fit" })).toEqual({ name: "browser_resize", args: { mode: "fit" } });
+    expect(operationOf("browser_resize", { preset: "phone" })).toEqual({ name: "browser_resize", args: { preset: "phone" } });
   });
 
   test("the headless browser gets numbers: a preset is its size, a bare mode the standard size, explicit numbers stay", () => {
     expect(headlessBrowserToolCall("browser_resize", { preset: "phone" })).toEqual({ name: "browser_resize", args: { width: 390, height: 844 } });
     expect(headlessBrowserToolCall("browser_resize", { mode: "fit" })).toEqual({ name: "browser_resize", args: { width: 1280, height: 800 } });
     expect(headlessBrowserToolCall("browser_resize", { mode: "fixed", width: 900, height: 600 })).toEqual({ name: "browser_resize", args: { width: 900, height: 600 } });
-    expect(headlessBrowserToolCall("browser_list_tabs", {})).toEqual({ name: "browser_tabs", args: { action: "list" } });
+    expect(headlessBrowserToolCall("browser_tabs", { action: "list" })).toEqual({ name: "browser_tabs", args: { action: "list" } });
   });
 
   test("the headless browser: grouped presets, one dimension over the standard size, and an orientation turn", () => {
@@ -51,30 +99,33 @@ describe("browser tool routing", () => {
 });
 
 describe("browser permission classification", () => {
-  test("auto-runs inspection tools and only the list arm of the overloaded tabs tool", () => {
-    expect(isReadOnlyBrowserCall("browser_list_tabs")).toBe(true);
-    expect(isReadOnlyBrowserCall("browser_snapshot")).toBe(true);
-    expect(isReadOnlyBrowserCall("browser_take_screenshot")).toBe(true);
-    expect(isReadOnlyBrowserCall("browser_console_messages")).toBe(true);
-    expect(isReadOnlyBrowserCall("browser_network_requests")).toBe(true);
+  test("auto-runs inspection: listing tabs, a snapshot or screenshot, and either kind of log", () => {
+    expect(isReadOnlyBrowserCall("browser_tabs")).toBe(true);
     expect(isReadOnlyBrowserCall("browser_tabs", { action: "list" })).toBe(true);
+    expect(isReadOnlyBrowserCall("browser_snapshot")).toBe(true);
+    expect(isReadOnlyBrowserCall("browser_snapshot", { screenshot: true })).toBe(true);
+    expect(isReadOnlyBrowserCall("browser_logs", { kind: "console" })).toBe(true);
+    expect(isReadOnlyBrowserCall("browser_logs", { kind: "network" })).toBe(true);
   });
 
-  test("gates every mutation, and an unknown tool is not assumed safe", () => {
-    for (const name of MUTATING_TOOLS) {
-      expect(isReadOnlyBrowserCall(name, { action: "new", target: "e1" })).toBe(false);
-    }
-    expect(isReadOnlyBrowserCall("browser_tabs", { action: "close", index: 0 })).toBe(false);
-    expect(isReadOnlyBrowserCall("browser_tabs")).toBe(false);
+  test("gates every mutation, including going back and pressing a key, and an unknown tool is not assumed safe", () => {
+    const mutating = ["browser_navigate", "browser_click", "browser_type", "browser_fill_form", "browser_hover", "browser_select_option", "browser_resize", "browser_fill_secret", "browser_drag", "browser_paste", "browser_copy"];
+    for (const name of mutating) expect(isReadOnlyBrowserCall(name, { target: "e1" })).toBe(false);
+    expect(isReadOnlyBrowserCall("browser_navigate", { url: "back" })).toBe(false);
+    expect(isReadOnlyBrowserCall("browser_type", { key: "Enter" })).toBe(false);
+    for (const action of ["new", "select", "close"]) expect(isReadOnlyBrowserCall("browser_tabs", { action, index: 0 })).toBe(false);
     expect(isReadOnlyBrowserCall("browser_evaluate", { fn: "() => fetch('/admin/wipe')" })).toBe(false);
     expect(isReadOnlyBrowserCall("browser_handle_dialog")).toBe(false);
   });
 
-  test("the mutating set and the tool schemas are the same nineteen tools", () => {
-    const schemaNames = BROWSER_TOOLS.map((tool) => String(tool.name));
-    expect(new Set(schemaNames).size).toBe(19);
-    for (const name of ["browser_drag", "browser_paste", "browser_copy"]) expect(MUTATING_TOOLS.has(name)).toBe(true);
-    for (const name of MUTATING_TOOLS) expect(schemaNames).toContain(name);
+  test("the retired names are not read-only by name alone", () => {
+    for (const old of ["browser_list_tabs", "browser_take_screenshot", "browser_console_messages", "browser_network_requests"]) {
+      expect(isReadOnlyBrowserCall(old)).toBe(false);
+    }
+  });
+
+  test("the schemas are fourteen tools", () => {
+    expect(new Set(BROWSER_TOOLS.map((tool) => tool.name)).size).toBe(14);
   });
 });
 
@@ -89,8 +140,6 @@ describe("browser tool input validation", () => {
     expect(() => parseBrowserToolInput("browser_click", { target: "e1", button: "scroll" })).toThrow(BrowserToolInputError);
     expect(() => parseBrowserToolInput("browser_type", { target: "e1" })).toThrow(BrowserToolInputError);
     expect(() => parseBrowserToolInput("browser_fill_form", { fields: [{ target: "e1", name: "n", type: "date", value: "x" }] })).toThrow(BrowserToolInputError);
-    expect(() => parseBrowserToolInput("browser_press_key", { key: "" })).toThrow(BrowserToolInputError);
-    expect(() => parseBrowserToolInput("browser_take_screenshot", { type: "webp" })).toThrow(BrowserToolInputError);
   });
 
   test("refuses a tool it does not define rather than forwarding it", () => {
@@ -106,10 +155,9 @@ describe("browser tool input validation", () => {
     expect(parseBrowserToolInput("browser_navigate", { url: "http://localhost:3000/x" })).toEqual({
       url: "http://localhost:3000/x",
     });
-    expect(parseBrowserToolInput("browser_navigate_back")).toEqual({});
-    expect(parseBrowserToolInput("browser_take_screenshot", {})).toEqual({ type: "png", scale: "css" });
-    expect(parseBrowserToolInput("browser_console_messages", {})).toEqual({ level: "info" });
-    expect(parseBrowserToolInput("browser_network_requests", {})).toEqual({ static: false });
+    expect(parseBrowserToolInput("browser_navigate", { url: "back" })).toEqual({ url: "back" });
+    expect(parseBrowserToolInput("browser_snapshot", {})).toEqual({ type: "png", scale: "css" });
+    expect(parseBrowserToolInput("browser_logs", { kind: "console" })).toEqual({ kind: "console", level: "info", static: false });
   });
 });
 
@@ -140,7 +188,7 @@ describe("coordinates, for a page with no ref to act on", () => {
     expect(parseBrowserToolInput("browser_paste", { text: "1\t2\n3\t4", tabId: 2 })).toEqual({ text: "1\t2\n3\t4", tabId: 2 });
     expect(() => parseBrowserToolInput("browser_paste", { text: "" })).toThrow(BrowserToolInputError);
     expect(parseBrowserToolInput("browser_copy", {})).toEqual({});
-    expect(parseBrowserToolInput("browser_press_key", { key: "Control+A" })).toEqual({ key: "Control+A" });
+    expect(parseBrowserToolInput("browser_type", { key: "Control+A" })).toEqual({ key: "Control+A" });
   });
 
   test("the headless runtime gets its own coordinate tools", () => {
@@ -379,17 +427,17 @@ describe("multi-tab additions", () => {
       ["browser_click", { target: "e1" }],
       ["browser_type", { target: "e1", text: "hi" }],
       ["browser_select_option", { target: "e1", values: ["a"] }],
-      ["browser_press_key", { key: "Enter" }],
+      ["browser_type", { key: "Enter" }],
       ["browser_hover", { target: "e1" }],
       ["browser_navigate", { url: "https://example.com/" }],
-      ["browser_navigate_back", {}],
+      ["browser_navigate", { url: "back" }],
       ["browser_fill_form", { fields: [] }],
     ];
     const reads: Array<[string, Record<string, unknown>]> = [
       ["browser_snapshot", {}],
-      ["browser_take_screenshot", {}],
-      ["browser_console_messages", {}],
-      ["browser_network_requests", {}],
+      ["browser_snapshot", { screenshot: true }],
+      ["browser_logs", { kind: "console" }],
+      ["browser_logs", { kind: "network" }],
     ];
     for (const [name, base] of [...writes, ...reads]) {
       expect(parseBrowserToolInput(name, { ...base, tabId: 1 })).toMatchObject({ tabId: 1 });

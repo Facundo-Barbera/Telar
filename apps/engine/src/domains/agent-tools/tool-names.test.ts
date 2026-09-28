@@ -54,7 +54,7 @@ test("`warp` is not a tool, not a capability, and not on any wall", () => {
   expect(() => assertTelarToolNames(["warp"])).toThrow(/must be prefixed/);
 
   const sessions = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
-  expect(sessions.length).toBe(20);
+  expect(sessions.length).toBe(11);
   expect(sessions).not.toContain("warp");
   expect(BROWSER_TOOLS.map((tool) => tool.name)).not.toContain("warp");
 });

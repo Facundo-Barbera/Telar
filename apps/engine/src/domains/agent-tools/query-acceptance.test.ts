@@ -42,7 +42,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { sessionQueryTools } from "../sessions/tools/query";
+import { sessionsTools } from "../sessions";
 import { startEngine, type EngineDaemon } from "../../daemon";
 import { collectTools, type SocketTool } from ".";
 import { stubModels } from "../../../test/stub-models";
@@ -239,14 +239,14 @@ describe("every query answer is bounded at default arguments", () => {
 describe("#516's tools, on the same 300-session fixture", () => {
   const wall = (): Map<string, SocketTool> => {
     const store = daemon.store;
-    const tools = collectTools(sessionQueryTools as never, {
+    const tools = collectTools(sessionsTools as never, { query: {
       find: async (query: Parameters<typeof store.queries.findSessions>[0]) => store.queries.findSessions(query),
       outline: async (sessionId: string, window: Parameters<typeof store.queries.turnOutline>[1]) => store.queries.turnOutline(sessionId, window),
       answer: async (sessionId: string, options: Parameters<typeof store.queries.turnAnswer>[1]) => store.queries.turnAnswer(sessionId, options),
       steps: async (sessionId: string, runId: string) => ({ items: store.queries.runItems(sessionId, runId) }),
       step: async (sessionId: string, runId: string, step: number | string, maxChars: number) => store.queries.runItem(sessionId, runId, step, maxChars),
       grep: async (sessionId: string, pattern: string, window: Parameters<typeof store.queries.grepSession>[2]) => store.queries.grepSession(sessionId, pattern, window),
-    } as never);
+    } } as never);
     return new Map(tools.map((tool) => [tool.name, tool]));
   };
 
@@ -270,15 +270,15 @@ describe("#516's tools, on the same 300-session fixture", () => {
    * is NOT what moved — the route has other callers (the issue names the web
    * transcript) and already met its own number, and shrinking a shared page to
    * fix one consumer's serialisation would have put this accounting two files
-   * away from the `json()` call that causes it. `sessions_outline` bounds its
+   * away from the `json()` call that causes it. The outline view bounds its
    * own answer again, in the units that are delivered, against
    * `OUTLINE_ANSWER_CHARS`. Restating the budget as the route's was refused: the
    * route already passed, so that reading makes the criterion vacuous.
    */
-  test("sessions_outline, at its default page, on the largest session", async () => {
-    const text = await call("sessions_outline", { sessionId: BIG_SESSION });
+  test("view outline, at its default page, on the largest session", async () => {
+    const text = await call("sessions_read", { view: "outline", sessionId: BIG_SESSION });
     const bytes = Buffer.byteLength(text, "utf8");
-    table.push({ answer: "tool sessions_outline", bytes, note: "default limit 20 — under the issue's 6 KB" });
+    table.push({ answer: "tool sessions_read view outline", bytes, note: "default limit 20 — under the issue's 6 KB" });
     expect(bytes).toBeLessThan(6_000);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
@@ -291,7 +291,7 @@ describe("#516's tools, on the same 300-session fixture", () => {
    */
   test("the delivered page carries its own cursor, not the store's", async () => {
     const route = await get(`/v2/sessions/${BIG_SESSION}/outline`);
-    const body = JSON.parse(await call("sessions_outline", { sessionId: BIG_SESSION })) as {
+    const body = JSON.parse(await call("sessions_read", { view: "outline", sessionId: BIG_SESSION })) as {
       turns: Array<{ sequence: number }>;
       more: boolean;
       next: number;
@@ -304,7 +304,7 @@ describe("#516's tools, on the same 300-session fixture", () => {
     // next turn down rather than skipping whatever the byte bound removed.
     expect(body.next).toBe(body.turns.at(-1)!.sequence);
     const older = JSON.parse(
-      await call("sessions_outline", { sessionId: BIG_SESSION, before: body.next }),
+      await call("sessions_read", { view: "outline", sessionId: BIG_SESSION, before: body.next }),
     ) as { turns: Array<{ sequence: number }> };
     expect(older.turns[0]!.sequence).toBeLessThan(body.next);
   });
@@ -326,31 +326,31 @@ describe("#516's tools, on the same 300-session fixture", () => {
    * that one is the ceiling a fixture designed to break the bound has to stay
    * under.
    */
-  test("sessions_find, at its default limit, across 300 sessions", async () => {
-    const text = await call("sessions_find", { q: "appearance" });
+  test("sessions_list q, at its default limit, across 300 sessions", async () => {
+    const text = await call("sessions_list", { q: "appearance" });
     const bytes = Buffer.byteLength(text, "utf8");
-    table.push({ answer: "tool sessions_find", bytes, note: "default limit 10 — under the issue's 3 KB" });
+    table.push({ answer: "tool sessions_list q", bytes, note: "default limit 10 — under the issue's 3 KB" });
     expect(bytes).toBeLessThan(3_000);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
 
-  test("sessions_answer, at its default slice", async () => {
-    const text = await call("sessions_answer", { sessionId: BIG_SESSION });
-    table.push({ answer: "tool sessions_answer", bytes: Buffer.byteLength(text, "utf8"), note: "default slice 8000" });
+  test("view answer, at its default slice", async () => {
+    const text = await call("sessions_read", { view: "answer", sessionId: BIG_SESSION });
+    table.push({ answer: "tool sessions_read view answer", bytes: Buffer.byteLength(text, "utf8"), note: "default slice 8000" });
     expect(text.length).toBeLessThanOrEqual(8_600);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
 
-  test("sessions_steps, at its default page", async () => {
-    const text = await call("sessions_steps", { sessionId: BIG_SESSION, runId: "run_0" });
-    table.push({ answer: "tool sessions_steps", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 50, with each step's bytes" });
+  test("view steps, at its default page", async () => {
+    const text = await call("sessions_read", { view: "steps", sessionId: BIG_SESSION, runId: "run_0" });
+    table.push({ answer: "tool sessions_read view steps", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 50, with each step's bytes" });
     expect(text.length).toBeLessThanOrEqual(8_600);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
 
-  test("sessions_step, at the 8,000-character default", async () => {
-    const text = await call("sessions_step", { sessionId: BIG_SESSION, runId: "run_0", step: 0 });
-    table.push({ answer: "tool sessions_step", bytes: Buffer.byteLength(text, "utf8"), note: "one step, maxChars 8000" });
+  test("view step, at the 8,000-character default", async () => {
+    const text = await call("sessions_read", { view: "step", sessionId: BIG_SESSION, runId: "run_0", step: 0 });
+    table.push({ answer: "tool sessions_read view step", bytes: Buffer.byteLength(text, "utf8"), note: "one step, maxChars 8000" });
     expect(text.length).toBeLessThanOrEqual(8_800);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
@@ -361,9 +361,9 @@ describe("#516's tools, on the same 300-session fixture", () => {
    * `GREP_CHARS` is what keeps the rendered answer from reaching `bounded`,
    * which clips characters and would hand back JSON that does not parse.
    */
-  test("sessions_grep, at its default page of 20 matches", async () => {
-    const text = await call("sessions_grep", { sessionId: BIG_SESSION, pattern: "index.lock" });
-    table.push({ answer: "tool sessions_grep", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 20, 200 chars of context each" });
+  test("view grep, at its default page of 20 matches", async () => {
+    const text = await call("sessions_read", { view: "grep", sessionId: BIG_SESSION, pattern: "index.lock" });
+    table.push({ answer: "tool sessions_read view grep", bytes: Buffer.byteLength(text, "utf8"), note: "default limit 20, 200 chars of context each" });
     expect(text.length).toBeLessThanOrEqual(12_000);
     expect(() => JSON.parse(text) as unknown).not.toThrow();
   });
@@ -394,25 +394,25 @@ describe("#516's tools, on the same 300-session fixture", () => {
     const body = async <T>(name: string, args: Record<string, unknown>): Promise<T> =>
       JSON.parse(await call(name, args)) as T;
 
-    const outline = await body<{ turns: unknown[]; total: number }>("sessions_outline", { sessionId: BIG_SESSION });
+    const outline = await body<{ turns: unknown[]; total: number }>("sessions_read", { view: "outline", sessionId: BIG_SESSION });
     expect(outline.turns.length).toBeGreaterThan(1);
     expect(outline.total).toBe(MEASURED_TURNS + 1);
 
-    const find = await body<{ sessions: unknown[] }>("sessions_find", { q: "appearance" });
+    const find = await body<{ sessions: unknown[] }>("sessions_list", { q: "appearance" });
     expect(find.sessions.length).toBe(10);
 
-    const answered = await body<{ text: string; totalChars: number }>("sessions_answer", { sessionId: BIG_SESSION });
+    const answered = await body<{ text: string; totalChars: number }>("sessions_read", { view: "answer", sessionId: BIG_SESSION });
     expect(answered.totalChars).toBe(ANSWER_CHARS);
     expect(answered.text.length).toBeGreaterThan(0);
 
-    const steps = await body<{ items: unknown[] }>("sessions_steps", { sessionId: BIG_SESSION, runId: "run_0" });
+    const steps = await body<{ items: unknown[] }>("sessions_read", { view: "steps", sessionId: BIG_SESSION, runId: "run_0" });
     expect(steps.items.length).toBe(ITEMS_PER_TURN);
 
-    const step = await body<{ text: string; index: number }>("sessions_step", { sessionId: BIG_SESSION, runId: "run_0", step: 0 });
+    const step = await body<{ text: string; index: number }>("sessions_read", { view: "step", sessionId: BIG_SESSION, runId: "run_0", step: 0 });
     expect(step.index).toBe(0);
     expect(step.text.length).toBeGreaterThan(0);
 
-    const grep = await body<{ matches: Array<{ context: string }> }>("sessions_grep", { sessionId: BIG_SESSION, pattern: "index.lock" });
+    const grep = await body<{ matches: Array<{ context: string }> }>("sessions_read", { view: "grep", sessionId: BIG_SESSION, pattern: "index.lock" });
     expect(grep.matches.length).toBe(20);
     expect(grep.matches.filter((match) => match.context.toLowerCase().includes("index.lock"))).toHaveLength(20);
   });
@@ -425,12 +425,12 @@ describe("#516's tools, on the same 300-session fixture", () => {
    */
   test("no answer is clipped by the backstop — each bounds its own shape", async () => {
     for (const [name, args] of [
-      ["sessions_outline", { sessionId: BIG_SESSION }],
-      ["sessions_find", { q: "appearance" }],
-      ["sessions_answer", { sessionId: BIG_SESSION }],
-      ["sessions_steps", { sessionId: BIG_SESSION, runId: "run_0" }],
-      ["sessions_step", { sessionId: BIG_SESSION, runId: "run_0", step: 0 }],
-      ["sessions_grep", { sessionId: BIG_SESSION, pattern: "index.lock" }],
+      ["sessions_read", { view: "outline", sessionId: BIG_SESSION }],
+      ["sessions_list", { q: "appearance" }],
+      ["sessions_read", { view: "answer", sessionId: BIG_SESSION }],
+      ["sessions_read", { view: "steps", sessionId: BIG_SESSION, runId: "run_0" }],
+      ["sessions_read", { view: "step", sessionId: BIG_SESSION, runId: "run_0", step: 0 }],
+      ["sessions_read", { view: "grep", sessionId: BIG_SESSION, pattern: "index.lock" }],
     ] as const) {
       expect(await call(name, args)).not.toContain("more characters not shown");
     }
@@ -442,11 +442,9 @@ describe("#516's tools, on the same 300-session fixture", () => {
    * where the six are enumerated as six, and a tool that went missing from the
    * wall would fail this count rather than quietly stop being measured.
    */
-  test("all six are here, every description under 350 characters and none of them a blank", () => {
-    const tools = [...wall().values()];
-    expect(tools.map((tool) => tool.name)).toEqual([
-      "sessions_find", "sessions_outline", "sessions_answer", "sessions_steps", "sessions_step", "sessions_grep",
-    ]);
+  test("all six ride on two tools, every description under 350 characters and none of them a blank", () => {
+    const tools = [...wall().values()].filter((tool) => tool.name === "sessions_list" || tool.name === "sessions_read");
+    expect(tools.map((tool) => tool.name)).toEqual(["sessions_list", "sessions_read"]);
     const over = tools.filter((tool) => tool.description.length > 350).map((tool) => `${tool.name} (${tool.description.length})`);
     expect(over).toEqual([]);
     for (const tool of tools) expect(tool.description.length).toBeGreaterThan(80);

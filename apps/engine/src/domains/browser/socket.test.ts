@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { z } from "zod";
+import { isReadOnlyBrowserCall } from "./helpers";
 import { BROWSER_TOOLS } from "./tools";
 import { type BrowserSocketCapability, BrowserToolSocket } from "./socket";
 
@@ -50,6 +51,54 @@ test("tools/list serves the browser toolkit VERBATIM — parity is structural, n
   const listed = await rpc(lease.url, lease.token, { jsonrpc: "2.0", id: 1, method: "tools/list" });
   const body = (await listed.json()) as { result: { tools: { name: string }[] } };
   expect(body.result.tools.map((tool) => tool.name)).toEqual(BROWSER_TOOLS.map((tool) => tool.name));
+});
+
+test("each mode of a merged tool reaches the gate classified as its old tool was, and the old names are gone", async () => {
+  const heard: { name: string; args: Record<string, unknown>; readOnly: boolean }[] = [];
+  const socket = makeSocket(fakeCapability({ tools: BROWSER_TOOLS, isReadOnly: isReadOnlyBrowserCall }));
+  const lease = await socket.bind({
+    scopeKey: "s",
+    gate: async (input) => {
+      heard.push(input);
+      return true;
+    },
+  });
+  const modes: [string, Record<string, unknown>, boolean][] = [
+    ["browser_tabs", {}, true],
+    ["browser_tabs", { action: "new" }, false],
+    ["browser_tabs", { action: "select", index: 0 }, false],
+    ["browser_tabs", { action: "close", index: 0 }, false],
+    ["browser_navigate", { url: "https://example.com/" }, false],
+    ["browser_navigate", { url: "back" }, false],
+    ["browser_snapshot", {}, true],
+    ["browser_snapshot", { screenshot: true, fullPage: true }, true],
+    ["browser_logs", { kind: "console" }, true],
+    ["browser_logs", { kind: "network", filter: "/api" }, true],
+    ["browser_type", { text: "hi" }, false],
+    ["browser_type", { key: "Enter" }, false],
+  ];
+  for (const [name, args] of modes) expect((await rpc(lease.url, lease.token, call(name, args))).status).toBe(200);
+  expect(heard.map(({ name, readOnly }) => [name, readOnly])).toEqual(modes.map(([name, , readOnly]) => [name, readOnly]));
+  expect(heard[0]?.args.action).toBe("list");
+
+  for (const old of ["browser_list_tabs", "browser_navigate_back", "browser_take_screenshot", "browser_console_messages", "browser_network_requests", "browser_press_key"]) {
+    const answer = (await (await rpc(lease.url, lease.token, call(old))).json()) as { error?: { code: number } };
+    expect(answer.error?.code).toBe(-32602);
+  }
+});
+
+test("browser_logs answers are bounded by their kind, each naming its own narrowing argument", async () => {
+  const lines = Array.from({ length: 2_000 }, (_, index) => `line ${index} ${"x".repeat(20)}`).join("\n");
+  const socket = makeSocket(fakeCapability({ tools: BROWSER_TOOLS, call: async () => ({ content: [{ type: "text", text: lines }] }) }));
+  const lease = await socket.bind({ scopeKey: "s" });
+  const textOf = async (args: Record<string, unknown>) =>
+    ((await (await rpc(lease.url, lease.token, call("browser_logs", args))).json()) as { result: { content: { text: string }[] } }).result.content[0]!.text;
+  const consoleText = await textOf({ kind: "console" });
+  const networkText = await textOf({ kind: "network" });
+  expect(consoleText).toContain("narrow with `level`");
+  expect(networkText).toContain("narrow with `filter`");
+  expect(consoleText).toContain("line 1999");
+  expect(consoleText).not.toContain("line 0 ");
 });
 
 test("initialize names the browser server, and the transport answers the spec's edges", async () => {
@@ -300,7 +349,7 @@ test("browser_fill_secret routes to the binding's handler — NEVER through the 
     },
     fillSecret: async (args, callBrowser) => {
       handlerSaw.push(args);
-      await callBrowser("browser_list_tabs", {});
+      await callBrowser("browser_tabs", { action: "list" });
       return { content: [{ type: "text", text: "Filled username from “GitHub” on https://github.com." }] };
     },
   });
@@ -312,7 +361,7 @@ test("browser_fill_secret routes to the binding's handler — NEVER through the 
   expect(answer.result.content[0]?.text).toContain("Filled username");
   expect(handlerSaw).toHaveLength(1);
   expect(gateSaw).toEqual([]);
-  expect(capabilitySaw).toEqual(["browser_list_tabs"]);
+  expect(capabilitySaw).toEqual(["browser_tabs"]);
 });
 
 test("without a handler, browser_fill_secret answers a sentence — not a hang, not a crash", async () => {

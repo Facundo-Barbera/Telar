@@ -46,67 +46,67 @@ function resolveProject(capability: NotesCapability, named: unknown): string | u
 }
 
 const NO_PROJECT =
-  "Name the project this note belongs to — `notes_projects` lists the ids. (Inside a Telar session the project is implied " +
+  "Name the project this note belongs to — `notes_list({ projects: true })` lists the ids. (Inside a Telar session the project is implied " +
   "and may be omitted; over the outward socket there is no session, so it cannot be.)";
+
+async function listProjects(capability: NotesCapability) {
+  try {
+    return json(await capability.projects());
+  } catch (error) {
+    return err(failure(error));
+  }
+}
+
+async function readNote(capability: NotesCapability, noteId: string) {
+  try {
+    const found = await capability.read(noteId);
+    if (!found) return err(`No note goes by "${noteId}" in any project's notebook.`);
+    return json(shape(found.note));
+  } catch (error) {
+    return err(failure(error));
+  }
+}
+
+async function listNotes(capability: NotesCapability, named: unknown) {
+  const projectId = resolveProject(capability, named);
+  if (!projectId) return err(NO_PROJECT);
+  try {
+    const notes = await capability.list(projectId);
+    const { rows } = fillWithin(notes, listShape, { limit: LIST_LIMIT, chars: LIST_CHARS });
+    const abridged = notes.slice(0, rows.length).filter((note) => note.body.length > PREVIEW_CHARS).length;
+    return json({
+      notes: rows,
+      count: notes.length,
+      ...(notes.length > rows.length ? { notShown: notes.length - rows.length } : {}),
+      note:
+        notes.length === 0
+          ? "This project's notebook is empty."
+          : notes.length > rows.length
+            ? `${rows.length} of ${notes.length} notes, pinned first. Read one whole with notes_list({ noteId }).`
+            : abridged > 0
+              ? `${abridged} of these are longer than the preview — read one whole with notes_list({ noteId }).`
+              : "Every body is short enough to be here in full.",
+    });
+  } catch (error) {
+    return err(failure(error));
+  }
+}
 
 export function notesTools(tool: ToolFactory, capability: NotesCapability): unknown[] {
   return [
     tool(
-      "notes_projects",
-      "Every project whose notebook you can read or write, with the id the other notes tools take. Read-only.",
-      {},
-      async () => {
-        try {
-          return json(await capability.projects());
-        } catch (error) {
-          return err(failure(error));
-        }
-      },
-    ),
-
-    tool(
       "notes_list",
       "A project's notebook — the notes kept beside the code so nobody is asked twice. Pinned first; titles and a " +
-        "120-character preview, notes_read gives one whole.",
-      { projectId: z.string().optional().describe("Omit inside a session for this one's.") },
-      async (args) => {
-        const projectId = resolveProject(capability, args.projectId);
-        if (!projectId) return err(NO_PROJECT);
-        try {
-          const notes = await capability.list(projectId);
-          const { rows } = fillWithin(notes, listShape, { limit: LIST_LIMIT, chars: LIST_CHARS });
-          const abridged = notes.slice(0, rows.length).filter((note) => note.body.length > PREVIEW_CHARS).length;
-          return json({
-            notes: rows,
-            count: notes.length,
-            ...(notes.length > rows.length ? { notShown: notes.length - rows.length } : {}),
-            note:
-              notes.length === 0
-                ? "This project's notebook is empty."
-                : notes.length > rows.length
-                  ? `${rows.length} of ${notes.length} notes, pinned first. Read one whole with notes_read(noteId).`
-                  : abridged > 0
-                    ? `${abridged} of these are longer than the preview — read one whole with notes_read(noteId).`
-                    : "Every body is short enough to be here in full.",
-          });
-        } catch (error) {
-          return err(failure(error));
-        }
+        "120-character preview. noteId reads one whole; projects lists the notebooks you can use.",
+      {
+        projectId: z.string().optional().describe("Omit inside a session for this one's."),
+        noteId: z.string().optional().describe("One note in full, from whichever project holds it."),
+        projects: z.boolean().optional().describe("List every project's id and name instead."),
       },
-    ),
-
-    tool(
-      "notes_read",
-      "One note in full, by id, from whichever project holds it — notes_list carries only a preview.",
-      { noteId: z.string() },
       async (args) => {
-        try {
-          const found = await capability.read(String(args.noteId));
-          if (!found) return err(`No note goes by "${String(args.noteId)}" in any project's notebook.`);
-          return json(shape(found.note));
-        } catch (error) {
-          return err(failure(error));
-        }
+        if (typeof args.noteId === "string") return await readNote(capability, args.noteId);
+        if (args.projects === true) return await listProjects(capability);
+        return await listNotes(capability, args.projectId);
       },
     ),
 

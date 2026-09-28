@@ -83,7 +83,7 @@ test("the browser socket registers as its own http server, ALONGSIDE the in-proc
   // surface per capability, not two.
   const telar = servers?.telar as { tools?: { name?: string }[] } | undefined;
   const inProcess = (telar?.tools ?? []).map((tool) => tool.name);
-  expect(inProcess.length).toBe(20);
+  expect(inProcess.length).toBe(11);
   expect(inProcess.every((name) => name!.startsWith("sessions_"))).toBe(true);
   // #877: `warp` was the one name here that was not a sessions verb, and it was
   // registered UNCONDITIONALLY. Pinned as an absence so a re-add fails here.
@@ -162,18 +162,9 @@ test("a toolkit registers under the SAME one server, and only when the turn carr
     "sessions_status",
     "sessions_stop",
     "sessions_settle",
-    "sessions_diff",
     "sessions_subscribe",
-    "sessions_unsubscribe",
-    "sessions_subscriptions",
     "sessions_requests",
     "sessions_resolve_request",
-    "sessions_find",
-    "sessions_outline",
-    "sessions_answer",
-    "sessions_steps",
-    "sessions_step",
-    "sessions_grep",
     // #543, appended at the END so the wall GROWS rather than reorders — a
     // reordered list is a diff nobody can read against the one before it.
     "sessions_schedule",
@@ -217,7 +208,7 @@ test("a turn that carries the run capability registers run_* on the in-process t
   };
   await run(createClaudeDriver(sdk), { run: run_ as never }).result;
   expect(names).toEqual(
-    expect.arrayContaining(["terminal_open", "terminal_list", "terminal_output", "terminal_wait", "terminal_kill", "run_configs", "run_save_config", "run_delete_config"]),
+    expect.arrayContaining(["terminal_open", "terminal_list", "terminal_output", "terminal_wait", "terminal_kill", "run_configs", "run_save_config"]),
   );
 });
 

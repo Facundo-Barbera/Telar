@@ -273,3 +273,15 @@ test("the worker's terminal_open reaches the daemon's open route", async () => {
   ]);
   for (const { method, path: tail } of asked) expect(matchRunRoute(method, tail)).toBeDefined();
 });
+
+test("run_save_config with delete forgets a configuration and leaves its terminal running", async () => {
+  const { call, store, manager } = surface();
+  const config = store.create("p", { name: "web dev", command: "bun run dev" });
+  const id = idIn((await call("terminal_open", { configId: config.id })).text);
+
+  expect((await call("run_save_config", { delete: true })).isError).toBe(true);
+  const removed = await call("run_save_config", { configId: config.id, delete: true });
+  expect(removed.isError).toBe(false);
+  expect((await call("run_configs")).text).not.toContain(config.id);
+  expect(manager.run(id).status).toBe("running");
+});

@@ -4,7 +4,7 @@ import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import { bearerIsValid } from "../../platform/http/auth";
 import { handleSocketMessage, readSocketBody, type SocketTool } from "../agent-tools";
 import { boundBrowserResult } from "./bounds";
-import { fileUrlViolation } from "./helpers";
+import { browserOperation, fileUrlViolation } from "./helpers";
 
 export type BrowserSocketCapability = {
   call(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<{ content: unknown[]; isError?: boolean }>;
@@ -178,7 +178,10 @@ export class BrowserToolSocket {
         if (binding.gate && !(await this.consultGate(binding, definition.name, args, readOnly))) {
           return { content: [{ type: "text", text: "The human declined this browser action." }], isError: true };
         }
-        const result = boundBrowserResult(definition.name, await this.capability.call(binding.scopeKey, definition.name, args));
+        const result = boundBrowserResult(
+          browserOperation(definition.name, args).name,
+          await this.capability.call(binding.scopeKey, definition.name, args),
+        );
         if (!result.isError) await this.reportState(binding.scopeKey);
         return result;
       },

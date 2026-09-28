@@ -20,7 +20,7 @@ describe("sessions_read is bounded", () => {
     const whole = store.queries.readEvents(id, 0);
     expect(whole.length).toBeGreaterThan(50);
 
-    const first = await call(tools, "sessions_read", { sessionId: id, mode: "events", from: "start" });
+    const first = await call(tools, "sessions_read", { sessionId: id, view: "events", from: "start" });
     const page = first.json!.events as Array<{ id: number }>;
     expect(first.json!.more).toBe(true);
     expect(page.length).toBeLessThanOrEqual(50);
@@ -29,12 +29,12 @@ describe("sessions_read is bounded", () => {
     expect(String(first.json!.note)).toContain(`after: ${first.json!.cursor}`);
 
     const seen: number[] = (
-      (await call(tools, "sessions_read", { sessionId: id, mode: "events", from: "start", verbose: true })).json!.events as Array<{ id: number }>
+      (await call(tools, "sessions_read", { sessionId: id, view: "events", from: "start", verbose: true })).json!.events as Array<{ id: number }>
     ).map((event) => event.id);
     let cursor = seen.at(-1)!;
     let more = true;
     for (let guard = 0; more && guard < 20; guard++) {
-      const next = await call(tools, "sessions_read", { sessionId: id, mode: "events", after: cursor, verbose: true });
+      const next = await call(tools, "sessions_read", { sessionId: id, view: "events", after: cursor, verbose: true });
       for (const event of next.json!.events as Array<{ id: number }>) seen.push(event.id);
       cursor = next.json!.cursor as number;
       more = next.json!.more === true;
@@ -52,7 +52,7 @@ describe("sessions_read is bounded", () => {
       store.turnLifecycle.stopTurn(id);
     }
     const whole = store.queries.readEvents(id, 0);
-    const latest = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
+    const latest = await call(tools, "sessions_read", { sessionId: id, view: "events" });
     const page = latest.json!.events as Array<{ id: number }>;
     expect(page.length).toBeGreaterThan(0);
     expect(page.at(-1)!.id).toBe(whole.at(-1)!.id);
@@ -69,7 +69,7 @@ describe("sessions_read is bounded", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one" });
-    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events", verbose: true });
+    const read = await call(tools, "sessions_read", { sessionId: id, view: "events", verbose: true });
     expect(read.json!.earlier).toBe(false);
     expect((read.json!.events as Array<{ id: number }>).map((event) => event.id)).toEqual(store.queries.readEvents(id, 0).map((event) => event.id));
   });
@@ -86,17 +86,17 @@ describe("sessions_read is bounded", () => {
       { kind: "usage", usage: { tokens: { input: 1, output: 1, cacheRead: 0, cacheCreate: 0 }, contextUsed: 2, contextMax: 10 } },
     ]);
 
-    const quiet = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
+    const quiet = await call(tools, "sessions_read", { sessionId: id, view: "events" });
     const types = (quiet.json!.events as Array<{ type: string }>).map((event) => event.type);
     expect(types).not.toContain("usage.updated");
     expect(quiet.json!.quietEvents).toBeGreaterThan(0);
 
-    const loud = await call(tools, "sessions_read", { sessionId: id, mode: "events", verbose: true });
+    const loud = await call(tools, "sessions_read", { sessionId: id, view: "events", verbose: true });
     expect((loud.json!.events as Array<{ type: string }>).map((event) => event.type)).toContain("usage.updated");
     expect(loud.json!.quietEvents).toBeUndefined();
   });
 
-  test("mode: summary folds turns instead of listing events", async () => {
+  test("view: summary folds turns instead of listing events", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
@@ -104,14 +104,14 @@ describe("sessions_read is bounded", () => {
       await call(tools, "sessions_send", { intent: "task", sessionId: id, input: `line ${lap}\nand a second line nobody needs` });
       store.turnLifecycle.stopTurn(id);
     }
-    const summary = await call(tools, "sessions_read", { sessionId: id, mode: "summary" });
+    const summary = await call(tools, "sessions_read", { sessionId: id, view: "summary" });
     const turns = summary.json!.turns as Array<{ runId: string; asked: string }>;
-    expect(summary.json!.mode).toBe("summary");
+    expect(summary.json!.view).toBe("summary");
     expect(summary.json!.turnCount).toBe(8);
     expect(turns).toHaveLength(5);
     expect(turns.at(-1)!.asked).toBe("line 7");
     expect(summary.json!.events).toBeUndefined();
-    expect(summary.text.length).toBeLessThan((await call(tools, "sessions_read", { sessionId: id, mode: "events" })).text.length);
+    expect(summary.text.length).toBeLessThan((await call(tools, "sessions_read", { sessionId: id, view: "events" })).text.length);
   });
 
   test("status, summary and a run read answer identically from a window as from the whole history", async () => {
@@ -146,7 +146,7 @@ describe("sessions_read is bounded", () => {
     for (const [name, args] of [
       ["sessions_status", { sessionId: id, turns: 3 }],
       ["sessions_status", { sessionId: id }],
-      ["sessions_read", { sessionId: id, mode: "summary", turns: 4 }],
+      ["sessions_read", { sessionId: id, view: "summary", turns: 4 }],
       ["sessions_read", { sessionId: id, runId: live }],
     ] as const) {
       expect((await call(windowed, name, args)).json).toEqual((await call(whole, name, args)).json!);
@@ -166,22 +166,22 @@ describe("sessions_read is bounded", () => {
       store.turnLifecycle.stopTurn(id);
     }
     const bare = await call(tools, "sessions_read", { sessionId: id });
-    expect(bare.json!.mode).toBe("summary");
+    expect(bare.json!.view).toBe("summary");
     expect(bare.json!.events).toBeUndefined();
-    expect(tools.get("sessions_read")!.description).toContain("by default a turn-by-turn summary");
-    expect(tools.get("sessions_read")!.description).toContain('mode: events');
+    expect(tools.get("sessions_read")!.description).toContain("Default view summary");
+    expect(tools.get("sessions_read")!.description).toContain("events is the raw journal");
 
     const withCursor = await call(tools, "sessions_read", { sessionId: id, after: 0 });
-    expect(withCursor.json!.mode).toBe("summary");
+    expect(withCursor.json!.view).toBe("summary");
 
-    const raw = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
-    expect(raw.json!.mode).toBeUndefined();
+    const raw = await call(tools, "sessions_read", { sessionId: id, view: "events" });
+    expect(raw.json!.view).toBeUndefined();
     expect((raw.json!.events as unknown[]).length).toBeGreaterThan(0);
     expect(bare.text.length).toBeLessThan(raw.text.length);
 
     const runId = store.queries.turns(id).at(-1)!.runId;
     const scoped = await call(tools, "sessions_read", { sessionId: id, runId });
-    expect(scoped.json!.mode).toBeUndefined();
+    expect(scoped.json!.view).toBeUndefined();
     expect(scoped.json!.runId).toBe(runId);
   });
 
@@ -351,11 +351,11 @@ describe("sessions_read is bounded", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one" });
-    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
+    const read = await call(tools, "sessions_read", { sessionId: id, view: "events" });
     expect(read.json!.runId).toBeUndefined();
     expect(read.json!.result).toBeUndefined();
     expect((read.json!.events as unknown[]).length).toBeGreaterThan(0);
-    const forward = await call(tools, "sessions_read", { sessionId: id, mode: "events", after: 0 });
+    const forward = await call(tools, "sessions_read", { sessionId: id, view: "events", after: 0 });
     expect(forward.json!.from).toBe(0);
   });
 
@@ -365,7 +365,7 @@ describe("sessions_read is bounded", () => {
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "x".repeat(60_000) });
 
-    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
+    const read = await call(tools, "sessions_read", { sessionId: id, view: "events" });
     const text = read.text;
     expect(text).toContain("more characters, not shown");
     expect(text.length).toBeLessThan(40_000);

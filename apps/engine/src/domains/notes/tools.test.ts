@@ -38,7 +38,7 @@ function build(capability: Partial<NotesCapability> = {}) {
 
 describe("the wall", () => {
   test("is exactly five tools — no rename, no reorder, no sixth slipped in", () => {
-    expect([...build().names].sort()).toEqual(["notes_delete", "notes_list", "notes_projects", "notes_read", "notes_write"]);
+    expect([...build().names].sort()).toEqual(["notes_delete", "notes_list", "notes_write"]);
   });
 });
 
@@ -62,7 +62,7 @@ describe("whose project is meant", () => {
   test("with no session and no argument it asks for one by name rather than guessing", async () => {
     const answer = await build().call("notes_list");
     expect(answer.isError).toBe(true);
-    expect(answer.text).toContain("notes_projects");
+    expect(answer.text).toContain("projects: true");
   });
 });
 
@@ -77,7 +77,7 @@ describe("listing does not carry bodies", () => {
     expect(listed.notes[0]!.bodyChars).toBe(body.length);
     expect(listed.notes[0]!.preview).toBe(`${body.slice(0, 120)}…`);
     expect(answer.text).not.toContain(body);
-    expect(answer.text).toContain("notes_read");
+    expect(answer.text).toContain("notes_list({ noteId })");
   });
 
   test("a body that fits is shown whole, with no marker to mislead", async () => {
@@ -86,10 +86,15 @@ describe("listing does not carry bodies", () => {
     expect(listed.notes[0]!.preview).toBe("bun run ship");
   });
 
-  test("notes_read is what still carries a body whole", async () => {
+  test("notes_list with a noteId is what still carries a body whole", async () => {
     const body = "x".repeat(5_000);
     const wall = build({ self: { projectId: "p1" }, read: async () => ({ note: note({ body }), projectId: "p1" }) });
-    expect(JSON.parse((await wall.call("notes_read", { noteId: "n-1" })).text).body).toBe(body);
+    expect(JSON.parse((await wall.call("notes_list", { noteId: "n-1" })).text).body).toBe(body);
+  });
+
+  test("notes_list with projects names every notebook you can use, whatever the session", async () => {
+    const wall = build({ self: { projectId: "p1" }, projects: async () => [{ id: "p1", name: "one" }, { id: "p2", name: "two" }] });
+    expect(JSON.parse((await wall.call("notes_list", { projects: true })).text)).toEqual([{ id: "p1", name: "one" }, { id: "p2", name: "two" }]);
   });
 });
 

@@ -71,7 +71,7 @@ const route = (method: string, tail: string) => {
 test("every tool on this wall is terminal_- or run_-prefixed", () => {
   const tools = surface(() => ({ sessionId: "s", projectId: "p", worktreePath: temp("tree") })).tools;
 
-  expect(tools.size).toBe(8);
+  expect(tools.size).toBe(7);
   for (const name of tools.keys()) {
     expect(name).toMatch(/^(terminal|run)_[a-z_]+$/);
   }

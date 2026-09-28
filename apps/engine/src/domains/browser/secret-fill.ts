@@ -40,7 +40,7 @@ type FillTarget = {
 };
 
 async function readFillTarget(callBrowser: SecretFillDeps["callBrowser"]): Promise<FillTarget | null> {
-  const result = asToolResult(await callBrowser("browser_list_tabs", {}));
+  const result = asToolResult(await callBrowser("browser_tabs", { action: "list" }));
   if (result.isError) return null;
   const tabs = parseBrowserTabs(textOf(result));
   const tab = tabs.find((candidate) => candidate.agentFocus) ?? tabs.find((candidate) => candidate.active) ?? tabs[0];

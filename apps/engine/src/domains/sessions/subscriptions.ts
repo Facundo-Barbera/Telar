@@ -101,7 +101,7 @@ export class SessionSubscriptions {
       if (mine >= MAX_SUBSCRIPTIONS_PER_SESSION) {
         throw new EngineStateError(
           "conflict",
-          `this session is already subscribed to ${mine} sessions, the most it may be. Unsubscribe from ones you are finished with — sessions_subscriptions lists them.`,
+          `this session is already subscribed to ${mine} sessions, the most it may be. Unsubscribe from ones you are finished with — sessions_subscribe with no arguments lists them, and cancel removes one.`,
         );
       }
       const subscription: Subscription = {

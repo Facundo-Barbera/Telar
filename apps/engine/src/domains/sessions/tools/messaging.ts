@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Session } from "@telar/engine-client";
 import { err, failure, fillWithin, json, type ToolFactory } from "../../agent-tools";
 import { delegationAnswer, WAIT, waitForDelegation } from "./wait";
+import { FIND_LIMIT_DEFAULT, FIND_LIMIT_MAX, findView } from "./query";
 import { CREATE, LIST, LIST_CHARS, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, SEND, type SessionsCapability, summarise, summariseOne } from "./shared";
 
 const runIdFor = (tool: string, toolCallId: string | undefined): string =>
@@ -16,21 +17,28 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
       "sessions_list",
       LIST,
       {
+        q: z.string().min(1).optional().describe("Search instead of list. Lexical, not semantic — the phrase you remember seeing."),
         settled: z
           .boolean()
           .optional()
-          .describe("Default false — the list a person has open."),
+          .describe("Default false — the list a person has open. With q: true for shelved only, false for open, omit for both."),
         projectId: z.string().optional(),
+        since: z.number().int().min(0).optional().describe("With q only. Epoch milliseconds."),
         limit: z
           .number()
           .int()
           .min(1)
           .max(LIST_LIMIT_MAX)
           .optional()
-          .describe(`Default ${LIST_LIMIT_DEFAULT}.`),
-        after: z.number().int().min(0).optional().describe("The cursor a previous answer's `more` hands back."),
+          .describe(`Default ${LIST_LIMIT_DEFAULT}. With q: default ${FIND_LIMIT_DEFAULT}, max ${FIND_LIMIT_MAX}.`),
+        after: z.number().int().min(0).optional().describe("Without q. The cursor a previous answer's `more` hands back."),
       },
       async (args) => {
+        if (typeof args.q === "string" && args.q.trim()) {
+          if (args.after !== undefined) return err("after pages a list; a search is narrowed with projectId, settled or since instead.");
+          return findView(capability.query, args);
+        }
+        if (args.since !== undefined) return err("since narrows a search: pass q with it.");
         const settled = args.settled === true;
         const wantedProject = typeof args.projectId === "string" && args.projectId.trim() ? args.projectId.trim() : undefined;
         const limit =

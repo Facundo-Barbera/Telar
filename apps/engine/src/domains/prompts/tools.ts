@@ -31,9 +31,7 @@ const listShape = (prompt: PreparedPrompt) => ({
 
 const DRAFT = `Put a prepared prompt in front of the human instead of acting on it yourself — it lands in their composer's stash, one keystroke from being sent, and NOTHING runs until they press it. Two uses: ending a turn by drafting the follow-up you would send next, and writing a prompt as the product when that is what you were asked for. Title it in a few words, give the message verbatim as \`text\`, and say in one line why you are offering it. Saying "you could ask me X next" in your answer instead leaves them to select, copy and paste it; this does not.`;
 
-const LIST = `The prepared prompts on this project's shelf — yours and the person's own set-aside ones. Titles and a 120-character preview; read one whole with prompt_read.`;
-
-const READ = `One prepared prompt in full, by id — prompt_list carries only a preview.`;
+const LIST = `The prepared prompts on this project's shelf — yours and the person's own set-aside ones. Titles and a 120-character preview; promptId reads one whole.`;
 
 const DROP = `Remove a prepared prompt an AGENT wrote; one the person set aside is theirs and this refuses it. Use it when a draft you offered is now wrong — a stale follow-up is worse than no follow-up, because it looks considered.`;
 
@@ -89,7 +87,8 @@ export function promptsTools(tool: ToolFactory, capability: PromptsCapability): 
       },
     ),
 
-    tool("prompt_list", LIST, {}, async () => {
+    tool("prompt_list", LIST, { promptId: z.string().optional().describe("One prepared prompt in full.") }, async (args) => {
+      if (typeof args.promptId === "string") return await withPrompt((found) => json({ ...shape(found), text: found.text }))(args);
       try {
         const prompts = await capability.list();
         const { rows } = fillWithin(prompts, listShape, { limit: LIST_LIMIT, chars: LIST_CHARS });
@@ -106,13 +105,6 @@ export function promptsTools(tool: ToolFactory, capability: PromptsCapability): 
         return err(failure(error));
       }
     }),
-
-    tool(
-      "prompt_read",
-      READ,
-      { promptId: z.string() },
-      withPrompt((found) => json({ ...shape(found), text: found.text })),
-    ),
 
     tool(
       "prompt_drop",
