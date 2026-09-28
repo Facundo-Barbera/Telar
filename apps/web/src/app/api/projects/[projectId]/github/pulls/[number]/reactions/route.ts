@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 import type { GitHubReactionContent } from "@telar/engine-client";
 
 /**

@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PreparedPrompt } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { mergeShelf, type ShelfRow } from "./prompt-shelf";
 import { usePromptStash } from "./use-prompt-stash";
 import type { StashEntry, StashedImage } from "./prompt-stash";

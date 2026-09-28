@@ -24,7 +24,7 @@
 
 import { useEffect, useState } from "react";
 import { defaultInstanceIdForDriver, type ProviderDriverKind, type ProviderInstance } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 
 /** THIS MACHINE'S LOGINS, which is the same scope the Providers pane edits.
  *  A cockpit looking at a remote host reads that host's sessions and this

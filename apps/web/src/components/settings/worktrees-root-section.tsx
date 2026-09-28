@@ -28,7 +28,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { WorktreeMoveResult, WorktreesRoot } from "@telar/engine-client";
 import { FolderGitIcon, MoveRightIcon } from "lucide-react";
 import { chooseDirectory } from "@/lib/choose-directory";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { REMOVABLE_DRIVE_WARNING } from "@/lib/desktop-store";
 import { Button } from "@/components/ui/button";
 import { Row } from "./settings-shell";

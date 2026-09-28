@@ -37,7 +37,7 @@ import {
   useStoreStatus,
   type StoreProgress,
 } from "@/lib/desktop-store";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { Row, SettingsGroup } from "./settings-shell";
 import { Button } from "@/components/ui/button";
 

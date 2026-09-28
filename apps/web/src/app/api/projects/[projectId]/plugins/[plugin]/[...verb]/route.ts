@@ -1,4 +1,4 @@
-import { engineErrorResponse, enginePluginDoor, requestObject } from "@/lib/engine/engine-server";
+import { engineErrorResponse, enginePluginDoor, requestObject } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

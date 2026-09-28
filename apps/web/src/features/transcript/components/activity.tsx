@@ -4,7 +4,7 @@ import { useContext,useMemo,useState } from "react";
 import {
 BookOpenIcon,ChevronRightIcon
 } from "lucide-react";
-import { type JournalItem,type JournalTask } from "@/lib/engine/journal";
+import { type JournalItem,type JournalTask } from "@/platform/engine";
 import { foldHarnessRows } from "../harness-paths";
 import { ROW,StepFold } from "./transcript-fold";
 import { cn } from "@/lib/utils";

@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 
 /** What the shell broadcasts; `restarting` is reported by the shell, not inferred. */
 export type UpdateStatus = {

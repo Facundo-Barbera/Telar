@@ -37,7 +37,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon, FolderTreeIcon, HardDriveIcon, RotateCwIcon, SearchIcon } from "lucide-react";
 import type { GitChangeStatus, TurnState, WorkspaceListing } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, type FileTreeNode } from "@/lib/file-tree";
 import { directoryReference, fileReference, startReferenceDrag, type TelarReference } from "@/lib/drag-reference";
 import type { OpenIntent } from "@/lib/editor-workspace";

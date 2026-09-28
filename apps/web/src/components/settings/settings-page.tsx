@@ -25,7 +25,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import type { EngineHealth } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
 import { Row, SettingsGroup, SettingsShell } from "./settings-shell";

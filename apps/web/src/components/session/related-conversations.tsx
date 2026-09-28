@@ -42,7 +42,7 @@ import { ArrowUpRightIcon, BellIcon, BellOffIcon, UsersIcon } from "lucide-react
 import type { SessionAssignment, Subscription } from "@telar/engine-client";
 import { PanelEmpty, PanelRow, PanelSectionLabel, type PanelTone } from "@/components/ui/panel";
 import { usePoll } from "@/ui/hooks/use-poll";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { hostFetcher } from "@/lib/hosts/client";
 import { createFollowingController, lockKey, type FollowingController } from "@/lib/following";

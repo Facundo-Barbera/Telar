@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon, CirclePlayIcon, NotebookIcon, PlayIcon, PlusIcon, RotateCwIcon, SquareIcon, Trash2Icon, TriangleAlertIcon } from "lucide-react";
 import type { TurnState } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import type { CellOutput, KernelState, NotebookCell, NotebookRead } from "@/lib/ds";
 import { EditorAddressRow } from "@/components/session/editor-chrome";
 import { Button } from "@/components/ui/button";

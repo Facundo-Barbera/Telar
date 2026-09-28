@@ -1,7 +1,7 @@
 import os from "node:os";
 import { machineName } from "@/lib/remote/observe";
-import { engineErrorResponse } from "@/lib/engine/engine-server";
-import { engineCall, engineForward } from "@/lib/engine/forward";
+import { engineErrorResponse } from "@/platform/engine/server";
+import { engineCall, engineForward } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

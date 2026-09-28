@@ -29,7 +29,7 @@
  */
 
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/lib/hosts/client";
 
 export type ForgeLink = { kind: "issue" | "pull"; number: number; repository: string };

@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "../deepgram";
 import { audioConstraints, readMicrophone } from "../devices";
 import { createDictationWriter, type DictationBox } from "../interim";

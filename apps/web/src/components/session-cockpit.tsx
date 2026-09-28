@@ -28,8 +28,8 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { splitImages } from "@/lib/prompt-stash";
-import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/platform/engine";
+import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
 import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -53,8 +53,8 @@ import { useProviderInstance } from "@/lib/provider-instance-cache";
 import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
 import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice } from "@/lib/models";
-import { sessionConnection } from "@/lib/engine/session-connection";
-import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/lib/engine/session-sync";
+import { sessionConnection } from "@/platform/engine";
+import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/platform/engine";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
 import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";

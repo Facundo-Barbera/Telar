@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * Compact the turn journal and give its freed pages back — issue #646.

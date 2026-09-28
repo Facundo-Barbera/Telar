@@ -5,7 +5,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { EngineApiError } from "@/lib/engine/client";
+import { EngineApiError } from "@/platform/engine";
 import { createRunApi, runPath } from "./api";
 
 type Call = { url: string; method?: string; body?: unknown };

@@ -41,7 +41,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { SearchIcon } from "lucide-react";
 import type { ClaudeConversation } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { fmtAgo, formatBytes } from "@/lib/format";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";

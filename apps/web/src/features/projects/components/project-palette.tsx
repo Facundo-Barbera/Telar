@@ -13,7 +13,7 @@ import { ProjectAvatar } from "./project-avatar";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { chooseDirectory } from "@/lib/choose-directory";
 import { claimChords } from "@/features/commands";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { announceProjectsChanged } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 import {

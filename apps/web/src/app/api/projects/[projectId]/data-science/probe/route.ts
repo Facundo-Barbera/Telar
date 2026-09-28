@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse, requestObject, requiredString } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse, requestObject, requiredString } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

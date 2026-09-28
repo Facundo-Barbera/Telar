@@ -31,7 +31,7 @@ import type {
 } from "@telar/engine-client";
 import { latexMachineSettings, pluginBlock } from "@telar/engine-client";
 import { blockPatch } from "@/lib/plugins/sections";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { ENGINE_LABEL } from "./latex-machine-settings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

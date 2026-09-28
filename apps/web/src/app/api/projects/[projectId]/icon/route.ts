@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /** Immutable: `?v=` is the content-derived `Project.icon`; `?format=png` is for clients that cannot decode SVG. */
 export const dynamic = "force-dynamic";

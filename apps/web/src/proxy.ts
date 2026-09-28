@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { decideApiAccess } from "@/lib/remote/gate";
 import { HOST_HEADER } from "@/lib/remote/host-token";
 import { readRemote, remoteHome, storePath, type RemoteFile } from "@/lib/remote/store";
-import { engineCall } from "@/lib/engine/forward";
+import { engineCall } from "@/platform/engine/server";
 
 /**
  * The cockpit's front door. Once pairing is required, every /api call must

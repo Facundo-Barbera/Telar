@@ -32,7 +32,7 @@
  * same composite every other per-session store in this cockpit keys on (see
  * `snapshotKey`, and the cockpit's own `syncKey`).
  */
-import type { HydratedSession } from "@/lib/engine/session-sync";
+import type { HydratedSession } from "@/platform/engine";
 
 /** What a switch needs in hand to paint: the same rows `hydrate` commits. */
 export type CachedTranscript = HydratedSession;

@@ -1,8 +1,8 @@
 import { readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller } from "@/lib/remote/gate";
 import { readRemote } from "@/lib/remote/store";
-import { engineErrorResponse } from "@/lib/engine/engine-server";
-import { engineCall } from "@/lib/engine/forward";
+import { engineErrorResponse } from "@/platform/engine/server";
+import { engineCall } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

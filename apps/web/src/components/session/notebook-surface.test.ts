@@ -16,7 +16,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { EngineApiError } from "@/lib/engine/client";
+import { EngineApiError } from "@/platform/engine";
 import { classifyNotebookRead } from "./notebook-surface";
 
 const engineSaid = (code: string, message: string, status = 404) => new EngineApiError(code as never, message, status);

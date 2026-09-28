@@ -1,7 +1,7 @@
 // Run refusals are EngineApiError; `conflict` means the terminal host is
 // unreachable or the terminal has already ended.
 
-import { EngineApiError } from "@/lib/engine/client";
+import { EngineApiError } from "@/platform/engine";
 import { pathnameFetcher } from "@/lib/hosts/client";
 import type {
   RunBytesAnswer,

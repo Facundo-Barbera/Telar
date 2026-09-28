@@ -33,7 +33,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2Icon, XIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { announceProjectsChanged } from "@/lib/projects";
 import { createRequestGate } from "@/lib/request-gate";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";

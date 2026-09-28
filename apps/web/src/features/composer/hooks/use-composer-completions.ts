@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import type { ProviderDriverKind, ProviderSkills, RuntimeMode } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { rankNotes, useProjectNotes } from "@/features/notes";
 import {
   availableCommands,

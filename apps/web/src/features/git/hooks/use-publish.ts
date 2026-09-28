@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { GitHubPullCreateRefusal, GitHubPullCreateResult, GitPushRefusal, GitPushResult } from "@telar/engine-client";
-import { EngineApiError } from "@/lib/engine/client";
+import { EngineApiError } from "@/platform/engine";
 
 export type PublishVerbs = {
   sendPush: () => Promise<GitPushResult>;

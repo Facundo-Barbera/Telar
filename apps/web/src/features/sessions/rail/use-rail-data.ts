@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { InboxPolicy, Project, PublicHost, SidebarLayout } from "@telar/engine-client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/lib/hosts/client";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
 import { dedupeAcrossHosts } from "@/lib/session-groups";

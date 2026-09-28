@@ -29,7 +29,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { FileIcon, RotateCwIcon } from "lucide-react";
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { rawFileUrl } from "@/lib/file-urls";
 import { EditorAddressRow } from "@/components/session/editor-chrome";
 import { PanelEmpty } from "@/components/ui/panel";

@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
  * costs a fork, an import costs the independence this whole rebuild is for.
  */
 const appRoot = fileURLToPath(new URL("../..", import.meta.url));
-const ownedRoots = ["app", "components", "lib"].map((segment) => path.join(appRoot, segment));
+const ownedRoots = ["app", "components", "lib", "platform"].map((segment) => path.join(appRoot, segment));
 const banned = [
   // `apps/web` still catches `apps/web_old` as a substring, but naming the
   // frozen tree explicitly keeps the failure message honest after the rename.
@@ -90,7 +90,7 @@ describe("standalone cockpit source boundary", () => {
 
   test("uses root-relative routes and its own stylesheet", () => {
     const layout = fs.readFileSync(path.join(appRoot, "app", "layout.tsx"), "utf8");
-    const client = fs.readFileSync(path.join(appRoot, "lib", "engine", "client.ts"), "utf8");
+    const client = fs.readFileSync(path.join(appRoot, "platform", "engine", "client.ts"), "utf8");
     expect(layout).toContain('import "./globals.css"');
     expect(layout).toContain("AppShell");
     expect(layout).not.toContain('href="/vnext');

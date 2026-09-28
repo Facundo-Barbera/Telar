@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChartLineIcon, PinIcon, PinOffIcon, RotateCwIcon } from "lucide-react";
 import type { TurnAttachment, TurnState } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { attachmentUrl } from "@/lib/ds";
 import { PanelEmpty, PanelHeader } from "@/components/ui/panel";
 import { cn } from "@/lib/utils";

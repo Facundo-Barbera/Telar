@@ -12,7 +12,7 @@ import { GET as aboutIconGet } from "@/app/api/about/icon/route";
 import { GET as notifyGet, PUT as notifyPut } from "@/app/api/mobile/notify/route";
 import { POST as discardPost } from "@/app/api/sessions/[sessionId]/turns/[runId]/discard/route";
 import { EngineClient } from "@telar/engine-client";
-import { engineRootFromWebEnv } from "@/lib/engine/engine-server";
+import { engineRootFromWebEnv } from "@/platform/engine/server";
 import { startEngine, type EngineDaemon } from "../../../../engine/src/daemon";
 
 const savedTelarHome = process.env.TELAR_HOME;

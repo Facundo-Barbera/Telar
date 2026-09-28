@@ -1,4 +1,4 @@
-import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * One structured completion from the text-generation harness — the title job's

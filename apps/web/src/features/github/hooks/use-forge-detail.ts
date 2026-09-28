@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GitHubIssueDetail, GitHubPullDetail } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import type { UNAVAILABLE } from "@/lib/github-forge";
 
 const api = createEngineApi();

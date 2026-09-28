@@ -13,7 +13,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { GitOverview, GitReadFailure, GitRefEntry, ProjectAvailability, Session } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 

@@ -11,7 +11,7 @@ Loader2Icon,
 HourglassIcon,
 Minimize2Icon
 } from "lucide-react";
-import { itemLabel,itemText,type JournalItem,type JournalTask,type JournalTurn } from "@/lib/engine/journal";
+import { itemLabel,itemText,type JournalItem,type JournalTask,type JournalTurn } from "@/platform/engine";
 import { fmtTokens } from "@/lib/format";
 import { attachmentUrl } from "@/lib/ds";
 import { MessageMenu,MessageResponse } from "@/components/ui/message";

@@ -38,7 +38,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { GlobeIcon, PlugIcon, PlusIcon, Settings2Icon, TerminalIcon, XIcon } from "lucide-react";
 import type { McpOAuthStatus, McpServer, McpServerSpec } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

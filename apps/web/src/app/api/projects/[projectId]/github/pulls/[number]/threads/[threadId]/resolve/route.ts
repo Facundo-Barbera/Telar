@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * Resolve or unresolve one review thread — #842.

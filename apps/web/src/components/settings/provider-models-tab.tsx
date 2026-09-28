@@ -25,7 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, EyeIcon, EyeOffIcon, PlusIcon, StarIcon, XIcon } from "lucide-react";
 import type { CustomProviderModel, ModelCatalogue, ModelOverlay, ProviderInstance, ProviderModel } from "@telar/engine-client";
 import { cn } from "@/lib/utils";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
 import { DRIVER_LABEL } from "@/lib/provider-instances";
 import { Button } from "@/components/ui/button";

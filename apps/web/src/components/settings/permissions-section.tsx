@@ -34,7 +34,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { MonitorIcon } from "lucide-react";
 import { driverTakesComputerUse, type ComputerUseGrant, type ComputerUseStatus } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { DRIVER_LABEL, DRIVERS } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

@@ -1,5 +1,5 @@
 import { EngineClientError } from "@telar/engine-client";
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse } from "@/platform/engine/server";
 
 /**
  * Upload one file for a session, BEFORE the message that refers to it.

@@ -5,7 +5,7 @@
  * `lib/run/route-map.ts`, so the mapping is tested without a server. Refusals
  * pass through untranslated — `conflict` is what the panel branches on.
  */
-import { engineClient, engineErrorResponse, requestObject } from "@/lib/engine/engine-server";
+import { engineClient, engineErrorResponse, requestObject } from "@/platform/engine/server";
 import { RunRouteRefusal, serveRunRequest, type RunEngineVerbs } from "@/features/terminal";
 
 export const dynamic = "force-dynamic";
