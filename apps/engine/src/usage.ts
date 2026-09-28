@@ -70,7 +70,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
 import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport, UsageResolution, UsageSource } from "@telar/engine-client";
-import { loadRates, priceTokens, type RatesTable } from "./usage-pricing";
+import { loadRates, priceTokens, type RatesTable } from "./domains/usage";
 
 type UsageRecord = {
   at: number;
