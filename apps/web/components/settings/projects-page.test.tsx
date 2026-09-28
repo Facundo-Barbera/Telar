@@ -396,7 +396,8 @@ test("a plugin's editor mounts only once the plugin is on", () => {
    * in components/plugins/settings-panes.test.tsx.
    */
   expect(source).toContain("pluginEnabled(enabled, entry.pluginId) ? projectPaneFor(entry.pluginId) : undefined");
-  expect(source).toContain("<PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />");
+  // Otherwise the generic pane, which draws its generated fields only once on.
+  expect(source).toMatch(/<PluginSettings\s+key=\{entry\.key\}\s+entry=\{entry\}\s+project=\{project\}\s+onChange=\{onChange\}/);
 });
 
 test("the compact switch list is the unbound scope's answer, and only that", () => {

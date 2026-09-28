@@ -31,10 +31,34 @@ import type { PluginEngineModule, PluginInitContext } from "./contract";
 import type { PluginToolModule } from "./tool-module";
 import type { PluginWorkLog } from "./work-log";
 
+/**
+ * Deliberately trivial — the point is that the plugin owns the shape. The
+ * `.meta()` is what the cockpit's generated pane reads: titles, one-sentence
+ * hints, and `inherits` naming the Mac default a project falls back to.
+ */
 const HelloSettings = z.object({
-  /** Deliberately trivial — the point is that the plugin owns the shape. */
-  greeting: z.string().min(1).max(200).default("hello"),
-  slowMs: z.number().int().min(0).max(60_000).default(50),
+  greeting: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .meta({ title: "Greeting", description: "What the proof tool answers with in this project.", inherits: "greeting" }),
+  slowMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(60_000)
+    .default(50)
+    .meta({
+      title: "Pretend work",
+      description: "How long each greeting takes, in milliseconds.",
+      info: "Long enough to see a disabled plugin drain rather than stop.",
+    }),
+});
+
+/** The Mac's half: the greeting every project inherits. */
+const HelloMachineSettings = z.object({
+  greeting: z.string().min(1).max(200).optional().meta({ title: "Greeting", description: "What the proof tool answers with, unless a project says otherwise." }),
 });
 export type HelloSettings = z.infer<typeof HelloSettings>;
 
@@ -49,7 +73,10 @@ export const helloMeta: PluginMeta = {
   // proving the wrong thing.
   readTools: [],
   eventKinds: ["greeted"],
-  settings: [{ id: "hello", scope: "project", label: "Hello", blurb: "The proof plugin's one setting." }],
+  settings: [
+    { id: "hello", scope: "project", label: "Hello", blurb: "The proof plugin's settings for this project." },
+    { id: "defaults", scope: "machine", label: "Hello", blurb: "What every project inherits on this Mac." },
+  ],
 };
 
 /** Per-project pretend work, so `busy` has something to report. */
@@ -185,6 +212,7 @@ export function helloPlugin(deps: {
   return {
     meta: helloMeta,
     settingsSchema: HelloSettings,
+    machineSettingsSchema: HelloMachineSettings,
     resolve: (sessionId) => storeHelloCapability(() => runtime, deps.resolve(sessionId)),
     init(context: PluginInitContext) {
       runtime = new HelloRuntime(context.work);

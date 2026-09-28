@@ -542,10 +542,17 @@ export function ProjectPluginPanes({
           return <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} machineOff />;
         }
         const Pane = pluginEnabled(enabled, entry.pluginId) ? projectPaneFor(entry.pluginId) : undefined;
+        const machineSettings = machine?.entries[entry.pluginId]?.settings;
         return Pane ? (
           <Pane key={entry.key} project={project} onChange={onChange} />
         ) : (
-          <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />
+          <PluginSettings
+            key={entry.key}
+            entry={entry}
+            project={project}
+            onChange={onChange}
+            {...(machineSettings ? { machineSettings } : {})}
+          />
         );
       })}
     </>

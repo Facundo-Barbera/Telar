@@ -23,6 +23,7 @@
  *   see `contract.ts` for why that is three verbs and not one.
  */
 import path from "node:path";
+import { z } from "zod";
 import { BUNDLED_PLUGIN_TOOL_PREFIXES, type PluginMeta, type PluginStatus } from "@telar/engine-client";
 import {
   PLUGIN_DISPOSE_TIMEOUT_MS,
@@ -133,12 +134,18 @@ export class PluginHost {
   }
 
   statuses(): PluginStatus[] {
-    return [...this.records.values()].map((record) => ({
-      meta: record.module.meta,
-      state: record.state,
-      ...(record.error === undefined ? {} : { error: record.error }),
-      ...(record.initMs === undefined ? {} : { initMs: record.initMs }),
-    }));
+    return [...this.records.values()].map((record) => {
+      const project = settingsJsonSchema(record.module.settingsSchema);
+      const machine = settingsJsonSchema(record.module.machineSettingsSchema);
+      return {
+        meta: record.module.meta,
+        state: record.state,
+        ...(record.error === undefined ? {} : { error: record.error }),
+        ...(record.initMs === undefined ? {} : { initMs: record.initMs }),
+        ...(project ? { settingsSchema: project } : {}),
+        ...(machine ? { machineSettingsSchema: machine } : {}),
+      };
+    });
   }
 
   /** The read classifications the host honours. See `policy.ts`. */
@@ -411,5 +418,23 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * A PLUGIN'S SETTINGS SCHEMA, AS DATA A COCKPIT CAN RENDER — JSON Schema from
+ * its own zod schema, so the settings pane is generated from the one definition
+ * the host already validates writes against. Titles, descriptions and the
+ * renderer's hints (`info`, `widget`, `inherits`) come from the schema's
+ * `.meta()`. The INPUT shape, because that is what a pane writes. A schema that
+ * cannot be expressed is left out rather than failing the health answer: the
+ * pane falls back to enable-only.
+ */
+function settingsJsonSchema(schema: z.ZodType<unknown> | undefined): Record<string, unknown> | undefined {
+  if (!schema) return undefined;
+  try {
+    return z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }) as Record<string, unknown>;
+  } catch {
+    return undefined;
   }
 }

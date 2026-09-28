@@ -179,3 +179,28 @@ test("every search entry points at a row that renders, unless it says it lands o
   // And the exemption list stays honest: a label that became a setting, or went away, leaves it.
   for (const label of NOT_SETTINGS) expect(labels.has(label)).toBe(true);
 });
+
+test("generated plugin rows join the index on panes that exist, anchored where they render", async () => {
+  // settings-page merges them at runtime from the engine's plugin schemas; the
+  // two panes it points them at must be panes the shell can select.
+  const page = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
+  expect(page).toContain("pluginSettingsSearchEntries(");
+  expect(page).toContain('{ project: page("projects"), machine: page("plugins") }');
+  for (const id of ["projects", "plugins"]) expect(SETTINGS_SEARCH_PAGES.some((entry) => entry.id === id)).toBe(true);
+  // A generated row is found by name like any declared one.
+  const { pluginSettingsSearchEntries } = await import("@/lib/plugins/settings-form");
+  const { FIXTURE_SCHEMA } = await import("@/test-fixtures/plugin-settings-schema");
+  const generated = pluginSettingsSearchEntries(
+    [
+      {
+        meta: { id: "hello", api: 1, name: "Hello", version: "1", toolPrefixes: ["hello"], readTools: [], eventKinds: [], settings: [] },
+        state: "ready",
+        settingsSchema: FIXTURE_SCHEMA,
+      },
+    ],
+    { project: { id: "projects", label: "Projects" }, machine: { id: "plugins", label: "Plugins" } },
+  );
+  const results = searchSettings({ entries: [...SETTINGS_SEARCH_INDEX.entries, ...generated] }, "output folder");
+  expect(results[0]?.title).toBe("Output folder");
+  expect(results[0]?.pageId).toBe("projects");
+});

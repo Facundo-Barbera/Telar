@@ -32,6 +32,8 @@ export type PluginSectionEntry = {
   /** The plugin's state, so a failed one can say so instead of pretending. */
   state: PluginStatus["state"];
   error?: string;
+  /** The plugin's settings as JSON Schema, for the generated pane. */
+  settingsSchema?: Record<string, unknown>;
 };
 
 /**
@@ -63,6 +65,8 @@ export function projectPluginSections(plugins: readonly PluginStatus[] | undefin
         scope: "project",
         state: status.state,
         ...(status.error ? { error: status.error } : {}),
+        // The fields draw once, under the plugin's first section.
+        ...(index === 0 && status.settingsSchema ? { settingsSchema: status.settingsSchema } : {}),
       });
     }
   }
