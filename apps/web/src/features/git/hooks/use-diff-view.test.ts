@@ -19,7 +19,6 @@ describe("the diff view preference", () => {
   });
 
   test("a record written before the tree existed keeps the tree shown", () => {
-    // Absent means the default, not `false`.
     expect(parseDiffView('{"layout":"split","wrap":false,"ignoreWhitespace":false}').tree).toBe(true);
   });
 

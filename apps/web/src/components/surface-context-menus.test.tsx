@@ -45,10 +45,13 @@ const byText = (root: ParentNode, selector: string, text: string) =>
   [...root.querySelectorAll(selector)].find((node) => node.textContent?.trim() === text)!;
 
 describe("every surface menu uses the shared primitive", () => {
-  const dir = fileURLToPath(new URL(".", import.meta.url));
-  const sources = (fs.readdirSync(dir, { recursive: true }) as string[])
-    .filter((name) => name.endsWith(".tsx") && !name.includes(".test.") && name !== path.join("ui", "context-menu.tsx"))
-    .map((name) => ({ name, source: fs.readFileSync(path.join(dir, name), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "") }))
+  const sources = [".", "../features"]
+    .map((rel) => fileURLToPath(new URL(rel, import.meta.url)))
+    .flatMap((dir) =>
+      (fs.readdirSync(dir, { recursive: true }) as string[])
+        .filter((name) => name.endsWith(".tsx") && !name.includes(".test.") && name !== path.join("ui", "context-menu.tsx"))
+        .map((name) => ({ name, source: fs.readFileSync(path.join(dir, name), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "") })),
+    )
     .filter(({ source }) => source.includes("<ContextMenuItem"));
 
   test("imports components/ui/context-menu and defines no ContextMenu of its own", () => {

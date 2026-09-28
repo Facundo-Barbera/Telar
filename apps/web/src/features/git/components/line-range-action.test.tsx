@@ -1,19 +1,10 @@
-/**
- * SELECTED LINES INTO THE MESSAGE — issue #855.
- *
- * The selection itself is `@pierre/diffs`'s and draws into a shadow root that
- * happy-dom measures at 0×0, so it is not driven here. What Telar owns is pinned
- * instead: turning the library's range into a reference, and the button that
- * offers it — which must put the text in the message without taking focus from
- * somebody typing there.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { toLineRange } from "./diff-code-view";
-import { LineRangeAction } from "./diff-surface";
+import { LineRangeAction } from "./line-range-action";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -64,8 +55,6 @@ describe("the Add to message button", () => {
     const { composer, button } = await mount(() => {});
     composer.focus();
     expect(document.activeElement).toBe(composer);
-    // A mouse-down whose default is prevented is what stops a button taking
-    // focus; `dispatchEvent` returns false exactly when it was.
     const kept = !button.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     expect(kept).toBe(true);
     expect(document.activeElement).toBe(composer);

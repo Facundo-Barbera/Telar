@@ -1,11 +1,3 @@
-/**
- * THE DIFF SURFACE'S FILE TREE — issue #855.
- *
- * Ordering and chain collapse belong to `lib/file-tree.ts` and are pinned there;
- * what is pinned here is what the review adds on top: folding, and the claim
- * that the tree has no open set of its own — clicking a file opens the SAME row
- * the list draws, through the same toggle.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -14,7 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import type { GitFileChange, GitFilePatch } from "@telar/engine-client";
 import { DEFAULT_DIFF_VIEW } from "../hooks/use-diff-view";
 import { DiffFileTree, diffTreeRows } from "./diff-file-tree";
-import { ReviewFileRow, toggleOpen } from "./diff-surface";
+import { toggleOpen } from "../model";
+import { ReviewFileRow } from "./review-file-row";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -54,8 +47,6 @@ describe("the review's tree", () => {
 const file = (path: string, extra: Partial<GitFileChange> = {}): GitFileChange => ({ path, status: "modified", linesAdded: 1, linesRemoved: 0, ...extra });
 const readPatch = () => new Promise<{ file: GitFilePatch }>(() => {});
 
-/** The surface's own shape, reduced to the part under test: one set, one
- *  toggle, handed to both the tree and the rows. */
 function Harness({ files }: { files: GitFileChange[] }) {
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
   const toggle = (path: string) => setOpen((current) => toggleOpen(current, path));

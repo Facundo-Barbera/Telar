@@ -1,7 +1,3 @@
-/**
- * PLACING A DIFF LINE ON THE PULL REQUEST — #1014. Every refusal the anchoring
- * predicate has, and the optimistic send with its rollback. Fixtures only.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitHubLineCommentResult, GitHubPullAnchor } from "@telar/engine-client";

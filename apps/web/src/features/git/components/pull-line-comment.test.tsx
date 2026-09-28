@@ -1,7 +1,3 @@
-/**
- * What a selection offers for the pull request — #1014. The answer is handed in
- * and the markup read, as `diff-unknown.test.tsx` does.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";

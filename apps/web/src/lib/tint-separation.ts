@@ -15,7 +15,7 @@
  *                step, held to the 1.075:1 the palette already argues for
  *                --background against --card — not a 4.5:1 text bar.
  *   READABILITY  the ink still clearing 4.5:1 ON THE FILL. `text-success` sits
- *                on `.tint-success` (diff-surface.tsx:771), and the fill is
+ *                on `.tint-success`, and the fill is
  *                made of THE SAME TOKEN as the ink — so every step the fill
  *                takes away from the card is a step toward its own text.
  *                Raising the floor buys elevation and spends readability.

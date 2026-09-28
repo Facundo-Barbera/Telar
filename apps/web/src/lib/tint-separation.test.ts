@@ -155,9 +155,6 @@ describe("the semantic tints, on every scheme and Look we ship", () => {
   });
 
   test("the ink still reads on the fill, not just on the card it used to sit on", () => {
-    // `text-success` on `.tint-success` — diff-surface.tsx:771. The fill is
-    // 12% of the same token, so the ink is measured against a surface that has
-    // already moved toward it. This is the wall that stops the floor rising.
     const unreadable: string[] = [];
     for (const { label, mode, card } of surfaces) {
       for (const tone of TONES) {
