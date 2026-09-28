@@ -267,7 +267,7 @@ function Row({
   action?: React.ReactNode;
 }) {
   return (
-    <PanelRow tone={tone} className="group/row gap-1.5 p-0 pl-0">
+    <PanelRow className="group/row gap-1.5 p-0 pl-0">
       <Link href={href} className="flex min-w-0 flex-1 items-center gap-2 py-2 pr-1 pl-4 hover:bg-muted/60">
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-xs">{title}</span>
@@ -581,7 +581,7 @@ export function RelatedConversationsView({
               /* NO LINK WITHOUT A ROW. The coordinator has been archived — the
                  live list does not carry it — and a link built from a bare id
                  would 404 in a way that reads as a routing bug. */
-              <PanelRow key={`${entry.sessionId}:${entry.at}:${index}`} tone={tone} className="gap-1.5 py-2">
+              <PanelRow key={`${entry.sessionId}:${entry.at}:${index}`} className="gap-1.5 py-2">
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-xs text-muted-foreground">{title}</span>
                   <span className="truncate text-3xs text-muted-foreground">{[detail, "no longer listed"].filter(Boolean).join(" · ")}</span>

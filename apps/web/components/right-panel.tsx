@@ -48,7 +48,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { KeyHint } from "@/components/ui/key-hint";
-import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
+import { PanelDivider, PanelEmpty, PanelRow } from "@/components/ui/panel";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -934,15 +934,6 @@ export function isLiveTask(task: Task): boolean {
   return LIVE_TASK_STATES.has(task.state);
 }
 
-/** The rail's one mapping from engine state to the five-colour vocabulary. */
-export function taskTone(state: TaskState): PanelTone {
-  if (state === "failed") return "danger";
-  if (state === "waiting") return "attention";
-  if (state === "running" || state === "pending") return "active";
-  if (state === "completed") return "done";
-  return "none";
-}
-
 // ── presentation ───────────────────────────────────────────────────────────
 
 /** An absent figure is an em dash, never a zero — a session that reported
@@ -1185,7 +1176,7 @@ function TaskRow({
         startReferenceDrag(event.dataTransfer, taskReference({ id: task.id, ...(task.title ? { title: task.title } : {}), state: task.state }))
       }
     >
-      <PanelRow tone={taskTone(task.state)} className="p-0 pl-0">
+      <PanelRow className="p-0 pl-0">
         <button
           type="button"
           className={cn("flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs", detail && "hover:bg-muted/60")}

@@ -17,7 +17,7 @@
  */
 import { useEffect, useState } from "react";
 import { InboxIcon } from "lucide-react";
-import { PanelRow, PanelSectionLabel, type PanelTone } from "@/components/ui/panel";
+import { PanelRow, PanelSectionLabel } from "@/components/ui/panel";
 import { createEngineApi } from "@/lib/engine/client";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import { hostFetcher } from "@/lib/hosts/client";
@@ -32,11 +32,10 @@ export const HELD_DETAIL = "Reports never open a turn. They arrive with this con
 /** The row, given its answer rather than fetching it, so a test can put a case to it. */
 export function ReportCadenceView({ held }: { held: number }) {
   const waiting = heldLabel(held);
-  const tone: PanelTone = waiting ? "info" : "none";
   return (
     <div className="flex flex-col">
       <PanelSectionLabel label="Reports from peers" />
-      <PanelRow tone={tone} className="gap-2">
+      <PanelRow className="gap-2">
         <InboxIcon className="size-3 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-3xs text-muted-foreground">{HELD_DETAIL}</span>
         {waiting && <span className="shrink-0 font-mono text-3xs text-muted-foreground tabular-nums">{waiting}</span>}

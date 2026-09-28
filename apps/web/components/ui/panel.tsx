@@ -5,9 +5,8 @@ import { cn } from "@/lib/utils";
  * PANEL GRAMMAR — the device that makes Telar read as one instrument.
  *
  * Every region in the frozen app is a bordered panel introduced by the same
- * header: an icon, a MONO UPPERCASE label, and a count. Rows inside carry a 3px
- * coloured left rail when they have a state worth reporting. It is a small
- * vocabulary and it is used everywhere — the dashboard's `NEEDS YOU 2`, the
+ * header: an icon, a MONO UPPERCASE label, and a count. Rows inside say their
+ * state in words, never with a coloured stripe. It is a small vocabulary and it is used everywhere — the dashboard's `NEEDS YOU 2`, the
  * conversation's `SUB-AGENTS ●1`, the workspace's `DESK 0` — which is exactly
  * why the app feels composed rather than assembled.
  *
@@ -22,17 +21,8 @@ import { cn } from "@/lib/utils";
 
 /** The state vocabulary from globals.css, and nothing else — five meanings,
  *  five tokens. A sixth ramp is how two surfaces start disagreeing about what
- *  amber means. `none` draws no rail at all, which is the common case. */
+ *  amber means. `none` tints nothing, which is the common case. */
 export type PanelTone = "none" | "active" | "attention" | "danger" | "done" | "info";
-
-const RAIL: Record<PanelTone, string> = {
-  none: "before:bg-transparent",
-  active: "before:bg-primary",
-  attention: "before:bg-warning",
-  danger: "before:bg-destructive",
-  done: "before:bg-success",
-  info: "before:bg-info",
-};
 
 export function Panel({ className, ...props }: ComponentProps<"section">) {
   return <section className={cn("flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card", className)} {...props} />;
@@ -94,26 +84,18 @@ export function PanelBody({ className, ...props }: ComponentProps<"div">) {
 }
 
 /**
- * A row inside a panel, with the 3px status rail.
+ * A row inside a panel.
  *
- * Drawn with `::before` rather than `border-l` so the rail is INSIDE the row's
- * box: a border would shift the row's content by 3px only when it has a tone,
- * and a list where toned and untoned rows sit at different indents reads as
- * broken alignment rather than as a status signal.
+ * NO COLOURED RAIL. A row that has a state says it as a short muted word at its
+ * trailing edge, which every call site already does; a stripe beside that word
+ * said the same thing twice, and on its own said it only to readers who had
+ * learned the colours.
  */
-export function PanelRow({
-  tone = "none",
-  active,
-  className,
-  ...props
-}: ComponentProps<"div"> & { tone?: PanelTone; active?: boolean }) {
+export function PanelRow({ active, className, ...props }: ComponentProps<"div"> & { active?: boolean }) {
   return (
     <div
-      data-tone={tone}
       className={cn(
         "relative flex min-w-0 items-center gap-2 px-3 py-2 pl-4 text-sm",
-        "before:absolute before:inset-y-0 before:left-0 before:w-[3px]",
-        RAIL[tone],
         active && "bg-muted/50",
         className,
       )}

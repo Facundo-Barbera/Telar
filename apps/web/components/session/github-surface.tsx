@@ -289,7 +289,7 @@ function ForgeRow({
 }) {
   const tone = TONE_TEXT[statusTone(status)];
   return (
-    <PanelRow tone="none" className="p-0 pl-0">
+    <PanelRow className="p-0 pl-0">
       <button
         type="button"
         draggable

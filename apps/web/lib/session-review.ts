@@ -297,3 +297,12 @@ export const REVIEW_STATUS_LETTER: Record<GitFileChange["status"], string> = {
   renamed: "R",
   untracked: "?",
 };
+
+/** The letter's word, for its tooltip — the row's only statement of its state. */
+export const REVIEW_STATUS_WORD: Record<GitFileChange["status"], string> = {
+  added: "Added",
+  modified: "Modified",
+  deleted: "Deleted",
+  renamed: "Renamed",
+  untracked: "Untracked",
+};

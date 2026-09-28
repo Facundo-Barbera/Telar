@@ -20,9 +20,9 @@ describe("the held row", () => {
     expect(view(0)).not.toContain("tabular-nums");
   });
 
-  test("the held row carries a tone, so a glance at the panel sees it", () => {
-    expect(view(3)).toContain('data-tone="info"');
-    expect(view(0)).toContain('data-tone="none"');
+  test("the held row says its count in words, with no coloured rail", () => {
+    expect(view(3)).not.toContain("data-tone");
+    expect(view(3)).not.toContain("before:");
   });
 
   test("offers no cadence any more, and says where the reports go", () => {
