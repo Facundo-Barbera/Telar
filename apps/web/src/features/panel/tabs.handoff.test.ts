@@ -3,7 +3,7 @@
  * project; the hand-off must copy it onto the session and then clear it.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   canvasPanelKey,
   clearPanelTabs,
@@ -18,8 +18,11 @@ type Tab = "run" | "changes" | "editor";
 const isTab = (tab: string): tab is Tab => tab === "run" || tab === "changes" || tab === "editor";
 const kinds = (state: PanelTabState<Tab>) => state.tabs.map((tab) => tab.kind);
 
+let previous: unknown;
+
 beforeEach(() => {
   const store = new Map<string, string>();
+  previous = (globalThis as { window?: unknown }).window;
   (globalThis as { window?: unknown }).window = {
     localStorage: {
       getItem: (key: string) => store.get(key) ?? null,
@@ -27,6 +30,10 @@ beforeEach(() => {
       removeItem: (key: string) => void store.delete(key),
     },
   };
+});
+
+afterEach(() => {
+  (globalThis as { window?: unknown }).window = previous;
 });
 
 function handOff(projectId: string, sessionId: string, panel: PanelTabState<Tab>) {
