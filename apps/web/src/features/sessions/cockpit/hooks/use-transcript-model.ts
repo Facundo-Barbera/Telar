@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { EngineEvent, EngineRequest, Item, Task, Turn } from "@telar/engine-client";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, taskRoster } from "@/platform/engine";
 import type { PanelTab, TaskFocus } from "@/features/panel";
-import { questionFields } from "@/features/composer/question-drawer";
+import { questionFields } from "@/features/composer";
 import { actionableRequests } from "../failed-turn-recovery";
 import { processToReveal, stillWorking } from "../background-presence";
 
