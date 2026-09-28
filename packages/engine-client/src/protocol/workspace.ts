@@ -1,22 +1,3 @@
-/**
- * engine protocol v2 — HOW A PROJECT'S WORKTREES ARE PREPARED.
- *
- * One `workspace` document per engine, in two layers plus a proposal:
- *
- *   machine    this Mac's defaults, for every project
- *   proposed   a tracked `.telar/workspace.json` in the repo, read as the
- *              PROJECT'S suggestion — never written by Telar
- *   project    the per-project answer stored in the engine, which wins
- *
- * PER FIELD, THREE STATES, like every other "follow the app" setting here: a
- * field ABSENT from a project's overrides inherits, `null` turns it off for
- * that project, and a value replaces the inherited one. `env` is the one field
- * that merges rather than replaces — by key, machine < proposed < project — so
- * a project adding one variable does not silently drop the machine's.
- *
- * NOTHING HERE NAMES A PROJECT. A default that only makes sense for one repo
- * belongs in that repo's `.telar/workspace.json`, not in this file.
- */
 import { z } from "zod";
 
 export const WORKSPACE_SCHEMA_VERSION = 1;
@@ -25,12 +6,6 @@ export const WORKSPACE_SCHEMA_VERSION = 1;
  *  rather than exported as something no process can read. */
 export const WorkspaceEnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "not a valid environment variable name");
 
-/**
- * A path INSIDE the worktree. Relative, and never climbing out: every one of
- * these is something Telar may copy into or delete from a checkout, and an
- * absolute path or a `..` would point that at somebody's home directory.
- * Either separator, because the same document is read on Windows.
- */
 export const WorkspaceRelativePath = z
   .string()
   .min(1)
@@ -69,12 +44,6 @@ export const WorkspaceArtifact = z.object({
 });
 export type WorkspaceArtifact = z.infer<typeof WorkspaceArtifact>;
 
-/**
- * Every field optional: an empty document is a valid one and means "nothing
- * to prepare". `z.object` rather than `looseObject` on purpose — this is
- * typed by people, and a misspelled key should be dropped on read rather than
- * kept forever as a setting that silently does nothing.
- */
 export const WorkspaceConfig = z.object({
   setup: WorkspaceSetup.optional(),
   env: z.record(WorkspaceEnvName, z.string()).optional(),
@@ -129,10 +98,6 @@ export type ProjectWorkspaceView = z.infer<typeof ProjectWorkspaceView>;
  *  choice somebody makes, not one Telar makes for every repo on the Mac. */
 export const DEFAULT_MACHINE_WORKSPACE: WorkspaceConfig = {};
 
-/**
- * THE ONE PLACE THE LAYERS ARE COMBINED, shared so the engine and the settings
- * pane can never disagree about what a project will actually get.
- */
 export function resolveWorkspace(
   machine: WorkspaceConfig,
   proposed: WorkspaceConfig | undefined,

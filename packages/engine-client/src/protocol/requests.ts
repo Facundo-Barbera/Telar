@@ -1,38 +1,7 @@
-/**
- * engine protocol v2 — requests: the things that need a human.
- *
- * A request is opened by the engine when a turn wants to do something its
- * session's `RuntimeMode` does not already permit, and it stays open until
- * something resolves it. While one is open the runtime is `waiting` and NO
- * FURTHER WORK HAPPENS on that session.
- *
- * THIS IS THE FILE THAT DECIDES WHETHER DETACHED RUNS ARE REAL. A session left
- * running overnight that opens an approval at minute three and sits there until
- * morning is not autonomous; it is stuck, and worse, it is stuck silently. Two
- * rules follow from that and both are contract, not implementation detail:
- *
- *   1. `RuntimeMode` determines which requests are auto-resolved and which
- *      genuinely park — see `autoResolution()` below, which is the single
- *      definition of that policy.
- *   2. A request that parks with nobody watching MUST produce a notification.
- *      `RequestOpened.notified` records whether one went out, so "it was stuck
- *      and nobody was told" is a detectable state rather than a guess.
- *
- * v1 had none of this: the driver ran at `permissionMode: "default"` with no
- * `canUseTool` callback, so nothing could be asked in the first place.
- */
 import { z } from "zod";
 import { Id, ProviderRefs, RuntimeMode, Timestamp } from "./common";
 import { CommandExecutionDetail, FileChangeDetail, FileReadDetail, ToolCallDetail } from "./items";
 
-/**
- * What is being asked.
- *
- * KINDS ARE COARSE ON PURPOSE. The temptation is one kind per tool; the reason
- * not to is that a human's answer is about capability, not vocabulary — "may
- * you run shell commands here" is one decision whether the tool is called Bash
- * or exec_command. Provider-specific naming stays in `providerRefs`.
- */
 export const RequestKind = z.enum([
   "command_execution",
   "file_change",
@@ -41,11 +10,6 @@ export const RequestKind = z.enum([
   /** The agent is asking a question, not asking permission. Never auto-resolved
    *  in any mode — an invented answer is worse than a parked session. */
   "user_input",
-  /** The agent wants a credential filled from the user's password manager.
-   *  Never auto-resolved in any mode, `full-access` included: a secret leaving
-   *  the vault is the one capability no runtime mode may hand out on its own.
-   *  The human's answer also PICKS the item (`answers.item`), so policy has
-   *  nothing it could even resolve with. */
   "secret_access",
 ]);
 export type RequestKind = z.infer<typeof RequestKind>;
@@ -61,33 +25,9 @@ export const RequestDecision = z.enum([
 ]);
 export type RequestDecision = z.infer<typeof RequestDecision>;
 
-/** Who answered. `policy` means no human was involved — the runtime mode
- *  resolved it — and that distinction is what makes an audit trail honest.
- *  `session` means ANOTHER SESSION answered, through `sessions_resolve_request`:
- *  an agent, not a person, and the trail must say so for the same reason.
- *  `timeout` means A DEADLINE PASSED and the asker's own stated default was
- *  taken — see `deadlineResolution` below, which is the only thing that writes
- *  it. It is distinct from `policy` because `policy` is the session's runtime
- *  mode answering immediately and this is nobody answering at all. */
 export const RequestResolver = z.enum(["human", "policy", "timeout", "cancelled", "session"]);
 export type RequestResolver = z.infer<typeof RequestResolver>;
 
-/**
- * THE ANSWER A REQUEST CARRIES FOR THE CASE WHERE NOBODY COMES — issue #541 D.
- *
- * SUPPLIED BY THE ASKER, NEVER INVENTED BY THE ENGINE, and that is the whole of
- * why this is defensible where `autoResolution` refuses to be. A runtime mode
- * answering a question would be the engine guessing at a human's intent; this is
- * the party that ASKED saying, at the moment it asked, what it will do if it is
- * left alone. `user_input` therefore MAY carry one — a question with a stated
- * fallback is exactly the owner's case, "I went with X because you were away" —
- * even though no mode auto-answers it.
- *
- * ONLY `accept` AND `decline`. `acceptForSession` widens the session's posture
- * for every later call of that kind, permanently; a deadline nobody watched must
- * not be able to do that. `cancel` withdraws the whole turn, which is a person
- * abandoning work rather than an answer to a question.
- */
 export const RequestDefault = z.object({
   decision: z.enum(["accept", "decline"]),
   /** For a `user_input` default: the same per-field shape a human's answer has,
@@ -96,43 +36,10 @@ export const RequestDefault = z.object({
 });
 export type RequestDefault = z.infer<typeof RequestDefault>;
 
-/**
- * WHICH KINDS MAY CARRY A DEFAULT AT ALL.
- *
- * `secret_access` MAY NOT, for `autoResolution`'s own reason one line further
- * on: a mode may widen what the AGENT can do, never what the VAULT gives up, and
- * a deadline is a weaker warrant than a mode. The human's answer also PICKS the
- * item, so there is no answer for an asker to state in advance either.
- *
- * "DESTRUCTIVE ACTIONS NEVER GET A DEFAULT" IS NOT ENFORCED HERE, and saying so
- * is more useful than pretending otherwise: the engine has no reading of
- * `command_execution` that tells `rm -rf` from `bun test`, and a guard built on
- * one would be a check that passes for the wrong reason. The rule is the ASKER's
- * — it is in the session briefing — and this function is only the part the
- * contract can actually hold.
- */
 export function defaultAllowed(kind: RequestKind): boolean {
   return kind !== "secret_access";
 }
 
-/**
- * One field the agent wants filled in. Only present on `user_input`.
- *
- * THE ANSWER SHAPE IS PART OF THIS TYPE, not a client convention. `answers` on
- * the resolve body is `Record<string, unknown>`, so nothing on the wire forces
- * a shape and a client that guesses wrong is not rejected — it is silently
- * misread, which is how a multi-select answer becomes one label and the other
- * two vanish. The rule, per field:
- *
- *   `kind: "choice"` with `multiple: true`   answers with `string[]` of labels
- *   `kind: "choice"` without it              answers with a single `string`
- *
- * Absent and `false` are the same thing: a field that does not say `multiple`
- * is single-select, which is what every field written before this existed is.
- * A client MUST send the shape its field asked for — an array to a single-select
- * field is a client bug, and the engine takes the first element rather than
- * inventing a joined answer out of it.
- */
 export const UserInputField = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
@@ -145,14 +52,6 @@ export const UserInputField = z.object({
 });
 export type UserInputField = z.infer<typeof UserInputField>;
 
-/**
- * One password-manager item a `secret_access` request may fill from.
- *
- * METADATA ONLY, BY CONSTRUCTION. This shape crosses the journal, the cockpit,
- * and the phone, so it may never grow a field that could carry a value: id,
- * title, vault and matched domain are what 1Password itself shows on a locked
- * list. The values stay behind the resolver until the human has accepted.
- */
 export const SecretCandidate = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
@@ -168,14 +67,6 @@ export type SecretCandidate = z.infer<typeof SecretCandidate>;
 export const SecretFieldKind = z.enum(["username", "password", "otp", "field"]);
 export type SecretFieldKind = z.infer<typeof SecretFieldKind>;
 
-/**
- * ONE REMEMBERED LOGIN, as the cockpit lists it.
- *
- * METADATA ONLY, for the same reason `SecretCandidate` is: this shape crosses
- * the settings page and the phone. It names WHICH item, in which vault, for
- * which browser profile and origin, and which kinds of field were approved —
- * never a value, and never a way to read one.
- */
 export const RememberedLogin = z.object({
   id: z.string().min(1),
   profileId: z.string().min(1),
@@ -205,16 +96,7 @@ export const SecretAccessDetail = z.object({
   /** Domain-matched items only. Never empty — zero matches refuse the call
    *  before a request is opened. */
   candidates: z.array(SecretCandidate).min(1),
-  /** The agent's item hint, surfaced so the human sees what was asked for. */
   hint: z.string().optional(),
-  /**
-   * WHICH BROWSER IDENTITY this fill lands in — the named profile the session's
-   * browser is running under. Shown because a person with several accounts is
-   * deciding about ONE of them, and it is what a remembered authorization is
-   * scoped to. Metadata only, like everything else on this shape. Absent when
-   * the host has no named profiles (an older desktop shell), which is also when
-   * `remember` is not offered.
-   */
   profile: z.object({ id: z.string().min(1), label: z.string().optional(), account: z.string().optional() }).optional(),
 });
 export type SecretAccessDetail = z.infer<typeof SecretAccessDetail>;
@@ -237,15 +119,6 @@ export type RequestDetail = z.infer<typeof RequestDetail>;
 export const RequestState = z.enum(["open", "resolved"]);
 export type RequestState = z.infer<typeof RequestState>;
 
-/**
- * NAMED `EngineRequest`, NOT `Request`, and that is not stylistic. `Request` is
- * a DOM global (the fetch API's), so in any browser-facing file a bare
- * `Request` type annotation resolves to THAT with no error — TypeScript simply
- * uses the wrong type and the code compiles. Measured: `session-cockpit.tsx`
- * typechecked against the fetch `Request` and only failed later, on unrelated
- * property accesses, with a message that pointed nowhere near the cause. The
- * `Engine` prefix matches `EngineEvent` and `EngineHealth`.
- */
 export const EngineRequest = z.object({
   id: Id,
   runId: Id,
@@ -256,25 +129,10 @@ export const EngineRequest = z.object({
   detail: RequestDetail,
   openedAt: Timestamp,
 
-  /** Whether a notification was dispatched when this parked. Absent means the
-   *  request never parked (it resolved immediately by policy). */
   notified: z.boolean().optional(),
 
-  /**
-   * HOW LONG THIS MAY SIT BEFORE ITS DEFAULT IS TAKEN — milliseconds from
-   * `openedAt`, issue #541 D.
-   *
-   * ONLY EVER SET ON A REQUEST THAT PARKED. One that resolved by policy was
-   * never waiting on anybody, so a clock on it would measure nothing.
-   *
-   * A DEADLINE ALONE RESOLVES NOTHING. Without a `default` beside it this field
-   * is inert by construction — see `deadlineResolution`, which is the single
-   * definition of that rule.
-   */
   deadlineMs: z.number().int().positive().optional(),
 
-  /** What `deadlineMs` takes when it passes. Absent means this request WAITS,
-   *  however long the deadline was. */
   default: RequestDefault.optional(),
 
   decision: RequestDecision.optional(),
@@ -284,50 +142,12 @@ export const EngineRequest = z.object({
    *  can adapt rather than simply retrying the same thing. */
   reason: z.string().optional(),
 
-  /**
-   * Answers to a `user_input` request, keyed by `UserInputField.key` — and the
-   * item pick of a `secret_access` request, under the key `item`.
-   *
-   * DELIBERATELY `unknown` PER KEY, because the shape is the FIELD's to state:
-   * a `choice` field with `multiple: true` answers with a `string[]`, one
-   * without it answers with a `string`. `UserInputField` documents that rule;
-   * this record only carries it.
-   *
-   * `remember: true` on a `secret_access` answer is the human ticking the
-   * card's opt-in box: it authorizes LATER fills of the same item, in the same
-   * browser profile, on the same origin, for the same field kinds — and
-   * nothing else. Absent and false are the same thing, which is why the box is
-   * unchecked by default and no mode can supply it.
-   */
   answers: z.record(z.string(), z.unknown()).optional(),
 
   providerRefs: ProviderRefs.optional(),
 });
 export type EngineRequest = z.infer<typeof EngineRequest>;
 
-/**
- * THE AUTO-RESOLUTION POLICY, defined once.
- *
- * Returns the decision a runtime mode makes on its own, or `null` when the
- * request genuinely parks and needs a human. It lives in the CONTRACT rather
- * than in the engine because two independent parties must agree on it: the
- * engine, which enforces it, and every client, which has to tell the user what
- * a mode will do BEFORE they pick it. A settings screen that describes this
- * from memory is a settings screen that lies after the first policy change.
- *
- * The shape of the ladder:
- *   approval-required  asks about everything except reads
- *   auto-accept-edits  edits and reads pass; commands and tools still ask
- *   auto               everything inside the session's boundary passes;
- *                      `user_input` still parks, because it is a question
- *   full-access        nothing asks
- *
- * `user_input` NEVER auto-resolves. It is the one kind where the engine has no
- * defensible answer to invent, in any mode. `secret_access` shares the rule for
- * a different reason: a mode may widen what the AGENT can do, never what the
- * VAULT gives up — and the resolution carries the human's item pick, which no
- * policy could invent either.
- */
 export function autoResolution(mode: RuntimeMode, kind: RequestKind): RequestDecision | null {
   if (kind === "user_input" || kind === "secret_access") return null;
   switch (mode) {
@@ -348,28 +168,6 @@ export function requiresHuman(mode: RuntimeMode, kind: RequestKind): boolean {
   return autoResolution(mode, kind) === null;
 }
 
-/**
- * THE DEADLINE POLICY, DEFINED ONCE — issue #541 D.
- *
- * Returns the answer a passed deadline takes, or `null` when this request keeps
- * waiting. Beside `autoResolution` and for the identical reason: the engine
- * enforces it, and a client has to be able to tell a person what an open request
- * will do before they walk away from it. A cockpit computing "this one answers
- * itself in four minutes" from its own copy of the rule is a cockpit that lies
- * after the first change to it.
- *
- * ── THE THREE WAYS IT ANSWERS `null`, AND THE SECOND IS THE POINT ───────────
- *   1. The request is already resolved. Nothing to do.
- *   2. THERE IS NO DEFAULT. A deadline on its own resolves NOTHING — the issue's
- *      clause "requests with no default wait", and the one place it lives. A
- *      reader looking for where that promise is kept should find exactly this
- *      line and no second copy of it.
- *   3. The deadline has not passed yet.
- *
- * `>=` RATHER THAN `>`: a deadline of zero milliseconds would otherwise never
- * arrive, and the schema already refuses zero — this is so the boundary is the
- * one a caller would read off the field name.
- */
 export function deadlineResolution(
   request: Pick<EngineRequest, "state" | "openedAt" | "deadlineMs" | "default">,
   now: number,

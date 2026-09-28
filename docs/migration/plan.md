@@ -78,6 +78,20 @@ PRs (~17), each landing as `store/*`/`routes/*`:
 
 Security invariants to preserve (10+): the engine token never reaches a browser or phone; only ping and pair are open; observers are GET-only; the pairing code is 8 digits, 5 min, 5 tries, fragment-only; hashes at rest with constant-time comparison; no CORS; Host-header checks on the network listener; login grants stay written by the shell.
 
+## Phase 4, engine (design: docs/migration/engine-decomposition.md)
+
+~65 PRs, in this order:
+1. prep
+2. kernel
+3. ~26 modules bottom-up behind an `EngineStore` facade, plus the `turnEnded` hook
+4. remove the facade (codemod)
+5. daemon → router + `routes/*` (~14)
+6. driver/worker/execution-store/capabilities (~15); the driver goes last
+
+Precondition: JSON removal has landed.
+
+Decision: `detachAssignments` stays. It is the "Continue myself" action for phase 6 (sessions as sub-agents).
+
 ## Decisions taken
 
 - Comment policy: "default none" (not an absolute ban).
