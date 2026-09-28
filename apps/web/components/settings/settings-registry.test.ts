@@ -2,25 +2,14 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { PluginStatus } from "@telar/engine-client";
 import { searchSettings } from "@/lib/settings-search";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "./settings-registry";
+import { SECTION_IDS, settingsSearchIndex } from "./settings-sections";
 
-/**
- * THE REGISTRY IS A SECOND COPY, so this is the file that keeps it from
- * rotting.
- *
- * A row renamed in its section and not here does not break anything visibly: it
- * keeps appearing in search, keeps navigating to the right pane, and quietly
- * stops scrolling to the row — the kind of decay nobody reports. Both halves
- * are checked against source, the same way `settings-nav.test.ts` pins the
- * route contract.
- */
 const here = fileURLToPath(new URL(".", import.meta.url));
 
-/** EVERY .tsx UNDER THIS DIRECTORY, not just its top level. A pane's rows are
- *  not all written in the file named after the pane — the appearance pane's
- *  Show-through row is a component in `studio/`, and a flat read reported it
- *  missing from a pane it is rendered on twice. */
+// Recursive: a pane's rows may live in a subdirectory (e.g. `studio/`).
 function paneSources(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = `${dir}${name}`;
@@ -30,13 +19,10 @@ function paneSources(dir: string): string[] {
 }
 
 const sources = paneSources(here).join("\n");
-const nav = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
 
 test("every indexed pane is a pane the shell can actually select", () => {
-  // Choosing a result calls the same `onSelect` the nav button does; an id that
-  // drifted from SECTIONS would navigate nowhere at all.
   for (const page of SETTINGS_SEARCH_PAGES) {
-    expect(nav).toContain(`{ id: "${page.id}"`);
+    expect(SECTION_IDS).toContain(page.id);
   }
 });
 
@@ -47,7 +33,6 @@ test("every indexed row's title is still copy that exists on a pane", () => {
 
 test("every indexed group is still a group heading that exists", () => {
   const groups = new Set(SETTINGS_SEARCH_INDEX.entries.map((entry) => entry.group).filter(Boolean));
-  // The group is half the anchor, so a renamed heading silently moves the id.
   for (const group of groups) {
     expect(sources).toContain(`title="${group}"`);
   }
@@ -56,9 +41,6 @@ test("every indexed group is still a group heading that exists", () => {
 test("no two rows claim the same anchor", () => {
   const ids = SETTINGS_SEARCH_INDEX.entries.map((entry) => entry.id);
   expect(new Set(ids).size).toBe(ids.length);
-  // The pane is in the id, which is what lets two panes carry a row of the same
-  // name. "Engine" used to be the example on both sides; Agent tools answers
-  // that question in one row called "Computer use" now (#357).
   expect(ids).toContain("settings-row-about-this-build-engine");
   expect(ids).toContain("settings-row-tools-computer-use");
 });
@@ -80,17 +62,6 @@ test("the questions a person actually types find the row", () => {
 });
 
 test("every indexed row is declared on the pane that actually renders it", () => {
-  /**
-   * THE DRIFT THE TITLE CHECK CANNOT SEE. "Every title still exists somewhere
-   * in this directory" stays true when a whole SECTION moves between panes —
-   * which is what #294 did, taking remembered logins out of Agent tools and
-   * onto the new Integrations pane. The index went on saying `tools`, so the
-   * row kept being found and kept navigating to the pane it had left.
-   *
-   * Checked for the rows whose copy is distinctive enough to attribute to one
-   * file; a title as common as "Engine" appears on two panes on purpose and is
-   * covered by the anchor-uniqueness test instead.
-   */
   const paneOf: Record<string, string> = {
     "Remembered logins": "integrations",
     "Browser profiles": "integrations",
@@ -111,13 +82,7 @@ test("a result carries the pane it lives on, which is what the list shows", () =
   expect(hit?.pageLabel).toBe("Remote access");
 });
 
-/**
- * A ROW CANNOT EXIST WITHOUT BEING SEARCHABLE, AND AN ENTRY CANNOT OUTLIVE ITS
- * ROW. Static extraction rather than a render: the panes are lazy and most of
- * their rows appear only once the engine answers, so mounting them here would
- * test the mocks. Every `<Row>`/`<ToggleRow>` with a plain-string label is read
- * out of the pane sources and matched against the registry in both directions.
- */
+// Static extraction: the panes are lazy and most rows need the engine to answer.
 function renderedLabels(): Set<string> {
   const labels = new Set<string>();
   for (const source of paneSources(here)) {
@@ -129,11 +94,7 @@ function renderedLabels(): Set<string> {
   return labels;
 }
 
-/**
- * Rows that are not settings: a state the pane is in (loading, empty, failed,
- * not available here). Searching for one would land on a row that is usually
- * not there. A new entry here needs the same excuse.
- */
+// Rows that are a state the pane is in, not a setting.
 const NOT_SETTINGS = new Set([
   "Could not read plugins",
   "Could not save",
@@ -180,27 +141,22 @@ test("every search entry points at a row that renders, unless it says it lands o
   for (const label of NOT_SETTINGS) expect(labels.has(label)).toBe(true);
 });
 
-test("generated plugin rows join the index on panes that exist, anchored where they render", async () => {
-  // settings-page merges them at runtime from the engine's plugin schemas; the
-  // two panes it points them at must be panes the shell can select.
-  const page = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
-  expect(page).toContain("pluginSettingsSearchEntries(");
-  expect(page).toContain('{ project: page("projects"), machine: page("plugins") }');
-  for (const id of ["projects", "plugins"]) expect(SETTINGS_SEARCH_PAGES.some((entry) => entry.id === id)).toBe(true);
-  // A generated row is found by name like any declared one.
-  const { pluginSettingsSearchEntries } = await import("@/lib/plugins/settings-form");
+test("generated plugin rows join the index on the Projects and Plugins panes", async () => {
   const { FIXTURE_SCHEMA } = await import("@/test-fixtures/plugin-settings-schema");
-  const generated = pluginSettingsSearchEntries(
-    [
-      {
-        meta: { id: "hello", api: 1, name: "Hello", version: "1", toolPrefixes: ["hello"], readTools: [], eventKinds: [], settings: [] },
-        state: "ready",
-        settingsSchema: FIXTURE_SCHEMA,
-      },
-    ],
-    { project: { id: "projects", label: "Projects" }, machine: { id: "plugins", label: "Plugins" } },
-  );
-  const results = searchSettings({ entries: [...SETTINGS_SEARCH_INDEX.entries, ...generated] }, "output folder");
-  expect(results[0]?.title).toBe("Output folder");
-  expect(results[0]?.pageId).toBe("projects");
+  const plugin: PluginStatus = {
+    meta: { id: "hello", api: 1, name: "Hello", version: "1", toolPrefixes: ["hello"], readTools: [], eventKinds: [], settings: [] },
+    state: "ready",
+    settingsSchema: FIXTURE_SCHEMA,
+    machineSettingsSchema: FIXTURE_SCHEMA,
+  };
+  expect(settingsSearchIndex([], () => false)).toBe(SETTINGS_SEARCH_INDEX);
+
+  const hits = searchSettings(settingsSearchIndex([plugin], () => false), "output folder");
+  expect(hits.map((hit) => [hit.pageId, hit.pageLabel])).toEqual([
+    ["projects", "Projects"],
+    ["plugins", "Plugins"],
+  ]);
+
+  const bespoke = settingsSearchIndex([plugin], (scope) => scope === "project");
+  expect(searchSettings(bespoke, "output folder").map((hit) => hit.pageId)).toEqual(["plugins"]);
 });

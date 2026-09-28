@@ -1,9 +1,26 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { detailLines, deviceLine, NOT_REGISTERED, NOTIFY_ON_LABELS, pausedLine, phoneSummary, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
-import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES } from "@/lib/mobile/desktop";
+import { createElement } from "react";
+import { click, flush, mount, stubFetch, installTestDom } from "@/lib/testing/dom";
+import { detailLines, deviceLine, NOT_REGISTERED, NOTIFY_ON_LABELS, pausedLine, phoneSummary, PushNotificationsGroup, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
+import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES, type NotifyOn } from "@/lib/mobile/desktop";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
+
+installTestDom();
+
+async function mountPane(status: PushRelayStatus, notifyOn: NotifyOn = "both", saves = true) {
+  const calls = stubFetch({
+    "GET /api/mobile/relay": () => status,
+    "GET /api/mobile/notify": () => ({ notifyOn }),
+    "PUT /api/mobile/notify": () => {
+      if (!saves) throw new Error("refused");
+      return {};
+    },
+  });
+  const { host, unmount } = await mount(createElement(PushNotificationsGroup));
+  await flush(() => Boolean(host.textContent));
+  return { host, calls, unmount };
+}
 
 describe("Notify on", () => {
   test("offers exactly the server's three answers, in the owner's words, default first", () => {
@@ -12,21 +29,21 @@ describe("Notify on", () => {
     expect(NOTIFY_ON_LABELS[DEFAULT_NOTIFY_ON]).toBe("This Mac when active");
   });
 
-  test("the row is on the Push notifications group and search finds it there", () => {
-    const source = readFileSync(new URL("./push-notifications-group.tsx", import.meta.url), "utf8");
-    expect(source).toContain('label="Notify on"');
-    expect(source).toContain('fetch("/api/mobile/notify"');
+  test("the row shows the stored choice where search points, and reverting writes the default", async () => {
     expect(SETTINGS_SEARCH_INDEX.entries.find((entry) => entry.title === "Notify on")?.id).toBe("settings-row-remote-push-notifications-notify-on");
+    for (const saves of [true, false]) {
+      const { host, calls, unmount } = await mountPane({ configured: true, devices: [] }, "both", saves);
+      expect(host.querySelector('[id$="push-notifications-notify-on"]')?.textContent).toContain("Both");
+      await click(host.querySelector('[aria-label="Revert to the default"]')!);
+      expect(calls.filter((call) => call.route.startsWith("PUT")).map((call) => call.body)).toEqual([{ notifyOn: "mac" }]);
+      // A refused write shows the stored value again, and says so.
+      expect(host.textContent).toContain(saves ? "This Mac when active" : "Couldn't save. Try again.");
+      expect(host.textContent?.includes("Both")).toBe(!saves);
+      unmount();
+    }
   });
 });
 
-/**
- * WHAT THE PANE SAYS ABOUT A PHONE THAT IS NOT RINGING — issues #579 and #584.
- *
- * The line is the whole diagnosis. Before #584 it could say "3 recent failures"
- * about a phone whose token Apple had permanently rejected 627 times, which
- * reads as a bad week rather than as something to act on.
- */
 const device = (patch: Partial<PushRelayStatus["devices"][number]> = {}): PushRelayStatus["devices"][number] => ({
   deviceId: "phone", name: "Facundo's iPhone", paired: true, topic: "io.github.novarix.telar", sandbox: false,
   enabled: true, liveActivities: false, updatedAt: 1000, consecutiveFailures: 0, parked: false, transport: "v2", ...patch,
@@ -114,7 +131,6 @@ describe("the daily budget", () => {
   test("a pause names the time it lifts", () => {
     const at = new Date(2026, 8, 17, 14, 32).getTime();
     expect(pausedLine(at)).toBe(`Push paused until ${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
-    expect(pausedLine(at)).toContain("Push paused until");
   });
 });
 
@@ -125,13 +141,15 @@ describe("the header badge", () => {
   });
 });
 
-/** The pane is status only: nothing about setting up a relay, and no vendor names on screen. */
 describe("the pane's copy", () => {
-  test("never asks for a relay to be provisioned or a config pasted", () => {
-    const source = readFileSync(new URL("./push-notifications-group.tsx", import.meta.url), "utf8");
-    const copy = [...source.matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)].map((match) => match[1] ?? match[2]).join("\n");
-    for (const banned of [/provision/i, /paste/i, /relay host/i, /relay config/i, /\bApple\b/, /APNs/, /Keychain/, /Cloudflare/]) {
-      expect(copy).not.toMatch(banned);
+  test("never asks for a relay to be provisioned or a config pasted, and names no vendor", async () => {
+    const banned = [/provision/i, /paste/i, /relay host/i, /relay config/i, /\bApple\b/, /APNs/, /Keychain/, /Cloudflare/];
+    const failing = [device({ consecutiveFailures: 2 }), device({ deviceId: "b", transport: "none" })];
+    for (const status of [{ configured: false, devices: [] }, { configured: true, pausedUntil: Date.now() + 3600_000, devices: failing }]) {
+      const { host, unmount } = await mountPane(status);
+      const copy = [host.textContent, ...[...host.querySelectorAll("[data-info]")].map((node) => node.getAttribute("data-info"))].join("\n");
+      for (const word of banned) expect(copy).not.toMatch(word);
+      unmount();
     }
   });
 });

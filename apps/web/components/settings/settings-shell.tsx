@@ -62,7 +62,7 @@ const SettingsGroupContext = createContext<string | undefined>(undefined);
  * instant one and the pulse does not run. The row is still centred and still
  * focused, which is the part that carries the meaning.
  */
-function revealSettingsRow(id: string): boolean {
+export function revealSettingsRow(id: string): boolean {
   const row = document.getElementById(id);
   if (!row) return false;
   const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;

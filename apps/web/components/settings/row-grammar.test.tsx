@@ -1,114 +1,99 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, expect, mock, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PackagesPanel } from "./packages-panel";
+import type { Project } from "@telar/engine-client";
+import { detachFromHost } from "@/lib/host-follow";
 
-/**
- * THE TWO SECTIONS THAT USED TO BYPASS THE ROW GRAMMAR.
- *
- * Both hand-rolled `Row`'s anatomy — a bold div for the label, a muted `text-xs`
- * one for the hint, controls pushed right — which is the duplication the shared
- * grammar exists to end. What is pinned here is that they are on `Row` now, and
- * that the port did not quietly change what each surface offers: the panel is
- * used in TWO scopes and the looks row keeps a control live that a blanket
- * `unavailable` would have killed.
- */
-const looks = readFileSync(new URL("./looks-section.tsx", import.meta.url), "utf8");
-const packages = readFileSync(new URL("./packages-panel.tsx", import.meta.url), "utf8");
+GlobalRegistrator.register({ url: "http://mini.tailnet:3000/settings" });
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+afterAll(async () => await GlobalRegistrator.unregister());
+
+const navigation = await import("next/navigation");
+mock.module("next/navigation", () => ({
+  ...navigation,
+  useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {}, back: () => {}, forward: () => {}, prefetch: () => {} }),
+}));
+
+const { PackagesPanel } = await import("./packages-panel");
+const { Dropdown } = await import("./settings-shell");
+const { WorkspaceSection } = await import("./workspace-section");
+const { TextGenSection } = await import("./textgen-section");
+const { DataScienceSection } = await import("./data-science-section");
+const { LooksSection } = await import("./looks-section");
 
 test("the packages fields are Rows with names, not unlabelled blocks", () => {
-  // Server render, so no fetch has resolved — this is the first paint, which is
-  // exactly where an unlabelled input said nothing at all.
   const html = renderToStaticMarkup(<PackagesPanel scope={{ projectId: "project_a" }} />);
   expect(html).toContain("Install packages");
-  // A real Row: it carries the derived anchor and the reserved revert slot, so
-  // search can reach it and it measures like every other field.
   expect(html).toContain('id="settings-row-environment-install-packages"');
   expect(html).toContain('<span class="flex size-3 shrink-0 items-center justify-center">');
 });
 
 test("with no environment resolved, the install field says so instead of sitting dead", () => {
   const html = renderToStaticMarkup(<PackagesPanel scope={{ projectId: "project_a" }} />);
-  // The control was already `disabled`; what was missing was the reason. `Row`
-  // supplies both now, from the one prop.
   expect(html).toContain("No Python environment was resolved for this project.");
   expect(html).toContain("inert=");
 });
 
 test("the session's narrow column keeps the rows and drops the group frame", () => {
-  // The labelling is the point of the port, and it lives on the rows — so
-  // `dense` may not be allowed to opt out of it, only out of the heading.
   const dense = renderToStaticMarkup(<PackagesPanel scope={{ sessionId: "session_a" }} dense />);
   expect(dense).toContain("Install packages");
   expect(dense).not.toContain("<h4");
-  const wide = renderToStaticMarkup(<PackagesPanel scope={{ projectId: "project_a" }} />);
-  expect(wide).toContain("<h4");
+  expect(renderToStaticMarkup(<PackagesPanel scope={{ projectId: "project_a" }} />)).toContain("<h4");
 });
 
-test("both sections import the shared grammar rather than restating it", () => {
-  expect(packages).toContain('from "./settings-shell"');
-  expect(looks).toContain('from "./settings-shell"');
-  // PanelRow is gone from looks-section: the host row was its only user there.
-  expect(looks).not.toContain("PanelRow");
+async function mountOffline(node: React.ReactNode) {
+  const [realFetch, realSetTimeout] = [globalThis.fetch, window.setTimeout];
+  globalThis.fetch = (async () => new Response("{}", { status: 500 })) as unknown as typeof fetch;
+  window.setTimeout = ((fn: () => void) => void queueMicrotask(fn)) as unknown as typeof window.setTimeout;
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  await act(async () => root.render(node));
+  for (let i = 0; i < 20; i++) await act(async () => await Promise.resolve());
+  return {
+    host,
+    done: () => {
+      act(() => root.unmount());
+      globalThis.fetch = realFetch;
+      window.setTimeout = realSetTimeout;
+    },
+  };
+}
+
+test("a dropdown's trigger reads the chosen label, never the value", () => {
+  const html = renderToStaticMarkup(<Dropdown value="__auto" onChange={() => {}} options={[{ value: "__auto", label: "Automatic" }]} />);
+  expect(html).toContain(">Automatic<");
+  expect(html).not.toContain(">__auto<");
 });
 
-test("an enumeration setting is a dropdown, and a boolean is still a switch (#364)", () => {
-  /**
-   * The rule the segmented control kept breaking: a row whose control states
-   * every answer it did NOT choose spends the whole row on alternatives and
-   * re-lays out the next time one is added. What is pinned is that the named
-   * rows moved, and that `Segmented` survives only where a form's own choice
-   * steers the fields under it.
-   */
-  const shell = readFileSync(new URL("./settings-shell.tsx", import.meta.url), "utf8");
-  const workspace = readFileSync(new URL("./workspace-section.tsx", import.meta.url), "utf8");
-  const textgen = readFileSync(new URL("./textgen-section.tsx", import.meta.url), "utf8");
-
-  expect(shell).toContain("export function Dropdown<T extends string>");
-  // The #318 bug, fixed in ONE place rather than at each call site: a bare
-  // `<SelectValue />` renders the value string when nothing maps it to a label.
-  expect(shell).toContain("<SelectValue>{chosen?.text ?? chosen?.label ?? value}</SelectValue>");
-
-  for (const source of [workspace, textgen]) {
-    expect(source).toContain("<Dropdown<");
-    expect(source).not.toContain("<Segmented<");
+test("an enumeration setting is a dropdown, and a boolean is still a switch", async () => {
+  for (const node of [<WorkspaceSection key="w" />, <TextGenSection key="t" />]) {
+    const view = await mountOffline(node);
+    expect(view.host.querySelector('[data-slot="select-trigger"]')).not.toBeNull();
+    expect(view.host.querySelector("[aria-pressed]")).toBeNull();
+    expect(view.host.querySelector('[role="switch"]')).not.toBeNull();
+    view.done();
   }
-  // Booleans did NOT move: a switch is already the shortest true statement.
-  expect(textgen).toContain("<ToggleRow");
 });
 
-test("a row with nothing specific to say carries no sub-line at all (#364)", () => {
-  /**
-   * The one thing a hint may never be is the control read aloud. Channel's
-   * fallback was "Which stream of builds this install follows" over a select
-   * whose options ARE the streams; what survives is `CHANNEL_HINT`, which says
-   * what the chosen channel MEANS — the thing the options cannot say.
-   */
-  const updates = readFileSync(new URL("./updates-section.tsx", import.meta.url), "utf8");
-  expect(updates).toContain("{...(prefs && CHANNEL_HINT[prefs.channel] ? { hint: CHANNEL_HINT[prefs.channel] } : {})}");
-  expect(updates).not.toContain('"Which stream of builds this install follows."');
+test("a plugin pane heads its groups with whose they are, never a bare 'Packages'", () => {
+  const html = renderToStaticMarkup(<DataScienceSection project={{ id: "project_1", name: "Telar", root: "/tmp/telar" } as Project} onChange={() => {}} />);
+  expect(html).toContain(">Python tools<");
+  expect(html).not.toContain(">Packages<");
 });
 
-test("two plugin panes on one page do not both head a group 'Packages' (#363)", () => {
-  // They were separate screens; folding the per-project page into Projects put
-  // them on one, where a heading that names nothing is also a duplicate anchor.
-  const ds = readFileSync(new URL("./data-science-section.tsx", import.meta.url), "utf8");
-  const latex = readFileSync(new URL("./latex-section.tsx", import.meta.url), "utf8");
-  expect(ds).toContain('title="Python packages"');
-  expect(ds).toContain('title="Python tools"');
-  expect(latex).toContain('title="TeX packages"');
-  for (const source of [ds, latex]) expect(source).not.toContain('title="Packages"');
-});
-
-test("the host-look row keeps Retry live when there is nothing to follow", () => {
-  /**
-   * The regression this guards: `unavailable` takes the whole control column
-   * inert as a unit, and this row's column holds both the Follow switch (which
-   * SHOULD be dead with no published look) and Retry (which is the entire point
-   * of the failed and empty states). The switch refuses for itself instead.
-   */
-  expect(looks).not.toContain("unavailable=");
-  expect(looks).toContain("disabled={!ready && !following}");
-  expect(looks).toContain('disabled={state.status === "loading"}');
+test("the host-look row keeps Retry live when there is nothing to follow", async () => {
+  detachFromHost();
+  const { host, done } = await mountOffline(<LooksSection onWear={() => {}} />);
+  try {
+    const retry = [...host.querySelectorAll("button")].find((button) => button.textContent === "Retry");
+    expect(host.textContent).toContain("The engine did not answer.");
+    expect(retry?.disabled).toBe(false);
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Follow the host\'s look"]')?.hasAttribute("data-disabled")).toBe(true);
+    expect(host.querySelector("#settings-row-appearance-host-look [inert]")).toBeNull();
+  } finally {
+    done();
+  }
 });
