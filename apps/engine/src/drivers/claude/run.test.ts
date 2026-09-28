@@ -344,6 +344,29 @@ test("a login's per-class auto-compact limit follows the session's window (#587)
   expect(seen[3]).toMatchObject({ DISABLE_AUTO_COMPACT: "1" });
 });
 
+test("the Claude process does not inherit the engine's store or desktop control channel", async () => {
+  const seen: (Record<string, unknown> | undefined)[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push(input.options.env);
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const names = ["TELAR_HOME", "ELECTRON_RUN_AS_NODE", "TELAR_DESKTOP_BROWSER_CONTROL_TOKEN"];
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) process.env[name] = "engine-only";
+  try {
+    await run(driver, { model: "claude-opus-5-5" }).result;
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  for (const name of names) expect(seen[0]).not.toHaveProperty(name);
+  expect(seen[0]).toMatchObject({ PATH: process.env.PATH, HOME: process.env.HOME });
+});
+
 test("MCP tool schemas are deferred behind tool search unless the environment says otherwise", async () => {
   // 142 tools / ~38k tokens rode every request in the 24 Sep benchmark because
   // Claude Code never switched tool search on by itself.

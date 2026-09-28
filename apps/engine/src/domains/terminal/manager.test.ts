@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { RunManager } from "./manager";
 import { type StartRunInput } from "./live-run";
+import type { RunLauncher } from "./launcher";
 import type { RunConfiguration, RunEnvVar } from "./types";
 
 const worktree = () => track(fs.mkdtempSync(path.join(os.tmpdir(), "telar-run-tree-")));
@@ -112,6 +113,32 @@ test("a run lands in the configured directory with the configured environment, a
   expect(fs.realpathSync(text.split("\n")[0]!)).toBe(fs.realpathSync(path.join(tree, "apps", "web")));
   expect(output.cursor).toBe(output.lines.length);
 }, 10_000);
+
+test("a terminal does not inherit the engine's store, host token or desktop control channel", async () => {
+  const names = ["TELAR_HOME", "ELECTRON_RUN_AS_NODE", "TELAR_HOST_TOKEN", "TELAR_DESKTOP_BROWSER_CONTROL_PORT", "TELAR_DESKTOP_BROWSER_CONTROL_TOKEN"];
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) process.env[name] = "engine-only";
+  let seen: NodeJS.ProcessEnv | undefined;
+  const launcher: RunLauncher = {
+    kind: "pipes",
+    launch: async (request) => {
+      seen = request.env;
+      throw new Error("captured");
+    },
+  };
+  try {
+    await runManager({ launcher }).start(input(worktree(), config("true", { env: [{ key: "GREETING", value: "hello" }] }))).catch(() => undefined);
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  for (const name of names) expect(seen).not.toHaveProperty(name);
+  expect(seen?.PATH).toBe(process.env.PATH);
+  expect(seen?.HOME).toBe(process.env.HOME);
+  expect(seen?.GREETING).toBe("hello");
+});
 
 test("a non-zero exit is a failure, with the code kept", async () => {
   const manager = runManager();

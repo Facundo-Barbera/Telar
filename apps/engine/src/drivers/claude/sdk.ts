@@ -7,6 +7,7 @@ import { RELAY_RULE } from "../../domains/turns";
 import type { SessionsCapability } from "../../domains/sessions";
 import type { NotesCapability } from "../../domains/notes";
 import type { PromptsCapability } from "../../domains/prompts";
+import { agentEnv } from "../../platform/process/agent-env";
 
 /** The SDK's permission callback, narrowed to what this driver uses. */
 export type SdkCanUseTool = (
@@ -115,7 +116,7 @@ export function claudeMcpServers(servers: McpServer[] | undefined): Record<strin
         ...(server.spec.args ? { args: server.spec.args } : {}),
         // Overlaid on the worker's environment rather than replacing it: an MCP
         // server still needs PATH and HOME like any other child process.
-        ...(server.spec.env ? { env: { ...process.env, ...server.spec.env } } : {}),
+        ...(server.spec.env ? { env: { ...agentEnv(), ...server.spec.env } } : {}),
       };
       continue;
     }
