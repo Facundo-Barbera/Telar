@@ -9,16 +9,23 @@ import { SECTION_IDS, settingsSearchIndex } from "./settings-sections";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 
-// Recursive: a pane's rows may live in a subdirectory (e.g. `studio/`).
-function paneSources(dir: string): string[] {
+const srcRoot = fileURLToPath(new URL("../../", import.meta.url));
+
+function tsxSources(dir: string): { path: string; text: string }[] {
   return readdirSync(dir).flatMap((name) => {
     const path = `${dir}${name}`;
-    if (statSync(path).isDirectory()) return paneSources(`${path}/`);
-    return name.endsWith(".tsx") && !name.endsWith(".test.tsx") ? [readFileSync(path, "utf8")] : [];
+    if (statSync(path).isDirectory()) return tsxSources(`${path}/`);
+    return name.endsWith(".tsx") && !name.endsWith(".test.tsx") ? [{ path, text: readFileSync(path, "utf8") }] : [];
   });
 }
 
-const sources = paneSources(here).join("\n");
+// Panes live in this folder or in a feature folder that builds on the settings shell.
+const paneSources = (): string[] =>
+  tsxSources(srcRoot)
+    .filter(({ path, text }) => path.startsWith(here) || text.includes('/settings-shell"'))
+    .map(({ text }) => text);
+
+const sources = paneSources().join("\n");
 
 test("every indexed pane is a pane the shell can actually select", () => {
   for (const page of SETTINGS_SEARCH_PAGES) {
@@ -85,7 +92,7 @@ test("a result carries the pane it lives on, which is what the list shows", () =
 // Static extraction: the panes are lazy and most rows need the engine to answer.
 function renderedLabels(): Set<string> {
   const labels = new Set<string>();
-  for (const source of paneSources(here)) {
+  for (const source of paneSources()) {
     for (const [, attrs] of source.matchAll(/<(?:Row|ToggleRow)\b([\s\S]*?)\/?>/g)) {
       const label = /\blabel="([^"]+)"/.exec(attrs ?? "")?.[1];
       if (label) labels.add(label);
@@ -123,7 +130,7 @@ test("every rendered row with a fixed label has a search entry", () => {
 
 test("every search entry points at a row that renders, unless it says it lands on a pane", () => {
   const labels = renderedLabels();
-  const sources = paneSources(here).join("\n");
+  const sources = paneSources().join("\n");
   // A row is rendered if a Row carries its label, a row descriptor mapped into
   // Rows names it (`label: "Setup"`), or it spells its anchor out by hand.
   const renders = (title: string, id: string) =>
