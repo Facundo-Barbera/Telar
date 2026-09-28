@@ -198,9 +198,8 @@ test("the chosen default reaches the catalogue and the claim of a session that n
   engine.setModelOverlay("claude", { default: "opus[1m]" });
   const { models } = await engine.modelCatalogue("claude");
   expect(models.filter((model) => model.isDefault).map((model) => model.id)).toEqual(["opus[1m]"]);
-  // The claim's fallback is private; `claimModelSelection` is what a turn with
-  // no model runs through, so read it the way the claim does.
-  const claim = (engine as unknown as { claimModelSelection: (d: string, s: undefined, i: string) => { model?: string } | undefined })
-    .claimModelSelection("claude", undefined, "claude");
-  expect(claim?.model).toBe("opus[1m]");
+  engine.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  engine.createSession({ id: "session_one", projectId: "project_one" });
+  engine.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  expect(engine.claimNextTurn("worker_one")?.model?.model).toBe("opus[1m]");
 });
