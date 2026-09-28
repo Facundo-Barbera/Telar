@@ -1,6 +1,6 @@
 "use client";
 
-import { AudioLinesIcon, MicIcon } from "lucide-react";
+import { MicIcon, SquareIcon } from "lucide-react";
 import type { ComposerDictation } from "../hooks/use-composer-dictation";
 import { keyCapText, useKeyCapPlatform, useKeymap } from "@/features/commands";
 import { DictationCaretPill } from "./dictation-caret-pill";
@@ -39,7 +39,7 @@ export function DictationButton({ dictation, className }: { dictation: ComposerD
           unavailable && "opacity-50",
         )}
       >
-        {listening ? <AudioLinesIcon className="size-4 motion-safe:animate-pulse" /> : <MicIcon className="size-4" />}
+        {listening ? <SquareIcon data-icon="stop" className="size-3.5 fill-current" /> : <MicIcon data-icon="mic" className="size-4" />}
       </button>
       {listening && caret && <DictationCaretPill rect={caret.rect} language={caret.language} />}
       <DictationNotice error={error} />

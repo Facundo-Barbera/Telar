@@ -63,6 +63,18 @@ describe("the composer's dictation control", () => {
     expect(send).toBe(mic + 1);
     expect(host.textContent).not.toContain("Listening");
   });
+
+  test("while listening it is a stop button, and pressing it stops and brings the mic back", async () => {
+    const host = await listening();
+    const stop = micIn(host);
+    expect(stop.getAttribute("aria-label")).toBe("Stop dictating");
+    expect(stop.querySelector('[data-icon="stop"]')).not.toBeNull();
+
+    await press(stop);
+    expect(micIn(host).getAttribute("aria-label")).toBe("Dictate");
+    expect(micIn(host).querySelector('[data-icon="mic"]')).not.toBeNull();
+    expect(host.querySelector(".dictation-glow-ring")!.getAttribute("data-phase")).toBe("idle");
+  });
 });
 
 describe("the dictation glow follows the voice", () => {
