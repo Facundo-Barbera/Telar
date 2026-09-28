@@ -65,6 +65,7 @@ function onEngineExit(home, code, signal) {
 }
 
 function startEngineChild(home, env) {
+  if (env?.TELAR_HOME !== home) throw new Error("the engine child needs the env that names its store");
   const engineJs = resolveEngineJs();
   engineChild = fork(engineJs, [], {
     cwd: path.dirname(engineJs),

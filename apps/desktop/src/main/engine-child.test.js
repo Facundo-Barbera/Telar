@@ -18,6 +18,12 @@ function storeWithLock(pid) {
   return home;
 }
 
+test("the engine child will not start without the env that names its store", () => {
+  const { startEngineChild } = freshEngineChild();
+  expect(() => startEngineChild("/tmp/store")).toThrow(/names its store/);
+  expect(() => startEngineChild("/tmp/store", { TELAR_HOME: "/tmp/other" })).toThrow(/names its store/);
+});
+
 describe("the engine's exit before the window opens", () => {
   test("a held store lock says another Telar is running, names its pid, and quits", () => {
     const { onEngineExit } = freshEngineChild();

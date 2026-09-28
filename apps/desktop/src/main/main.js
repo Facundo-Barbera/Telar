@@ -334,7 +334,7 @@ async function runSmoke() {
     } else {
       captureLoginShellEnv();
       const home = telarHome();
-      startEngineChild(home);
+      startEngineChild(home, childEnv(home));
 
       const discovery = await waitForEngine(home, { requireWorker: true });
       rememberEngine(discovery);
@@ -482,7 +482,7 @@ if (SMOKE) {
           }
 
           const home = telarHome();
-          startEngineChild(home);
+          startEngineChild(home, childEnv(home));
           rememberEngine(await waitForEngine(home));
           await recordHandoffBoot(home);
           const port = await getStablePort();
