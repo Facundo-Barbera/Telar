@@ -17,13 +17,6 @@ import { SessionCockpit } from "@/features/sessions/cockpit";
  * asked the engine for every project, and on the owner's store that is the
  * stall the issue reports. The cockpit reads the same list on mount anyway.
  *
- * THE GREETING STILL DOES NOT FLASH, because the answer is remembered rather
- * than re-derived: the cockpit seeds the breadcrumb from the note the last visit
- * left (`rememberedProjectName`, lib/composer-project.ts). Where there is no
- * note — a genuinely first visit — the breadcrumb shows the id for the length of
- * one fetch, which is what it has always fallen back to when the engine could
- * not answer.
- *
  * THE PHRASE IS NO LONGER PICKED AT ALL. It used to be one of fourteen, chosen
  * at random per request — see `features/composer/greetings.ts` for why the rotation went.
  */

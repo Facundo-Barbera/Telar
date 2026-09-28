@@ -19,7 +19,7 @@ export function FreshGreeting({ projectId, projectName }: { projectId: string; p
   const router = useRouter();
   const { hostId, projects } = useHostProjects();
 
-  const name = projectName ?? projectId;
+  const name = projectName ?? projects.find((project) => project.id === projectId)?.name ?? "this project";
 
   return (
     <div className="mb-6 px-4 text-center">
