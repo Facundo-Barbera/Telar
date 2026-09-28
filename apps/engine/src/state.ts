@@ -221,7 +221,7 @@ import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings
 import type { DictationContext } from "./dictation/keyterms";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
-import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
+import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import {
@@ -2451,7 +2451,7 @@ export class EngineStore {
       // Rolled back under this store's feet: anything read or written inside
       // the transaction describes a queue sqlite no longer has.
       this.queueCache.clear(); this.itemsCache.clear(); this.queueChangeAnnounced = false;
-      this.pendingStopTasks.clear(); this.afterCommit = [];
+      this.afterCommit = [];
       this.dirtySessionRows.clear();
       // Same argument, for the projection's memo: it records which turn rows
       // this process has folded, and a rollback took some of those rows with it.
@@ -3055,7 +3055,7 @@ export class EngineStore {
   /**
    * A WINDOW OF ROWS from a CSV, TSV or Parquet file in the session's tree.
    * CSV is parsed here; Parquet goes through the kernel (pyarrow), so it needs
-   * data science on. The fence is `sessionFile`'s.
+   * data science on. The fence is `readFenced`'s.
    */
   async sessionTable(sessionId: string, target: string, options: { offset: number; limit: number; sort?: string; desc?: boolean }): Promise<TableWindow> {
     const session = this.getSession(sessionId);
@@ -3069,7 +3069,7 @@ export class EngineStore {
       const parsed = JSON.parse(line.text.slice(line.text.indexOf("__TELAR_TABLE__") + 15)) as Omit<TableWindow, "offset" | "path">;
       return { path: target, offset: options.offset, ...parsed };
     }
-    const file = this.sessionFile(sessionId, target);
+    const file = this.readFenced(workspaceRootOf(session), target, "session workspace");
     if (file.binary) throw new EngineStateError("invalid_request", "that file is not text");
     return { path: target, ...windowCsv(file.text, /\.tsv$/i.test(target) ? "\t" : ",", options), ...(file.truncated ? { truncated: true } : {}) };
   }
@@ -3970,18 +3970,6 @@ export class EngineStore {
     }
   }
 
-  /**
-   * BACKGROUND TASKS THE USER STOPPED, awaiting the actual process kill —
-   * keyed by session, holding provider task ids. IN MEMORY, NOT A FILE: the
-   * target is a live provider process, and a process does not outlive this
-   * engine (an engine restart disposes every runtime, so a pending kill would
-   * target something already gone). The
-   * heartbeat drains this to whichever worker holds the runtime; the
-   * projection is already `stopped`, so this is best-effort enforcement, not
-   * the source of truth. See `stopBackgroundTasks` / `drainStopTasks`.
-   */
-  private readonly pendingStopTasks = new Map<string, Set<string>>();
-
   // ── MCP OAuth ─────────────────────────────────────────────────────────────
   //
   // TELAR OWNS THIS FLOW, unlike every provider login. The rule elsewhere is
@@ -4880,7 +4868,7 @@ export class EngineStore {
     // `ingestObservations` is NOT here: it wraps itself, because a batch of
     // nothing but deltas writes no document at all and must not open a
     // transaction. See the method.
-    const commands = ["createSession", "updateSession", "settleSession", "markSessionRead", "submitTurn", "submitAgentTurn",
+    const commands = ["createSession", "updateSession", "markSessionRead", "submitTurn", "submitAgentTurn",
       "claimTurn", "claimNextTurn", "markRunning", "openRequest", "resolveRequest", "completeTurn", "failTurn",
       "stopSession", "stopTurn", "pauseSession", "resumeSession", "stopBackgroundTasks", "taskStopsForWorker", "openProviderTurn",
       "reportSessionTasks", "ackSteer", "promoteTurn", "releaseHeldTurn", "discardAmbiguousTurn", "recover", "retireWorkerRegistration",
@@ -5259,16 +5247,6 @@ export class EngineStore {
     return age < EngineStore.ICON_TTL_MISSING ? {} : undefined;
   }
 
-  private projectIcon(project: Pick<Project, "id" | "root">): ProjectIcon | undefined {
-    const cached = this.cachedProjectIcon(project.id);
-    if (cached) {
-      if (!cached.icon) return undefined;
-      const confirmed = confirmProjectIconSync(cached.icon);
-      if (confirmed) return this.refreshProjectIcon(project.id, confirmed);
-    }
-    return this.rememberProjectIcon(project.id, findProjectIcon(project.root));
-  }
-
   private async projectIconAsync(project: Pick<Project, "id" | "root">): Promise<ProjectIcon | undefined> {
     const cached = this.cachedProjectIcon(project.id);
     if (cached) {
@@ -5287,13 +5265,6 @@ export class EngineStore {
 
   /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
    *  project has none rather than guessing. */
-  projectIconFile(projectId: string): ProjectIcon {
-    const project = this.getProject(projectId);
-    const icon = this.projectIcon(project);
-    if (!icon) throw new EngineStateError("not_found", "this project has no icon");
-    return icon;
-  }
-
   async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
     const project = this.getProject(projectId);
     const icon = await this.projectIconAsync(project);
@@ -7683,16 +7654,6 @@ export class EngineStore {
 
   sessionFileBytesAsync(sessionId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
     return this.readFencedBytes(workspaceRootOf(this.getSession(sessionId)), target, "session workspace");
-  }
-
-  projectFile(projectId: string, target: string): WorkspaceFile {
-    const project = this.getProject(projectId);
-    return this.readFenced(project.root, target, "project");
-  }
-
-  sessionFile(sessionId: string, target: string): WorkspaceFile {
-    const session = this.getSession(sessionId);
-    return this.readFenced(workspaceRootOf(session), target, "session workspace");
   }
 
   /**
@@ -16509,19 +16470,16 @@ export class EngineStore {
       state: "stopped",
     });
     if (closed.length === 0) return 0;
-    const pending = this.pendingStopTasks.get(sessionId) ?? new Set<string>();
     const deliveries = this.readTaskStopDeliveries();
     const turns = this.readQueue(sessionId).turns;
     const driver = this.getSession(sessionId).driver;
     for (const task of closed) {
       if (!task.providerTaskId) continue;
-      pending.add(task.providerTaskId);
       const workerId = turns.find((turn) => turn.runId === task.runId)?.claim?.workerId;
       if (workerId) deliveries.push({ deliveryId: `stop_${crypto.randomUUID().replaceAll("-", "")}`, sessionId,
         providerTaskId: task.providerTaskId, workerId, driver });
     }
     this.writeDocument(this.paths.taskStops, deliveries);
-    if (pending.size > 0) this.pendingStopTasks.set(sessionId, pending);
     this.touchSession(sessionId, at);
     return closed.length;
   }
@@ -16540,23 +16498,6 @@ export class EngineStore {
     const remaining = pending.filter((delivery) => delivery.workerId !== workerId || !ack.has(delivery.deliveryId));
     if (remaining.length !== pending.length) this.writeDocument(this.paths.taskStops, remaining);
     return remaining.filter((delivery) => delivery.workerId === workerId).map(({ workerId: _owner, ...delivery }) => delivery);
-  }
-
-  /**
-   * The pending background-task kills, drained. Rides the heartbeat like
-   * `cancel` — but drain-on-read rather than derived-from-state, because once
-   * the projection is `stopped` there is nothing left in the durable state to
-   * re-derive the intent from. A single embedded worker holds every runtime,
-   * so this broadcasts to the caller rather than routing by worker; the worker
-   * whose runtime lacks the session simply no-ops.
-   */
-  drainStopTasks(): WorkerStatus["stopTask"] {
-    const drained: WorkerStatus["stopTask"] = [];
-    for (const [sessionId, providerTaskIds] of this.pendingStopTasks) {
-      for (const providerTaskId of providerTaskIds) drained.push({ sessionId, providerTaskId });
-    }
-    this.pendingStopTasks.clear();
-    return drained;
   }
 
   /**
