@@ -75,8 +75,18 @@ export class PluginHost {
       drainPollMs?: number;
       /** Overridable so a test can prove the ceiling without waiting ten minutes. */
       drainMaxMs?: number;
-      /** The declared prefix set to assert against. Overridable for tests only. */
+      /**
+       * The declared prefix set to assert against: the bundled list, plus the
+       * prefixes installed external manifests declare (checked for collisions
+       * by the loader before they get here).
+       */
       declaredPrefixes?: readonly string[];
+      /**
+       * Plugins that were found but REFUSED — an external manifest that did not
+       * validate. Listed as failed with the reason, so Settings ▸ Plugins can
+       * say why; never initialised, never serving anything.
+       */
+      refused?: readonly { meta: PluginMeta; error: string }[];
     },
   ) {
     const declared = options.declaredPrefixes ?? BUNDLED_PLUGIN_TOOL_PREFIXES;
@@ -99,6 +109,10 @@ export class PluginHost {
         this.prefixOwners.set(prefix, id);
       }
       this.records.set(id, { module, state: "ready", cleanups: [] });
+    }
+    for (const { meta, error } of options.refused ?? []) {
+      if (this.records.has(meta.id)) continue;
+      this.records.set(meta.id, { module: { meta }, state: "failed", error, cleanups: [] });
     }
     this.work = new PluginWorkLog(path.join(options.stateDir, "plugins", "work"), options.daemonId);
   }
@@ -135,8 +149,8 @@ export class PluginHost {
 
   statuses(): PluginStatus[] {
     return [...this.records.values()].map((record) => {
-      const project = settingsJsonSchema(record.module.settingsSchema);
-      const machine = settingsJsonSchema(record.module.machineSettingsSchema);
+      const project = record.module.publishedSettingsSchema ?? settingsJsonSchema(record.module.settingsSchema);
+      const machine = record.module.publishedMachineSettingsSchema ?? settingsJsonSchema(record.module.machineSettingsSchema);
       return {
         meta: record.module.meta,
         state: record.state,

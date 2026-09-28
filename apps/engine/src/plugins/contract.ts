@@ -12,9 +12,9 @@
  * process the daemon can. The host bounds MISTAKES (a hung `init`, a plugin
  * that throws on startup, a plugin that leaks a subprocess) and it bounds
  * AUTHORITY CLAIMS (see `policy.ts`). It does not bound malice, and no comment
- * in this tree should suggest it does. External plugins will need a different
- * story than "we call the function"; that story is not written yet, and shipping
- * bundled plugins does not write it.
+ * in this tree should suggest it does. External plugins (`external/`) run as a
+ * child process with a minimal environment — a boundary for mistakes and for
+ * the engine's secrets, still not for malice.
  */
 import type { PluginMeta } from "@telar/engine-client";
 import type { z } from "zod";
@@ -135,6 +135,15 @@ export type PluginEngineModule<Settings = unknown> = {
    * `settingsSchema` — so nothing has to be migrated to add one.
    */
   machineSettingsSchema?: z.ZodType<unknown>;
+  /**
+   * THE SCHEMAS TO PUBLISH, when the plugin wrote them as JSON Schema itself —
+   * an external plugin's manifest. Published as written, so the renderer hints
+   * in them (`info`, `widget`, `inherits`) survive; the zod schemas above are
+   * still what validates a write. A bundled plugin omits these and the host
+   * derives them from its zod.
+   */
+  publishedSettingsSchema?: Record<string, unknown>;
+  publishedMachineSettingsSchema?: Record<string, unknown>;
   /**
    * Acquire whatever the plugin needs, bounded by `PLUGIN_INIT_TIMEOUT_MS`, and
    * register a cleanup for each acquisition. Omit it entirely when there is
