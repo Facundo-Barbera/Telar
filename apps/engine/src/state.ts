@@ -119,8 +119,8 @@ import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, 
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { type AttachmentInput, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TERMINAL_WAKE_KINDS } from "./domains/sessions";
-import { FOLDING_INTENTS, heldDelivery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
+import { type AttachmentInput, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, isPeerMail, newestAssignment, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TERMINAL_WAKE_KINDS } from "./domains/sessions";
+import { FOLDING_INTENTS, heldDelivery, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -264,19 +264,7 @@ function requestTitle(detail: RequestDetail): string {
   }
 }
 
-/**
- * How old the shell's `planned-restart.json` may be and still mean "this
- * restart". Ten minutes covers a slow update install and relaunch; past it the
- * marker describes some earlier restart — an update that never came back up,
- * found by a boot much later — and continuing work then would surprise
- * everybody. See `resumeAfterPlannedRestart`.
- */
-const PLANNED_RESTART_WINDOW_MS = 10 * 60_000;
 
-/** What the model is told on the turn that continues after an update restart.
- *  The engine's words, not the person's — see `Turn.origin`'s `restart`. */
-const PLANNED_RESTART_CONTINUATION =
-  "Telar restarted to install an update in the middle of your last turn. Check the current state before redoing anything that may already have happened, then continue.";
 
 
 /** How much of a finished turn's answer rides in the wake that announces it.
@@ -289,14 +277,6 @@ const PLANNED_RESTART_CONTINUATION =
  */
 const MAX_WAKE_LINE_CHARS = 240;
 
-/**
- * ENDED BY A WORKER GOING AWAY, as a quit ends it — `cutOffByTelar` minus
- * `engine_restart`, which a boot also stamps on backlog that never ran.
- */
-function endedByShutdown(turn: Turn): boolean {
-  if (turn.state === "stopped") return turn.stopReason === "worker_unavailable";
-  return turn.state === "failed" && turn.failure?.code === "interrupted";
-}
 
 const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
 
@@ -594,6 +574,7 @@ export class EngineStore {
   private readonly turnLifecycle: TurnLifecycle;
   private readonly ingest: TurnIngest;
   private readonly claims: TurnClaims;
+  private readonly recovery: TurnRecovery;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1305,6 +1286,18 @@ export class EngineStore {
     this.intake = this.createIntake();
     this.turnLifecycle = this.createTurnLifecycle();
     this.claims = this.createClaims();
+    this.recovery = new TurnRecovery(this.kernel, {
+      records: this.records,
+      items: this.sessionItems,
+      tasks: this.sessionTasks,
+      requests: this.sessionRequests,
+      readQueue: (id) => this.readQueue(id),
+      writeQueue: (id, queue) => this.writeQueue(id, queue),
+      scanQueue: (id) => this.scanQueue(id),
+      liveQueueSessionIds: () => this.liveQueueSessionIds(),
+      getSessionDefaults: () => this.getSessionDefaults(),
+      submitTurn: (id, input) => this.submitTurn(id, input),
+    });
     this.ingest = new TurnIngest(this.kernel, {
       records: this.records,
       items: this.sessionItems,
@@ -4521,307 +4514,21 @@ export class EngineStore {
     return this.prefixes.get(sessionId, itemId, through);
   }
 
-  /**
-   * BOOT: SETTLE WHAT THE LAST PROCESS LEFT IN FLIGHT.
-   *
-   * Returns the runIds it stopped. `requeued`/`ambiguous` are gone with the
-   * states they named — nothing is requeued (that would be automatic work the
-   * user did not ask for) and nothing is ambiguous (that would be a decision
-   * the user is now spared).
-   *
-   * IT DELIVERS NOTHING. No subscription is fired for any turn settled here:
-   * a boot that woke every subscriber would open fresh agent turns for exactly
-   * the work that was just declared over, which is the automatic restart this
-   * whole change exists to remove. The journal records the truth; nobody is
-   * summoned by it.
-   */
   recover(): { stopped: string[] } {
-    return this.kernel.command("recover", () => {
-      const stopped: string[] = [];
-      /** The turns this boot cut off mid-flight, per session — what a planned
-       *  restart may continue. Backlog that was merely queued is not here. */
-      const cutOff = new Map<string, string[]>();
-      for (const session of this.records.all()) {
-        const queue = this.readQueue(session.id);
-        const settledRuns = new Set<string>();
-        for (const turn of queue.turns) {
-          if (turn.state === "queued" || turn.state === "claimed" || turn.state === "running") continue;
-          settledRuns.add(turn.runId);
-        }
-        {
-          const sweptAt = this.now();
-          this.sessionTasks.closeLive(session.id, sweptAt, "the turn ended before this agent reported back", { runIds: settledRuns, includeBackground: false });
-          // Same retroactive cure for items: a stopped turn from before this
-          // sweep existed still holds the tool row it was inside.
-          this.sessionItems.closeOpen(session.id, settledRuns, sweptAt);
-          this.sessionRequests.closeOpen(session.id, settledRuns, sweptAt);
-        }
-        let changed = false;
-        /** Housekeeping, kept apart from `changed`: retiring a dead claim must
-         *  rewrite the queue but must NOT touch the session — nothing happened
-         *  to it, and a bumped `updatedAt` would reorder somebody's sidebar. */
-        let claimsRetired = false;
-        const recoveryEvents: Array<{ type: "turn.stopped"; runId: string }> = [];
-        const at = this.now();
-        const recoveredProviderSessionId = latestProviderSessionId(queue.turns);
-        let metadataChanged = false;
-        if (!session.resumeCursor && recoveredProviderSessionId) {
-          session.resumeCursor = recoveredProviderSessionId;
-          session.updatedAt = at;
-          metadataChanged = true;
-        }
-        for (const turn of queue.turns) {
-          if (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running" && turn.state !== "steering") continue;
-          const wasLive = turn.state === "running";
-          if ((wasLive || turn.state === "claimed") && turn.kind !== "compact") {
-            cutOff.set(session.id, [...(cutOff.get(session.id) ?? []), turn.runId]);
-          }
-          turn.state = "stopped";
-          turn.stopReason = "engine_restart";
-          turn.completedAt = at;
-          turn.updatedAt = at;
-          delete turn.steer;
-          delete turn.claim;
-          // A hold was a question waiting to be asked. There is no question now,
-          // so the flag goes with it rather than lingering on a terminal row.
-          delete turn.held;
-          stopped.push(turn.runId);
-          recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
-          if (wasLive) {
-            // The process that was running these did not survive the restart.
-            this.sessionTasks.closeOrphaned(session.id, turn.runId, at, "the engine restarted while this agent was running");
-            this.sessionItems.closeOpen(session.id, new Set([turn.runId]), at);
-            // A question the lost worker parked can never be answered; leaving
-            // it open held the session `blocked` over a tool call nothing would
-            // run.
-            this.sessionRequests.closeOpen(session.id, new Set([turn.runId]), at);
-          }
-          changed = true;
-        }
-        for (const turn of queue.turns) {
-          if (turn.state !== "ambiguous") continue;
-          turn.state = "stopped";
-          turn.stopReason = "engine_restart";
-          turn.completedAt ??= at;
-          turn.updatedAt = at;
-          delete turn.held;
-          stopped.push(turn.runId);
-          recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
-          changed = true;
-        }
-        for (const turn of queue.turns) {
-          if (turn.state !== "stopped" || !turn.claim) continue;
-          delete turn.claim;
-          claimsRetired = true;
-        }
-        if (session.paused) {
-          delete session.paused;
-          session.updatedAt = at;
-          metadataChanged = true;
-        }
-        const swept = this.sessionTasks.closeLive(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
-        if (changed || claimsRetired) {
-          this.writeQueue(session.id, queue);
-        }
-        if (changed || metadataChanged || swept.length > 0) {
-          if (!metadataChanged) this.records.touch(session.id, at);
-          else this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(session));
-        }
-        if (changed) {
-          for (const event of recoveryEvents) {
-            this.appendEvent(session.id, { type: event.type, reason: "engine_restart" }, event.runId);
-          }
-        }
-      }
-      const pruned = this.sessionRequests.pruneHistory();
-      if (pruned.dropped > 0) {
-        const freed = pruned.bytes >= 1e6 ? `${(pruned.bytes / 1e6).toFixed(1)} MB` : `${Math.round(pruned.bytes / 1e3)} KB`;
-        console.log(`[engine] trimmed ${pruned.dropped} resolved requests out of ${pruned.sessions} session${pruned.sessions === 1 ? "" : "s"} (${freed}); the journal still holds them, except policy-resolved pairs of settled turns.`);
-      }
-      // LAST, once every queue is terminal: nothing above may see the turn this
-      // opens, and nothing claims before the caller publishes discovery.
-      try {
-        this.resumeAfterPlannedRestart(cutOff);
-      } catch (error) {
-        console.warn("[engine] could not continue sessions after the restart:", error);
-      }
-      return { stopped };
-    });
+    return this.recovery.recover();
   }
 
-  /**
-   * CONTINUE WHAT A PLANNED RESTART CUT OFF — and only a planned one.
-   *
-   * THE MARKER IS THE WHOLE PERMISSION. The desktop shell writes
-   * `planned-restart.json` immediately before it restarts to install an
-   * update; a crash writes nothing, so a crash resumes nothing, whatever the
-   * setting says. The marker must also be fresh (`PLANNED_RESTART_WINDOW_MS`):
-   * an update that failed to relaunch and a boot days later must not act on a
-   * restart nobody remembers. It is deleted on every path — used, refused,
-   * stale or unreadable — so it is read by exactly one boot.
-   *
-   * THREE WAYS A TURN IS CUT OFF, because a quit has more than one ending. If
-   * the engine went away under the worker, the turn was still `running` and
-   * `recover()` just stopped it (`cutOff`). If the worker got to say so first,
-   * the turn is already `failed` with `interrupted`. And on a clean quit the
-   * daemon retires the embedded worker's registration BEFORE stopping it, so
-   * the turn is `stopped` with `worker_unavailable` and the worker's own
-   * `interrupted` is refused — that is the ending every real update took, and
-   * missing it is why this never fired (#999). The last two count when they
-   * ended at or after the shell announced the restart.
-   *
-   * ONE CONTINUATION PER SESSION, never a replay. The interrupted prompt is not
-   * sent again: whatever it had already done is in the world, and the text
-   * tells the model to look before redoing anything. The run id is derived
-   * from the marker, so a boot that dies before the marker is gone cannot
-   * open a second one — `submitTurn` replays a known run id.
-   *
-   * WHERE IT SITS: at the back of the queue, which after `recover()` means
-   * alone — a restart stops pre-restart backlog too, and that is unchanged.
-   * Anything the person sends after this boot queues behind it.
-   */
-  private resumeAfterPlannedRestart(cutOff: Map<string, string[]>): string[] {
-    const file = this.paths.plannedRestart;
-    if (!fs.existsSync(file)) return [];
-    const resumed: string[] = [];
-    try {
-      let marker: unknown;
-      try {
-        marker = JSON.parse(fs.readFileSync(file, "utf8"));
-      } catch {
-        return resumed;
-      }
-      const now = this.now();
-      if (
-        typeof marker !== "object" || marker === null ||
-        (marker as { version?: unknown }).version !== 1 ||
-        (marker as { reason?: unknown }).reason !== "update"
-      ) return resumed;
-      const plannedAt = (marker as { at?: unknown }).at;
-      if (typeof plannedAt !== "number" || !Number.isFinite(plannedAt) || plannedAt > now || now - plannedAt > PLANNED_RESTART_WINDOW_MS) {
-        return resumed;
-      }
-      if (this.getSessionDefaults().resumeAfterRestart !== true) return resumed;
 
-      const candidates = new Map(cutOff);
-      for (const session of this.records.all()) {
-        if (candidates.has(session.id)) continue;
-        const interrupted = this.readQueue(session.id).turns.filter(
-          (turn) => endedByShutdown(turn) && turn.kind !== "compact" && (turn.completedAt ?? 0) >= plannedAt,
-        );
-        if (interrupted.length > 0) candidates.set(session.id, interrupted.map((turn) => turn.runId));
-      }
-      for (const [sessionId, runIds] of candidates) {
-        // One bad session is skipped, never the boot.
-        try {
-          const session = this.records.get(sessionId);
-          // Put away, or stopped by the person (their Stop latch is still up):
-          // either way somebody decided this session is done for now.
-          if (session.state === "archived" || session.settledOverride === "settled" || session.agentMessagesBlocked || session.draft) continue;
-          const turns = this.readQueue(sessionId).turns;
-          // A turn the person stopped is theirs to restart, not ours.
-          const last = turns.filter((turn) => runIds.includes(turn.runId)).sort((a, b) => b.sequence - a.sequence)[0];
-          if (!last || last.stopReason === "user" || last.stopReason === "agent") continue;
-          const { turn } = this.submitTurn(sessionId, {
-            runId: `run_restart_${plannedAt}_${sessionId}`.slice(0, 200),
-            input: PLANNED_RESTART_CONTINUATION,
-            origin: "restart",
-            restartOrigin: { reason: "update", plannedAt, interruptedRunId: last.runId },
-            // The same model and effort the cut-off turn was running on.
-            ...(last.model ? { model: (({ instanceId: _instanceId, ...selection }) => selection)(last.model) } : {}),
-          });
-          resumed.push(turn.runId);
-        } catch (error) {
-          console.warn(`[engine] could not continue ${sessionId} after the restart:`, error);
-        }
-      }
-      if (resumed.length > 0) console.log(`[engine] continued ${resumed.length} session${resumed.length === 1 ? "" : "s"} cut off by the update restart.`);
-      return resumed;
-    } finally {
-      fs.rmSync(file, { force: true });
-    }
-  }
 
-  /**
-   * A WORKER REGISTRATION RETIRES — its lease expired, or it shut down — and
-   * the work it was holding ends with it.
-   *
-   * THE NAMED HOOK for that moment, called from wherever a registration is
-   * dropped, so there is no window in which a claim is held by a worker that
-   * no longer exists: an abandoned claim that stayed `claimed` would block the
-   * session's dispatch for ever, and one that went back to `queued` would be
-   * replayed by the next worker — automatic work nobody asked for. Both are
-   * closed by ending it.
-   *
-   * SCOPED TO THIS WORKER'S OWN CLAIMS. `turn.claim.workerId` is the filter and
-   * there is no second one: a healthy worker's turns are untouched, whichever
-   * session they are in. Nothing here reaches for a process, and no task of a
-   * session this worker was not running is swept — a broad kill on one
-   * worker's death is how independently launched project services died with it.
-   *
-   * CANCELLATION IS NOT CLAIMED. The engine knows the registration is gone; it
-   * does NOT know whether the provider process, or a command it had already
-   * started, is still alive. The turn is recorded as stopped for that reason
-   * and nothing asserts the work was undone.
-   */
   retireWorkerRegistration(workerId: string): { stopped: string[] } {
-    return this.kernel.command("retireWorkerRegistration", () => {
-      assertId(workerId, "worker id");
-      const stopped: string[] = [];
-      for (const session of this.records.all()) {
-        const queue = this.readQueue(session.id);
-        // Only sessions this worker actually held work in.
-        const mine = queue.turns.filter((turn) => turn.claim?.workerId === workerId && (turn.state === "claimed" || turn.state === "running"));
-        if (mine.length === 0) continue;
-        const at = this.now();
-        const live = new Set(mine.map((turn) => turn.runId));
-        // A steer aimed at one of those turns was never delivered by a worker
-        // that is gone. It ends where it stands rather than going back to the
-        // queue — requeueing is what made a lost worker restart the work.
-        const orphanedSteers = queue.turns.filter((turn) => turn.state === "steering" && turn.steer && live.has(turn.steer.intoRunId));
-        // PER SESSION, NOT THE ACCUMULATOR. Journalling from the cross-session
-        // list would write this session's events again onto the next one — the
-        // same trap `recover()`'s hold sweep documented, one loop lower down.
-        const settled: string[] = [];
-        for (const turn of [...mine, ...orphanedSteers]) {
-          const wasRunning = turn.state === "running";
-          turn.state = "stopped";
-          turn.stopReason = "worker_unavailable";
-          turn.completedAt = at;
-          turn.updatedAt = at;
-          delete turn.steer;
-          delete turn.claim;
-          settled.push(turn.runId);
-          if (wasRunning) {
-            // The worker was what ran these agents, rows and questions; no
-            // answer can reach a request it died waiting on.
-            this.sessionTasks.closeOrphaned(session.id, turn.runId, at, "the worker running this agent disappeared");
-            this.sessionItems.closeOpen(session.id, new Set([turn.runId]), at);
-            this.sessionRequests.closeOpen(session.id, new Set([turn.runId]), at);
-          }
-        }
-        this.writeQueue(session.id, queue);
-        this.records.touch(session.id, at);
-        for (const runId of settled) this.appendEvent(session.id, { type: "turn.stopped", reason: "worker_unavailable" }, runId);
-        stopped.push(...settled);
-      }
-      const deliveries = this.sessionTasks.readStops();
-      const remaining = deliveries.filter((delivery) => delivery.workerId !== workerId);
-      if (remaining.length !== deliveries.length) this.writeDocument(this.paths.taskStops, remaining);
-      return { stopped };
-    });
+    return this.recovery.retireWorkerRegistration(workerId);
   }
+
 
   cancellationsForWorker(workerId: string): Array<{ sessionId: string; runId: string; claimToken: string }> {
-    assertId(workerId, "worker id");
-    return [...this.liveQueueSessionIds()].flatMap((sessionId) =>
-      this.scanQueue(sessionId).turns.flatMap((turn) =>
-        turn.state === "stopped" && turn.claim?.workerId === workerId
-          ? [{ sessionId, runId: turn.runId, claimToken: turn.claim.token }]
-          : [],
-      ),
-    );
+    return this.recovery.cancellationsForWorker(workerId);
   }
+
 
   private scanQueue(sessionId: string): SessionQueue {
     return this.sessionQueues.scan(sessionId);
