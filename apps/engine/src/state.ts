@@ -196,7 +196,7 @@ import {
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
 import { assertId, EngineStateError, ID, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
-import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
+import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "./domains/turns";
 import { TELAR_ORIENTATION } from "./orientation";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
@@ -566,73 +566,8 @@ const ACTIVE_TURN_STATES = new Set<Turn["state"]>(["queued", "claimed", "running
  */
 const SNAPSHOT_SETTLED_REQUESTS = 50;
 
-/**
- * HOW MANY RESOLVED REQUESTS THE DOCUMENT ITSELF KEEPS (#545).
- *
- * `SNAPSHOT_SETTLED_REQUESTS` above bounded what a snapshot CARRIES; nothing
- * bounded what the store HOLDS. `requests.json` was append-only for the life of
- * a session — one orchestrator conversation had 4,902 rows, every one resolved,
- * and the store 43,280 across 345 documents, 33 MB that every heartbeat and
- * every activity fold re-read to find the handful that were open.
- *
- * SO THE DOCUMENT IS A WINDOW, NOT A LEDGER, and the ledger is the journal:
- * `request.opened` and `request.resolved` are appended for every one of these,
- * so a resolved request that falls out of this window is still answerable from
- * `readEvents` — EXCEPT a pair the POLICY resolved, which the journal sweep
- * prunes once its turn has ended (#697 part B, `ExecutionStore.pruneRequests`).
- * Those leave a per-turn count by kind and decision on `turn_summaries`, and the
- * command itself stays on its item. A request a person, a session or a
- * cancellation resolved is never trimmed. What the window has to keep is what a
- * client RENDERS — which is the same tail `boundedRequests` already chose, so
- * it is the same number.
- *
- * AN OPEN REQUEST IS NEVER DROPPED, whatever this number is: it is the one row
- * a session's `blocked` state and a worker's answer both depend on.
- */
-const RESOLVED_REQUEST_HISTORY = 50;
 
-/**
- * Drop all but the newest `RESOLVED_REQUEST_HISTORY` resolved rows, in place.
- *
- * IN PLACE, so the caller's map is exactly what was written: `writeRequests` is
- * the only writer and every mutation path hands it a map it has just edited.
- *
- * NEWEST BY WHEN IT WAS ANSWERED, NOT BY WHERE IT SITS, and the difference is a
- * bug rather than a nicety. The document is in OPEN order, and a question a
- * human left parked for an hour is answered long after the ones opened behind
- * it — so dropping from the front would drop the row that had just resolved,
- * which is precisely the row a blocked worker is polling the heartbeat for. The
- * sort is stable, so rows answered in the same tick keep document order.
- *
- * Returns how many rows went, so the boot sweep can report one line.
- */
-function pruneResolvedRequests(requests: Map<string, EngineRequest>): number {
-  const resolved = [...requests.values()].filter((request) => request.state !== "open");
-  if (resolved.length <= RESOLVED_REQUEST_HISTORY) return 0;
-  const oldestFirst = resolved.sort((left, right) => (left.resolvedAt ?? 0) - (right.resolvedAt ?? 0));
-  const dropped = oldestFirst.slice(0, oldestFirst.length - RESOLVED_REQUEST_HISTORY);
-  for (const request of dropped) requests.delete(request.id);
-  return dropped.length;
-}
 
-/**
- * Every open request, plus the newest settled ones — see above.
- *
- * `chosen` narrows to a window's turns first when there is one; without it this
- * is the unwindowed snapshot, where the tail is the only bound.
- */
-/**
- * IS THIS A ROW THIS STORE WROTE? — the cheap half of "validate on write, trust
- * on read" (#545). See `readRequests`: the schema walk that used to run per row
- * per read is now run ONCE, on the row `openRequest` creates. This is what is
- * left, and it exists so a foreign or hand-edited document still fails loudly.
- */
-function isRequestRow(row: unknown): row is EngineRequest {
-  if (typeof row !== "object" || row === null) return false;
-  const candidate = row as Partial<EngineRequest>;
-  return typeof candidate.id === "string" && typeof candidate.runId === "string" &&
-    (candidate.state === "open" || candidate.state === "resolved");
-}
 
 function boundedRequests(all: EngineRequest[], chosen?: Set<string>): EngineRequest[] {
   const carried = chosen === undefined ? all : all.filter((request) => chosen.has(request.runId) || request.state === "open");
@@ -1515,9 +1450,6 @@ function sessionQueueIndexFile(paths: EngineStatePaths, sessionId: string): stri
 
 
 
-function requestsFile(paths: EngineStatePaths, sessionId: string): string {
-  return path.join(sessionDir(paths, sessionId), "requests.json");
-}
 
 /**
  * THE NOTIFICATION MAILBOX — what arrived while this session was working.
@@ -1689,6 +1621,7 @@ export class EngineStore {
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
   private readonly prefixes: OpenPrefixes;
+  private readonly sessionRequests: SessionRequests;
 
   private registerCacheHooks(): void {
     this.kernel.onWrite((file, write, written) => {
@@ -1699,8 +1632,6 @@ export class EngineStore {
     this.kernel.beforeCommit(() => this.flushSessionRows());
     this.kernel.onRollback(() => { this.queueCache.clear(); this.liveQueueIndex = undefined; this.queueChangeAnnounced = false; });
     this.kernel.onSessionDeleted((id) => { this.queueCache.delete(id); this.liveQueueIndex?.delete(id); });
-    this.kernel.onRollback(() => { this.liveRequestIndex = undefined; });
-    this.kernel.onSessionDeleted((id) => this.liveRequestIndex?.delete(id));
     this.kernel.onRollback(() => this.kernel.runProgress.clear());
     this.kernel.onSessionDeleted((id) => this.kernel.runProgress.delete(id));
     this.kernel.onRollback(() => { this.dirtySessionRows.clear(); this.foldedTurnStates.clear(); });
@@ -4400,6 +4331,7 @@ export class EngineStore {
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
     this.records = new SessionRecords(this.kernel, { withActivity: (session) => this.withActivity(session), readQueue: (sessionId) => this.readQueue(sessionId) });
     this.sessionItems = new SessionItems(this.kernel);
+    this.sessionRequests = new SessionRequests(this.kernel, () => this.records.ids());
     this.prefixes = new OpenPrefixes(this.kernel, (sessionId) => this.readEvents(sessionId));
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
@@ -8128,7 +8060,7 @@ export class EngineStore {
     // FROM THE INDEX, NOT THE DOCUMENT (#545): this fold runs per live session
     // per live-list read and per `getSession`, and the whole-history parse it
     // used to make was 3.7% + 3.2% of an idle daemon's profile.
-    const open = [...this.liveRequests(session.id).values()].filter((request) => request.state === "open" && !settledRuns.has(request.runId));
+    const open = [...this.sessionRequests.live(session.id).values()].filter((request) => request.state === "open" && !settledRuns.has(request.runId));
     if (open.length > 0) {
       // The OLDEST open request, not the newest: it dates how long this session
       // has been waiting, which is the number that should embarrass us.
@@ -8884,7 +8816,7 @@ export class EngineStore {
       turns: plan.turns,
       items: this.sessionItems.forRuns(sessionId, chosen),
       tasks: [...this.readTasks(sessionId).values()].filter((task) => chosen.has(task.runId)),
-      requests: boundedRequests([...this.readRequests(sessionId).values()], chosen),
+      requests: boundedRequests([...this.sessionRequests.read(sessionId).values()], chosen),
       page: plan.page,
     });
   }
@@ -8925,7 +8857,7 @@ export class EngineStore {
    */
   snapshotRequests(sessionId: string): EngineRequest[] {
     this.records.require(sessionId);
-    return structuredClone(boundedRequests([...this.readRequests(sessionId).values()]));
+    return structuredClone(boundedRequests([...this.sessionRequests.read(sessionId).values()]));
   }
 
   items(sessionId: string): Item[] {
@@ -9870,7 +9802,7 @@ export class EngineStore {
     this.writeQueue(sessionId, queue);
     // This turn's own bookkeeping only: no worker ran, so there are no items or
     // tasks of its own, and background work belongs to whatever else is running.
-    this.closeOpenRequests(sessionId, turn.runId, at);
+    this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
     this.records.touch(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -10648,7 +10580,7 @@ export class EngineStore {
       // with it, whichever turn started them.
       this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
       this.closeOpenItems(sessionId, turn.runId, at);
-      this.closeOpenRequests(sessionId, turn.runId, at);
+      this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
       this.records.touch(sessionId, at);
       this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
       for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -10705,7 +10637,7 @@ export class EngineStore {
       for (const turn of stopped) {
         this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
         this.closeOpenItems(sessionId, turn.runId, at);
-        this.closeOpenRequests(sessionId, turn.runId, at);
+        this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
       }
       // Also runs when no foreground turn exists: a background task outlives
       // its turn, but belongs to the session the user just stopped.
@@ -10754,7 +10686,7 @@ export class EngineStore {
       this.anchorTurn(sessionId, turn.runId, "after");
       this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
       this.closeOpenItems(sessionId, turn.runId, at);
-      this.closeOpenRequests(sessionId, turn.runId, at);
+      this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
       this.records.touch(sessionId, at);
       this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
       for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -10952,7 +10884,7 @@ export class EngineStore {
       delete turn.claim;
       this.writeQueue(sessionId, queue);
       this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was discarded before this agent reported back");
-      this.closeOpenRequests(sessionId, turn.runId, at);
+      this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
       this.records.touch(sessionId, at);
       this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
       return structuredClone(turn);
@@ -12782,7 +12714,7 @@ export class EngineStore {
    * ══ WHY THE LIVE QUEUE SET IS THE WHOLE CANDIDATE SET ══
    *
    * `openRequest` requires a RUNNING CLAIM, and every path that ends a turn
-   * cancels the requests it left behind (`closeOpenRequests`). So an open
+   * cancels the requests it left behind (`SessionRequests.closeOpen`). So an open
    * request implies a live queue, and walking `sessionIds()` the way the two
    * sweeps above do would read every conversation ever started to find the
    * nought-to-two a worker is actually blocked on — the fold #545 removed from
@@ -12811,7 +12743,7 @@ export class EngineStore {
        */
       let due: Array<{ request: EngineRequest; answer: RequestDefault }>;
       try {
-        due = [...this.liveRequests(sessionId).values()].flatMap((request) => {
+        due = [...this.sessionRequests.live(sessionId).values()].flatMap((request) => {
           /**
            * `=== null` RATHER THAN A TRUTHINESS TEST, and that is not a style
            * note. A falsy check here would be a SECOND COPY of the no-default
@@ -13446,7 +13378,7 @@ export class EngineStore {
 
   requests(sessionId: string): EngineRequest[] {
     this.records.require(sessionId);
-    return structuredClone([...this.readRequests(sessionId).values()]);
+    return structuredClone([...this.sessionRequests.read(sessionId).values()]);
   }
 
   /**
@@ -13495,7 +13427,7 @@ export class EngineStore {
       }
       const turn = this.requireRunningClaim(sessionId, runId, claimToken);
       const session = this.records.get(sessionId);
-      const requests = this.readRequests(sessionId);
+      const requests = this.sessionRequests.read(sessionId);
 
       const known = requests.get(input.requestId);
       if (known) {
@@ -13530,11 +13462,11 @@ export class EngineStore {
           // Best-effort notification is outside the execution transaction. A
           // crash here leaves an explicitly unnotified, durable open request.
           try {
-            const latest = this.readRequests(sessionId);
+            const latest = this.sessionRequests.read(sessionId);
             const pending = latest.get(request.id);
             if (pending?.state !== "open") return;
             pending.notified = notify();
-            this.writeRequests(sessionId, latest);
+            this.sessionRequests.write(sessionId, latest);
           } catch { /* retain the unnotified request for the next reader */ }
         });
       }
@@ -13542,7 +13474,7 @@ export class EngineStore {
       const written = RequestSchema.safeParse(request);
       if (!written.success) throw new EngineStateError("invalid_request", "invalid request");
       requests.set(request.id, request);
-      this.writeRequests(sessionId, requests);
+      this.sessionRequests.write(sessionId, requests);
       this.appendEvent(sessionId, { type: "request.opened", request }, turn.runId);
 
       if (automatic) {
@@ -13567,7 +13499,7 @@ export class EngineStore {
   ): EngineRequest {
     return this.kernel.command("resolveRequest", () => {
       assertId(requestId, "request id");
-      const requests = this.readRequests(sessionId);
+      const requests = this.sessionRequests.read(sessionId);
       const request = requests.get(requestId);
       if (!request) throw new EngineStateError("not_found", "request does not exist");
       if (request.state === "resolved") {
@@ -13581,7 +13513,7 @@ export class EngineStore {
       if (input.reason !== undefined) request.reason = input.reason;
       if (input.answers !== undefined) request.answers = input.answers;
       requests.set(request.id, request);
-      this.writeRequests(sessionId, requests);
+      this.sessionRequests.write(sessionId, requests);
       this.records.touch(sessionId, at);
       this.appendEvent(
         sessionId,
@@ -13629,8 +13561,8 @@ export class EngineStore {
        * resolution of a long-lived daemon — the unbounded growth the whole
        * change exists to remove. See `reindexRequests`.
        */
-      this.trimResolvedRequests(sessionId, turns);
-      return [...this.liveRequests(sessionId).values()]
+      this.sessionRequests.trim(sessionId, turns);
+      return [...this.sessionRequests.live(sessionId).values()]
         .filter((request) => request.state === "resolved" && request.decision && claimed.has(request.runId))
         .map((request) => ({
           requestId: request.id,
@@ -13778,7 +13710,7 @@ export class EngineStore {
           // Same retroactive cure for items: a stopped turn from before this
           // sweep existed still holds the tool row it was inside.
           this.closeOpenItemsForRuns(session.id, settledRuns, sweptAt);
-          this.closeOpenRequestsForRuns(session.id, settledRuns, sweptAt);
+          this.sessionRequests.closeOpen(session.id, settledRuns, sweptAt);
         }
         let changed = false;
         /** Housekeeping, kept apart from `changed`: retiring a dead claim must
@@ -13818,7 +13750,7 @@ export class EngineStore {
             // A question the lost worker parked can never be answered; leaving
             // it open held the session `blocked` over a tool call nothing would
             // run.
-            this.closeOpenRequests(session.id, turn.runId, at);
+            this.sessionRequests.closeOpen(session.id, new Set([turn.runId]), at);
           }
           changed = true;
         }
@@ -13857,7 +13789,7 @@ export class EngineStore {
           }
         }
       }
-      const pruned = this.pruneResolvedRequestHistory();
+      const pruned = this.sessionRequests.pruneHistory();
       if (pruned.dropped > 0) {
         const freed = pruned.bytes >= 1e6 ? `${(pruned.bytes / 1e6).toFixed(1)} MB` : `${Math.round(pruned.bytes / 1e3)} KB`;
         console.log(`[engine] trimmed ${pruned.dropped} resolved requests out of ${pruned.sessions} session${pruned.sessions === 1 ? "" : "s"} (${freed}); the journal still holds them, except policy-resolved pairs of settled turns.`);
@@ -14021,7 +13953,7 @@ export class EngineStore {
             // answer can reach a request it died waiting on.
             this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
             this.closeOpenItems(session.id, turn.runId, at);
-            this.closeOpenRequests(session.id, turn.runId, at);
+            this.sessionRequests.closeOpen(session.id, new Set([turn.runId]), at);
           }
         }
         this.writeQueue(session.id, queue);
@@ -14204,11 +14136,11 @@ export class EngineStore {
      * in the live index — so a session that leaves it would keep whatever was
      * indexed at that moment for the life of the daemon. This is the same
      * liveness test against the queue that has just been written; OPEN rows are
-     * deliberately untouched, because retiring one is `closeOpenRequests`'
+     * deliberately untouched, because retiring one is `SessionRequests.closeOpen`'
      * decision and a session that quietly stopped reporting `blocked` is the
      * worse failure.
      */
-    this.trimResolvedRequests(sessionId, queue.turns);
+    this.sessionRequests.trim(sessionId, queue.turns);
     if (!this.liveQueueIndex) return;
     if (queueConcernsAWorker(queue)) this.liveQueueIndex.add(sessionId);
     else this.liveQueueIndex.delete(sessionId);
@@ -14459,43 +14391,6 @@ export class EngineStore {
     this.closeLiveTasks(sessionId, at, failure, { runId, includeBackground: false });
   }
 
-  /**
-   * A TURN THAT ENDED WITHOUT ITS ITEMS ENDING. The driver closes what it
-   * still holds open when a turn finishes on its own; a turn that is STOPPED
-   * from the cockpit, that fails, or that the engine finds running after a
-   * restart never reaches that code, and the tool row the model was inside
-   * stayed `inProgress` — measured: seven `command_execution` rows across
-   * prod sessions, each spinning under a turn marked stopped, one of them a
-   * shell the human had cancelled a minute earlier. An item is the turn's
-   * own: unlike a background task it cannot outlive the turn, so every
-   * terminal transition closes what the turn left open. Closed as `failed`
-   * — the vocabulary has no "stopped" for an item, and "did not finish" is
-   * what the row should read as.
-   */
-  /**
-   * A turn that ended can no longer be answered: the worker parked on these
-   * requests is gone with it. Left open, they keep the session `blocked` and
-   * the composer in answer mode over a turn nothing will resume. Retired as
-   * `cancelled` — the audit trail says nobody chose. Never called for an
-   * ambiguous turn: that one is still undecided.
-   */
-  private closeOpenRequests(sessionId: string, runId: string, at: number): number {
-    const requests = this.readRequests(sessionId);
-    let closed = 0;
-    for (const request of requests.values()) {
-      if (request.runId !== runId || request.state !== "open") continue;
-      request.state = "resolved";
-      request.decision = "cancel";
-      request.resolvedBy = "cancelled";
-      request.resolvedAt = at;
-      request.reason = "the turn ended before this request was answered";
-      requests.set(request.id, request);
-      this.appendEvent(sessionId, { type: "request.resolved", requestId: request.id, decision: "cancel", resolvedBy: "cancelled", reason: request.reason }, runId);
-      closed += 1;
-    }
-    if (closed > 0) this.writeRequests(sessionId, requests);
-    return closed;
-  }
 
   /**
    * THE SAME SWEEP FOR MANY RUNS, IN ONE READ — what `recover()` needs.
@@ -14529,24 +14424,6 @@ export class EngineStore {
     return closed.size;
   }
 
-  private closeOpenRequestsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
-    if (runIds.size === 0) return 0;
-    const requests = this.readRequests(sessionId);
-    let closed = 0;
-    for (const request of requests.values()) {
-      if (!runIds.has(request.runId) || request.state !== "open") continue;
-      request.state = "resolved";
-      request.decision = "cancel";
-      request.resolvedBy = "cancelled";
-      request.resolvedAt = at;
-      request.reason = "the turn ended before this request was answered";
-      requests.set(request.id, request);
-      this.appendEvent(sessionId, { type: "request.resolved", requestId: request.id, decision: "cancel", resolvedBy: "cancelled", reason: request.reason }, request.runId);
-      closed += 1;
-    }
-    if (closed > 0) this.writeRequests(sessionId, requests);
-    return closed;
-  }
 
   private closeOpenItems(sessionId: string, runId: string, at: number): number {
     const items = this.sessionItems.read(sessionId);
@@ -14657,182 +14534,13 @@ export class EngineStore {
     });
   }
 
-  /**
-   * WHICH REQUESTS A LIVE RUN COULD STILL BE ABOUT — issue #545.
-   *
-   * The two hot readers each wanted a handful of rows and paid for the whole
-   * history to get them. `requests.json` is the record of everything a session
-   * has EVER been asked, and nothing pruned it: on the owner's store that was
-   * 43,280 rows across 345 documents, 33 MB, of which exactly ZERO were open.
-   * `readRequests` `JSON.parse`d one of those documents and then ran
-   * `EngineRequest.array().safeParse` over every element — per claimed session
-   * per 1 s heartbeat (`resolutionsForWorker`), and per live session per
-   * live-list read and per `getSession` (`withActivityFrom`). Measured on the
-   * running daemon: 12.1% + 3.7% + 3.2% of an 8 s profile, on an engine whose
-   * answer to all of it was "nothing has changed".
-   *
-   * SO THE ANSWER IS HELD IN MEMORY AND THE DOCUMENT STAYS THE RECORD. The map
-   * carries, per session, the requests a run that is still going could still be
-   * about: every OPEN one, and every one this process has seen go open →
-   * resolved. `withActivityFrom` wants the first set, `resolutionsForWorker` the
-   * second, and both are single-digit sizes rather than five-figure ones.
-   *
-   * A RESTART NEEDS ONLY THE OPEN ONES, which is what makes the cold build
-   * cheap and correct. A resolution is only ever deliverable to a run that is
-   * `running` with a claim, and `recover()` stops every one of those at boot —
-   * so nothing resolved before this process started can be pending for it.
-   *
-   * BUILT LAZILY, LIKE `liveQueueIndex`, and for its reason: a cold daemon pays
-   * the scan once instead of on every question, and a store that is never asked
-   * (most tests) pays nothing. `undefined` means "not built"; an empty map means
-   * "built, and nothing is live".
-   */
-  private liveRequestIndex: Map<string, Map<string, EngineRequest>> | undefined;
 
-  private static readonly NO_LIVE_REQUESTS: ReadonlyMap<string, EngineRequest> = new Map();
 
-  private liveRequests(sessionId: string): ReadonlyMap<string, EngineRequest> {
-    if (!this.liveRequestIndex) {
-      const index = new Map<string, Map<string, EngineRequest>>();
-      for (const id of this.records.ids()) {
-        const open = new Map<string, EngineRequest>();
-        // An unreadable document must not stop the daemon booting: a session
-        // whose requests cannot be parsed simply holds nothing open, exactly as
-        // `readSessions` skips a session it cannot read.
-        try {
-          for (const request of this.readRequests(id).values()) {
-            if (request.state === "open") open.set(request.id, structuredClone(request));
-          }
-        } catch { continue; }
-        if (open.size > 0) index.set(id, open);
-      }
-      this.liveRequestIndex = index;
-    }
-    return this.liveRequestIndex.get(sessionId) ?? EngineStore.NO_LIVE_REQUESTS;
-  }
 
-  /**
-   * THE INDEX IS MAINTAINED WHERE THE DOCUMENT IS WRITTEN, which is here and
-   * nowhere else — the same argument `writeQueue` makes for `liveQueueIndex`.
-   * Five call sites open, resolve and retire requests; a projection maintained
-   * at each of them is a sixth thing to remember.
-   *
-   * A row already in the index STAYS while it is resolved, because that is the
-   * resolution a blocked worker is polling for. It leaves when the run it
-   * belongs to can no longer take one — see `resolutionsForWorker`, which has
-   * the session's claims in hand, and `writeQueue`, which sees a session stop
-   * concerning any worker at all.
-   *
-   * CLONED IN, so a caller that keeps editing the map it wrote cannot edit the
-   * store's idea of what is open behind its own back.
-   */
-  private reindexRequests(sessionId: string, requests: Map<string, EngineRequest>): void {
-    const index = this.liveRequestIndex;
-    if (!index) return;
-    const known = index.get(sessionId);
-    const live = new Map<string, EngineRequest>();
-    for (const request of requests.values()) {
-      if (request.state === "open" || known?.has(request.id)) live.set(request.id, structuredClone(request));
-    }
-    if (live.size > 0) index.set(sessionId, live);
-    else index.delete(sessionId);
-  }
 
-  /**
-   * DROP THE RESOLUTIONS NOBODY CAN STILL BE WAITING FOR.
-   *
-   * A resolved row is in the index for one reason: a worker parked inside
-   * `canUseTool` polls the heartbeat for it. The poll is only ever answered for
-   * a turn that is `running` under a claim, so once the turn is anything else
-   * the row is history and belongs in the document alone. Open rows are never
-   * touched here — an open request outlives its turn until something retires it,
-   * and that is `closeOpenRequests`' decision rather than this one's.
-   */
-  private trimResolvedRequests(sessionId: string, turns: Turn[]): void {
-    const live = this.liveRequestIndex?.get(sessionId);
-    if (!live) return;
-    const answerable = new Set(turns.filter((turn) => turn.state === "running" && turn.claim).map((turn) => turn.runId));
-    for (const [id, request] of live) {
-      if (request.state !== "open" && !answerable.has(request.runId)) live.delete(id);
-    }
-    if (live.size === 0) this.liveRequestIndex?.delete(sessionId);
-  }
 
-  /**
-   * The document, parsed and NOT re-validated — issue #545.
-   *
-   * Every row in here was written by `writeRequests` below from a value this
-   * file built and `openRequest` validated once, at the moment it was created.
-   * Re-running `EngineRequest.array().safeParse` over the history on every read
-   * re-checks a shape that cannot have changed since — and it was the expensive
-   * half of the hot path, because zod walks a discriminated union per row.
-   *
-   * THE STRUCTURAL GUARD STAYS, because a document edited behind the store's
-   * back or written by an older engine must still fail as "invalid request
-   * projection" rather than as an `undefined` somewhere downstream. It checks
-   * the three fields every reader keys on, which is a property test per row
-   * rather than a schema walk.
-   */
-  private readRequests(sessionId: string): Map<string, EngineRequest> {
-    const stored = this.readDocument(requestsFile(this.paths, sessionId));
-    if (stored === undefined) return new Map();
-    const rows = (stored as { requests?: unknown }).requests;
-    if (!Array.isArray(rows) || rows.some((row) => !isRequestRow(row))) {
-      throw new EngineStateError("invalid_request", "invalid request projection");
-    }
-    return new Map((rows as EngineRequest[]).map((request) => [request.id, request]));
-  }
 
-  /**
-   * AND THE ONLY WRITER IS WHERE THE WINDOW IS APPLIED (#545).
-   *
-   * Here rather than in `resolveRequest` because five call sites resolve a
-   * request — a human answering, a policy, and three retire paths that cancel
-   * in bulk when a turn ends — and a bound applied at four of them is a
-   * document that grows through the fifth. See `pruneResolvedRequests`.
-   */
-  private writeRequests(sessionId: string, requests: Map<string, EngineRequest>): void {
-    pruneResolvedRequests(requests);
-    this.writeDocument(requestsFile(this.paths, sessionId), { version: STATE_VERSION, requests: [...requests.values()] });
-    this.reindexRequests(sessionId, requests);
-  }
 
-  /**
-   * THE BOOT SWEEP: bring documents written before the window existed inside it.
-   *
-   * `writeRequests` bounds every document it touches from now on, but a session
-   * nobody writes to again keeps whatever it had — and the store this was
-   * written for holds 345 of them. One pass, at boot, beside `recover()`'s other
-   * retroactive cures; silent when there is nothing to do, so an engine that has
-   * already been swept says nothing on every subsequent start.
-   *
-   * IT WRITES THROUGH THE ORDINARY PATH, so each trimmed document goes out with
-   * its index row and its revision exactly as any other request write would.
-   */
-  private pruneResolvedRequestHistory(): { sessions: number; dropped: number; bytes: number } {
-    let sessions = 0;
-    let dropped = 0;
-    let bytes = 0;
-    for (const sessionId of this.records.ids()) {
-      let requests: Map<string, EngineRequest>;
-      const file = requestsFile(this.paths, sessionId);
-      try {
-        requests = this.readRequests(sessionId);
-      } catch {
-        // One unreadable document must not stop the engine booting — the same
-        // rule `readSessions` follows for a session it cannot parse.
-        continue;
-      }
-      const before = this.kernel.documentBytes(file) ?? 0;
-      const went = pruneResolvedRequests(requests);
-      if (went === 0) continue;
-      this.writeRequests(sessionId, requests);
-      sessions += 1;
-      dropped += went;
-      bytes += before - (this.kernel.documentBytes(file) ?? 0);
-    }
-    return { sessions, dropped, bytes };
-  }
 
   /** One observation → at most one journal record, plus its projection edit. */
   private journalObservation(
