@@ -1,36 +1,7 @@
 #!/usr/bin/env bun
-/**
- * ONE SLICE OF THE ENGINE SUITE, COMPUTED RATHER THAN LISTED — #760's option A.
- *
- * `Test engine` is the longest job in `Verify` on every run where iOS does not
- * archive (12 of 12 measured, 109–147 s against 58–80 s for the next one), and
- * it is one runner walking every engine test file in a row — 190 of them when
- * that was measured, and the count is not written down anywhere here because it
- * moves every week. The runners are not the
- * constraint — verify.yml's header records a measured ceiling of at least 40
- * concurrent hosted jobs — so the job is split and no test is touched.
- *
- * THE SPLIT IS COMPUTED FROM THE FILESYSTEM, NEVER WRITTEN DOWN. A hand-kept
- * list of which file goes in which shard is `test:desktop:unit` before #763 all
- * over again: 36 filenames typed into a script, and the suite quietly stopped
- * running the ones nobody remembered to add. A new test file must land in a
- * shard because of where it is, not because someone edited this file.
- *
- * ROUND-ROBIN OVER THE SORTED LIST, AND NO WEIGHTS. The obvious improvement is
- * a cost table so the expensive files spread evenly — and a cost table is the
- * hand-kept list again, wearing a number instead of a name: it is right on the
- * day it is measured and drifts silently afterwards, with no failure to say so.
- * Round-robin needs nothing maintained and cannot drop a file. Measured against
- * the ten per-file CI timings on #760, the worst of three shards lands near 40 s
- * against a 34 s ideal and a 101 s status quo, which is most of the available
- * win for none of the rot.
- *
- * EACH SHARD CHECKS ITS OWN ARITHMETIC. A shard that silently drops files is the
- * failure mode worth fearing here, because it looks exactly like a fast green
- * run. So the file count bun reports back is compared with the number of paths
- * this script handed it, and a mismatch fails the shard — in band, on every run,
- * rather than in a summary someone reads once.
- */
+// One slice of the engine suite. The split is round-robin over the sorted file
+// list, computed from the filesystem so a new test file can never be dropped, and
+// each shard checks bun ran exactly the files it was handed.
 import { readdir, readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -41,16 +12,9 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** The workspace the shards run in, so its bunfig.toml preloads are the ones bun reads. */
 export const ENGINE_DIR = "apps/engine";
 
-/** Where the engine's tests live, relative to ENGINE_DIR — what bun is handed. */
-export const ENGINE_TEST_DIR = "test";
+/** Where the engine's tests live, relative to ENGINE_DIR: next to the code, and shared ones in test/. */
+export const ENGINE_TEST_DIRS = ["src", "test"];
 
-/**
- * THE CEILING IS READ AS TEXT, NOT IMPORTED. scripts/test-ceiling.mjs imports
- * `bun:test` and calls `setDefaultTimeout` the moment it loads, which is right
- * for a preload and wrong for anything else; importing it here would run that in
- * a process that is not a test run. scripts/source-invariants.mjs reads the same
- * constant the same way, and fails loudly if the declaration ever moves.
- */
 export async function testCeilingMs() {
   const source = await readFile(join(ROOT, "scripts/test-ceiling.mjs"), "utf8");
   const declared = /export const TEST_CEILING_MS = ([0-9_]+);/.exec(source);
@@ -64,10 +28,6 @@ export async function testCeilingMs() {
   return Number(declared[1].replace(/_/g, ""));
 }
 
-/**
- * Every engine test file, relative to ENGINE_DIR, sorted — the sort is what
- * makes the partition the same on every runner and in check:source.
- */
 export async function engineTestFiles() {
   const found = [];
   const walk = async (relative) => {
@@ -82,14 +42,10 @@ export async function engineTestFiles() {
       }
     }
   };
-  await walk(ENGINE_TEST_DIR);
+  for (const dir of ENGINE_TEST_DIRS) await walk(dir);
   return found.sort();
 }
 
-/**
- * Shard `index` of `total`, one-based. Pure, so check:source can assert the
- * union over synthetic inputs as well as over the real tree.
- */
 export function shardOf(files, index, total) {
   if (!Number.isInteger(total) || total < 1) throw new Error(`a shard count must be a positive integer, got ${total}`);
   if (!Number.isInteger(index) || index < 1 || index > total) {
@@ -103,38 +59,8 @@ export function shardArguments(files, ceilingMs) {
   return ["test", "--timeout", String(ceilingMs), ...files];
 }
 
-/**
- * HOW LONG ONE SHARD GETS BEFORE IT IS CALLED HUNG — #849.
- *
- * The whole suite runs in about 230 s on one runner, so a third of it is under
- * 120 s. Eight minutes is four times that and still well inside the job's
- * `timeout-minutes: 20`, which is the number that matters: a shard the WRAPPER
- * ends reports `hung` and names what was holding it open, while a shard the JOB
- * ends is twenty minutes of nothing and a red X that cannot say whether it hung
- * or went red. The point of the budget is that it fires first.
- */
 export const SHARD_BUDGET_MS = 8 * 60_000;
 
-/**
- * THE SHARD RUNS THROUGH THE BOUNDED WRAPPER — #849, and #841 is why it did
- * not. That PR moved `Test engine` onto this script, which spawned `bun test`
- * directly and was bounded only by the job's `timeout-minutes: 20`. So CI got
- * the sharding and LOST the thing #807/#844 built: the ability to tell a hang
- * from a red. Both are non-zero exits, and a job killed at its own timeout
- * prints neither a tally nor a reason.
- *
- * Going through the wrapper restores distinguishable outcomes — 0 passed,
- * 1 failed, 2 hung, 3 unknown, 4 leaked — and, since #849's other half, a shard
- * that leaves processes behind names them and goes red. Per shard, so the answer to "which
- * third of the suite leaks" comes out of an ordinary CI run rather than a
- * bisect: 194 files narrowed to ~65 without reading any of them.
- *
- * THE ARITHMETIC STILL HAPPENS HERE. The wrapper TEES its child's output to its
- * own stdout, so bun's `Ran N tests across M files.` line survives the extra
- * hop and `filesReportedIn` reads it exactly as before. That check is the one
- * that catches a shard silently dropping files, which looks like a fast green
- * run, and it must not be traded for the hang detection.
- */
 export function wrappedShardCommand(files, ceilingMs, budgetMs = SHARD_BUDGET_MS) {
   return [
     "bun",
@@ -193,21 +119,7 @@ async function main(argv) {
   return verdict.code;
 }
 
-/**
- * WHAT A SHARD'S EXIT CODE MEANS, decided in one pure place so it can be
- * asserted rather than described. Four inputs, one answer — and every branch is
- * reachable from a test, which is the reason this is not inline in `main`.
- */
 export function shardVerdict({ status, output, handed, label = "this shard" }) {
-  /**
-   * THE WRAPPER'S VERDICT COMES FIRST, AND IS PASSED THROUGH UNCHANGED. 2 is
-   * `hung` and 3 is `unknown`; both mean the run never reached its own tally,
-   * so the file-count arithmetic below has nothing to check — and its message
-   * ("a shard that cannot say what it ran has not proved it ran") would replace
-   * a precise diagnosis with a vague one. The whole reason for routing through
-   * the wrapper is that those two stop being indistinguishable from a red test,
-   * which is what #841 gave up when it moved CI off the wrapper.
-   */
   if (status === 2 || status === 3) {
     return {
       code: status,
@@ -237,12 +149,6 @@ export function shardVerdict({ status, output, handed, label = "this shard" }) {
         "was renamed, or whether two paths now match one another as filters.",
     };
   }
-  /**
-   * 4 IS `leaked` — #849. Unlike a hang it DID print its tally, so the
-   * arithmetic above has already run and a dropped file still says so first.
-   * Past that, the wrapper's code stands: every test passed and something was
-   * left running, which is a red a shard must not turn back into a green.
-   */
   if (status === 4) {
     return {
       code: 4,
