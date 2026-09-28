@@ -38,34 +38,28 @@ export function useJournalReactions({ events, browser, enabledPlugins, showPanel
     });
   }, [browser, updatePanel]);
 
-  const browserEventsThrough = useRef(0);
-  const browserMountedAt = useRef(0);
-  useEffect(() => {
-    if (!desktopBrowserBridge()) return;
-    if (browserMountedAt.current === 0) browserMountedAt.current = Date.now();
-    const { acted, through } = agentBrowserActivity(events, browserMountedAt.current, browserEventsThrough.current);
-    browserEventsThrough.current = through;
-    if (!acted) return;
-    updatePanel((current) => revealPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} }));
-  }, [events, updatePanel]);
-
-  const seenDisplays = useRef<Set<number>>(new Set());
-  // Stamped in the effect, not at render: reading the clock during render is impure.
+  // Stamped in an effect, not at render: reading the clock during render is impure.
   const mountedAt = useRef(0);
+  const browserEventsThrough = useRef(0);
+  const seenEvents = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (mountedAt.current === 0) mountedAt.current = Date.now();
+    if (desktopBrowserBridge()) {
+      const { acted, through } = agentBrowserActivity(events, mountedAt.current, browserEventsThrough.current);
+      browserEventsThrough.current = through;
+      if (acted) updatePanel((current) => revealPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} }));
+    }
     const fresh = events.filter(
-      (event) => event.type === "display.opened" && event.at >= mountedAt.current && !seenDisplays.current.has(event.id),
+      (event) => (event.type === "display.opened" || event.type === "prompt.drafted") && event.at >= mountedAt.current && !seenEvents.current.has(event.id),
     );
-    if (fresh.length === 0) return;
-    for (const event of fresh) seenDisplays.current.add(event.id);
-    const last = fresh.at(-1)!;
-    if (last.type !== "display.opened") return;
-    showPanelTab(panelTabForPath(last.path, enabledPlugins));
-  }, [events, enabledPlugins, showPanelTab]);
+    for (const event of fresh) seenEvents.current.add(event.id);
+    const display = fresh.filter((event) => event.type === "display.opened").at(-1);
+    if (display?.type === "display.opened") showPanelTab(panelTabForPath(display.path, enabledPlugins));
+    if (fresh.some((event) => event.type === "prompt.drafted")) announcePromptShelfChanged();
+  }, [events, enabledPlugins, showPanelTab, updatePanel]);
 
   const seenTerminals = useRef<Set<string>>(new Set());
-  const revealNewTerminals = useCallback(
+  return useCallback(
     (terminals: readonly RunView[]) => {
       if (mountedAt.current === 0) mountedAt.current = Date.now();
       const fresh = freshTerminals(terminals, mountedAt.current, seenTerminals.current);
@@ -75,17 +69,4 @@ export function useJournalReactions({ events, browser, enabledPlugins, showPanel
     },
     [updatePanel],
   );
-
-  const seenDrafts = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    if (mountedAt.current === 0) mountedAt.current = Date.now();
-    const fresh = events.filter(
-      (event) => event.type === "prompt.drafted" && event.at >= mountedAt.current && !seenDrafts.current.has(event.id),
-    );
-    if (fresh.length === 0) return;
-    for (const event of fresh) seenDrafts.current.add(event.id);
-    announcePromptShelfChanged();
-  }, [events]);
-
-  return revealNewTerminals;
 }
