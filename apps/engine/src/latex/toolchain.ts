@@ -11,14 +11,11 @@ import path from "node:path";
 import { defaultExec, type Exec } from "../ds/python-env";
 import { compareVersions, findBrew, type ToolInfo } from "../ds/toolchain";
 
-export type { ToolInfo } from "../ds/toolchain";
-export { findBrew } from "../ds/toolchain";
-
-export type TexliveFlavour = "mactex" | "tinytex" | "texlive";
+type TexliveFlavour = "mactex" | "tinytex" | "texlive";
 
 /** The programs a compile and a package install lean on, per root. */
-export const TEXLIVE_BINARIES = ["latexmk", "pdflatex", "lualatex", "xelatex", "tlmgr", "kpsewhich"] as const;
-export type TexliveBinary = (typeof TEXLIVE_BINARIES)[number];
+const TEXLIVE_BINARIES = ["latexmk", "pdflatex", "lualatex", "xelatex", "tlmgr", "kpsewhich"] as const;
+type TexliveBinary = (typeof TEXLIVE_BINARIES)[number];
 
 export type TexliveDistribution = {
   binDir: string;
@@ -96,7 +93,7 @@ export function parseTexliveYear(banner: string): string | undefined {
   return /TeX Live (\d{4})/.exec(banner)?.[1];
 }
 
-export async function findTectonic(exec: Exec = defaultExec, env = process.env): Promise<ToolInfo | undefined> {
+async function findTectonic(exec: Exec = defaultExec, env = process.env): Promise<ToolInfo | undefined> {
   const file = findLatexBinary("tectonic", env);
   if (!file) return undefined;
   const found = await version(exec, file);
@@ -119,7 +116,7 @@ function glob(dir: string): string[] {
  * directory — plus wherever PATH's latexmk/pdflatex actually are, so an
  * exotic install is found through the same door a shell finds it.
  */
-export function texliveRootCandidates(env: NodeJS.ProcessEnv = process.env): RootCandidate[] {
+function texliveRootCandidates(env: NodeJS.ProcessEnv = process.env): RootCandidate[] {
   const candidates: RootCandidate[] = [{ binDir: "/Library/TeX/texbin", flavour: "mactex" }];
   for (const yearRoot of glob("/usr/local/texlive")) for (const arch of glob(path.join(yearRoot, "bin"))) candidates.push({ binDir: arch, flavour: "texlive" });
   for (const base of [path.join(home(), "Library", "TinyTeX", "bin"), path.join(home(), ".TinyTeX", "bin")])

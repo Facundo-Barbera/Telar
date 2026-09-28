@@ -24,7 +24,7 @@ import type { RunClosedBy, RunConfigurationInput, RunConfigurationView, RunOutpu
  */
 export type RunStopSignal = "SIGTERM" | "SIGINT" | "SIGKILL";
 
-export type RunWaitAnswer = RunWaitOutcome;
+type RunWaitAnswer = RunWaitOutcome;
 
 /** Which terminal a verb is about. Absent: see each verb's default. */
 export type RunTarget = { terminalId?: string; runId?: string };

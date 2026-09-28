@@ -77,7 +77,7 @@ export const MAX_ESCAPE_CHARS = 8192;
  * or to emit a partial one. What it gives up is waiting for a sequence to
  * finish, because memory is the one thing a misbehaving process can exhaust.
  */
-export const MAX_HOLD_CHARS = 64 * 1024;
+const MAX_HOLD_CHARS = 64 * 1024;
 
 /**
  * ONE CELL, AND DELIBERATELY NOT `*`.

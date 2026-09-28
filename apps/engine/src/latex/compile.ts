@@ -14,7 +14,7 @@ import type { JobStep } from "../ds/jobs";
 
 export const LATEX_AUX_DIR = ".telar/latex";
 
-export type LatexEngineName = "pdflatex" | "lualatex" | "xelatex";
+type LatexEngineName = "pdflatex" | "lualatex" | "xelatex";
 
 /** What `resolveLatex(session)` proved: which program compiles this tree. */
 export type ResolvedLatex = {

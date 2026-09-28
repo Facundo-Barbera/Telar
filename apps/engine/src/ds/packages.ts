@@ -33,11 +33,11 @@ export function validSpec(spec: string): boolean {
   return SPEC.test(spec.trim()) && spec.trim().length <= 200;
 }
 
-export function validName(name: string): boolean {
+function validName(name: string): boolean {
   return NAME_ONLY.test(name.trim()) && name.trim().length <= 200;
 }
 
-export function assertSpecs(specs: string[]): string[] {
+function assertSpecs(specs: string[]): string[] {
   const clean = specs.map((spec) => spec.trim()).filter(Boolean);
   const bad = clean.filter((spec) => !validSpec(spec));
   if (bad.length) throw new Error(`not a package requirement: ${bad.join(", ")}`);
@@ -45,7 +45,7 @@ export function assertSpecs(specs: string[]): string[] {
   return clean;
 }
 
-export function assertNames(names: string[]): string[] {
+function assertNames(names: string[]): string[] {
   const clean = names.map((name) => name.trim()).filter(Boolean);
   const bad = clean.filter((name) => !validName(name));
   if (bad.length) throw new Error(`not a package name: ${bad.join(", ")}`);

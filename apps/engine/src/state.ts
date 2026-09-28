@@ -489,11 +489,11 @@ const MAX_QUEUED_TURNS = 16;
  * found by a boot much later — and continuing work then would surprise
  * everybody. See `resumeAfterPlannedRestart`.
  */
-export const PLANNED_RESTART_WINDOW_MS = 10 * 60_000;
+const PLANNED_RESTART_WINDOW_MS = 10 * 60_000;
 
 /** What the model is told on the turn that continues after an update restart.
  *  The engine's words, not the person's — see `Turn.origin`'s `restart`. */
-export const PLANNED_RESTART_CONTINUATION =
+const PLANNED_RESTART_CONTINUATION =
   "Telar restarted to install an update in the middle of your last turn. Check the current state before redoing anything that may already have happened, then continue.";
 
 /**
@@ -802,18 +802,6 @@ export class EngineStateError extends Error {
  * reads both files and fails if they disagree.
  */
 export const ENGINE_EXIT_LOCK_HELD = 3;
-
-/**
- * THE TWO WAYS `turnAnswer` MISSES — declared in `turn-summary.ts` and
- * re-exported here, where they are thrown (#592, then #516's wall).
- *
- * The move is about what a module DRAGS: the query wall that pairs a sentence
- * with each of these is bound inside the out-of-process worker, which holds no
- * store, and importing them from this file would have put the whole
- * `EngineStore` in that process to reach two string literals. Every existing
- * importer of `TURN_ANSWER_NONE` from `./state` is untouched.
- */
-export { TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "./turn-summary";
 
 /**
  * How large one attached file may be.

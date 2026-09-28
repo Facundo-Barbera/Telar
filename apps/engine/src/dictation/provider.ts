@@ -60,7 +60,7 @@ import { grantDictationToken, type DictationToken } from "./token";
  *  here, and one name for it means no client has to handle `undefined`. */
 export type DictationProviderId = "off" | "deepgram";
 
-export const DICTATION_PROVIDER_IDS: readonly DictationProviderId[] = ["off", "deepgram"];
+const DICTATION_PROVIDER_IDS: readonly DictationProviderId[] = ["off", "deepgram"];
 
 export function isDictationProviderId(value: unknown): value is DictationProviderId {
   return typeof value === "string" && (DICTATION_PROVIDER_IDS as readonly string[]).includes(value);

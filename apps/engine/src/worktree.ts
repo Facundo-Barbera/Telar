@@ -645,7 +645,7 @@ function sanitize(id: string): string {
  * renamed, so the caller learns its naming scheme is wrong instead of hunting
  * for a branch that is not where it said it would be.
  */
-export function sanitizeBranchSlug(slug: string): string {
+function sanitizeBranchSlug(slug: string): string {
   const segments = slug.split("/").map((s) => s.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 48));
   if (segments.length < 2 || segments.length > 3 || segments.some((s) => s === "")) {
     throw new WorktreeError(`branch slug "${slug}" must be 2-3 non-empty segments, e.g. loom/<loom>/<thread>`);
@@ -666,7 +666,7 @@ export function sanitizeBranchSlug(slug: string): string {
  * charset-conservative rather than a full check-ref-format: every name it
  * admits is a valid ref, not the reverse.
  */
-export function sanitizeBranchName(name: string): string {
+function sanitizeBranchName(name: string): string {
   const trimmed = name.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,120}$/.test(trimmed) || trimmed.endsWith("/") || trimmed.includes("//") || trimmed.includes("..")) {
     throw new WorktreeError(`branch name "${name}" is not a usable git branch name`);
@@ -951,7 +951,7 @@ export function isGitWorkTree(git: GitRunner, projectRoot: string): boolean {
  * `isGitWorkTree`'s reason: "that ref does not exist" is an answer to the
  * caller, not a state for their row.
  */
-export function resolveWorktreeBase(git: GitRunner, projectRoot: string, baseRef?: string): string {
+function resolveWorktreeBase(git: GitRunner, projectRoot: string, baseRef?: string): string {
   const requested = baseRef ?? "HEAD";
   const head = git(projectRoot, ["rev-parse", requested]);
   if (head.status !== 0) {
@@ -981,7 +981,7 @@ export type WorktreePlan = {
   named: boolean;
 };
 
-export function planSessionWorktree(input: {
+function planSessionWorktree(input: {
   engineRoot: string;
   sessionId: string;
   branchSlug?: string;
@@ -1110,7 +1110,7 @@ export function prepareSessionWorktree(
  * not move, which is cheap enough at the one moment a checkout's location is
  * being decided and would be waste on any path that repeats.
  */
-export function cacheDedupNotice(worktreesRoot: string): CacheDedupVerdict[] {
+function cacheDedupNotice(worktreesRoot: string): CacheDedupVerdict[] {
   return detectCacheDedup(worktreesRoot).filter((verdict) => verdict.dedup !== "same-device");
 }
 

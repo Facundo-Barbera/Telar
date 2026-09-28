@@ -49,7 +49,7 @@ const execFileP = promisify(execFile);
 /** How the CLI got onto this machine, which is the same question as "what
  *  would replace it". `unknown` is a real answer, not a failure: a binary at a
  *  path nobody recognises is one Telar must not guess an installer for. */
-export type InstallMethod = "native" | "homebrew" | "npm" | "bun" | "pnpm" | "vite-plus" | "unknown";
+type InstallMethod = "native" | "homebrew" | "npm" | "bun" | "pnpm" | "vite-plus" | "unknown";
 
 export type UpdateStatus =
   /** Nothing newer is published, as far as the registry was willing to say. */
@@ -288,7 +288,7 @@ export function forgetLatestVersions(): void {
 
 /** The one switch. Off, everything else still works — the version, the install
  *  method and the pairing verdict are all local facts. */
-export function updateChecksEnabled(): boolean {
+function updateChecksEnabled(): boolean {
   return process.env.TELAR_NO_UPDATE_CHECKS !== "1";
 }
 

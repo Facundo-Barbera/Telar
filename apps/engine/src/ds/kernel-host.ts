@@ -56,7 +56,7 @@ export type KernelInfo = {
   executable?: string;
 };
 
-export type KernelHostEvents = {
+type KernelHostEvents = {
   onState?: (sessionId: string, state: KernelState, reason?: string) => void;
   /** Every output as it arrives — the host has already persisted images. */
   onOutput?: (sessionId: string, execId: string, cellId: string | undefined, output: CellOutput) => void;

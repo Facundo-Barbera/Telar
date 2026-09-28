@@ -94,7 +94,7 @@ is their machine's configuration, and a large silent rewrite is hard to undo.
 
 /** Written beside the appearance home, so a session in this directory knows
  *  what the directory is. Kept honest the same way the README is. */
-export function ensureAgentsFile(stateRoot: string): void {
+function ensureAgentsFile(stateRoot: string): void {
   const file = path.join(stateRoot, "AGENTS.md");
   let existing: string | undefined;
   try {

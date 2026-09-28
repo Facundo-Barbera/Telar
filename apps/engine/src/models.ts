@@ -399,7 +399,7 @@ export async function readCodexModels(
   }
 }
 
-export async function readOpenCodeModels(): Promise<{ models: ProviderModel[]; message?: string }> {
+async function readOpenCodeModels(): Promise<{ models: ProviderModel[]; message?: string }> {
   try {
     const executable = requireCli("opencode");
     const { stdout } = await promisify(execFile)(executable, ["models"], { timeout: MODEL_LIST_TIMEOUT_MS, maxBuffer: 2_000_000 });

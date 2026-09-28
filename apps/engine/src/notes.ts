@@ -47,7 +47,7 @@ export class ProjectNotesError extends Error {
   }
 }
 
-export function notesDirectory(paths: EngineStatePaths): string {
+function notesDirectory(paths: EngineStatePaths): string {
   return path.join(paths.root, "notes");
 }
 
@@ -70,7 +70,7 @@ const two = (value: number): string => String(value).padStart(2, "0");
 
 /** The display half of a stamp, stated here rather than imported so this module
  *  owes no other store anything. */
-export function noteLabel(at: Date): string {
+function noteLabel(at: Date): string {
   return `${WEEKDAYS[at.getDay()]} ${two(at.getHours())}:${two(at.getMinutes())}`;
 }
 
@@ -111,7 +111,7 @@ export function readNotes(paths: EngineStatePaths, projectId: string): ProjectNo
   return sortNotes(notes);
 }
 
-export function writeNotes(paths: EngineStatePaths, projectId: string, notes: readonly ProjectNote[]): ProjectNote[] {
+function writeNotes(paths: EngineStatePaths, projectId: string, notes: readonly ProjectNote[]): ProjectNote[] {
   const parsed = sortNotes(notes.map((note) => ProjectNote.parse(note)));
   atomicWrite(notesPath(paths, projectId), parsed);
   return parsed;
@@ -136,7 +136,7 @@ export function findNote(paths: EngineStatePaths, id: string): { note: ProjectNo
 
 /** Which projects have a notebook on disk. Not the project registry — that is
  *  `store.listProjects`, and a project with no notes has no file here. */
-export function notebookProjects(paths: EngineStatePaths): string[] {
+function notebookProjects(paths: EngineStatePaths): string[] {
   let entries: string[];
   try {
     entries = fs.readdirSync(notesDirectory(paths));

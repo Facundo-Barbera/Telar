@@ -131,7 +131,7 @@ const DEFAULT_MISSED_BEATS = 3;
 const DEFAULT_RECONNECT_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 
-export class RunTerminalLost extends Error {
+class RunTerminalLost extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RunTerminalLost";

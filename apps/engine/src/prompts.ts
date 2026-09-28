@@ -47,7 +47,7 @@ export class PreparedPromptsError extends Error {
   }
 }
 
-export function promptsDirectory(paths: EngineStatePaths): string {
+function promptsDirectory(paths: EngineStatePaths): string {
   return path.join(paths.root, "prompts");
 }
 
@@ -71,7 +71,7 @@ const two = (value: number): string => String(value).padStart(2, "0");
 
 /** The display half of a stamp, stated here rather than imported so this module
  *  owes the notebook nothing. */
-export function promptLabel(at: Date): string {
+function promptLabel(at: Date): string {
   return `${WEEKDAYS[at.getDay()]} ${two(at.getHours())}:${two(at.getMinutes())}`;
 }
 
@@ -120,7 +120,7 @@ export function readPrompts(paths: EngineStatePaths, projectId: string): Prepare
   return sortPrompts(prompts);
 }
 
-export function writePrompts(paths: EngineStatePaths, projectId: string, prompts: readonly PreparedPrompt[]): PreparedPrompt[] {
+function writePrompts(paths: EngineStatePaths, projectId: string, prompts: readonly PreparedPrompt[]): PreparedPrompt[] {
   const parsed = sortPrompts(prompts.map((prompt) => PreparedPrompt.parse(prompt)));
   atomicWrite(promptsPath(paths, projectId), parsed);
   return parsed;
@@ -128,18 +128,6 @@ export function writePrompts(paths: EngineStatePaths, projectId: string, prompts
 
 export function getPrompt(paths: EngineStatePaths, projectId: string, id: string): PreparedPrompt | null {
   return readPrompts(paths, projectId).find((prompt) => prompt.id === id) ?? null;
-}
-
-/** Which projects have a shelf on disk. Not the project registry — that is
- *  `store.listProjects`, and a project with no prepared prompts has no file. */
-export function shelvedProjects(paths: EngineStatePaths): string[] {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(promptsDirectory(paths));
-  } catch {
-    return [];
-  }
-  return entries.filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -".json".length));
 }
 
 /**

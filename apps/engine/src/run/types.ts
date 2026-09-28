@@ -30,7 +30,7 @@ import { z } from "zod";
  * into confetti. Enforced when saving, so nothing is ever labelled secret and
  * then printed anyway.
  */
-export const MIN_SECRET_CHARS = 4;
+const MIN_SECRET_CHARS = 4;
 
 /** What a caller may store. Ids and timestamps are the store's to mint. */
 export const RunEnvVar = z

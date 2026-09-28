@@ -298,7 +298,7 @@ const MAX_IDLE_RUNTIMES = 3;
  * turn cold-starts from `resume` — which costs a process spawn, not a
  * conversation.
  */
-export const STOP_REAP_GRACE_MS = 3_000;
+const STOP_REAP_GRACE_MS = 3_000;
 
 /**
  * HOW LONG BACKGROUND WORK MAY RUN WITH NOBODY WATCHING — #807.

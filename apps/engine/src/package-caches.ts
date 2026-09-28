@@ -68,7 +68,7 @@ import os from "node:os";
 import path from "node:path";
 
 /** A package manager this module knows a cache location for. */
-export type PackageManagerName = "bun" | "npm" | "pnpm" | "yarn";
+type PackageManagerName = "bun" | "npm" | "pnpm" | "yarn";
 
 /** One package manager's cache, resolved to an absolute path — not yet `stat`'d,
  *  not yet compared against anything. */
@@ -164,7 +164,7 @@ export function packageCaches(deps: PackageCacheDeps = {}): PackageCache[] {
  * has run — it is not evidence of a different filesystem, and reporting it as
  * one would be a wrong answer dressed as a precise one.
  */
-export type DedupOutcome = "same-device" | "different-device" | "unreachable";
+type DedupOutcome = "same-device" | "different-device" | "unreachable";
 
 /** One cache, and the verdict for installing into `worktreeRoot` from it. */
 export type CacheDedupVerdict = PackageCache & { readonly dedup: DedupOutcome };

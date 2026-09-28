@@ -16,7 +16,6 @@ import path from "node:path";
 
 /** The libraries the `ds_*` tools gate on. Probed, never assumed. */
 export const STACK_MODULES = ["pandas", "matplotlib", "duckdb", "pyarrow"] as const;
-export type StackModule = (typeof STACK_MODULES)[number];
 
 /** What the bridge needs; lives in Telar's venv, never installed into the project's. */
 export const BRIDGE_MODULES = ["ipykernel", "jupyter_client"] as const;

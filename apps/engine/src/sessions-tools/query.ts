@@ -31,12 +31,12 @@ import { TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "../turn-summary";
  * way to find the big item is to fetch all of them, which is the cost this
  * exists to avoid.
  */
-export type StepRow = { index: number; id: string; title: string; status: Item["status"]; bytes: number };
+type StepRow = { index: number; id: string; title: string; status: Item["status"]; bytes: number };
 
 /** One step, whole — up to the read budget, with the marker that says how much
  *  was left behind. `text` is the step's `detail`, which is everything it
  *  actually SAID; the scalars beside it are how a reader identifies it. */
-export type StepRead = {
+type StepRead = {
   index: number;
   id: string;
   title: string;
@@ -59,7 +59,7 @@ export type StepRead = {
  * page it trimmed has a different "next" from the one the store handed over.
  * Everything else rides through untouched.
  */
-export type OutlineTurn = { sequence: number } & Record<string, unknown>;
+type OutlineTurn = { sequence: number } & Record<string, unknown>;
 
 /**
  * The five query routes as a capability — the seam every other wall in this

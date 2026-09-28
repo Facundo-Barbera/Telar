@@ -39,7 +39,7 @@ const execFileP = promisify(execFile);
  *  from its id would have one place to say so. */
 export type CliId = "claude" | "codex" | "opencode";
 
-export type CliStatus =
+type CliStatus =
   /** Resolved, and (where a pairing exists) its version is the one expected. */
   | "ok"
   /** Resolved, same protocol family, different patch. Works in practice; worth
@@ -288,11 +288,6 @@ export function isExecutableFile(candidate: string): boolean {
   } catch {
     return false;
   }
-}
-
-export function cliCandidatePaths(id: CliId): string[] {
-  const spec = SPECS[id];
-  return candidatePathsFor(spec.bin, process.env[spec.overrideEnv]);
 }
 
 /** The first runnable candidate, or nothing. The un-judged half of `resolveCli`

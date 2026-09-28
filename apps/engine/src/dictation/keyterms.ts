@@ -131,7 +131,7 @@ export type DictationContext = {
 
 /** Deepgram's own budget for a keyterm prompt. Their words, quoted by the
  *  refusal itself: "The maximum number of tokens across all keyterms is 500." */
-export const DEEPGRAM_KEYTERM_TOKEN_BUDGET = 500;
+const DEEPGRAM_KEYTERM_TOKEN_BUDGET = 500;
 
 /**
  * THE LIST THAT CANNOT BE REFUSED, WHATEVER IS IN IT.

@@ -44,7 +44,7 @@ export type ScheduleRule =
 /** The smallest interval a row may carry. The issue's floor, and the reason the
  *  sweep runs at 30 s rather than 60: a sweep at the floor would silently make
  *  the floor twice what it says. */
-export const MIN_SCHEDULE_INTERVAL_MS = 60_000;
+const MIN_SCHEDULE_INTERVAL_MS = 60_000;
 
 /**
  * The parts of an instant as they read on a wall clock in `zone`.

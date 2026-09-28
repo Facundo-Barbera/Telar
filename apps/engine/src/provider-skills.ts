@@ -86,7 +86,7 @@ const NEVER_DESCEND = new Set(["node_modules", "dist", "build", "out", "target",
 
 /** Where this machine keeps Claude's own configuration, honouring the same
  *  variable the CLI reads. Mirrors `defaultScanRoots` in usage.ts. */
-export function claudeHome(env: NodeJS.ProcessEnv = process.env): string {
+function claudeHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), ".claude");
 }
 
@@ -513,7 +513,7 @@ function dedupe(groups: readonly ProviderSkill[][]): ProviderSkill[] {
  * only watch the directory-scoped roots once something has gone and found them.
  * `readProviderSkills` is the public shape and drops it.
  */
-export async function readProviderSkillsWithRoots(input: ProviderSkillsInput): Promise<{ value: ProviderSkills; watched: string[] }> {
+async function readProviderSkillsWithRoots(input: ProviderSkillsInput): Promise<{ value: ProviderSkills; watched: string[] }> {
   if (input.driver !== "claude") {
     // Codex and OpenCode expose no inventory to ask, but their machine-wide
     // skills directory is theirs by convention and is where Telar installs its

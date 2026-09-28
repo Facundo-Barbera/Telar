@@ -81,11 +81,6 @@
 import { DEEPGRAM_LISTEN_URL, askListen } from "./listen";
 import { DEEPGRAM_KEYTERM_PROVABLE_BYTES } from "./keyterms";
 
-// RE-EXPORTED rather than moved out from under its callers: the address is a
-// property of this endpoint and `listen.ts` owns it now, but a file that only
-// fits a glossary should not have to know that to name the URL.
-export { DEEPGRAM_LISTEN_URL };
-
 /** Deepgram's own sentence for this refusal, and the ONLY thing that earns a
  *  retry — see the header for the `400` that must not. */
 const KEYTERM_LIMIT = /keyterm limit exceeded/i;
@@ -112,7 +107,7 @@ export function keytermBytes(terms: readonly string[]): number {
 /** The longest prefix weighing no more than `budgetBytes`. A PREFIX, because
  *  the order in `keyterms.ts` is the priority and dropping from the tail is
  *  what it is for — the branches go before the person's own words do. */
-export function keytermPrefix(terms: readonly string[], budgetBytes: number): string[] {
+function keytermPrefix(terms: readonly string[], budgetBytes: number): string[] {
   const kept: string[] = [];
   let spent = 0;
   for (const term of terms) {

@@ -72,7 +72,7 @@ import { setImmediate as yieldImmediate } from "node:timers/promises";
 import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport, UsageResolution, UsageSource } from "@telar/engine-client";
 import { loadRates, priceTokens, type RatesTable } from "./usage-pricing";
 
-export type UsageRecord = {
+type UsageRecord = {
   at: number;
   model: string;
   tokens: TokenUsage;
@@ -576,7 +576,7 @@ export type UsageScanRoots = {
 
 /** Where each CLI keeps its transcripts, honouring the same env vars the
  *  CLIs themselves read. */
-export function defaultScanRoots(env: NodeJS.ProcessEnv = process.env): UsageScanRoots {
+function defaultScanRoots(env: NodeJS.ProcessEnv = process.env): UsageScanRoots {
   const home = os.homedir();
   const claudeHome = env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
   const codexHome = env.CODEX_HOME?.trim() || path.join(home, ".codex");

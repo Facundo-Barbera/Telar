@@ -92,7 +92,7 @@ export function openCodeConfigContent(input: DriverRun, instructionsFile?: strin
  * The reserve and the 32k cap are OpenCode's and can rot: a moved reserve lands
  * the trigger off by the difference, not a factor.
  */
-export const OPENCODE_DISABLE_AUTOCOMPACT_ENV = "OPENCODE_DISABLE_AUTOCOMPACT";
+const OPENCODE_DISABLE_AUTOCOMPACT_ENV = "OPENCODE_DISABLE_AUTOCOMPACT";
 const OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX";
 const OPENCODE_OUTPUT_TOKEN_MAX = 32_000;
 const OPENCODE_RESERVE = 20_000;
@@ -106,12 +106,12 @@ export function openCodeCompactionEnv(autoCompact: AutoCompact | undefined): Rec
   return { [OPENCODE_DISABLE_AUTOCOMPACT_ENV]: autoCompact.mode === "never" ? "1" : undefined };
 }
 
-export function splitOpenCodeModel(model: string | undefined): { providerID: string; modelID: string } | undefined {
+function splitOpenCodeModel(model: string | undefined): { providerID: string; modelID: string } | undefined {
   const slash = model?.indexOf("/") ?? -1;
   return model && slash > 0 ? { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) } : undefined;
 }
 
-export function openCodeOutputTokenMax(env: Record<string, string | undefined>): number {
+function openCodeOutputTokenMax(env: Record<string, string | undefined>): number {
   const value = Number.parseInt(env[OPENCODE_OUTPUT_TOKEN_MAX_ENV] ?? "", 10);
   return value > 0 ? value : OPENCODE_OUTPUT_TOKEN_MAX;
 }

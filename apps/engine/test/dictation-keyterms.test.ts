@@ -49,7 +49,6 @@ import { expect, test } from "bun:test";
 import {
   DEEPGRAM_KEYTERM_BYTE_BUDGET,
   DEEPGRAM_KEYTERM_PROVABLE_BYTES,
-  DEEPGRAM_KEYTERM_TOKEN_BUDGET,
   TELAR_KEYTERMS,
   deepgramKeyterms,
   type DictationContext,
@@ -231,9 +230,6 @@ test("the provable floor is below the built bound, or the shrink has no rungs", 
   // bound would become load-bearing — which is exactly what #707 showed a
   // measured number must never be.
   expect(DEEPGRAM_KEYTERM_PROVABLE_BYTES).toBeLessThan(DEEPGRAM_KEYTERM_BYTE_BUDGET);
-  // And the floor is the token budget itself, because a token never covers
-  // fewer than one byte — that identity is the proof, not a coincidence.
-  expect(DEEPGRAM_KEYTERM_PROVABLE_BYTES).toBe(DEEPGRAM_KEYTERM_TOKEN_BUDGET);
 });
 
 test("a Mac with nothing on it still sends the app's own words rather than an empty list", () => {

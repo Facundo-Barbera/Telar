@@ -8,7 +8,7 @@
  */
 import path from "node:path";
 
-export type LatexDiagnosticCode =
+type LatexDiagnosticCode =
   | "missing-package"
   | "missing-file"
   | "undefined-control-sequence"

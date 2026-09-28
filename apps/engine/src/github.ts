@@ -79,7 +79,7 @@ const GH_TIMEOUT_MS = 20_000;
 /** How many rows one read may carry. A panel is not an issue tracker; past
  *  fifty rows the reader wants a search box, and this surface deliberately is
  *  not one. */
-export const GITHUB_PAGE_SIZE = 50;
+const GITHUB_PAGE_SIZE = 50;
 
 export const defaultGhRunner: GhRunner = (cwd, args) =>
   new Promise((resolve) => {
@@ -633,7 +633,7 @@ function apiArray(result: GhResult): Record<string, unknown>[] {
   }
 }
 
-export function parseMilestones(result: GhResult): GitHubMilestone[] {
+function parseMilestones(result: GhResult): GitHubMilestone[] {
   return apiArray(result)
     .flatMap((row) => {
       const title = text(row.title);
@@ -692,7 +692,7 @@ export async function readForgeFacets(gh: GhRunner, cwd: string, now: () => numb
 
 /** `gh label list --json name,color` answers the same shape a row's labels do, so
  *  the same parser applies — one definition of "a label with no name is not one". */
-export function parseLabelList(result: GhResult) {
+function parseLabelList(result: GhResult) {
   if (result.status !== 0) return [];
   try {
     return labels(JSON.parse(result.stdout)).slice(0, MAX_FACET_VALUES);
@@ -767,7 +767,7 @@ fragment threadAuthor on IssueComment {
   reactionGroups { content viewerHasReacted users { totalCount } }
 }`;
 
-export function threadAuthorsArgv(number: number): string[] {
+function threadAuthorsArgv(number: number): string[] {
   return [
     "api",
     "graphql",
@@ -857,8 +857,8 @@ export function parseThread(stdout: string): ThreadRead {
 /** How many review threads one read carries, newest kept, and how many comments
  *  each. A thread is a reviewer's point and its replies; fifty replies is past
  *  the point where a panel card is still the right place to read it. */
-export const MAX_REVIEW_THREADS = 100;
-export const MAX_THREAD_REPLIES = 50;
+const MAX_REVIEW_THREADS = 100;
+const MAX_THREAD_REPLIES = 50;
 
 /**
  * The line-bound review conversations on one pull request.
@@ -894,7 +894,7 @@ query($owner: String!, $name: String!, $number: Int!, $threads: Int!, $replies: 
   }
 }`;
 
-export function reviewThreadsArgv(number: number): string[] {
+function reviewThreadsArgv(number: number): string[] {
   return [
     "api",
     "graphql",
@@ -997,7 +997,7 @@ export function parseReviewThreads(stdout: string): { threads: GitHubReviewThrea
 
 /** The `readBoards` bargain again: a failed read costs the threads, not the pull
  *  request, and says so by being absent. */
-export async function readReviewThreads(gh: GhRunner, cwd: string, number: number): Promise<{ threads: GitHubReviewThread[]; more: number } | undefined> {
+async function readReviewThreads(gh: GhRunner, cwd: string, number: number): Promise<{ threads: GitHubReviewThread[]; more: number } | undefined> {
   const result = await gh(cwd, reviewThreadsArgv(number));
   if (result.status !== 0) return undefined;
   try {
@@ -1015,7 +1015,7 @@ export async function readReviewThreads(gh: GhRunner, cwd: string, number: numbe
  * issue. Every comment then falls back to the derivation, which is what shipped in
  * #790 — worse than this read and better than a blank panel.
  */
-export async function readThread(gh: GhRunner, cwd: string, number: number): Promise<ThreadRead> {
+async function readThread(gh: GhRunner, cwd: string, number: number): Promise<ThreadRead> {
   const result = await gh(cwd, threadAuthorsArgv(number));
   if (result.status !== 0) return { authors: new Map() };
   try {
@@ -1788,7 +1788,7 @@ export function classifyGraphqlWriteFailure(result: GhResult): { refusal: "scope
 }
 
 /** The subject's reactions out of a mutation's answer, whichever mutation it was. */
-export function parseReactionAnswer(stdout: string): GitHubReaction[] | undefined {
+function parseReactionAnswer(stdout: string): GitHubReaction[] | undefined {
   const data = (JSON.parse(stdout) as { data?: Record<string, { subject?: { reactionGroups?: unknown } } | null> | null }).data;
   const answer = data?.addReaction ?? data?.removeReaction;
   const groups = answer?.subject?.reactionGroups;
@@ -1859,7 +1859,7 @@ export async function replyToThread(gh: GhRunner, cwd: string, input: { threadId
 }
 
 /** Resolve (`resolved: true`) or unresolve one review thread. */
-export function threadResolveArgv(threadId: string, resolved: boolean): string[] {
+function threadResolveArgv(threadId: string, resolved: boolean): string[] {
   const mutation = resolved ? "resolveReviewThread" : "unresolveReviewThread";
   return [
     "api",
@@ -1898,7 +1898,7 @@ export async function resolveThread(gh: GhRunner, cwd: string, input: { threadId
 
 /** The open pull request whose head is `branch`. The branch comes off the
  *  session record, never a request. */
-export function pullForBranchArgv(branch: string): string[] {
+function pullForBranchArgv(branch: string): string[] {
   return ["pr", "list", "--head", branch, "--state", "open", "--limit", "1", "--json", "number,url,headRefOid,baseRefName"];
 }
 
@@ -1920,7 +1920,7 @@ export async function readPullForBranch(gh: GhRunner, cwd: string, branch: strin
 /** Every file in the pull request's own diff, one `[path, patch]` JSON row per
  *  line. `patch` is absent for binary and very large files, which leaves them
  *  with no hunks and so nothing to anchor to. */
-export function pullFilesArgv(number: number): string[] {
+function pullFilesArgv(number: number): string[] {
   return ["api", "--paginate", `repos/{owner}/{repo}/pulls/${number}/files`, "--jq", '.[] | [.filename, (.patch // "")]'];
 }
 
@@ -2029,7 +2029,7 @@ export async function commentOnPullLine(gh: GhRunner, cwd: string, number: numbe
  * main" — and it is the case a cockpit can produce by accident: a branch whose
  * commits have all already landed on the base.
  */
-export function classifyPullCreateFailure(result: GhResult): { refusal: GitHubPullCreateRefusal; message?: string; url?: string } {
+function classifyPullCreateFailure(result: GhResult): { refusal: GitHubPullCreateRefusal; message?: string; url?: string } {
   const text = `${result.stderr}\n${result.stdout}`.toLowerCase();
   const message = result.stderr.trim() || result.stdout.trim();
   const carry = message ? { message } : {};

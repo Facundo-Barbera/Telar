@@ -109,7 +109,7 @@ export function wakeNotification(input: {
 }
 
 /** One notification as an entry in a merged one. */
-export function asEntry(detail: NotificationDetail): NotificationEntry {
+function asEntry(detail: NotificationDetail): NotificationEntry {
   return {
     kind: detail.kind,
     ...(detail.sessionId ? { sessionId: detail.sessionId } : {}),

@@ -70,7 +70,7 @@ const CONFIG_DIR_ENV: Record<ProviderDriverKind, string> = {
 
 /** `~` is stored rather than an absolute home so a registry survives being
  *  copied between machines; it is expanded here, at the moment it is used. */
-export function expandHome(target: string): string {
+function expandHome(target: string): string {
   return target.startsWith("~") ? path.join(os.homedir(), target.slice(1)) : target;
 }
 
@@ -140,7 +140,7 @@ const CREDENTIAL_ENV: ReadonlySet<string> = new Set([
  * would let the warning and the behaviour it warns about drift apart, which is
  * the one bug a warning must not have.
  */
-export function providerInstanceConfigured(instance: Pick<ProviderInstance, "configDir" | "env">): boolean {
+function providerInstanceConfigured(instance: Pick<ProviderInstance, "configDir" | "env">): boolean {
   return instance.configDir !== undefined || instance.env.length > 0;
 }
 

@@ -103,7 +103,7 @@ export function valueBetweenMarkers(output: string, name: string): string | unde
 
 /** `-ilc`: interactive AND login, because the two source different files and
  *  the version managers are split across both. */
-export function readEnvFromLoginShell(
+function readEnvFromLoginShell(
   shell: string,
   names: readonly string[],
   execFile: ExecFileLike = execFileSync as unknown as ExecFileLike,
@@ -121,7 +121,7 @@ export function readEnvFromLoginShell(
 /** macOS's own idea of the user PATH, for when no login shell would answer —
  *  a shell whose rc exits non-zero, or an account with a login shell that is
  *  not really a shell. */
-export function readPathFromLaunchctl(execFile: ExecFileLike = execFileSync as unknown as ExecFileLike): string | undefined {
+function readPathFromLaunchctl(execFile: ExecFileLike = execFileSync as unknown as ExecFileLike): string | undefined {
   try {
     return trimmed(execFile("/bin/launchctl", ["getenv", "PATH"], { encoding: "utf8", timeout: LAUNCHCTL_TIMEOUT_MS }));
   } catch {

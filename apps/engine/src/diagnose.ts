@@ -46,7 +46,7 @@ import { createRequire } from "node:module";
 import { STALLED_AFTER_MS } from "@telar/engine-client";
 
 /** One run the scan has something to say about. Ids and times only. */
-export type StalledRun = {
+type StalledRun = {
   sessionId: string;
   runId: string;
   /**

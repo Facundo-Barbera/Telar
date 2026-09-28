@@ -53,7 +53,7 @@ const SECRET_FILE = "sessions-mcp-secret.json";
  * user's session records. It sits beside `engine.json`, which is the other
  * secret this root holds.
  */
-export function sessionsSocketSecretPath(paths: EngineStatePaths): string {
+function sessionsSocketSecretPath(paths: EngineStatePaths): string {
   return path.join(paths.root, SECRET_FILE);
 }
 

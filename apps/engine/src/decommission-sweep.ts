@@ -63,7 +63,7 @@ function directorySize(directory: string): { bytes: number; files: number } {
 }
 
 /** One directory that went, named as a person would recognise it. */
-export type SweptDirectory = { what: string; bytes: number; files: number };
+type SweptDirectory = { what: string; bytes: number; files: number };
 
 export type DecommissionSweep = {
   /** Empty when there was nothing to take — including on an already-swept home. */

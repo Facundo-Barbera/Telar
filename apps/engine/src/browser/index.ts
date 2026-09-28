@@ -50,7 +50,7 @@ export * from "./transport";
  * scopes are never evicted, so this is a target rather than a hard ceiling —
  * see `ScopedRuntimePool`.
  */
-export const MAX_BROWSER_SCOPES = 6;
+const MAX_BROWSER_SCOPES = 6;
 
 /** What a client needs to render the browser panel for one scope. */
 export type BrowserState = {

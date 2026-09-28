@@ -29,8 +29,8 @@ export type SecretFieldWant = { kind: SecretFieldKind; label?: string };
  *  browser transport uses. */
 export type OpExec = (args: readonly string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
 
-export type SecretsListResult = { ok: true; candidates: SecretCandidate[] } | { ok: false; error: string };
-export type SecretsReadResult = { ok: true; values: { want: SecretFieldWant; value: string }[] } | { ok: false; error: string };
+type SecretsListResult = { ok: true; candidates: SecretCandidate[] } | { ok: false; error: string };
+type SecretsReadResult = { ok: true; values: { want: SecretFieldWant; value: string }[] } | { ok: false; error: string };
 
 export type SecretsProvider = {
   listLoginCandidates(origin: string): Promise<SecretsListResult>;
@@ -52,7 +52,7 @@ const OP_LOCKED =
  * finds the desktop-app integration socket; the two `OP_*` variables are its
  * documented auth switches.
  */
-export const defaultOpExec: OpExec = (args) =>
+const defaultOpExec: OpExec = (args) =>
   new Promise((resolve, reject) => {
     const env: Record<string, string> = {};
     for (const key of ["PATH", "HOME", "OP_SERVICE_ACCOUNT_TOKEN", "OP_BIOMETRIC_UNLOCK_ENABLED", "XDG_CONFIG_HOME"]) {

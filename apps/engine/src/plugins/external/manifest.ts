@@ -14,7 +14,7 @@ import path from "node:path";
 import { BUNDLED_PLUGIN_TOOL_PREFIXES, ExternalPluginManifest, PLUGIN_API_VERSION, PluginId, type PluginMeta } from "@telar/engine-client";
 import { BUNDLED_PLUGIN_IDS } from "../bundled";
 
-export const MANIFEST_FILE = "plugin.json";
+const MANIFEST_FILE = "plugin.json";
 
 export type LoadedExternalPlugin = { dir: string; manifest: ExternalPluginManifest };
 export type RefusedExternalPlugin = { dir: string; meta: PluginMeta; error: string };
@@ -73,16 +73,16 @@ export function checkPluginFolder(
 }
 
 /** A folder name as a listing id: itself when it is one, a safe stand-in when not. */
-export function listedId(name: string): string {
+function listedId(name: string): string {
   return PluginId.safeParse(name).success ? name : `invalid-${name.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`.slice(0, 64);
 }
 
-export function refusedPlugin(folder: string, error: string, name?: string): RefusedExternalPlugin {
+function refusedPlugin(folder: string, error: string, name?: string): RefusedExternalPlugin {
   const folderName = path.basename(folder);
   return { dir: folder, meta: refusedMeta(listedId(folderName), name ?? folderName), error };
 }
 
-export function loadExternalPlugins(dir: string, reserved: Reservations): { loaded: LoadedExternalPlugin[]; refused: RefusedExternalPlugin[] } {
+function loadExternalPlugins(dir: string, reserved: Reservations): { loaded: LoadedExternalPlugin[]; refused: RefusedExternalPlugin[] } {
   const loaded: LoadedExternalPlugin[] = [];
   const refused: RefusedExternalPlugin[] = [];
   let names: string[] = [];

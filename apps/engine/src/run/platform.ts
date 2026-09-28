@@ -30,7 +30,7 @@ export type RunKill = (pid: number, signal: NodeJS.Signals | 0) => void;
  *   gone          nothing is left, and we know that
  *   unanswerable  THIS PLATFORM CANNOT BE ASKED. Never a synonym for `gone`.
  */
-export type GroupLiveness = "alive" | "gone" | "unanswerable";
+type GroupLiveness = "alive" | "gone" | "unanswerable";
 
 export type RunProcessGroup = {
   /**

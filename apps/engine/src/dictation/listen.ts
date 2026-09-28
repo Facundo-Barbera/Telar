@@ -44,7 +44,7 @@ export const DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen";
  * and do not gate the handshake, and are left off so this file is not a second,
  * silently diverging copy of the client's URL.
  */
-export const LISTEN_MODEL = "nova-3";
+const LISTEN_MODEL = "nova-3";
 
 /**
  * What one ask came back with. `status` is 0 when nothing came back at all —

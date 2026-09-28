@@ -27,11 +27,11 @@ import { BrowserToolResult } from "./tools";
 
 /** Playwright MCP is slow on a cold navigation but not minutes-slow. A request
  *  that has not answered in 30s has lost the browser, not queued behind it. */
-export const BROWSER_RPC_TIMEOUT_MS = 30_000;
+const BROWSER_RPC_TIMEOUT_MS = 30_000;
 /** How long SIGTERM gets before SIGKILL. Chromium normally exits in well under
  *  a second; this is generous enough that a busy machine is not mistaken for a
  *  wedged one, and short enough not to stall daemon shutdown. */
-export const BROWSER_KILL_GRACE_MS = 2_000;
+const BROWSER_KILL_GRACE_MS = 2_000;
 /** The MCP revision the legacy runtime negotiated and @playwright/mcp 0.0.77
  *  speaks. Sending a version the server does not know fails the handshake, so
  *  this is pinned rather than tracking the newest published spec. */
@@ -70,7 +70,7 @@ export type BrowserProcess = {
 export type SpawnBrowserProcess = (command: string, args: readonly string[]) => BrowserProcess;
 
 /** Spawn through Node's `child_process`. The default; tests replace it. */
-export const spawnBrowserProcess: SpawnBrowserProcess = (command, args) => {
+const spawnBrowserProcess: SpawnBrowserProcess = (command, args) => {
   const child = spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"] });
   return {
     write: (frame) => {
@@ -105,7 +105,7 @@ export const spawnBrowserProcess: SpawnBrowserProcess = (command, args) => {
  * repo is broken. The environment override is spelled the same so one variable
  * still points both at the same install.
  */
-export function resolvePlaywrightMcpCli(startDir?: string): string {
+function resolvePlaywrightMcpCli(startDir?: string): string {
   const override = process.env.TELAR_PLAYWRIGHT_MCP_BIN?.trim();
   if (override) return override;
   return (

@@ -25,7 +25,7 @@
 import crypto from "node:crypto";
 import type { CellOutput } from "./outputs";
 
-export type NbCell = {
+type NbCell = {
   id: string;
   cell_type: "code" | "markdown" | "raw";
   source: string;
@@ -59,7 +59,7 @@ export function mintCellId(): string {
  * otherwise put the id-less notebook straight back into #351's failure. Two
  * parses of the same bytes agreeing costs a hash and removes that whole class.
  */
-export function derivedCellId(index: number, source: string, salt = ""): string {
+function derivedCellId(index: number, source: string, salt = ""): string {
   // `index` and `salt` are digits, so a colon separates them from the source
   // unambiguously without smuggling a control character into this file.
   return crypto.createHash("sha256").update(`${index}:${salt}:${source}`).digest("hex").slice(0, 8);

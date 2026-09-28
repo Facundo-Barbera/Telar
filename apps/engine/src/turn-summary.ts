@@ -83,11 +83,11 @@ export const ANSWER_HEAD_CHARS = 300;
  * which is the right place for a fixed-size summary to stop: a caller that wants
  * the rest asks `/runs/:runId/items`, which is the route that exists for it.
  */
-export const ITEM_TITLES = 12;
+const ITEM_TITLES = 12;
 export const ITEM_TITLE_CHARS = 80;
 
 /** A failure's sentence, not its stack. Same argument as the answer head. */
-export const FAILURE_CHARS = 300;
+const FAILURE_CHARS = 300;
 
 /** How much of the journal line a `grep` hit shows around the match. Enough for
  *  the sentence the phrase is in; a caller that wants the event reads it. */
@@ -143,7 +143,7 @@ export function firstLine(text: string, limit: number): string {
 }
 
 /** `text`'s opening, clamped across line breaks — what an answer head is. */
-export function head(text: string, limit: number): string {
+function head(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
 
@@ -221,7 +221,7 @@ export const OUTLINE_ANSWER_CHARS = 200;
  * the budget must still be readable, or a conversation could hold a page nothing
  * can page past.
  */
-export const OUTLINE_PAGE_BYTES = 6_000;
+const OUTLINE_PAGE_BYTES = 6_000;
 
 export type OutlineRow = {
   runId: string;
@@ -286,25 +286,6 @@ function attachedLine(turn: Turn): string {
 function endedAt(turn: Turn): number | undefined {
   return turn.completedAt;
 }
-
-/**
- * IS THIS TURN'S ROW SETTLED — i.e. can it still change?
- *
- * The reconcile that maintains the projection compares stored state against the
- * queue's, so a row is rewritten whenever the state moves. This is the other
- * half: a turn in a non-terminal state has a row that is still provisional (its
- * item count is whatever had happened by the last write), and a caller reading
- * the outline of a LIVE session should see that rather than a stale count
- * presented as final.
- */
-export const TERMINAL_TURN_STATES: ReadonlySet<Turn["state"]> = new Set<Turn["state"]>([
-  "completed",
-  "failed",
-  "stopped",
-  "discarded",
-  "steered",
-  "ambiguous",
-]);
 
 /**
  * WHERE A PATTERN MATCHED, WITH ENOUGH AROUND IT TO READ — `grep`'s context.

@@ -50,7 +50,7 @@ export type RunLaunchRequest = {
 };
 
 /** Why the host was ending a terminal, when it was the host that did. */
-export type RunCloseReason = NonNullable<TerminalEnding["closed"]>;
+type RunCloseReason = NonNullable<TerminalEnding["closed"]>;
 
 export type RunLaunchEvents = {
   output(stream: "stdout" | "stderr", chunk: string): void;

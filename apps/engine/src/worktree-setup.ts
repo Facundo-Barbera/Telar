@@ -42,7 +42,7 @@ export type SetupLine = { at: number; text: string };
 
 /** Ten minutes: long enough for a cold install on a slow disk, short enough
  *  that a hung one is noticed the same session. `setup.timeoutMs` overrides. */
-export const DEFAULT_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 const MAX_LINES = 2000;
 const MAX_LINE_CHARS = 4000;
