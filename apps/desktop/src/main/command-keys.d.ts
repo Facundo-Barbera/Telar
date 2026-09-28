@@ -1,7 +1,7 @@
 // Hand-written declaration for command-keys.js — apps/desktop has no tsconfig
 // of its own (it is plain-JS Electron main-process code, see main.js's header),
 // so this pairing is what lets apps/web's TypeScript resolve the relative import
-// in apps/web/src/lib/commands.ts without depending on allowJs's best-effort
+// in apps/web/src/features/commands/commands.ts without depending on allowJs's best-effort
 // inference of a CommonJS module's shape. The .js file is still what actually
 // ships and runs on both sides; this file only describes it.
 

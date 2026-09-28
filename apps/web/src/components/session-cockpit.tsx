@@ -131,7 +131,7 @@ import { ConversationContent, ConversationScrollButton, ConversationTopEdge, Con
 import { Message, MessageContent, MessageMenu, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
-import { useCommandHandlers } from "@/lib/use-command-keys";
+import { useCommandHandlers } from "@/features/commands";
 
 /**
  * How long a mouse-opened title menu waits for a `dblclick` to cancel it.

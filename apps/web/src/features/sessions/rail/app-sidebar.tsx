@@ -4,7 +4,7 @@ import { Suspense, useCallback, useState } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import type { Project } from "@telar/engine-client";
-import type { CommandPalettePage } from "@/components/command-palette";
+import { type CommandPalettePage, useCommandHandlers, useCommandKeys } from "@/features/commands";
 import type { NewConversationTarget } from "@/features/projects";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarRail, type SidebarResizableOptions, type SidebarWidthProposal, useSidebar } from "@/components/ui/sidebar";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -19,7 +19,6 @@ import {
   type SidebarSession,
 } from "@/lib/session-list";
 import { APP_SIDEBAR_MAIN_MIN_WIDTH, APP_SIDEBAR_STORAGE_KEY, keepsRoomForMain, SIDEBAR_RESIZE_MIN_WIDTH } from "@/lib/sidebar-width";
-import { useCommandHandlers, useCommandKeys } from "@/lib/use-command-keys";
 import { AppSidebarFooterRow } from "./app-sidebar-footer";
 import { RailDrafts } from "./rail-drafts";
 import { AttentionRows, RailSessionList, RailShelves } from "./rail-list";
@@ -29,7 +28,7 @@ import { SidebarProjectFilter } from "./sidebar-project-filter";
 import { useRailData, type RemoteProject } from "./use-rail-data";
 import { useRailView } from "./use-rail-view";
 
-const CommandPalette = dynamic(() => import("@/components/command-palette").then((mod) => mod.CommandPalette));
+const CommandPalette = dynamic(() => import("@/features/commands/components/command-palette").then((mod) => mod.CommandPalette));
 
 const APP_SIDEBAR_RESIZABLE = {
   minWidth: SIDEBAR_RESIZE_MIN_WIDTH,

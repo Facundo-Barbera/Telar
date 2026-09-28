@@ -1,7 +1,7 @@
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { groupSessions, railJumpSlots, railRowsForCommandKeys } from "./session-groups";
-import { deriveSessionList, sessionHref, sessionKey, type SidebarSession } from "./session-list";
+import { groupSessions, railJumpSlots, railRowsForCommandKeys } from "@/lib/session-groups";
+import { deriveSessionList, sessionHref, sessionKey, type SidebarSession } from "@/lib/session-list";
 
 const NOW = 1_800_000_000_000;
 
@@ -19,7 +19,6 @@ const row = (id: string, title: string, over: Partial<SidebarSession> = {}): Sid
 });
 
 describe("what ⌘1..⌘9 count", () => {
-  // The rail's own derivation, as `app-sidebar.tsx` runs it.
   const counted = (rows: SidebarSession[], options: { order?: string[]; collapsed?: Set<string>; activeSessionId?: string } = {}) =>
     railRowsForCommandKeys(
       groupSessions(
@@ -58,9 +57,7 @@ describe("what ⌘1..⌘9 count", () => {
       row("b1", "Beta old", { projectId: "beta", projectName: "Beta", createdAt: NOW - 5_000 }),
       row("b2", "Beta older", { projectId: "beta", projectName: "Beta", createdAt: NOW - 6_000 }),
     ];
-    // No arrangement: alphabetical.
     expect(counted(rows)).toEqual(["Alpha new", "Beta old", "Beta older"]);
-    // Beta dragged above Alpha: ⌘1 is now Beta's top row, whatever was created when.
     expect(counted(rows, { order: ["beta", "alpha"] })).toEqual(["Beta old", "Beta older", "Alpha new"]);
   });
 
@@ -84,7 +81,6 @@ describe("what ⌘1..⌘9 count", () => {
 
   test("never more than nine, whatever the survivor rule pins into view", () => {
     const rows = Array.from({ length: 20 }, (_, index) => row(`s${index}`, `Session ${index}`, { createdAt: NOW - index * 1_000 }));
-    // The open session is pinned past the limit; indexing ignores it.
     const recent = counted(rows, { activeSessionId: "s19" });
     expect(recent).toHaveLength(9);
     expect(recent[0]).toBe("Session 0");
@@ -124,7 +120,6 @@ describe("the numbers a row wears line up with what the keys count", () => {
     ];
     const open = railJumpSlots(railRows(rows));
     expect(open.get(sessionKey(row("c1", "Gamma")))).toBe(3);
-    // Beta folded away: Gamma moves up on screen, and its number moves with it.
     const folded = railJumpSlots(railRows(rows, new Set(["beta"])));
     expect(folded.get(sessionKey(row("c1", "Gamma")))).toBe(2);
     expect(folded.get(sessionKey(row("b1", "Beta")))).toBeUndefined();

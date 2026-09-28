@@ -12,7 +12,7 @@ import { DirectoryBrowser } from "@/features/files";
 import { ProjectAvatar } from "./project-avatar";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { chooseDirectory } from "@/lib/choose-directory";
-import { claimChords } from "@/lib/commands";
+import { claimChords } from "@/features/commands";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { announceProjectsChanged } from "@/lib/projects";
 import { cn } from "@/lib/utils";

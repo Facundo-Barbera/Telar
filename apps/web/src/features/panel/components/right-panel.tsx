@@ -14,7 +14,7 @@ import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspac
 import type { PluginPanelSource } from "@/lib/plugins/panels";
 import { isPluginSurface } from "@/lib/plugins/registry";
 import { useSidebarPrefs } from "@/lib/sidebar-width";
-import { useCommandHandlers } from "@/lib/use-command-keys";
+import { useCommandHandlers } from "@/features/commands";
 import { cn } from "@/lib/utils";
 import { journalWrites, latestBrowserState, type BrowserStartState, type TaskFocus } from "../folds";
 import { useKeptTerminals } from "../hooks/use-kept-terminals";

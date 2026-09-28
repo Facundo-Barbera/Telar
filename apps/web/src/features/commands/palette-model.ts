@@ -1,11 +1,9 @@
 import { MAX_FONT_SIZE, MIN_FONT_SIZE } from "@telar/engine-client";
 import { type NewConversationTarget, matchTargets } from "@/features/projects";
-import type { Command, CommandId, Keymap } from "@/lib/commands";
+import type { Command, CommandId, Keymap } from "./commands";
 
 export const RECENT_CONVERSATION_LIMIT = 8;
 
-/** Spelled here rather than imported to keep this module free of the component;
- *  `command-palette.tsx` assigns these into `PalettePage`, which checks for drift. */
 export type PaletteSubPage = "projects" | "sources";
 
 export const PALETTE_SUB_PAGES: Partial<Record<CommandId, PaletteSubPage>> = {
@@ -13,11 +11,8 @@ export const PALETTE_SUB_PAGES: Partial<Record<CommandId, PaletteSubPage>> = {
   "add-project": "sources",
 };
 
-/** Kept separate from `PaletteSubPage` so `PALETTE_SUB_PAGES` values stay limited
- *  to the project palette's pages. */
 export type PaletteQuickPage = "looks" | "accent";
 
-/** Commands whose Actions row moved to Quick settings; excluded from Actions. */
 export const PALETTE_QUICK_COMMANDS: readonly CommandId[] = ["toggle-rail"];
 
 export type QuickSettingId =
@@ -33,26 +28,22 @@ export type PaletteQuickSetting = {
   id: QuickSettingId;
   label: string;
   value: string;
-  /** A lucide name, resolved through `lib/command-icons.ts`. */
   icon: string;
   page?: PaletteQuickPage;
 };
 
 export type QuickSettingsState = {
   scheme: "light" | "dark" | "system";
-  /** "" when the appearance is not recognisably a Look. */
   look: string;
   accent: string;
   fontSize: number;
   translucent: boolean;
-  /** False in a browser tab and off macOS; the row is then omitted. */
   translucency: boolean;
   railOpen: boolean;
 };
 
 const SCHEME_LABELS = { light: "Light", dark: "Dark", system: "System" } as const;
 
-/** Text-size rows are omitted at the min/max font size. */
 export function quickSettings(state: QuickSettingsState): PaletteQuickSetting[] {
   const rows: PaletteQuickSetting[] = [
     {
@@ -109,7 +100,6 @@ export function quickSettings(state: QuickSettingsState): PaletteQuickSetting[] 
   return rows;
 }
 
-/** Matches on label, id and current value. */
 export function matchQuick(rows: readonly PaletteQuickSetting[], query: string): PaletteQuickSetting[] {
   const needle = needleOf(query);
   if (!needle) return [...rows];
@@ -119,7 +109,6 @@ export function matchQuick(rows: readonly PaletteQuickSetting[], query: string):
 export type PaletteAction = {
   id: CommandId;
   label: string;
-  /** "" when the command is unbound. */
   chord: string;
   page?: PaletteSubPage;
 };
@@ -158,8 +147,6 @@ function needleOf(query: string): string {
   return query.trim().toLocaleLowerCase();
 }
 
-/** `runnable` drops commands that cannot run here; `exclude` drops the command
- *  that opened the palette. Jump commands are never listed. */
 export function paletteActions(
   commands: readonly Command[],
   keymap: Keymap,
@@ -188,7 +175,6 @@ export function matchActions(actions: readonly PaletteAction[], query: string): 
   return actions.filter((action) => `${action.label} ${action.id}`.toLocaleLowerCase().includes(needle));
 }
 
-/** Filters before cutting to `limit`, so a query can reach older conversations. */
 export function recentSessions<S extends PaletteSessionLike>(
   sessions: readonly S[],
   query: string,
@@ -203,12 +189,10 @@ export function recentSessions<S extends PaletteSessionLike>(
   return matched.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, limit);
 }
 
-/** Host-prefixed because two Macs can mint the same session id. */
 export function paletteSessionKey(session: PaletteSessionLike): string {
   return session.hostId ? `${session.hostId}:${session.id}` : session.id;
 }
 
-/** Sections in fixed order; empty sections are dropped. */
 export function paletteSections<S extends PaletteSessionLike>({
   actions,
   quick = [],

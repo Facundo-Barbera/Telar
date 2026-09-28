@@ -25,7 +25,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { XIcon } from "lucide-react";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
-import { isEditableTarget } from "@/lib/command-keys";
+import { isEditableTarget } from "@/features/commands";
 import { searchSettings, type SettingsSearchEntry, type SettingsSearchIndex } from "@/features/settings";
 import { cn } from "@/lib/utils";
 

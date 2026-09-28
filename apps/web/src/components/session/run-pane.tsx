@@ -38,7 +38,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { claimChords } from "@/lib/commands";
+import { claimChords } from "@/features/commands";
 import { EngineApiError } from "@/lib/engine/client";
 import type { RunApi } from "@/lib/run/api";
 import { byteDroppedNotice, byteFeed } from "@/lib/run/terminal-feed";

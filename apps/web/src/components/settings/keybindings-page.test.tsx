@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { COMMANDS, defaultKeymap, mergeKeymap, type Command, type Keymap } from "@/lib/commands";
+import { COMMANDS, defaultKeymap, mergeKeymap, type Command, type Keymap } from "@/features/commands";
 // The formatter moved out of the pane in #401 — every control bound to a chord
 // draws its caps now, so a settings page is not where they can live.
 import { keyCaps } from "@/lib/key-caps";

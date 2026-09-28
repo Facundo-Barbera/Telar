@@ -13,7 +13,7 @@
  * `hello` is enabled in tests and draws no tab, opener or command.
  */
 import { FlaskConicalIcon, PuzzleIcon, SigmaIcon, type LucideIcon } from "lucide-react";
-import type { CommandId } from "@/lib/commands";
+import type { CommandId } from "@/features/commands";
 
 /** A right-panel tab a plugin owns. `wide` asks for the wide default width. */
 export type PluginSurface = { id: string; label: string; icon: LucideIcon; blurb: string; wide?: boolean };
