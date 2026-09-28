@@ -55,8 +55,6 @@ const WATCHED = [
   "withActivityFrom",
   "reconcileTurnSummaries",
   "knownTurnStates",
-  "readTasks",
-  "closeOrphanedTasks",
   "appendEvent",
   "noteSessionRevision",
   "bumpRevisionFor",
