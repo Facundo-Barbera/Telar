@@ -26,7 +26,7 @@ import path from "node:path";
 import { EngineClient, type RuntimeMode, type Session } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver, type SessionsCapability, type TurnDriver } from "../src/driver";
-import { SessionsToolSocket } from "../src/sessions-tools/run-socket";
+import { TelarToolSocket } from "../src/telar-socket";
 import { reportBack } from "../src/agent-notice";
 import { EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";
@@ -49,7 +49,7 @@ const workers: EngineWorker[] = [];
 /** The harness's own settle-poll client — not the worker's — so a test that
  *  records `EngineClient` calls can leave the harness's reads out. */
 const harnessPollers = new WeakSet<EngineClient>();
-const sockets: SessionsToolSocket[] = [];
+const sockets: TelarToolSocket[] = [];
 
 const tmp = (prefix: string): string => {
   const directory = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -527,11 +527,11 @@ test("a turn's capability knows who it is, and a subscription made mid-turn wake
 
 // ── 3. the codex transport seam ─────────────────────────────────────────────
 
-test("a Codex turn is handed the wall over the socket with its own self bound; a Claude turn is not", async () => {
+test("a Codex turn is handed the `telar` wall over the socket with its own self bound; a Claude turn is not", async () => {
   // THE TRANSPORT HALF OF THE WORKER SEAM. Claude gets the capability
-  // in-process (seam 1); a Codex claim additionally gets `{url, token}` for
-  // the worker-hosted socket, and the token must serve the SAME wall with the
-  // SAME `self` — proven by subscribing over plain HTTP and reading the
+  // in-process (seam 1); a Codex claim additionally gets a lease on the
+  // worker-hosted `telar` socket, and the token must serve `sessions_*` with
+  // the SAME `self` — proven by subscribing over plain HTTP and reading the
   // subscription back through the ordinary API as the codex session's own.
   const daemon = await startEngine({ models: stubModels, engineRoot: tmp("telar-sessions-run-seam-"), workerLeaseMs: 1_000 });
   daemons.push(daemon);
@@ -542,16 +542,16 @@ test("a Codex turn is handed the wall over the socket with its own self bound; a
 
   const handed = new Map<string, { url: string; token: string } | undefined>();
   const driver: TurnDriver = {
-    async run({ sessionId, sessionsSocket, sessions }) {
-      handed.set(sessionId, sessionsSocket);
+    async run({ sessionId, telarSocketLease, sessions }) {
+      handed.set(sessionId, telarSocketLease);
       // The in-process capability is NOT withdrawn by the socket's arrival.
       expect(sessions).toBeDefined();
       return { text: "done" };
     },
   };
-  const socket = new SessionsToolSocket();
+  const socket = new TelarToolSocket();
   sockets.push(socket);
-  const worker = new EngineWorker({ client, workerId: "worker_seam3", driver, sessionsSocket: socket, pollMs: 60_000 });
+  const worker = new EngineWorker({ client, workerId: "worker_seam3", driver, telarSocket: socket, pollMs: 60_000 });
   workers.push(worker);
   await worker.start();
   await client.submitTurn(codex.id, { runId: "run_codex", input: "go" });

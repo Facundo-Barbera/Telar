@@ -1,4 +1,3 @@
-import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
 import type { AutoCompact, Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDefault, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
@@ -281,26 +280,12 @@ export type DriverRun = {
    */
   browserSocket?: { url: string; token: string };
   /**
-   * The `sessions_*` wall as an HTTP MCP server the WORKER hosts — see
-   * `sessions-tools/run-socket.ts`. FOR PROVIDERS THAT TAKE SERVERS AS CONFIG
-   * (Codex): the Claude driver ignores it and keeps its in-process
-   * registration under `telar`, because renaming a shipped tool would split
-   * its identity. The token is per-session — the bound capability closes over
-   * `self`, so a subscription made through it wakes the right session.
-   */
-  sessionsSocket?: { url: string; token: string };
-  /**
-   * THE `telar` WALL'S HOST, for the provider whose driver holds per-turn
-   * bindings. The DRIVER binds it, because the capabilities it serves are that
-   * turn's bindings and the worker cannot reach them.
-   */
-  telarSocket?: TelarToolSocket;
-  /**
-   * THE SAME WALL, ALREADY LEASED — the shape a provider that cannot hold
+   * THE `telar` WALL, ALREADY LEASED — the shape a provider that cannot hold
    * in-process state consumes. Codex and OpenCode take MCP servers as config
    * and hold no per-turn capability bindings, so for them the WORKER binds the
-   * wall against its own per-session client capabilities and passes the lease
-   * down. Same key, same tool names, same approvals.
+   * wall (`telarWall`) against its own per-session client capabilities and
+   * passes the lease down. Same key, same tool names, same approvals as
+   * Claude's in-process registration.
    */
   telarSocketLease?: { url: string; token: string; generation: string };
   /**

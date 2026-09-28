@@ -4,8 +4,8 @@
  *
  * `plugin-wire.test.ts` proves the TRANSPORT between worker and daemon. This
  * file proves the transport between worker and PROVIDER: a plugin's tools reach
- * a turn as a worker-hosted MCP socket (`plugins/socket.ts`), and BOTH drivers
- * mount that same socket under the same key. That is what makes the host
+ * a turn on the one `telar` wall (`telarWall`): Codex and OpenCode over the
+ * worker-hosted socket, Claude in-process, both under the same key. That is what makes the host
  * provider-neutral instead of a Claude feature — Codex takes MCP servers as
  * config and cannot be handed an in-process server at all, so a plugin
  * registered in-process would exist on Claude and silently not exist on Codex.
@@ -26,8 +26,7 @@ import { createClaudeDriver, requestKindForTool, setPluginReadTools } from "../s
 import { bundledPluginToolModules, setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import { HOST_RATIFIED_READ_TOOLS } from "../src/plugins/policy";
-import { PluginToolSocket } from "../src/plugins/socket";
-import { TelarToolSocket } from "../src/telar-socket";
+import { TelarToolSocket, collectTelarWall, telarWall } from "../src/telar-socket";
 import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
 
 /** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
@@ -39,11 +38,9 @@ allowCliInThisFile();
 /** And pin WHICH claude, so the resolve cannot depend on this machine (#752). */
 pinFakeClaudeInThisFile();
 
-const sockets: PluginToolSocket[] = [];
-const telarSockets: TelarToolSocket[] = [];
+const sockets: TelarToolSocket[] = [];
 afterEach(async () => {
   for (const socket of sockets.splice(0)) await socket.close();
-  for (const socket of telarSockets.splice(0)) await socket.close();
   setPluginToolModules(bundledPluginToolModules());
   setPluginReadTools(new Set(Object.values(HOST_RATIFIED_READ_TOOLS).flat()));
 });
@@ -57,9 +54,9 @@ const helloCapability = (mark: string) => ({
 /** The socket, bound for one session's enabled plugins. */
 async function bound(capabilities: Record<string, unknown>) {
   setPluginToolModules([helloToolModule]);
-  const socket = new PluginToolSocket();
+  const socket = new TelarToolSocket();
   sockets.push(socket);
-  const lease = await socket.bind([helloToolModule], capabilities);
+  const lease = await socket.bind(() => collectTelarWall(telarWall(() => ({ plugins: capabilities }))));
   return { socket, lease };
 }
 
@@ -92,10 +89,11 @@ test("two sessions get two tokens, and each token reaches only its own capabilit
   // The property that makes one socket safe for the whole worker: the binding,
   // not the port, is what scopes a plugin to a session.
   setPluginToolModules([helloToolModule]);
-  const socket = new PluginToolSocket();
+  const socket = new TelarToolSocket();
   sockets.push(socket);
-  const first = (await socket.bind([helloToolModule], { hello: helloCapability("first") }))!;
-  const second = (await socket.bind([helloToolModule], { hello: helloCapability("second") }))!;
+  const wall = (mark: string) => () => collectTelarWall(telarWall(() => ({ plugins: { hello: helloCapability(mark) } })));
+  const first = (await socket.bind(wall("first")))!;
+  const second = (await socket.bind(wall("second")))!;
 
   expect(JSON.stringify((await mcp(first, "tools/call", { name: "hello_ping", arguments: {} })).body)).toContain("first");
   expect(JSON.stringify((await mcp(second, "tools/call", { name: "hello_ping", arguments: {} })).body)).toContain("second");
@@ -107,11 +105,12 @@ test("two sessions get two tokens, and each token reaches only its own capabilit
   expect((await mcp(second, "tools/list")).status).toBe(200);
 });
 
-test("a plugin the project did not enable contributes no tools, and an empty wall binds nothing", async () => {
+test("a plugin the project did not enable contributes no tools", async () => {
   // Absence at the gate is absence in `tools/list` BY CONSTRUCTION rather than
   // by a check the socket performs.
   const { lease } = await bound({});
-  expect(lease).toBeUndefined();
+  const listed = await mcp(lease!, "tools/list");
+  expect((listed.body.result as { tools: unknown[] }).tools).toEqual([]);
 });
 
 test("the socket takes its own bearer and serves one path", async () => {
@@ -133,13 +132,13 @@ test("the socket takes its own bearer and serves one path", async () => {
 
 // ── both drivers mount it, under the same key ───────────────────────────────
 
-test("the Claude driver mounts the telar socket as an http server under the shared key", async () => {
+test("the Claude driver registers the plugin's tools in-process under the shared key", async () => {
   setPluginToolModules([helloToolModule]);
-  const socket = new TelarToolSocket();
-  telarSockets.push(socket);
-  let servers: Record<string, unknown> | undefined;
+  let servers: Record<string, { tools?: { name: string }[] }> | undefined;
   const driver = createClaudeDriver(async () => ({
-    async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
+    tool: (name: string) => ({ name }),
+    createSdkMcpServer: (input: { tools: { name: string }[] }) => ({ tools: input.tools }),
+    async *query(input: { options: { mcpServers?: Record<string, never> } }) {
       servers = input.options.mcpServers;
       yield { type: "result", subtype: "success" };
     },
@@ -151,44 +150,12 @@ test("the Claude driver mounts the telar socket as an http server under the shar
     cwd: "/tmp",
     signal: new AbortController().signal,
     onObservations: async () => undefined,
-    telarSocket: socket,
     plugins: { hello: { ping: async () => ({ greeted: "world" }), state: async () => ({ busy: false }) } },
   });
-
-  /**
-   * THE TOKEN IS THE DRIVER'S OWN, so asserting a literal would only prove the
-   * test's argument round-tripped. What matters is that the credential it
-   * minted actually opens the wall — and that a revoked one does not.
-   */
-  const entry = servers?.[TELAR_MCP_SERVER] as { type: string; url: string; headers: Record<string, string> };
-  expect(entry?.type).toBe("http");
-  expect(entry.url).toContain("/v2/telar/mcp");
-  const bearer = entry.headers.Authorization;
-  expect(bearer).toMatch(/^Bearer \S+$/);
-
-  const ask = (authorization: string) =>
-    fetch(entry.url, {
-      method: "POST",
-      headers: { authorization, "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    });
-
-  // The real token reaches the real wall, and the plugin's tools are on it.
-  const listed = await ask(bearer);
-  expect(listed.status).toBe(200);
-  const names = (((await listed.json()) as { result?: { tools?: { name: string }[] } }).result?.tools ?? []).map((tool) => tool.name);
-  expect(names).toContain("hello_ping");
-
-  // A different bearer does not.
-  expect((await ask("Bearer not-the-one")).status).toBe(401);
-
-  // …and closing the socket revokes it, so a provider still holding the entry
-  // cannot keep reaching a wall the worker has torn down.
-  await socket.close();
-  await expect(ask(bearer)).rejects.toBeDefined();
+  expect((servers?.[TELAR_MCP_SERVER]?.tools ?? []).map((tool) => tool.name)).toEqual(["hello_ping", "hello_state"]);
 });
 
-test("a turn with no plugins and no socket mounts no telar server", async () => {
+test("a turn with no plugins mounts no telar server", async () => {
   let servers: Record<string, unknown> | undefined;
   const driver = createClaudeDriver(async () => ({
     async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {

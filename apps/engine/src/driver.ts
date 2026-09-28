@@ -49,10 +49,8 @@ import {
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 import { claudeEffortFor, claudeFixedWindowOf, claudeWindowTokensOf } from "./model-manifest";
-import { collectTelarWall, type TelarSocketLease, type TelarWallPart } from "./telar-socket";
-import { runTools } from "./run/tools";
-import { pluginBriefings, pluginToolModules } from "./plugins/bundled";
-import type { ToolFactory } from "./tool-kit";
+import { telarWall, toSdkTools } from "./telar-socket";
+import { pluginBriefings } from "./plugins/bundled";
 import type { RunCapability } from "./run/capability";
 import {
   canonicalEnvPatch,
@@ -74,12 +72,12 @@ import {
   taskMemoryFrom,
 } from "./claude-runtime";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
-import { displayTools, type DisplayCapability } from "./display/tools";
+import type { DisplayCapability } from "./display/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
 import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
-import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
-import { notesTools, type NotesCapability } from "./notes-tools/tools";
-import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
+import type { SessionsCapability } from "./sessions-tools/tools";
+import type { NotesCapability } from "./notes-tools/tools";
+import type { PromptsCapability } from "./prompts-tools/tools";
 
 export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";
 export type { DriverRequest, DriverRequestOutcome, DriverRun, DriverResult, ProviderTurnBinding, DriverSessionHooks, TurnDriver,
@@ -278,25 +276,6 @@ type ClaudeTurnBindings = {
   plugins: Record<string, unknown> | undefined;
 };
 
-/**
- * A capability that reads through to THE CURRENT TURN'S instance on every
- * property access. The Telar MCP tools are registered once per session
- * runtime, but each turn arrives with its own capability object — one
- * captured at creation would call back into a turn that has already settled.
- */
-function delegatingCapability<T extends object>(get: () => T | undefined): T {
-  return new Proxy({} as T, {
-    get(_, prop) {
-      const current = get();
-      if (!current) throw new Error("this capability is not bound to a running turn");
-      return Reflect.get(current, prop);
-    },
-    has(_, prop) {
-      const current = get();
-      return current ? Reflect.has(current, prop) : false;
-    },
-  });
-}
 
 /**
  * The user's MCP servers in the SDK's own config shape.
@@ -1273,20 +1252,6 @@ export function createClaudeDriver(
   const backgroundClaimLingerMs = options.backgroundClaimLingerMs ?? BACKGROUND_CLAIM_LINGER_MS;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
-  /**
-   * ONE `telar` WALL LEASE PER SESSION, plus the bindings ref its wall reads.
-   *
-   * PER SESSION, NOT PER TURN: the token is baked into the MCP server entry the
-   * provider was started with, so minting a fresh one each turn would 401 every
-   * reused query. The REF is what makes that safe — `buildRuntime` points it at
-   * the live bindings, so a stable lease still serves whatever the current turn
-   * carries.
-   */
-  const telarLeases = new Map<
-    string,
-    { lease: TelarSocketLease; ref: { current: RuntimeBindings<ClaudeTurnBindings> | undefined } }
-  >();
-
   const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>({
     /**
      * WHAT THE POOL MUST NOT DESTROY. A backgrounded shell, monitor or
@@ -1342,7 +1307,6 @@ export function createClaudeDriver(
       providerSessionId,
       providerInstanceId,
       browserSocket,
-      telarSocket,
       orientation,
       mainBriefing,
       run,
@@ -2631,38 +2595,6 @@ export function createClaudeDriver(
        * one and this turn cold-starts. `model` is deliberately absent: it is
        * the one knob a live query can turn (`setModel`).
        */
-      /**
-       * THE `telar` WALL, WHEN THIS DEPLOYMENT HOSTS ONE. Each part names a
-       * toolkit, its own builder, and a GETTER for the capability this turn
-       * bound; the getters read through `ref`, which `buildRuntime` points at
-       * the live bindings, so one stable lease serves every turn of a session
-       * while still dispatching to the current one.
-       */
-      const telarLeased = telarSocket ? telarLeases.get(sessionId) : undefined;
-      const telarRef = telarLeased?.ref ?? { current: undefined as RuntimeBindings<ClaudeTurnBindings> | undefined };
-      const telarParts: TelarWallPart[] = [
-        { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
-        { name: "notes", build: notesTools as never, capability: () => telarRef.current?.current.notes },
-        { name: "prompts", build: promptsTools as never, capability: () => telarRef.current?.current.prompts },
-        { name: "display", build: displayTools as never, capability: () => telarRef.current?.current.display },
-        { name: "run", build: runTools as never, capability: () => telarRef.current?.current.run },
-        /**
-         * EVERY PLUGIN'S WALL, on the same key. One entry per registered module
-         * rather than a second socket: a plugin tool must have one qualified
-         * name, and a `telar-plugins` server beside `telar` would give it two.
-         */
-        ...pluginToolModules().map((module) => ({
-          name: `plugin:${module.meta.id}`,
-          build: ((tool: ToolFactory, capability: never) => module.tools(tool, capability) as unknown[]) as never,
-          capability: () => telarRef.current?.current.plugins?.[module.meta.id],
-        })),
-      ];
-      let telarLease = telarLeased?.lease;
-      if (telarSocket && !telarLease) {
-        telarLease = await telarSocket.bind(() => collectTelarWall(telarParts));
-        if (telarLease) telarLeases.set(sessionId, { lease: telarLease, ref: telarRef });
-      }
-
       const fingerprintFields: Record<string, unknown> = {
         cwd,
         /**
@@ -2713,14 +2645,6 @@ export function createClaudeDriver(
          */
         mainBriefing: mainBriefing ?? null,
         /**
-         * THE `telar` WALL'S LEASE. A STABLE TOKEN IS NOT CATALOG COHERENCE:
-         * re-collecting per request keeps dispatch honest server-side, but a
-         * reused query keeps advertising the list it was started with. The
-         * capability booleans around this cold-start the provider when the SET
-         * changes; the generation covers a rebind of the lease itself.
-         */
-        telarSocket: telarLease ? `${telarLease.url}#${telarLease.generation}` : null,
-        /**
          * THE ENABLED PLUGIN SET — Data Science and LaTeX among them. The wall
          * re-collects per request, so dispatch is already honest — but a reused
          * query keeps advertising the catalog (and the briefings) it was started
@@ -2742,10 +2666,6 @@ export function createClaudeDriver(
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
-        // The socket wall reads through this. A cold start replaces the bindings
-        // object and the lease — deliberately outliving it — follows.
-        telarRef.current = bindings;
-
         /** The permission gate the QUERY holds: a stable wrapper over the
          *  current turn's `canUseTool`, because the worker's gate is bound to
          *  a claim token that dies with each turn while the query lives on. */
@@ -2757,101 +2677,15 @@ export function createClaudeDriver(
             }
           : undefined;
 
-        const telarTools: unknown[] = [];
-
         /**
-         * THE SESSIONS TOOLKIT, WHEN THE TURN CARRIES ONE.
-         *
-         * NO APPROVAL GATE ON ANY OF THESE, the judgement every toolkit below
-         * inherits: not one of them lands anything. Creating a session starts no
-         * work (nothing is queued until `sessions_send`), reading and stopping
-         * are read-and-brake, and there is deliberately no merge, no accept and
-         * no archive for a gate to guard. The guard that matters here is
-         * structural — the store's live-session budget — not interactive.
+         * THE `telar` WALL, IN-PROCESS — the same parts list the socket serves
+         * Codex and OpenCode (see `telarWall`). NO APPROVAL GATE is added here:
+         * none of these toolkits lands anything by itself, and plugin tools
+         * answer to the same `canUseTool` ladder as every `mcp__telar__` tool.
          */
-        if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, delegatingCapability(() => bindings.current.sessions)));
-
-        /**
-         * THE PROJECT'S NOTEBOOK, WHEN THE TURN CARRIES ONE — so "what does the
-         * deploy note say?" is answerable, and "keep this where we can find it"
-         * lands somewhere the human will actually see it.
-         *
-         * NO APPROVAL GATE, the sessions toolkit's judgement again: nothing here
-         * lands anything, and writing a note changes no branch and queues no turn. The
-         * one guard that matters is the wall's own — `notes_delete` removes only
-         * notes an agent wrote, and refuses the user's in a sentence.
-         */
-        if (notes && sdk.tool) telarTools.push(...notesTools(sdk.tool, delegatingCapability(() => bindings.current.notes)));
-
-        /**
-         * THE PROMPT SHELF, WHEN THE TURN CARRIES A PROJECT — so a turn can end
-         * by drafting the turn that should follow it, and a prompt asked for as
-         * a product lands where it can be sent rather than in a transcript.
-         *
-         * NO APPROVAL GATE, and here the reason is the tool's whole point rather
-         * than a judgement about blast radius: `prompt_draft` LANDS NOTHING BY
-         * CONSTRUCTION. It queues no turn and starts no work — the prompt sits
-         * on the shelf until a person presses it, which is the human decision
-         * the tool exists to preserve. Gating it would ask for consent to ask
-         * for consent. The wall's own fence is the one that matters:
-         * `prompt_drop` removes only what an agent wrote.
-         */
-        if (prompts && sdk.tool) telarTools.push(...promptsTools(sdk.tool, delegatingCapability(() => bindings.current.prompts)));
-
-        /**
-         * EVERY ENABLED PLUGIN'S WALL, from the host's list — Data Science and
-         * LaTeX are two entries in it, not two branches here. A plugin the
-         * project did not enable has no capability in `plugins` and so no
-         * tools. No approval gate is added: plugin tools answer to the same
-         * `canUseTool` ladder as every other `mcp__telar__` tool, and the host's
-         * ratified read table (`plugins/policy.ts`) is what classifies them.
-         */
-        if (sdk.tool) {
-          for (const module of pluginToolModules()) {
-            const id = module.meta.id;
-            if (plugins?.[id] === undefined) continue;
-            telarTools.push(...module.tools(sdk.tool, delegatingCapability(() => bindings.current.plugins?.[id] as object | undefined)));
-          }
-        }
-
-        /**
-         * THE DISPLAY TOOLKIT, WHEN THE TURN CARRIES ONE. No approval gate,
-         * the same judgement again: opening a panel on a file the human
-         * could open themselves commits nothing. The worker's capability owns
-         * the one check that matters — the path stays inside this turn's own
-         * checkout.
-         */
-        if (display && sdk.tool) telarTools.push(...displayTools(sdk.tool, delegatingCapability(() => bindings.current.display)));
-
-        /**
-         * THE RUN TOOLKIT, WHEN THE TURN CARRIES A PROJECT AND A DIRECTORY. No
-         * approval gate here either: every verb is an HTTP call to the daemon,
-         * which owns the process group and applies its own gates. This is the
-         * path the packaged app takes (no socket, in-process SDK server), and
-         * it was the one place `runTools` was not registered — the socket wall
-         * above had it, so `RUN_BRIEFING` promised tools that only Codex and
-         * OpenCode could see.
-         */
-        if (run && sdk.tool) telarTools.push(...runTools(sdk.tool, delegatingCapability(() => bindings.current.run)));
-
-        /**
-         * ONE `telar` REGISTRATION, FROM WHICHEVER TRANSPORT THIS DEPLOYMENT HAS.
-         *
-         * With a lease the key is the worker-hosted http entry and the
-         * in-process server is NOT built — two servers under one key is a
-         * shadowing bug, not a fallback. The socket is what lets these same
-         * tools, under these same names, reach Codex and OpenCode; the
-         * in-process path remains for a deployment with no socket.
-         */
-        const telarServer = telarLease
-          ? {
-              [TELAR_MCP_SERVER]: {
-                type: "http" as const,
-                url: telarLease.url,
-                headers: { Authorization: `Bearer ${telarLease.token}` },
-              },
-            }
-          : telarTools.length > 0 && sdk.createSdkMcpServer
+        const telarTools = sdk.tool ? toSdkTools(telarWall(() => bindings.current), sdk.tool) : [];
+        const telarServer =
+          telarTools.length > 0 && sdk.createSdkMcpServer
             ? { [TELAR_MCP_SERVER]: sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
             : undefined;
 

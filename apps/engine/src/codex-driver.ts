@@ -49,7 +49,7 @@ import { BROWSER_BRIEFING } from "./browser/briefing";
 import { RUN_BRIEFING } from "./run/briefing";
 import { pluginBriefings } from "./plugins/bundled";
 import type { ItemDetail, ItemSeed, McpServer, NotificationDetail, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot, UserInputField } from "@telar/engine-client";
-import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER } from "@telar/engine-client";
+import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./computer-use";
 import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
@@ -325,7 +325,6 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       autoCompact,
       mcpServers: userMcpServers,
       browserSocket,
-      sessionsSocket,
       telarSocketLease,
       orientation,
       mainBriefing,
@@ -740,20 +739,11 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         // entry is applied LAST, the same shadowing rule as the Claude merge:
         // there is no `strictMcpConfig` on this path, so shadowing a colliding
         // user server is the only defence available.
-        // The sessions wall rides the same shape — see the DriverRun field's
-        // header for why it exists only on this path. Its elicitations are NOT
-        // auto-accepted the way the browser's are: the sessions socket carries
-        // no gate of its own, so the ordinary elicitation→approval arm below
-        // is the one card, exactly the ladder a Claude session's `sessions_*`
-        // call answers to.
         const telarTable =
-          browserSocket || sessionsSocket || telarSocketLease
+          browserSocket || telarSocketLease
             ? {
                 ...(browserSocket
                   ? { [TELAR_BROWSER_MCP_SERVER]: { url: browserSocket.url, http_headers: { Authorization: `Bearer ${browserSocket.token}` } } }
-                  : {}),
-                ...(sessionsSocket
-                  ? { [TELAR_SESSIONS_MCP_SERVER]: { url: sessionsSocket.url, http_headers: { Authorization: `Bearer ${sessionsSocket.token}` } } }
                   : {}),
                 /**
                  * THE `telar` WALL — the core toolkits and the migrated plugins,

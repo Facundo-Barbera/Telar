@@ -10,7 +10,7 @@
  * This file closes that gap. The repo's fake Codex app-server is driven through
  * the `mcp-elicitation-telar-plugins` scenario, which asks for approval and
  * then — ONLY on accept — makes a real `tools/call` against a real
- * `PluginToolSocket` over loopback. The plugin's capability counts how many
+ * `telar` socket over loopback. The plugin's capability counts how many
  * times it actually ran, so every assertion here is about EXECUTION rather than
  * about cards:
  *

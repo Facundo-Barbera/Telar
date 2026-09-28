@@ -2,20 +2,17 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim, WorkerTurnFailure } from "@telar/engine-client";
-import { collectTelarWall, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
+import { collectTelarWall, telarWall, type TelarCapabilities, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
 import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
-import { sessionsTools } from "./sessions-tools/tools";
-import { notesTools, type NotesCapability } from "./notes-tools/tools";
-import { promptsTools, type PromptsCapability } from "./prompts-tools/tools";
+import type { NotesCapability } from "./notes-tools/tools";
+import type { PromptsCapability } from "./prompts-tools/tools";
 import { promptsForComposer } from "./prompts";
 import { createDisplayCapability } from "./display/capability";
 import { clientRunCapability } from "./run/client-capability";
-import { runTools } from "./run/tools";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
-import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
 import { ratifiedReadTools } from "./plugins/policy";
 import { isMountPoint, mountPointForRoot, type VolumeDeps } from "./volumes";
 import { RateLimitedError, setPluginReadTools } from "./driver";
@@ -209,18 +206,10 @@ export type EngineWorkerOptions = {
    */
   browserSocket?: BrowserToolSocket;
   /**
-   * The `sessions_*` wall as the worker-hosted MCP socket CODEX turns are
-   * pointed at — Claude's registration stays in-process (see
-   * `DriverRun.sessionsSocket`). Absent means a Codex session simply has no
-   * sessions tools, which is what a test gets and what every deployment
-   * produced before this existed.
-   */
-  sessionsSocket?: SessionsToolSocket;
-  /**
    * WHERE THE `telar` WALL IS SERVED for providers that take MCP servers as
    * CONFIG. Codex and OpenCode cannot be handed an in-process server, so the
    * worker binds the wall against its own per-session client capabilities and
-   * passes the lease down. Claude's driver binds its own.
+   * passes the lease down. Claude's driver registers the same wall in-process.
    */
   telarSocket?: TelarToolSocket;
   /**
@@ -459,14 +448,6 @@ export class EngineWorker {
     }
   >();
   /**
-   * Each CODEX session's sessions-wall lease, kept across turns for the same
-   * reason the browser's is: the url+token are baked into the provider process
-   * at creation and that process outlives the turn. No per-turn refs here —
-   * the capability closes over the session id and the worker's client, both
-   * stable for the session's life. Revoked in `stop()`.
-   */
-  private readonly sessionsLeases = new Map<string, SessionsSocketLease>();
-  /**
    * THE SESSION'S CLAIM AS IT IS RIGHT NOW — what `sessions_send` proves itself
    * with, read at CALL time rather than captured when the capability was built.
    *
@@ -497,7 +478,7 @@ export class EngineWorker {
        * request reads the capabilities of the turn that is actually running —
        * with its runId and its claim, not the ones the lease was minted under.
        */
-      capabilities: { current: Record<string, unknown> };
+      capabilities: { current: TelarCapabilities };
     }
   >();
   /** Terminal settlements the engine has not acknowledged, by runId. Retried on
@@ -748,8 +729,6 @@ export class EngineWorker {
     // ones deliberately kept alive between turns — is closed.
     for (const { lease } of this.browserLeases.values()) lease.release();
     this.browserLeases.clear();
-    for (const lease of this.sessionsLeases.values()) lease.release();
-    this.sessionsLeases.clear();
     this.liveClaims.clear();
     this.providerTurnsWanted.clear();
     for (const entry of this.telarLeases.values()) entry.lease?.release();
@@ -1607,18 +1586,6 @@ export class EngineWorker {
         : undefined;
 
       /**
-       * THE SESSIONS WALL FOR CODEX, leased on the worker-hosted socket —
-       * see `sessions-tools/run-socket.ts`. Bound only for a Codex claim:
-       * Claude gets the same capability in-process, so a lease for it would
-       * be a credential nobody redeems. Cached per SESSION like the browser's
-       * lease and revoked in `stop()`.
-       */
-      let sessionsLease = this.sessionsLeases.get(sessionId);
-      if (!sessionsLease && driverKind !== "claude" && this.options.sessionsSocket) {
-        sessionsLease = await this.options.sessionsSocket.bind(sessionsCapability);
-        this.sessionsLeases.set(sessionId, sessionsLease);
-      }
-      /**
        * EVERY ENABLED PLUGIN'S CAPABILITY, BY ID — Data Science and LaTeX
        * included. Every verb is an HTTP call to the daemon, which owns the
        * kernel and the jobs; the worker holds no process and no store. The
@@ -1652,12 +1619,41 @@ export class EngineWorker {
        */
       const telarKey = [...(claim.plugins ?? [])].sort().join(",");
       let telarEntry = this.telarLeases.get(sessionId);
-      const telarCapabilities: Record<string, unknown> = {
+      /**
+       * `display_open` — show the human one file in the cockpit. The fence
+       * is this turn's own checkout; the report rides the same observation
+       * channel as everything else the worker sees, so the engine journals
+       * it under this turn and a stop refuses it like any late report.
+       *
+       * ABSENT WITH NO CHECKOUT. The whole tool is a path inside a fence, and
+       * a session with no directory has no fence to put one in — so it does
+       * not exist rather than existing and refusing every call.
+       */
+      const displayCapability =
+        cwd === undefined
+          ? undefined
+          : createDisplayCapability({
+              cwd,
+              report: (observation) =>
+                this.options.client
+                  .reportObservations(sessionId, runId, claimToken, [{ kind: "display.opened", ...observation }])
+                  .then(() => undefined),
+            });
+      /**
+       * THE RUN DOOR. The daemon's own gate (`runs need a project`, `runs need
+       * a working directory`) is what this condition mirrors: a run is a
+       * process in a directory.
+       */
+      const runCapability = claim.projectId && claim.projectRoot ? clientRunCapability(this.options.client, sessionId) : undefined;
+      // Everything the `telar` wall serves, handed to both transports: the
+      // driver's in-process server (Claude) and the lease below (Codex, OpenCode).
+      const telarCapabilities = {
         sessions: sessionsCapability,
         ...(notesCapability ? { notes: notesCapability } : {}),
         ...(promptsCapability ? { prompts: promptsCapability } : {}),
-        ...(claim.projectId && claim.projectRoot ? { run: clientRunCapability(this.options.client, sessionId) } : {}),
-        ...pluginCapabilities,
+        ...(displayCapability ? { display: displayCapability } : {}),
+        ...(runCapability ? { run: runCapability } : {}),
+        ...(Object.keys(pluginCapabilities).length > 0 ? { plugins: pluginCapabilities } : {}),
       };
       if (driverKind !== "claude" && this.options.telarSocket) {
         if (telarEntry?.key === telarKey) {
@@ -1665,20 +1661,8 @@ export class EngineWorker {
           telarEntry.capabilities.current = telarCapabilities;
         } else {
           telarEntry?.lease?.release();
-          const box = { current: telarCapabilities };
-          const lease = await this.options.telarSocket.bind(() =>
-            collectTelarWall([
-              { name: "sessions", build: sessionsTools as never, capability: () => box.current.sessions },
-              { name: "notes", build: notesTools as never, capability: () => box.current.notes },
-              { name: "prompts", build: promptsTools as never, capability: () => box.current.prompts },
-              { name: "run", build: runTools as never, capability: () => box.current.run },
-              ...pluginToolModules().map((module) => ({
-                name: `plugin:${module.meta.id}`,
-                build: ((tool: never, capability: never) => module.tools(tool, capability) as unknown[]) as never,
-                capability: () => box.current[module.meta.id],
-              })),
-            ]),
-          );
+          const box: { current: TelarCapabilities } = { current: telarCapabilities };
+          const lease = await this.options.telarSocket.bind(() => collectTelarWall(telarWall(() => box.current)));
           telarEntry = { key: telarKey, capabilities: box, ...(lease ? { lease } : {}) };
           // A `stop()` during the await already cleared the map; give it back.
           if (this.stopped) lease?.release();
@@ -1760,8 +1744,9 @@ export class EngineWorker {
         // and with which credential. Spread on the same absent-means-absent
         // rule as everything above it.
         ...(lease ? { browserSocket: { url: lease.url, token: lease.token } } : {}),
-        // The sessions toolkit, hoisted above — one assembly, two consumers.
-        sessions: sessionsCapability,
+        // The `telar` wall's capabilities, hoisted above — one assembly, two
+        // consumers. Claude's driver registers them in-process.
+        ...telarCapabilities,
         /**
          * THE SESSION'S OWN ROWS, for the driver that rebuilds its conversation
          * from them rather than resuming one the provider holds. Back over the
@@ -1771,48 +1756,9 @@ export class EngineWorker {
          * own character budget is what actually decides how much is sent.
          */
         transcript: async (options) => (await this.options.client.session(sessionId, { turns: options?.turns ?? 80 })).items,
-        // The project notebook, hoisted above for the same reason. Absent on a
-        // project-less session, which is no notebook rather than an empty one.
-        ...(notesCapability ? { notes: notesCapability } : {}),
-        // The sessions wall over HTTP, for the provider that takes servers as
-        // config. Same absent-means-absent rule as `browserSocket`.
-        ...(sessionsLease ? { sessionsSocket: { url: sessionsLease.url, token: sessionsLease.token } } : {}),
-        /**
-         * THE RUN DOOR, same shape again. `clientRunCapability` and the `run_*`
-         * toolkit shipped with #198 W4, and every driver gates its toolkit and
-         * `RUN_BRIEFING` on this field — but nothing ever set it, so the briefing
-         * told every agent about tools it did not have. The daemon's own gate
-         * (`runs need a project`, `runs need a working directory`) is what this
-         * condition mirrors: a run is a process in a directory.
-         */
-        ...(claim.projectId && claim.projectRoot ? { run: clientRunCapability(this.options.client, sessionId) } : {}),
-        // Claude's driver binds its own telar socket and reads these through its
-        // per-turn bindings; Codex and OpenCode consume the worker's lease.
-        ...(Object.keys(pluginCapabilities).length > 0 ? { plugins: pluginCapabilities } : {}),
         ...(telarEntry?.lease
           ? { telarSocketLease: { url: telarEntry.lease.url, token: telarEntry.lease.token, generation: telarEntry.lease.generation } }
           : {}),
-        /**
-         * `display_open` — show the human one file in the cockpit. The fence
-         * is this turn's own checkout; the report rides the same observation
-         * channel as everything else the worker sees, so the engine journals
-         * it under this turn and a stop refuses it like any late report.
-         *
-         * ABSENT WITH NO CHECKOUT. The whole tool is a path inside a fence, and
-         * a session with no directory has no fence to put one in — so it does
-         * not exist rather than existing and refusing every call.
-         */
-        ...(cwd === undefined
-          ? {}
-          : {
-              display: createDisplayCapability({
-                cwd,
-                report: (observation) =>
-                  this.options.client
-                    .reportObservations(sessionId, runId, claimToken, [{ kind: "display.opened", ...observation }])
-                    .then(() => undefined),
-              }),
-            }),
         onRequest: askEngine,
         onObservations: async (observations) => {
           // A stop is terminal the moment the engine records it, and the

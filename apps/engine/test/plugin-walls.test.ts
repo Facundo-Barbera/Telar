@@ -20,7 +20,6 @@ import { EngineClient, TELAR_MCP_SERVER, canonicalToolName } from "@telar/engine
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver } from "../src/driver";
 import type { DriverRun, TurnDriver } from "../src/provider-contract";
-import { TelarToolSocket } from "../src/telar-socket";
 import { bundledPluginToolModules, pluginBriefings, setPluginToolModules } from "../src/plugins/bundled";
 import { dataScienceMeta } from "../src/plugins/data-science";
 import { latexMeta } from "../src/plugins/latex";
@@ -38,7 +37,6 @@ pinFakeClaudeInThisFile();
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
-const sockets: TelarToolSocket[] = [];
 const root = (): string => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-plugin-walls-"));
   roots.push(directory);
@@ -48,7 +46,6 @@ const root = (): string => {
 beforeEach(() => setPluginToolModules(bundledPluginToolModules({})));
 afterEach(async () => {
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
-  for (const socket of sockets.splice(0)) await socket.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
   setPluginToolModules(bundledPluginToolModules());
 });
@@ -89,7 +86,7 @@ test("the baseline is what shipped: the tool names are the `mcp__telar__` ones a
 });
 
 /** One Claude turn against a fake SDK; returns what the query was started with. */
-async function claudeTurn(plugins: Record<string, unknown>, socket?: TelarToolSocket) {
+async function claudeTurn(plugins: Record<string, unknown>) {
   let captured: { servers?: Record<string, { tools?: { name: string }[]; url?: string; headers?: Record<string, string> }>; append?: string } = {};
   const driver = createClaudeDriver(
     async () => ({
@@ -111,7 +108,6 @@ async function claudeTurn(plugins: Record<string, unknown>, socket?: TelarToolSo
     cwd: "/tmp",
     signal: new AbortController().signal,
     onObservations: async () => undefined,
-    ...(socket ? { telarSocket: socket } : {}),
     ...(Object.keys(plugins).length > 0 ? { plugins } : {}),
   } as DriverRun);
   return captured;
@@ -132,16 +128,6 @@ for (const scenario of CASES) {
     const { servers } = await claudeTurn(capabilities(scenario.plugins));
     const inProcess = (servers?.[TELAR_MCP_SERVER]?.tools ?? []).map((tool) => tool.name);
     expect(pluginNames(inProcess)).toEqual([...scenario.expected]);
-  });
-
-  test(`Claude over the \`telar\` socket, ${scenario.label}: the same tool names`, async () => {
-    const socket = new TelarToolSocket();
-    sockets.push(socket);
-    const { servers } = await claudeTurn(capabilities(scenario.plugins), socket);
-    const entry = servers?.[TELAR_MCP_SERVER] as { url: string; headers: Record<string, string> } | undefined;
-    // "Both off" on a turn with no other toolkit binds no socket at all.
-    const names = entry ? await advertised(entry) : [];
-    expect(pluginNames(names)).toEqual([...scenario.expected]);
   });
 
   test(`briefings, ${scenario.label}: a plugin's paragraph only where it is enabled`, async () => {
