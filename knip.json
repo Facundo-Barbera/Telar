@@ -79,10 +79,7 @@
     "uv",
     "osascript",
     "scutil",
-    "tailscale",
-    "plutil",
-    "sips",
-    "rsvg-convert"
+    "tailscale"
   ],
   "ignoreIssues": {
     "packages/engine-client/src/protocol/common.ts": [
