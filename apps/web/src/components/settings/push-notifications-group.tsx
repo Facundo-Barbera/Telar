@@ -18,15 +18,14 @@
  *
  * ── ONE SETTING: "NOTIFY ON" ────────────────────────────────────────────────
  * With the Mac's own banners on, every alert could arrive on both devices. The
- * row picks which one; the rule itself is `notifyRoute` (lib/mobile/desktop.ts).
+ * row picks which one; the rule itself is `notifyRoute` in the engine's push domain.
  */
 
 import { useEffect, useState } from "react";
 import { BellIcon, SmartphoneIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmtAgo } from "@/lib/format";
-import type { ActivityReport } from "@/lib/mobile/push";
-import type { NotifyOn } from "@/lib/mobile/desktop";
+import type { ActivityReport, NotifyOn } from "@telar/engine-client";
 import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 
 export interface PushRelayStatus {
@@ -119,7 +118,7 @@ export function testLine(test: NonNullable<PushRelayStatus["devices"][number]["t
  * Apple accepted with no card afterwards: iOS dropped it, which is otherwise
  * indistinguishable from success on this side.
  */
-export function activityLine(report: ActivityReport): string | undefined {
+function activityLine(report: ActivityReport): string | undefined {
   if (report.card) return "card running";
   if (report.blocker === "no-start-token") return "no push-to-start token from this phone yet";
   if (report.blocker === "gave-up") return "gave up after 3 starts that never appeared; retries when work next starts";
@@ -188,7 +187,7 @@ export function detailLines(status: PushRelayStatus, now = Date.now()): Array<{ 
 
 /**
  * "NOTIFY ON", in the order a person weighs it. The values are the server's
- * (`NotifyOn`, lib/mobile/desktop.ts); only the type crosses, because that
+ * (`NotifyOn`, from engine-client); only the type crosses, because that
  * module reads the store and must not be bundled into the page.
  */
 export const NOTIFY_ON_LABELS: Record<NotifyOn, string> = {

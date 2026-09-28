@@ -1,15 +1,3 @@
-/**
- * APPROVE FROM THE NOTIFICATION — which alerts may offer it, and what it names.
- *
- * What must not drift:
- *
- *   - Approve is offered only for exactly one open approval (command, edit,
- *     read, tool call); a question or a secret keeps Open only;
- *   - the alert names THAT request, so the phone resolves it and nothing newer;
- *   - every alert carries a category, so every one gets Open;
- *   - only sessions whose signal moved are read, and a failed read still alerts.
- */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { CATEGORY_REQUEST, CATEGORY_SESSION, notification, type MobileRegistration, type SessionSignal } from "./push";
 import { markApprovable } from "./worker";

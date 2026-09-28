@@ -9,6 +9,7 @@ import { GET as liveGet } from "@/app/api/sessions/live/route";
 import { GET as fsGet } from "@/app/api/fs/route";
 import { GET as aboutGet } from "@/app/api/about/route";
 import { GET as aboutIconGet } from "@/app/api/about/icon/route";
+import { GET as notifyGet, PUT as notifyPut } from "@/app/api/mobile/notify/route";
 import { POST as discardPost } from "@/app/api/sessions/[sessionId]/turns/[runId]/discard/route";
 import { EngineClient } from "@telar/engine-client";
 import { engineRootFromWebEnv } from "@/lib/engine/engine-server";
@@ -234,4 +235,19 @@ test("about and its icon are the engine's, bytes included", async () => {
   const icon = await aboutIconGet(new Request(`http://cockpit.test${about.iconUrl}`));
   expect(icon.headers.get("content-type")).toBe("image/png");
   expect([...new Uint8Array(await icon.arrayBuffer()).slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+});
+
+test("which device is notified is the engine's setting", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
+  roots.push(home);
+  process.env.TELAR_HOME = home;
+  process.env.TELAR_COCKPIT = "1";
+  daemons.push(await startEngine({ engineRoot: path.join(home, "engine") }));
+
+  expect(await (await notifyGet(new Request("http://cockpit.test/api/mobile/notify"))).json()).toEqual({ notifyOn: "mac" });
+  const put = (notifyOn: unknown) =>
+    notifyPut(new Request("http://cockpit.test/api/mobile/notify", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ notifyOn }) }));
+  expect(await (await put("both")).json()).toEqual({ notifyOn: "both" });
+  expect((await put("pager")).status).toBe(400);
+  expect(await (await notifyGet(new Request("http://cockpit.test/api/mobile/notify"))).json()).toEqual({ notifyOn: "both" });
 });

@@ -1,21 +1,9 @@
-/**
- * THE LIVE ACTIVITY PAYLOADS, AGAINST THE SWIFT TYPE THAT DECODES THEM.
- *
- * APNs answers 200 for a Live Activity push whose `content-state` or
- * `attributes` the phone cannot decode, and the phone then drops it silently.
- * So the only place a key drifting between this file and
- * `apps/ios/Shared/SessionActivityAttributes.swift` can be caught is here:
- * every key sent must be one the Swift type declares, and every key it
- * requires must be sent.
- */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ACTIVITY_STALE_S, AUTOMATIC_ACTIVITY, activityDelivery, automaticActivityDelivery, type MobileRegistration } from "./push";
 import { v2Body } from "./relay-v2";
 
 const swift = readFileSync(new URL("../../../../ios/Shared/SessionActivityAttributes.swift", import.meta.url), "utf8");
-/** `var name: Type` lines of a Swift struct body, split into required and optional. */
 function fields(body: string) {
   const all = [...body.matchAll(/var (\w+): ([\w?]+)(?: = [^\n]+)?\n/g)].filter(m => !body.slice(0, m.index).includes("{ url(")).map(m => ({ name: m[1], optional: m[2].endsWith("?") }));
   return { all: all.map(f => f.name).sort(), required: all.filter(f => !f.optional).map(f => f.name).sort() };
@@ -31,7 +19,7 @@ const record: MobileRegistration = {
 };
 const now = 1_800_000_100.5;
 const working = { id: "session_1", title: "Deploy", activity: "working" };
-const REFERENCE_EPOCH = 978_307_200; // Swift's default Date coding counts from 2001.
+const REFERENCE_EPOCH = 978_307_200;
 
 function expectDecodable(state: Record<string, unknown>) {
   for (const key of Object.keys(state)) expect(contentState.all).toContain(key);
@@ -88,7 +76,6 @@ describe("the automatic card", () => {
     expect(aps.alert).toEqual({ title: "Telar", body: "Agent work in progress" });
     expect(aps["input-push-token"]).toBe(1);
     expectDecodable(aps["content-state"] as Record<string, unknown>);
-    // A start goes to the push-to-start token, so it names no activity.
     expect(delivery.activityId).toBeUndefined();
     expect(v2Body(delivery)).toMatchObject({ kind: "liveactivity", start: true });
   });
@@ -102,7 +89,6 @@ describe("the automatic card", () => {
     const end = automaticActivityDelivery(record, [], "e".repeat(64), now - 50, now);
     expect(end.payload.aps.event).toBe("end");
     expectDecodable(end.payload.aps["content-state"] as Record<string, unknown>);
-    // An undefined field is dropped on the wire, never sent as null.
     expect(JSON.parse(JSON.stringify(end.payload.aps["content-state"]))).not.toHaveProperty("sessionId");
   });
 });
