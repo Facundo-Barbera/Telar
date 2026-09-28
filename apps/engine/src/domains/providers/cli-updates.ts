@@ -10,7 +10,7 @@ import {
   type CliId,
   type CliResolution,
 } from "./cli";
-import { EngineStateError } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 
 const execFileP = promisify(execFile);
 

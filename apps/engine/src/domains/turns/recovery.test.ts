@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import type { Turn } from "@telar/engine-client";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 import type { ExecutionStore } from "../../platform/db/execution-store";
 import { useTempStores } from "../../../test/temp-store";
 

@@ -57,11 +57,11 @@ function handOver(store: EngineDaemon["store"], runId: string, scope?: string) {
 
 /** Settle a turn so it leaves the unsettled set and becomes pageable. */
 function settle(store: EngineDaemon["store"], sessionId: string, runId: string, state: "completed" | "stopped") {
-  const queue = (store as never as { readQueue(id: string): { turns: { runId: string; state: string; completedAt?: number }[] } }).readQueue(sessionId);
+  const queue = (store as never as { sessionQueues: { read(id: string): { turns: { runId: string; state: string; completedAt?: number }[] } } }).sessionQueues.read(sessionId);
   const turn = queue.turns.find((candidate) => candidate.runId === runId)!;
   turn.state = state;
   turn.completedAt = 5_000;
-  (store as never as { writeQueue(id: string, queue: unknown): void }).writeQueue(sessionId, queue);
+  (store as never as { sessionQueues: { write(id: string, queue: unknown): void } }).sessionQueues.write(sessionId, queue);
 }
 
 test("a CARRIER OUTSIDE THE PAGE still resolves to its real outcome", async () => {
@@ -74,13 +74,13 @@ test("a CARRIER OUTSIDE THE PAGE still resolves to its real outcome", async () =
   // The task, steered into that carrier, then plenty of newer turns above it.
   handOver(store, "run_task", "engine only");
   settle(store, "session_worker", "run_task", "completed");
-  const queue = (store as never as { readQueue(id: string): { turns: Record<string, unknown>[] } }).readQueue("session_worker");
+  const queue = (store as never as { sessionQueues: { read(id: string): { turns: Record<string, unknown>[] } } }).sessionQueues.read("session_worker");
   const task = queue.turns.find((turn) => turn.runId === "run_task")!;
   task.state = "steered";
   // `steer` requires `requestedAt`; a hand-built one must satisfy the schema
   // or the queue fails to parse on the next read.
   task.steer = { intoRunId: "run_carrier", requestedAt: 4_000, deliveredAt: 4_100 };
-  (store as never as { writeQueue(id: string, q: unknown): void }).writeQueue("session_worker", queue);
+  (store as never as { sessionQueues: { write(id: string, q: unknown): void } }).sessionQueues.write("session_worker", queue);
 
   for (let index = 0; index < 6; index += 1) {
     store.intake.submitTurn("session_worker", { runId: `run_newer_${index}`, input: `later ${index}` });
@@ -113,12 +113,12 @@ test("a TASK OUTSIDE THE PAGE with an ACTIVE carrier still reports outstanding",
 
   // The task is old; the run it joined is still going.
   handOver(store, "run_task");
-  const queue = (store as never as { readQueue(id: string): { turns: Record<string, unknown>[] } }).readQueue("session_worker");
+  const queue = (store as never as { sessionQueues: { read(id: string): { turns: Record<string, unknown>[] } } }).sessionQueues.read("session_worker");
   const task = queue.turns.find((turn) => turn.runId === "run_task")!;
   task.state = "steered";
   task.steer = { intoRunId: "run_live", requestedAt: 1, deliveredAt: 2 };
   task.completedAt = 1;
-  (store as never as { writeQueue(id: string, q: unknown): void }).writeQueue("session_worker", queue);
+  (store as never as { sessionQueues: { write(id: string, q: unknown): void } }).sessionQueues.write("session_worker", queue);
 
   store.intake.submitTurn("session_worker", { runId: "run_live", input: "the work" });
   for (let index = 0; index < 5; index += 1) {

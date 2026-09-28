@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_TEXT_GEN_POLICY, type TextGenPolicy } from "@telar/engine-client";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 import { buildTitlePrompt, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "./textgen";
 import { worktreeReady } from "../../../test/worktree-ready";
 

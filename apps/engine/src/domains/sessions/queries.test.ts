@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 import { useTempStores } from "../../../test/temp-store";
 
 const { root, readyStore } = useTempStores();

@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 import type { ExecutionStore } from "../../platform/db/execution-store";
 import { useTempStores } from "../../../test/temp-store";
 

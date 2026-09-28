@@ -18,7 +18,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, pluginBlock, type ModelCatalogue, type ProviderModel } from "@telar/engine-client";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 import { startEngine, type EngineDaemon } from "../../daemon";
 import { stubModels } from "../../../test/stub-models";
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 import type { ExecutionStore } from "../../platform/db/execution-store";
 import { useTempStores } from "../../../test/temp-store";
 

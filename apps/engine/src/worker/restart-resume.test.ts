@@ -5,7 +5,8 @@ import path from "node:path";
 import { connectEngine } from "@telar/engine-client/node";
 import { startEngine, type EngineDaemon } from "../daemon";
 import type { TurnDriver } from "../drivers";
-import { EngineStateError, EngineStore } from "../state";
+import { EngineStore } from "../state";
+import { EngineStateError } from "../platform/kernel";
 import { stubModels } from "../../test/stub-models";
 
 /**

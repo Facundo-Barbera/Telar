@@ -30,11 +30,11 @@ async function ready() {
 }
 
 function settle(store: EngineDaemon["store"], sessionId: string, runId: string) {
-  const queue = (store as never as { readQueue(id: string): { turns: { runId: string; state: string; completedAt?: number }[] } }).readQueue(sessionId);
+  const queue = (store as never as { sessionQueues: { read(id: string): { turns: { runId: string; state: string; completedAt?: number }[] } } }).sessionQueues.read(sessionId);
   const turn = queue.turns.find((candidate) => candidate.runId === runId)!;
   turn.state = "completed";
   turn.completedAt = 5_000;
-  (store as never as { writeQueue(id: string, queue: unknown): void }).writeQueue(sessionId, queue);
+  (store as never as { sessionQueues: { write(id: string, queue: unknown): void } }).sessionQueues.write(sessionId, queue);
 }
 
 test("the bootstrap IS the snapshot, plus the journal and the subscriptions", async () => {

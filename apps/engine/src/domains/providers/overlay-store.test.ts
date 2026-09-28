@@ -12,7 +12,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ModelCatalogue } from "@telar/engine-client";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 import { statePaths } from "../../platform/fs/state-paths";
 
 const roots: string[] = [];
