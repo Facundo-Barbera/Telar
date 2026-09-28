@@ -3,11 +3,11 @@
 import { useEffect } from "react";
 import type { AppFont, PublishedAppearance } from "@telar/engine-client";
 import { ACCENT_COLOURS, LIGHT_PRIMARY_FOREGROUND } from "../accent-colours";
-import { useAppearance } from "@/lib/appearance";
-import { useComposition } from "@/lib/composition";
+import { useAppearance } from "../appearance";
+import { useComposition } from "../composition";
 import { createEngineApi } from "@/lib/engine/client";
 import { isHostWindow } from "@/lib/host-window";
-import { captureLook } from "@/lib/looks";
+import { captureLook } from "../looks";
 import { readTheme, useTheme } from "./theme-provider";
 
 const api = createEngineApi();

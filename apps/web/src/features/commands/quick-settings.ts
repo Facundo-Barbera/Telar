@@ -1,17 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useTheme, type Theme } from "@/features/appearance";
 import {
   ACCENTS,
+  applyLook,
   MAX_FONT_SIZE,
   MIN_FONT_SIZE,
+  sameComposition,
   useAppearance,
+  useComposition,
+  useLooks,
+  useTheme,
   type Accent,
-} from "@/lib/appearance";
+  type Look,
+  type Theme,
+} from "@/features/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
-import { applyLook, sameComposition, useLooks, type Look } from "@/lib/looks";
-import { useComposition } from "@/lib/composition";
 import { quickSettings, type PaletteQuickSetting, type QuickSettingId } from "./palette-model";
 import { runCommand } from "./commands";
 
