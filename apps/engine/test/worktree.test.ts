@@ -13,7 +13,7 @@ import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
 import { worktreeReady } from "./worktree-ready";
 import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_ADMISSION_MS, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WORKTREE_ADD_TIMEOUT_MS, WORKTREE_ADMISSION_MS, WorktreeError, worktreeLockReason, defaultWorktreesRoot, type AsyncGitRunner, type GitRunner } from "../src/worktree";
-import { gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync } from "../src/git";
+import { gitOverviewAsync, sessionDiffAsync, sessionFilePatchAsync } from "../src/domains/git";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
@@ -603,7 +603,7 @@ test("human branch names refuse the engine namespaces and unusable shapes", () =
   }
 });
 
-test("the overview lists cuttable refs: locals and remote-tracking, current marked, no origin/HEAD", () => {
+test("the overview lists cuttable refs: locals and remote-tracking, current marked, no origin/HEAD", async () => {
   const projectRoot = repo();
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -613,7 +613,7 @@ test("the overview lists cuttable refs: locals and remote-tracking, current mark
   git("update-ref", "refs/remotes/origin/main", sha);
   git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
 
-  const overview = gitOverview(defaultGitRunner, projectRoot);
+  const overview = await gitOverviewAsync(createAsyncGitRunner(), projectRoot);
   /**
    * ASSERTED FIRST, so a loaded machine says what happened — issue #650.
    *
@@ -637,25 +637,25 @@ test("the overview lists cuttable refs: locals and remote-tracking, current mark
   expect(overview.defaultBase).toBe("origin/main");
 });
 
-test("the default base falls back to common names, and is absent without remote state", () => {
+test("the default base falls back to common names, and is absent without remote state", async () => {
   const projectRoot = repo();
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   // No remote-tracking refs at all: nothing to default to.
-  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBeUndefined();
+  expect((await gitOverviewAsync(createAsyncGitRunner(), projectRoot)).defaultBase).toBeUndefined();
 
   // A hand-added remote has refs but no origin/HEAD pointer — the common
   // names are the fallback.
   const sha = git("rev-parse", "HEAD").trim();
   git("update-ref", "refs/remotes/origin/master", sha);
-  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/master");
+  expect((await gitOverviewAsync(createAsyncGitRunner(), projectRoot)).defaultBase).toBe("origin/master");
   git("update-ref", "refs/remotes/origin/main", sha);
-  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/main");
+  expect((await gitOverviewAsync(createAsyncGitRunner(), projectRoot)).defaultBase).toBe("origin/main");
 
   // A pointer to a branch that no longer exists must not be trusted — every
   // worktree cut from it would fail its rev-parse.
   git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone");
-  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/main");
+  expect((await gitOverviewAsync(createAsyncGitRunner(), projectRoot)).defaultBase).toBe("origin/main");
 });
 
 /**
@@ -1164,9 +1164,7 @@ test("async git reads preserve overview and review data for committed and untrac
   fs.writeFileSync(path.join(root, "README.md"), "hello\ncommitted\nworking\n");
   fs.writeFileSync(path.join(root, "new.txt"), "new file\n");
   const input = { cwd: root, baseRef: base };
-  expect(await gitOverviewAsync(asyncGit, root)).toEqual(gitOverview(defaultGitRunner, root));
   const diff = await sessionDiffAsync(asyncGit, input);
-  expect(diff).toEqual(sessionDiff(defaultGitRunner, input));
   expect(diff.commits).toHaveLength(1);
   expect(diff.files.map(file => file.path)).toEqual(["new.txt", "README.md"].sort((a, b) => a.localeCompare(b)));
   for (const patchInput of [
@@ -1175,7 +1173,6 @@ test("async git reads preserve overview and review data for committed and untrac
     { ...input, baseRef: "deleted-base", path: "README.md" },
   ]) {
     const patch = await sessionFilePatchAsync(asyncGit, patchInput);
-    expect(patch).toEqual(sessionFilePatch(defaultGitRunner, patchInput));
     expect(patch.patch).not.toBe("");
   }
 });

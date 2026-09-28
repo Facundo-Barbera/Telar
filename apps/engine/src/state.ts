@@ -224,22 +224,8 @@ import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./domains/files";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
-import {
-  commitSessionWork,
-  defaultRemoteBaseAsync,
-  gitOverviewAsync,
-  listGitRefsAsync,
-  projectRemoteAsync,
-  pullRequestBlockedBy,
-  pushSessionBranch,
-  sessionBranchFacts,
-  sessionDiffAsync,
-  porcelainPaths,
-  sessionFilePatchAsync,
-  type GitOverview,
-} from "./git";
-import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
-import { cloneRepository, isCloneFailure } from "./clone";
+import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
+import { porcelainPaths } from "./platform/git/parse";
 import { inlineExcerpt, quotedExcerpt } from "./agent-notice";
 import { RELAY_RULE } from "./attribution";
 import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";

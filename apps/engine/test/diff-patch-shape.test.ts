@@ -21,8 +21,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { sessionFilePatch, sessionFilePatchAsync } from "../src/git";
+import { sessionFilePatchAsync } from "../src/domains/git";
 import { createAsyncGitRunner, createGitRunner } from "../src/worktree";
+
+const toAsync = (git: GitRunner): AsyncGitRunner => async (cwd, args, options) => git(cwd, args, options);
 
 const roots: string[] = [];
 afterEach(() => {
@@ -103,7 +105,7 @@ test("a patch cut at the engine's output bound says so, on both runners (#694)",
 
   for (const [runner, answer] of [
     ["async", await sessionFilePatchAsync(async, { cwd: root, path: "big.txt" })],
-    ["sync", sessionFilePatch(sync, { cwd: root, path: "big.txt" })],
+    ["sync", await sessionFilePatchAsync(toAsync(sync), { cwd: root, path: "big.txt" })],
   ] as const) {
     expect(answer.incomplete, `${runner} runner reports the bound`).toBe("truncated");
     // What arrived is KEPT (#650) and is a real prefix of a real answer...

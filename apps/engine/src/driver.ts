@@ -71,7 +71,7 @@ import {
   type RuntimeQuery,
   taskMemoryFrom,
 } from "./claude-runtime";
-import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
+import { countDiffLines, patchHunksOf, unifiedDiff } from "./domains/git";
 import type { DisplayCapability } from "./display/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
 import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";

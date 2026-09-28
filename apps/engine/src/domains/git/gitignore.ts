@@ -1,50 +1,7 @@
-/**
- * IGNORING TELAR'S OWN FILES IN SOMEBODY'S REPOSITORY.
- *
- * WHAT vNEXT ACTUALLY WRITES INTO A CHECKOUT: nothing. Every write this engine
- * makes lands under `TELAR_HOME` — the state directory, the journals, the
- * attachments, and worktrees, which go to `<TELAR_HOME>/engine/worktrees` for the
- * reasons `worktree.ts` sets out. The single exception is `writeWorkspaceFile`,
- * which saves a file a person opened and edited on purpose.
- *
- * SO WHY THIS EXISTS. The rules below are DEFENSIVE, and the header says so in the
- * file it writes. `telar.yaml` and `.telar/` are the legacy app's project-local
- * manifest and state — it is the same repository and the same machine, and a
- * checkout that has ever been opened by the old app will grow them. The worktree
- * rule covers a mode that does not exist today: if an in-repo worktree layout is
- * ever added, a repository registered before that change would otherwise start
- * reporting a checkout as untracked files.
- *
- * IT NEVER REWRITES AND NEVER DUPLICATES. Ported from the frozen app's
- * `ensureTelarGitignore`, which got this right: read the file, compare against a
- * set of patterns that would ALREADY cover each rule, and append only what is
- * missing. Somebody who wrote `/.telar` gets nothing added; somebody who wrote a
- * comment about Telar gets the rules, because a comment is not a rule.
- *
- * THE RULES ARE HERE, NOT IN A REQUEST. The route takes a project id and nothing
- * else. A caller that could name the lines could append anything to a file inside
- * a repository, and this is the only write in the engine that touches a file the
- * user did not ask for by name.
- *
- * AND IT UNDOES ITSELF. Registering a project now ignores these files WITHOUT
- * asking — the switch in the old dialog became a default — so the decision has to
- * be reversible from the toast that reports it. `removeTelarGitignore` is that
- * reverse, and it is deliberately narrower than a delete: it takes out the header
- * and the run of OUR rules directly under it, and leaves every other line in the
- * file exactly where it was.
- */
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { GitignoreRemoval, GitignoreResult } from "@telar/engine-client";
 
-/**
- * One rule, and every spelling that already covers it.
- *
- * `alreadyCovered` IS NOT COSMETIC. `.telar/`, `.telar`, `/.telar/` and `/.telar`
- * all ignore the same directory, and a repository that has any of them must not
- * grow a fifth line saying it again — that is how a `.gitignore` ends up with the
- * same rule four times in four different hands.
- */
 export type IgnoreRule = { rule: string; alreadyCovered: string[]; why: string };
 
 export const TELAR_IGNORE_RULES: IgnoreRule[] = [
@@ -65,17 +22,8 @@ export const TELAR_IGNORE_RULES: IgnoreRule[] = [
   },
 ];
 
-/** The comment that goes above the rules, so the next person to read this file
- *  knows who wrote them and can delete them on purpose. */
 const HEADER = "# Telar — local state, not for sharing";
 
-/**
- * The rules a `.gitignore` already covers.
- *
- * BLANK LINES AND COMMENTS ARE NOT RULES. A file whose only mention of Telar is
- * `# telar stuff below` covers nothing, and treating that as a match would leave
- * the repository unignored while reporting success.
- */
 function existingRules(contents: string): Set<string> {
   return new Set(
     contents
@@ -85,15 +33,6 @@ function existingRules(contents: string): Set<string> {
   );
 }
 
-/**
- * Append what is missing to `<root>/.gitignore`.
- *
- * NOT ATOMIC, AND THAT IS THE RIGHT CALL HERE — unlike `writeWorkspaceFile`, which
- * writes beside the target and renames. This appends to a file the user owns and
- * may have open in an editor; a rename would replace their inode, and an editor
- * holding the old one would write the whole file back over these lines the next
- * time it saved. Read-modify-write on the same inode is what `git` itself does.
- */
 export function ensureTelarGitignore(root: string, rules: IgnoreRule[] = TELAR_IGNORE_RULES): GitignoreResult {
   const file = path.join(root, ".gitignore");
   let contents = "";
@@ -114,34 +53,13 @@ export function ensureTelarGitignore(root: string, rules: IgnoreRule[] = TELAR_I
   }
   if (added.length === 0) return { added, present, path: file, created: false };
 
-  // A file that does not end in a newline would otherwise have the header
-  // welded onto its last rule.
   const prefix = contents.length > 0 && !contents.endsWith("\n") ? `${contents}\n` : contents;
-  // The blank line matters: appended flush against somebody else's section, these
-  // rules read as part of it.
   const gap = prefix.length > 0 && !prefix.endsWith("\n\n") ? "\n" : "";
   const block = [HEADER, ...added.map((rule) => rule)].join("\n");
   writeFileSync(file, `${prefix}${gap}${block}\n`, "utf8");
   return { added, present, path: file, created };
 }
 
-/**
- * Take the block back out of `<root>/.gitignore`.
- *
- * IT REMOVES OUR HEADER AND THE RUN OF OUR RULES UNDER IT, and nothing else. A
- * `.telar/` somebody wrote themselves, in their own section, is theirs — matching
- * rules anywhere in the file would make an undo of Telar's write delete a line
- * Telar never wrote. So the search is anchored on the header this module emits,
- * and it stops at the first line that is not one of `rules`.
- *
- * THE BLANK LINE ABOVE THE BLOCK GOES WITH IT, because `ensureTelarGitignore`
- * added it — leaving it behind would let a register/undo/register cycle grow a
- * gap per round trip.
- *
- * A FILE WITH NO HEADER IS NOT AN ERROR. The undo runs from a toast that may
- * arrive after somebody has already edited the file by hand, and "there was
- * nothing of ours to remove" is a true answer rather than a failure.
- */
 export function removeTelarGitignore(root: string, rules: IgnoreRule[] = TELAR_IGNORE_RULES): GitignoreRemoval {
   const file = path.join(root, ".gitignore");
   let contents: string;
@@ -163,11 +81,8 @@ export function removeTelarGitignore(root: string, rules: IgnoreRule[] = TELAR_I
     removed.push(lines[end].trim());
     end++;
   }
-  // The gap `ensureTelarGitignore` opened above the header, and only that one.
   const from = at > 0 && lines[at - 1].trim() === "" ? at - 1 : at;
   const kept = [...lines.slice(0, from), ...lines.slice(end)];
-  // A file that now ends in blank lines ends in ONE newline instead: the block
-  // was the tail, and its removal should not leave the shape of a tail behind.
   while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
   writeFileSync(file, kept.length === 0 ? "" : `${kept.join("\n")}\n`, "utf8");
   return { removed, path: file };
