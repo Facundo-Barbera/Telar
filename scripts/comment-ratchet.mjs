@@ -172,37 +172,60 @@ export function newCommentRuns(comments, added, max = MAX_NEW_BLOCK_LINES) {
   return runs.filter(([first, last]) => last - first + 1 > max);
 }
 
-export function countFindings(current, baseline) {
+/** Fails a workspace whose comment count rose over the merge base; notes one below the committed baseline. */
+export function countFindings(current, atBase, baseline) {
   const failures = [];
   const notices = [];
   for (const [workspace, count] of Object.entries(current)) {
+    const before = atBase[workspace] ?? 0;
     const limit = baseline[workspace];
-    if (limit === undefined) failures.push(`${workspace}: no baseline in ${BASELINE_FILE}. Run \`bun run comments:baseline\`.`);
-    else if (count > limit) failures.push(`${workspace}: ${count} comment lines, above its baseline of ${limit}. Delete comments rather than raising the baseline.`);
-    else if (count < limit) notices.push(`${workspace}: ${count} comment lines, below its baseline of ${limit}. Run \`bun run comments:baseline\` to lock that in.`);
+    if (count > before) failures.push(`${workspace}: this change adds ${count - before} comment lines (${before} → ${count}). Delete comments rather than adding them.`);
+    else if (limit === undefined || count < limit) notices.push(`${workspace}: ${count} comment lines, below the baseline of ${limit ?? "none"}. Run \`bun run comments:baseline\` to lock that in.`);
   }
   return { failures, notices };
 }
 
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
 
+const codeFiles = (list) => list.split("\n").filter((file) => file && languageOf(file));
+
 export function workspaceCounts(root) {
   const counts = {};
   for (const workspace of WORKSPACES) {
-    const files = git(root, ["ls-files", "--", workspace]).split("\n").filter((file) => file && languageOf(file));
+    const files = codeFiles(git(root, ["ls-files", "--", workspace]));
     if (files.length === 0) continue;
     counts[workspace] = files.reduce((sum, file) => sum + commentLines(readFileSync(join(root, file), "utf8"), languageOf(file)).size, 0);
   }
   return counts;
 }
 
-export function newBlockFailures(root, baseRef) {
-  let base;
-  try {
-    base = git(root, ["merge-base", baseRef, "HEAD"]).trim();
-  } catch {
-    return [`cannot find the merge base with ${baseRef}; fetch it (in CI, check out with fetch-depth: 0).`];
+export function countsAt(root, ref) {
+  const counts = {};
+  for (const workspace of WORKSPACES) {
+    const files = codeFiles(git(root, ["ls-tree", "-r", "--name-only", ref, "--", workspace]));
+    if (files.length === 0) continue;
+    const blobs = execFileSync("git", ["cat-file", "--batch"], { cwd: root, input: files.map((file) => `${ref}:${file}`).join("\n"), maxBuffer: 1024 * 1024 * 1024 });
+    let offset = 0;
+    counts[workspace] = files.reduce((sum, file) => {
+      const newline = blobs.indexOf(10, offset);
+      const size = Number(blobs.subarray(offset, newline).toString().split(" ")[2]);
+      const text = blobs.subarray(newline + 1, newline + 1 + size).toString("utf8");
+      offset = newline + 1 + size + 1;
+      return sum + commentLines(text, languageOf(file)).size;
+    }, 0);
   }
+  return counts;
+}
+
+const mergeBaseOf = (root, baseRef) => {
+  try {
+    return git(root, ["merge-base", baseRef, "HEAD"]).trim();
+  } catch {
+    return undefined;
+  }
+};
+
+export function newBlockFailures(root, base) {
   const diff = git(root, ["diff", "-U0", "--no-color", "--no-renames", "--diff-filter=AM", base, "--", ...WORKSPACES, "scripts"]);
   const failures = [];
   for (const [file, added] of addedLines(diff)) {
@@ -217,9 +240,11 @@ export function newBlockFailures(root, baseRef) {
 }
 
 export function commentRatchet(root, baseRef = process.env.COMMENT_RATCHET_BASE || "origin/main") {
+  const base = mergeBaseOf(root, baseRef);
+  if (!base) return { failures: [`cannot find the merge base with ${baseRef}; fetch it (in CI, check out with fetch-depth: 0).`], notices: [] };
   const baseline = JSON.parse(readFileSync(join(root, BASELINE_FILE), "utf8"));
-  const { failures, notices } = countFindings(workspaceCounts(root), baseline);
-  return { failures: [...failures, ...newBlockFailures(root, baseRef)], notices };
+  const { failures, notices } = countFindings(workspaceCounts(root), countsAt(root, base), baseline);
+  return { failures: [...failures, ...newBlockFailures(root, base)], notices };
 }
 
 if (import.meta.main) {
