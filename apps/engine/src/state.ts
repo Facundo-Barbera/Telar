@@ -98,7 +98,7 @@ import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, typ
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { type AttachmentInput, SessionQueries, SessionSettler, createSessionModules, SessionAttachments, workspaceRootOf, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, type OpenRequestInput, RequestGate, type ResolveRequestInput } from "./domains/sessions";
-import { requireRunningClaimFromQueue, WorkerChannel, TurnWakes, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission } from "./domains/turns";
+import { requireRunningClaimFromQueue, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -118,7 +118,6 @@ import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitR
 import { backfillTurnSummaries, CheckoutSizes, CleanupStore, copyStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
 import { type AttachedTerminals, pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
 import { type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
-
 
 
 
@@ -367,6 +366,7 @@ export class EngineStore {
   private readonly subscriptions: SessionSubscriptions;
   private readonly lifecycle: SessionLifecycle;
   private readonly schedules: ScheduleBook;
+  private readonly anchors: TurnAnchors;
   private readonly pluginDoors: PluginDoors;
   private readonly workspaceReads: WorkspaceReads;
   private readonly sessionGit: SessionGit;
@@ -972,12 +972,8 @@ export class EngineStore {
     this.claims = this.createClaims();
     this.sessionGit = new SessionGit(this.kernel, {
       records: this.records,
-      asyncGit: this.asyncGit,
       worktreeGit: this.worktreeGit,
-      anchorReadRoot: (session) => this.workspaceReads.anchorReadRoot(session),
       forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
-      readQueue: (id) => this.readQueue(id),
-      writeQueue: (id, queue) => this.writeQueue(id, queue),
       getProject: (id) => this.getProject(id),
       registerProject: (input) => this.registerProject(input),
     });
@@ -1085,6 +1081,10 @@ export class EngineStore {
       attachmentBytes: (sessionId, attachmentId) => this.attachmentBytes(sessionId, attachmentId).data,
       appendEvent: (sessionId, event) => void this.appendEvent(sessionId, event),
       dataScienceOps: () => this.dataScienceOps,
+    });
+    this.anchors = new TurnAnchors(this.kernel, this.records, this.sessionQueues, this.asyncGit, {
+      readRoot: (session) => this.workspaceReads.anchorReadRoot(session),
+      forgetReadsUnder: (root) => this.forgetGitReadsUnder(root),
     });
     this.schedules = new ScheduleBook(this.kernel, {
       requireSession: (sessionId) => void this.records.require(sessionId),
@@ -1502,13 +1502,6 @@ export class EngineStore {
       latexOps: new LatexOps(this.toolchains, this.latexJobs, (projectId) => this.getProject(projectId)),
     };
   }
-
-  private anchorTurn(sessionId: string, runId: string, side: "before" | "after"): void {
-    this.sessionGit.anchorTurn(sessionId, runId, side);
-  }
-
-
-
 
   projectGitAsync(projectId: string): Promise<GitOverview> {
     return this.workspaceReads.projectOverview(projectId);
@@ -1952,7 +1945,7 @@ export class EngineStore {
       writeQueue: (id, queue) => this.writeQueue(id, queue),
       requireRunningClaimFromQueue: (queue, runId, token) => requireRunningClaimFromQueue(queue, runId, token),
       assertProjectAvailable: (id) => this.assertProjectAvailable(id),
-      anchorTurn: (id, runId, side) => this.anchorTurn(id, runId, side),
+      anchorTurn: (id, runId, side) => this.anchors.anchor(id, runId, side),
       fireSubscriptions: (id, kind, turn, context) => this.fireSubscriptions(id, kind, turn, context),
       flushPendingNotifications: (id) => this.flushPendingNotifications(id),
       evaluateDelegationSettling: (id) => this.evaluateDelegationSettling(id),
