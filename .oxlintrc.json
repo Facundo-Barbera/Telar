@@ -66,7 +66,7 @@
     },
     {
       "files": [
-        "packages/engine-client/src/index.ts"
+        "packages/engine-client/src/platform/client.ts"
       ],
       "rules": {
         "typescript/no-unsafe-declaration-merging": "off"
