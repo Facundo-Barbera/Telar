@@ -215,3 +215,27 @@ export function engineProxy(request: Request): Promise<Response> {
   const { pathname, search } = new URL(request.url);
   return engineForward(request, `${pathname.replace(/^\/api\//, "/v2/")}${search}`);
 }
+
+/** Streams `request` to the engine and its answer back unbuffered, for answers that may be a live stream. */
+export async function enginePipe(request: Request, pathname: string): Promise<Response> {
+  const { discovery } = await engineClient();
+  const headers = new Headers(request.headers);
+  for (const name of ["cookie", "host", "connection", "content-length"]) headers.delete(name);
+  headers.set("authorization", `Bearer ${discovery.token}`);
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  let answer: Response;
+  try {
+    answer = await fetch(`http://${discovery.host}:${discovery.port}${pathname}`, {
+      method: request.method,
+      headers,
+      ...(hasBody ? { body: request.body, duplex: "half" } : {}),
+      redirect: "manual",
+      signal: request.signal,
+    } as RequestInit);
+  } catch {
+    throw new EngineClientError("engine_unavailable", "engine is unreachable");
+  }
+  const out = new Headers(answer.headers);
+  for (const name of ["content-encoding", "content-length", "transfer-encoding", "connection"]) out.delete(name);
+  return new Response(answer.body, { status: answer.status, statusText: answer.statusText, headers: out });
+}

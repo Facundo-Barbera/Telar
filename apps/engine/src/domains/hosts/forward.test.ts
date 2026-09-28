@@ -1,8 +1,7 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { forward, upstreamTimeout, upstreamUrl, HOST_ID_HEADER } from "./proxy";
-import { HOST_NAME_HEADER } from "@/platform/engine/host-client";
-import { HOST_HEADER } from "@/features/remote/server/host-token";
+import { forward, upstreamTimeout, upstreamUrl, HOST_ID_HEADER, HOST_NAME_HEADER } from "./forward";
+
+const HOST_HEADER = "x-telar-host";
 
 const host = { id: "host_b", name: "mini", baseUrl: "http://mini:3000", deviceToken: "tlr_remote" };
 
@@ -30,7 +29,6 @@ describe("upstreamTimeout", () => {
   });
 
   test("a write is never a list read, whatever it is addressed to", () => {
-    // `PATCH /inbox` shares its path with the rail's read.
     expect(upstreamTimeout({ method: "PATCH" }, ["inbox"])).toBe(60_000);
     expect(upstreamTimeout({ method: "POST" }, ["projects"])).toBe(60_000);
     expect(upstreamTimeout({ method: "get" }, ["health"])).toBe(10_000);
@@ -57,10 +55,8 @@ describe("forward", () => {
     const headers = new Headers(seen!.headers);
     expect(headers.get("authorization")).toBe("Bearer tlr_remote");
     expect(headers.get("cookie")).toBeNull();
-    // The shell's launcher secret for this cockpit must not reach another machine.
     expect(headers.get(HOST_HEADER)).toBeNull();
     expect(headers.get("x-telar-attachment-name")).toBe("a.png");
-    // The remote pairs a device; this cockpit does not become one.
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(response.headers.get("etag")).toBe("W/1");
     expect(await response.json()).toEqual({ projects: [] });
@@ -82,7 +78,6 @@ describe("forward", () => {
     });
     await forward(request, host, ["sessions", "s", "turns"], fake(async (_url, init) => {
       seen = init;
-      // Drain what the proxy handed over, as the network would.
       const body = await new Response(init.body as BodyInit).text();
       expect(body).toBe(JSON.stringify({ input: "hi" }));
       return Response.json({ ok: true });
