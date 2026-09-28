@@ -7,6 +7,7 @@ import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRo
 import { INLINE_CHARS } from "../src/agent-notice";
 import { RELAY_RULE } from "../src/attribution";
 import { summariseTurn } from "../src/turn-summary";
+import { forgetOpenPrefixes, openPrefixCount } from "./store-internals";
 
 const roots: string[] = [];
 /**
@@ -4389,7 +4390,7 @@ describe("an open item's streamed prefix", () => {
      * whole reply. Exactly the bug the field exists to prevent, one layer down.
      */
     const { store, token } = streaming();
-    store.forgetOpenPrefixesForTest();
+    forgetOpenPrefixes(store);
     store.ingestObservations("session_one", "run_one", token, [
       { kind: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" },
     ]);
@@ -4413,7 +4414,7 @@ describe("an open item's streamed prefix", () => {
     // Stop deliberately leaves items open, so the prefix is the only account of
     // what the reader was shown — and it must outlive the process that held it.
     const { store } = streaming();
-    store.forgetOpenPrefixesForTest();
+    forgetOpenPrefixes(store);
     expect(store.openItemPrefix("session_one", "i1", store.eventCursor("session_one"))!.streamed).toBe("Once upon ");
   });
 
@@ -4472,12 +4473,12 @@ test("#214 an item evicted from the prefix cache keeps streaming correctly", () 
   // THE BOUND ITSELF, asserted separately: the text above stays correct whether
   // or not eviction ran, so it cannot tell a held bound from a skipped one.
   // Opening is the path that used to insert without trimming.
-  expect(store.openPrefixCountForTest()).toBeLessThanOrEqual(64);
+  expect(openPrefixCount(store)).toBeLessThanOrEqual(64);
   store.ingestObservations("session_one", "run_one", token, [
     { kind: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" },
   ]);
   expect(store.openItemPrefix("session_one", "i1", store.eventCursor("session_one"))!.streamed).toBe("Once upon a time");
-  expect(store.openPrefixCountForTest()).toBeLessThanOrEqual(64);
+  expect(openPrefixCount(store)).toBeLessThanOrEqual(64);
 });
 
 /**

@@ -106,7 +106,7 @@ import type {
   ProviderUpdateRun,
   PublishedAppearance,
   EngineRequest,
-  ReportWindowStatus,
+  HeldReports,
   RequestDecision,
   RuntimeMode,
   LiveSessionRow,
@@ -1141,8 +1141,8 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       },
     ) => request<{ session: Session; ended?: SessionSettleEnded }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
     /** How many peer reports the session is holding; not on the session record. */
-    sessionReportWindow: (sessionId: string) =>
-      request<ReportWindowStatus>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/report-window`),
+    sessionHeldReports: (sessionId: string) =>
+      request<HeldReports>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/held-reports`),
     /**
      * A HUMAN WAS SHOWN THIS TURN'S RESULT. Names the turn rather than a time,
      * so a receipt that lands after newer work cannot mark that work read —

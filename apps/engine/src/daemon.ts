@@ -36,7 +36,6 @@ import {
   type McpOAuthStatus,
   type McpServer,
   type ModelSelection,
-  type ReportCadence,
   type RuntimeMode,
   type StorageReport,
   type TurnSubmissionResult,
@@ -193,13 +192,8 @@ export type EngineDaemonOptions = {
    * half an hour, and a few minutes either side of it is not a difference.
    */
   settledTerminalSweepIntervalMs?: number;
-  /**
-   * Testable cadence for the report-window sweep — issue #723.
-   *
-   * FASTER THAN THE SWEEP ABOVE, because the shortest window a person may set is
-   * a minute and a pass slower than that would silently become the real window.
-   */
-  reportWindowSweepIntervalMs?: number;
+  /** Testable cadence for the cohort and subscription sweep. */
+  cohortSweepIntervalMs?: number;
   /**
    * Testable cadence for the snooze-wake sweep — issues #490, #586.
    *
@@ -464,14 +458,7 @@ function sessionEventsETag(cursor: number, after: number, limit: number): string
   return `W/"events-${cursor}-${after}-${limit}"`;
 }
 
-/**
- * Does `If-None-Match` name this tag?
- *
- * WEAK COMPARISON, which is what RFC 9110 requires of `If-None-Match`: `W/"x"`
- * and `"x"` match, and a client that stripped the prefix somewhere along the
- * way is not punished for it. A list is a list — a browser may send back
- * several — and `*` means "if you have anything at all", which here is always.
- */
+// Weak comparison, as RFC 9110 requires of `If-None-Match`: a list, `W/` ignored, `*` matches anything.
 function matchesETag(header: string | string[] | undefined, tag: string): boolean {
   if (header === undefined) return false;
   const bare = (value: string): string => value.trim().replace(/^W\//, "");
@@ -611,17 +598,6 @@ async function appearanceBody(request: http.IncomingMessage): Promise<Record<str
  */
 function appearanceEtag(updatedAt: number): string {
   return `"a${updatedAt.toString(36)}"`;
-}
-
-/** `If-None-Match` as clients actually send it: a list, possibly weak-tagged,
- *  possibly `*`. Only equality against our own strong tag matters here. */
-function matchesEtag(header: string | string[] | undefined, etag: string): boolean {
-  const raw = Array.isArray(header) ? header.join(",") : header;
-  if (!raw) return false;
-  return raw
-    .split(",")
-    .map((candidate) => candidate.trim().replace(/^W\//, ""))
-    .some((candidate) => candidate === "*" || candidate === etag);
 }
 
 function stringValue(value: unknown, label: string, optional = false): string | undefined {
@@ -1525,59 +1501,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     void store.sweepSettledTerminals().catch(() => undefined);
   }, options.settledTerminalSweepIntervalMs ?? 5 * 60_000);
   settledTerminalSweeper.unref();
-  /**
-   * AND A REPORT WINDOW NEEDS ONE TOO — issue #723.
-   *
-   * The same gap as the sweep above, for the same reason: the mailbox's drains
-   * all hang off a turn ending, and a coordinator that set a window and went
-   * quiet has no turn to end. The tick is FASTER than the delegation sweep
-   * because the shortest window a person can set is a minute, and a five-minute
-   * pass would make that window a five-minute one.
-   *
-   * IT IS STILL CHEAP. A session with no window costs one document read and a
-   * closed window with an empty box costs one more; nothing here reads a queue
-   * unless a cohort is actually going out.
-   */
-  const reportWindowSweeper = setInterval(() => {
-    try {
-      store.sweepReportWindows();
-    } catch {
-      /* the next tick tries again */
-    }
-    // A cohort's expiry rides the same tick: a minute is its shortest timeout.
+  // A minute is the shortest cohort timeout, so this ticks faster than that.
+  const cohortSweeper = setInterval(() => {
     try {
       store.sweepCohorts();
     } catch {
       /* the next tick tries again */
     }
-    // And so does a subscription's: its target finished, or it outlived its bound.
     try {
       store.sweepSubscriptions();
     } catch {
       /* the next tick tries again */
     }
-  }, options.reportWindowSweepIntervalMs ?? 30_000);
-  reportWindowSweeper.unref();
-  /**
-   * AND A SNOOZE NEEDS ONE — issues #490, #586.
-   *
-   * The third instance of the gap the two above describe, and the plainest:
-   * a snooze ends because a DEADLINE PASSES, and nothing writes at a deadline.
-   * See `sweepSnoozeWakes` for why this belongs to the engine rather than to
-   * each cockpit — in short, it is one tick here instead of one per row per
-   * connected client, which is the direction #490 is pushing.
-   *
-   * 60 s, AND THE FLOOR IS DELIBERATE. The shortest snooze the cockpit offers is
-   * an hour (`snoozePresets` — hour, three hours, evening, tomorrow, next week),
-   * so even the delegation sweep's five minutes would serve. It is finer because
-   * `snoozedUntil` is a free timestamp on the PATCH route and not only a preset,
-   * and because `dueSnoozeWakes` seeks rather than scans — so the cost of being
-   * finer is near zero and the benefit is that a wake does not land on a
-   * visibly coarse grid. There is nothing below this worth having.
-   *
-   * A THROW HERE MUST NOT TAKE THE DAEMON DOWN, as above. The sweep already
-   * skips a session it cannot read; this is the backstop for anything else.
-   */
+  }, options.cohortSweepIntervalMs ?? 30_000);
+  cohortSweeper.unref();
   const snoozeWakeSweeper = setInterval(() => {
     try {
       store.sweepSnoozeWakes();
@@ -1586,23 +1523,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
   }, options.snoozeWakeSweepIntervalMs ?? 60_000);
   snoozeWakeSweeper.unref();
-  /**
-   * AND A SCHEDULE'S APPOINTMENT NEEDS ONE — issue #543.
-   *
-   * 30 s, MATCHING `reportWindowSweeper` AND NOT THE 60 s ABOVE, and the reason
-   * is arithmetic rather than taste: the shortest interval a schedule may carry
-   * is 60 s, and a sweep at 60 s would silently make that floor 120 s. A
-   * feature whose smallest number is a fiction is the class of bug this whole
-   * file keeps arguing against.
-   *
-   * IT DOES NOT MATTER THAT THIS TICK MAY BE LATE. The sweep is
-   * deadline-driven — it asks which rows are due, never how many ticks it
-   * missed — so a suspend that stops the timer for three days changes when a
-   * row is noticed and not what happens to it.
-   *
-   * A THROW HERE MUST NOT TAKE THE DAEMON DOWN, as above; the sweep already
-   * catches per row.
-   */
+  // 30 s because the shortest schedule interval is 60 s; a 60 s tick would double it.
   /**
    * THE AUTOMATIC CLEANUP: once five minutes after start, then every thirty.
    * With every switch off, a sweep reads one small document and stops.
@@ -1666,6 +1587,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
   }, options.requestDeadlineSweepIntervalMs ?? 15_000);
   requestDeadlineSweeper.unref();
+  const stopTimers = () => {
+    for (const timer of [workerPruner, delegationSweeper, settledTerminalSweeper, cohortSweeper, snoozeWakeSweeper, scheduleSweeper, requestDeadlineSweeper, cleanupSweeper]) {
+      clearInterval(timer);
+    }
+    clearTimeout(cleanupFirst);
+    if (modelPrefetch) clearTimeout(modelPrefetch);
+  };
 
   // Read once: it names the Mac to another cockpit (`.local` dropped — it is
   // mDNS's suffix, not the name), and a name that flickered per request
@@ -1757,7 +1685,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return { ...store.getSession(sessionId), ended };
       },
       // The bounds are the store's, like every member here — see #723.
-      setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
       // #543. Present only in-process; a worker reaching the wall over HTTP has
       // no route for it yet and the tool reports that rather than throwing.
       putSchedule: async (input) => store.putSchedule({ ...input, rule: input.rule as never }),
@@ -2913,7 +2840,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             return;
           }
           const etag = appearanceEtag(stored.updatedAt);
-          if (matchesEtag(request.headers["if-none-match"], etag)) {
+          if (matchesETag(request.headers["if-none-match"], etag)) {
             response.writeHead(304, { etag, "cache-control": "no-store" });
             response.end();
             return;
@@ -5211,30 +5138,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, { cohorts: store.cohortsFor(session.sessionId) });
           return;
         }
-        /**
-         * THE CADENCE, AND WHAT IT IS HOLDING — issue #723.
-         *
-         * TWO FACTS, ONE READ, because neither is legible alone. A window with
-         * nothing waiting and a window with five reports waiting are different
-         * situations to the person who set it, and a surface that could only
-         * show the setting would make a held report look exactly like a lost
-         * one — the bug #631 part 2 fixed, reintroduced by the cure's own UI.
-         *
-         * ITS OWN ROUTE RATHER THAN A FIELD ON A LIST. `LiveSessionRow` omits
-         * `reportWindowMinutes` deliberately (see the contract) and the rail is
-         * measured against a per-row ceiling; the count is not on the session
-         * record at all — it is the mailbox's length, which only a read of the
-         * box can answer. A surface that configures a cadence reads this; a
-         * list never does.
-         *
-         * `held` IS THE WHOLE BOX, not the windowed part of it. A busy session
-         * holds mail for its running turn whatever its cadence says, and the
-         * mailbox does not file the two apart — so this reports what is waiting
-         * and lets the reader, who can see the window beside it, say why.
-         */
-        if (request.method === "GET" && session.tail === "/report-window") {
+        // How many peer notifications are waiting for this session's next turn.
+        if (request.method === "GET" && session.tail === "/held-reports") {
           writeJson(response, 200, {
-            reportWindowMinutes: store.getSession(session.sessionId).reportWindowMinutes ?? null,
             held: store.pendingNotifications(session.sessionId).length,
           });
           return;
@@ -5323,10 +5229,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               ...(input.settledOverride === undefined ? {} : { settledOverride: input.settledOverride as "settled" | "active" | null }),
               ...(input.snoozedUntil === undefined ? {} : { snoozedUntil: input.snoozedUntil as number | null }),
               ...(input.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: input.resumeAfterRateLimit as boolean | null }),
-              // The report window, same reasoning again — the bounds are the
-              // store's, so an in-process caller cannot set a window this hop
-              // would have refused (#723).
-              ...(input.reportWindowMinutes === undefined ? {} : { reportWindowMinutes: input.reportWindowMinutes as ReportCadence | null }),
             });
           /**
            * AN EXPLICIT SETTLE ENDS WHAT THE SESSION LEFT RUNNING — issue #883.
@@ -5696,34 +5598,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         for (const stream of [...openStreams]) (stream.end ?? stream)();
         openStreams.clear();
         await closeServer(server);
-        clearInterval(workerPruner);
-        clearInterval(delegationSweeper);
-        clearInterval(settledTerminalSweeper);
+        stopTimers();
         store.checkoutSizes.stop();
-        // CLEARED RATHER THAN ONLY UNREF'D, unlike the two sweeps beside it,
-        // because this one RESOLVES REQUESTS: a tick that landed between
-        // `closeExecutionStore` and the process ending would be a write against
-        // a store that has gone. The others only read or queue.
-        clearInterval(requestDeadlineSweeper);
         // No worktree setup outlives the engine that started it; a cleanup
         // deletes, so it does not tick against a store that is closing.
         store.setups.stopAll();
-        clearTimeout(cleanupFirst);
-        if (modelPrefetch) clearTimeout(modelPrefetch);
-        clearInterval(cleanupSweeper);
         removeOwnDiscovery(store, daemonId);
         store.closeExecutionStore();
         lock.release();
       },
     };
   } catch (error) {
-    clearInterval(workerPruner);
-    clearInterval(delegationSweeper);
-    clearInterval(settledTerminalSweeper);
-    clearInterval(requestDeadlineSweeper);
-    clearTimeout(cleanupFirst);
-    if (modelPrefetch) clearTimeout(modelPrefetch);
-    clearInterval(cleanupSweeper);
+    stopTimers();
     server.close();
     store.closeExecutionStore();
     lock.release();

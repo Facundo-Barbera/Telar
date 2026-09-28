@@ -115,7 +115,6 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
       const ended = await store.endSessionLeftovers(sessionId);
       return { ...store.getSession(sessionId), ended };
     },
-    setReportWindow: async (sessionId, minutes) => store.updateSession(sessionId, { reportWindowMinutes: minutes }),
     diff: async (sessionId) => store.sessionDiffAsync(sessionId),
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
     unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
@@ -152,7 +151,6 @@ const WALL_NAMES = [
   "sessions_subscriptions",
   "sessions_requests",
   "sessions_resolve_request",
-  "sessions_report_window",
   // #516's six queries, appended in the order the wall registers them — the
   // list GROWS rather than reorders, which is what makes a change that adds a
   // tool unable to also move one.
@@ -328,7 +326,7 @@ describe("creating a session", () => {
     // turn's does (`self`) — for subscriptions, which are recorded on the
     // subscription and on neither session.
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
-      "cohorts", "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "unsubscribe",
+      "cohorts", "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "unsubscribe",
     ]);
   });
 
@@ -481,29 +479,6 @@ describe("driving a session", () => {
     // Bringing it back closes nothing and reopens nothing.
     await call(tools, "sessions_settle", { sessionId: id, settled: false });
     expect(closed).toEqual([id]);
-  });
-
-  /**
-   * THE CADENCE VERB IS DEPRECATED — the session-tools audit. Reports never open
-   * a turn now, so there is no cadence to set: the tool answers `deprecated` and
-   * changes nothing. It is still refused where there is no caller.
-   */
-  test("the report window is a deprecated no-op for the caller, and refused where there is no caller", async () => {
-    const { store, projectId } = engine();
-    const mine = store.createSession({ projectId, title: "coordinator" });
-    const tools = wall(store, { sessionId: mine.id });
-
-    const set = await call(tools, "sessions_report_window", { minutes: 25 });
-    expect(set.isError).toBe(false);
-    expect(set.json).toMatchObject({ sessionId: mine.id, deprecated: true });
-    expect(String(set.json!.note)).toContain("reports never open a turn");
-    expect(store.getSession(mine.id).reportWindowMinutes).toBeUndefined();
-
-    // On the outward socket there is still no session to speak for.
-    const socket = wall(store);
-    const nobody = await call(socket, "sessions_report_window", { minutes: 25 });
-    expect(nobody.isError).toBe(true);
-    expect(nobody.text).toContain("no session");
   });
 
   test("status lists the mail a session is holding, so held never reads as lost", async () => {
@@ -1421,12 +1396,12 @@ describe("subscribing and answering", () => {
     }
   });
 
-  test("an awaited result defaults to one wake; ongoing monitoring is explicit", async () => {
+  test("a subscription wakes once", async () => {
     const { store, projectId } = engine();
     const host = store.createSession({ projectId, title: "coordinator" });
     const target = store.createSession({ projectId, title: "worker" });
     const tools = wall(store, { sessionId: host.id });
-    await call(tools, "sessions_subscribe", { sessionId: target.id });
+    await call(tools, "sessions_subscribe", { sessionIds: [target.id] });
     for (const runId of ["run_first", "run_second"]) {
       store.submitTurn(target.id, { runId, input: "work" });
       const token = store.claimTurn(target.id, "worker_one")!.claim!.token;
@@ -1435,8 +1410,6 @@ describe("subscribing and answering", () => {
     }
     expect(store.subscriptionsFor(host.id)).toHaveLength(0);
     expect(store.turns(host.id)).toHaveLength(1);
-    const ongoing = await call(tools, "sessions_subscribe", { sessionId: target.id, once: false });
-    expect(ongoing.json!.once).not.toBe(true);
   });
 
   test("sessionIds subscribes a cohort, which is listed and removed by its id", async () => {
@@ -1487,12 +1460,10 @@ describe("subscribing and answering", () => {
     const tools = wall(store, { sessionId: host.id });
     const target = store.createSession({ projectId, title: "a worker" });
 
-    // ONE SUBSCRIPTION, NO KNOBS (session-tools audit): one session is a cohort
-    // of one, and the old knobs are accepted, ignored, and named as deprecated.
-    const subscribed = await call(tools, "sessions_subscribe", { sessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
+    // One session is a cohort of one.
+    const subscribed = await call(tools, "sessions_subscribe", { sessionIds: [target.id] });
     expect(subscribed.isError).toBe(false);
     expect(subscribed.json).toMatchObject({ subscriberSessionId: host.id, members: [{ sessionId: target.id }] });
-    expect(String(subscribed.json!.deprecated)).toContain("deprecated");
     expect(String(subscribed.json!.note)).toContain(`ONE notification when ${target.id} is done`);
 
     const listed = await call(tools, "sessions_subscriptions");
@@ -1843,10 +1814,9 @@ describe("the shape of the wall", () => {
    * because nothing else in the tree spawns a process that inherits a
    * session's own telar server.
    */
-  test("twenty-one tools, every one of them a `sessions_` verb", () => {
+  test("twenty tools, every one of them a `sessions_` verb", () => {
     const names = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
-    // 21 since #543 added `sessions_schedule`.
-    expect(names.length).toBe(21);
+    expect(names.length).toBe(20);
     for (const name of names) {
       expect(name.startsWith("sessions_")).toBe(true);
       expect(qualifyTelarTool(name)).toBe(`mcp__telar__${name}`);

@@ -164,7 +164,6 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_subscriptions",
     "sessions_requests",
     "sessions_resolve_request",
-    "sessions_report_window",
     "sessions_find",
     "sessions_outline",
     "sessions_answer",
@@ -181,9 +180,9 @@ test("the sessions toolkit registers under the SAME one server, and only when th
 
   // …and without one the sessions tools are GONE, and nothing is left to
   // register: the server itself does not appear. Anti-vacuity for the list
-  // above is the COUNT — twenty-one names, not zero — rather than a tool that
+  // above is the COUNT — twenty names, not zero — rather than a tool that
   // happened to be unconditional.
-  expect(names.length).toBe(21);
+  expect(names.length).toBe(20);
   names.length = 0;
   await claudeDriver(sdk).run({
     prompt: "prompt",
@@ -358,10 +357,6 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // wall can answer "what happened lately" from one page rather than by
     // walking 61,933 events to reach the end. A READ, like every other member
     // that is not one of the five verbs.
-    // `setReportWindow` joined with #723, and it is the narrowest member here:
-    // one field of `updateSession`, on the CALLER's own session, reached through
-    // `setSessionReportWindow` rather than by widening the Pick to the whole
-    // patch — the same treatment `settle` already gets.
     // `query` joined with #516: the six READS that ask a conversation something
     // rather than paging it, grouped as a sub-port because they are answered by
     // the projection and the query routes rather than by a store verb each.
@@ -371,7 +366,7 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // `subscribeCohort` and `cohorts` are a subscription to several sessions at
     // once, and its list: the same reach `subscribe` already has.
     expect(surface).toEqual([
-      "cohorts", "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "setReportWindow", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "turn", "unsubscribe",
+      "cohorts", "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "turn", "unsubscribe",
     ]);
     expect(Object.keys(sessions.query).sort()).toEqual(["answer", "find", "grep", "outline", "step", "steps"]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {

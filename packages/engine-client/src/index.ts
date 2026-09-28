@@ -171,7 +171,6 @@ import {
   type PluginInstallInput,
   type PluginStatus,
   type ProjectPlugins,
-  type ReportCadence,
 } from "./protocol";
 
 export * from "./protocol";
@@ -346,21 +345,8 @@ export type SessionSnapshot = {
   tasks: Task[];
 };
 
-/** What `GET /v2/sessions/:id/report-window` answers with — the cadence a
- *  session asked for, and how much mail is waiting on it (#723). */
-export type ReportWindowStatus = {
-  /** Minutes, `HOLD_REPORTS` for the window that never closes (#784), or `null`
-   *  while routine reports reach the session as they arrive — see
-   *  `Session.reportWindowMinutes`. */
-  reportWindowMinutes: ReportCadence | null;
-  /**
-   * HOW MANY NOTIFICATIONS ARE WAITING, whatever is holding them. A session
-   * with a turn in flight holds its mail too, so this is "what has not been
-   * delivered" rather than "what the window is holding" — the mailbox keeps one
-   * box and does not file the two apart.
-   */
-  held: number;
-};
+/** What `GET /v2/sessions/:id/held-reports` answers with: peer notifications waiting for the next turn. */
+export type HeldReports = { held: number };
 
 /**
  * ══ THE FIVE QUERY ROUTES — issue #516 ══
@@ -2406,11 +2392,6 @@ export class EngineClient {
       /** Sit out a usage limit and carry on. `null` returns the session to the
        *  driver's default — see `Session.resumeAfterRateLimit`. */
       resumeAfterRateLimit?: boolean | null;
-      /** Hold routine peer reports and deliver them together on this cadence,
-       *  or `HOLD_REPORTS` to hold them and never deliver them as a turn at all
-       *  (#784). `null` returns the session to arrival delivery — see
-       *  `Session.reportWindowMinutes`. */
-      reportWindowMinutes?: ReportCadence | null;
     },
   ): Promise<{ session: Session; ended?: SessionSettleEnded }> {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
@@ -2426,34 +2407,9 @@ export class EngineClient {
     return this.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
   }
 
-  /**
-   * THE SECOND FIELD OF `updateSession` A WORKER MAY TOUCH, on the same terms as
-   * `settleSession` above and for the same reason — issue #723.
-   *
-   * A session asks for its OWN report cadence through this; the narrow verb is
-   * what keeps `sessions_report_window` from carrying the title, the model and
-   * the runtime mode along with it. `null` returns the session to arrival
-   * delivery.
-   */
-  setSessionReportWindow(sessionId: string, minutes: ReportCadence | null): Promise<{ session: Session }> {
-    return this.updateSession(sessionId, { reportWindowMinutes: minutes });
-  }
-
-  /**
-   * THE CADENCE AND WHAT IT IS HOLDING — the read behind the human's control
-   * (#723).
-   *
-   * BOTH, OR NEITHER IS LEGIBLE. The setting alone cannot tell a held report
-   * from a lost one, which is the failure this feature exists to avoid rather
-   * than to cause; the count alone cannot say when it will go out.
-   *
-   * SMALL ON PURPOSE. A surface that shows a cadence POLLS — a peer's report
-   * arriving writes nothing to this session's journal — so this answers two
-   * numbers rather than riding the snapshot, whose `turns` and `items` a poll
-   * has no use for.
-   */
-  sessionReportWindow(sessionId: string): Promise<ReportWindowStatus> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/report-window`);
+  /** How many peer notifications are waiting for this session's next turn. */
+  sessionHeldReports(sessionId: string): Promise<HeldReports> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/held-reports`);
   }
 
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot> {

@@ -862,63 +862,6 @@ export const ClaudeConversation = z.object({
 });
 export type ClaudeConversation = z.infer<typeof ClaudeConversation>;
 
-/**
- * THE BOUNDS ON A REPORT WINDOW — `Session.reportWindowMinutes`, issue #723.
- *
- * A MINUTE IS THE FLOOR rather than a second, because a window measured in
- * seconds is not a cadence: it delays each report by less than the turn it
- * would open and gives a reader the same interleaving it was set to fix. A day
- * is the ceiling on the same argument from the other end — past that, "held"
- * and "lost" are the same experience, and the mailbox cap (`MAX_COHORT_ENTRIES`)
- * would be doing the deciding instead of the window.
- */
-export const MIN_REPORT_WINDOW_MINUTES = 1;
-export const MAX_REPORT_WINDOW_MINUTES = 24 * 60;
-
-/**
- * THE WINDOW THAT NEVER CLOSES — issue #784, step 2.
- *
- * A THIRD CADENCE ON THE SAME FIELD, not a second field. "As they arrive",
- * "every N minutes" and "hold them" are three answers to ONE question — how
- * this session is told about its peers — and a boolean beside the number would
- * be two records of one decision, with the pair `{minutes: 25, held: true}`
- * meaning nothing anybody could name.
- *
- * WHY IT IS NOT JUST A VERY LONG WINDOW. `MAX_REPORT_WINDOW_MINUTES` is a day,
- * and lengthening it was the obvious move and the wrong one: every window ends
- * in a FLUSH, and a flush is a TURN. #784's finding is that for a PERSON'S
- * session the turn is the cost — the conversation gains a row, a provider call
- * is paid against context they will re-read cold, and whatever they were
- * reading moves. A 25-minute window set overnight delivers at 3:14am, 3:41am and
- * 4:09am: quieter than forty, no better for them. This cadence holds the
- * mailbox and NEVER flushes it, so the count on the panel is the whole delivery
- * and the person reads it when they choose to look.
- *
- * IT DOES NOT LOSE ANYTHING, and the surface is what makes that true rather
- * than the claim. The reports stay in the mailbox `sessions_status` and
- * `GET /v2/sessions/:id/report-window` already report, and the Agents panel
- * already draws that count — the one risk `report-cadence.tsx` names about its
- * own feature is that *"'held' and 'lost' look identical from outside"*, which
- * is exactly why the count had to exist before this value could.
- *
- * AND IT HOLDS ONLY WHAT A WINDOW HOLDS: a `report`, and a `result` nobody is
- * awaiting. A `task`, a `blocker` and an awaited `result` are untouched — the
- * one clause a cadence withdraws is the same one, and a hold that swallowed a
- * blocker would be the single way this change could make things worse.
- */
-export const HOLD_REPORTS = "hold";
-
-/**
- * How a session is told about routine peer traffic: a number of minutes, or
- * `HOLD_REPORTS`. Absent (on `Session`) or `null` (on a patch) is the default —
- * each report wakes the session as it arrives.
- */
-export const ReportCadence = z.union([
-  z.number().int().min(MIN_REPORT_WINDOW_MINUTES).max(MAX_REPORT_WINDOW_MINUTES),
-  z.literal(HOLD_REPORTS),
-]);
-export type ReportCadence = z.infer<typeof ReportCadence>;
-
 export const Session = z.object({
   id: Id,
   /**
@@ -1201,42 +1144,6 @@ export const Session = z.object({
    */
   agentMessagesBlockedAt: Timestamp.optional(),
 
-  /**
-   * HOW LONG ROUTINE PEER REPORTS ARE HELD BEFORE ONE MERGED DELIVERY — the
-   * report cadence, issue #723.
-   *
-   * ABSENT MEANS TODAY'S BEHAVIOUR, which is the only safe default: a routine
-   * report reaching an idle session is delivered on arrival (#631 part 2, so it
-   * is not silently lost). That is right for one sender and unreadable for five
-   * — a coordinator with five workers is woken five times, and the interleaving
-   * rather than the per-message cost is what made hand-run orchestration
-   * illegible. With a window set, those arrivals are HELD in the session's
-   * mailbox instead and the window's close delivers them as ONE turn.
-   *
-   * IT BELONGS TO THE RECIPIENT, and that is the whole reason it lives on
-   * `Session` rather than on an assignment or a subscription. The mailbox is
-   * keyed per recipient and so is the cohort merge, so "one merged notice per
-   * window" is only well-defined when one window governs one box. A
-   * sender-owned interval would put five clocks on one mailbox, which is the
-   * per-event problem with extra steps.
-   *
-   * ONLY ROUTINE TRAFFIC IS HELD: a `report`, and a `result` nobody is awaiting
-   * — exactly the set that is `passive` today. A `task` is work arriving, a
-   * `blocker` is a peer asking for intervention now, and an awaited `result` is
-   * the event a coordinator called `sessions_subscribe` to be woken for. A
-   * window that delayed any of those three would be flattening the distinction
-   * #199 exists to keep.
-   *
-   * MINUTES, because it is a cadence a person states out loud ("report every
-   * 25 minutes") and no reader of this field wants to count zeros.
-   *
-   * OR `HOLD_REPORTS`, WHICH IS A WINDOW THAT NEVER CLOSES — issue #784. The
-   * name kept its `Minutes` suffix because a rename across seven files and two
-   * wire surfaces would have been the change rather than the cadence; read it as
-   * "how long", of which "indefinitely" is an answer. See `ReportCadence`.
-   */
-  reportWindowMinutes: ReportCadence.optional(),
-
   /** Legacy pause metadata, accepted when reading older state. Startup and
    * session Stop settle its held backlog and remove the latch without replay.
    * New clients use session Stop; no command creates a pause latch. */
@@ -1291,10 +1198,6 @@ export const LiveSessionRow = Session.omit({
   agentMessagesBlockedAt: true,
   paused: true,
   unsettledAssignments: true,
-  /** A delivery cadence, which no row renders — it decides WHEN a session is
-   *  told something, not what a reader of a list sees. Same argument as the
-   *  latches above; a surface that configures it reads the whole record. */
-  reportWindowMinutes: true,
 });
 export type LiveSessionRow = z.infer<typeof LiveSessionRow>;
 

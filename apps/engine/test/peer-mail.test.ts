@@ -121,14 +121,6 @@ test("only a task or a blocker steers into the host's running turn", () => {
   expect(send(store, proof, "run_result", "result", "PR green.").turn.state).toBe("queued");
 });
 
-test("report_window is retired: the tick delivers nothing", () => {
-  const { store, proof } = setup();
-  store.updateSession("session_host", { reportWindowMinutes: 5 });
-  send(store, proof, "run_report", "report");
-  expect(store.sweepReportWindows()).toEqual([]);
-  expect(queued(store)).toHaveLength(0);
-});
-
 /**
  * A CORRECTION — issue #784, step 3, unchanged by the audit. Unread, the
  * earlier message is withdrawn and the correction takes its place; read, the

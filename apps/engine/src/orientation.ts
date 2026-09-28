@@ -151,8 +151,7 @@ It is not this CLI's own notion of a session, and not a chat thread.
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
 \`sessions_subscribe\`, \`sessions_unsubscribe\`, \`sessions_subscriptions\`,
-\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_report_window\` (deprecated),
-\`sessions_schedule\`, and the six reads below.
+\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_schedule\`, and the six reads below.
 
 ### Reading a peer without spending your context on it
 
