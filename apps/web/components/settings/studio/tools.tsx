@@ -28,13 +28,11 @@ import {
   MIN_FONT_SIZE,
   MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
-  MONO_FONTS,
+  APP_FONTS,
   MONOSPACED_FONTS,
-  SANS_FONTS,
   type Accent,
   type Appearance,
-  type MonoFont,
-  type SansFont,
+  type AppFont,
 } from "@/lib/appearance";
 import {
   cssColorToHex,
@@ -66,7 +64,7 @@ export type TypeToolProps = { appearance: Appearance; onChange: (patch: Partial<
 // differs, because Geist and Geist Mono are what it has always meant in each.
 // EXPORTED because the Looks list names a look's two faces in its summary line
 // and must not keep a second table of the same names.
-export const SANS_LABEL: Record<SansFont, string> = {
+export const SANS_LABEL: Record<AppFont, string> = {
   geist: "Geist",
   inter: "Inter",
   "plex-sans": "IBM Plex Sans",
@@ -85,7 +83,7 @@ export const SANS_LABEL: Record<SansFont, string> = {
   system: "System",
   custom: "Custom…",
 };
-export const MONO_LABEL: Record<MonoFont, string> = { ...SANS_LABEL, geist: "Geist Mono" };
+export const MONO_LABEL: Record<AppFont, string> = { ...SANS_LABEL, geist: "Geist Mono" };
 const ACCENT_LABEL: Record<Accent, string> = {
   indigo: "Indigo",
   sky: "Sky",
@@ -507,7 +505,7 @@ export function TypeTool({ appearance, onChange }: TypeToolProps) {
         title="Interface font"
         hint="Everything outside code blocks and the terminal."
         family={
-          <FontSelect value={appearance.fontSans} items={SANS_LABEL} options={SANS_FONTS} onPick={(fontSans) => onChange({ fontSans })} label="Interface font" />
+          <FontSelect value={appearance.fontSans} items={SANS_LABEL} options={APP_FONTS} onPick={(fontSans) => onChange({ fontSans })} label="Interface font" />
         }
         size={
           <SizeSelect value={appearance.fontSize} min={MIN_FONT_SIZE} max={MAX_FONT_SIZE} label="Interface text size" onPick={(fontSize) => onChange({ fontSize })} />
@@ -531,7 +529,7 @@ export function TypeTool({ appearance, onChange }: TypeToolProps) {
         title="Code font"
         hint="Code blocks, diffs, file previews, and the terminal."
         family={
-          <FontSelect value={appearance.fontMono} items={MONO_LABEL} options={MONO_FONTS} onPick={(fontMono) => onChange({ fontMono })} label="Code font" />
+          <FontSelect value={appearance.fontMono} items={MONO_LABEL} options={APP_FONTS} onPick={(fontMono) => onChange({ fontMono })} label="Code font" />
         }
         size={
           <SizeSelect value={appearance.fontMonoSize} min={MIN_MONO_FONT_SIZE} max={MAX_MONO_FONT_SIZE} label="Code text size" onPick={(fontMonoSize) => onChange({ fontMonoSize })} />

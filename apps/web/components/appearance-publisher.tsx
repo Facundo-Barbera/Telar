@@ -47,7 +47,7 @@
  */
 
 import { useEffect } from "react";
-import type { MonoFont, PublishedAppearance, SansFont } from "@telar/engine-client";
+import type { AppFont, PublishedAppearance } from "@telar/engine-client";
 import { ACCENT_COLOURS, LIGHT_PRIMARY_FOREGROUND } from "@/lib/accent-colours";
 import { useAppearance } from "@/lib/appearance";
 import { useComposition } from "@/lib/composition";
@@ -98,7 +98,7 @@ const MONO_TAIL = "ui-monospace, SFMono-Regular, Menlo, monospace";
  * interface keeps monospaced fallbacks, because falling back to a proportional
  * one would silently undo the one thing the reader asked for.
  */
-type SharedFace = Exclude<SansFont, "geist" | "system" | "custom">;
+type SharedFace = Exclude<AppFont, "geist" | "system" | "custom">;
 
 const FACE_STACKS: Record<SharedFace, string> = {
   inter: `"Inter", ${SANS_TAIL}`,
@@ -117,7 +117,7 @@ const FACE_STACKS: Record<SharedFace, string> = {
   "cascadia-code": `"Cascadia Code", ${MONO_TAIL}`,
 };
 
-const SANS_STACKS: Record<SansFont, string> = {
+const SANS_STACKS: Record<AppFont, string> = {
   ...FACE_STACKS,
   // The one id whose face depends on the slot — Geist in the interface, Geist
   // Mono in code, which is what it has always meant in each.
@@ -128,7 +128,7 @@ const SANS_STACKS: Record<SansFont, string> = {
   custom: SANS_TAIL,
 };
 
-const MONO_STACKS: Record<MonoFont, string> = {
+const MONO_STACKS: Record<AppFont, string> = {
   ...FACE_STACKS,
   geist: `"Geist Mono", ${MONO_TAIL}`,
   system: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
