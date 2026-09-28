@@ -1,26 +1,17 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { GET as aboutGet } from "@/app/api/about/route";
-import { GET as iconGet } from "@/app/api/about/icon/route";
-import { buildIdentity } from "./build-identity";
+import { matchRoute } from "../../platform/http/route";
+import { buildIdentity, locateWebRoot } from "./identity";
+import { aboutRoutes } from "./routes";
 
 const roots: string[] = [];
-const savedCwd = process.cwd();
 
 afterEach(() => {
-  // The route handlers read the real `process.cwd()`, so a test that moves it
-  // has to put it back or every later test file inherits a temp directory.
-  process.chdir(savedCwd);
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-/**
- * `web` stands in for the server's directory: `apps/web` under `next dev`,
- * `<standalone>/apps/web` in a packaged app.
- */
 function layout(options: { icons?: string[]; productName?: string } = {}): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-build-identity-"));
   roots.push(root);
@@ -41,7 +32,6 @@ function layout(options: { icons?: string[]; productName?: string } = {}): strin
   return web;
 }
 
-/** A stamped layout's server directory: <root>/standalone/apps/web. */
 function packagedWeb(stamp: Record<string, unknown>, icons: string[] = []): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-build-identity-"));
   roots.push(root);
@@ -56,7 +46,6 @@ function packagedWeb(stamp: Record<string, unknown>, icons: string[] = []): stri
   return web;
 }
 
-/** Just enough of a PNG that the magic number is real and the files differ. */
 function pngBytes(name: string): Uint8Array {
   return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Buffer.from(name, "utf8")]);
 }
@@ -74,16 +63,13 @@ describe("build identity", () => {
     expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "nightly" })).appName).toBe("Telar Nightly");
     expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "" })).channel).toBe("stable");
     expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234" })).appName).toBe("Telar");
-    // A beta has no seat of its own in the wire type.
     expect(buildIdentity({}, packagedWeb({ channel: "beta" })).channel).toBe("stable");
   });
 
   test("a --dev package is stamped dev and named Telar Dev; a plain local package is not", () => {
-    // What `package-desktop.sh --dev` writes: packaged, yet a checkout.
     const dev = buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "dev" }));
     expect(dev.channel).toBe("dev");
     expect(dev.appName).toBe("Telar Dev");
-    // A plain working-tree package stamps "local" and reads as a cut build.
     const local = buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "local" }));
     expect(local.channel).toBe("stable");
     expect(local.appName).toBe("Telar");
@@ -97,7 +83,6 @@ describe("build identity", () => {
   });
 
   test("a build with no icon of its own falls back to the default one", () => {
-    // Only the plain icon exists, as in a packaged build.
     const identity = buildIdentity({}, packagedWeb({ channel: "nightly" }, ["icon.png"]));
     expect(path.basename(identity.icon!.path)).toBe("icon.png");
   });
@@ -117,62 +102,53 @@ describe("build identity", () => {
   test("productName names the app, and TELAR_APP_NAME overrides it outright", () => {
     const web = layout({ productName: "Telar Fork" });
     expect(buildIdentity({}, web).appName).toBe("Telar Fork Dev");
-    // No suffix on an explicit name: somebody who typed it meant it.
     expect(buildIdentity({ TELAR_APP_NAME: "  Downstairs Mac  " }, web).appName).toBe("Downstairs Mac");
     expect(buildIdentity({ TELAR_APP_NAME: "   " }, web).appName).toBe("Telar Fork Dev");
   });
 });
 
 describe("about routes", () => {
-  test("about carries the identity beside the version, with no engine in reach", async () => {
-    const body = (await (await aboutGet()).json()) as {
-      appVersion: string;
-      appName: string;
-      channel: string;
-      iconUrl?: string;
-    };
+  const about = (web: string, route: string) => {
+    const { route: found } = matchRoute(aboutRoutes("/state/root", () => buildIdentity({}, web)), "GET", route)!;
+    return found.handle({ body: {}, params: [], query: new URLSearchParams() }) as { status: number; body: any; bytes?: Uint8Array; headers?: Record<string, string> };
+  };
+
+  test("about carries the identity, the version and the engine's own root", () => {
+    const { body } = about(layout({ icons: ["icon-dev.png"], productName: "Telar" }), "/v2/about");
     expect(typeof body.appVersion).toBe("string");
-    // This suite runs from a checkout, so the route must report the same thing
-    // the shell's title bar would.
-    expect(body.channel).toBe("dev");
-    expect(body.appName).toBe("Telar Dev");
+    expect(body).toMatchObject({ appName: "Telar Dev", channel: "dev", stateRoot: "/state/root" });
     expect(body.iconUrl).toMatch(/^\/api\/about\/icon\?v=/);
   });
 
-  test("the icon route answers PNG bytes under an immutable cache", async () => {
-    const response = iconGet();
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("image/png");
-    expect(response.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    expect([...bytes.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+  test("the icon answers PNG bytes under an immutable cache, the default one when the build has none", () => {
+    const answer = about(layout({ icons: ["icon.png"] }), "/v2/about/icon");
+    expect(answer.status).toBe(200);
+    expect(answer.headers).toEqual({ "content-type": "image/png", "cache-control": "public, max-age=31536000, immutable" });
+    expect(Array.from(answer.bytes!.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect(new TextDecoder().decode(answer.bytes)).toContain("icon.png");
   });
 
-  test("the icon route serves the DEFAULT icon when this build has no custom one", async () => {
-    // A layout with only the plain icon, entered the way the packaged server
-    // enters its own: by chdir'ing to the directory it will read from.
-    process.chdir(layout({ icons: ["icon.png"] }));
-    const response = iconGet();
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("image/png");
-    expect(new TextDecoder().decode(await response.arrayBuffer())).toContain("icon.png");
-  });
-
-  test("no icon on this layout is a 404, and about stops advertising one", async () => {
-    process.chdir(layout());
-    expect(iconGet().status).toBe(404);
-    const body = (await (await aboutGet()).json()) as { iconUrl?: string; appName: string };
-    expect(body.iconUrl).toBeUndefined();
-    expect(body.appName).toBe("Telar Dev");
+  test("no icon on this layout is a 404, and about stops advertising one", () => {
+    const web = layout();
+    expect(about(web, "/v2/about/icon").status).toBe(404);
+    expect(about(web, "/v2/about").body.iconUrl).toBeUndefined();
   });
 });
 
-test("the layout is found from the repository root, not only from apps/web", () => {
-  // The runner may start in either place, so find the root rather than assume.
-  const repoRoot = fs.existsSync(path.join(savedCwd, "apps", "web", "package.json")) ? savedCwd : path.resolve(savedCwd, "..", "..");
-  const fromWeb = buildIdentity({}, path.join(repoRoot, "apps", "web"));
-  const fromRoot = buildIdentity({}, repoRoot);
-  expect(fromRoot.appName).toBe(fromWeb.appName);
-  expect(fromRoot.channel).toBe(fromWeb.channel);
-  expect(fromRoot.icon?.path).toBe(fromWeb.icon?.path);
+describe("locating the cockpit's directory", () => {
+  test("from the engine inside a packaged app", () => {
+    const web = packagedWeb({ channel: "nightly" });
+    const resources = path.resolve(web, "..", "..", "..");
+    fs.mkdirSync(path.join(resources, "engine"));
+    expect(locateWebRoot(path.join(resources, "engine"))).toBe(web);
+  });
+
+  test("from anywhere in a checkout", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-checkout-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, "apps", "web"), { recursive: true });
+    fs.mkdirSync(path.join(root, "apps", "engine", "src"), { recursive: true });
+    expect(locateWebRoot(path.join(root, "apps", "engine", "src"))).toBe(path.join(root, "apps", "web"));
+    expect(locateWebRoot(root)).toBe(path.join(root, "apps", "web"));
+  });
 });

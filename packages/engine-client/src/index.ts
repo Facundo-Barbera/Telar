@@ -188,8 +188,7 @@ export class EngineClientError extends Error {
   readonly code: EngineErrorCode;
   readonly status?: number;
   readonly operation?: string;
-  /** The sanitized transport cause — see `sanitizeTransportCause`. Absent for
-   *  an ordinary HTTP error response, which has a status instead. */
+  /** The sanitized transport cause; absent on an HTTP error, which has a status. */
   readonly transport?: string;
 
   constructor(code: EngineErrorCode, message: string, status?: number, details?: { operation?: string; transport?: string }) {
@@ -396,6 +395,7 @@ export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery 
 export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
 export type { DirectoryEntry, DirectoryListing } from "./files/schema";
 export { LOCAL_HOST_ID, type PublicHost } from "./hosts/schema";
+export type { BuildChannel } from "./updates/schema";
 export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
 export interface EngineClient

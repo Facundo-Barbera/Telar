@@ -18,7 +18,8 @@ async function engineFetch(method: string, pathname: string, init: { body?: stri
 
 /** Engine errors with an engine code are mapped as every proxy maps them; any other refusal is the route's own and passes through. */
 async function answerOf(response: Response): Promise<EngineAnswer> {
-  const body = response.status === 304 ? null : await response.json().catch(() => null);
+  const json = response.headers.get("content-type")?.includes("json") ?? false;
+  const body = response.status === 304 ? null : json ? await response.json().catch(() => null) : await response.arrayBuffer();
   if (response.status >= 400) {
     const error = (body as { error?: { code?: string; message?: string } } | null)?.error;
     if (!error?.code || error.code in statusByCode) {
@@ -50,9 +51,9 @@ export async function engineForward(request: Request, pathname: string): Promise
       const value = answer.headers.get(name);
       if (value) out.set(name, value);
     }
-    return answer.status === 304
-      ? new Response(null, { status: 304, headers: out })
-      : Response.json(answer.body, { status: answer.status, headers: out });
+    if (answer.status === 304) return new Response(null, { status: 304, headers: out });
+    if (answer.body instanceof ArrayBuffer) return new Response(answer.body, { status: answer.status, headers: out });
+    return Response.json(answer.body, { status: answer.status, headers: out });
   } catch (error) {
     return engineErrorResponse(error);
   }
