@@ -7,17 +7,10 @@ import { ClockIcon, TriangleAlertIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
 import {
-  type EngineEvent,
   type ClaudeConversation,
-  type EngineRequest,
   type RequestDecision,
-  type Item,
   type ProviderDriverKind,
   type RuntimeMode,
-  type Session,
-  type SessionSnapshot,
-  type SnapshotPage,
-  type Task,
   type Turn,
   type TurnModelSelection,
   seedSessionTitle,
@@ -26,7 +19,7 @@ import {
 } from "@telar/engine-client";
 import { announcePromptShelfChanged, splitImages } from "@/features/prompts";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/platform/engine";
-import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, projectJournal, taskRoster } from "@/platform/engine";
+import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, taskRoster } from "@/platform/engine";
 import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/features/projects";
@@ -37,7 +30,6 @@ import { sessionLink } from "../../session-link";
 import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity } from "../../session-settling";
 import { useInboxPolicy } from "../../inbox-policy";
 import { useSessionDefaults } from "../../session-defaults";
-import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "../../snapshot-cache";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { usePluginPanels, pluginCommands } from "@/features/plugins";
@@ -46,10 +38,6 @@ import { ReadReceiptMarker, useReadReceipt } from "./read-receipt";
 import { questionFields } from "@/lib/question-drawer";
 import { normaliseContextNoticePercent } from "@/lib/context-notice";
 import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice, useProviderInstance } from "@/features/providers";
-import { sessionConnection } from "@/platform/engine";
-import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/platform/engine";
-import { recallTranscript, rememberTranscript, transcriptKey } from "../transcript-cache";
-import { decideStale } from "../stale-state";
 import { processToReveal, stillWorking } from "../background-presence";
 import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./cohort-fold";
@@ -98,6 +86,7 @@ import { useCommandHandlers } from "@/features/commands";
 import { appendToDraft, cockpitPlugins, pinToggleOverride, transcriptRows } from "../model";
 import { SessionMasthead, SessionProblem, SoloTools, usePanelPresence } from "./masthead";
 import { EmptyTranscript, SessionTurn, TurnFrame } from "./session-turn";
+import { useSessionSync } from "../hooks/use-session-sync";
 
 const api = createEngineApi();
 /** Below this the session rail, the conversation and the panel cannot all
@@ -192,32 +181,15 @@ export function SessionCockpit({
     setDraftDriver(next);
     setDraftModel({});
   }, [setDraftModel]);
-  const [sessionRecord, setSession] = useState<Session>();
-  const session = sessionId ? sessionRecord : undefined;
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [page, setPage] = useState<SnapshotPage>();
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [requests, setRequests] = useState<EngineRequest[]>([]);
-  const [events, setEvents] = useState<EngineEvent[]>([]);
+  const {
+    session, setSession, clearTranscript, turns, items, tasks, requests, events, page, loadOlder, loadingOlder,
+    error, setError, stale, loading, syncKey, transcriptLanded, hydrate,
+  } = useSessionSync({ hostId, sessionId, initiallyLoading: Boolean(routeSessionId) });
   const [draft, setDraft] = useState("");
   /** Files picked but not yet sent. Held as `File`s rather than uploaded on
    *  pick — see the upload loop in `submit` for why. */
   const [attachments, setAttachments] = useState<File[]>([]);
   const [draftRunId, setDraftRunId] = useState<string>();
-  const [error, setError] = useState<EngineApiError>();
-  const [stale, setStale] = useState<number>();
-  /** The same value, readable from callbacks that must not re-subscribe the
-   *  polling effect every time it changes. */
-  const staleAt = useRef<number | undefined>(undefined);
-  /** When the last successful read landed — the date a live transcript wears
-   *  once the engine goes away under it. */
-  const lastLiveAt = useRef<number | undefined>(undefined);
-  /** Seeded from whether there is anything to load at all — a fresh canvas has
-   *  no transcript to hydrate, so it must never paint a loading state. */
-  const [loading, setLoading] = useState(Boolean(routeSessionId));
-  const [readKey, setReadKey] = useState<string>();
   /** The transcript's scroll layer, reachable from `submit`. */
   const follow = useRef<ConversationFollowHandle>(null);
   /** The reader has scrolled back through the transcript — the composer steps
@@ -242,188 +214,6 @@ export function SessionCockpit({
   const [enabledPlugins, setEnabledPlugins] = useState<readonly string[]>([]);
   const pluginPanels = usePluginPanels(hostId, enabledPlugins);
   const [projectTranscript] = useState(createJournalProjector);
-  const cursor = useRef(0);
-  const syncQueue = useRef<Promise<void>>(Promise.resolve());
-  const syncKey = JSON.stringify([hostId ?? LOCAL_HOST, sessionId]);
-  const syncSession = useRef(syncKey);
-  const syncGeneration = useRef(0);
-  const tailInFlight = useRef(false);
-  const transcriptLanded = !sessionId || readKey === syncKey;
-
-  const [transcriptSubject, setTranscriptSubject] = useState(syncKey);
-  if (transcriptSubject !== syncKey) {
-    setTranscriptSubject(syncKey);
-    const recalled = sessionId ? recallTranscript(transcriptKey(hostId ?? LOCAL_HOST, sessionId)) : undefined;
-    if (recalled) {
-      setSession(recalled.session);
-      setTurns(recalled.turns);
-      setItems(recalled.items);
-      setTasks(recalled.tasks);
-      setRequests(recalled.requests);
-      setEvents(recalled.events);
-      setPage(recalled.page);
-      setReadKey(syncKey);
-    }
-  }
-
-  useEffect(() => {
-    if (syncSession.current === syncKey) return;
-    syncSession.current = syncKey;
-    syncGeneration.current += 1;
-    syncQueue.current = Promise.resolve();
-    tailInFlight.current = false;
-    cursor.current = 0;
-  }, [syncKey]);
-
-  const enqueueSync = useCallback((operation: () => Promise<void>) => {
-    const next = syncQueue.current.then(operation, operation);
-    syncQueue.current = next.catch(() => undefined);
-    return next;
-  }, []);
-  /** The engine answered — whatever it said. Drops the banner and dates the
-   *  content, which is why an empty tail counts: it is proof of reachability,
-   *  and without it a recovery with no new events never cleared the banner. */
-  const live = useCallback(() => {
-    lastLiveAt.current = Date.now();
-    if (staleAt.current === undefined) return;
-    staleAt.current = undefined;
-    setStale(undefined);
-  }, [setStale]);
-  /** What the last recording was made of — identities, not contents, so a tail
-   *  that changed nothing can be recognised and skipped. See `remember`. */
-  const photographed = useRef<{
-    id: string;
-    session: unknown;
-    turns: unknown;
-    items: unknown;
-    tasks: unknown;
-    requests: unknown;
-    events: unknown;
-  }>(undefined);
-  /** …and the snapshot the next outage will show. Written from the freshly
-   *  fetched values rather than from state, which has not committed yet. */
-  const remember = useCallback((id: string, snapshot: SessionSnapshot & { events?: EngineEvent[] }) => {
-    live();
-    rememberTranscript(transcriptKey(hostId ?? LOCAL_HOST, id), {
-      ...snapshot,
-      events: snapshot.events ?? [],
-      cursor: snapshot.cursor ?? 0,
-    });
-    const store = snapshotStore();
-    if (!store) return;
-    const held = photographed.current;
-    if (
-      held &&
-      held.id === id &&
-      held.session === snapshot.session &&
-      held.turns === snapshot.turns &&
-      held.items === snapshot.items &&
-      held.tasks === snapshot.tasks &&
-      held.requests === snapshot.requests &&
-      held.events === snapshot.events
-    ) {
-      return;
-    }
-    photographed.current = {
-      id,
-      session: snapshot.session,
-      turns: snapshot.turns,
-      items: snapshot.items,
-      tasks: snapshot.tasks,
-      requests: snapshot.requests,
-      events: snapshot.events,
-    };
-    const foldedItems = snapshot.events ? projectJournal(snapshot.turns, snapshot.items, snapshot.events, snapshot.tasks)
-      .flatMap((turn) => [...turn.items, ...turn.tasks.flatMap((task) => task.items)])
-      .map((item) => ({ ...item, streamed: item.streamedText, streamedThrough: snapshot.cursor ?? item.streamedThrough })) : snapshot.items;
-    void saveSnapshot(store, hostId ?? LOCAL_HOST, id, {
-      session: snapshot.session,
-      turns: snapshot.turns,
-      items: foldedItems,
-      tasks: snapshot.tasks,
-      requests: snapshot.requests,
-      ...(snapshot.page ? { page: snapshot.page } : {}),
-    }).catch(() => undefined);
-  }, [live, hostId]);
-  const fail = useCallback((cause: unknown, fallback: string) => {
-    const failure = cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", fallback);
-    const at = decideStale({
-      code: failure.code,
-      hasContent: staleAt.current !== undefined || lastLiveAt.current !== undefined,
-      ...(staleAt.current === undefined ? {} : { cachedAt: staleAt.current }),
-      ...(lastLiveAt.current === undefined ? {} : { lastLiveAt: lastLiveAt.current }),
-    });
-    if (at === undefined) {
-      setError(failure);
-      return;
-    }
-    // The banner replaces the card rather than sitting under it — including
-    // the one a first read may have set before the recording finished loading.
-    setError(undefined);
-    staleAt.current = at;
-    setStale(at);
-  }, [setError, setStale]);
-  const hydrate = useCallback(
-    () =>
-      enqueueSync(async () => {
-        // Nothing to read before the first message creates the session.
-        if (!sessionId) return;
-        const generation = syncGeneration.current;
-        const hydrated = await sessionConnection(hostId ?? LOCAL_HOST, createEngineApi(hostFetcher(hostId)), sessionId, { turns: INITIAL_TURNS }).read();
-        if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
-        setSession(hydrated.session);
-        setTurns(hydrated.turns);
-        setItems(hydrated.items);
-        setTasks(hydrated.tasks);
-        setRequests(hydrated.requests);
-        setEvents(hydrated.events);
-        setPage(hydrated.page);
-        setReadKey(syncKey);
-        cursor.current = hydrated.cursor;
-        remember(sessionId, hydrated);
-      }),
-    [enqueueSync, sessionId, remember, hostId, syncKey, setEvents, setItems, setPage, setReadKey, setRequests, setSession, setTasks, setTurns],
-  );
-  const tail = useCallback(
-    () => {
-      if (tailInFlight.current) return Promise.resolve();
-      tailInFlight.current = true;
-      const flightGeneration = syncGeneration.current;
-      return enqueueSync(async () => {
-        if (!sessionId) return;
-        const generation = syncGeneration.current;
-        const snapshot = await sessionConnection(hostId ?? LOCAL_HOST, createEngineApi(hostFetcher(hostId)), sessionId, { turns: INITIAL_TURNS }).read();
-        if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
-        cursor.current = snapshot.cursor;
-        setSession(snapshot.session);
-        setEvents(snapshot.events);
-        setTurns((current) => mergeRows(current, snapshot.turns, (turn) => turn.runId));
-        setItems((current) => mergeRows(current, snapshot.items, (item) => item.id));
-        setTasks((current) => mergeRows(current, snapshot.tasks, (task) => task.id));
-        setRequests(snapshot.requests);
-        remember(sessionId, snapshot);
-      }).finally(() => {
-        if (flightGeneration === syncGeneration.current) tailInFlight.current = false;
-      });
-    },
-    [enqueueSync, sessionId, remember, hostId, syncKey, setEvents, setItems, setRequests, setSession, setTasks, setTurns],
-  );
-  const loadOlder = useCallback(() => {
-    const before = page?.before;
-    if (!sessionId || !before || loadingOlder) return;
-    setLoadingOlder(true);
-    void enqueueSync(async () => {
-      const generation = syncGeneration.current;
-      const older = await loadOlderTurns(createEngineApi(hostFetcher(hostId)), sessionId, before);
-      if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
-      setTurns((current) => mergeRows(older.turns, current, (turn) => turn.runId));
-      setItems((current) => mergeRows(older.items, current, (item) => item.id));
-      setTasks((current) => mergeRows(older.tasks, current, (task) => task.id));
-      setPage(older.page);
-    })
-      .catch((cause) => setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not load earlier turns.")))
-      .finally(() => setLoadingOlder(false));
-  }, [enqueueSync, sessionId, page, loadingOlder, syncKey, hostId, setError, setItems, setLoadingOlder, setPage, setTasks, setTurns]);
 
   const panelKey = sessionId ?? (projectId === undefined ? "main" : canvasPanelKey(projectId));
 
@@ -841,11 +631,7 @@ export function SessionCockpit({
     }
     writePanelTabs(target, panel, Date.now());
     for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(target, instance), state, Date.now());
-    setTurns([]);
-    setItems([]);
-    setTasks([]);
-    setRequests([]);
-    setEvents([]);
+    clearTranscript();
     owner.current = { sessionId: target, projectId };
     setCreatedSessionId(target);
   }
@@ -953,58 +739,6 @@ export function SessionCockpit({
       window.clearTimeout(task);
     };
   }, [projectId, hostId, transcriptLanded]);
-
-  useEffect(() => {
-    if (!sessionId) return;
-    let cancelled = false;
-    // Another session's liveness says nothing about this one.
-    lastLiveAt.current = undefined;
-    staleAt.current = undefined;
-    void snapshotStore()
-      ?.read(snapshotKey(hostId ?? LOCAL_HOST, sessionId))
-      .then((cached) => {
-        if (!cached || cancelled || lastLiveAt.current !== undefined) return;
-        if (recallTranscript(transcriptKey(hostId ?? LOCAL_HOST, sessionId))) return;
-        setSession(cached.session);
-        setTurns(cached.turns);
-        setItems(cached.items);
-        setTasks(cached.tasks);
-        setRequests(cached.requests);
-        // The recorded window's own paging cursor, so "Load earlier turns"
-        // works from a cached open once the engine answers again.
-        setPage(cached.page);
-        setEvents([]);
-        staleAt.current = cached.savedAt;
-        setStale(cached.savedAt);
-        setLoading(false);
-      }, () => undefined);
-    void hydrate()
-      .then(
-        () => !cancelled && setError(undefined),
-        (cause) => {
-          if (cancelled) return;
-          fail(cause, "Could not hydrate this session.");
-          setReadKey(syncKey);
-        },
-      )
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [hydrate, sessionId, hostId, fail, syncKey]);
-
-  const tailMs = tailIntervalMs(turns);
-  useEffect(() => {
-    if (!sessionId) return;
-    let cancelled = false;
-    const interval = window.setInterval(() => {
-      void tail().catch((cause) => !cancelled && fail(cause, "Could not tail the session journal."));
-    }, tailMs);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [tail, sessionId, fail, tailMs]);
 
   const transcript = useMemo(
     // A peer's passive report is drawn inside the turn it arrived during — see
@@ -1227,11 +961,7 @@ export function SessionCockpit({
         writePanelTabs(target, panel, Date.now());
         // Every Editor's files travel with them — same hand-off, same reason.
         for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(target, instance), state, Date.now());
-        setTurns([]);
-        setItems([]);
-        setTasks([]);
-        setRequests([]);
-        setEvents([]);
+        clearTranscript();
         owner.current = { sessionId: target, projectId };
         setCreatedSessionId(target);
         // Only when the patch did not already give us a newer record.
