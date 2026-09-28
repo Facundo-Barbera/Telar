@@ -199,20 +199,7 @@ import {
 import { WorkspaceConfigStore } from "./workspace-config";
 import { atomicWrite } from "./platform/fs/atomic";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "./platform/db/document-window";
-import {
-  boundedOutline,
-  context,
-  firstLine,
-  outlineRow,
-  summariseTurn,
-  FIND_SCAN,
-  GREP_CONTEXT_CHARS,
-  ITEM_TITLE_CHARS,
-  TURN_ANSWER_NONE,
-  TURN_ANSWER_NO_SUCH_RUN,
-  WHY_CHARS,
-  type OutlineRow,
-} from "./turn-summary";
+import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "./domains/turns";
 import { TELAR_ORIENTATION } from "./orientation";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
 import { lastKeytermFit, type KeytermFit } from "./dictation/fit";
@@ -227,7 +214,6 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
 import { inlineExcerpt, quotedExcerpt } from "./agent-notice";
-import { RELAY_RULE } from "./domains/turns";
 import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import {
   commentOn,

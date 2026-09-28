@@ -73,8 +73,7 @@ import {
 } from "./claude-runtime";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./domains/git";
 import type { DisplayCapability } from "./display/tools";
-import type { SteerMailbox, SteerMessage } from "./steering";
-import { framedSteerText, RELAY_RULE, steerRowTitle } from "./domains/turns";
+import { framedSteerText, RELAY_RULE, type SteerMailbox, type SteerMessage, steerRowTitle } from "./domains/turns";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./domains/notes";
 import type { PromptsCapability } from "./prompts-tools/tools";

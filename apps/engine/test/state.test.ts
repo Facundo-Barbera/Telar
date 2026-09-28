@@ -7,7 +7,7 @@ import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRo
 import type { ExecutionStore } from "../src/execution-store";
 import { INLINE_CHARS } from "../src/agent-notice";
 import { RELAY_RULE } from "../src/domains/turns";
-import { summariseTurn } from "../src/turn-summary";
+import { summariseTurn } from "../src/domains/turns";
 import { forgetOpenPrefixes, openPrefixCount } from "./store-internals";
 
 const roots: string[] = [];

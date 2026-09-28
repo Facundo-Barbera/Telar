@@ -19,7 +19,7 @@ import type { AutoCompact, McpServer, NotificationDetail, RequestDecision, TurnO
 import { codexMcpServers, codexNotificationInstruction, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
 import { codexApprovalRequest, codexItemDetail, codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
-import { SteerMailbox } from "../src/steering";
+import { SteerMailbox } from "../src/domains/turns";
 import { allowCliInThisFile } from "./allow-cli";
 
 /** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —

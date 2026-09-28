@@ -33,7 +33,7 @@ import { notesTools, type NotesCapability } from "../src/domains/notes";
 import { displayTools } from "../src/display/tools";
 import { TELAR_SKILL } from "../src/orientation";
 import { MAX_ANSWER_CHARS } from "../src/tool-kit";
-import { GREP_CONTEXT_CHARS, WHY_CHARS } from "../src/turn-summary";
+import { GREP_CONTEXT_CHARS, WHY_CHARS } from "../src/domains/turns";
 
 /** The widest `find` the route will serve — the fixture answers at it, so the
  *  wall's own byte bound is what the ceiling below measures. */

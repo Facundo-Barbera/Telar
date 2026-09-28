@@ -6,7 +6,7 @@ import { autoResolution, EngineEvent, idleSince, isShelved, RuntimeMode, settlin
 import type { ScheduleRule } from "./domains/schedules";
 import { atomicWrite } from "./platform/fs/atomic";
 import { statePaths } from "./state-paths";
-import type { TurnSummary } from "./turn-summary";
+import type { TurnSummary } from "./domains/turns";
 
 type Statement = { run(...args: unknown[]): unknown; get(...args: unknown[]): Record<string, unknown> | undefined; all(...args: unknown[]): Array<Record<string, unknown>> };
 type Database = { exec(sql: string): void; prepare(sql: string): Statement; close(): void };

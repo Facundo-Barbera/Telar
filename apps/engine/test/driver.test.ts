@@ -16,7 +16,7 @@ import {
   taskStateForStatus,
   titleForToolCall,
 } from "../src/driver";
-import { SteerMailbox } from "../src/steering";
+import { SteerMailbox } from "../src/domains/turns";
 import { until } from "./wait";
 
 /**

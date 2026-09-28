@@ -45,7 +45,7 @@
  */
 import type { EngineEvent, Item, Turn } from "@telar/engine-client";
 import type { EngineStore } from "../src/state";
-import { outlineRow, summariseTurn, type OutlineRow } from "../src/turn-summary";
+import { outlineRow, summariseTurn, type OutlineRow } from "../src/domains/turns";
 
 /** The issue's own numbers. `session_0` carries the 60,000-event journal and is
  *  also the session with the most turns — "the largest session", which is what
