@@ -1,7 +1,7 @@
 #!/bin/sh
 # A CLAUDE CODE CLI THAT EXISTS AND NOTHING MORE (issue #752).
 #
-# `plugin-driver-seam.test.ts` drives a FAKE Claude SDK in-process and never
+# `domains/plugins/driver-seam.test.ts` drives a FAKE Claude SDK in-process and never
 # spawns a provider — but the driver still RESOLVES a binary path on its way
 # there, and `requireCli` throws when resolution finds nothing. Before this
 # fixture that resolution fell through to whatever the host happened to have,

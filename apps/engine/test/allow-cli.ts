@@ -47,7 +47,7 @@ const FAKE_CLAUDE = path.join(import.meta.dir, "fixtures", "fake-claude");
  * was reporting a fact about the machine rather than about the code.
  *
  * These files drive a FAKE SDK and spawn nothing; they need a path to exist,
- * not a provider to run. So pin one. `plugin-approval-dispatch.test.ts` pins
+ * not a provider to run. So pin one. `domains/plugins/approval-dispatch.test.ts` pins
  * `CODEX_BIN` for the mirror-image reason — to stop the driver finding the REAL
  * codex and spawning it — and the two now bracket the same seam from both ends.
  *
