@@ -11,7 +11,7 @@
  * stays off the transcript).
  */
 import type { EngineEvent } from "@telar/engine-client";
-import type { JournalItem } from "@/platform/engine";
+import type { JournalItem } from "@/features/transcript";
 
 type Renderer<T extends EngineEvent["type"]> = (event: Extract<EngineEvent, { type: T }>) => JournalItem | undefined;
 

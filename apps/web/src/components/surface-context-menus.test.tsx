@@ -8,7 +8,7 @@ import { UNKNOWN_PATH, type GitFileChange, type SessionDiff } from "@telar/engin
 import { installTestDom, mount, flush, click, stubFetch } from "@/lib/testing/dom";
 import { fileReference, REFERENCE_MIME } from "@/lib/drag-reference";
 import type { NotebookCell, NotebookRead } from "@/lib/ds";
-import type { JournalItem, JournalTask } from "@/platform/engine";
+import type { JournalItem, JournalTask } from "@/features/transcript";
 import type { DiffTab } from "@/lib/diff-scope";
 import { messagePlainText, quoteForComposer } from "@/components/ui/message";
 import { NotebookSurface } from "./session/notebook-surface";

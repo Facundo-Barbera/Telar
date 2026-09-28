@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ExecutionStore } from "./execution-store";
-import { projectJournal } from "../../../../web/src/platform/engine/journal";
+import { projectJournal } from "../../../../web/src/features/transcript/journal/fold";
 import { turnUsage } from "../../../test/store-internals";
 
 const roots: string[] = [];

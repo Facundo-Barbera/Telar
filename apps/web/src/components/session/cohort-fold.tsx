@@ -27,7 +27,7 @@
 import { useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import type { NotificationDetail } from "@telar/engine-client";
-import type { JournalItem, JournalTurn } from "@/platform/engine";
+import type { JournalItem, JournalTurn } from "@/features/transcript";
 import { cn } from "@/lib/utils";
 import { ROW, tallyParts } from "@/features/transcript";
 

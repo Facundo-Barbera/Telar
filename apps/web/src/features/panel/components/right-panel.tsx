@@ -9,7 +9,7 @@ import { diffTabParams, readDiffTab, type DiffTab } from "@/lib/diff-scope";
 import { diffTurns, type DiffTurn } from "@/lib/diff-turns";
 import type { TelarReference } from "@/lib/drag-reference";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
-import type { JournalTask } from "@/platform/engine";
+import type { JournalTask } from "@/features/transcript";
 import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
 import type { PluginPanelSource } from "@/lib/plugins/panels";
 import { isPluginSurface } from "@/lib/plugins/registry";

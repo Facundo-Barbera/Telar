@@ -1,5 +1,5 @@
 import type { BrowserSnapshot, EngineEvent, Item, Task, TaskState } from "@telar/engine-client";
-import type { JournalTask } from "@/platform/engine";
+import type { JournalTask } from "@/features/transcript";
 import { browserScopeKey, LIVE_BROWSER_TAB, type BrowserState } from "./model";
 import type { PanelTabInstance } from "./tabs";
 
