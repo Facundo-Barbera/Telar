@@ -1961,6 +1961,31 @@ export class EngineStore {
   private readonly executionStore: ExecutionStore;
   private commandDepth = 0;
   private afterCommit: Array<() => void> = [];
+  private readonly rollbackHooks: Array<() => void> = [];
+  private readonly sessionDeletedHooks: Array<(sessionId: string) => void> = [];
+
+  /** A cache's owner says what a rolled-back command, or a deleted session, does to it. */
+  private onRollback(hook: () => void): void {
+    this.rollbackHooks.push(hook);
+  }
+  private onSessionDeleted(hook: (sessionId: string) => void): void {
+    this.sessionDeletedHooks.push(hook);
+  }
+
+  private registerCacheHooks(): void {
+    this.onRollback(() => { this.queueCache.clear(); this.liveQueueIndex = undefined; this.queueChangeAnnounced = false; });
+    this.onSessionDeleted((id) => { this.queueCache.delete(id); this.liveQueueIndex?.delete(id); });
+    this.onRollback(() => { this.itemsCache.clear(); this.openPrefixes.clear(); });
+    this.onSessionDeleted((id) => this.itemsCache.delete(id));
+    this.onRollback(() => { this.liveRequestIndex = undefined; });
+    this.onSessionDeleted((id) => this.liveRequestIndex?.delete(id));
+    // Liveness stamps name records a rollback took; `lastProgressOf` falls back to the durable stamp.
+    this.onRollback(() => this.runProgress.clear());
+    this.onSessionDeleted((id) => this.runProgress.delete(id));
+    this.onRollback(() => { this.dirtySessionRows.clear(); this.foldedTurnStates.clear(); });
+    this.onSessionDeleted((id) => { this.dirtySessionRows.delete(id); this.listRevision = this.nextRevision(); });
+    this.onSessionDeleted((id) => this.dropSubscriptionsOf(id));
+  }
   private readDocument(file: string): unknown | undefined {
     return this.executionStore.owns(file) ? this.executionStore.read(file) : readJson(file);
   }
@@ -2426,25 +2451,8 @@ export class EngineStore {
       }, commandId);
     }
     catch (error) {
-      this.openPrefixes.clear(); this.liveQueueIndex = undefined;
-      // And the liveness ledger (#813): its stamps came from appends inside the
-      // transaction sqlite has just thrown away, so they name records that do
-      // not exist. Dropped rather than repaired — `lastProgressOf` falls back
-      // to the turn's own durable stamp, which is exactly what a restart uses.
-      this.runProgress.clear();
-      // Same argument for the open-request index (#545): rows it names were
-      // written inside the transaction sqlite has just thrown away. Dropped
-      // rather than repaired — the next reader rebuilds it from the documents.
-      this.liveRequestIndex = undefined;
-      // Rolled back under this store's feet: anything read or written inside
-      // the transaction describes a queue sqlite no longer has.
-      this.queueCache.clear(); this.itemsCache.clear(); this.queueChangeAnnounced = false;
       this.afterCommit = [];
-      this.dirtySessionRows.clear();
-      // Same argument, for the projection's memo: it records which turn rows
-      // this process has folded, and a rollback took some of those rows with it.
-      // Emptying it costs one SELECT on the next write and cannot be wrong.
-      this.foldedTurnStates.clear();
+      for (const hook of this.rollbackHooks) hook();
       throw error;
     } finally { this.commandDepth -= 1; }
     if (this.commandDepth === 0) {
@@ -4833,6 +4841,7 @@ export class EngineStore {
     this.volumes = options.volumes ?? {};
     this.ambientEnv = options.ambientEnv ?? process.env;
     this.paths = statePaths(root);
+    this.registerCacheHooks();
     this.workspace = new WorkspaceConfigStore(this.paths.workspace);
     this.cleanup = new CleanupStore(this.paths.cleanup);
     this.setups = new WorktreeSetups({
@@ -12052,25 +12061,7 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "session.archived" });
     this.executionStore.deleteSession(sessionId);
     fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
-    // A row that left is a change of MEMBERSHIP — the list is shorter, or the
-    // shelf's count is — so every reader is told rather than only the side this
-    // session happened to be on. See `sessionsRevision`. Also drop whatever this
-    // command owed for it: there is no document left to fold.
-    this.dirtySessionRows.delete(sessionId);
-    this.listRevision = this.nextRevision();
-    // The queue went with the directory, so no `writeQueue` will ever retire
-    // this id from the live index. Drop it here or a worker keeps asking about
-    // a session that no longer exists.
-    this.liveQueueIndex?.delete(sessionId);
-    this.queueCache.delete(sessionId);
-    this.itemsCache.delete(sessionId);
-    // And the requests went with it: nothing is open on a session that no
-    // longer exists, and `writeRequests` will never be called for it again.
-    this.liveRequestIndex?.delete(sessionId);
-    // Same argument, for the liveness ledger: a session recreated under this id
-    // must not inherit a stamp from the one that was deleted (#813).
-    this.runProgress.delete(sessionId);
-    this.dropSubscriptionsOf(sessionId);
+    for (const hook of this.sessionDeletedHooks) hook(sessionId);
     return true;
   }
 
