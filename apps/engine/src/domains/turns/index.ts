@@ -8,3 +8,4 @@ export { sessionTurnRoutes } from "./session-routes";
 export { FOLDING_INTENTS, MAX_TEXT_LENGTH, TurnIntake, type TurnSubmission } from "./intake";
 export { type StoppedClaim, TurnLifecycle } from "./lifecycle";
 export { TurnIngest } from "./ingest";
+export { isLiveTask, TurnClaims } from "./claims";

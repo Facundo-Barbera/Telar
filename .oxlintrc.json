@@ -55,6 +55,7 @@
     },
     {
       "files": [
+        "apps/engine/src/domains/turns/claims.ts",
         "apps/engine/src/drivers/claude/runtime.ts",
         "apps/engine/src/platform/kernel/kernel.ts",
         "apps/engine/src/state.ts",
