@@ -27,9 +27,7 @@
  * paths anybody types.
  */
 
-// Type-only: `lib/fs-dirs.ts` is the route's own module and reads the
-// filesystem, so this must never become a value import.
-import type { DirectoryEntry } from "./fs-dirs";
+import type { DirectoryEntry } from "@telar/engine-client";
 
 /** Everything a key decision reads. The component owns it; this never writes. */
 export type DirectoryBrowserState = {

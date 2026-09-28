@@ -6,6 +6,7 @@ import path from "node:path";
 import { GET as projectsGet, POST as projectsPost } from "@/app/api/projects/route";
 import { GET as eventsGet } from "@/app/api/sessions/[sessionId]/events/route";
 import { GET as liveGet } from "@/app/api/sessions/live/route";
+import { GET as fsGet } from "@/app/api/fs/route";
 import { POST as discardPost } from "@/app/api/sessions/[sessionId]/turns/[runId]/discard/route";
 import { EngineClient } from "@telar/engine-client";
 import { engineRootFromWebEnv } from "@/lib/engine/engine-server";
@@ -136,6 +137,18 @@ describe("engine route adapters", () => {
    * silently empty `relatedWork`: nothing was ever `active` or `review`, so the
    * elbow tree (#324) drew each delegate as a sibling of its coordinator.
    */
+  test("the folder listing is the engine's, refusals included", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
+    roots.push(home);
+    process.env.TELAR_HOME = home;
+    process.env.TELAR_COCKPIT = "1";
+    daemons.push(await startEngine({ engineRoot: path.join(home, "engine") }));
+
+    const outside = await fsGet(new Request(`http://cockpit.test/api/fs?path=${encodeURIComponent(home)}&ignored=1`));
+    expect(outside.status).toBe(400);
+    expect((await outside.json()).error.code).toBe("invalid_request");
+  });
+
   test("the live list carries who each session is working for", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
     roots.push(home);

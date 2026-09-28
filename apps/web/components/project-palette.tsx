@@ -250,7 +250,7 @@ export function cloneRequest(query: string): { source: string; url: string } | u
  * both quote (`'…'`/`"…"`), a terminal copy carries a trailing newline, and a
  * browser or an editor hands over a `file://` URL, percent-encoded.
  *
- * `~` IS LEFT FOR THE LISTING TO EXPAND (`expandHome` in lib/fs-dirs.ts), since
+ * `~` IS LEFT FOR THE LISTING TO EXPAND (`expandHome` in the engine's fs-dirs.ts), since
  * home is the ANSWERING machine's — on a paired Mac it is not this one's.
  */
 export function pathRequest(query: string): string | undefined {

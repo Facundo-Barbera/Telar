@@ -131,6 +131,7 @@ import { describeReclaim } from "./worktree-inventory";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 import { readTaskOutput, resolveTaskOutputFile } from "./task-output";
+import { fsRoute } from "./routes/fs";
 
 /**
  * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
@@ -1909,6 +1910,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       if (request.method === "GET" && url.pathname === "/v2/health") {
         writeJson(response, 200, health());
+        return;
+      }
+      if (request.method === fsRoute.method && url.pathname === fsRoute.path) {
+        const answer = fsRoute.handle(url);
+        writeJson(response, answer.status, answer.body);
         return;
       }
       /**

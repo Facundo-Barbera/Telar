@@ -445,6 +445,7 @@ function runCursor(input: RunTargetInput & { after?: number } & RunOutputFilter)
 
 export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery } from "./protocol/diff-query";
 export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
+export type { DirectoryEntry, DirectoryListing } from "./fs";
 export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
 export class EngineClient {

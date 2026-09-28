@@ -20,7 +20,7 @@ import {
   rememberedDirectoryKey,
   type DirectoryBrowserState,
 } from "./directory-browser";
-import type { DirectoryEntry } from "./fs-dirs";
+import type { DirectoryEntry } from "@telar/engine-client";
 
 const HOME = "/Users/someone";
 

@@ -10,7 +10,7 @@
  * nobody is looking at. T3 Code browses in the palette instead, and every part
  * of that is reachable by the keyboard alone.
  *
- * THE LISTING IS THE ENGINE'S (`/api/fs/dirs` → `fs-dirs.ts`), so on a remote
+ * THE LISTING IS THE ENGINE'S (`/api/fs` → `/v2/fs`), so on a remote
  * screen this lists the PAIRED MAC's disk: `createEngineApi()`'s default fetcher
  * follows the address bar, and `/hosts/:id/…` routes the read over there. That
  * is the thing a native dialog could never do, and the reason the last
@@ -28,9 +28,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftIcon, CornerDownLeftIcon, EyeIcon, EyeOffIcon, FolderIcon, GitBranchIcon, Loader2Icon } from "lucide-react";
-// Type-only: `lib/fs-dirs.ts` is the route's own module and reads the
-// filesystem, so this must never become a value import.
-import type { DirectoryEntry, DirectoryListing } from "@/lib/fs-dirs";
+import type { DirectoryEntry, DirectoryListing } from "@telar/engine-client";
 import {
   clampIndex,
   directoryField,
