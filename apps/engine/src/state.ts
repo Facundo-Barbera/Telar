@@ -59,7 +59,6 @@ import {
   type ModelCatalogue,
   type ModelOverlay,
   type GitFilePatch,
-  type GitReadFailure,
   type SessionDiff,
   type EngineEvent,
   type Item,
@@ -104,7 +103,7 @@ import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
 import { readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
-import { WorkspaceReads, cloneRepository, commitSessionWork, ensureTelarGitignore, isCloneFailure, pushSessionBranch, removeTelarGitignore, type GitOverview } from "./domains/git";
+import { SessionGit, WorkspaceReads, type GitOverview } from "./domains/git";
 import {  } from "./platform/git/parse";
 import { type AttachedBrowser, SessionBrowser } from "./domains/browser";
 import { GitHubStore, defaultGhRunner, SessionPulls, type GhRunner } from "./domains/github";
@@ -133,19 +132,6 @@ import { type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes
 
 
 
-/**
- * How long a turn's anchor probe may take — issue #741.
- *
- * MUCH SHORTER THAN `DEFAULT_GIT_TIMEOUT_MS`, and the difference is the point.
- * `rev-parse --verify HEAD` reads one file; thirty seconds of a shared pool
- * slot for it would be thirty seconds every other read waits behind, on a
- * command that runs at the start and end of every turn of every session. A
- * probe that does not answer in five seconds is a machine under load, and the
- * honest record of that is `read`, not a longer wait.
- *
- * The same five seconds `projectGitAsync`'s own HEAD read already uses.
- */
-const ANCHOR_PROBE_MS = 5_000;
 
 
 
@@ -383,6 +369,7 @@ export class EngineStore {
   private readonly schedules: ScheduleBook;
   private readonly pluginDoors: PluginDoors;
   private readonly workspaceReads: WorkspaceReads;
+  private readonly sessionGit: SessionGit;
   private readonly requestGate: RequestGate;
   private readonly sessionTerminals: SessionTerminals;
   private readonly sessionPulls: SessionPulls;
@@ -983,6 +970,17 @@ export class EngineStore {
     this.intake = this.createIntake();
     this.turnLifecycle = this.createTurnLifecycle();
     this.claims = this.createClaims();
+    this.sessionGit = new SessionGit(this.kernel, {
+      records: this.records,
+      asyncGit: this.asyncGit,
+      worktreeGit: this.worktreeGit,
+      anchorReadRoot: (session) => this.workspaceReads.anchorReadRoot(session),
+      forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
+      readQueue: (id) => this.readQueue(id),
+      writeQueue: (id, queue) => this.writeQueue(id, queue),
+      getProject: (id) => this.getProject(id),
+      registerProject: (input) => this.registerProject(input),
+    });
     this.worker = new WorkerChannel(this.kernel, {
       records: this.records,
       tasks: this.sessionTasks,
@@ -1505,115 +1503,12 @@ export class EngineStore {
     };
   }
 
-  /**
-   * Stamp where the repository stands, OFF THE LOCK — issue #741.
-   *
-   * ────────────────────────────────────────────────────────────────────────
-   * NEVER THE SYNCHRONOUS RUNNER, AND NEVER INLINE. `worktree.ts`'s header
-   * records what that costs: `listProjects` calling sync git in the daemon loop
-   * froze every request, and a `rev-parse --abbrev-ref HEAD` on a project under
-   * `~/Documents` blocked FOR MINUTES in the kernel. `markRunning` runs for
-   * every turn of every session, under the store lock. So the probe is
-   * dispatched and the answer written back when it arrives; a turn is never
-   * held waiting for git, and the worst case is an anchor that lands a moment
-   * after the event that named it.
-   * ────────────────────────────────────────────────────────────────────────
-   *
-   * A PROBE THAT DID NOT ANSWER SETS `read` RATHER THAN LEAVING A PLAUSIBLE
-   * ABSENT. Absent with no `read` means "there was nothing to see" — a
-   * repository with no commits yet, which `rev-parse --verify` reports by
-   * exiting non-zero. The two are different claims and #654 is the precedent
-   * for keeping them apart.
-   */
   private anchorTurn(sessionId: string, runId: string, side: "before" | "after"): void {
-    let cwd: string | undefined;
-    try {
-      /**
-       * `requireSession`, NOT `getSession` — #545's lesson, and this method is
-       * exactly the caller it was written about.
-       *
-       * `getSession` folds the session's ACTIVITY, which parses `queue.json`,
-       * `requests.json` and `tasks.json` to derive a pill nothing here looks
-       * at. This runs INSIDE `markRunning` and the three terminal transitions,
-       * which `queue-write-path.test.ts` pins at a fixed number of whole-queue
-       * parses each — so the fold turned `markRunning`'s 2 into 3. All this
-       * wants is the workspace and the project id.
-       */
-      cwd = this.workspaceReads.anchorReadRoot(this.records.require(sessionId));
-    } catch {
-      // A session that vanished between the transition and this line has
-      // nothing to anchor; the turn's own record is already written.
-      return;
-    }
-    if (cwd === undefined) return;
-    // A TURN THAT ENDED HAS JUST WRITTEN TO THIS CHECKOUT. Every terminal
-    // transition passes here, so the review surfaces' cached reads of it are
-    // dropped rather than served for up to another two seconds.
-    if (side === "after") this.forgetGitReadsUnder(cwd);
-    void this.asyncGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], { timeoutMs: ANCHOR_PROBE_MS })
-      .then((result) => this.stampAnchor(sessionId, runId, side, result))
-      .catch(() => {
-        // The runner reports every failure as a result; a throw here would be
-        // the store itself, and it must not take the daemon with it.
-      });
+    this.sessionGit.anchorTurn(sessionId, runId, side);
   }
 
-  /**
-   * Write one side of an anchor onto whatever the turn says NOW.
-   *
-   * RE-READ RATHER THAN CLOSED OVER, exactly as `settleWorktree` is: git ran
-   * while the world moved, and writing a turn captured before the probe would
-   * silently undo whatever happened during it. A turn that no longer exists is
-   * not an error — there is simply nothing left to stamp.
-   *
-   * THROUGH `executeCommand`, because this arrives on a promise rather than
-   * through the wrapped command surface, and a queue write outside the
-   * transaction is a queue write nothing serialises.
-   */
-  private stampAnchor(sessionId: string, runId: string, side: "before" | "after", result: GitResult): void {
-    /**
-     * FOUR ANSWERS FROM ONE COMMAND, and the third is the one worth naming.
-     *
-     *   status 0   a sha. Write it.
-     *   timedOut   nobody looked. `read: "timeout"`, and the sha stays absent
-     *              rather than becoming a plausible wrong one.
-     *   status 1   `--verify --quiet` reporting that HEAD does not resolve — a
-     *              repository with NO COMMITS YET. Nothing to write, and
-     *              nothing wrong: absent with no `read` is the honest record,
-     *              and the empty-tree sha would be a sentinel a reader could
-     *              also have named deliberately.
-     *   anything   git did not answer at all (128 on a path that is not a
-     *   else       repository). `read: "failed"`.
-     */
-    if (result.timedOut) return this.writeAnchor(sessionId, runId, { read: "timeout" });
-    if (result.status === 0) {
-      const sha = result.stdout.trim();
-      return this.writeAnchor(sessionId, runId, sha ? { [side]: sha } : { read: "failed" });
-    }
-    if (result.status === 1) return;
-    this.writeAnchor(sessionId, runId, { read: "failed" });
-  }
 
-  private writeAnchor(sessionId: string, runId: string, patch: { before?: string; after?: string; read?: GitReadFailure }): void {
-    if (Object.keys(patch).length === 0) return;
-    try {
-      this.kernel.command("stampTurnAnchor", () => {
-        const queue = this.readQueue(sessionId);
-        const turn = queue.turns.find((candidate) => candidate.runId === runId);
-        if (!turn) return;
-        const merged = { ...turn.anchor, ...patch };
-        // A LATER GOOD READ CLEARS AN EARLIER DOUBT, but a doubt never erases a
-        // sha somebody already observed: `before` and `after` are separate
-        // observations and only the failing one is in doubt.
-        if (patch.read === undefined) delete merged.read;
-        turn.anchor = merged;
-        turn.updatedAt = this.now();
-        this.writeQueue(sessionId, queue);
-      });
-    } catch {
-      // A session deleted while the probe ran leaves nothing to write to.
-    }
-  }
+
 
   projectGitAsync(projectId: string): Promise<GitOverview> {
     return this.workspaceReads.projectOverview(projectId);
@@ -1663,55 +1558,20 @@ export class EngineStore {
     return this.github.checkLog(projectId, jobId);
   }
 
-  /**
-   * Ignore Telar's own files in a project's repository.
-   *
-   * THE ONLY WRITE IN THIS STORE THAT TOUCHES A FILE THE USER DID NOT NAME, which
-   * is why the rules live in the engine (`gitignore.ts`) and this method takes a
-   * project id and nothing else. A caller that could pass the lines could append
-   * anything to a file inside somebody's repository.
-   */
   projectGitignore(projectId: string): GitignoreResult {
-    return ensureTelarGitignore(this.getProject(projectId).root);
+    return this.sessionGit.gitignore(projectId);
   }
 
-  /**
-   * Take those rules back out — the Undo behind the toast that reports them.
-   *
-   * IT EXISTS BECAUSE THE WRITE STOPPED ASKING. Registering a project now ignores
-   * Telar's files by default (the switch in the old Register dialog became a
-   * default), and a write into somebody's repository that nobody opted into needs
-   * a way back that is as cheap as the way in.
-   */
+
   undoProjectGitignore(projectId: string): GitignoreRemoval {
-    return removeTelarGitignore(this.getProject(projectId).root);
+    return this.sessionGit.undoGitignore(projectId);
   }
 
-  /**
-   * CLONE A REPOSITORY AND REGISTER WHAT LANDED — the Sources palette's "Git URL"
-   * and "GitHub repository" rows, in one request.
-   *
-   * ONE CALL RATHER THAN TWO, because the cockpit cannot name the path in between:
-   * it hands over a URL and a parent folder, and only the engine knows which
-   * directory `git clone` created. Splitting it would mean answering a path to a
-   * client whose next call would be "now register this path I did not choose".
-   *
-   * THE CLONE IS NOT UNDONE WHEN THE REGISTRATION FAILS. The checkout on disk is
-   * the expensive half and it is perfectly good; `registerProject` refuses for
-   * reasons a person can act on (a root already registered under another name),
-   * and deleting somebody's fresh clone to tidy up after that would be the worst
-   * possible reading of the error.
-   */
-  async cloneProject(input: { url: string; parent: string; name?: string }): Promise<Project> {
-    // The MUTATION pool: a clone is minutes at worst, and it must neither hold
-    // the thread nor a slot the rail's reads need.
-    const outcome = await cloneRepository(this.worktreeGit, { url: input.url, parent: input.parent });
-    if (isCloneFailure(outcome)) {
-      throw new EngineStateError(outcome.code === "failed" ? "invalid_request" : outcome.code, outcome.message);
-    }
-    const folder = outcome.root.split("/").pop() ?? outcome.root;
-    return this.registerProject({ name: input.name?.trim() || folder, root: outcome.root });
+
+  cloneProject(input: { url: string; parent: string; name?: string }): Promise<Project> {
+    return this.sessionGit.cloneProject(input);
   }
+
 
   projectIssue(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubIssueRead> {
     return this.github.issue(projectId, number, options);
@@ -1748,64 +1608,15 @@ export class EngineStore {
     return this.github.threadResolve(projectId, number, input);
   }
 
-  /**
-   * Snapshot the session's work as one commit.
-   *
-   * THE ONE GIT MUTATION THE ENGINE OFFERS. It is additive and reversible, a
-   * human pressed it, and it runs in the session's own checkout — see
-   * `commitSessionWork` for why staging, branch switching and discarding are
-   * deliberately absent rather than pending.
-   *
-   * NOT `async`, so a bad message is refused before the first await. On the
-   * MUTATION pool, like a cut: `add -A` and a pre-commit hook are seconds, and
-   * the rail's reads must not queue behind them. What the commit changed is
-   * dropped from the read cache — this is a write the store KNOWS about, and a
-   * two-second-old "3 changed" beside a fresh commit is the badge lying.
-   */
   commitSessionWork(sessionId: string, message: string): Promise<{ committed: boolean; commit?: GitCommitEntry; reason?: string }> {
-    const session = this.records.get(sessionId);
-    const text = message.trim();
-    if (!text) throw new EngineStateError("invalid_request", "a commit message is required");
-    if (text.length > 2_000) throw new EngineStateError("invalid_request", "commit message is too long");
-    const cwd = workspaceRootOf(session);
-    return commitSessionWork(this.worktreeGit, { cwd, message: text }).finally(() => this.forgetGitReadsUnder(cwd));
+    return this.sessionGit.commit(sessionId, message);
   }
 
-  /**
-   * Publish this session's branch — issue #670.
-   *
-   * ── THE BINDING IS THE STORE'S, NEVER THE CALLER'S ──────────────────────────
-   * The checkout, the mode and the branch all come off the session record. A
-   * request body that could name a branch could ask this engine to push any ref
-   * in any repository on the machine, which is the same reason `sessionDiff`
-   * takes no directory and `projectGitHubComment` takes no session id.
-   *
-   * ── ON THE MUTATION POOL, NOT THE READ POOL ─────────────────────────────────
-   * `worktreeGit` has two slots against the read pool's four and is already the
-   * home of the engine's other slow git children. A push is the slowest of them
-   * and the only one whose clock is somebody's upload; putting it in the read
-   * pool would let one person's first push of a large branch hold a quarter of
-   * the capacity every rail poll draws from. It is bounded at
-   * `PUSH_TIMEOUT_MS` so a slot cannot be held indefinitely.
-   */
-  async pushSessionBranch(sessionId: string): Promise<GitPushResult> {
-    const session = this.records.get(sessionId);
-    const workspace = session.workspace;
-    if (workspace.mode === "none") throw new EngineStateError("invalid_request", "this session has no working directory");
-    const cwd = workspaceRootOf(session);
-    try {
-      return structuredClone(
-        await pushSessionBranch(this.worktreeGit, {
-          cwd,
-          mode: workspace.mode,
-          ...(workspace.mode === "worktree" ? { branch: workspace.branch } : {}),
-        }),
-      );
-    } finally {
-      // Ahead/behind in the overview moved with the push.
-      this.forgetGitReadsUnder(cwd);
-    }
+
+  pushSessionBranch(sessionId: string): Promise<GitPushResult> {
+    return this.sessionGit.push(sessionId);
   }
+
 
   openSessionPullRequest(sessionId: string, input: { title: string; body?: string; base?: string }): Promise<GitHubPullCreateResult> {
     return this.sessionPulls.open(sessionId, input);
