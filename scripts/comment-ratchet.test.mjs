@@ -131,6 +131,18 @@ describe("commentRatchet", () => {
     expect(commentRatchet(root, "base")).toEqual([]);
   });
 
+  test("a long comment the base already had is not new when the diff re-aligns around it", () => {
+    const root = repo();
+    const essay = Array.from({ length: 7 }, (_, k) => `// line ${k}`).join("\n");
+    const code = Array.from({ length: 10 }, (_, k) => `const v${k} = ${k};`).join("\n");
+    writeFileSync(join(root, "apps/engine/a.ts"), `${essay}\n${code}\n`);
+    run(root, "commit", "-qam", "essay");
+    run(root, "branch", "-f", "base");
+    writeFileSync(join(root, "apps/engine/a.ts"), `${code}\n${essay}\nexport {};\n`);
+    run(root, "commit", "-qam", "move the essay down");
+    expect(commentRatchet(root, "base")).toEqual([]);
+  });
+
   test("deleting code and comments passes", () => {
     const root = repo();
     writeFileSync(join(root, "apps/engine/a.ts"), "const a = 1;\n");
