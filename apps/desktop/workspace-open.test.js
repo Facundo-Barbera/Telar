@@ -1,21 +1,11 @@
-// THE WORKSPACE OPEN HANDLER, AND THE ONE THING THAT MAY BE A FILE.
-//
-// `main.js` is not requirable — it calls `app.whenReady()` on its first lines
-// and expects an Electron main process around it — so this pins the handler by
-// SOURCE, the way packaging.test.js pins the packaged file list. The point is
-// not to re-implement the branch: it is that the two guards a renderer cannot
-// reach around (absolute path, real thing on disk) stay in front of the widened
-// kind, and that "directory" stays the default so the header's Open button —
-// which sends no kind at all — is unchanged by this.
-
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const path = require("node:path");
+const { mainSource } = require("./main-source");
 
-const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+const main = mainSource();
 const preload = fs.readFileSync(path.join(__dirname, "preload.js"), "utf8");
 
-/** The handler body, so a match cannot come from somewhere else in a 96k file. */
 const handler = main.slice(
   main.indexOf('ipcMain.handle("telar:workspace:open", async'),
   main.indexOf('ipcMain.handle("telar:dialog:choose-directory"'),
@@ -29,8 +19,7 @@ describe("telar:workspace:open accepts a file only when the caller says so", () 
 
   test("the kind is a directory unless it is exactly \"file\", so a caller that sends none is refused a non-directory as before", () => {
     expect(handler).toContain('const file = input?.kind === "file";');
-    // One expression decides which stat is acceptable — not two branches that
-    // could drift into disagreeing about what a folder is.
+
     expect(handler).toContain("if (file ? !stat.isFile() : !stat.isDirectory())");
   });
 
@@ -43,8 +32,7 @@ describe("telar:workspace:open accepts a file only when the caller says so", () 
     expect(absolute).toBeLessThan(stat);
     expect(kind).toBeLessThan(act);
     expect(stat).toBeLessThan(act);
-    // A path that is not absolute never reaches the stat, and nothing acts
-    // before the kind check has rejected the wrong sort of thing.
+
     expect(handler).toContain('return { ok: false, error: "A workspace can only be opened from an absolute path." };');
   });
 
