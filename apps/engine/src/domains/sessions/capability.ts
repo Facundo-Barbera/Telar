@@ -1,5 +1,5 @@
 import type { EngineClient, EngineEvent, Session, SessionDiff, SessionSettleEnded, Subscription } from "@telar/engine-client";
-import type { SessionsCapability } from "../../sessions-tools/tools";
+import type { SessionsCapability } from "./tools/shared";
 import type { EngineStore } from "../../state";
 
 type Capability = SessionsCapability;

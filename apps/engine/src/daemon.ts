@@ -50,7 +50,7 @@ import { computerUseRoutes, createComputerUseGate, type ComputerUseGate } from "
 import { bearerIsValid } from "./platform/http/auth";
 import { createProviderProber, readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS, type SocketTool } from "./domains/agent-tools";
-import { sessionBootstrap, type SessionBootstrapWindow, sessionsCapability, sessionSnapshot, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
+import { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionBootstrap, type SessionBootstrapWindow, sessionsCapability, sessionSnapshot, sessionsSocketConnectCard, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
 import { browserRoutes, createLoginGrantStore } from "./domains/browser";
 import {
   acquireDaemonLock,
@@ -89,12 +89,6 @@ import {
   writeTheme,
 } from "./domains/appearance";
 import { warmUsageScanCache } from "./usage";
-import {
-  collectSessionsWallTools,
-  ensureSessionsSocketSecret,
-  handleSessionsSocketMessage,
-  sessionsSocketConnectCard,
-} from "./sessions-tools/socket";
 import {
   collectNotesWallTools,
   ensureNotesSocketSecret,

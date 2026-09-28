@@ -11,8 +11,8 @@
 import { expect, test } from "bun:test";
 import { BROWSER_TOOLS } from "../src/domains/browser";
 import { itemDetailForToolCall, titleForToolCall } from "../src/drivers/claude";
-import { collectSessionsWallTools } from "../src/sessions-tools/socket";
-import type { SessionsCapability } from "../src/sessions-tools/tools";
+import { collectSessionsWallTools } from "../src/domains/sessions";
+import type { SessionsCapability } from "../src/domains/sessions";
 import {
   assertTelarToolNames,
   displayToolName,
