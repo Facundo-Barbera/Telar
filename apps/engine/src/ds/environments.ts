@@ -52,7 +52,7 @@ function executable(file: string): boolean {
   }
 }
 
-export function venvPython(dir: string): string | undefined {
+function venvPython(dir: string): string | undefined {
   for (const candidate of [path.join(dir, "bin", "python"), path.join(dir, "Scripts", "python.exe")]) {
     if (executable(candidate)) return candidate;
   }
@@ -89,7 +89,7 @@ export type DiscoverOptions = {
   condaEnvironmentsFile?: string;
 };
 
-export async function listCondaEnvs(conda: string, exec: Exec, environmentsFile?: string): Promise<string[]> {
+async function listCondaEnvs(conda: string, exec: Exec, environmentsFile?: string): Promise<string[]> {
   const roots = new Set<string>();
   const result = await exec(conda, ["env", "list", "--json"], { timeoutMs: 20_000 }).catch(() => undefined);
   if (result && result.status === 0) {

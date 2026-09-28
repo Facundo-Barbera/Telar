@@ -101,7 +101,7 @@ export function managedRelease(platform: string = process.platform, arch: string
  * one rather than over a binary a compile may be running right now, and so the
  * directory's existence is itself the "which version is installed" answer.
  */
-export function managedTectonicDir(engineRoot: string, version: string = MANAGED_TECTONIC_VERSION): string {
+function managedTectonicDir(engineRoot: string, version: string = MANAGED_TECTONIC_VERSION): string {
   return path.join(engineRoot, "tools", "tectonic", version);
 }
 
@@ -110,7 +110,7 @@ export function managedTectonicBinary(engineRoot: string, version: string = MANA
 }
 
 /** The installed binary, or nothing. Cheap enough to call on every resolve. */
-export function findManagedTectonic(engineRoot: string, version: string = MANAGED_TECTONIC_VERSION): ToolInfo | undefined {
+function findManagedTectonic(engineRoot: string, version: string = MANAGED_TECTONIC_VERSION): ToolInfo | undefined {
   const file = managedTectonicBinary(engineRoot, version);
   try {
     if (!fs.statSync(file).isFile()) return undefined;

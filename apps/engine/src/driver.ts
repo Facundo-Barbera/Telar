@@ -81,8 +81,8 @@ import type { PromptsCapability } from "./prompts-tools/tools";
 
 export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";
 export type { DriverRequest, DriverRun, ProviderTurnBinding, DriverSessionHooks, TurnDriver, SessionsCapability } from "./provider-contract";
-import { ProviderUnavailableError, normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun,
-  type DriverResult, type ProviderTurnBinding, type DriverSessionHooks, type TurnDriver } from "./provider-contract";
+import { ProviderUnavailableError, normalizeOutcome, type DriverRun, type ProviderTurnBinding, type DriverSessionHooks,
+  type TurnDriver } from "./provider-contract";
 import { requireCwd } from "./provider-contract";
 import { taskOutputFileFrom } from "./task-output";
 
@@ -204,7 +204,7 @@ function claudeInitialContent(prompt: string, attachments: TurnAttachment[]): st
  * echo. The two mechanisms above say what needs saying without guessing at a
  * field's receiving-side behaviour.
  */
-export function claudeNotificationOrigin(detail: NotificationDetail): { kind: string; [field: string]: unknown } {
+function claudeNotificationOrigin(detail: NotificationDetail): { kind: string; [field: string]: unknown } {
   if (detail.kind === "peer_message") {
     // `from` IS THE ADDRESSABLE IDENTITY and `fromSession` the navigable one;
     // both are the sending session where there is one. A send from the outward
@@ -241,7 +241,7 @@ export function claudeNotificationContent(body: string, detail?: NotificationDet
 
 /** The field kill switch: `TELAR_CLAUDE_STREAMING_INPUT=0` restores the
  *  plain-string prompt (and with it, no send-now on Claude). */
-export function claudeStreamingInputEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+function claudeStreamingInputEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.TELAR_CLAUDE_STREAMING_INPUT?.trim() !== "0";
 }
 
@@ -524,7 +524,7 @@ export function requestKindForTool(name: string): RequestKind {
 }
 
 /** The request payload for a tool call, reusing the item mapping's detail. */
-export function requestDetailForToolCall(name: string, input: unknown): RequestDetail {
+function requestDetailForToolCall(name: string, input: unknown): RequestDetail {
   const detail = itemDetailForToolCall(name, input);
   switch (detail.type) {
     case "command_execution":
@@ -747,7 +747,7 @@ export function taskKindForType(taskType: string | undefined): TaskKind {
 
 /** The same classification, but SILENT about a type nobody stated — so an
  *  absent `task_type` reads as "unknown", never as "agent". */
-export function taskKindForTypeOrUndefined(taskType: string | undefined): TaskKind | undefined {
+function taskKindForTypeOrUndefined(taskType: string | undefined): TaskKind | undefined {
   return taskType ? taskKindForType(taskType) : undefined;
 }
 
@@ -760,7 +760,7 @@ export function taskKindForTypeOrUndefined(taskType: string | undefined): TaskKi
  * only other way it earns a row is being sent to the background later
  * (`task_updated{is_backgrounded: true}`, Ctrl+B), which the caller handles.
  */
-export function isForegroundShell(taskType: string | undefined, backgrounded: boolean | undefined): boolean {
+function isForegroundShell(taskType: string | undefined, backgrounded: boolean | undefined): boolean {
   return taskKindForType(taskType) === "background" && backgrounded !== true;
 }
 
@@ -800,7 +800,7 @@ export function taskStateForStatus(status: string | undefined, fallback: TaskSta
 
 const TERMINAL_TASK_STATES = new Set<TaskState>(["completed", "failed", "stopped"]);
 
-export function isTerminalTaskState(state: TaskState): boolean {
+function isTerminalTaskState(state: TaskState): boolean {
   return TERMINAL_TASK_STATES.has(state);
 }
 
@@ -866,7 +866,7 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
  * request's error object and the limit frame carries account state, and neither
  * belongs in a durable journal.
  */
-export function providerWaitFrom(item: {
+function providerWaitFrom(item: {
   type?: string;
   subtype?: string;
   attempt?: number;
@@ -938,7 +938,7 @@ const KNOWN_RATE_LIMIT_TYPES = new Set(["five_hour", "seven_day", "seven_day_opu
 
 /** What a warning row has already said, so the next frame repeating it says
  *  nothing. Held per turn by both pumps — see `takeProviderWait`. */
-export type LimitWarningSeen = { limitType?: ProviderWaitDetail["limitType"]; resetsAt?: number };
+type LimitWarningSeen = { limitType?: ProviderWaitDetail["limitType"]; resetsAt?: number };
 
 /**
  * THE WARNING IS A HEARTBEAT TOO — #897.
@@ -961,7 +961,7 @@ export type LimitWarningSeen = { limitType?: ProviderWaitDetail["limitType"]; re
  * has moved, so the next warning after one is news rather than a repeat. The
  * other two wait kinds carry no limit state and pass straight through.
  */
-export function takeProviderWait(
+function takeProviderWait(
   detail: ProviderWaitDetail,
   seen: LimitWarningSeen | undefined,
 ): { emit: boolean; seen: LimitWarningSeen | undefined } {
@@ -972,7 +972,7 @@ export function takeProviderWait(
 }
 
 /** The collapsed label, derived once by the engine like every other row's. */
-export function titleForProviderWait(detail: ProviderWaitDetail): string {
+function titleForProviderWait(detail: ProviderWaitDetail): string {
   /**
    * THE ROW THAT SAYS "STILL NOTHING". Its whole content is the elapsed time,
    * because that is all anyone knows: the request went out, nothing has come
@@ -1109,7 +1109,7 @@ function durationText(ms: number): string {
  * Returns `undefined` when the provider said nothing — including on
  * subscription plans, where Claude omits cost entirely. That is not $0.00.
  */
-export function turnCostFrom(cumulativeUsd: unknown, epoch: { costTotalUsd: number | undefined }): number | undefined {
+function turnCostFrom(cumulativeUsd: unknown, epoch: { costTotalUsd: number | undefined }): number | undefined {
   if (typeof cumulativeUsd !== "number" || !Number.isFinite(cumulativeUsd) || cumulativeUsd < 0) return undefined;
   const previous = epoch.costTotalUsd;
   if (cumulativeUsd === 0) return previous === undefined ? 0 : undefined;
@@ -4679,7 +4679,7 @@ function userText(content: unknown): string | undefined {
  * half lives: a file edit's `structuredPatch`. The string `output` is only what
  * was sent to the MODEL, and for an edit that is a confirmation sentence.
  */
-export function withToolResult(detail: ItemDetail, output: string, structured?: unknown): ItemDetail {
+function withToolResult(detail: ItemDetail, output: string, structured?: unknown): ItemDetail {
   if (detail.type === "file_change") {
     const hunks = patchHunksOf(structured);
     if (!hunks) return detail;

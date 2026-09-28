@@ -13,14 +13,14 @@
  */
 import { z } from "zod";
 
-export const TextOutput = z.object({
+const TextOutput = z.object({
   kind: z.literal("text"),
   stream: z.enum(["stdout", "stderr", "result"]),
   text: z.string(),
   truncated: z.boolean().optional(),
 });
-export const HtmlOutput = z.object({ kind: z.literal("html"), html: z.string(), truncated: z.boolean().optional() });
-export const ImageOutput = z.object({
+const HtmlOutput = z.object({ kind: z.literal("html"), html: z.string(), truncated: z.boolean().optional() });
+const ImageOutput = z.object({
   kind: z.literal("image"),
   mediaType: z.enum(["image/png", "image/svg+xml"]),
   dataB64: z.string().optional(),
@@ -28,8 +28,8 @@ export const ImageOutput = z.object({
   width: z.number().optional(),
   height: z.number().optional(),
 });
-export const JsonOutput = z.object({ kind: z.literal("json"), value: z.unknown() });
-export const DataframeOutput = z.object({
+const JsonOutput = z.object({ kind: z.literal("json"), value: z.unknown() });
+const DataframeOutput = z.object({
   kind: z.literal("dataframe"),
   columns: z.array(z.string()),
   dtypes: z.array(z.string()),
@@ -37,13 +37,13 @@ export const DataframeOutput = z.object({
   shape: z.tuple([z.number(), z.number()]),
   truncated: z.boolean(),
 });
-export const ErrorOutput = z.object({
+const ErrorOutput = z.object({
   kind: z.literal("error"),
   ename: z.string(),
   evalue: z.string(),
   traceback: z.array(z.string()),
 });
-export const ClearOutput = z.object({ kind: z.literal("clear") });
+const ClearOutput = z.object({ kind: z.literal("clear") });
 
 export const CellOutput = z.discriminatedUnion("kind", [TextOutput, HtmlOutput, ImageOutput, JsonOutput, DataframeOutput, ErrorOutput, ClearOutput]);
 export type CellOutput = z.infer<typeof CellOutput>;
@@ -120,7 +120,7 @@ export function describeOutputs(outputs: CellOutput[], limit = 12_000): string {
  * them. A kernel with no matplotlib, no figure or no title says nothing and the
  * plot keeps the name its maker had.
  */
-export const PLOT_TITLE_MARKER = "__TELAR_PLOT_TITLE__";
+const PLOT_TITLE_MARKER = "__TELAR_PLOT_TITLE__";
 
 /** Run this BEFORE `plt.show()`: after it, the figure is gone. */
 export const PLOT_TITLE_PROBE = [

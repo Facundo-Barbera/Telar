@@ -20,17 +20,17 @@ import { VIEWPORT_PRESET_KEYS } from "../../../desktop/viewport-presets.js";
 
 // ── what a browser tool call returns ───────────────────────────────────────
 
-export const McpTextContent = z.object({ type: z.literal("text"), text: z.string() });
-export type McpTextContent = z.infer<typeof McpTextContent>;
+const McpTextContent = z.object({ type: z.literal("text"), text: z.string() });
+type McpTextContent = z.infer<typeof McpTextContent>;
 
 /** `data` is base64. Playwright MCP only sends this when the runtime was
  *  launched with `--image-responses allow`, which `transport.ts` does. */
-export const McpImageContent = z.object({
+const McpImageContent = z.object({
   type: z.literal("image"),
   data: z.string(),
   mimeType: z.string().min(1).optional(),
 });
-export type McpImageContent = z.infer<typeof McpImageContent>;
+type McpImageContent = z.infer<typeof McpImageContent>;
 
 /**
  * Any content block MCP grows that this engine does not model yet (`resource`,
@@ -43,15 +43,15 @@ export type McpImageContent = z.infer<typeof McpImageContent>;
  * every caller then reads as `undefined`. A forward-compatibility escape hatch
  * must never be able to accept a shape we DO know and got wrong.
  */
-export const McpUnknownContent = z
+const McpUnknownContent = z
   .looseObject({ type: z.string().min(1) })
   .refine((block) => block.type !== "text" && block.type !== "image", {
     message: "malformed text/image content block",
   });
-export type McpUnknownContent = z.infer<typeof McpUnknownContent>;
+type McpUnknownContent = z.infer<typeof McpUnknownContent>;
 
-export const McpContentBlock = z.union([McpTextContent, McpImageContent, McpUnknownContent]);
-export type McpContentBlock = z.infer<typeof McpContentBlock>;
+const McpContentBlock = z.union([McpTextContent, McpImageContent, McpUnknownContent]);
+type McpContentBlock = z.infer<typeof McpContentBlock>;
 
 /**
  * The `tools/call` result.
@@ -70,7 +70,7 @@ export type BrowserToolResult = z.infer<typeof BrowserToolResult>;
 
 // ── the tools ──────────────────────────────────────────────────────────────
 
-export const BrowserToolName = z.enum([
+const BrowserToolName = z.enum([
   "browser_list_tabs",
   "browser_tabs",
   "browser_navigate",
@@ -95,7 +95,7 @@ export const BrowserToolName = z.enum([
 /** The size a headless resize falls back to for a dimension it was not given
  *  — the headless browser's own starting size (transport.ts `viewportSize`). */
 export const BROWSER_DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
-export type BrowserToolName = z.infer<typeof BrowserToolName>;
+type BrowserToolName = z.infer<typeof BrowserToolName>;
 
 export type BrowserToolDefinition = {
   name: BrowserToolName;
@@ -392,7 +392,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
 
 const BY_NAME = new Map<string, BrowserToolDefinition>(BROWSER_TOOLS.map((tool) => [tool.name, tool]));
 
-export function browserToolDefinition(name: string): BrowserToolDefinition | null {
+function browserToolDefinition(name: string): BrowserToolDefinition | null {
   return BY_NAME.get(name) ?? null;
 }
 

@@ -335,7 +335,7 @@ export const NO_CLIENT_STRATEGY =
 
 /** RFC 7591 dynamic client registration. `token_endpoint_auth_method: "none"`
  *  because this is a public client: PKCE is the proof, not a shipped secret. */
-export async function dcrRegister(options: {
+async function dcrRegister(options: {
   registrationEndpoint: string;
   redirectUris: string[];
   scopes?: string[];
@@ -400,7 +400,7 @@ export type OAuthClientStore = {
   rememberClient(input: { serverId: string; projectId?: string; resource: string; as: AuthServerMeta; client: OAuthClient }): void;
 };
 
-export async function ensureClient(options: {
+async function ensureClient(options: {
   serverId: string;
   projectId?: string;
   resource: string;
@@ -455,7 +455,7 @@ export async function ensureClient(options: {
 
 // ── PKCE (RFC 7636), S256 only ───────────────────────────────────────────────
 
-export function generateCodeVerifier(): string {
+function generateCodeVerifier(): string {
   // 32 random bytes → 43 base64url characters, inside the spec's 43–128 range,
   // and base64url's alphabet is a subset of the unreserved set it requires.
   return crypto.randomBytes(32).toString("base64url");

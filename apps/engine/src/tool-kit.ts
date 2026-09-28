@@ -63,7 +63,7 @@ export const MAX_ANSWER_CHARS = 16_000;
  * Returns the text unchanged when it fits — the ordinary case, and the one that
  * must cost nothing.
  */
-export function bounded(text: string, max: number = MAX_ANSWER_CHARS): string {
+function bounded(text: string, max: number = MAX_ANSWER_CHARS): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}\n[… ${text.length - max} more characters not shown]`;
 }

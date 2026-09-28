@@ -56,12 +56,12 @@ export type DictationSettings = { provider: DictationProviderId; language: strin
  * provider decides what fits. Storing only what fits today would silently throw
  * away the rest the first time somebody pasted a list.
  */
-export const DICTATION_VOCABULARY_LIMIT = 200;
+const DICTATION_VOCABULARY_LIMIT = 200;
 
 /** Longest single stored term. A paragraph pasted into the box is not a term —
  *  see `MAX_TERM_CHARACTERS` in `keyterms.ts`, which draws the same line lower
  *  for what actually goes on a socket. */
-export const DICTATION_TERM_LIMIT = 200;
+const DICTATION_TERM_LIMIT = 200;
 
 /**
  * ONE TERM PER ENTRY, TRIMMED, WITHOUT BLANKS OR REPEATS.
@@ -88,7 +88,7 @@ export function cleanDictationVocabulary(value: unknown): string[] {
 }
 
 /** `<engineRoot>/dictation/settings.json`. */
-export function dictationSettingsFile(dictationDir: string): string {
+function dictationSettingsFile(dictationDir: string): string {
   return path.join(dictationDir, "settings.json");
 }
 

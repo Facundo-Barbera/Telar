@@ -62,7 +62,7 @@ const HelloMachineSettings = z.object({
 });
 export type HelloSettings = z.infer<typeof HelloSettings>;
 
-export const helloMeta: PluginMeta = {
+const helloMeta: PluginMeta = {
   id: "hello",
   api: PLUGIN_API_VERSION,
   name: "Hello",
@@ -82,7 +82,7 @@ export const helloMeta: PluginMeta = {
 /** Per-project pretend work, so `busy` has something to report. */
 type HelloWork = { projectId: string; done: Promise<void>; workId: string };
 
-export class HelloRuntime {
+class HelloRuntime {
   private readonly running = new Map<string, HelloWork[]>();
   private readonly draining = new Set<string>();
   private sweeper: ReturnType<typeof setInterval> | undefined;

@@ -75,7 +75,7 @@ export type ImportedRow = {
 };
 
 /** Why the import stopped where it did — the UI's sentence comes from this. */
-export type TranscriptCut =
+type TranscriptCut =
   | { kind: "whole"; }
   | { kind: "compact_boundary"; at: number; droppedTokens?: number }
   | { kind: "row_budget"; budget: number };

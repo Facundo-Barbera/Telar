@@ -63,7 +63,7 @@ type BoundPolicy = {
  * The logs get enough for roughly the last few dozen lines, which is the window
  * in which "what just went wrong" actually lives.
  */
-export const BROWSER_ANSWER_POLICIES: Readonly<Record<string, BoundPolicy>> = {
+const BROWSER_ANSWER_POLICIES: Readonly<Record<string, BoundPolicy>> = {
   browser_snapshot: { budget: 16 * 1024, keep: "head", narrow: "`target` or `depth`" },
   browser_console_messages: { budget: 6 * 1024, keep: "tail", narrow: "`level`" },
   browser_network_requests: { budget: 6 * 1024, keep: "tail", narrow: "`filter`" },

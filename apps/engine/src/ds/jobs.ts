@@ -22,7 +22,7 @@ export type JobStep = {
   env?: Record<string, string>;
 };
 
-export type JobStatus = "running" | "ok" | "failed" | "cancelled";
+type JobStatus = "running" | "ok" | "failed" | "cancelled";
 
 export type JobRead = {
   jobId: string;

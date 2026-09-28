@@ -144,7 +144,7 @@ export function isMountPoint(mount: string, deps: VolumeDeps = {}): boolean {
  * one keeps exactly today's behaviour instead of half of this feature. A network
  * share and a filesystem `diskutil` has no VolumeUUID for both land here.
  */
-export function readVolumeUuid(mount: string, platform: NodeJS.Platform = process.platform): string | undefined {
+function readVolumeUuid(mount: string, platform: NodeJS.Platform = process.platform): string | undefined {
   if (platform !== "darwin") return undefined;
   let plist: string;
   try {

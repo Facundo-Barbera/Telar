@@ -56,7 +56,7 @@ export type ManifestProfile = {
   effortMap?: Partial<Record<Effort, Effort>>;
 };
 
-export type ManifestModel = {
+type ManifestModel = {
   slug: string;
   name: string;
   aliases?: string[];

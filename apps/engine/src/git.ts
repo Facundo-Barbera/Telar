@@ -80,7 +80,7 @@ export type GitWorktreeEntry = {
   isMainCheckout: boolean;
 };
 
-export type GitRefEntry = {
+type GitRefEntry = {
   /** Short name, remote-qualified for remotes (`origin/main`) — resolvable
    *  verbatim as a worktree base. */
   name: string;
@@ -104,7 +104,7 @@ export type GitRefEntry = {
  * index. Also not evidence of absence, but actionable differently: a retry is
  * the honest offer for a timeout and rarely the answer for the others.
  */
-export type GitReadFailure = "timeout" | "failed";
+type GitReadFailure = "timeout" | "failed";
 
 /** `timedOut` first, because a killed child also carries a non-zero status. */
 function failureOf(result: { status: number; timedOut?: true }): GitReadFailure | undefined {

@@ -87,7 +87,7 @@ export type ReapCandidate = {
 };
 
 /** One tree that went, and what it held. */
-export type ReapedTree = { sessionId: string; path: string; bytes: number; files: number };
+type ReapedTree = { sessionId: string; path: string; bytes: number; files: number };
 
 export type NodeModulesReap = {
   /** Empty when there was nothing to take — including on a home swept today. */

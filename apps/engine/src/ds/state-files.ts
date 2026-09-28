@@ -113,7 +113,7 @@ export class DsFiles {
 }
 
 /** A name that is a filename and nothing else. */
-export function safe(name: string): string {
+function safe(name: string): string {
   const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "").slice(0, 80);
   if (!cleaned) throw new Error("name must contain a letter or digit");
   return cleaned;

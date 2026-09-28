@@ -39,7 +39,7 @@ const execFileP = promisify(execFile);
  *  from its id would have one place to say so. */
 export type CliId = "claude" | "codex" | "opencode";
 
-export type CliStatus =
+type CliStatus =
   /** Resolved, and (where a pairing exists) its version is the one expected. */
   | "ok"
   /** Resolved, same protocol family, different patch. Works in practice; worth

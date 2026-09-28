@@ -107,7 +107,7 @@ export function keytermBytes(terms: readonly string[]): number {
 /** The longest prefix weighing no more than `budgetBytes`. A PREFIX, because
  *  the order in `keyterms.ts` is the priority and dropping from the tail is
  *  what it is for — the branches go before the person's own words do. */
-export function keytermPrefix(terms: readonly string[], budgetBytes: number): string[] {
+function keytermPrefix(terms: readonly string[], budgetBytes: number): string[] {
   const kept: string[] = [];
   let spent = 0;
   for (const term of terms) {

@@ -47,7 +47,7 @@ export class PreparedPromptsError extends Error {
   }
 }
 
-export function promptsDirectory(paths: EngineStatePaths): string {
+function promptsDirectory(paths: EngineStatePaths): string {
   return path.join(paths.root, "prompts");
 }
 
@@ -71,7 +71,7 @@ const two = (value: number): string => String(value).padStart(2, "0");
 
 /** The display half of a stamp, stated here rather than imported so this module
  *  owes the notebook nothing. */
-export function promptLabel(at: Date): string {
+function promptLabel(at: Date): string {
   return `${WEEKDAYS[at.getDay()]} ${two(at.getHours())}:${two(at.getMinutes())}`;
 }
 
@@ -120,7 +120,7 @@ export function readPrompts(paths: EngineStatePaths, projectId: string): Prepare
   return sortPrompts(prompts);
 }
 
-export function writePrompts(paths: EngineStatePaths, projectId: string, prompts: readonly PreparedPrompt[]): PreparedPrompt[] {
+function writePrompts(paths: EngineStatePaths, projectId: string, prompts: readonly PreparedPrompt[]): PreparedPrompt[] {
   const parsed = sortPrompts(prompts.map((prompt) => PreparedPrompt.parse(prompt)));
   atomicWrite(promptsPath(paths, projectId), parsed);
   return parsed;

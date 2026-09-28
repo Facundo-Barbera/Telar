@@ -489,11 +489,11 @@ const MAX_QUEUED_TURNS = 16;
  * found by a boot much later — and continuing work then would surprise
  * everybody. See `resumeAfterPlannedRestart`.
  */
-export const PLANNED_RESTART_WINDOW_MS = 10 * 60_000;
+const PLANNED_RESTART_WINDOW_MS = 10 * 60_000;
 
 /** What the model is told on the turn that continues after an update restart.
  *  The engine's words, not the person's — see `Turn.origin`'s `restart`. */
-export const PLANNED_RESTART_CONTINUATION =
+const PLANNED_RESTART_CONTINUATION =
   "Telar restarted to install an update in the middle of your last turn. Check the current state before redoing anything that may already have happened, then continue.";
 
 /**

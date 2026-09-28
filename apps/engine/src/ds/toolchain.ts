@@ -20,7 +20,7 @@ import path from "node:path";
 import { defaultExec, type Exec } from "./python-env";
 
 export type ToolInfo = { path: string; version: string };
-export type CondaInfo = ToolInfo & { flavour: "conda" | "mamba" | "micromamba" };
+type CondaInfo = ToolInfo & { flavour: "conda" | "mamba" | "micromamba" };
 
 export type PythonVersion = {
   /** "3.13.2" */
@@ -90,7 +90,7 @@ async function version(exec: Exec, file: string, args: string[] = ["--version"])
   return match?.[1];
 }
 
-export async function findUv(exec: Exec = defaultExec, env = process.env): Promise<ToolInfo | undefined> {
+async function findUv(exec: Exec = defaultExec, env = process.env): Promise<ToolInfo | undefined> {
   const file = findBinary("uv", env);
   if (!file) return undefined;
   const found = await version(exec, file);
@@ -105,7 +105,7 @@ export async function findBrew(exec: Exec = defaultExec, env = process.env): Pro
 }
 
 /** conda, else mamba, else micromamba — all speak the `env list --json` / `create` / `install` dialect we use. */
-export async function findConda(exec: Exec = defaultExec, env = process.env): Promise<CondaInfo | undefined> {
+async function findConda(exec: Exec = defaultExec, env = process.env): Promise<CondaInfo | undefined> {
   for (const flavour of ["conda", "mamba", "micromamba"] as const) {
     const file = findBinary(flavour, env);
     if (!file) continue;

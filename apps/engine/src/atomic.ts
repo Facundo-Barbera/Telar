@@ -29,7 +29,7 @@ export function atomicWrite(file: string, value: unknown, mode = 0o600): void {
  * was stored (`document-window.ts`), so the writer has to hold that text rather
  * than hand a value to `JSON.stringify` here and never see the result.
  */
-export function atomicWriteText(file: string, text: string, mode = 0o600): void {
+function atomicWriteText(file: string, text: string, mode = 0o600): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {

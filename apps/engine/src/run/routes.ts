@@ -19,7 +19,7 @@ import { z } from "zod";
 import type { RunCapability } from "./capability";
 import { RunClosedBy, RunConfigurationInput, RunError } from "./types";
 
-export type RunRouteContext = {
+type RunRouteContext = {
   /** Capture groups from `pattern`, in order. */
   params: string[];
   /** The decoded JSON body, or `{}` for a request without one. */
@@ -45,7 +45,7 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
 
 const Target = z.object({ terminalId: z.string().min(1).optional(), runId: z.string().min(1).optional() });
 
-export const runRoutes: RunRoute[] = [
+const runRoutes: RunRoute[] = [
   {
     method: "GET",
     pattern: /^\/run\/configs$/,

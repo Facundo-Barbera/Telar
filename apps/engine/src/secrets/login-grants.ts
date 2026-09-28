@@ -37,7 +37,7 @@ export const LOGIN_GRANTS_FILE = "browser-login-grants.json";
 
 /** One approved field: a kind, plus the exact 1Password field label when the
  *  kind is the open-ended `field`. */
-export type GrantField = { kind: SecretFieldKind; label?: string };
+type GrantField = { kind: SecretFieldKind; label?: string };
 
 export type LoginGrant = {
   id: string;
@@ -170,7 +170,7 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-export function withFileLock<T>(lockPath: string, run: () => T): T {
+function withFileLock<T>(lockPath: string, run: () => T): T {
   let held = false;
   for (let attempt = 0; attempt < LOCK_ATTEMPTS && !held; attempt += 1) {
     try {

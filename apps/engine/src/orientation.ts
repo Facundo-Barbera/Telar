@@ -359,7 +359,7 @@ export function isTelarGenerated(text: string): boolean {
  * Installing it.
  * ------------------------------------------------------------------ */
 
-export type SkillSyncOutcome = "written" | "unchanged" | "removed" | "absent" | "foreign" | "failed";
+type SkillSyncOutcome = "written" | "unchanged" | "removed" | "absent" | "foreign" | "failed";
 export type SkillSyncResult = { root: string; file: string; outcome: SkillSyncOutcome };
 
 const skillFile = (root: string, name: string): string => path.join(root, name, "SKILL.md");

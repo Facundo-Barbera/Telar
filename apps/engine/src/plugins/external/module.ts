@@ -26,7 +26,7 @@ import type { LoadedExternalPlugin } from "./manifest";
 import { ExternalPluginProcess, type ExternalProcessOptions } from "./process";
 
 /** The session verb a tool call travels under. Not a verb a manifest may declare. */
-export const TOOL_VERB = "tool";
+const TOOL_VERB = "tool";
 
 export function externalMeta(manifest: ExternalPluginManifest): PluginMeta {
   return {

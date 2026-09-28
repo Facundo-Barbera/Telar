@@ -327,7 +327,7 @@ export function driverOf(provider: string): ProviderDriverKind | undefined {
  * revoked login among five good ones is a fact about that login, and taking the
  * other four off screen to report it would be the wrong trade every time.
  */
-export async function readAccount(config: HubConfig, account: HubAuthFile, deps: HubDeps = {}): Promise<UsageLimitAccount> {
+async function readAccount(config: HubConfig, account: HubAuthFile, deps: HubDeps = {}): Promise<UsageLimitAccount> {
   const driver = driverOf(account.provider) ?? "claude";
   const base: UsageLimitAccount = {
     id: account.id,

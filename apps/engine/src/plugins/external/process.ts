@@ -62,7 +62,7 @@ export type ExternalProcessState = "stopped" | "starting" | "running" | "backoff
 
 /** 1s, 2s, 4s … capped — and reset once a start has stayed up this long. */
 export const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const;
-export const STABLE_AFTER_MS = 60_000;
+const STABLE_AFTER_MS = 60_000;
 const LOG_TAIL = 200;
 
 const realTimers: PluginTimers = {

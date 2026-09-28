@@ -138,7 +138,7 @@ export async function readSocketBody(request: http.IncomingMessage): Promise<Rec
 /** The newest protocol revision this file implements. A client asking for a
  *  plausible date-shaped version gets its own echoed back — a socket's surface
  *  (tools only, stateless, no batch) is identical across them. */
-export const MCP_PROTOCOL_VERSION = "2025-06-18";
+const MCP_PROTOCOL_VERSION = "2025-06-18";
 
 type JsonRpcId = string | number | null;
 

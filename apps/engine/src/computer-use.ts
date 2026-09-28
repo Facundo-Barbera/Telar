@@ -239,7 +239,7 @@ function resolveCua(env: Record<string, string | undefined>, home: string, exist
  * ------------------------------------------------------------------ */
 
 /** Whether something accepts connections on a unix socket. */
-export function socketListening(socket: string, timeoutMs = 1_000): Promise<boolean> {
+function socketListening(socket: string, timeoutMs = 1_000): Promise<boolean> {
   return new Promise((resolve) => {
     const connection = net.connect(socket);
     const done = (answer: boolean) => {
@@ -385,7 +385,7 @@ export async function resetComputerUseAccess(probe: ComputerUseProbe = {}, deps:
 
 /** SIGTERM to OUR daemon — both of its processes, found by `helperDaemonPids` —
  *  and nothing else. False when there was none to stop. */
-export function stopHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}): boolean {
+function stopHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}): boolean {
   const pids = helperDaemonPids(helper, deps);
   for (const pid of pids) {
     try {
@@ -399,7 +399,7 @@ export function stopHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}): 
 
 /** Stop our daemon, wait for it to be gone — socket quiet, processes exited, or
  *  `ensureHelperDaemon` would wait on the dying one — then start a fresh one. */
-export async function restartHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}, timeoutMs = 5_000): Promise<boolean> {
+async function restartHelperDaemon(helper: BundledHelper, deps: HelperDeps = {}, timeoutMs = 5_000): Promise<boolean> {
   const listening = deps.listening ?? socketListening;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   if (stopHelperDaemon(helper, deps)) {
@@ -477,7 +477,7 @@ type HelperGrants = { accessibility: boolean; screenRecording: boolean };
  * LaunchServices (`open -n -W`, stdout to a file) because a child of the engine
  * would be answered for TELAR's grants, not the helper's.
  */
-export async function probeHelperGrants(helper: BundledHelper, request: boolean, deps: HelperDeps = {}): Promise<HelperGrants | { error: string }> {
+async function probeHelperGrants(helper: BundledHelper, request: boolean, deps: HelperDeps = {}): Promise<HelperGrants | { error: string }> {
   const out = path.join(os.tmpdir(), `telar-cu-probe-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
   try {
     fs.writeFileSync(out, "");
@@ -794,7 +794,7 @@ export async function computerUseStatus(probe: ComputerUseProbe = {}, timeoutMs 
  * The claim gate — only a measured `granted` puts the tools in a claim.
  * ------------------------------------------------------------------ */
 
-export type ComputerUseMeasurement = { status: ComputerUseStatus; measuredAt: number };
+type ComputerUseMeasurement = { status: ComputerUseStatus; measuredAt: number };
 export type ComputerUseGate = {
   /** The last measurement, if any. */
   last(): ComputerUseMeasurement | undefined;

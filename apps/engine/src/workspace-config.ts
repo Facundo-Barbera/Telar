@@ -29,7 +29,7 @@ import {
 import { atomicWrite } from "./atomic";
 
 /** Relative to a project's checkout. Tracked, so a repo can propose its own setup. */
-export const WORKSPACE_PROPOSAL_PATH = path.join(".telar", "workspace.json");
+const WORKSPACE_PROPOSAL_PATH = path.join(".telar", "workspace.json");
 
 /** A proposal file bigger than this is not configuration. */
 const MAX_PROPOSAL_BYTES = 256 * 1024;
@@ -48,12 +48,12 @@ function describe(error: { issues: { path: PropertyKey[]; message: string }[] })
   return where ? `${where}: ${issue.message}` : issue.message;
 }
 
-export function validateWorkspaceConfig(input: unknown): Validated<WorkspaceConfig> {
+function validateWorkspaceConfig(input: unknown): Validated<WorkspaceConfig> {
   const parsed = WorkspaceConfig.safeParse(input ?? {});
   return parsed.success ? { ok: true, value: parsed.data } : { ok: false, message: describe(parsed.error) };
 }
 
-export function validateProjectOverrides(input: unknown): Validated<ProjectWorkspaceOverrides> {
+function validateProjectOverrides(input: unknown): Validated<ProjectWorkspaceOverrides> {
   const parsed = ProjectWorkspaceOverrides.safeParse(input ?? {});
   return parsed.success ? { ok: true, value: parsed.data } : { ok: false, message: describe(parsed.error) };
 }

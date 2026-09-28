@@ -21,7 +21,7 @@ import { canonicalName, validSpec } from "./packages";
 import { BRIDGE_MODULES, STACK_MODULES, defaultExec, type Exec } from "./python-env";
 import type { Toolchain } from "./toolchain";
 
-export function telarPythonRoot(engineRoot: string): string {
+function telarPythonRoot(engineRoot: string): string {
   return path.join(engineRoot, "python");
 }
 

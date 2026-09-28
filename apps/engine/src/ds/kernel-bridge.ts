@@ -23,7 +23,7 @@ export type BridgeNotification = { method: string; params: Record<string, unknow
 
 export type SpawnBridge = (python: string, script: string, options: { cwd: string; env: NodeJS.ProcessEnv }) => ChildProcessWithoutNullStreams;
 
-export const defaultSpawnBridge: SpawnBridge = (python, script, options) =>
+const defaultSpawnBridge: SpawnBridge = (python, script, options) =>
   spawn(python, ["-u", script], { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] });
 
 export class KernelBridge {

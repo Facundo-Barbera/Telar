@@ -22,7 +22,7 @@ import type { TaskOutputPage } from "@telar/engine-client";
  *  gigabytes; the panel is a place to see what it is doing now. */
 export const TASK_OUTPUT_TAIL_BYTES = 256 * 1024;
 /** The most one read returns; `more` says there is another page. */
-export const TASK_OUTPUT_CHUNK_BYTES = 512 * 1024;
+const TASK_OUTPUT_CHUNK_BYTES = 512 * 1024;
 
 /** The path in a backgrounded Bash call's result text, if it states one. */
 export function taskOutputFileFrom(text: string): string | undefined {

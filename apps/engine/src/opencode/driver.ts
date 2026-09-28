@@ -58,7 +58,7 @@ export function mcpConfiguration(input: DriverRun): NonNullable<Config["mcp"]> {
   return mcp;
 }
 
-export function openCodePartDetail(part: Part): ItemDetail | undefined {
+function openCodePartDetail(part: Part): ItemDetail | undefined {
   if (part.type === "text") return { type: "assistant_message", text: part.text };
   if (part.type === "reasoning") return { type: "reasoning", text: part.text };
   if (part.type === "tool") return { type: "dynamic_tool_call", call: { name: part.tool, toolUseId: part.callID,

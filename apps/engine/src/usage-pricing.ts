@@ -16,11 +16,11 @@
 import fs from "node:fs";
 import type { TokenUsage } from "@telar/engine-client";
 
-export const LITELLM_RATES_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const LITELLM_RATES_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const RATES_TTL_MS = 24 * 3_600_000;
 const FETCH_TIMEOUT_MS = 10_000;
 
-export type ModelRate = {
+type ModelRate = {
   inputPerTok: number;
   outputPerTok: number;
   cacheReadPerTok?: number;

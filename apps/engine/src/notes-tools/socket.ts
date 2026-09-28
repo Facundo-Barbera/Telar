@@ -41,7 +41,7 @@ const SECRET_FILE = "notes-mcp-secret.json";
 /** At the engine root, beside `sessions-mcp-secret.json` and for the reason that
  *  one states: it sits with `engine.json`, the other secret this root holds, and
  *  not in the middle of the user's notebooks. */
-export function notesSocketSecretPath(paths: EngineStatePaths): string {
+function notesSocketSecretPath(paths: EngineStatePaths): string {
   return path.join(paths.root, SECRET_FILE);
 }
 

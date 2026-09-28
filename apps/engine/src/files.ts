@@ -53,7 +53,7 @@ export const MAX_WORKSPACE_FILES = 5_000;
  * a generated bundle. A file past it arrives cut, WITH ITS REAL SIZE, so the
  * viewer can say so instead of showing a syntax error that is not in the source.
  */
-export const MAX_FILE_BYTES = 512 * 1024;
+const MAX_FILE_BYTES = 512 * 1024;
 
 /**
  * How much of a file the RAW route serves.
@@ -65,7 +65,7 @@ export const MAX_FILE_BYTES = 512 * 1024;
  * file is a download, not a preview, and the route refuses rather than
  * buffering half a gigabyte into the daemon.
  */
-export const MAX_RAW_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_RAW_FILE_BYTES = 64 * 1024 * 1024;
 
 /** How deep a walk goes. Only reached in an unversioned directory; deep enough
  *  for a real source tree, shallow enough that a symlink cycle cannot hang the
@@ -94,7 +94,7 @@ function relative(root: string, target: string): string {
  * configuration, and throwing here would make the Files tree a failure state for
  * it.
  */
-export function gitWorkspaceFiles(git: GitRunner, cwd: string): string[] | undefined {
+function gitWorkspaceFiles(git: GitRunner, cwd: string): string[] | undefined {
   const inside = git(cwd, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.status !== 0 || inside.stdout.trim() !== "true") return undefined;
   /**
@@ -344,7 +344,7 @@ export async function readWorkspaceFileBytes(input: { cwd: string; path: string;
 }
 
 /** Async reads keep Files and the composer's file picker off the daemon loop. */
-export async function gitWorkspaceFilesAsync(git: AsyncGitRunner, cwd: string): Promise<string[] | undefined> {
+async function gitWorkspaceFilesAsync(git: AsyncGitRunner, cwd: string): Promise<string[] | undefined> {
   const inside = await git(cwd, ["rev-parse", "--is-inside-work-tree"]);
   // A timed-out repository is not evidence of an unversioned directory. Walking
   // it would add filesystem work precisely when the checkout is already stalled.
