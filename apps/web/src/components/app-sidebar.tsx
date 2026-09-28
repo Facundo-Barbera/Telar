@@ -84,9 +84,8 @@ import {
   UnfoldVerticalIcon,
   XIcon,
 } from "lucide-react";
-import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
+import { AppSidebarFooterRow, SidebarProjectFilter, SessionRow } from "@/features/sessions";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
-import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
 import type { InboxPolicy, Project, SidebarLayout, SidebarMode } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
@@ -136,7 +135,6 @@ import {
   type SidebarWidthProposal,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { SessionRow } from "@/components/session/session-row";
 import { ProjectGroupSection } from "@/components/session/project-group";
 import { FlatSessionList, RailModeSwitch } from "@/components/session/flat-session-list";
 import { flatRailRows, flattenSessions, useExpandedParents } from "@/lib/flat-rail";

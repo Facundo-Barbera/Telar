@@ -1,36 +1,5 @@
 "use client";
 
-/**
- * THE PROJECT FILTER, AT THE HEAD OF THE FIELD IT NARROWS — issue #470.
- *
- * It began as a row of its own under the search field ("All projects ▾" and a
- * lone `+`), which spent a whole line of a narrow rail on a control most
- * cockpits never change; #395 folded it into the field as a chip; #400 removed
- * it outright. What comes back is deliberately NOT that chip: a chip was one
- * scope at a time, and "these three projects and not the other eleven" — the
- * thing the collapsible groups genuinely cannot express — needs a set.
- *
- * NOTHING CHECKED IS EVERY PROJECT, which is the state the rail starts in and
- * the state "Clear" returns it to. There is no "All projects" row to press,
- * because an empty selection already says it and a row that means "uncheck the
- * other eleven" is a second way to spell the same move.
- *
- * IT REPLACES THE SEARCH GLYPH rather than sitting beside it — `start`'s own
- * contract in `sidebar-search-field.tsx`, and the reason is unchanged from
- * #395: two marks at the head of one field is one too many, and the field's
- * width belongs to what you are typing.
- *
- * ABSENT ON A COCKPIT WITH ONE PROJECT. The caller decides that (it is the same
- * `pickerTargets.length > 1` test the palette uses to skip a question with one
- * answer): with one project registered, "every project" and "that project"
- * select the same rows, so the control would be furniture eating the width of
- * the field.
- *
- * HOST-GROUPED ONLY WHEN THERE ARE HOSTS TO GROUP BY. A cockpit with no paired
- * Mac gets a flat list — a lone "Local" caption over every row in the popover
- * would be a heading that divides nothing.
- */
-
 import { CheckIcon, ChevronDownIcon, FolderGit2Icon } from "lucide-react";
 import { ProjectAvatar, type NewConversationTarget } from "@/features/projects";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -38,8 +7,6 @@ import { CAPTION } from "@/lib/idiom";
 import { projectFilterKey } from "@/lib/project-filter";
 import { cn } from "@/lib/utils";
 
-/** The projects under each Mac, this one first — `targets`' own order, which
- *  the rail builds local-first and then in book order. */
 function groupTargetsByHost(
   targets: readonly NewConversationTarget[],
 ): { id: string; name: string; targets: NewConversationTarget[] }[] {
@@ -55,8 +22,6 @@ function groupTargetsByHost(
 
 export function SidebarProjectFilter({
   targets,
-  /** The selection AS APPLIED (see `appliedProjectFilter`), so the count on the
-   *  trigger and the ticks in the list can never disagree. */
   selected,
   onToggle,
   onClear,
@@ -82,10 +47,6 @@ export function SidebarProjectFilter({
         }
       >
         <FolderGit2Icon className="size-3.5" />
-        {/* THE COUNT ONLY WHEN THERE IS ONE TO GIVE. Unfiltered the trigger is
-            two small glyphs and the field keeps its width for typing; a "0" or
-            an "All" spelled out inside a search box is a label competing with a
-            placeholder. */}
         {count > 0 && (
           <span className="rounded-sm bg-sidebar-accent px-1 text-3xs font-semibold tabular-nums text-sidebar-foreground/80">{count}</span>
         )}
@@ -123,9 +84,6 @@ export function SidebarProjectFilter({
             </div>
           ))}
         </div>
-        {/* ONE MOVE BACK TO "EVERY PROJECT", and only while there is something
-            to undo. A permanent Clear row is a control that does nothing most
-            of the time it is read. */}
         {count > 0 && (
           <>
             <div aria-hidden className="mx-1 my-1 h-px bg-border" />

@@ -11,7 +11,7 @@
  */
 import { ChevronRightIcon } from "lucide-react";
 import type { SidebarMode } from "@telar/engine-client";
-import { SessionRow } from "@/components/session/session-row";
+import { SessionRow } from "@/features/sessions";
 import { summarizeChildren, type FlatEntry } from "@/lib/flat-rail";
 import type { RailJumpSlot } from "@/lib/session-groups";
 import type { SessionRowChanged } from "@/lib/session-mutations";

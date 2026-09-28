@@ -66,7 +66,7 @@ const bridge: UpdatesBridge = {
 };
 (globalThis as { window: { telarDesktop?: unknown } }).window.telarDesktop = { updates: bridge };
 
-const { AppSidebarFooterRow } = await import("./app-sidebar-footer");
+const { AppSidebarFooterRow } = await import("@/features/sessions");
 const { UpdatesSection } = await import("./settings/updates-section");
 const { UPDATE_TOAST_MS } = await import("./ui/update-toast");
 
