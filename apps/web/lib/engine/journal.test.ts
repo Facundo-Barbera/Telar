@@ -844,6 +844,31 @@ describe("passive arrivals", () => {
   });
 });
 
+describe("turn order", () => {
+  const a: Turn = { ...turn, runId: "run_a", sequence: 1, origin: "session", state: "running", acceptedAt: 50, updatedAt: 250, startedAt: 200 };
+  const b: Turn = { ...turn, runId: "run_b", sequence: 2, origin: "provider", state: "completed", acceptedAt: 90, updatedAt: 150, startedAt: 100, completedAt: 150 };
+  const queued: Turn = { ...turn, runId: "run_q", sequence: 0, state: "queued", acceptedAt: 10, updatedAt: 10 };
+  const rows = [
+    item({ id: "b_answer", runId: "run_b", status: "completed", startedAt: 120, completedAt: 150, detail: { type: "assistant_message", text: "done" } }),
+    item({ id: "a_steer", runId: "run_a", status: "completed", startedAt: 250, completedAt: 250, detail: { type: "user_message", text: "and this?" } }),
+  ];
+  const order = (turns: { runId: string }[]) => turns.map((each) => each.runId);
+
+  test("a lower-sequence turn that started later renders after the one that ran first", () => {
+    const projected = projectJournal([a, b, queued], rows, []);
+    expect(order(projected)).toEqual(["run_b", "run_a", "run_q"]);
+    const shown = projected.flatMap((each) => each.items.map((row) => row.id));
+    expect(shown.indexOf("a_steer")).toBeGreaterThan(shown.indexOf("b_answer"));
+  });
+
+  test("the incremental projector agrees, on the whole fold and on a single-run refold", () => {
+    const project = createJournalProjector();
+    expect(order(project([a, b, queued], rows, []))).toEqual(["run_b", "run_a", "run_q"]);
+    const events = [{ ...envelope, id: 1, at: 260, runId: "run_a", type: "content.delta", itemId: "a_steer", stream: "assistant_text", text: "" }] as EngineEvent[];
+    expect(order(project([a, b, queued], rows, events))).toEqual(["run_b", "run_a", "run_q"]);
+  });
+});
+
 describe("a turn the engine wrote after a planned restart", () => {
   const restartOrigin = { reason: "update" as const, plannedAt: 1_800_000_000_000, interruptedRunId: "run_0" };
   const continued: Turn = { ...turn, origin: "restart", restartOrigin, input: "Telar restarted to install an update in the middle of your last turn." };

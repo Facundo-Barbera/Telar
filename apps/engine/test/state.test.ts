@@ -2408,6 +2408,23 @@ test("a provider turn is born running under a claim, and a human message sent me
   expect(turns.get("run_human")?.state).toBe("queued");
 });
 
+test("a provider turn can open over a queued one, so a lower sequence can start after a higher one finished", () => {
+  let clock = 100;
+  const store = new EngineStore(root(), () => (clock += 10));
+  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.createSession({ id: "session_one", projectId: "project_one" });
+  const waiting = store.submitTurn("session_one", { runId: "run_waiting", input: "cohort done" }).turn;
+  expect(waiting.state).toBe("queued");
+  const provider = store.openProviderTurn("session_one", { workerId: "worker_one", input: "Background task completed.", reason: { kind: "unknown" } });
+  expect(provider.sequence).toBeGreaterThan(waiting.sequence);
+  store.completeTurn("session_one", provider.runId, provider.claim!.token, { text: "done" });
+  const claimed = store.claimNextTurn("worker_one")!;
+  expect(claimed.turn.runId).toBe("run_waiting");
+  store.markRunning("session_one", "run_waiting", claimed.turn.claim!.token);
+  const turns = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
+  expect(turns.get("run_waiting")!.startedAt!).toBeGreaterThan(turns.get(provider.runId)!.completedAt!);
+});
+
 test("task reports between turns fold onto the rows they name, and open nothing", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
