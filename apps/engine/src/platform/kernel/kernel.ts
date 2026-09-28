@@ -8,6 +8,19 @@ import { EngineStateError } from "./errors";
 
 export const STATE_VERSION = 2 as const;
 
+export function assertStateVersion(value: unknown, document: string): void {
+  const version = (value as { version?: unknown } | null)?.version;
+  if (version === STATE_VERSION) return;
+  if (version === 1) {
+    throw new EngineStateError(
+      "invalid_request",
+      `this ${document} was written by protocol v1, which this engine no longer reads. ` +
+        `v2 is a deliberate hard break with no migration — clear the engine state root (TELAR_HOME/engine) and start fresh.`,
+    );
+  }
+  throw new EngineStateError("invalid_request", `invalid ${document}`);
+}
+
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 /** A journal record before the engine stamps its envelope. */
 export type JournalEntry = DistributiveOmit<EngineEvent, "id" | "at" | "sessionId" | "runId">;

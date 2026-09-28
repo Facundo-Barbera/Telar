@@ -53,8 +53,6 @@ const WATCHED = [
   "writeDocument",
   "storeSessionRow",
   "withActivityFrom",
-  "reconcileTurnSummaries",
-  "knownTurnStates",
   "appendEvent",
   "noteSessionRevision",
   "bumpRevisionFor",
