@@ -62,7 +62,7 @@ function modelRoutes(store: EngineStore): Route[] {
       handle: async ({ query }) => {
         const instanceId = query.get("instanceId");
         return ok({
-          catalogue: await store.modelCatalogue((query.get("driver") ?? "claude") as "claude" | "codex", {
+          catalogue: await store.catalogues.catalogue((query.get("driver") ?? "claude") as "claude" | "codex", {
             force: query.get("refresh") === "1",
             ...(instanceId ? { instanceId } : {}),
           }),
@@ -77,7 +77,7 @@ function modelRoutes(store: EngineStore): Route[] {
         const instanceId = query.get("instanceId")?.trim();
         const cwd = query.get("cwd")?.trim();
         return ok({
-          conversations: await store.listAdoptableClaudeConversations({
+          conversations: await store.adoption.list({
             ...(instanceId ? { instanceId } : {}),
             ...(cwd ? { cwd } : {}),
             limit: positiveParam(query.get("limit"), 100, 500, "limit"),
@@ -85,12 +85,12 @@ function modelRoutes(store: EngineStore): Route[] {
         });
       },
     },
-    { method: "GET", path: "/v2/textgen", auth: "engine", handle: () => ok({ textGen: store.getTextGenPolicy() }) },
+    { method: "GET", path: "/v2/textgen", auth: "engine", handle: () => ok({ textGen: store.settings.textGen() }) },
     {
       method: "PATCH",
       path: "/v2/textgen",
       auth: "engine",
-      handle: ({ body }) => ok({ textGen: store.setTextGenPolicy(only(body, ["titles", "renameBranches", "driver", "model"])) }),
+      handle: ({ body }) => ok({ textGen: store.settings.setTextGen(only(body, ["titles", "renameBranches", "driver", "model"])) }),
     },
     textGenComplete(store),
   ];
@@ -103,7 +103,7 @@ const GLOBAL_MCP_SLOT = /^\/v2\/mcp-servers\/([A-Za-z0-9_-]+)$/;
 function mcpServerRoutes(store: EngineStore): Route[] {
   const save = (id: string, projectId: string | undefined, input: Record<string, unknown>) =>
     ok({
-      mcpServer: store.saveMcpServer({
+      mcpServer: store.mcpServers.save({
         id,
         ...(projectId === undefined ? {} : { projectId }),
         ...(input.label === undefined ? {} : { label: stringValue(input.label, "mcp server label")! }),
@@ -112,13 +112,13 @@ function mcpServerRoutes(store: EngineStore): Route[] {
       }),
     });
   return [
-    { method: "GET", path: "/v2/mcp-servers", auth: "engine", handle: () => ok({ mcpServers: store.listMcpServers({ projectId: null }) }) },
+    { method: "GET", path: "/v2/mcp-servers", auth: "engine", handle: () => ok({ mcpServers: store.mcpServers.list({ projectId: null }) }) },
     {
       method: "GET",
       path: /^\/v2\/projects\/([^/]+)\/mcp-servers$/,
       auth: "engine",
       handle: ({ params }) =>
-        ok({ mcpServers: store.listMcpServers({ projectId: params[0]! }), effective: resolveMcpServers(store.listMcpServers(), params[0]!) }),
+        ok({ mcpServers: store.mcpServers.list({ projectId: params[0]! }), effective: resolveMcpServers(store.mcpServers.list(), params[0]!) }),
     },
     { method: "PUT", path: PROJECT_MCP_SLOT, auth: "engine", handle: ({ body, params }) => save(params[1]!, params[0]!, body) },
     { method: "PUT", path: GLOBAL_MCP_SLOT, auth: "engine", handle: ({ body, params }) => save(params[0]!, undefined, body) },
@@ -127,9 +127,9 @@ function mcpServerRoutes(store: EngineStore): Route[] {
       path: PROJECT_MCP_SLOT,
       auth: "engine",
       body: "raw",
-      handle: ({ params }) => ok({ removed: store.removeMcpServer(params[1]!, params[0]!) }),
+      handle: ({ params }) => ok({ removed: store.mcpServers.remove(params[1]!, params[0]!) }),
     },
-    { method: "DELETE", path: GLOBAL_MCP_SLOT, auth: "engine", body: "raw", handle: ({ params }) => ok({ removed: store.removeMcpServer(params[0]!, undefined) }) },
+    { method: "DELETE", path: GLOBAL_MCP_SLOT, auth: "engine", body: "raw", handle: ({ params }) => ok({ removed: store.mcpServers.remove(params[0]!, undefined) }) },
   ];
 }
 
@@ -147,7 +147,7 @@ function providerInstanceRoutes(store: EngineStore, deps: ProviderRouteDeps): Ro
       path: "/v2/provider-instances",
       auth: "engine",
       handle: async ({ query }) => {
-        const providerInstances = store.listProviderInstances();
+        const providerInstances = store.providers.list();
         return ok({ providerInstances, probes: await probeProviders(providerInstances, { force: query.get("refresh") === "1" }) });
       },
     },
@@ -159,20 +159,20 @@ function providerInstanceRoutes(store: EngineStore, deps: ProviderRouteDeps): Ro
       // The command is derived from the install on disk, never taken from the request.
       async handle({ params }) {
         const id = params[0]!;
-        const instance = store.listProviderInstances().find((entry) => entry.id === id);
+        const instance = store.providers.list().find((entry) => entry.id === id);
         if (!instance) throw new HttpError(404, "not_found", `unknown provider instance ${id}`);
         const result = await updateProvider(instance.driver, instance.binaryPath);
-        const providerInstances = store.listProviderInstances();
+        const providerInstances = store.providers.list();
         return ok({ result, providerInstances, probes: await probeProviders(providerInstances, { force: true }) });
       },
     },
-    { method: "GET", path: INSTANCE_MODELS, auth: "engine", handle: ({ params }) => ok({ overlay: store.getModelOverlay(params[0]!) }) },
+    { method: "GET", path: INSTANCE_MODELS, auth: "engine", handle: ({ params }) => ok({ overlay: store.catalogues.overlay(params[0]!) }) },
     {
       method: "PATCH",
       path: INSTANCE_MODELS,
       auth: "engine",
       // By key presence: `[]` clears a list, an absent key leaves it alone.
-      handle: ({ body, params }) => ok({ overlay: store.setModelOverlay(params[0]!, only(body, ["favorites", "hidden", "order", "custom", "default"])) }),
+      handle: ({ body, params }) => ok({ overlay: store.catalogues.setOverlay(params[0]!, only(body, ["favorites", "hidden", "order", "custom", "default"])) }),
     },
     {
       method: "PUT",
@@ -180,7 +180,7 @@ function providerInstanceRoutes(store: EngineStore, deps: ProviderRouteDeps): Ro
       auth: "engine",
       // Fields pass through verbatim, `null` included: the store owns clear / keep / set.
       handle({ body, params }) {
-        const saved = store.saveProviderInstance({
+        const saved = store.providers.save({
           id: params[0]!,
           ...Object.fromEntries(INSTANCE_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]])),
           ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
@@ -191,7 +191,7 @@ function providerInstanceRoutes(store: EngineStore, deps: ProviderRouteDeps): Ro
         });
       },
     },
-    { method: "DELETE", path: INSTANCE, auth: "engine", body: "raw", handle: ({ params }) => ok({ removed: store.removeProviderInstance(params[0]!) }) },
+    { method: "DELETE", path: INSTANCE, auth: "engine", body: "raw", handle: ({ params }) => ok({ removed: store.providers.remove(params[0]!) }) },
   ];
 }
 

@@ -6,14 +6,14 @@ import type { EngineStore } from "../../state";
 export function schedulesRoutes(store: EngineStore): Route[] {
   const one = /^\/v2\/schedules\/(.*)$/;
   return [
-    { method: "GET", path: "/v2/schedules", auth: "engine", handle: ({ query }) => ok({ schedules: store.listSchedules(query.get("sessionId") ?? undefined) }) },
+    { method: "GET", path: "/v2/schedules", auth: "engine", handle: ({ query }) => ok({ schedules: store.schedules.list(query.get("sessionId") ?? undefined) }) },
     {
       method: "POST",
       path: "/v2/schedules",
       auth: "engine",
       handle: ({ body }) =>
         ok({
-          schedule: store.putSchedule({
+          schedule: store.schedules.put({
             ...(typeof body.id === "string" ? { id: body.id } : {}),
             sessionId: String(body.sessionId ?? ""),
             prompt: String(body.prompt ?? ""),
@@ -28,11 +28,11 @@ export function schedulesRoutes(store: EngineStore): Route[] {
       path: one,
       auth: "engine",
       handle({ params }) {
-        const row = store.readSchedule(params[0]!);
+        const row = store.schedules.read(params[0]!);
         if (!row) throw new HttpError(404, "not_found", "schedule does not exist");
         return ok({ schedule: row });
       },
     },
-    { method: "DELETE", path: one, auth: "engine", handle: ({ params }) => ok({ deleted: store.deleteSchedule(params[0]!) }) },
+    { method: "DELETE", path: one, auth: "engine", handle: ({ params }) => ok({ deleted: store.schedules.delete(params[0]!) }) },
   ];
 }

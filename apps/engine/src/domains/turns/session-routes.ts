@@ -41,7 +41,7 @@ export function sessionTurnRoutes(store: EngineStore, { execution, requireWorker
         const model = TurnModelSelection.safeParse(body.model);
         if (body.model !== undefined && !model.success) throw new HttpError(400, "invalid_request", "turn model selection is invalid");
         // Refreshed off the critical path: the claim reads the remembered default and must not wait on a CLI.
-        if (store.claudeAdmissionNeedsCatalogue(sessionId!, model.success ? model.data : undefined)) void store.prepareClaudeCatalogue();
+        if (store.claims.claudeAdmissionNeedsCatalogue(sessionId!, model.success ? model.data : undefined)) void store.catalogues.prepareClaude();
         const accepted = await store.submitTurnAsync(sessionId!, {
           runId: stringValue(body.runId, "run id")!,
           input: stringValue(body.input, "turn input")!,
@@ -66,8 +66,8 @@ export function sessionTurnRoutes(store: EngineStore, { execution, requireWorker
         const by = body.by === undefined ? "user" : stringValue(body.by, "by");
         if (by !== "user" && by !== "agent") throw new HttpError(400, "invalid_request", 'by must be "user" or "agent" when given');
         const commandId = stringValue(body.commandId, "command id", true);
-        if (scope !== "session") return ok(store.stopTurn(sessionId!, runId));
-        return ok(store.executeCommand(JSON.stringify({ operation: "stopSession", sessionId, by }), () => store.stopSession(sessionId!, by), commandId));
+        if (scope !== "session") return ok(store.turnLifecycle.stopTurn(sessionId!, runId));
+        return ok(store.executeCommand(JSON.stringify({ operation: "stopSession", sessionId, by }), () => store.turnLifecycle.stopSession(sessionId!, by), commandId));
       },
     },
     {

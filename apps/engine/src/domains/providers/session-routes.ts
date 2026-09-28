@@ -14,7 +14,7 @@ export function sessionProviderRoutes(store: EngineStore, skills: ProviderSkills
       path: sessionRoute("/skills"),
       auth: "engine",
       async handle({ params: [sessionId] }) {
-        const record = store.getSession(sessionId!);
+        const record = store.records.get(sessionId!);
         const checkout = workspacePath(record.workspace);
         if (checkout === undefined) return ok({ skills: [], commands: [] });
         return ok(
@@ -38,7 +38,7 @@ export function sessionProviderRoutes(store: EngineStore, skills: ProviderSkills
         const sourceCwd = stringValue(body.sourceCwd, "source cwd", true);
         return {
           status: 201,
-          body: await store.adoptClaudeConversation(sessionId!, {
+          body: await store.adoption.adopt(sessionId!, {
             sourceSessionId,
             ...(cut ? { cut } : {}),
             ...(sourceCwd ? { sourceCwd } : {}),

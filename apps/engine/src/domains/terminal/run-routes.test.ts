@@ -8,7 +8,7 @@ import type { EngineStore } from "../../state";
 import { runRoutes } from "./run-routes";
 
 const store = {
-  getSession: (id: string) => ({ id, projectId: "p1", workspace: { mode: "local", path: "/tmp/checkout" } }),
+  records: { get: (id: string) => ({ id, projectId: "p1", workspace: { mode: "local", path: "/tmp/checkout" } }) },
 } as unknown as EngineStore;
 
 const call = async (mount: Partial<RunMount>, method: "GET" | "POST", url: string, body: Record<string, unknown> = {}) => {

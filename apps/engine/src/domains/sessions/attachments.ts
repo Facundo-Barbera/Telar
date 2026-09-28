@@ -40,7 +40,7 @@ export function sessionAttachmentRoutes(store: EngineStore): Route[] {
       auth: "engine",
       handle({ params: [sessionId], query }) {
         const tag = query.get("tag") ?? undefined;
-        return ok({ attachments: store.listAttachments(sessionId!, tag ? { tag } : {}) });
+        return ok({ attachments: store.attachments.list(sessionId!, tag ? { tag } : {}) });
       },
     },
     {
@@ -48,7 +48,7 @@ export function sessionAttachmentRoutes(store: EngineStore): Route[] {
       path: sessionRoute("/attachments/([A-Za-z0-9_-]+)"),
       auth: "engine",
       handle({ params: [sessionId, attachmentId] }) {
-        const { attachment, data } = store.attachmentBytes(sessionId!, attachmentId!);
+        const { attachment, data } = store.attachments.bytes(sessionId!, attachmentId!);
         return {
           status: 200,
           body: null,
@@ -64,7 +64,7 @@ export function sessionAttachmentRoutes(store: EngineStore): Route[] {
       auth: "engine",
       handle({ params: [sessionId, attachmentId], body }) {
         const tags = Array.isArray(body.tags) ? body.tags.filter((tag): tag is string => typeof tag === "string") : [];
-        return ok({ attachment: store.tagAttachment(sessionId!, attachmentId!, tags) });
+        return ok({ attachment: store.attachments.tag(sessionId!, attachmentId!, tags) });
       },
     },
     {
@@ -75,7 +75,7 @@ export function sessionAttachmentRoutes(store: EngineStore): Route[] {
       async handle({ params: [sessionId], request }) {
         const data = await rawBody(request, MAX_ATTACHMENT_UPLOAD_BYTES);
         const mediaType = (request.headers["content-type"] ?? "application/octet-stream").split(";")[0]!.trim();
-        return { status: 201, body: { attachment: store.putAttachment(sessionId!, { name: attachmentName(request.headers["x-telar-attachment-name"]), mediaType, data }) } };
+        return { status: 201, body: { attachment: store.attachments.put(sessionId!, { name: attachmentName(request.headers["x-telar-attachment-name"]), mediaType, data }) } };
       },
     },
   ];

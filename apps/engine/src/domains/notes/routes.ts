@@ -10,7 +10,7 @@ const missing = () => new HttpError(404, "not_found", "no note goes by that id i
 export function notesRoutes(store: EngineStore, socket: { port(): number; secret(): string }): Route[] {
   // Every project route checks the registration first, before an id can become a filename.
   const project = (id: string): string => {
-    store.getProject(id);
+    store.projectRegistry.get(id);
     return id;
   };
   return [

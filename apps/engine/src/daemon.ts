@@ -140,30 +140,30 @@ function openStore(root: string, options: EngineDaemonOptions, doorbell: Embedde
 const leaseMs = (options: EngineDaemonOptions) => options.workerLeaseMs ?? 15_000;
 
 function engineSweeps(store: EngineStore, options: EngineDaemonOptions, pruneWorkers: () => void, forgetStorage: () => void): Sweep[] {
-  const sweepCleanup = () => store.runCleanup().then(forgetStorage);
+  const sweepCleanup = () => store.worktrees.runCleanup().then(forgetStorage);
   return [
     { every: options.workerPruneIntervalMs ?? Math.max(10, Math.floor(leaseMs(options) / 3)), run: pruneWorkers },
     // Nothing writes when a delegate's quiet hour passes, a settled session's grace ends or a deadline expires; these are those writes.
-    { every: options.delegationSweepIntervalMs ?? 5 * 60_000, run: () => store.sweepDelegatedSettling() },
-    { every: options.settledTerminalSweepIntervalMs ?? 5 * 60_000, run: () => store.sweepSettledTerminals() },
+    { every: options.delegationSweepIntervalMs ?? 5 * 60_000, run: () => store.settler.sweepDelegated() },
+    { every: options.settledTerminalSweepIntervalMs ?? 5 * 60_000, run: () => store.sessionTerminals.sweepSettled() },
     // A minute is the shortest cohort timeout, so this ticks faster than that.
     {
       every: options.cohortSweepIntervalMs ?? 30_000,
       run: () => {
         try {
-          store.sweepCohorts();
+          store.subscriptions.sweepCohorts();
         } finally {
-          store.sweepSubscriptions();
+          store.subscriptions.sweepSubscriptions();
         }
       },
     },
-    { every: options.snoozeWakeSweepIntervalMs ?? 60_000, run: () => store.sweepSnoozeWakes() },
-    { every: options.scheduleSweepIntervalMs ?? 30_000, run: () => store.sweepSchedules() },
+    { every: options.snoozeWakeSweepIntervalMs ?? 60_000, run: () => store.settler.sweepSnoozeWakes() },
+    { every: options.scheduleSweepIntervalMs ?? 30_000, run: () => store.schedules.sweep() },
     // Finer than the rest: a tick coarser than the shortest deadline someone sets would become the deadline.
-    { every: options.requestDeadlineSweepIntervalMs ?? 15_000, run: () => store.sweepRequestDeadlines() },
+    { every: options.requestDeadlineSweepIntervalMs ?? 15_000, run: () => store.requestGate.sweepDeadlines() },
     { once: options.cleanupFirstDelayMs ?? 5 * 60 * 1000, run: sweepCleanup },
     { every: options.cleanupIntervalMs ?? 30 * 60 * 1000, run: sweepCleanup },
-    { once: options.modelPrefetchDelayMs === null ? null : (options.modelPrefetchDelayMs ?? 5_000), run: () => store.prefetchModelCatalogues() },
+    { once: options.modelPrefetchDelayMs === null ? null : (options.modelPrefetchDelayMs ?? 5_000), run: () => store.catalogues.prefetch() },
   ];
 }
 
@@ -259,7 +259,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   reportBootHousekeeping(store, now, say);
   const skillRoots = options.skillRoots ?? [];
   // Never fatal and never awaited on start: a provider that isn't installed has nowhere to put the skill.
-  const syncOrientationSkill = (policy = store.getAgentOrientation()): Promise<unknown> =>
+  const syncOrientationSkill = (policy = store.settings.orientation()): Promise<unknown> =>
     skillRoots.length
       ? Promise.all(BUNDLED_SKILLS.map((skill) => syncTelarSkill({ install: policy.skill, roots: skillRoots, ...skill }))).catch(() => [])
       : Promise.resolve([]);
@@ -277,10 +277,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const openStreams = new Set<OpenStream>();
   const push = createPushService({ remoteDir, pairedDevices: () => remoteStore.read().devices, openStreams });
   // Run configurations live here, not in a worker: a terminal must outlive the turn that opened it.
-  const runMount = createRunMount({ root: store.paths.root, noteForNextTurn: (sessionId, note) => store.noteForNextTurn(sessionId, note) });
-  store.attachTerminals(runMount.manager);
-  void store.refreshTerminalCensus();
-  runMount.manager.watch(() => void store.refreshTerminalCensus());
+  const runMount = createRunMount({ root: store.paths.root, noteForNextTurn: (sessionId, note) => store.mailbox.noteForNextTurn(sessionId, note) });
+  store.sessionTerminals.attach(runMount.manager);
+  void store.sessionTerminals.refresh();
+  runMount.manager.watch(() => void store.sessionTerminals.refresh());
   const pluginStatuses = await plugins.host.startAll();
   // The host, not a plugin's own manifest, is the authority on which of its tools are reads.
   setPluginReadTools(plugins.host.ratifiedReadTools());
@@ -319,7 +319,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     port = await listenLoopback(server, options.port ?? 0);
     const discovery: EngineDiscovery = { version: ENGINE_PROTOCOL_VERSION, daemonId, host: "127.0.0.1", port, token, startedAt };
     // Recovered under the lock and before discovery is published, so no client sees a pre-recovery queue.
-    store.recover();
+    store.recovery.recover();
     writeDiscovery(store.paths.engine, discovery);
     push.listening(discovery);
     const embedded = options.embeddedWorker

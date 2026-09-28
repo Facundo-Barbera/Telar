@@ -161,7 +161,7 @@ export function appearanceRoutes(store: EngineStore): Route[] {
       path: "/v2/appearance",
       auth: "engine",
       handle({ request }) {
-        const stored = store.getAppearance();
+        const stored = store.appearance.get();
         if (!stored) return ok({ appearance: null, updatedAt: null });
         const etag = appearanceEtag(stored.updatedAt);
         if (matchesETag(request.headers["if-none-match"], etag)) return notModified(etag);
@@ -174,7 +174,7 @@ export function appearanceRoutes(store: EngineStore): Route[] {
       auth: "engine",
       body: "raw",
       async handle({ request }) {
-        const written = store.setAppearance(await appearanceBody(request));
+        const written = store.appearance.set(await appearanceBody(request));
         const etag = appearanceEtag(written.updatedAt);
         return { status: 200, body: { ok: true, updatedAt: written.updatedAt, etag }, headers: { etag } };
       },
@@ -185,7 +185,7 @@ export function appearanceRoutes(store: EngineStore): Route[] {
       auth: "engine",
       body: "raw",
       handle() {
-        store.clearAppearance();
+        store.appearance.clear();
         return ok({ ok: true });
       },
     },

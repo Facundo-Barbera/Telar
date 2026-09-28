@@ -21,20 +21,20 @@ export function githubRoutes(store: EngineStore): Route[] {
         } catch (cause) {
           throw new HttpError(400, "invalid_request", cause instanceof Error ? cause.message : "invalid filter");
         }
-        return ok({ github: await store.projectGitHub(params[0]!, { force: filters.refresh, issues: filters.issues, pulls: filters.pulls }) });
+        return ok({ github: await store.github.list(params[0]!, { force: filters.refresh, issues: filters.issues, pulls: filters.pulls }) });
       },
     },
     {
       method: "GET",
       path: /^\/v2\/projects\/([^/]+)\/github\/checks\/(\d+)\/log$/,
       auth: "engine",
-      handle: async ({ params }) => ok({ log: await store.projectCheckLog(params[0]!, params[1]!) }),
+      handle: async ({ params }) => ok({ log: await store.github.checkLog(params[0]!, params[1]!) }),
     },
     {
       method: "GET",
       path: /^\/v2\/projects\/([^/]+)\/github\/facets$/,
       auth: "engine",
-      handle: async ({ params, query }) => ok({ facets: await store.projectForgeFacets(params[0]!, { force: query.get("refresh") === "1" }) }),
+      handle: async ({ params, query }) => ok({ facets: await store.github.facetsOf(params[0]!, { force: query.get("refresh") === "1" }) }),
     },
     {
       method: "GET",
@@ -43,7 +43,7 @@ export function githubRoutes(store: EngineStore): Route[] {
       // "Not signed in" and "no such number" are 200 answers, so the cockpit keeps the sentence that says what to do.
       async handle({ params: [projectId, kind, number], query }) {
         const force = query.get("refresh") === "1";
-        return ok(kind === "issues" ? await store.projectIssue(projectId!, Number(number), { force }) : await store.projectPull(projectId!, Number(number), { force }));
+        return ok(kind === "issues" ? await store.github.issue(projectId!, Number(number), { force }) : await store.github.pull(projectId!, Number(number), { force }));
       },
     },
     {
@@ -57,7 +57,7 @@ export function githubRoutes(store: EngineStore): Route[] {
         if (!subject.success) throw new HttpError(400, "invalid_request", "subjectId must be a GitHub node id");
         if (typeof body.react !== "boolean") throw new HttpError(400, "invalid_request", "react must be true or false");
         return ok(
-          await store.projectGitHubReaction(projectId!, {
+          await store.github.react(projectId!, {
             kind: kind === "issues" ? "issue" : "pull",
             number: Number(number),
             subjectId: subject.data,
@@ -74,10 +74,10 @@ export function githubRoutes(store: EngineStore): Route[] {
       async handle({ body, params: [projectId, number, threadId, verb] }) {
         if (verb === "replies") {
           if (typeof body.body !== "string") throw new HttpError(400, "invalid_request", "body must be a string");
-          return ok(await store.projectThreadReply(projectId!, Number(number), { threadId: threadId!, body: body.body }));
+          return ok(await store.github.threadReply(projectId!, Number(number), { threadId: threadId!, body: body.body }));
         }
         if (typeof body.resolved !== "boolean") throw new HttpError(400, "invalid_request", "resolved must be true or false");
-        return ok(await store.projectThreadResolve(projectId!, Number(number), { threadId: threadId!, resolved: body.resolved }));
+        return ok(await store.github.threadResolve(projectId!, Number(number), { threadId: threadId!, resolved: body.resolved }));
       },
     },
     {
@@ -88,7 +88,7 @@ export function githubRoutes(store: EngineStore): Route[] {
       async handle({ body, params: [projectId, number] }) {
         const method = stringValue(body.method, "merge method")!;
         if (method !== "merge" && method !== "squash" && method !== "rebase") throw new HttpError(400, "invalid_request", "merge method must be merge, squash or rebase");
-        return ok(await store.projectPullMerge(projectId!, Number(number), { method, expectedHeadOid: stringValue(body.expectedHeadOid, "expected head commit")! }));
+        return ok(await store.github.merge(projectId!, Number(number), { method, expectedHeadOid: stringValue(body.expectedHeadOid, "expected head commit")! }));
       },
     },
   ];

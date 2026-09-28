@@ -19,8 +19,8 @@ export function sessionFilesRoutes(store: EngineStore): Route[] {
       auth: "engine",
       async handle({ params: [sessionId], query }) {
         const target = query.get("path");
-        if (target) return ok({ file: await store.sessionFilePatchAsync(sessionId!, target, parseFilePatchQuery(query)) });
-        return ok({ diff: await store.sessionDiffAsync(sessionId!, parseDiffBaseQuery(query)) });
+        if (target) return ok({ file: await store.workspaceReads.sessionFilePatch(sessionId!, target, parseFilePatchQuery(query)) });
+        return ok({ diff: await store.workspaceReads.sessionDiff(sessionId!, parseDiffBaseQuery(query)) });
       },
     },
     {
@@ -29,10 +29,10 @@ export function sessionFilesRoutes(store: EngineStore): Route[] {
       auth: "engine",
       async handle({ params: [sessionId], query }) {
         // Opening a released session's files brings its checkout back, as a message does.
-        store.restoreSessionWorktree(sessionId!);
+        store.worktrees.restore(sessionId!);
         const target = query.get("path");
         if (target) return ok({ file: await store.sessionFileAsync(sessionId!, target) });
-        return ok({ listing: await store.sessionFilesAsync(sessionId!) });
+        return ok({ listing: await store.workspaceReads.sessionFiles(sessionId!) });
       },
     },
     {
@@ -66,7 +66,7 @@ export function sessionFilesRoutes(store: EngineStore): Route[] {
       auth: "engine",
       async handle({ params: [sessionId], query }) {
         return ok(
-          await store.sessionTable(sessionId!, requiredPath(query), {
+          await store.pluginDoors.table(sessionId!, requiredPath(query), {
             offset: Number(query.get("offset") ?? 0),
             limit: Math.min(Number(query.get("limit") ?? 200), 1000),
             ...(query.get("sort") ? { sort: query.get("sort")! } : {}),

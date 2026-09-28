@@ -56,32 +56,32 @@ export function capabilityOver(store: EngineStore, self?: { sessionId: string })
     send: async (sessionId, input) => store.submitAgentTurnAsync(sessionId, input),
     read: async (sessionId, after) => store.readEvents(sessionId, after),
     status: async (sessionId) => ({
-      session: store.getSession(sessionId),
+      session: store.records.get(sessionId),
       turns: store.turns(sessionId),
-      pendingNotifications: store.pendingNotifications(sessionId),
+      pendingNotifications: store.wakes.pendingNotifications(sessionId),
     }),
-    stop: async (sessionId) => store.stopSession(sessionId, "agent"),
+    stop: async (sessionId) => store.turnLifecycle.stopSession(sessionId, "agent"),
     settle: async (sessionId, settled) => {
-      const session = store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
+      const session = store.lifecycle.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
       if (!settled) return session;
       const ended = await store.endSessionLeftovers(sessionId);
-      return { ...store.getSession(sessionId), ended };
+      return { ...store.records.get(sessionId), ended };
     },
-    diff: async (sessionId) => store.sessionDiffAsync(sessionId),
-    subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
-    unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
-    subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
-    subscribeCohort: async (subscriber, input) => store.subscribeCohort(subscriber, input),
-    cohorts: async (subscriber) => store.cohortsFor(subscriber),
-    requests: async (sessionId) => store.requests(sessionId),
-    resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
+    diff: async (sessionId) => store.workspaceReads.sessionDiff(sessionId),
+    subscribe: async (subscriber, input) => store.subscriptions.subscribe(subscriber, input),
+    unsubscribe: async (id, subscriber) => store.subscriptions.unsubscribe(id, subscriber),
+    subscriptions: async (subscriber) => store.subscriptions.subscriptionsFor(subscriber),
+    subscribeCohort: async (subscriber, input) => store.subscriptions.subscribeCohort(subscriber, input),
+    cohorts: async (subscriber) => store.subscriptions.cohortsFor(subscriber),
+    requests: async (sessionId) => store.requestGate.list(sessionId),
+    resolveRequest: async (sessionId, requestId, input) => store.requestGate.resolve(sessionId, requestId, { ...input, resolvedBy: "session" }),
     query: {
-      find: async (search) => store.findSessions(search),
-      outline: async (sessionId, window) => store.turnOutline(sessionId, window),
-      answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
-      steps: async (sessionId, runId) => ({ items: store.runItems(sessionId, runId) }),
-      step: async (sessionId, runId, step, maxChars) => store.runItem(sessionId, runId, step, maxChars),
-      grep: async (sessionId, pattern, window) => store.grepSession(sessionId, pattern, window),
+      find: async (search) => store.queries.findSessions(search),
+      outline: async (sessionId, window) => store.queries.turnOutline(sessionId, window),
+      answer: async (sessionId, options) => store.queries.turnAnswer(sessionId, options),
+      steps: async (sessionId, runId) => ({ items: store.queries.runItems(sessionId, runId) }),
+      step: async (sessionId, runId, step, maxChars) => store.queries.runItem(sessionId, runId, step, maxChars),
+      grep: async (sessionId, pattern, window) => store.queries.grepSession(sessionId, pattern, window),
     },
   };
 }
@@ -103,7 +103,7 @@ export function wall(store: EngineStore, self?: { sessionId: string }, diff?: Se
 export function engine(options?: ConstructorParameters<typeof EngineStore>[2]): { store: EngineStore; projectId: string; projectRoot: string } {
   const projectRoot = repo();
   const store = new EngineStore(tmp("telar-sessions-state-"), Date.now, options);
-  const project = store.registerProject({ name: "aurora", root: projectRoot });
+  const project = store.projectRegistry.register({ name: "aurora", root: projectRoot });
   return { store, projectId: project.id, projectRoot };
 }
 

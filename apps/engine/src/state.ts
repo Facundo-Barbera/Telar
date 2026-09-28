@@ -17,13 +17,6 @@ import {
   type UsageLimitSource,
   type ProjectPlugins,
   assignmentsOf,
-  // THE CLIENTS' OWN SETTLING RULE, imported rather than re-implemented: the
-  // live list drops the rows a rail would shelve (#457), so an engine that
-  // disagreed with a cockpit here would produce a conversation neither of them
-  // shows. See `protocol/settling.ts`.
-  // AND THE WAKE MOMENT, from the same file and for the same reason. It already
-  // decides the scheduled expiry and the early wake together; `sweepSnoozeWakes`
-  // records what it answers rather than deciding again (#490, #586).
   type AssignmentTurn,
   type SessionAssignment,
   type LiveSessionRow,
@@ -113,7 +106,7 @@ import { type ClaudeConversation } from "./drivers/claude";
 import { BUNDLED_MANIFEST, type ModelManifest, readModelCatalogue } from "./domains/providers";
 import { type KernelState, PluginDoors, type BootstrapRequest, type CreateEnvironmentRequest, type DsCapability, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, type ManagedTectonicStatus, type RequirementsSource, type ResolvedLatex, type TableWindow, type Toolchain } from "./domains/plugins";
 import { ScheduleBook, type ScheduleInput } from "./domains/schedules";
-import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
+import { derivedBranchFor, prepareSessionWorktree, WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { backfillTurnSummaries, CheckoutSizes, CleanupStore, copyStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
 import { type AttachedTerminals, pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
@@ -329,54 +322,54 @@ const prefetchableRef = (ref: string | undefined): string | undefined =>
   ref === undefined ? "HEAD" : /^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(ref) ? ref : undefined;
 
 export class EngineStore {
-  private readonly kernel: Kernel<EngineNotifier>;
-  private readonly settings: SettingsStore;
-  private readonly appearance: AppearanceStore;
-  private readonly mcpOAuth: McpOAuthStore;
-  private readonly mcpServers: McpServers;
-  private readonly providers: ProviderRegistry;
-  private readonly usageSources: UsageLimitSources;
-  private readonly projectProbes: ProjectProbes;
-  private readonly projectRegistry: ProjectRegistry;
-  private readonly toolchains: PluginToolchains;
-  private readonly github: GitHubStore;
-  private readonly browser: SessionBrowser;
-  private readonly worktrees: WorktreeMaintenance;
+  readonly kernel: Kernel<EngineNotifier>;
+  readonly settings: SettingsStore;
+  readonly appearance: AppearanceStore;
+  readonly mcpOAuth: McpOAuthStore;
+  readonly mcpServers: McpServers;
+  readonly providers: ProviderRegistry;
+  readonly usageSources: UsageLimitSources;
+  readonly projectProbes: ProjectProbes;
+  readonly projectRegistry: ProjectRegistry;
+  readonly toolchains: PluginToolchains;
+  readonly github: GitHubStore;
+  readonly browser: SessionBrowser;
+  readonly worktrees: WorktreeMaintenance;
   private readonly remounts: ProjectRemounts;
-  private readonly attachments: SessionAttachments;
-  private readonly queries: SessionQueries;
-  private readonly intake: TurnIntake;
-  private readonly turnLifecycle: TurnLifecycle;
-  private readonly ingest: TurnIngest;
-  private readonly claims: TurnClaims;
-  private readonly recovery: TurnRecovery;
-  private readonly wakes: TurnWakes;
-  private readonly settler: SessionSettler;
-  private readonly worker: WorkerChannel;
-  private readonly catalogues: ModelCatalogues;
-  private readonly records: SessionRecords;
+  readonly attachments: SessionAttachments;
+  readonly queries: SessionQueries;
+  readonly intake: TurnIntake;
+  readonly turnLifecycle: TurnLifecycle;
+  readonly ingest: TurnIngest;
+  readonly claims: TurnClaims;
+  readonly recovery: TurnRecovery;
+  readonly wakes: TurnWakes;
+  readonly settler: SessionSettler;
+  readonly worker: WorkerChannel;
+  readonly catalogues: ModelCatalogues;
+  readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
-  private readonly prefixes: OpenPrefixes;
+  readonly prefixes: OpenPrefixes;
   private readonly sessionRequests: SessionRequests;
-  private readonly sessionTasks: SessionTasks;
+  readonly sessionTasks: SessionTasks;
   private readonly sessionQueues: SessionQueues;
-  private readonly mailbox: SessionMailbox;
+  readonly mailbox: SessionMailbox;
   private readonly sessionIndex: SessionIndex;
   private readonly activity: SessionActivity;
-  private readonly subscriptions: SessionSubscriptions;
-  private readonly lifecycle: SessionLifecycle;
-  private readonly schedules: ScheduleBook;
+  readonly subscriptions: SessionSubscriptions;
+  readonly lifecycle: SessionLifecycle;
+  readonly schedules: ScheduleBook;
   private readonly anchors: TurnAnchors;
-  private readonly pluginDoors: PluginDoors;
-  private readonly workspaceReads: WorkspaceReads;
-  private readonly sessionGit: SessionGit;
-  private readonly requestGate: RequestGate;
-  private readonly sessionTerminals: SessionTerminals;
-  private readonly sessionPulls: SessionPulls;
-  private readonly adoption: ConversationAdoption;
+  readonly pluginDoors: PluginDoors;
+  readonly workspaceReads: WorkspaceReads;
+  readonly sessionGit: SessionGit;
+  readonly requestGate: RequestGate;
+  readonly sessionTerminals: SessionTerminals;
+  readonly sessionPulls: SessionPulls;
+  readonly adoption: ConversationAdoption;
   readonly dictation: Dictation;
-  private readonly dataScienceOps: DataScienceOps;
-  private readonly latexOps: LatexOps;
+  readonly dataScienceOps: DataScienceOps;
+  readonly latexOps: LatexOps;
 
   private registerCacheHooks(): void {
     this.kernel.onRollback(() => this.kernel.runProgress.clear());
@@ -1968,6 +1961,8 @@ export class EngineStore {
       assertProjectAvailable: (id) => this.assertProjectAvailable(id),
       restoreWorktree: (id) => void this.restoreSessionWorktree(id),
       prepareWorktree: (id, root, plan, baseSha) => this.lifecycle.prepareWorktree(id, root, plan, baseSha),
+      planWorktree: prepareSessionWorktree,
+      derivedBranchFor,
       promoteTurn: (id, runId) => this.promoteTurn(id, runId),
       requireSenderClaim: (proof) => this.requireSenderClaim(proof),
       hasLiveTurn: (id) => this.hasLiveTurn(id),

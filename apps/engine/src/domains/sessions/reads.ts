@@ -67,9 +67,9 @@ export function sessionReadRoutes(store: EngineStore): Route[] {
       path: sessionRoute("/outline"),
       auth: "engine",
       handle: ({ params, query }) =>
-        ok(store.turnOutline(params[0]!, { limit: positiveParam(query.get("limit"), OUTLINE_PAGE[0], OUTLINE_PAGE[1], "limit"), ...before(query) })),
+        ok(store.queries.turnOutline(params[0]!, { limit: positiveParam(query.get("limit"), OUTLINE_PAGE[0], OUTLINE_PAGE[1], "limit"), ...before(query) })),
     },
-    { method: "GET", path: sessionRoute("/runs/([A-Za-z0-9_-]+)/items"), auth: "engine", handle: ({ params }) => ok({ items: store.runItems(params[0]!, params[1]!) }) },
+    { method: "GET", path: sessionRoute("/runs/([A-Za-z0-9_-]+)/items"), auth: "engine", handle: ({ params }) => ok({ items: store.queries.runItems(params[0]!, params[1]!) }) },
     {
       method: "GET",
       path: sessionRoute("/runs/([A-Za-z0-9_-]+)/items/([A-Za-z0-9_-]+)"),
@@ -78,7 +78,7 @@ export function sessionReadRoutes(store: EngineStore): Route[] {
       handle({ params: [sessionId, runId, raw], query }) {
         const index = Number(raw);
         const step = Number.isSafeInteger(index) && index >= 0 ? index : raw!;
-        return ok(store.runItem(sessionId!, runId!, step, positiveParam(query.get("maxChars"), ITEM_CHARS[0], ITEM_CHARS[1], "maxChars")));
+        return ok(store.queries.runItem(sessionId!, runId!, step, positiveParam(query.get("maxChars"), ITEM_CHARS[0], ITEM_CHARS[1], "maxChars")));
       },
     },
     {
@@ -87,7 +87,7 @@ export function sessionReadRoutes(store: EngineStore): Route[] {
       auth: "engine",
       handle: ({ params, query }) =>
         ok(
-          store.turnAnswer(params[0]!, {
+          store.queries.turnAnswer(params[0]!, {
             ...(query.get("runId") ? { runId: query.get("runId")! } : {}),
             from: positiveParam(query.get("from"), 0, ANY, "from"),
             limit: positiveParam(query.get("limit"), ANSWER_SLICE[0], ANSWER_SLICE[1], "limit"),
@@ -101,7 +101,7 @@ export function sessionReadRoutes(store: EngineStore): Route[] {
       handle({ params, query }) {
         const pattern = query.get("pattern");
         if (!pattern) throw new HttpError(400, "invalid_request", "pattern is required");
-        return ok(store.grepSession(params[0]!, pattern, { limit: positiveParam(query.get("limit"), GREP_PAGE[0], GREP_PAGE[1], "limit"), ...before(query) }));
+        return ok(store.queries.grepSession(params[0]!, pattern, { limit: positiveParam(query.get("limit"), GREP_PAGE[0], GREP_PAGE[1], "limit"), ...before(query) }));
       },
     },
   ];

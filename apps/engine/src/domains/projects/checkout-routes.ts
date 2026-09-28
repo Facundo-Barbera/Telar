@@ -13,14 +13,14 @@ import { createIconPng } from "./icon-png";
 export function projectCheckoutRoutes(store: EngineStore, providerSkills: ProviderSkillsOptions | undefined): Route[] {
   const iconPng = createIconPng(path.join(store.paths.root, "icon-png"));
   return [
-    { method: "GET", path: /^\/v2\/projects\/([^/]+)\/git$/, auth: "engine", handle: async ({ params }) => ok({ git: await store.projectGitAsync(params[0]!) }) },
+    { method: "GET", path: /^\/v2\/projects\/([^/]+)\/git$/, auth: "engine", handle: async ({ params }) => ok({ git: await store.workspaceReads.projectOverview(params[0]!) }) },
     {
       method: "GET",
       path: /^\/v2\/sessions\/([^/]+)\/setup$/,
       auth: "engine",
       handle({ params, query }) {
         const sessionId = params[0]!;
-        store.getSession(sessionId);
+        store.records.get(sessionId);
         const after = Number(query.get("after") ?? 0);
         return ok({ setup: store.setups.status(sessionId) ?? null, ...store.setups.output(sessionId, Number.isFinite(after) && after > 0 ? after : 0) });
       },
@@ -54,8 +54,8 @@ export function projectCheckoutRoutes(store: EngineStore, providerSkills: Provid
       auth: "engine",
       async handle({ params, query }) {
         const target = query.get("path");
-        if (target) return ok({ file: await store.projectFilePatchAsync(params[0]!, target, parseFilePatchQuery(query)) });
-        return ok({ diff: await store.projectDiffAsync(params[0]!) });
+        if (target) return ok({ file: await store.workspaceReads.projectFilePatch(params[0]!, target, parseFilePatchQuery(query)) });
+        return ok({ diff: await store.workspaceReads.projectDiff(params[0]!) });
       },
     },
     {
@@ -65,7 +65,7 @@ export function projectCheckoutRoutes(store: EngineStore, providerSkills: Provid
       async handle({ params, query }) {
         const target = query.get("path");
         if (target) return ok({ file: await store.projectFileAsync(params[0]!, target) });
-        return ok({ listing: await store.projectFilesAsync(params[0]!) });
+        return ok({ listing: await store.workspaceReads.projectFiles(params[0]!) });
       },
     },
     {
@@ -86,7 +86,7 @@ export function projectCheckoutRoutes(store: EngineStore, providerSkills: Provid
       auth: "engine",
       // The canvas's pending driver choice, Claude when unsaid; read from the project's own checkout.
       async handle({ params, query }) {
-        const project = store.getProject(params[0]!);
+        const project = store.projectRegistry.get(params[0]!);
         const asked = query.get("driver");
         const driver = ProviderDriverKind.safeParse(asked ?? "claude");
         if (!driver.success) throw new HttpError(400, "invalid_request", `unknown provider driver ${JSON.stringify(asked)}`);

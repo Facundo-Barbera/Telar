@@ -17,20 +17,20 @@ type EnginePluginOptions = { dir: string; daemonId: string; stateDir: string; wi
  */
 export function createEnginePlugins(store: EngineStore, { dir, daemonId, stateDir, withKernels }: EnginePluginOptions) {
   const resolve = (pluginId: string, sessionId: string): { projectId: string; sessionId: string } => {
-    const session = store.getSession(sessionId);
+    const session = store.records.get(sessionId);
     if (!session.projectId) throw new EngineStateError("invalid_request", `${pluginId} needs a project`);
-    const project = store.getProject(session.projectId);
-    if (!store.pluginRuns(project, pluginId)) {
-      const why = machineAllows(store.machinePlugins(), pluginId) ? `${pluginId} is not enabled for this session's project` : `${pluginId} is turned off for this Mac`;
+    const project = store.projectRegistry.get(session.projectId);
+    if (!store.toolchains.runs(project, pluginId)) {
+      const why = machineAllows(store.toolchains.machine(), pluginId) ? `${pluginId} is not enabled for this session's project` : `${pluginId} is turned off for this Mac`;
       throw new EngineStateError("invalid_request", why);
     }
     return { projectId: project.id, sessionId };
   };
   const bundled = bundledPlugins({
     resolveHello: (sessionId) => resolve("hello", sessionId),
-    latex: { resolve: (sessionId) => store.latex(sessionId), jobs: store.latexJobs, settings: store },
+    latex: { resolve: (sessionId) => store.pluginDoors.latex(sessionId), jobs: store.latexJobs, settings: store },
     dataScience: {
-      resolve: (sessionId) => store.dataScience(sessionId),
+      resolve: (sessionId) => store.pluginDoors.dataScience(sessionId),
       settings: store,
       // Kernels only on an engine that runs turns; outputs are journaled by the store, the host persists images.
       ...(withKernels
@@ -40,9 +40,9 @@ export function createEnginePlugins(store: EngineStore, { dir, daemonId, stateDi
                 engineRoot: store.paths.root,
                 sessionDir: (sessionId: string) => path.join(store.paths.sessions, sessionId),
                 events: {
-                  onState: (sessionId, state, reason) => store.recordKernelState(sessionId, state, reason),
+                  onState: (sessionId, state, reason) => store.pluginDoors.recordKernelState(sessionId, state, reason),
                   persistImage: (sessionId, input) =>
-                    store.putAttachment(sessionId, {
+                    store.attachments.put(sessionId, {
                       name: `${input.producer}.${input.mediaType === "image/svg+xml" ? "svg" : "png"}`,
                       mediaType: input.mediaType,
                       data: input.data,
@@ -52,13 +52,13 @@ export function createEnginePlugins(store: EngineStore, { dir, daemonId, stateDi
                     }).id,
                 },
               },
-              attach: (host) => store.attachKernels(host),
+              attach: (host) => store.pluginDoors.attachKernels(host),
             },
           }
         : {}),
       projectOf: (sessionId) => {
         try {
-          return store.getSession(sessionId).projectId;
+          return store.records.get(sessionId).projectId;
         } catch {
           return undefined;
         }
@@ -68,12 +68,12 @@ export function createEnginePlugins(store: EngineStore, { dir, daemonId, stateDi
   const moduleFor = (loaded: LoadedExternalPlugin) =>
     externalPlugin(loaded, {
       resolve: (sessionId) => resolve(loaded.manifest.id, sessionId),
-      enabledAnywhere: () => store.listProjects().some((project) => store.pluginRuns(project, loaded.manifest.id)),
+      enabledAnywhere: () => store.projectRegistry.list().some((project) => store.toolchains.runs(project, loaded.manifest.id)),
       settings: (projectId) => {
-        const machine = pluginSettings(store.machinePlugins(), loaded.manifest.id);
+        const machine = pluginSettings(store.toolchains.machine(), loaded.manifest.id);
         if (projectId === undefined) return machine;
         try {
-          return { ...machine, ...pluginSettings(readProjectPlugins(store.getProject(projectId)).plugins, loaded.manifest.id) };
+          return { ...machine, ...pluginSettings(readProjectPlugins(store.projectRegistry.get(projectId)).plugins, loaded.manifest.id) };
         } catch {
           return machine;
         }

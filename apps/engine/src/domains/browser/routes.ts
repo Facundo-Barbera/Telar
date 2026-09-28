@@ -28,14 +28,14 @@ export function browserSessionRoutes(store: EngineStore): Route[] {
       path: sessionRoute("/browser"),
       auth: "engine",
       async handle({ params: [sessionId], query }) {
-        return ok({ browser: await store.browserState(sessionId!, { screenshot: query.get("screenshot") === "1", start: query.get("start") === "1" }) });
+        return ok({ browser: await store.browser.state(sessionId!, { screenshot: query.get("screenshot") === "1", start: query.get("start") === "1" }) });
       },
     },
     {
       method: "POST",
       path: sessionRoute("/browser/open"),
       auth: "engine",
-      handle: async ({ params: [sessionId], body }) => ok({ browser: await store.browserOpen(sessionId!, stringValue(body.url, "url")!) }),
+      handle: async ({ params: [sessionId], body }) => ok({ browser: await store.browser.open(sessionId!, stringValue(body.url, "url")!) }),
     },
     {
       method: "POST",
@@ -46,7 +46,7 @@ export function browserSessionRoutes(store: EngineStore): Route[] {
         if (controller !== "agent" && controller !== "human" && controller !== "idle") {
           throw new HttpError(400, "invalid_request", "controller must be agent, human or idle");
         }
-        store.recordBrowserControl(sessionId!, controller, stringValue(body.tabId, "tab id", true), body.interrupted === true);
+        store.browser.recordControl(sessionId!, controller, stringValue(body.tabId, "tab id", true), body.interrupted === true);
         return ok({});
       },
     },

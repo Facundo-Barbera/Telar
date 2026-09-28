@@ -45,7 +45,7 @@ export function createStorageMeter(store: EngineStore): StorageMeter {
 
 export function storageRoutes(store: EngineStore, meter: StorageMeter): Route[] {
   const cleanup = () => ({
-    cleanup: { policy: store.cleanup.policy(), ...(store.cleanup.last() ? { last: store.cleanup.last() } : {}), running: store.isCleanupRunning() },
+    cleanup: { policy: store.cleanup.policy(), ...(store.cleanup.last() ? { last: store.cleanup.last() } : {}), running: store.worktrees.isCleanupRunning() },
   });
   return [
     { method: "GET", path: "/v2/storage", auth: "engine", handle: async ({ query }) => ok({ storage: await meter.read(query.get("refresh") === "1") }) },
@@ -73,15 +73,15 @@ export function storageRoutes(store: EngineStore, meter: StorageMeter): Route[] 
       method: "GET",
       path: "/v2/storage/retention",
       auth: "engine",
-      handle: ({ query }) => ok({ retention: store.getRetentionPolicy(), buckets: store.retentionPreview(query.get("bytes") === "1" ? { bytes: true } : {}) }),
+      handle: ({ query }) => ok({ retention: store.settings.retention(), buckets: store.settings.retentionPreview(query.get("bytes") === "1" ? { bytes: true } : {}) }),
     },
-    { method: "PUT", path: "/v2/storage/retention", auth: "engine", handle: ({ body }) => ok({ retention: store.setRetentionPolicy(body) }) },
+    { method: "PUT", path: "/v2/storage/retention", auth: "engine", handle: ({ body }) => ok({ retention: store.settings.setRetention(body) }) },
     {
       method: "POST",
       path: "/v2/storage/retention/sweep",
       auth: "engine",
       handle() {
-        const swept = store.sweepRetention();
+        const swept = store.settings.sweepRetention();
         meter.forget();
         return ok({ swept });
       },
@@ -101,7 +101,7 @@ export function storageRoutes(store: EngineStore, meter: StorageMeter): Route[] 
       path: "/v2/cleanup/run",
       auth: "engine",
       async handle() {
-        await store.runCleanup();
+        await store.worktrees.runCleanup();
         meter.forget();
         return ok(cleanup());
       },
