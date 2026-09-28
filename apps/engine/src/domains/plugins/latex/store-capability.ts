@@ -40,9 +40,8 @@ async function resolvedDistribution(deps: StoreLatexDeps): Promise<TexliveDistri
   return toolchain.texlive.find((dist) => real(dist.binDir) === real(deps.resolved.binPath)) ?? toolchain.texlive[0];
 }
 
-export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
+function storeLatexCapabilityContext(deps: StoreLatexDeps) {
   const { sessionId, cwd, resolved, jobs } = deps;
-
   async function runOnce(plan: ReturnType<typeof planCompile>, timeoutMs: number, onStart: (jobId: string) => void) {
     const { jobId } = jobs.start({ kind: "latex-compile", lock: `${sessionId}:compile`, steps: plan.steps });
     const startedAt = deps.now();
@@ -63,7 +62,6 @@ export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
       ok: read.status === "ok",
     };
   }
-
   async function installMissing(diagnostics: LatexDiagnostic[]): Promise<{ installed: boolean; lines: string[] }> {
     const wanted = missingTexPackages(diagnostics);
     if (wanted.length === 0) return { installed: false, lines: [] };
@@ -85,7 +83,6 @@ export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
       : `Telar tried to install ${wanted.join(", ")} and could not; compiling again anyway.`;
     return { installed: read.status === "ok", lines: [note, ...read.lines] };
   }
-
   async function compile(input?: { path?: string; timeoutMs?: number }): Promise<CompileResult> {
     const plan = planCompile(resolved, cwd, input?.path);
     fs.mkdirSync(plan.outDir, { recursive: true });
@@ -138,7 +135,19 @@ export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
 
     return { ok, path: plan.mainFile, ...(pdfPath ? { pdfPath } : {}), diagnostics, logTail, ...(read.error ? { error: read.error } : {}) };
   }
+  return { deps, sessionId, cwd, resolved, jobs, runOnce, installMissing, compile };
+}
 
+export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
+  const h = storeLatexCapabilityContext(deps);
+  return {
+    ...buildMethods(h),
+    ...toolchainMethods(h),
+  };
+}
+
+function buildMethods(h: ReturnType<typeof storeLatexCapabilityContext>): Pick<LatexCapability, "toolchain" | "compile" | "status" | "log"> {
+  const { deps, cwd, resolved, compile } = h;
   return {
     async toolchain(): Promise<ResolvedToolchainAnswer> {
       const available = await deps.toolchain();
@@ -154,13 +163,10 @@ export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
         available,
       };
     },
-
     compile,
-
     async status() {
       return deps.lastCompile.get() ?? { status: "never" as const };
     },
-
     async log(input?: { tail?: number; around?: number; find?: string }) {
       const last = deps.lastCompile.get();
       const mainFile = last?.path ?? resolved.mainFile;
@@ -184,14 +190,18 @@ export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
       }
       return { lines: lines.slice(-(input?.tail ?? LOG_TAIL)) };
     },
+  };
+}
 
+function toolchainMethods(h: ReturnType<typeof storeLatexCapabilityContext>): Pick<LatexCapability, "packages" | "install" | "clean"> {
+  const { deps, cwd, resolved, jobs } = h;
+  return {
     async packages(): Promise<LatexPackagesAnswer> {
       if (resolved.kind === "tectonic") return { mode: "automatic", note: TECTONIC_PACKAGES_NOTE };
       const dist = await resolvedDistribution(deps);
       if (!dist) return { mode: "unavailable", reason: "the configured TeX Live was not found on this machine" };
       return listTexPackages(dist);
     },
-
     async install(input: { add?: string[]; remove?: string[] }) {
       if (resolved.kind === "tectonic") return { ok: false, lines: [], error: TECTONIC_PACKAGES_NOTE };
       const dist = await resolvedDistribution(deps);
@@ -205,7 +215,6 @@ export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
       const read = await jobs.wait(jobId, 10 * 60 * 1000);
       return { ok: read.status === "ok", lines: read.lines, ...(read.error ? { error: read.error } : {}) };
     },
-
     async clean(input?: { pdf?: boolean }) {
       const removed: string[] = [];
       const outDir = path.join(cwd, LATEX_AUX_DIR);
@@ -225,3 +234,4 @@ export function storeLatexCapability(deps: StoreLatexDeps): LatexCapability {
     },
   };
 }
+

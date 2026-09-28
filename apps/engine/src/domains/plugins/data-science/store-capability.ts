@@ -35,9 +35,8 @@ export type StoreDsDeps = {
   useEnvironment: (target: string) => Promise<{ environments: EnvironmentRow[]; switched: string }>;
 };
 
-export function storeDsCapability(deps: StoreDsDeps): DsCapability {
+function storeDsCapabilityContext(deps: StoreDsDeps) {
   const { sessionId, host, files } = deps;
-
   async function ensure(): Promise<boolean> {
     const live = host.info(sessionId);
     if (live && live.state !== "dead") {
@@ -72,7 +71,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     await host.ensure({ sessionId, bridgePython, kernelPython: deps.python, sitePackages, cwd: deps.cwd });
     return true;
   }
-
   async function run(input: { code: string; cellId?: string; timeoutMs?: number; producer?: string; title?: string }): Promise<ExecResult> {
     await ensure();
     const result = await host.execute(sessionId, {
@@ -91,7 +89,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     await evaluateWatches();
     return result;
   }
-
   async function evaluateWatches(): Promise<void> {
     const watches = files.watches();
     if (!watches.length) return;
@@ -110,7 +107,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     }
     files.saveWatches(watches);
   }
-
   function readNotebook(target: string): { nb: Notebook; file: WorkspaceFile } {
     const file = deps.readFile(target);
     if (file.binary) throw new Error("that file is not text");
@@ -128,13 +124,11 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     } catch { }
     return { nb: parsed.nb, file };
   }
-
   function writeNotebook(target: string, nb: Notebook, expected: string): WorkspaceFile {
     const outcome = deps.writeFile(target, serializeNotebook(nb), expected);
     if (!outcome.written) throw new Error(outcome.refusal === "conflict" ? "the notebook changed on disk since it was read; read it again" : `write refused: ${outcome.refusal}`);
     return outcome.file;
   }
-
   function summarise(target: string, nb: Notebook, sha256: string, options: { from?: number; to?: number; withOutputs?: boolean } = {}): NotebookRead {
     const from = options.from ?? 0;
     const to = options.to ?? nb.cells.length - 1;
@@ -152,13 +146,24 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
       })),
     };
   }
-
   const stripImageBytes = (output: CellOutput): CellOutput => (output.kind === "image" && output.attachmentId ? { ...output, dataB64: undefined } : output);
-
   const imageBase64 = (attachmentId: string): string | undefined => {
     try { return Buffer.from(deps.attachmentBytes(attachmentId)).toString("base64"); } catch { return undefined; }
   };
+  return { deps, sessionId, host, files, ensure, run, evaluateWatches, readNotebook, writeNotebook, summarise, stripImageBytes, imageBase64 };
+}
 
+export function storeDsCapability(deps: StoreDsDeps): DsCapability {
+  const h = storeDsCapabilityContext(deps);
+  return {
+    ...kernelMethods(h),
+    ...notebookMethods(h),
+    ...historyMethods(h),
+  };
+}
+
+function kernelMethods(h: ReturnType<typeof storeDsCapabilityContext>): Pick<DsCapability, "kernel" | "execute" | "interrupt" | "restart" | "environment" | "vars" | "inspect"> {
+  const { deps, sessionId, host, ensure, run } = h;
   return {
     async kernel(): Promise<KernelStatus> {
       const info = host.info(sessionId);
@@ -188,7 +193,12 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
       await ensure();
       return host.call<Record<string, unknown>>(sessionId, "inspect_var", { name, depth });
     },
+  };
+}
 
+function notebookMethods(h: ReturnType<typeof storeDsCapabilityContext>): Pick<DsCapability, "notebookRead" | "notebookEdit" | "notebookRun" | "plot"> {
+  const { deps, run, readNotebook, writeNotebook, summarise, imageBase64 } = h;
+  return {
     async notebookRead(target, options) {
       const { nb, file } = readNotebook(target);
       return summarise(target, nb, file.sha256, options);
@@ -246,13 +256,17 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
       }
       return { results, notebook: summarise(target, nb, sha) };
     },
-
     async plot(input) {
       const result = await run({ code: input.code, producer: "ds_plot", ...(input.title ? { title: input.title } : {}) });
       const image = result.outputs.find((o): o is Extract<CellOutput, { kind: "image" }> => o.kind === "image");
       return { ok: result.ok, outputs: result.outputs.filter((o) => o.kind !== "image"), ...(image?.attachmentId ? { attachmentId: image.attachmentId } : {}), ...(result.error ? { error: `${result.error.ename}: ${result.error.evalue}` } : {}) };
     },
+  };
+}
 
+function historyMethods(h: ReturnType<typeof storeDsCapabilityContext>): Pick<DsCapability, "snapshot" | "snapshots" | "diff" | "checkpoint" | "lineage" | "watches" | "watch" | "experiment" | "packages" | "install"> {
+  const { deps, sessionId, host, files, ensure, evaluateWatches } = h;
+  return {
     async snapshot(name, vars) {
       await ensure();
       const { vars: captured } = await host.call<{ vars: Record<string, SnapshotVar> }>(sessionId, "snapshot", { names: vars ?? [] });
@@ -307,6 +321,7 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     },
   };
 }
+
 
 export function diffSnapshots(a: Snapshot | undefined, b: Snapshot | undefined, from: string, to: string): SnapshotDiff {
   if (!a) throw new Error(`no snapshot named ${from}`);
