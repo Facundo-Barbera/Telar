@@ -2,12 +2,6 @@ import type { Session } from "../protocol/entities";
 import type { EngineTransport } from "../platform/transport";
 import type { WorktreeInventory, WorktreeMoveResult, WorktreeReclaimItem, WorktreeReclaimOutcome, WorktreesRoot } from "./schema";
 
-type SessionSetup = {
-  setup: { state: string; command: string; startedAt: number; endedAt?: number; exitCode?: number; detail?: string } | null;
-  lines: { at: number; text: string }[];
-  cursor: number;
-};
-
 const sessionPath = (sessionId: string) => `/v2/sessions/${encodeURIComponent(sessionId)}`;
 
 export const worktreesClient = {
@@ -38,9 +32,5 @@ export const worktreesClient = {
 
   restoreSessionWorktree(this: EngineTransport, sessionId: string): Promise<{ session: Session }> {
     return this.request("POST", `${sessionPath(sessionId)}/worktree/restore`, {});
-  },
-
-  sessionSetup(this: EngineTransport, sessionId: string, after = 0): Promise<SessionSetup> {
-    return this.request("GET", `${sessionPath(sessionId)}/setup?after=${after}`);
   },
 };

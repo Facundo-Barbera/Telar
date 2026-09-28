@@ -210,7 +210,6 @@ export const EngineEvent = z.discriminatedUnion("type", [
 ]);
 export type EngineEvent = z.infer<typeof EngineEvent>;
 
-export type EngineEventType = EngineEvent["type"];
 
 export function safeParseEvent(value: unknown): EngineEvent | null {
   const parsed = EngineEvent.safeParse(value);

@@ -60,10 +60,6 @@ export const RunStatus = z.enum(["running", "ready", "exited", "failed", "closed
 export type RunStatus = z.infer<typeof RunStatus>;
 
 /** A terminal that has ended for good. */
-export function isTerminalRunStatus(status: RunStatus): boolean {
-  return status === "exited" || status === "failed" || status === "closed";
-}
-
 /** Why a terminal exists: a saved configuration (`run`), or a command an agent
  *  opened so the person can watch it (`agent`). */
 export const RunOrigin = z.enum(["run", "agent"]);
