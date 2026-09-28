@@ -6,6 +6,12 @@ struct SessionFamily {
     var needsYou: Int
 }
 
+struct NestedBands {
+    var attention: [NestedRow]
+    var pinned: [NestedRow]
+    var projects: [(group: SidebarProject, rows: [NestedRow])]
+}
+
 struct NestedRow: Identifiable {
     var row: HostedSession
     var family: SessionFamily?
@@ -27,13 +33,13 @@ enum SessionNesting {
     static func families(
         _ rows: [HostedSession],
         assignments: [ScopedSessionID: [SessionAssignment]],
-        elsewhere: [HostedSession] = []
+        pinned: Set<ScopedSessionID> = []
     ) -> [SessionFamily] {
         let byKey = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         func root(_ row: HostedSession) -> HostedSession {
             var seen: Set<ScopedSessionID> = [row.id]
             var current = row
-            while let key = parentKey(current, assignments: assignments), let parent = byKey[key] {
+            while !pinned.contains(current.id), let key = parentKey(current, assignments: assignments), let parent = byKey[key] {
                 guard seen.insert(parent.id).inserted else { return row }
                 current = parent
             }
@@ -53,15 +59,31 @@ enum SessionNesting {
             }
         }
         for (key, child) in nested { families[key]?.children.append(child) }
-
-        let outside = elsewhere.filter { byKey[$0.id] == nil && $0.session.activity == .blocked }
         return order.compactMap { key in
             guard var family = families[key] else { return nil }
-            let members = Set([key] + family.children.map(\.id))
             family.needsYou = family.children.filter { $0.session.activity == .blocked }.count
-                + outside.filter { parentKey($0, assignments: assignments).map(members.contains) == true }.count
             return family
         }
+    }
+
+    static func bands(
+        _ model: SidebarModel,
+        assignments: [ScopedSessionID: [SessionAssignment]],
+        expanded: Set<String>,
+        selected: ScopedSessionID?
+    ) -> NestedBands {
+        let sections = [model.attention, model.pinned] + model.projects.map(\.sessions)
+        let home = Dictionary(sections.enumerated().flatMap { index, rows in rows.map { ($0.id, index) } }, uniquingKeysWith: { first, _ in first })
+        var placed = Array(repeating: [SessionFamily](), count: sections.count)
+        for family in families(sections.flatMap { $0 }, assignments: assignments, pinned: Set(model.pinned.map(\.id))) {
+            if let index = home[family.parent.id] { placed[index].append(family) }
+        }
+        let rows = placed.map { visible($0, expanded: expanded, selected: selected) }
+        return NestedBands(
+            attention: rows[0],
+            pinned: rows[1],
+            projects: zip(model.projects, rows.dropFirst(2)).filter { !$0.1.isEmpty }.map { ($0.0, $0.1) }
+        )
     }
 
     static func visible(_ families: [SessionFamily], expanded: Set<String>, selected: ScopedSessionID?) -> [NestedRow] {
@@ -69,7 +91,7 @@ enum SessionNesting {
             let shown = expanded.contains(foldKey(family.parent.id))
                 ? family.children
                 : family.children.filter { $0.session.activity == .blocked || $0.id == selected }
-            let head = NestedRow(row: family.parent, family: family.children.isEmpty && family.needsYou == 0 ? nil : family, nested: false)
+            let head = NestedRow(row: family.parent, family: family.children.isEmpty ? nil : family, nested: false)
             return [head] + shown.map { NestedRow(row: $0, family: nil, nested: true) }
         }
     }

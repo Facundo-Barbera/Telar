@@ -5,9 +5,10 @@ import Testing
 @Suite struct SessionNestingTests {
     private let host = UUID()
 
-    private func row(_ id: String, activity: String = "idle", startedFrom: String? = nil) throws -> HostedSession {
-        var object: [String: Any] = ["id": id, "projectId": "p", "title": id, "createdAt": 1000, "updatedAt": 1000,
-            "activity": activity, "driver": "claude", "workspace": ["mode": "local", "path": "/tmp"]]
+    private func row(_ id: String, activity: String = "idle", startedFrom: String? = nil, pinned: Bool = false, project: String = "p") throws -> HostedSession {
+        var object: [String: Any] = ["id": id, "projectId": project, "title": id, "createdAt": 1000, "updatedAt": 1000,
+            "activity": activity, "driver": "claude", "workspace": ["mode": "local", "path": "/tmp"],
+            "settledOverride": pinned ? "active" : NSNull()]
         if let startedFrom { object["startedFrom"] = ["sessionId": startedFrom] }
         return HostedSession(hostId: host, session: try JSONDecoder().decode(Session.self, from: JSONSerialization.data(withJSONObject: object)))
     }
@@ -44,9 +45,8 @@ import Testing
     @Test func foldedParentStillShowsWhatNeedsYouAndTheOpenChild() throws {
         let rows = try [row("parent"), row("quiet", startedFrom: "parent"), row("stuck", activity: "blocked", startedFrom: "parent"),
                         row("open", startedFrom: "parent")]
-        let hoisted = try row("hoisted", activity: "blocked", startedFrom: "open")
-        let families = SessionNesting.families(rows, assignments: [:], elsewhere: [hoisted])
-        #expect(families[0].needsYou == 2)
+        let families = SessionNesting.families(rows, assignments: [:])
+        #expect(families[0].needsYou == 1)
         let folded = SessionNesting.visible(families, expanded: [], selected: key("open"))
         #expect(ids(folded) == ["parent", "  stuck", "  open"])
         #expect(folded[0].family?.children.count == 3)
@@ -57,6 +57,32 @@ import Testing
         let visible = SessionNesting.visible(SessionNesting.families(rows, assignments: [:]), expanded: [], selected: nil)
         #expect(ids(visible) == ["solo", "orphan"])
         #expect(visible.allSatisfy { $0.family == nil })
+    }
+
+    @Test func aPinnedParentTakesItsChildrenOutOfTheirProjectGroup() throws {
+        let rows = try [row("orchestrator", pinned: true), row("builder"), row("stuck", activity: "blocked"), row("mine")]
+        let assignments = [key("builder"): [SessionAssignment(fromSessionId: "orchestrator", receivedAt: 1)],
+                           key("stuck"): [SessionAssignment(fromSessionId: "orchestrator", receivedAt: 2)]]
+        let model = SidebarModel(sessions: rows, names: { _ in "Telar" })
+        let folded = SessionNesting.bands(model, assignments: assignments, expanded: [], selected: nil)
+        #expect(folded.attention.isEmpty)
+        #expect(ids(folded.pinned) == ["orchestrator", "  stuck"])
+        #expect(folded.pinned[0].family?.needsYou == 1)
+        #expect(folded.projects.map { ids($0.rows) } == [["mine"]])
+        let open = SessionNesting.bands(model, assignments: assignments, expanded: [SessionNesting.foldKey(key("orchestrator"))], selected: nil)
+        #expect(ids(open.pinned) == ["orchestrator", "  builder", "  stuck"])
+    }
+
+    @Test func aChildWhoseParentIsNotListedStaysInItsGroup() throws {
+        let rows = try [row("builder", startedFrom: "settled"), row("other")]
+        let bands = SessionNesting.bands(SidebarModel(sessions: rows, names: { _ in "Telar" }), assignments: [:], expanded: [], selected: nil)
+        #expect(bands.projects.map { ids($0.rows) } == [["builder", "other"]])
+    }
+
+    @Test func aGroupLeftEmptyByNestingIsNotDrawn() throws {
+        let rows = try [row("parent", pinned: true), row("child", startedFrom: "parent", project: "q")]
+        let bands = SessionNesting.bands(SidebarModel(sessions: rows, names: { $0.session.projectId }), assignments: [:], expanded: [], selected: nil)
+        #expect(bands.projects.isEmpty)
     }
 
     @Test func aCycleLeavesEachSessionAtTheTop() throws {

@@ -183,10 +183,11 @@ struct SessionSidebar: View {
                     ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
                 }
             } else {
+                let bands = SessionNesting.bands(model, assignments: inbox.assignments, expanded: expandedParents, selected: selection)
                 draftRows
-                attentionBand
-                pinnedBand
-                projectBands
+                attentionBand(bands.attention)
+                pinnedBand(bands.pinned)
+                projectBands(bands.projects)
                 shelf("Snoozed", rows: inbox.sections.snoozed.sorted { ($0.session.snoozedUntil ?? 0) < ($1.session.snoozedUntil ?? 0) }, open: $snoozedOpen)
 
                 shelf(
@@ -228,11 +229,10 @@ struct SessionSidebar: View {
     }
 
     @ViewBuilder
-    private var attentionBand: some View {
-        let attention = model.attention.filter(matches)
+    private func attentionBand(_ attention: [NestedRow]) -> some View {
         if !attention.isEmpty {
             Section {
-                ForEach(nested(attention)) { item in sessionRow(item.row, family: item.family, nested: item.nested) }
+                ForEach(attention) { item in sessionRow(item.row, family: item.family, nested: item.nested) }
             } header: {
                 HStack(spacing: 6) {
                     Circle().fill(Theme.statusRed).frame(width: 6, height: 6)
@@ -248,11 +248,9 @@ struct SessionSidebar: View {
     }
 
     @ViewBuilder
-    private var pinnedBand: some View {
-        let pinnedRows = model.pinned.filter(matches)
-        if !pinnedRows.isEmpty {
+    private func pinnedBand(_ drawn: [NestedRow]) -> some View {
+        if !drawn.isEmpty {
             Section {
-                let drawn = nested(pinnedRows)
                 ForEach(drawn) { item in sessionRow(item.row, family: item.family, nested: item.nested).moveDisabled(item.nested) }
                     .onMove { offsets, destination in
                         Task { await reorder(drawn.map(\.row), offsets: offsets, to: destination, key: .pinned) }
@@ -262,11 +260,10 @@ struct SessionSidebar: View {
     }
 
     @ViewBuilder
-    private var projectBands: some View {
-        ForEach(model.projects) { group in
+    private func projectBands(_ bands: [(group: SidebarProject, rows: [NestedRow])]) -> some View {
+        ForEach(bands, id: \.group.id) { group, drawn in
             Section {
                 if !collapsed.contains(group.id) {
-                    let drawn = nested(group.sessions)
                     ForEach(drawn) { item in
                         sessionRow(item.row, variant: .slim, placesAbove: group.places.count, family: item.family, nested: item.nested)
                             .moveDisabled(item.nested)
@@ -303,10 +300,10 @@ struct SessionSidebar: View {
                         }
                         Spacer(minLength: 4)
 
-                        Text("\(group.sessions.count)").font(Theme.metaSmall).foregroundStyle(Theme.textMuted).monospacedDigit()
+                        Text("\(drawn.count)").font(Theme.metaSmall).foregroundStyle(Theme.textMuted).monospacedDigit()
                     }
                 }
-                .accessibilityLabel("\(group.name), \(group.sessions.count) shown, \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
+                .accessibilityLabel("\(group.name), \(drawn.count) shown, \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
                 .contextMenu {
                     newConversation(group)
                     Divider()
@@ -339,11 +336,6 @@ struct SessionSidebar: View {
     }
 
     private var expandedParents: Set<String> { Set(savedExpanded.split(separator: "\n").map(String.init)) }
-
-    private func nested(_ rows: [HostedSession]) -> [NestedRow] {
-        let families = SessionNesting.families(rows, assignments: inbox.assignments, elsewhere: model.attention)
-        return SessionNesting.visible(families, expanded: expandedParents, selected: selection)
-    }
 
     @ViewBuilder private func familyToggle(_ family: SessionFamily?) -> some View {
         if let family {
