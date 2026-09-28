@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ActivityGroup } from "./activity";
 import { TranscriptItem } from "./transcript-item";
-import type { JournalItem } from "@/features/transcript";
+import type { JournalItem } from "@/platform/engine";
 
 const base = { id: "item_r", runId: "run_1", sessionId: "session_1", startedAt: 1, streamedText: "", openedBy: 0 } as const;
 

@@ -16,8 +16,3 @@ export {
   turnActivity,
   withoutOpeningNotification,
 } from "./model";
-export { hostPassiveArrivals } from "./journal/arrivals";
-export { projectJournal } from "./journal/fold";
-export { isCompacting, isToolItem, itemLabel, itemText, toolOutput } from "./journal/items";
-export { createJournalProjector } from "./journal/projector";
-export { taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "./journal/types";

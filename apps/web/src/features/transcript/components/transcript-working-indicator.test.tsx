@@ -20,7 +20,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Item, Turn } from "@telar/engine-client";
-import { isCompacting, projectJournal, type JournalTurn } from "@/features/transcript";
+import { isCompacting, projectJournal, type JournalTurn } from "@/platform/engine";
 import { turnActivity } from "../model";
 import { TranscriptItem } from "./transcript-item";
 import { WorkingIndicator } from "./turn-status";

@@ -15,7 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SessionTurn } from "../session-cockpit";
-import type { JournalItem, JournalTurn } from "@/features/transcript";
+import type { JournalItem, JournalTurn } from "@/platform/engine";
 
 const base = { runId: "run_1", sessionId: "session_1", startedAt: 1, streamedText: "", openedBy: 0 } as const;
 

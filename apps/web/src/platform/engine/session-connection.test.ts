@@ -42,7 +42,7 @@ test("a companion snapshot ahead of the tail installs its cursor and excludes re
 
 test("Swift and web consume the same engine-produced OpenCode prefix fixture", async () => {
   const { Session, Item, Turn } = await import("@telar/engine-client");
-  const { projectJournal, itemText } = await import("@/features/transcript");
+  const { projectJournal, itemText } = await import("./journal");
   const raw = await import("../../../../ios/TelarMobileTests/Fixtures/engine-revision.json");
   const snapshot = { ...raw.default, session: Session.parse(raw.default.session), items: raw.default.items.map((item) => Item.parse(item)), turns: raw.default.turns.map((turn) => Turn.parse(turn)) };
   expect(snapshot.session.driver).toBe("opencode");

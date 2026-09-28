@@ -1,12 +1,20 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, Item, Task, Turn } from "@telar/engine-client";
-import { isActiveTurn } from "@/platform/engine";
-import { hostPassiveArrivals } from "./arrivals";
-import { projectJournal } from "./fold";
-import { isCompacting, isToolItem, itemLabel, itemText, toolOutput } from "./items";
-import { createJournalProjector } from "./projector";
-import { taskRoster } from "./types";
+import {
+  appendJournalEvents,
+  createJournalProjector,
+  hostPassiveArrivals,
+  isActiveTurn,
+  isCompacting,
+  isToolItem,
+  itemLabel,
+  itemText,
+  journalCursor,
+  projectJournal,
+  taskRoster,
+  toolOutput,
+} from "./journal";
 
 const turn: Turn = {
   runId: "run_1",
@@ -27,6 +35,20 @@ const item = (over: Partial<Item> & Pick<Item, "id" | "detail">): Item => ({
 });
 
 const envelope = { at: 1, sessionId: "s1", runId: "run_1" } as const;
+
+describe("cursor merge", () => {
+  test("tails without duplicating a record already held", () => {
+    const first: EngineEvent[] = [
+      { ...envelope, id: 1, type: "item.started", item: item({ id: "i1", detail: { type: "assistant_message", text: "" } }) },
+    ];
+    const merged = appendJournalEvents(first, [
+      ...first,
+      { ...envelope, id: 2, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "Hi" },
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(journalCursor(merged)).toBe(2);
+  });
+});
 
 describe("streaming text", () => {
   test("deltas accumulate onto the item that opened them", () => {

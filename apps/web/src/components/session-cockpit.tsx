@@ -28,8 +28,8 @@ import {
   workspacePath,
 } from "@telar/engine-client";
 import { announcePromptShelfChanged, splitImages } from "@/features/prompts";
-import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError, isActiveTurn } from "@/platform/engine";
-import { createJournalProjector, hostPassiveArrivals, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/features/transcript";
+import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/platform/engine";
+import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
 import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/features/projects";
