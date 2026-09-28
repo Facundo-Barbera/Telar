@@ -13,7 +13,7 @@
  * the machine: the desktop shell, a browser tab and a paired phone read one
  * engine, and a per-browser copy would mean a key pasted once per device.
  *
- * LOCAL-ONLY, like the Agent's. Settings is scoped to the local engine — there
+ * LOCAL-ONLY. Settings is scoped to the local engine — there
  * is no `/hosts/<id>/settings` route to serve — so a host parameter here would
  * be one nothing could pass. The phone reaches the TOKEN route through the host
  * proxy; it does not paste the key from over there.

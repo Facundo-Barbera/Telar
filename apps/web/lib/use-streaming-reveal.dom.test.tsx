@@ -2,13 +2,8 @@
  * THE EFFECT-DRIVEN HALF of `useStreamingReveal`, which nothing in CI ran.
  *
  * `use-streaming-reveal.test.ts` covers first paint through `renderToString`
- * and says so in its own header: no effect ever runs there, no frame is ever
- * scheduled, and it names the rest as a gap. The only thing that exercised the
- * gap was `test-fixtures/streaming-reveal/fixture.tsx`, a page a person has to
- * open and click — so every requirement in #214 that lives in an effect
- * (reduced motion, Stop, the frame loop, a remount mid-reply) was pinned by
- * nothing a merge could fail on. This file is that fixture's scenarios, in a
- * DOM, on a clock it owns.
+ * and no effect ever runs there. This file covers the effects (reduced motion,
+ * Stop, the frame loop, a remount mid-reply) in a DOM, on a clock it owns.
  *
  * WHAT IS ASSERTED IS WHAT WAS COMMITTED, not what a render returned. A render
  * that React discards is never painted, and the hook adjusts its state during

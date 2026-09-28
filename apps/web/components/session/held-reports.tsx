@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * WHAT THIS CONVERSATION IS HOLDING FROM ITS PEERS — issue #723, retired to a
- * count by the session-tools audit.
- *
- * This row used to be a cadence picker: how often routine peer reports woke
- * the conversation. Reports never open a turn now — the engine holds them and
- * hands them over with the conversation's next turn, whatever starts it — so
- * there is nothing left to choose. What is left is the half that made a held
- * mailbox trustworthy: HOW MUCH IT IS HOLDING, because "held" and "lost" look
- * identical from outside it.
- *
- * IT POLLS, because a peer's report arriving writes nothing to THIS session's
- * journal. One small read on a ten-second clock, and only while the panel is
- * open.
- */
 import { useEffect, useState } from "react";
 import { InboxIcon } from "lucide-react";
 import { PanelRow, PanelSectionLabel } from "@/components/ui/panel";
@@ -30,7 +15,7 @@ export function heldLabel(held: number): string | undefined {
 export const HELD_DETAIL = "Reports never open a turn. They arrive with this conversation's next turn.";
 
 /** The row, given its answer rather than fetching it, so a test can put a case to it. */
-export function ReportCadenceView({ held }: { held: number }) {
+export function HeldReportsView({ held }: { held: number }) {
   const waiting = heldLabel(held);
   return (
     <div className="flex flex-col">
@@ -44,11 +29,8 @@ export function ReportCadenceView({ held }: { held: number }) {
   );
 }
 
-/**
- * THE READ. NOTHING AT ALL UNTIL THE FIRST ANSWER, and a failed read keeps the
- * last good one: "nothing held" invented from a dropped request is the one
- * wrong answer this row can give.
- */
+/** Polls, because a peer's report writes nothing to this session's journal.
+ *  A failed read keeps the last good count rather than inventing zero. */
 function useHeld(sessionId: string | undefined, hostId: string | undefined, visible: boolean): number | undefined {
   const [held, setHeld] = useState<number>();
   useEffect(() => {
@@ -72,7 +54,7 @@ function useHeld(sessionId: string | undefined, hostId: string | undefined, visi
   return held;
 }
 
-export function ReportCadence({
+export function HeldReports({
   sessionId,
   hostId,
   /** False while the panel is behind another tab — nothing polls off screen. */
@@ -84,5 +66,5 @@ export function ReportCadence({
 }) {
   const held = useHeld(sessionId, hostId, visible);
   if (!sessionId || held === undefined) return null;
-  return <ReportCadenceView held={held} />;
+  return <HeldReportsView held={held} />;
 }
