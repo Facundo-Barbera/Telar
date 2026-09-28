@@ -1,17 +1,13 @@
 import {
-cockpitPort,
-listEndpoints,
-deviceCookieHeader,
-readDeviceCookie,
-identifyCaller,
-isHostCaller,
-readRemote,
-describeDevice,
-type DeviceIdentity,
-machineName,
-observeIdentity,
-HOST_TOKEN_ENV,
-readHostHeader,
+  cockpitPort,
+  listEndpoints,
+  deviceCookieHeader,
+  identifyCaller,
+  describeDevice,
+  type DeviceIdentity,
+  machineName,
+  observeIdentity,
+  HOST_TOKEN_ENV,
 } from "@/features/remote/server";
 import { readServeError } from "@/features/remote";
 import { engineRoute } from "@/platform/engine/server";
@@ -35,19 +31,14 @@ function hostRow(): { name: string; identity: DeviceIdentity } | undefined {
 
 export const GET = engineRoute(async (request: Request) => {
   const remote = (await engineCall("GET", "/v2/remote")).body as Record<string, unknown>;
-  const credentials = {
-    authorization: request.headers.get("authorization"),
-    deviceCookie: readDeviceCookie(request),
-    hostHeader: readHostHeader(request),
-  };
-  const caller = identifyCaller(credentials, readRemote());
+  const caller = await identifyCaller(request);
   const host = hostRow();
   return Response.json({
     ...remote,
-    host: host ? { ...host, isCaller: isHostCaller(credentials) } : undefined,
+    host: host ? { ...host, isCaller: caller.host } : undefined,
     tailscaleServeError: readServeError(),
-    callerDeviceId: caller?.id,
-    callerRole: caller?.role,
+    callerDeviceId: caller.device?.id,
+    callerRole: caller.device?.role,
     endpoints: listEndpoints(cockpitPort()),
   });
 });

@@ -9,11 +9,10 @@ import { GET as remoteGet, PATCH as remotePatch } from "@/app/api/remote/route";
 import { POST as pairingMint } from "@/app/api/remote/pairing/route";
 import { DELETE as deviceDelete, PATCH as devicePatch } from "@/app/api/remote/devices/[deviceId]/route";
 import { DELETE as devicesDeleteOthers } from "@/app/api/remote/devices/route";
-import { decideApiAccess } from "./gate";
 import { HOST_HEADER } from "./host-token";
 import { dialableAddresses, isTailnetIpv4, listEndpoints } from "./endpoints";
 import { machineName } from "./observe";
-import { readRemote } from "./store";
+import { decideAccess, readRemote } from "./testing";
 import { startEngine, type EngineDaemon } from "../../../../../engine/src/daemon";
 
 const savedTelarHome = process.env.TELAR_HOME;
@@ -66,11 +65,13 @@ function patchDeviceRequest(deviceId: string, body: Record<string, unknown>) {
   );
 }
 
+const gateFor = (token: string) =>
+  decideAccess({ ...readRemote(), requireAuth: true }, { pathname: "/api/health", method: "GET", authorization: `Bearer ${token}` }, undefined);
+
 describe("pairing routes", () => {
   test("ping answers strangers with the version signature, even while the gate is on", async () => {
     await freshHome();
-    const { EXEMPT_API_PATHS } = await import("./gate");
-    expect(EXEMPT_API_PATHS.has("/api/ping")).toBe(true);
+    expect(decideAccess({ ...readRemote(), requireAuth: true }, { pathname: "/api/ping", method: "GET" }, undefined)).toEqual({ allow: true });
     const body = (await (await pingGet(new Request("http://x/api/ping"))).json()) as { ok: boolean; proto: number; appVersion: string };
     expect(body.ok).toBe(true);
     expect(body.proto).toBe(1);
@@ -89,10 +90,7 @@ describe("pairing routes", () => {
     expect(cookie).toContain("SameSite=Lax");
     expect(cookie.includes("Secure")).toBe(false);
     // And the minted device actually admits requests.
-    expect(decideApiAccess(
-      { pathname: "/api/health", method: "GET", authorization: `Bearer ${body.deviceToken}`, deviceCookie: null },
-      { ...readRemote(), requireAuth: true },
-    )).toEqual({ allow: true, deviceId: body.deviceId, role: "full" });
+    expect(gateFor(body.deviceToken)).toEqual({ allow: true, deviceId: body.deviceId, role: "full" });
   });
 
   test("the exchange hands the device every dialable address, never loopback", async () => {
@@ -290,10 +288,7 @@ describe("pairing routes", () => {
       params: Promise.resolve({ deviceId: paired.deviceId }),
     });
     expect(gone.status).toBe(200);
-    expect(decideApiAccess(
-      { pathname: "/api/health", method: "GET", authorization: `Bearer ${paired.deviceToken}`, deviceCookie: null },
-      { ...readRemote(), requireAuth: true },
-    )).toEqual({ allow: false, code: "cockpit_unauthorized" });
+    expect(gateFor(paired.deviceToken)).toEqual({ allow: false, code: "cockpit_unauthorized" });
   });
 
   test("an oversized pair body is refused before parsing", async () => {

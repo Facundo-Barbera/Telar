@@ -151,6 +151,7 @@ function waitForServer(port, { timeoutMs = 30_000, intervalMs = 250 } = {}) {
 }
 
 module.exports = {
+  HOST_TOKEN,
   findFreePort,
   getStablePort,
   seatHostHeader,

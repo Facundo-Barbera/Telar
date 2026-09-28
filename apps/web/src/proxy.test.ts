@@ -8,19 +8,23 @@ import { NextRequest } from "next/server";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { config, proxy } from "./proxy";
 import { addDevice, mintDeviceToken, setDeviceRole, setRequireAuth } from "@/features/remote/server/testing";
+import { startEngine, type EngineDaemon } from "../../engine/src/daemon";
 
 const savedTelarHome = process.env.TELAR_HOME;
 const savedTelarCockpit = process.env.TELAR_COCKPIT;
 const roots: string[] = [];
+const daemons: EngineDaemon[] = [];
 
-function freshHome(): void {
+async function freshHome(): Promise<void> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-proxy-"));
   roots.push(home);
   process.env.TELAR_HOME = home;
   process.env.TELAR_COCKPIT = "1";
+  daemons.push(await startEngine({ engineRoot: path.join(home, "engine") }));
 }
 
-afterEach(() => {
+afterEach(async () => {
+  for (const daemon of daemons.splice(0)) await daemon.close();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   if (savedTelarHome === undefined) delete process.env.TELAR_HOME;
   else process.env.TELAR_HOME = savedTelarHome;
@@ -43,48 +47,48 @@ describe("pairing proxy", () => {
     expect(matches("/_next/image")).toBe(false);
   });
 
-  test("an unpaired person is redirected to /pair, not shown a 401", () => {
-    freshHome();
+  test("an unpaired person is redirected to /pair, not shown a 401", async () => {
+    await freshHome();
     setRequireAuth(true);
-    const response = proxy(new NextRequest("http://cockpit.test/settings"));
+    const response = await proxy(new NextRequest("http://cockpit.test/settings"));
     expect(response?.status).toBe(307);
     expect(response?.headers.get("location")).toBe("http://cockpit.test/pair");
   });
 
-  test("no-op while requireAuth is off", () => {
+  test("no-op while requireAuth is off", async () => {
     // Stated rather than inherited: a fresh store requires pairing now (#357),
     // so "off" is a thing this cockpit was switched to.
-    freshHome();
+    await freshHome();
     setRequireAuth(false);
-    expect(proxy(new NextRequest("http://cockpit.test/api/health"))).toBeUndefined();
+    expect(await proxy(new NextRequest("http://cockpit.test/api/health"))).toBeUndefined();
   });
 
   test("refuses an unpaired call with the standard error body", async () => {
-    freshHome();
+    await freshHome();
     setRequireAuth(true);
-    const response = proxy(new NextRequest("http://cockpit.test/api/health"));
+    const response = await proxy(new NextRequest("http://cockpit.test/api/health"));
     expect(response?.status).toBe(401);
     expect(await response?.json()).toEqual({
       error: { code: "cockpit_unauthorized", message: "Pair this device with the Telar cockpit to use it." },
     });
   });
 
-  test("admits a paired bearer and notices revocation despite the cache", () => {
-    freshHome();
+  test("admits a paired bearer, and keeps admitting it after the file is rewritten", async () => {
+    await freshHome();
     setRequireAuth(true);
     const raw = mintDeviceToken();
     addDevice("Phone", raw);
     const authed = new NextRequest("http://cockpit.test/api/health", {
       headers: { authorization: `Bearer ${raw}` },
     });
-    expect(proxy(authed)).toBeUndefined();
+    expect(await proxy(authed)).toBeUndefined();
     // The write above moved remote.json's mtime; the next call re-reads.
     setRequireAuth(true); // rewrites the file with the device intact
-    expect(proxy(authed)).toBeUndefined();
+    expect(await proxy(authed)).toBeUndefined();
   });
 
   test("an observer reads freely, is 403'd on writes, and is never bounced to /pair", async () => {
-    freshHome();
+    await freshHome();
     const raw = mintDeviceToken();
     const full = mintDeviceToken();
     const phone = addDevice("Phone", raw);
@@ -93,22 +97,24 @@ describe("pairing proxy", () => {
     setDeviceRole(phone.id, "observer");
 
     const read = new NextRequest("http://cockpit.test/api/health", { headers: { authorization: `Bearer ${raw}` } });
-    expect(proxy(read)).toBeUndefined();
+    expect(await proxy(read)).toBeUndefined();
 
     const write = new NextRequest("http://cockpit.test/api/sessions/x/turns", {
       method: "POST",
       headers: { authorization: `Bearer ${raw}` },
     });
-    const denied = proxy(write);
+    const denied = await proxy(write);
     expect(denied?.status).toBe(403);
     expect(((await denied?.json()) as { error: { code: string } }).error.code).toBe("cockpit_forbidden");
 
     // A paired observer loading a page is a GET — allowed, no redirect.
-    expect(proxy(new NextRequest("http://cockpit.test/settings", { headers: { authorization: `Bearer ${raw}` } }))).toBeUndefined();
+    expect(await proxy(new NextRequest("http://cockpit.test/settings", { headers: { authorization: `Bearer ${raw}` } }))).toBeUndefined();
   });
 
-  test("fails open outside the launcher (ordinary web mode)", () => {
+  test("an engine that cannot answer denies rather than letting the request through", async () => {
     delete process.env.TELAR_COCKPIT;
-    expect(proxy(new NextRequest("http://cockpit.test/api/health"))).toBeUndefined();
+    const response = await proxy(new NextRequest("http://cockpit.test/api/health"));
+    expect(response?.status).toBe(503);
+    expect((await proxy(new NextRequest("http://cockpit.test/settings")))?.status).toBe(503);
   });
 });

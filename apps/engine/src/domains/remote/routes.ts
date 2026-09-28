@@ -9,6 +9,7 @@ import {
   type RemoteStore,
 } from "./store";
 import { fail, ok, type Route } from "../../platform/http/route";
+import { authRoutes } from "./auth";
 
 type Body = Record<string, unknown>;
 
@@ -166,17 +167,8 @@ export function remoteRoutes(store: RemoteStore): Route[] {
       auth: "engine",
       handle: ({ params: [id] }) => (store.revokeDevice(id!) ? ok({ ok: true }) : fail(404, "not_found", "No such device.")),
     },
-    {
-      method: "POST",
-      path: /^\/v2\/remote\/devices\/([^/]+)\/seen$/,
-      auth: "engine",
-      handle({ body, params: [id] }) {
-        store.touchDevice(id!, Date.now(), text(body.address, 256));
-        return ok({ ok: true });
-      },
-    },
   ];
-  return routes.map((route) => ({ ...route, handle: (input) => refusalsAsBadRequest(() => route.handle(input)) }));
+  return [...routes, ...authRoutes(store)].map((route) => ({ ...route, handle: (input) => refusalsAsBadRequest(() => route.handle(input)) }));
 }
 
 function refusalsAsBadRequest(run: () => ReturnType<Route["handle"]>): ReturnType<Route["handle"]> {

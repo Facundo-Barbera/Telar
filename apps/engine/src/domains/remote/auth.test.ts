@@ -1,8 +1,10 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { decideApiAccess, EXEMPT_API_PATHS } from "./gate";
-import { HOST_HEADER } from "./host-token";
-import { hashToken, type DeviceRole, type RemoteFile } from "./store";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { matchRoute } from "../../platform/http/router";
+import { authRoutes, decideAccess, EXEMPT_PATHS, type Credentials } from "./auth";
+import { createRemoteStore, hashToken, type DeviceRole, type RemoteFile } from "./store";
 
 const RAW = "tlr_" + "a".repeat(43);
 
@@ -20,14 +22,15 @@ function ask(
   credentials: { authorization?: string; deviceCookie?: string; method?: string } = {},
   remote = file(),
 ) {
-  return decideApiAccess(
+  return decideAccess(
+    remote,
     {
       pathname,
       method: credentials.method ?? "GET",
       authorization: credentials.authorization ?? null,
       deviceCookie: credentials.deviceCookie ?? null,
     },
-    remote,
+    undefined,
   );
 }
 
@@ -45,7 +48,7 @@ describe("api gate", () => {
   });
 
   test("the exemptions answer strangers", () => {
-    for (const pathname of EXEMPT_API_PATHS) {
+    for (const pathname of EXEMPT_PATHS) {
       expect(ask(pathname)).toEqual({ allow: true });
     }
   });
@@ -127,8 +130,9 @@ describe("api gate", () => {
 describe("the process that runs the server", () => {
   const HOST = "tlr_" + "h".repeat(43);
   const file = { version: 1 as const, requireAuth: true, devices: [] };
-  const asHost = (credentials: { deviceCookie?: string; hostHeader?: string; method?: string }) =>
-    decideApiAccess(
+  const asHost = (credentials: { deviceCookie?: string; hostHeader?: string; method?: string }, secret: string | null = HOST) =>
+    decideAccess(
+      file,
       {
         pathname: "/api/projects",
         method: credentials.method ?? "GET",
@@ -136,77 +140,75 @@ describe("the process that runs the server", () => {
         deviceCookie: credentials.deviceCookie ?? null,
         hostHeader: credentials.hostHeader ?? null,
       },
-      file,
+      secret ?? undefined,
     );
 
   test("the host's secret is a full-role caller without a device record", () => {
-    process.env.TELAR_HOST_TOKEN = HOST;
-    try {
-      expect(asHost({ deviceCookie: HOST, method: "POST" })).toEqual({ allow: true, role: "full" });
-    } finally {
-      delete process.env.TELAR_HOST_TOKEN;
-    }
+    expect(asHost({ deviceCookie: HOST, method: "POST" })).toEqual({ allow: true, role: "full" });
   });
 
-  /**
-   * THE HEADER IS THE CARRIER THAT SURVIVES (issue #259). A cookie is seated
-   * once, per origin, in the network service's memory; the header is computed
-   * per request in the shell's own process. The gate must read it exactly as it
-   * reads the cookie — same role, same constant-time compare, same refusals.
-   */
   test("the header alone admits the host, with no cookie at all", () => {
-    process.env.TELAR_HOST_TOKEN = HOST;
-    try {
-      expect(asHost({ hostHeader: HOST, method: "POST" })).toEqual({ allow: true, role: "full" });
-    } finally {
-      delete process.env.TELAR_HOST_TOKEN;
-    }
+    expect(asHost({ hostHeader: HOST, method: "POST" })).toEqual({ allow: true, role: "full" });
   });
 
   test("a near-miss header is refused, by length and by content", () => {
-    process.env.TELAR_HOST_TOKEN = HOST;
-    try {
-      expect(asHost({ hostHeader: HOST + "x" }).allow).toBe(false);
-      expect(asHost({ hostHeader: HOST.slice(0, -1) + "z" }).allow).toBe(false);
-      expect(asHost({ hostHeader: HOST.slice(0, -1) }).allow).toBe(false);
-    } finally {
-      delete process.env.TELAR_HOST_TOKEN;
-    }
+    expect(asHost({ hostHeader: HOST + "x" }).allow).toBe(false);
+    expect(asHost({ hostHeader: HOST.slice(0, -1) + "z" }).allow).toBe(false);
+    expect(asHost({ hostHeader: HOST.slice(0, -1) }).allow).toBe(false);
   });
 
   test("with no secret set, an empty header is not a pass either", () => {
-    delete process.env.TELAR_HOST_TOKEN;
-    // The dangerous shape, for both carriers: an absent env var must not let an
-    // empty credential in.
-    expect(asHost({ deviceCookie: "" })).toEqual({ allow: false, code: "cockpit_unauthorized" });
-    expect(asHost({ hostHeader: "" })).toEqual({ allow: false, code: "cockpit_unauthorized" });
-    expect(asHost({ hostHeader: HOST })).toEqual({ allow: false, code: "cockpit_unauthorized" });
+    expect(asHost({ deviceCookie: "" }, null)).toEqual({ allow: false, code: "cockpit_unauthorized" });
+    expect(asHost({ hostHeader: "" }, null)).toEqual({ allow: false, code: "cockpit_unauthorized" });
+    expect(asHost({ hostHeader: HOST }, null)).toEqual({ allow: false, code: "cockpit_unauthorized" });
   });
 
   test("a wrong header does not spoil a right cookie", () => {
-    // The two are read in order, not as one credential: a stale header left on
-    // a request must not lock the window out of a jar that still works.
-    process.env.TELAR_HOST_TOKEN = HOST;
-    try {
-      expect(asHost({ hostHeader: "tlr_stale", deviceCookie: HOST })).toEqual({ allow: true, role: "full" });
-    } finally {
-      delete process.env.TELAR_HOST_TOKEN;
-    }
+    expect(asHost({ hostHeader: "tlr_stale", deviceCookie: HOST })).toEqual({ allow: true, role: "full" });
   });
 
   test("a near-miss is still refused", () => {
-    process.env.TELAR_HOST_TOKEN = HOST;
+    expect(asHost({ deviceCookie: HOST + "x" }).allow).toBe(false);
+    expect(asHost({ deviceCookie: HOST.slice(0, -1) + "z" }).allow).toBe(false);
+  });
+});
+
+describe("the routes the cockpit asks", () => {
+  const HOST = "tlr_" + "h".repeat(43);
+  function routes() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-auth-"));
+    const store = createRemoteStore(path.join(home, "remote"));
+    const raw = "tlr_" + "p".repeat(43);
+    const device = store.addDevice("Phone", raw);
+    store.setRequireAuth(true);
+    const table = authRoutes(store, () => HOST);
+    const call = (route: string, body: Record<string, unknown>) =>
+      matchRoute(table, "POST", route)!.route.handle({ body, params: [], query: new URLSearchParams() });
+    return { store, device, raw, call, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
+  }
+
+  test("decide answers the gate and stamps the admitted device", async () => {
+    const { store, device, raw, call, cleanup } = routes();
     try {
-      expect(asHost({ deviceCookie: HOST + "x" }).allow).toBe(false);
-      expect(asHost({ deviceCookie: HOST.slice(0, -1) + "z" }).allow).toBe(false);
+      expect((await call("/v2/auth/decide", { pathname: "/api/projects", method: "GET" })).body).toEqual({ allow: false, code: "cockpit_unauthorized" });
+      expect((await call("/v2/auth/decide", { pathname: "/api/projects", method: "GET", authorization: `Bearer ${raw}` })).body).toEqual({ allow: true, deviceId: device.id, role: "full" });
+      expect(store.read().devices[0]!.lastSeenAt).toBeGreaterThan(0);
+      expect((await call("/v2/auth/decide", { pathname: "/api/projects", method: "POST", hostHeader: HOST })).body).toEqual({ allow: true, role: "full" });
+      expect((await call("/v2/auth/decide", { method: "GET" })).status).toBe(400);
     } finally {
-      delete process.env.TELAR_HOST_TOKEN;
+      cleanup();
     }
   });
 
-  test("the header name is the one the shell writes", () => {
-    // Pinned here as well as in apps/desktop's source contract, so a rename in
-    // this half is caught by this half's own suite.
-    expect(HOST_HEADER).toBe("x-telar-host");
+  test("identify names the device and the host without deciding anything", async () => {
+    const { device, raw, call, cleanup } = routes();
+    try {
+      const credentials: Credentials = { deviceCookie: raw };
+      expect((await call("/v2/auth/identify", credentials)).body).toEqual({ host: false, device: { id: device.id, role: "full" } });
+      expect((await call("/v2/auth/identify", { hostHeader: HOST })).body).toEqual({ host: true });
+      expect((await call("/v2/auth/identify", {})).body).toEqual({ host: false });
+    } finally {
+      cleanup();
+    }
   });
 });
