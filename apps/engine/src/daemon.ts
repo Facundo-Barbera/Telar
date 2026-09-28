@@ -110,8 +110,7 @@ import {
   notesSocketConnectCard,
 } from "./notes-tools/socket";
 import type { NotesCapability } from "./notes-tools/tools";
-import { DICTATION_OFF, DictationError } from "./dictation/token";
-import { dictationProvider } from "./dictation/provider";
+import { DICTATION_OFF, DictationError, dictationProvider } from "./domains/dictation";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import * as shelf from "./prompts";

@@ -195,6 +195,8 @@ import {
   type AutoCompact,
   CLAUDE_COMPACTION_ENV_NAMES,
   migrateClaudeCompaction,
+  type DictationLanguage,
+  type DictationProviderId,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
 import { atomicWrite } from "./platform/fs/atomic";
@@ -214,11 +216,7 @@ import {
   type OutlineRow,
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
-import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
-import { lastKeytermFit, type KeytermFit } from "./dictation/fit";
-import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
-import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
-import type { DictationContext } from "./dictation/keyterms";
+import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";

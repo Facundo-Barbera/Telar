@@ -43,7 +43,7 @@
  *
  *   DEEPGRAM_API_KEY=... bun scripts/probe-deepgram-keyterm-bound.ts
  */
-import { deepgramKeyterms, type DictationContext } from "../apps/engine/src/dictation/keyterms";
+import { deepgramKeyterms, type DictationContext } from "../apps/engine/src/domains/dictation";
 import { handshake, listenQuery, requireKey, said } from "./deepgram-handshake";
 
 const key = requireKey();
