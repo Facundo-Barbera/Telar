@@ -25,7 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, type RuntimeMode, type Session } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { createClaudeDriver } from "../src/driver";
+import { createClaudeDriver } from "../src/drivers/claude";
 import { type SessionsCapability, type TurnDriver } from "../src/drivers";
 import { TelarToolSocket } from "../src/domains/agent-tools";
 import { reportBack } from "../src/domains/turns/agent-notice";

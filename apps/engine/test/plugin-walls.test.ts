@@ -18,7 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, TELAR_MCP_SERVER, canonicalToolName } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { createClaudeDriver } from "../src/driver";
+import { createClaudeDriver } from "../src/drivers/claude";
 import type { DriverRun, TurnDriver } from "../src/drivers";
 import { bundledPluginToolModules, pluginBriefings, setPluginToolModules } from "../src/plugins/bundled";
 import { dataScienceMeta } from "../src/plugins/data-science";

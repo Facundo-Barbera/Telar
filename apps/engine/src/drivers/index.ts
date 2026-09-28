@@ -1,6 +1,6 @@
 import type { ProviderDriverKind } from "@telar/engine-client";
 import { BROWSER_TOOLS, BrowserToolSocket, type BrowserSocketCapability, type EngineBrowser } from "../domains/browser";
-import { createClaudeDriver } from "../driver";
+import { createClaudeDriver } from "./claude";
 import type { DriverSelector } from "../worker";
 import { createCodexDriver } from "./codex";
 import type { TurnDriver } from "./contract";
