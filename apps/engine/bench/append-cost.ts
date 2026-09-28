@@ -47,7 +47,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
-import { ExecutionStore } from "../src/execution-store";
+import { ExecutionStore } from "../src/platform/db/execution-store";
 import type { EngineEvent } from "@telar/engine-client";
 
 const [items = 327, deltas = 400, batch = 16] = process.argv.slice(2).map(Number);

@@ -1,8 +1,14 @@
 // Test-only reads into store internals, kept out of the production classes.
 import fs from "node:fs";
 import path from "node:path";
-import type { ExecutionStore, TurnPolicyRequests, TurnUsageAggregate } from "../src/execution-store";
+import type { ExecutionStore } from "../src/platform/db/execution-store";
+import type { TurnPolicyRequests } from "../src/platform/db/journal-maintenance";
 import type { EngineStore } from "../src/state";
+
+type TurnUsageAggregate = {
+  tokens: { input: number; output: number; cacheRead: number; cacheCreate: number; reasoning: number };
+  rows: number;
+};
 
 type Row = Record<string, unknown> | undefined;
 type Statement = { get(...args: unknown[]): Row; all(...args: unknown[]): Array<Record<string, unknown>> };

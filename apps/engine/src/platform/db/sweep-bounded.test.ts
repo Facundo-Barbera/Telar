@@ -1,25 +1,10 @@
-/**
- * THE BACKGROUND SWEEP HOLDS THE EVENT LOOP FOR ONE CHUNK, NOT ONE SESSION.
- *
- * The first slim (#1011) and request prune (#1019) after an update cover each
- * session's whole history. The walk yielded only between sessions, and the
- * prune asked the journal once per run whether that run had ended — so one long
- * session held the daemon for tens of seconds, and nothing hydrated meanwhile.
- *
- *   - A LONG SESSION IS SEVERAL STEPS, each a turn-bounded chunk, with the
- *     walk coming back to it; a read between two steps is served.
- *   - THE WHOLE WALK STILL DOES WHAT THE SYNCHRONOUS SWEEP DOES, and counts
- *     a session chunked into several steps once.
- *   - NO STEP GROWS WITH THE SESSION'S HISTORY: the per-run scan was
- *     quadratic, and a step is timed against a bound it used to blow past.
- */
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ExecutionStore } from "../src/execution-store";
-import { turnPolicyRequests } from "./store-internals";
+import { ExecutionStore } from "./execution-store";
+import { turnPolicyRequests } from "../../../test/store-internals";
 
 const roots: string[] = [];
 afterEach(() => {

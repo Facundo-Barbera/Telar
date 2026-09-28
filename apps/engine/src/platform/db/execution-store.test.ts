@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import type { ContentStream, ItemDetail } from "@telar/engine-client";
 import { ContentStream as ContentStreamSchema, ItemDetail as ItemDetailSchema } from "@telar/engine-client";
-import { EngineStore } from "../src/state";
-import { ExecutionStore } from "../src/execution-store";
-import { toLegacyHome } from "./store-internals";
+import { EngineStore } from "../../state";
+import { ExecutionStore } from "./execution-store";
+import { toLegacyHome } from "../../../test/store-internals";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
@@ -90,7 +90,7 @@ test("SIGKILL between projection and commit leaves no accepted turn or journal f
   const cursor = store.eventCursor("session_one");
   store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
   const child = Bun.spawn([process.execPath, "-e", `
-    import { EngineStore } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/state.ts"))};
+    import { EngineStore } from ${JSON.stringify(path.resolve(import.meta.dir, "../../state.ts"))};
     const store = new EngineStore(process.argv[1]);
     store.executeCommand("crash", () => {
       store.submitTurn("session_one", { runId: "run_crashed", input: "uncommitted" });
@@ -111,7 +111,7 @@ test("export retains post-migration history and re-imports on open", async () =>
   store.stopSession("session_one");
   store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
   const destination = `${home}-export`; homes.push(destination);
-  const child = Bun.spawn([process.execPath, path.resolve(import.meta.dir, "../scripts/export-execution.ts"), home, destination], { stdout: "ignore", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, path.resolve(import.meta.dir, "../../../scripts/export-execution.ts"), home, destination], { stdout: "ignore", stderr: "pipe" });
   expect(await child.exited).toBe(0);
   const exported = new EngineStore(destination, Date.now); stores.push(exported);
   expect(exported.turns("session_one")[0]?.state).toBe("stopped");
@@ -143,13 +143,6 @@ test("human Stop keeps agent traffic blocked across restart until a fresh human 
   expect(reopened.submitAgentTurn("session_one", { runId: "run_fresh", input: "new report" }).replayed).toBe(false);
 });
 
-/**
- * A CACHED STATEMENT MUST NOT CARRY THE PREVIOUS CALL'S BINDINGS. Preparing
- * each query once is what stops sqlite recompiling the same seven statements
- * ten times a second, and the only way that can go wrong is a reused statement
- * answering for the row it was last run with — so this interleaves several
- * sessions through every cached path and demands each one's own answer back.
- */
 test("statements reused across calls still answer for the row they were asked about", () => {
   const { store } = setup();
   for (const id of ["session_two", "session_three"]) store.createSession({ id, projectId: "project_one" });
@@ -171,14 +164,6 @@ test("statements reused across calls still answer for the row they were asked ab
   expect(() => store.getSession("session_two")).toThrow();
 });
 
-/**
- * THE SCAN CACHE MUST NEVER OUTLIVE THE QUEUE IT DESCRIBES.
- *
- * Serving an unchanged queue from memory is what takes the worker heartbeat
- * from ten milliseconds to a tenth of one, and the only way it can be wrong is
- * by answering with a queue that has since moved. Each of these writes a queue
- * behind a scan that already ran and demands the new answer.
- */
 test("a queue written after a scan is seen by the next scan", () => {
   const { store } = setup();
   store.submitTurn("session_one", { runId: "run_one", input: "hello" });
@@ -216,27 +201,6 @@ test("a session id reused after a delete does not inherit the old queue", () => 
   expect(store.cancellationsForWorker("worker_one")).toEqual([]);
 });
 
-/**
- * A DEAD CLAIM IS NOT FREE TO LEAVE LYING ABOUT.
- *
- * `stopSession` keeps the claim on a turn it stops so the worker holding it
- * hears about the stop — but the token names a registration, and none survives
- * a restart. Left there it is not inert: `queueConcernsAWorker` counts it, so
- * every Stop anybody ever pressed kept a session in the set the heartbeat
- * walks, for ever and across every restart.
- */
-/**
- * A STREAMED DELTA IS WRITTEN ONCE FOR THE WHOLE BATCH, AND READS AS IF IT WERE
- * WRITTEN AT ONCE.
- *
- * A WAL fsync costs one transaction and the engine used to run one per
- * `ingestObservations`, so a delta at a time was an fsync per token-chunk.
- * The two halves of the fix are inseparable and both are asserted here: the
- * deltas do NOT reach the database as they arrive, and a reader cannot tell —
- * `readEvents` and `eventCursor` answer with the held ones, in order, with the
- * text intact. A second connection is what separates the two questions, because
- * it sees only what has actually been committed.
- */
 function streamed(home: string): Array<Record<string, unknown>> {
   const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
   const db = new Database(path.join(home, "execution.sqlite"), { readonly: true });
@@ -283,11 +247,6 @@ test("deltas arriving in one tick are held, read back whole, and stored in a sin
   expect(deltas.map((event) => event.text).join("")).toBe(chunks.join(""));
 });
 
-/**
- * UNFLUSHED DELTAS MAY BE LOST. A SETTLED TURN MAY NOT — and neither may a
- * delta that some earlier command already committed, just because a later one
- * failed on top of it.
- */
 test("a failed command does not take already-accepted deltas with it", () => {
   const { store, home } = setup();
   store.submitTurn("session_one", { runId: "run_one", input: "stream" });
@@ -321,18 +280,6 @@ test("a failed command does not take already-accepted deltas with it", () => {
     .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
 });
 
-/**
- * THE DELTA PATH SKIPS THE TRANSACTION AND THE PROJECTION READS (#443) — AND
- * NOTHING ELSE.
- *
- * `ingestObservations` routes a batch of nothing but `content.delta` past
- * `executeCommand` and past `readItems`/`readTasks`/`readQueue`, because such a
- * batch writes no document and a delta asks the projection one question. Every
- * one of these is a way that shortcut could be WRONG, and each is the same
- * demand: the fast path must refuse, drop and order exactly as the command path
- * does. What the two paths agree about when nothing is wrong is already pinned
- * by "deltas arriving in one tick…" above.
- */
 function streaming(): { store: EngineStore; home: string; runId: string; token: string } {
   const { store, home } = setup();
   store.submitTurn("session_one", { runId: "run_one", input: "stream" });
@@ -401,16 +348,6 @@ test("a delta for an item that never opened is dropped, and one for an item open
   expect(deltas(store)).toEqual(["one ", "two "]);
 });
 
-/**
- * THE RECEIPTS NOTHING WILL EVER READ AGAIN (#457).
- *
- * A receipt makes a retried command id free instead of repeating it, which
- * matters for the seconds a client spends retrying a request whose response it
- * lost — and never again after that. The dogfood store held 299,323 of them in
- * 723 MB. So: they go after a week, on open and once a day, and the only thing
- * worth asserting about the table is the behaviour it buys — a receipt that is
- * still there replays its command, and a receipt that is gone runs it again.
- */
 test("receipts outlive a retry and not a week; opening the store is itself a sweep", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-receipts-")); homes.push(root);
   fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
@@ -469,15 +406,6 @@ test("a restart retires the claim on a stopped turn without disturbing the sessi
   expect(reopened.cancellationsForWorker("worker_one")).toEqual([]);
 });
 
-/**
- * ISSUE #457, STEP 4 — the JSON the import replaced does not live forever.
- *
- * `importLegacy` keeps a copy of everything it read, as an undo for a migration
- * that went wrong. Its value is in the days right after the migration: a store
- * read and written through sqlite for a week has diverged from that copy
- * completely, so restoring it would discard the week rather than recover it. On
- * the dogfood home it was 239 MB, months old, beside a 735 MB database.
- */
 test("the pre-SQLite backup is kept for its week and then swept, and the sweep says what it took", () => {
   const day = 24 * 60 * 60 * 1000;
   let clock = Date.now();
@@ -532,24 +460,11 @@ test("a store with no migration behind it has no backup to consider", () => {
   expect(store.executionHousekeeping()?.receipts).toBe(0);
 });
 
-/**
- * THE JOURNAL ROWS A SETTLED TURN HAS SUPERSEDED (#646).
- *
- * `events` was 68% of a gigabyte store, and 57% of its rows said nothing their
- * own `item.completed` did not already say. The sweep drops those — but only
- * where it can PROVE the completed item holds the text, which is the single
- * thing worth asserting here: the guard, not the byte count.
- */
 function journal(root: string, sessionId: string, store: ExecutionStore) {
   store.write(path.join(root, "sessions", sessionId, "session.json"), { id: sessionId });
   let id = 0;
   const at = Date.parse("2026-09-01T00:00:00Z");
   const runId = "run_one";
-  // The kind and the stream are PARAMETERS rather than constants because the
-  // reach test below has to write every item kind the contract has, and a
-  // fixture that can only write `assistant_message` can only ever confirm the
-  // one kind that was never in doubt. Both default to what the older tests
-  // here pass, which is why those say nothing about either.
   return {
     start: (itemId: string, detail: ItemDetail = { type: "assistant_message", text: "" }) =>
       store.append({ id: ++id, at, sessionId, runId, type: "item.started",
@@ -630,39 +545,6 @@ test("an unfinished turn is left entirely alone, and swept once it ends", () => 
   } finally { store.close(); }
 });
 
-/**
- * HOW FAR COMPACTION REACHES, PER KIND, AND WHY IT STOPS WHERE IT DOES — #686.
- *
- * The guard compares an item's summed deltas against `detail.text` on its own
- * `item.completed`. Three of the contract's eighteen detail kinds have a
- * top-level `text`; the other fifteen keep their payload under a named field
- * or do not keep it at all. So the reach is not a coverage gap somebody forgot
- * to close — it is the guard correctly reporting that for those fifteen the
- * completed row DOES NOT HOLD what was streamed, and dropping their deltas
- * would be lossy rather than lossless. #686 opened as "compaction reaches 2 of
- * 18 kinds"; the finding was that widening it is the bug, not the fix.
- *
- * THE FIXTURE IS DELIBERATELY GENEROUS. Every kind's completed detail carries
- * the WHOLE streamed text in the most text-bearing field that kind has — the
- * command's `outputPreview`, the tool call's `output`, the diff, the error
- * message. They are kept anyway, which is the point: it is the shape the guard
- * reads, not the presence of the characters somewhere on the row. In real
- * traffic those fields are capped at 4,000 characters (see
- * `CommandExecutionDetail.outputPreview`), so pointing the comparison at them
- * would pass only where compaction was not worth doing.
- *
- * ASSERTED IN BOTH DIRECTIONS, WHICH IS WHAT MAKES IT A TEST. Only asserting
- * "9 dropped" would pass just as well on a fixture that quietly stopped writing
- * the other fifteen kinds' deltas. So the count is asserted BEFORE the sweep
- * (every kind really wrote three), the sweep's own return is asserted, and the
- * survivors are asserted per kind afterwards.
- *
- * THREE REACHABLE, TWO EMITTED. `user_message` is reachable and never streamed
- * into — it is typed, not generated — so the issue's "2 of 18" is the emission
- * count and this is the structural one. Both are worth having: the first can
- * change without anyone touching this store, and the trip-wire below is what
- * notices.
- */
 const DELTAS_PER_KIND = 3;
 /** The detail kinds whose completed row keeps the streamed text where the
  *  guard reads it — `$.item.detail.text`, no named field in between. */
@@ -753,28 +635,6 @@ test("compaction reaches exactly the kinds whose settled row keeps the streamed 
   } finally { store.close(); }
 });
 
-/**
- * THE TRIP-WIRE AT THE EMITTER SEAM — #686, and the cheap form of it.
- *
- * The dangerous change is not a wider guard, it is a NEW EMISSION. The moment a
- * driver streams a command's output or a tool's result, those deltas become the
- * only durable copy of anything past the 4,000-character preview — history, not
- * redundancy — and compaction must go on skipping them. The person that hurts
- * most is the command-heavy user, who is also the one a "fix" to the guard
- * would look like it was for.
- *
- * SO EVERY MEMBER IS CLASSIFIED, AND MOVING ONE IS A DECISION SOMEBODY MAKES ON
- * PURPOSE. A sixth member fails here. A member moved between the sets fails
- * here. Both failures are the prompt to answer one question first: what happens
- * to those deltas when their turn settles?
- *
- * OVER VALUES, NEVER OVER SOURCE TEXT. This repository has shipped a check that
- * grepped for a test name and therefore passed when the test was skipped; a
- * grep here would additionally pass through a rename, or through a driver that
- * emits via a variable rather than a literal.
- */
-/** Streams whose deltas a settled `item.completed` can account for, because the
- *  item they open keeps its text at `detail.text`. */
 const COMPACTABLE: ContentStream[] = ["assistant_text", "reasoning_text"];
 /** Streams no driver in this repository emits. Moving one out of here means
  *  deciding what the compaction should do with its deltas — the answer is
@@ -798,14 +658,6 @@ test("every content stream is classified for compaction, exactly once", () => {
   expect(COMPACTABLE.length).toBe(REACHABLE.filter((kind) => kind !== "user_message").length);
 });
 
-/**
- * THE SWEEP IS NOT ON THE OPEN PATH, and that is measured rather than tidy.
- *
- * Running it in the constructor cost 54 SECONDS on the owner's gigabyte — a
- * one-time cost, but one-time on the launch right after an update, and a longer
- * stall than the VACUUM that is deliberately kept behind a button. So the open
- * returns and the sweep follows it.
- */
 test("opening the store does not sweep; the sweep follows and says what it took", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-open-")); homes.push(root);
   fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
@@ -856,20 +708,6 @@ test("opening the store does not sweep; the sweep follows and says what it took"
   const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-told-")); homes.push(fresh);
   fs.mkdirSync(path.join(fresh, "sessions"), { recursive: true });
   const seen: { deltas: number; starts: number; sessions: number }[] = [];
-  /**
-   * THE DELAY IS INJECTED RATHER THAN SLEPT THROUGH (#706).
-   *
-   * This used to sleep 5,400 ms and then assert the callback had fired — a
-   * four-hundred-millisecond margin against the real five-second timer, on a
-   * machine shared with the rest of the suite. That is not an assertion about
-   * this store; it is an assertion that nothing else was busy. It also could
-   * not pass at all under a bare root-level `bun test`, which gets bun's 5 s
-   * default rather than the suite's `--timeout 20000`.
-   *
-   * Now the sweep is told to run immediately and the test waits for the
-   * CALLBACK. What is asserted is what the sweep removed — the same answer
-   * idle or loaded — and the whole test costs milliseconds.
-   */
   const announced = new ExecutionStore(fresh, { onJournalCompacted: (swept) => seen.push(swept), compactAfterOpenMs: 1 });
   try {
     const write = journal(fresh, "session_one", announced);
@@ -883,22 +721,6 @@ test("opening the store does not sweep; the sweep follows and says what it took"
   } finally { announced.close(); }
 });
 
-/* ══════════════════════════════════════════════════════════════════════════ *
- * ISSUE #894 — the sweep yields, and the bound it opens with is written down.
- *
- * Both halves of one incident. The sweep walked 605 sessions inside a single
- * timer callback and parked the event loop for about six minutes at 100% CPU,
- * during which the daemon answered neither `/v2/health` nor a Stop; and the
- * reason a swept store never got cheaper was the per-session bound, which
- * JSON-parsed the session's whole journal twice per sweep to find the id of
- * its last terminal turn event.
- *
- * THE ASSERTIONS ARE ORDER AND COUNTS, NEVER A MARKER. "It yielded" is proved
- * by state that only one ordering can produce — session one swept while
- * session two still holds every row it had — and the totals are compared
- * against a synchronous sweep over an identical fixture rather than against a
- * number typed here.
- * ══════════════════════════════════════════════════════════════════════════ */
 
 /** The metadata row as it really is on disk, read through a second connection
  *  rather than through a method added for the test. `null` when absent, which
@@ -914,15 +736,6 @@ function metadataValue(root: string, key: string): string | null {
 
 const TERMINAL_HIGH = "journal-terminal-high/";
 
-/**
- * Three sessions, each one settled turn of two deltas — the smallest fixture
- * in which "one session per macrotask" is distinguishable from "all of them".
- *
- * NAMED a/b/c BECAUSE THE ORDER IS PART OF THE ASSERTION. The walk snapshots
- * `sessionIds()`, which reads `documents` keys `ORDER BY key`, so the sweep
- * follows lexical order — `session_one, session_two, session_three` would be
- * walked one, three, two and every index below would be about nothing.
- */
 function threeSessions(root: string, store: ExecutionStore): string[] {
   const ids = ["session_a", "session_b", "session_c"];
   for (const id of ids) {
@@ -1090,14 +903,6 @@ test("a journal written before the bound existed still sweeps, and pays the pars
     write.endTurn();
     const terminal = store.events("session_one").at(-1)!;
 
-    /**
-     * A STORE FROM BEFORE THIS CHANGE, EXACTLY. Every row a previous binary
-     * would have written is there and the bound is not, because nothing was
-     * recording it — so the key is removed rather than the fixture being
-     * written some other way. The fallback has to be able to tell that from
-     * "this session has never had a turn end", and it can, because absent and
-     * zero are different rows.
-     */
     const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
     const raw = new Database(path.join(root, "execution.sqlite"));
     try { raw.query("DELETE FROM metadata WHERE key=?").run(`${TERMINAL_HIGH}session_one`); } finally { raw.close(); }

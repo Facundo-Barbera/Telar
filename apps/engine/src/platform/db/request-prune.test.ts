@@ -1,23 +1,9 @@
-/**
- * POLICY-RESOLVED REQUEST PAIRS, PRUNED INTO PER-TURN COUNTS — issue #697 part B.
- *
- * What must not drift, each held by a row count rather than a marker:
- *
- *   - ONLY POLICY. A request a person, a session or a cancellation resolved,
- *     and one still open, is never touched.
- *   - THE POLICY HAS TO AGREE. A pair claiming `policy` that the runtime mode at
- *     the time would not have produced survives.
- *   - ONLY SETTLED TURNS, and only turns with a summary row to hold the count.
- *   - IDEMPOTENT, and on its own watermark: a journal already compacted and
- *     folded still has its pairs found.
- *   - SAFE ON OPEN: the sweep the store starts by itself does it.
- */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ExecutionStore, type ExecutionStoreOptions } from "../src/execution-store";
-import { turnPolicyRequests } from "./store-internals";
+import { ExecutionStore, type ExecutionStoreOptions } from "./execution-store";
+import { turnPolicyRequests } from "../../../test/store-internals";
 
 const roots: string[] = [];
 afterEach(() => {

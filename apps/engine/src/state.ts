@@ -3,7 +3,8 @@
 // storage, so starting the daemon cannot create a `chats.json`, cutover marker,
 // or any other legacy mutation by accident.
 import crypto from "node:crypto";
-import { ExecutionStore, type ExecutionHousekeeping, type SessionIndexRow } from "./execution-store";
+import { ExecutionStore, type ExecutionHousekeeping } from "./platform/db/execution-store";
+import type { ScheduleRow, SessionIndexRow } from "./platform/db/tables";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -223,7 +224,6 @@ import { applyModelManifest, applyModelOverlay, BUNDLED_MANIFEST, chosenDefault,
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
-import type { ScheduleRow } from "./execution-store";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, type GitResult, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { buildInventory, type InventoryProject, type InventorySession } from "./worktree-inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./worktrees-location";

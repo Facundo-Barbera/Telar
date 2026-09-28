@@ -1,21 +1,10 @@
-/**
- * SLIMMED `item.completed` ROWS — issue #858.
- *
- * Every claim is held to a count or a stored value, and each one has its
- * negative: a sweep that slimmed nothing would pass a round-trip test, so the
- * row count and the raw stored text are asserted beside it.
- *
- * Built through `EngineStore` for `retention.test.ts`'s reason — the items rows
- * the slimming compares against must be the ones production writes — then
- * reopened as the bare `ExecutionStore` the mechanism lives on.
- */
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { ExecutionStore } from "../src/execution-store";
+import { EngineStore } from "../../state";
+import { ExecutionStore } from "./execution-store";
 
 const homes: string[] = [];
 const closers: Array<() => void> = [];
