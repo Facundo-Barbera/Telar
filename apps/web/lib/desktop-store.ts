@@ -1,18 +1,8 @@
 "use client";
 
 /**
- * WHERE THIS INSTALL KEEPS ITS STORE, as the cockpit sees it — issue #630.
- *
- * A LOCAL STRUCTURAL TYPE AND AN ACCESSOR, the same shape `desktop-updates.ts`
- * and `choose-directory.ts` use, and for the same reason: a global `Window`
- * augmentation would imply the bridge is always there, and in a browser tab it
- * never is.
- *
- * NOTHING HERE TALKS TO THE ENGINE, and that is not an accident of layering.
- * The store's location is decided by the shell before the engine exists and
- * read once at launch (`apps/desktop/main.js`), so an engine route would be
- * asking the thing being moved where it ought to be. It is a property of this
- * installation, like the update channel.
+ * Where this install keeps its store. Shell-only: the location is decided before the engine
+ * starts (`apps/desktop/main.js`), so there is no engine route for it.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -23,12 +13,11 @@ export type StoreVolume = { mount: string; uuid?: string; label?: string };
 export type StoreStatus = {
   /** Where the running engine's store actually is. */
   path: string;
-  /** Where it would be with nothing configured — what "move it back" means. */
+  /** Where it would be with nothing configured. */
   defaultPath: string;
   storeId?: string;
   volume?: StoreVolume;
-  /** An explicit TELAR_HOME is pointing this run somewhere; the controls say
-   *  so rather than offering to move a store this install does not own. */
+  /** An explicit TELAR_HOME points this run elsewhere, so the store cannot be moved. */
   pinnedByEnvironment: boolean;
   /** A previous store a completed move left behind, still on disk. */
   retired?: { source: string; stamp: string; bytes: number; removable: boolean };
@@ -55,30 +44,16 @@ export function desktopStore(): StoreBridge | undefined {
 }
 
 /**
- * THE SENTENCE SOMEBODY MOVING THEIR STORE ONTO A BUS-POWERED DRIVE IS
- * ENTITLED TO MEET, and the reason it lives here rather than only in the design
- * doc.
- *
- * It is deliberately narrow, because every clause in it is something that was
- * established by reading the code rather than assumed. The engine calls no
- * `fsync` at steady state, so a write it has acknowledged may still only be in
- * the page cache; sqlite's recovery gets the last committed transaction back
- * *if* the enclosure honoured its flushes, which enclosures are widely known to
- * lie about. What is structurally safe is that documents are written by rename,
- * so the failure mode is a missing recent write rather than a corrupt one.
- *
- * Claiming more than this would be claiming durability nobody established.
+ * Deliberately narrow: the engine does not fsync at steady state and enclosures may ignore
+ * flushes, but documents are written by rename, so the risk is lost recent writes, not corruption.
  */
 export const REMOVABLE_DRIVE_WARNING =
   "If the drive is unplugged while Telar is running, any turn in flight fails and the most recent writes can be lost. Telar's history is written so that what survives is intact rather than half-written, but a drive that is pulled mid-write can still lose the newest entries. Eject before unplugging.";
 
-/** What a move costs, phrased for a progress line rather than a log. */
 export function progressLabel(progress: StoreProgress | null): string | undefined {
   if (!progress) return undefined;
   const percent = progress.bytesTotal > 0 ? Math.min(100, Math.round((progress.bytesDone / progress.bytesTotal) * 100)) : 0;
-  // The two phases are named rather than averaged into one bar: a progress
-  // indicator that sits at 100% while an unannounced verification runs is how
-  // somebody learns to pull the drive out.
+  // The phases are named separately so a hidden verification never sits at 100%.
   return progress.phase === "copying" ? `Copying… ${percent}%` : `Checking the copy… ${percent}%`;
 }
 

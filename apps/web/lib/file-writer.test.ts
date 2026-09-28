@@ -1,23 +1,13 @@
-/**
- * THE FALSE CONFLICT, stated as the rule it broke: a write carries the hash of
- * the last write that LANDED, and the editor's own saves can never be a conflict
- * with themselves.
- *
- * The engine here is a real one in miniature — it holds bytes and a hash,
- * refuses any write whose precondition does not match, and can be made to answer
- * slowly so two writes overlap. That is the whole machine the bug lived in.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { createFileWriter, type FileWriteAnswer } from "./file-writer";
 
-/** A file on disk, with the engine's precondition rule and nothing else. */
+/** Holds bytes and a hash, and refuses any write whose precondition does not match. */
 function disk(text = "start") {
   let held = text;
   let version = 0;
   const writes: { text: string; expected: string; refused: boolean }[] = [];
-  /** Answers that do not resolve until `settle()` is called, so a test can hold
-   *  a write open and type underneath it. */
+  /** Held until `settle()`, so a test can keep a write open. */
   const open: (() => void)[] = [];
   return {
     get text() {
@@ -27,9 +17,7 @@ function disk(text = "start") {
       return `sha_${version}`;
     },
     writes,
-    /** Wait until a write is actually open, then let every held one answer.
-     *  Polled rather than assumed: a queued write only reaches the wire a
-     *  microtask after the one in front of it answers. */
+    /** Polls until a write is open (queued writes start a microtask later), then releases all. */
     async settle() {
       while (open.length === 0) await Promise.resolve();
       const waiting = open.splice(0);
@@ -51,8 +39,6 @@ function disk(text = "start") {
 
 describe("the baseline a write carries", () => {
   test("the second write carries the hash the first one produced", async () => {
-    // Without this every save after the first is a conflict with the save
-    // before it — the file changed on disk, and we are what changed it.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
     writer.rebase({ sha256: file.sha256 });
@@ -65,11 +51,7 @@ describe("the baseline a write carries", () => {
   });
 
   test("`persist` captured before a save still carries the hash that save produced", async () => {
-    // THE BUG, EXACTLY. The save coordinator is handed `persist` once and keeps
-    // it for the life of the file; the hash it sends must be read when the write
-    // goes out, not when the function was handed over. The editor used to hold
-    // that hash in a closure variable and REBUILD the closure on every save, so
-    // the rebuilt one carried the hash from before the write that rebuilt it.
+    // The hash must be read when the write goes out, not when `persist` was handed over.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
     writer.rebase({ sha256: file.sha256 });
@@ -81,18 +63,13 @@ describe("the baseline a write carries", () => {
   });
 
   test("two writes asked for at once go out one at a time, the second behind the first's hash", async () => {
-    // Typing through a save asks for a second write while the first is open.
-    // Both used to go out against the same hash and the loser was refused as a
-    // conflict — a conflict between two of the user's own keystrokes.
     const file = disk();
     const writer = createFileWriter({ send: file.write(true) });
     writer.rebase({ sha256: file.sha256 });
 
     const first = writer.persist("one");
     const second = writer.persist("two");
-    // Only ONE write is on the wire: the second is still queued. Releasing the
-    // first is what lets it start, and it starts by reading the hash the first
-    // produced.
+    // Only one write is on the wire; the second starts after the first answers.
     await file.settle();
     expect(file.writes).toHaveLength(1);
     await file.settle();
@@ -104,8 +81,6 @@ describe("the baseline a write carries", () => {
   });
 
   test("a real conflict is still refused", async () => {
-    // The precondition is the point. Somebody else moving the file — the agent,
-    // mid-turn — must still stop the write rather than overwrite it.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
     writer.rebase({ sha256: file.sha256 });
@@ -116,10 +91,7 @@ describe("the baseline a write carries", () => {
   });
 
   test("a refusal leaves the baseline where it was", async () => {
-    // The stash keeps the refused text WITH the hash it was edited against, so
-    // re-opening the file is refused again rather than winning. Advancing the
-    // baseline on a refusal would turn "your edit was refused" into "your edit
-    // silently destroyed the agent's".
+    // Advancing the baseline on refusal would let a re-open overwrite the agent's edit.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
     writer.rebase({ sha256: "sha_0" });
@@ -157,8 +129,6 @@ describe("the baseline a write carries", () => {
   });
 
   test("a re-read re-baselines, including backwards", async () => {
-    // "Re-read from disk" after a refusal: the panel deliberately adopts what is
-    // on disk now, and the next write is owed against THAT.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
     writer.rebase({ sha256: "sha_9" });
@@ -167,7 +137,6 @@ describe("the baseline a write carries", () => {
   });
 
   test("`writes` counts only the ones that landed", async () => {
-    // What tells a read that raced a write that its bytes are already stale.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
     writer.rebase({ sha256: file.sha256 });
@@ -180,9 +149,7 @@ describe("the baseline a write carries", () => {
   });
 
   test("a CRLF file gets its carriage returns back", async () => {
-    // The editor works in LF because a textarea cannot hold anything else, so
-    // without this one keystroke rewrites every line ending in the file — a
-    // one-line change arriving in review as a whole-file diff.
+    // The editor works in LF; without this one keystroke rewrites every line ending.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
     writer.rebase({ sha256: file.sha256, newline: "\r\n" });
@@ -213,7 +180,6 @@ describe("the baseline a write carries", () => {
   });
 
   test("the queue survives a failing write", async () => {
-    // A rejected promise left in the chain would deadlock every later write.
     const file = disk();
     const send = file.write();
     const writer = createFileWriter({

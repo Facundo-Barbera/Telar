@@ -27,8 +27,6 @@ describe("decideFollow", () => {
     expect(decideFollow({ mode: "follow", isHost: false, applied: published.updatedAt, answer: published })).toBe("skip");
   });
 
-  // THE HOST NEVER FOLLOWS: it is the publisher, and the packaged desktop
-  // shell is a host even when it is browsing another Mac.
   test("the host window never follows, whatever the store says", () => {
     expect(decideFollow({ mode: "follow", isHost: true, applied: null, answer: published })).toBe("skip");
   });
@@ -43,15 +41,6 @@ describe("decideFollow", () => {
   });
 });
 
-/**
- * WEARING A PUBLICATION KEEPS WHAT IT COST (#705).
- *
- * This is the one path where a Look somebody else made is worn with NOBODY in
- * the loop — no press, no confirmation, no surface to show a sentence beside.
- * The loop used to call `applyLook` and drop its return value on the floor, so
- * "this look's card leaves the tints unreadable" happened silently on exactly
- * the path least able to notice. A DOM, because this is a store.
- */
 describe("wearing what the host published", () => {
   beforeAll(() => {
     GlobalRegistrator.register({ url: "http://localhost/" });
@@ -87,8 +76,7 @@ describe("wearing what the host published", () => {
   });
 
   test("a card no ink lightness can rescue leaves a sentence behind", () => {
-    // The mid-green card: it sits on the state ink's own lightness, so the
-    // fill has nowhere to go and the repair deliberately changes nothing.
+    // Mid-green sits on the state ink's own lightness, so the repair cannot move it.
     wearPublication(look("oklch(0.50 0.10 162)"), () => {});
     expect(readFollowNotice()).toBe(lookTintMessage(["success", "warning", "destructive"]));
   });
@@ -96,7 +84,6 @@ describe("wearing what the host published", () => {
   test("and the next wear that costs nothing CLEARS it", () => {
     wearPublication(look("oklch(0.50 0.10 162)"), () => {});
     expect(readFollowNotice()).toBeDefined();
-    // A near-black card the ink repair CAN answer: nothing to report.
     wearPublication(look("#111111"), () => {});
     expect(readFollowNotice(), "a notice must never outlive the Look it is about").toBeUndefined();
   });

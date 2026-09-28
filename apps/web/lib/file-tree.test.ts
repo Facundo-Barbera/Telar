@@ -1,31 +1,20 @@
-/**
- * The tree's shape, sort, collapse and search — every decision the engine
- * deliberately does not make.
- *
- * Pinned against paths from THIS repository, because the reason single-child
- * collapse exists is `packages/core/src/loom/...` and a fixture of `a/b/c` does
- * not show whether it earns its keep.
- */
+// Uses paths from this repository: single-child collapse exists for `packages/core/src/loom/...`.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, MAX_SEARCH_MATCHES } from "./file-tree";
 
-/** The rendered shape, as `depth:label` — the only thing a reader of these tests
- *  actually cares about. */
 const shape = (paths: string[], expanded: string[] = []) =>
   flattenTree(buildFileTree(paths), new Set(expanded)).map((row) => `${row.depth}:${row.node.name}`);
 
 describe("buildFileTree", () => {
   test("groups by directory and returns the root's children, not a root row", () => {
-    // A row naming the workspace would be one click of overhead on every visit,
-    // and the panel header already names it.
+    // The panel header already names the workspace.
     const tree = buildFileTree(["README.md", "apps/engine/src/git.ts", "apps/engine/src/files.ts"]);
     expect(tree.map((node) => node.name)).toEqual(["apps/engine/src", "README.md"]);
   });
 
   test("directories come before files, and case does not sort into its own block", () => {
-    // A codepoint sort puts every capitalised name above every lowercase one, so
-    // `README.md` ends up nowhere near `package.json`.
+    // A codepoint sort would put every capitalised name above every lowercase one.
     expect(shape(["package.json", "README.md", "zeta.ts", "Alpha.ts", "src/a.ts"], ["src"])).toEqual([
       "0:src",
       "1:a.ts",
@@ -43,12 +32,9 @@ describe("buildFileTree", () => {
 
 describe("single-child collapse", () => {
   test("a chain of directories with one child each becomes one row", () => {
-    // The reason this exists: six rows and six clicks to reach the one directory
-    // that has anything in it.
     const tree = buildFileTree(["packages/core/src/loom/steps/run.ts", "packages/core/src/loom/steps/plan.ts"]);
     expect(tree.map((node) => node.name)).toEqual(["packages/core/src/loom/steps"]);
-    // The PATH stays real — it is what the expansion state and the git status
-    // lookup are keyed on.
+    // The path stays real: expansion state and git status are keyed on it.
     expect(tree[0]!.path).toBe("packages/core/src/loom/steps");
   });
 
@@ -57,7 +43,6 @@ describe("single-child collapse", () => {
   });
 
   test("a directory holding one directory AND a file does not collapse", () => {
-    // The file would become unreachable, which is the bug this guards.
     const tree = buildFileTree(["apps/README.md", "apps/engine/a.ts"]);
     expect(tree.map((node) => node.name)).toEqual(["apps"]);
     expect(tree[0]!.kind === "directory" && tree[0]!.children.map((child) => child.name)).toEqual(["engine", "README.md"]);
@@ -66,8 +51,6 @@ describe("single-child collapse", () => {
 
 describe("flattenTree", () => {
   test("only expanded directories contribute their children", () => {
-    // One level open is the default, which for a rootless tree means: nothing
-    // expanded, top-level rows visible.
     const paths = ["apps/engine/a.ts", "docs/b.md"];
     expect(shape(paths)).toEqual(["0:apps/engine", "0:docs"]);
     expect(shape(paths, ["docs"])).toEqual(["0:apps/engine", "0:docs", "1:b.md"]);
@@ -84,16 +67,12 @@ describe("flattenTree", () => {
 
 describe("matchFiles", () => {
   test("matches the whole path, so a directory name brings back its contents", () => {
-    // Typing `engine` should find `apps/engine/**`, which matching on filenames
-    // alone would not.
     const paths = ["apps/engine/src/git.ts", "apps/web/lib/format.ts", "README.md"];
     expect(matchFiles(paths, "engine").files).toEqual(["apps/engine/src/git.ts"]);
     expect(matchFiles(paths, "format").files).toEqual(["apps/web/lib/format.ts"]);
   });
 
   test("case-insensitive, and a regex metacharacter is just a character", () => {
-    // Somebody typing `(` is looking for a file with a bracket in its name, not
-    // asking for an error state.
     expect(matchFiles(["src/Auth.ts"], "auth").files).toEqual(["src/Auth.ts"]);
     expect(matchFiles(["src/fn(1).ts", "src/a.ts"], "(1)").files).toEqual(["src/fn(1).ts"]);
   });
@@ -104,7 +83,6 @@ describe("matchFiles", () => {
   });
 
   test("capped, with the real total, so the surface can say what it dropped", () => {
-    // A silently truncated search reads as "there are only 400 of these".
     const many = Array.from({ length: MAX_SEARCH_MATCHES + 25 }, (_unused, index) => `src/f${index}.ts`);
     const result = matchFiles(many, "src");
     expect(result.files).toHaveLength(MAX_SEARCH_MATCHES);
@@ -118,7 +96,6 @@ describe("directoryPaths and ancestorsOf", () => {
   });
 
   test("a changed file marks every directory above it", () => {
-    // So a collapsed `apps/` can still say something inside it is dirty.
     expect([...ancestorsOf(["apps/engine/src/git.ts", "README.md"])]).toEqual(["apps", "apps/engine", "apps/engine/src"]);
   });
 

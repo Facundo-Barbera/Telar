@@ -1,21 +1,11 @@
 import type { Subscription } from "@telar/engine-client";
 
-/**
- * The Following state a sidebar holds, and the three rules that make it honest.
- *
- * Extracted from the component so it is testable as itself: every bug this
- * replaced was a state bug — a removal claimed on a failed request, an empty
- * list asserted from a failed read, a stale read resurrecting a deleted row.
- */
+/** The sidebar's Following state, extracted so its state rules are testable. */
 
 /** Subscriptions per coordinator, keyed by `sessionKey`. */
 export type FollowingState = {
   byCoordinator: ReadonlyMap<string, readonly Subscription[]>;
-  /**
-   * How many mutations each coordinator has seen. A read that started before a
-   * delete and resolved after it carries a stale generation and is discarded —
-   * otherwise it would put the removed row back.
-   */
+  /** Mutations seen per coordinator; a read that started before a delete carries a stale generation and is discarded. */
   generation: ReadonlyMap<string, number>;
 };
 
@@ -27,31 +17,22 @@ export const generationOf = (state: FollowingState, key: string): number => stat
 export type FollowingRead = { key: string; subscriptions?: readonly Subscription[]; startedAt: number };
 
 /**
- * Fold reads in.
- *
- * A failed read PRESERVES the last good answer — an empty group claims nothing
- * is followed, and a failure is not evidence of that. A read older than the
- * coordinator's current generation is dropped, so a delete cannot be undone by
- * a request that was already in flight. Coordinators absent from `reads` are
- * dropped: they are no longer pinned.
+ * A failed read preserves the last good answer; a read older than the current generation is
+ * dropped, so an in-flight read cannot undo a delete.
  */
 export function applyReads(
   state: FollowingState,
   reads: readonly FollowingRead[],
   /**
-   * A FULL read represents the whole pinned set, so coordinators absent from it
-   * are no longer pinned and are dropped. A SCOPED read speaks for the
-   * coordinators it names and no others — merging is the only correct fold, or
-   * refreshing one row would delete every other row's state.
+   * `full` represents the whole pinned set, so absent coordinators are dropped;
+   * `scoped` merges only the coordinators it names.
    */
   mode: "full" | "scoped" = "full",
 ): FollowingState {
   const byCoordinator = mode === "scoped" ? new Map(state.byCoordinator) : new Map<string, readonly Subscription[]>();
   const generation = mode === "scoped" ? new Map(state.generation) : new Map<string, number>();
   for (const read of reads) {
-    // MEMBERSHIP IS AUTHORITY for a scoped fold. A full read that dropped this
-    // coordinator did so because it is no longer pinned; a scoped answer that
-    // arrived afterwards must not put it back.
+    // For a scoped fold, a coordinator a full read already dropped must not come back.
     if (mode === "scoped" && !state.byCoordinator.has(read.key)) continue;
     const stale = read.startedAt < generationOf(state, read.key);
     const kept = read.subscriptions !== undefined && !stale ? read.subscriptions : state.byCoordinator.get(read.key);
@@ -62,10 +43,7 @@ export function applyReads(
   return { byCoordinator, generation };
 }
 
-/**
- * Apply an unfollow: drop ONLY what the engine removed, and bump the generation
- * so a read already in flight cannot resurrect it.
- */
+/** Drop only what the engine removed, and bump the generation so an in-flight read cannot resurrect it. */
 export function applyUnfollow(
   state: FollowingState,
   key: string,
@@ -80,13 +58,8 @@ export function applyUnfollow(
 }
 
 /**
- * A synchronous lock, so a second click cannot start a second request.
- *
- * A `useState` updater is NOT a lock: React does not promise to run it before
- * the next event, and StrictMode invokes it twice. This is a plain `Set` on a
- * ref — checked and claimed in the same tick as the click.
- *
- * Keyed by coordinator AND target, so unfollowing one row never blocks another.
+ * A synchronous lock key, since a `useState` updater is not a lock (StrictMode runs it twice).
+ * Keyed by coordinator and target, so one row never blocks another.
  */
 export function lockKey(hostId: string | undefined, coordinatorId: string, targetKey: string): string {
   return `${hostId ?? "local"}:${coordinatorId}:${targetKey}`;
@@ -101,12 +74,10 @@ export function claim(locks: Set<string>, key: string): boolean {
 export const release = (locks: Set<string>, key: string): void => void locks.delete(key);
 
 /**
- * Owns Following state, generations, locks and the read epoch — outside React,
- * because mutating refs inside a `setState` updater is impure (StrictMode
- * invokes updaters twice) and because `live` on an effect guards starting a
- * read, not its completion. A read carries the epoch it began in; an answer
- * from a superseded epoch is dropped.
- */export type FollowingFetch = (session: { id: string; hostId?: string }) => Promise<readonly Subscription[]>;
+ * The controller below lives outside React: mutating refs in a `setState` updater is impure,
+ * and a read carries the epoch it began in so a superseded answer is dropped.
+ */
+export type FollowingFetch = (session: { id: string; hostId?: string }) => Promise<readonly Subscription[]>;
 export type FollowingUnfollow = (session: { id: string; hostId?: string }, subscriptionId: string) => Promise<void>;
 
 export function createFollowingController(onChange: (state: FollowingState) => void) {
@@ -134,21 +105,13 @@ export function createFollowingController(onChange: (state: FollowingState) => v
           return { key: session.key, startedAt, ...(subscriptions ? { subscriptions } : {}) };
         }),
       );
-      // A superseded epoch's answer describes a pinned set that no longer
-      // exists; applying it would reintroduce sessions the rail has dropped.
+      // A superseded epoch's answer would reintroduce sessions the rail has dropped.
       if (started !== epoch) return false;
       publish(applyReads(state, reads));
       return true;
     },
 
-    /**
-     * Start following, then refresh just this coordinator.
-     *
-     * SCOPED: the refresh speaks for one coordinator, so it merges rather than
-     * rebuilding the map, and it does NOT bump the shared epoch — a full read
-     * in flight still describes the pinned set and must not be superseded by a
-     * single row's follow-up.
-     */
+    /** Scoped refresh of one coordinator: merges, and does not bump the shared epoch. */
     async follow(
       coordinator: { id: string; hostId?: string; key: string },
       target: { id: string; key: string },
@@ -160,11 +123,7 @@ export function createFollowingController(onChange: (state: FollowingState) => v
       try {
         const ok = await create(coordinator, target.id).then(() => true, () => false);
         if (!ok) return { started: true, failed: true };
-        /**
-         * A NEW SUBSCRIPTION EXISTS, so every read that began before it is now
-         * stale: bump this coordinator's generation, or a full read already in
-         * flight would resolve with the pre-follow list and erase it.
-         */
+        /** Bump this coordinator's generation, or an in-flight full read would erase the new subscription. */
         const generation = new Map(state.generation);
         generation.set(coordinator.key, generationOf(state, coordinator.key) + 1);
         state = { byCoordinator: state.byCoordinator, generation };

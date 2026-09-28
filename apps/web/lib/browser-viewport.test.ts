@@ -15,9 +15,8 @@ describe("the browser viewport vocabulary", () => {
   });
 
   test("the shared table is grouped, and the older names still resolve", () => {
-    // The host requires this same file, so a preset picked here is never
-    // "custom" there. What is pinned is the table's shape, and that the
-    // hand-written key union in viewport-presets.d.ts has not drifted.
+    // The host requires this same file; the hand-written key union in
+    // viewport-presets.d.ts must not drift from the table.
     const keys: ViewportPresetEntryKey[] = [
       "iphone-se", "iphone-12-pro", "iphone-14-pro-max", "pixel-7", "galaxy-s8-plus",
       "ipad-mini", "ipad-air", "ipad-pro", "surface-pro-7",
@@ -179,11 +178,7 @@ describe("the size fields' keys and the ratio lock", () => {
   });
 });
 
-/**
- * THE DEVICE TOOLBAR'S TWO FIELDS (#473). They commit on submit and on blur,
- * so the rule that matters is which drafts are a size at all: a page relaid
- * out at 1px on the way to 1024 is a page that reflowed for nothing.
- */
+/** The fields commit on submit and blur, so only a complete draft is a size. */
 describe("the device toolbar's size fields", () => {
   test("two whole numbers are a size, clamped like every other way in", () => {
     expect(sizeFromFields("1024", "768")).toEqual({ width: 1024, height: 768 });

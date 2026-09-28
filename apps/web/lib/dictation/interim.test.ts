@@ -1,12 +1,6 @@
 /**
- * THE SPAN, AND EVERY WAY A PERSON CAN INVALIDATE IT (#544).
- *
- * The box here is a STRING with the composer's two writes on it, which is the
- * whole point: every rule this file checks is a rule about offsets and about
- * somebody typing, and none of them needs a microphone, a socket or a DOM to be
- * wrong. The insertion mirrors `insertReference` — spacing added the way a
- * person would have typed it — because the spacing is exactly what a naive span
- * swallows and then loses.
+ * The box is a string written through the same helpers the composer uses; the
+ * spacing `insertReference` adds is what a naive span swallows.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
@@ -14,8 +8,7 @@ import { insertReference } from "@/lib/drag-reference";
 import { replaceTextRange } from "@/lib/composer-tokens";
 import { createDictationWriter, insertedSpan, type DictationBox } from "./interim";
 
-/** A composer that is a string and a caret, writing exactly as the real one
- *  does — the same two helpers `composer-editor.tsx` calls. */
+/** A composer that is a string and a caret, using the helpers `composer-editor.tsx` calls. */
 function box(initial = "", caretAt = initial.length) {
   let draft = initial;
   let caret = caretAt;
@@ -59,8 +52,7 @@ const settled = (text: string) => ({ text, final: true });
 
 describe("insertedSpan", () => {
   test("the words, and not the spacing the composer added around them", () => {
-    // THE ONE THAT MATTERS: a span that swallowed the leading space would lose
-    // it on the first revision and run two words together.
+    // A span that swallowed the leading space would run two words together on revision.
     expect(insertedSpan("fix the test", "fix the test and ", "and")).toEqual({ start: 13, end: 16 });
   });
 
@@ -73,10 +65,7 @@ describe("insertedSpan", () => {
   });
 
   test("text the composer transformed falls back to the whole changed run", () => {
-    // A composer that normalised what it was handed — the words as typed are
-    // nowhere in the draft, so the span is the whole run that appeared. Wider
-    // than it needs to be, and therefore safe: the next revision still only
-    // replaces something this dictation put there.
+    // The words as typed are nowhere in the draft, so the span widens to the whole changed run.
     expect(insertedSpan("", "docs/readme ", "Docs/readme")).toEqual({ start: 0, end: 12 });
   });
 });
@@ -92,7 +81,6 @@ describe("the interim writer", () => {
     expect(composer.read()).toBe("record ");
     writer.write(guess("recording"));
     expect(composer.read()).toBe("recording ");
-    // All three guesses, one word in the box — which is the whole feature.
   });
 
   test("a final settles the words and the next utterance starts after them", () => {
@@ -103,8 +91,7 @@ describe("the interim writer", () => {
     writer.write(settled("fix the failing test"));
     expect(composer.read()).toBe("fix the failing test ");
 
-    // A SECOND UTTERANCE CONTINUES THE SENTENCE rather than replacing it: the
-    // span was forgotten at the final, so this opens a new one at the caret.
+    // The span was forgotten at the final, so this opens a new one at the caret.
     writer.write(guess("and"));
     expect(composer.read()).toBe("fix the failing test and ");
     writer.write(settled("and push it"));
@@ -116,9 +103,7 @@ describe("the interim writer", () => {
     const writer = createDictationWriter(composer.port);
     writer.write(guess("uh"));
     expect(composer.read()).toBe("uh ");
-    // Deepgram finalising the quiet at the end of an utterance. Leaving "uh"
-    // in the box because the frame carried no words would be the wrong read of
-    // the same signal.
+    // Deepgram finalising the quiet at the end of an utterance.
     writer.write(settled(""));
     expect(composer.read()).toBe(" ");
   });
@@ -128,13 +113,8 @@ describe("the interim writer", () => {
     const writer = createDictationWriter(composer.port);
     writer.write(guess("and"));
     writer.write(settled("and spoken"));
-    // Spaced as a paste would be, and nothing the person typed is overwritten.
     expect(composer.read()).toBe("half typed and spoken ");
   });
-
-  /* ---------------------------------------------------------------- *
-   * THE SPAN IS FRAGILE — the half of this file that is the point.
-   * ---------------------------------------------------------------- */
 
   test("somebody typing INSIDE the span drops it, and the guess so far becomes theirs", () => {
     const composer = box();
@@ -142,15 +122,12 @@ describe("the interim writer", () => {
     writer.write(guess("recording"));
     expect(composer.read()).toBe("recording ");
 
-    // A keystroke in the middle of the unconfirmed word. The offsets now mean
-    // something else, and writing through them would eat what they typed.
+    // The offsets now mean something else; writing through them would eat what was typed.
     composer.type("XX", 3);
     expect(composer.read()).toBe("recXXording ");
 
     writer.write(guess("recording now"));
-    // THE GUESS SO FAR IS LEFT ALONE and the new one opens a fresh span at the
-    // caret. Nothing the person typed was destroyed, which is the only
-    // outcome this test exists to force.
+    // The guess so far is left alone and the new one opens a fresh span at the caret.
     expect(composer.read()).toContain("recXX");
     expect(composer.read()).toContain("recording now");
   });
@@ -163,8 +140,7 @@ describe("the interim writer", () => {
     expect(composer.read()).toBe("typed spoken ");
 
     writer.write(settled("spoken words"));
-    // Every character of "typed " survives. A span applied at its old offsets
-    // would have replaced "typed " itself.
+    // A span applied at its old offsets would have replaced "typed " itself.
     expect(composer.read()).toStartWith("typed ");
     expect(composer.read()).toContain("spoken words");
   });
@@ -174,8 +150,7 @@ describe("the interim writer", () => {
     const writer = createDictationWriter(composer.port);
     writer.write(guess("one"));
     composer.type("!", 0);
-    // The new span is live again from the next frame on, so a revision after
-    // the interruption still replaces in place rather than appending forever.
+    // The new span is live again, so later revisions still replace in place.
     writer.write(guess("two"));
     const afterTwo = composer.read();
     writer.write(guess("three"));
@@ -203,9 +178,7 @@ describe("the interim writer", () => {
     const writer = createDictationWriter(composer.port);
     writer.write(guess("said out loud"));
     writer.forget();
-    // The press ended mid-guess. What was heard is the person's draft now.
     expect(composer.read()).toBe("said out loud ");
-    // And a later frame — a new press — opens a span rather than replacing it.
     writer.write(guess("more"));
     expect(composer.read()).toBe("said out loud more ");
   });

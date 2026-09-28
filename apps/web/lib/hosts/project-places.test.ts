@@ -16,8 +16,7 @@ describe("projectPlaces", () => {
   });
 
   test("two Macs' checkouts are two places, each keeping ITS OWN project id", () => {
-    // The whole point: ids are minted per engine, so a destination built from
-    // one Mac's id would open nothing on the other.
+    // Ids are minted per engine, so a destination built from one Mac's id would open nothing on the other.
     expect(projectPlaces([row("host_b", "project_over_there", "mini"), row(undefined, "project_here")])).toEqual([
       { projectId: "project_here" },
       { hostId: "host_b", hostName: "mini", projectId: "project_over_there" },
@@ -33,7 +32,7 @@ describe("projectPlaces", () => {
     const forwards = projectPlaces([row("host_a", "p_a", "studio"), row("host_b", "p_b", "mini")]);
     const backwards = projectPlaces([row("host_b", "p_b", "mini"), row("host_a", "p_a", "studio")]);
     expect(forwards).toEqual(backwards);
-    // By NAME, not by id — the name is what the reader sees on the badge.
+    // By name, not by id: the name is what the reader sees on the badge.
     expect(forwards.map((place) => place.hostName)).toEqual(["mini", "studio"]);
   });
 

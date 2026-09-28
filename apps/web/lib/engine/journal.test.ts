@@ -65,8 +65,7 @@ describe("streaming text", () => {
   });
 
   test("a delta for an unknown item is dropped, not buffered into a placeholder", () => {
-    // Inventing a row here would render a message with no idea what KIND of row
-    // it belongs to. The next snapshot repairs the gap.
+    // The next snapshot repairs the gap; inventing a row would have no kind.
     const [projected] = projectJournal([turn], [], [
       { ...envelope, id: 1, type: "content.delta", itemId: "ghost", stream: "assistant_text", text: "x" },
     ]);
@@ -74,8 +73,7 @@ describe("streaming text", () => {
   });
 
   test("streamed text wins over stored detail while a turn is live", () => {
-    // The engine only folds accumulated text into its projection when an item
-    // closes, so mid-flight the stored detail is deliberately stale.
+    // The engine folds text into its projection only when an item closes.
     const [projected] = projectJournal(
       [turn],
       [item({ id: "i1", detail: { type: "assistant_message", text: "stale" } })],
@@ -85,23 +83,8 @@ describe("streaming text", () => {
   });
 
   /**
-   * #214: LEAVING THE SURFACE MID-REPLY AND COMING BACK MUST NOT LOSE THE
-   * PREFIX, and it did.
-   *
-   * A remount throws the event tail away and re-opens on a snapshot. The
-   * snapshot's cursor is the last event the ENGINE had written — deltas
-   * included — but the engine does not fold streamed text into an item until it
-   * closes, so a live item's stored detail is empty while its cursor is already
-   * stamped past every delta so far. Hydrating from that cursor skips them, and
-   * the reader sees only what arrived after they came back.
-   *
-   * THE SNAPSHOT'S TEXT IS A PREFIX AND DELTAS APPEND TO IT. That is the whole
-   * contract, and it is what both halves of the fix have to honour: the engine
-   * folds an open item's accumulated text at the same high-watermark as the
-   * cursor, and the client seeds `streamedText` from it so the next delta
-   * CONTINUES rather than REPLACES. Asserted against the uninterrupted fold, so
-   * the test says "the same as never having left" rather than restating a
-   * string.
+   * A remount hydrates from a snapshot whose cursor is past every delta so far;
+   * the snapshot's text is a prefix and later deltas append to it.
    */
   test("a remount mid-reply keeps the prefix already streamed", () => {
     const opened: EngineEvent = {
@@ -113,12 +96,8 @@ describe("streaming text", () => {
     const first: EngineEvent = { ...envelope, id: 2, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "Once upon " };
     const second: EngineEvent = { ...envelope, id: 3, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" };
 
-    // Never left: one continuous fold over every event.
     const [uninterrupted] = projectJournal([turn], [], [opened, first, second]);
 
-    // Left after `first` and came back. The snapshot reflects events up to id 2
-    // — so it carries the item and the text streamed into it so far — and the
-    // client tails from 2, which means `second` is the only event it ever sees.
     const [remounted] = projectJournal(
       [turn],
       [item({ id: "i1", streamed: "Once upon ", streamedThrough: 2, detail: { type: "assistant_message", text: "" } })],
@@ -130,9 +109,7 @@ describe("streaming text", () => {
   });
 
   test("a delta already inside the seeded prefix is not applied twice", () => {
-    // The snapshot and the tail are separate reads, so the tail legitimately
-    // re-delivers a delta the prefix already contains. The watermark is what
-    // makes that harmless — without it the two are indistinguishable.
+    // The tail can re-deliver a delta the prefix already contains; the watermark makes that harmless.
     const [projected] = projectJournal(
       [turn],
       [item({ id: "i1", streamed: "Once upon ", streamedThrough: 2, detail: { type: "assistant_message", text: "" } })],
@@ -146,12 +123,8 @@ describe("streaming text", () => {
 
   test("a reconnect's longer prefix is adopted; a repeat of the same one is not", () => {
     /**
-     * REACH, NOT RECENCY. A companion snapshot rides every queue-changing
-     * event, so the SAME prefix arrives again and again — adopting it
-     * unconditionally would rewind a fold that has appended past it. A
-     * reconnect brings a genuinely longer one, and refusing that would lose
-     * every delta between the two watermarks. Whichever reaches further wins,
-     * which is safe because the engine never un-streams text.
+     * Whichever prefix reaches further wins: repeated companion snapshots must not
+     * rewind, and a reconnect's longer one must be adopted.
      */
     const [projected] = projectJournal(
       [turn],
@@ -168,8 +141,6 @@ describe("streaming text", () => {
   });
 
   test("an item that has streamed nothing yet takes its first seed later", () => {
-    // The first snapshot can land before a single delta — `streamed` empty,
-    // watermark real. The next snapshot's prefix must still be adopted.
     const [projected] = projectJournal(
       [turn],
       [item({ id: "i1", streamed: "", streamedThrough: 1, detail: { type: "assistant_message", text: "" } })],
@@ -179,8 +150,6 @@ describe("streaming text", () => {
   });
 
   test("two items streaming at once keep their own prefixes", () => {
-    // Interleaved A/B: B opens and completes while A is still streaming, and A
-    // must not inherit B's text or lose its own to B's snapshot row.
     const [projected] = projectJournal(
       [turn],
       [
@@ -195,9 +164,7 @@ describe("streaming text", () => {
   });
 
   test("a stopped turn keeps the partial text of an item it never closed", () => {
-    // Unified Stop can leave an item `inProgress` forever. The prefix is the
-    // only record of what the reader saw, so it must survive the turn going
-    // terminal — and it is rebuildable from the journal, not only from RAM.
+    // Stop can leave an item `inProgress` forever; the prefix must survive the turn ending.
     const [projected] = projectJournal(
       [{ ...turn, state: "stopped" }],
       [item({ id: "i1", streamed: "half a th", streamedThrough: 2, detail: { type: "assistant_message", text: "" } })],
@@ -207,9 +174,7 @@ describe("streaming text", () => {
   });
 
   test("a closed item's stored text replaces the seed, however long the seed was", () => {
-    // Not "whichever is longer": a provider that rewrites its answer on close
-    // must be able to SHORTEN it. Once the item is closed the stored detail is
-    // the truth, and the streamed prefix stops being consulted.
+    // Once closed, the stored detail wins even when shorter.
     const [projected] = projectJournal(
       [turn],
       [item({ id: "i1", status: "completed", streamed: "a long partial draft", detail: { type: "assistant_message", text: "Short." } })],
@@ -221,7 +186,6 @@ describe("streaming text", () => {
 
 describe("ordering", () => {
   test("items sort by the event id that opened them, not by timestamp", () => {
-    // Two events can share a millisecond; the id is monotonic by construction.
     const [projected] = projectJournal([turn], [], [
       { ...envelope, id: 5, at: 100, type: "item.started", item: item({ id: "late", startedAt: 100, detail: { type: "assistant_message", text: "" } }) },
       { ...envelope, id: 2, at: 100, type: "item.started", item: item({ id: "early", startedAt: 100, detail: { type: "reasoning", text: "" } }) },
@@ -262,13 +226,9 @@ describe("sub-agents", () => {
         { ...envelope, id: 4, type: "task.completed", task: { ...task, state: "completed", resultText: "found it" } },
       ],
     );
-    // Rendered flat, five concurrent agents read as one agent doing five
-    // contradictory things. This split is what `Item.taskId` buys.
     expect(projected!.items.map((row) => row.id)).toEqual(["parent"]);
     expect(projected!.tasks).toHaveLength(1);
     expect(projected!.tasks[0]!.items.map((row: { id: string }) => row.id)).toEqual(["child"]);
-    // The terminal event repeats the whole task; the rows it already collected
-    // must survive that replacement.
     expect(projected!.tasks[0]).toMatchObject({ state: "completed", resultText: "found it" });
   });
 
@@ -279,18 +239,13 @@ describe("sub-agents", () => {
       [],
       [task],
     );
-    // The cold-open path: no events at all, only the two projections. Folding
-    // items first would strand the row on the main timeline permanently.
+    // Cold open: folding items before tasks would strand the row on the main timeline.
     expect(projected!.items).toEqual([]);
     expect(projected!.tasks[0]!.items.map((row: { id: string }) => row.id)).toEqual(["child"]);
   });
 
   test("the roster carries the live copy, so the panel is not reading a stale snapshot", () => {
-    // THE BUG THIS PINS: the transcript folds `task.*` events as they arrive
-    // while the panel took the snapshot's `tasks` array, which only changes when
-    // a tail response happens to carry a new snapshot. Two sub-agents ran in the
-    // conversation while the Agents panel said "Sub-agents appear here as they
-    // work" — a surface reading a list that had not been told yet.
+    // The panel must see `task.*` events as they arrive, not only when a snapshot changes.
     const [projected] = projectJournal(
       [turn],
       [],
@@ -303,9 +258,7 @@ describe("sub-agents", () => {
   });
 
   test("a task whose turn the journal never saw stays in the roster", () => {
-    // Background work is DEFINED by outliving its turn, and `projectJournal`
-    // files a task under the turn that launched it. Dropping what it cannot file
-    // would lose exactly the tasks the panel most needs to keep showing.
+    // Background tasks outlive their turn; dropping unfiled ones loses exactly those.
     const orphan = { ...task, id: "task_b", runId: "run_gone" };
     const roster = taskRoster([task, orphan], [{ ...task, items: [] }]);
     expect(roster.map((entry) => entry.id)).toEqual(["task_a", "task_b"]);
@@ -318,7 +271,6 @@ describe("sub-agents", () => {
       [],
       [{ ...envelope, id: 1, type: "item.started", item: item({ id: "orphan", taskId: "task_missing", detail: { type: "assistant_message", text: "x" } }) }],
     );
-    // An invisible row is worse than a misplaced one.
     expect(projected!.items.map((row) => row.id)).toEqual(["orphan"]);
   });
 });
@@ -359,29 +311,12 @@ describe("turn state", () => {
     expect(projected!.usage?.costUsd).toBe(0.01);
   });
 
-  /**
-   * #71: A WAKE-UP IS VISIBLE FROM THE MOMENT THE REQUEST GOES OUT, not from
-   * its first token.
-   *
-   * The cockpit draws its working indicator on ONE thing — the session's live
-   * turn (`isActiveTurn`, and the executing turn is what `session-cockpit`
-   * passes `live`) — so what the fold makes of the wake-up's opening triple IS
-   * whether anything appears on screen. A background task ending, the model
-   * generating, and a blank screen for the whole gap between them was read
-   * twice as "the task didn't wake you up".
-   *
-   * The engine now opens the turn on the provider's own `requesting`
-   * announcement (see the idle pump in apps/engine/src/driver.ts), so the
-   * triple arrives with NO items behind it — which is exactly the state
-   * asserted here: live, running, started, and nothing to show yet.
-   */
+  /** A wake-up turn is live from the provider's `requesting`, before any items arrive. */
   test("a wake-up with nothing on it yet is still a live turn (#71)", () => {
     const woken: Turn = {
       runId: "run_wake",
       sessionId: "s1",
       sequence: 2,
-      // Opened before the CLI echoed its injected notification, so there is no
-      // prompt to draw — the wake row names the task instead.
       input: "",
       origin: "provider",
       providerReason: { kind: "task_notification", taskId: "task_bg" },
@@ -399,22 +334,14 @@ describe("turn state", () => {
     expect(projected!.items).toEqual([]);
     expect(projected!.state).toBe("running");
     expect(isActiveTurn(projected!.state)).toBe(true);
-    // The indicator's elapsed clock has a start, and its quiet clock a floor —
-    // without these it would read 0s forever, or claim silence since the epoch.
     expect(projected!.startedAt).toBe(10);
     expect(projected!.lastActivityAt).toBe(10);
-    // And it is drawn as a wake, not as a person's message.
     expect(projected!.origin).toBe("provider");
     expect(projected!.wokenBy).toBe("task_bg");
   });
 
   test("a turn opened so LIVE background work could be decided is not drawn as a wake-up (#891)", () => {
-    /**
-     * Same shape, opposite fact. The engine opens this turn because a task it
-     * kept alive past turn end needs a tool call decided — nothing woke the
-     * model and nothing was said. Projected as `wokenBy` it read as
-     * "Sub-agent reported", a sentence about something that did not happen.
-     */
+    /** A turn opened to decide a kept-alive task's tool call was not a wake-up. */
     const claim: Turn = {
       runId: "run_claim",
       sessionId: "s1",
@@ -436,8 +363,6 @@ describe("turn state", () => {
     expect(projected!.decidedForBackgroundWork).toBe(true);
     expect(projected!.askedBy).toBe("task_agent");
     expect(projected!.wokenBy).toBeUndefined();
-    // And through the snapshot path, which is the one a client opening a cold
-    // session reads.
     const [fromSnapshot] = projectJournal([claim], [], []);
     expect(fromSnapshot!.decidedForBackgroundWork).toBe(true);
     expect(fromSnapshot!.askedBy).toBe("task_agent");
@@ -464,8 +389,6 @@ describe("item rendering helpers", () => {
   });
 
   test("labels prefer the engine-stored title over a derived one", () => {
-    // Three clients deriving "what does an edit of src/a.ts say collapsed"
-    // independently is three answers, so the engine derives it once.
     const [projected] = projectJournal(
       [turn],
       [item({ id: "c", title: "engine label", detail: { type: "command_execution", command: { command: "ls" } } })],
@@ -527,7 +450,6 @@ describe("the compaction gesture", () => {
     } as EngineEvent;
     const [fromEvent] = projectJournal([], [], [accepted]);
     expect(fromEvent?.kind).toBe("compact");
-    // An ordinary message carries no kind at all.
     expect(projectJournal([turn], [], [])[0]?.kind).toBeUndefined();
   });
 });
@@ -536,29 +458,19 @@ describe("browser control rows", () => {
   test("human interaction that INTERRUPTED the agent renders as a labeled row inside the turn; the agent resuming and between-turn changes stay off the transcript", () => {
     const [projected] = projectJournal([turn], [], [
       { ...envelope, id: 5, type: "browser.control.changed", controller: "human", interrupted: true },
-      // The agent's side is routine in a shared browser — no "handed back" row.
       { ...envelope, id: 6, type: "browser.control.changed", controller: "agent" },
       { ...envelope, id: 8, type: "browser.control.changed", controller: "idle" },
-      // No runId: a change between turns — live state for the panel mark,
-      // not transcript history.
+      // No runId: a change between turns is live state, not transcript history.
       { at: 2, sessionId: "s1", id: 7, type: "browser.control.changed", controller: "human" },
     ]);
     expect(projected!.items.map((row) => (row.detail.type === "unknown" ? row.detail.label : ""))).toEqual(["You interacted with the browser"]);
     expect(projected!.items.every((row) => row.status === "completed")).toBe(true);
-    // The transcript renders through itemLabel — it must say the sentence,
-    // not the wire type. This is what printed "unknown" on screen.
     expect(projected!.items.map(itemLabel)).toEqual(["You interacted with the browser"]);
     expect(projected!.items.map(itemLabel).join(" ")).not.toMatch(/handed back|took the browser/);
   });
 
   test("touching the browser without interrupting the agent draws nothing", () => {
-    /**
-     * THE NOISE THIS REMOVES: scrolling or clicking in a tab the agent is not
-     * working in used to put "You interacted with the browser" in the
-     * conversation, repeatedly, explaining nothing. The row exists to explain
-     * a deferred or refused agent action; with nothing interrupted there is
-     * nothing to explain.
-     */
+    /** The row explains a deferred or refused agent action; with nothing interrupted it is noise. */
     const [projected] = projectJournal([turn], [], [
       { ...envelope, id: 5, type: "browser.control.changed", controller: "human" },
       { ...envelope, id: 6, type: "browser.control.changed", controller: "idle" },
@@ -579,14 +491,7 @@ describe("browser control rows", () => {
   });
 });
 
-/**
- * #290 — A USAGE LIMIT IS NOT A FAULT, and the fold is where that survives.
- *
- * `failure` was projected as its message alone, so every failure reached the
- * transcript as one undifferentiated string. A limit needs the CODE and the
- * reset time to draw a row that says when it lifts, and both have to arrive by
- * two routes: the snapshot, and the event tail a client watches live.
- */
+/** A limit needs its code and reset time, via both the snapshot and the live tail. */
 describe("a turn waiting out a usage limit", () => {
   const limited: Turn = {
     ...turn,
@@ -641,21 +546,11 @@ describe("a turn waiting out a usage limit", () => {
   });
 });
 
-/**
- * THE MEMOISED PROJECTION (#407).
- *
- * Two claims, and only the first is about correctness: the projector must
- * answer exactly what the fold answers, for every shape the fold handles. The
- * second is the whole point of it existing — a turn whose rows did not move is
- * not folded again, and the identity of the returned object is how that is
- * observable at all.
- */
+/** Must match the plain fold, and hand back the same object for turns whose rows didn't move. */
 describe("createJournalProjector", () => {
   const runTurn = (runId: string, over: Partial<Turn> = {}): Turn => ({ ...turn, runId, state: "completed", ...over });
 
-  /** A journal with something of every kind in it, spread over two turns —
-   *  including the browser diff, which is the one thing the fold carries ACROSS
-   *  turns and therefore the one thing a per-turn projector could get wrong. */
+  /** Includes the browser diff, the one thing the fold carries across turns. */
   const busy = () => {
     const turns: Turn[] = [runTurn("run_1"), runTurn("run_2", { state: "running" })];
     const items: Item[] = [
@@ -668,9 +563,7 @@ describe("createJournalProjector", () => {
     const events: EngineEvent[] = [
       { ...envelope, id: 10, runId: "run_1", type: "browser.state.changed", provider: "attached", tabs: [{ id: "0", url: "https://example.com/", title: "Example", active: true }] },
       { ...envelope, id: 11, runId: "run_2", type: "task.started", task: tasks[0]! },
-      // The DIFF for this one is against the tab set turn 1 established. A
-      // projector folding run_2 alone cannot see event 10, so this row is the
-      // proof that the carry is handed in rather than recomputed.
+      // Diffed against turn 1's tabs, so the carry must be handed in.
       { ...envelope, id: 12, runId: "run_2", type: "browser.state.changed", provider: "attached", tabs: [
         { id: "0", url: "https://example.com/", title: "Example", active: false },
         { id: "1", url: "https://news.ycombinator.com/", title: "Hacker News", active: true },
@@ -688,8 +581,6 @@ describe("createJournalProjector", () => {
   test("the cross-turn tab diff survives being folded a turn at a time", () => {
     const { turns, items, events, tasks } = busy();
     const [, second] = createJournalProjector()(turns, items, events, tasks);
-    // "Opened a tab", not "Closed" and not nothing: the left-hand side of the
-    // diff came from a turn this fold never looked at.
     expect(second!.items.map(itemLabel)).toContain("Opened a tab — Hacker News");
   });
 
@@ -698,7 +589,6 @@ describe("createJournalProjector", () => {
     const project = createJournalProjector();
     const [firstBefore, secondBefore] = project(turns, items, events, tasks);
 
-    // The shape of a quiet tail: the same rows handed back, in a new array.
     const [firstAfter, secondAfter] = project([...turns], [...items], [...events], [...tasks]);
     expect(firstAfter).toBe(firstBefore);
     expect(secondAfter).toBe(secondBefore);
@@ -736,8 +626,7 @@ describe("createJournalProjector", () => {
     const project = createJournalProjector();
     const [first] = project(turns, items, events, tasks);
 
-    // Switched conversation: nothing in common. Then back — and the entry must
-    // have been dropped rather than answering for a journal it never saw.
+    // Switching conversations must drop the cache entry.
     expect(project([runTurn("run_9")], [], [], [])).toHaveLength(1);
     const [again] = project(turns, items, events, tasks);
     expect(again).not.toBe(first);
@@ -752,12 +641,7 @@ describe("createJournalProjector", () => {
 });
 
 describe("passive arrivals", () => {
-  /**
-   * THE DELTA COORDINATOR, 17:58–18:06. Run 386 ran for 7m46s; peer turns 392,
-   * 394 and 397 reached it BUSY, so each was accepted passive, got its row and
-   * completed at once. Drawn as turns of their own they sat under the working
-   * line while 386 ran, and after all of 386 once it stopped.
-   */
+  /** Passive peer turns accepted while a run was busy must not render as turns of their own. */
   const notice = (runId: string, from: string) =>
     ({
       kind: "peer_message",
@@ -797,7 +681,6 @@ describe("passive arrivals", () => {
     const shown = hostPassiveArrivals(projected);
     expect(shown.map((row) => row.runId)).toEqual(["run_386"]);
     expect(shown[0]!.items.map((row) => row.id)).toEqual(["answer_early", "notification_run_392", "notification_run_394", "answer_final", "notification_run_397"]);
-    // The projector caches its folds; the host it handed over is untouched.
     expect(projected[0]!.items.map((row) => row.id)).toEqual(["answer_early", "answer_final"]);
   });
 
@@ -819,7 +702,6 @@ describe("passive arrivals", () => {
       { ...envelope, id: 4, at: 180, runId: "run_399", type: "turn.completed", resultText: "" },
     ] as EngineEvent[];
     const shown = hostPassiveArrivals(projectJournal([host], [said("answer_early", 110)], events));
-    // Arrived after the turn it would have joined had ended: a row of its own.
     expect(shown.map((row) => row.runId)).toEqual(["run_386", "run_399"]);
   });
 
@@ -829,8 +711,6 @@ describe("passive arrivals", () => {
   });
 
   test("arrivals while idle fold into the head of the NEXT turn — the one that handed them over", () => {
-    // Held results for a cohort, recorded completions, reports: none is a turn
-    // the model took, and as rows they read as one wake per worker.
     const idle: Turn = { ...host, state: "completed", completedAt: 105 };
     const next: Turn = { ...turn, runId: "run_398", sequence: 398, input: "[cohort done]", state: "running", acceptedAt: 200, updatedAt: 200, startedAt: 200 };
     const shown = hostPassiveArrivals(projectJournal([idle, ...guests, next], rows, []));

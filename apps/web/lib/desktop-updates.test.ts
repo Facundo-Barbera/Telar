@@ -1,21 +1,10 @@
-/**
- * WHAT THE UPDATE PANE SAYS, AND WHICH BUTTON IT OFFERS.
- *
- * These are the two decisions in that surface, pulled out of the component so
- * they can be checked without a shell to talk to. Both matter more than they
- * look: the sentence is the only place a stalled or failed update is ever
- * explained, and the button is the difference between "install this" and
- * "restart a download that is already running".
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { updateAction, updateLabel, updateStatusHint, updateToast, type UpdateStatus } from "./desktop-updates";
 
 describe("updateStatusHint", () => {
   test("a version it does not have never renders as vundefined", () => {
-    // `version` is optional on the wire, and the shell only learns it from
-    // `update-available` — so a `downloading` broadcast that arrives without one
-    // is a normal event, not a bug to render as a broken string.
+    // `version` is optional on the wire; a `downloading` broadcast without one is normal.
     expect(updateStatusHint({ status: "available" })).toBe("Downloading…");
     expect(updateStatusHint({ status: "downloading", percent: 42 })).toBe("Downloading… 42%");
     expect(updateStatusHint({ status: "downloading", version: "1.2.3", percent: 42 })).toBe("Downloading v1.2.3… 42%");
@@ -23,14 +12,11 @@ describe("updateStatusHint", () => {
 
   test("a percentage is rounded, because 41.99999 is not a thing to show a person", () => {
     expect(updateStatusHint({ status: "downloading", percent: 41.99999 })).toBe("Downloading… 42%");
-    // Absent progress reads as 0% rather than NaN%.
     expect(updateStatusHint({ status: "downloading" })).toBe("Downloading… 0%");
   });
 
   test("a locally packaged build says WHY it will never update", () => {
-    // The honest failure. A build with no feed baked in is not broken and is not
-    // up to date; saying "You're on the latest build" there would be a lie that
-    // takes a while to catch.
+    // A build with no feed is neither broken nor up to date.
     expect(updateStatusHint({ status: "unsupported" })).toContain("packaged locally");
   });
 
@@ -43,16 +29,13 @@ describe("updateStatusHint", () => {
   });
 
   test("a restart in progress says so, in the present tense (#389)", () => {
-    // The state that used to be silence — the seconds between the press and
-    // the quit, which read as a dead button.
     expect(updateStatusHint({ status: "restarting", version: "1.2.3" })).toBe("Restarting to install v1.2.3…");
     expect(updateStatusHint({ status: "restarting" })).toBe("Restarting to install…");
   });
 });
 
 describe("updateAction", () => {
-  /** Every status the shell can broadcast, so a new one cannot be added
-   *  without deciding which of the three controls it draws. */
+  /** Every status the shell can broadcast, so a new one must be mapped deliberately. */
   const EVERY_STATUS: UpdateStatus["status"][] = [
     "checking",
     "available",
@@ -85,8 +68,7 @@ describe("updateAction", () => {
   });
 
   test("idle, failed and unsupported all offer the check", () => {
-    // The glyph for these is the arrow-circle — NOT the download arrow the
-    // idle button used to draw, which is the complaint #389 opens with.
+    // The glyph for these is the arrow-circle, not the download arrow.
     expect(updateAction({ status: "not-available" })).toBe("check");
     expect(updateAction({ status: "error", message: "boom" })).toBe("check");
     expect(updateAction({ status: "unsupported" })).toBe("check");
@@ -94,10 +76,7 @@ describe("updateAction", () => {
   });
 
   test("an update already arriving reports rather than asks", () => {
-    // `available` and `downloading` are things happening TO you. "Check for
-    // updates" there is at best a no-op and at worst restarts a check for
-    // something already on its way down — so the control draws the download
-    // glyph and the press does nothing.
+    // Something already on its way down: the control draws the download glyph and the press does nothing.
     expect(updateAction({ status: "available", version: "1.2.3" })).toBe("download");
     expect(updateAction({ status: "downloading", percent: 10 })).toBe("download");
   });
@@ -125,9 +104,7 @@ describe("updateLabel", () => {
   });
 
   test("a failure of this surface's own calls wins over whatever the shell last said", () => {
-    // The one state nothing else can describe: a rejected IPC call, or a
-    // restart that was accepted and then did not happen. What the update was
-    // doing before that is no longer what the reader needs.
+    // A rejected IPC call, or a restart that was accepted and then did not happen.
     expect(updateLabel({ status: "downloaded", version: "1.2.3" }, "The app has not restarted after 10s. Click to try again.")).toBe(
       "The app has not restarted after 10s. Click to try again.",
     );
@@ -137,8 +114,6 @@ describe("updateLabel", () => {
 
 describe("updateToast", () => {
   test("exactly three moments raise one", () => {
-    // News that arrived without being asked for. A press's own answer is
-    // already on the control that was pressed.
     expect(updateToast({ status: "available", version: "1.2.3" })?.message).toBe("v1.2.3 is available — downloading…");
     expect(updateToast({ status: "downloaded", version: "1.2.3" })?.message).toBe("v1.2.3 downloaded — restart to install.");
     expect(updateToast({ status: "restarting", version: "1.2.3" })?.message).toBe("Restarting to install v1.2.3…");
@@ -151,9 +126,7 @@ describe("updateToast", () => {
   });
 
   test("the key changes only when the news does", () => {
-    // A `downloading` broadcast arrives many times a second and a re-render
-    // arrives whenever React likes; neither may re-raise a toast that has
-    // already been read. Only a new key does that.
+    // `downloading` broadcasts arrive many times a second; only a new key may re-raise a toast.
     const first = updateToast({ status: "downloaded", version: "1.2.3" })!;
     expect(updateToast({ status: "downloaded", version: "1.2.3" })!.key).toBe(first.key);
     expect(updateToast({ status: "downloaded", version: "1.2.4" })!.key).not.toBe(first.key);

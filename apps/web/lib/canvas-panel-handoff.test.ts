@@ -1,13 +1,6 @@
 /**
- * THE REPORTED BUG: "every conversation opens with Run showing".
- *
- * The panel store was already per-session and already started empty, so
- * per-session state was never the cause. The cause is the CANVAS key:
- * `new:<projectId>` is ONE key shared by every new conversation in a project,
- * and creating a session copies it onto the new session. Left in place, the
- * hand-off became a default that every later conversation inherited.
- *
- * These pin both halves — the hand-off still happens, and the canvas forgets.
+ * `new:<projectId>` is one canvas key shared by every new conversation in a
+ * project; the hand-off must copy it onto the session and then clear it.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { beforeEach, describe, expect, test } from "bun:test";
@@ -23,11 +16,8 @@ import {
 
 type Tab = "run" | "changes" | "editor";
 const isTab = (tab: string): tab is Tab => tab === "run" || tab === "changes" || tab === "editor";
-/** The strip as KINDS — the hand-off is about which surfaces travel, not about
- *  which instance ids they took. */
 const kinds = (state: PanelTabState<Tab>) => state.tabs.map((tab) => tab.kind);
 
-/** A localStorage that behaves like the real one, per test. */
 beforeEach(() => {
   const store = new Map<string, string>();
   (globalThis as { window?: unknown }).window = {
@@ -39,7 +29,6 @@ beforeEach(() => {
   };
 });
 
-/** What the cockpit does when the first message creates the session. */
 function handOff(projectId: string, sessionId: string, panel: PanelTabState<Tab>) {
   writePanelTabs(sessionId, panel, 1);
   clearPanelTabs(canvasPanelKey(projectId));

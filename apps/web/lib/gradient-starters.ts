@@ -1,41 +1,11 @@
 /**
- * GRADIENT STARTERS — somewhere to begin, not somewhere to stay (#471).
- *
- * WHAT THIS FILE USED TO BE. Eleven authored mesh compositions, each a flat
- * linear wash under three soft radial blobs, stored as finished CSS strings and
- * referenced by ID. A gradient layer named one of them and that was the whole
- * vocabulary: you could have any gradient you liked as long as it was one of
- * these eleven. "It needs gradient customization. We give a lot of options;
- * what if instead we let the user create them."
- *
- * SO THE TABLE IS SPECS NOW, and a starter is a CHIP THAT FILLS THE EDITOR
- * rather than a kind a layer is locked into. Picking one writes its stops into
- * the layer; the next thing you do is move them. Nothing downstream resolves an
- * id at paint time any more — `composeState` composes from the layer's own spec
- * — so this table is consulted in exactly two places: the chips, and reading an
- * older layer forward (`SCENE_PRESETS` in lib/scene-composer.ts).
- *
- * WHAT THE COLOURS ARE. Each starter's stops are the SAME COLOURS its mesh was
- * built from — the wash's two ends with the three blobs between them, converted
- * out of oklch into the hex a colour input can show — laid along one ramp at the
- * mesh's own angle. So a stored look that named `dusk` still opens in Dusk's
- * palette; what it loses is the mesh's softness, which is the price of a
- * gradient a person can actually take apart.
- *
- * THE CHROMA CEILING SURVIVES, and it is still the whole design constraint: the
- * app's canvas frosts over these at 30-70% opacity, and a gradient with
- * saturated midtones turns body text into a legibility problem. Light halves
- * sit near white with a tint; dark halves near black with one.
+ * Gradient starters: chips that fill the editor with stops, also used to read older preset
+ * layers forward (`SCENE_PRESETS`). Keep chroma low: the canvas frosts over these at 30-70%.
  */
 
 import { MAX_GRADIENT_STOPS, type CustomGradientSpec } from "@telar/engine-client";
 
-/**
- * The spec vocabulary is the FORMAT's, not this app's — a gradient layer
- * carries one, so any client reading a published Look needs the same parser and
- * the same composer. Re-exported here so the editor and the starters are one
- * import, the way scene-composer.ts re-exports the moved scene model.
- */
+/** The spec vocabulary belongs to the format; re-exported so the editor and starters are one import. */
 export {
   composeGradient,
   DEFAULT_GRADIENT_SPECS,
@@ -52,16 +22,12 @@ export {
 export type GradientStarter = {
   id: string;
   label: string;
-  /** What the chip fills the editor with, in each colour state. A starter has
-   *  two halves because the mesh it came from did: a wash tuned for daylight is
-   *  not the one that reads at night. */
+  /** One spec per colour state. */
   light: CustomGradientSpec;
   dark: CustomGradientSpec;
 };
 
-/** Five colours along one ramp, evenly spaced and fully opaque — the shape
- *  every starter has, so the table below is colours and an angle and nothing
- *  else. Per-stop positions and alphas are what EDITING adds. */
+/** Five evenly spaced, fully opaque colours along one ramp. */
 function ramp(angle: number, colors: readonly string[]): CustomGradientSpec {
   const last = colors.length - 1;
   return {

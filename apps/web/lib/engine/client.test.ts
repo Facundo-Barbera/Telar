@@ -4,11 +4,7 @@ import type { Turn } from "@telar/engine-client";
 import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError, OPEN_BUDGET, READ_BUDGET } from "./client";
 import { SessionConnection } from "./session-connection";
 
-/**
- * A wire that counts how many requests are on it AT ONCE — the only number the
- * browser's six-per-origin cap is about. Each call takes a macrotask, so an
- * over-budget caller is genuinely made to wait rather than merely interleaved.
- */
+/** Counts concurrent requests; each call yields a macrotask so over-budget callers really wait. */
 function countingWire(answer: (pathname: string) => unknown = () => ({})) {
   let live = 0;
   let peak = 0;
@@ -38,22 +34,14 @@ describe("engine browser adapter", () => {
   });
 
   test("mints a run id on an origin the browser does not call secure", () => {
-    /**
-     * `crypto.randomUUID` is secure-context only, so it is ABSENT — not
-     * restricted, absent — on a page served over plain HTTP from anything but a
-     * loopback host. Which is every reader who reaches this cockpit by its
-     * address on a network, and the throw landed on the first message of a new
-     * conversation.
-     */
+    // `crypto.randomUUID` is absent off a secure context (plain HTTP, non-loopback).
     const real = crypto.randomUUID;
     Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
     try {
-      // The override has to have TAKEN, or this test passes by testing nothing.
       expect(crypto.randomUUID).toBeUndefined();
       const id = newRunId();
       expect(id).toMatch(/^run_[0-9a-f]{32}$/);
-      // Still a version 4 UUID underneath, from `getRandomValues` — which has no
-      // secure-context restriction — rather than `Math.random`.
+      // Still a v4 UUID, from `getRandomValues`, which works in insecure contexts.
       expect(id[16]).toBe("4");
       expect(newRunId()).not.toBe(id);
     } finally {
@@ -96,12 +84,6 @@ describe("engine browser adapter", () => {
   });
 
   test("continuing releases the held run and submits NOTHING — the prompt is never resent", async () => {
-    /**
-     * The recovery card's primary verb. It is a discard and only a discard:
-     * that clears the engine's held dispatch, and the transcript, the provider
-     * cursor and the record of the interruption all stay exactly where they
-     * are. Whatever runs next is what the person types.
-     */
     const calls: string[] = [];
     await continueAfterAmbiguousTurn(
       {
@@ -113,8 +95,6 @@ describe("engine browser adapter", () => {
       "session_a",
       { runId: "uncertain_run", state: "ambiguous" },
     );
-    // A discard and nothing else. The signature does not even offer `submitTurn`,
-    // so "Continue resends the prompt" is not a regression that can be written.
     expect(calls).toEqual(["discard:session_a:uncertain_run"]);
   });
 
@@ -144,23 +124,12 @@ describe("engine browser adapter", () => {
   test("background reads never spend more than the connection budget (#82)", async () => {
     const wire = countingWire();
     const api = createEngineApi(wire.fetcher);
-    // Six reads asked for at one instant — the shape of a rail pass landing
-    // across an open cockpit's tail, and exactly the cap it used to fill.
     await Promise.all([api.health(), api.projects(), api.inbox(), api.hosts(), api.orientation(), api.sidebarLayout()]);
     expect(wire.peak).toBe(READ_BUDGET);
-    // Every one of them still happened; the budget delays, it never drops.
     expect(wire.urls).toHaveLength(6);
   });
 
   test("the opening read never waits behind the polls (#497)", async () => {
-    /**
-     * THE THREE SERIAL ROUND TRIPS #490's audit measured, in a fixture.
-     *
-     * Opening a conversation issued `/bootstrap` beside the cockpit's
-     * `/projects` and the rail's own pass. Three reads, two slots — and nothing
-     * ordered them, so the one a person was waiting on could be the one that
-     * queued. `/bootstrap` spends `OPEN_BUDGET` now, which no poll can take.
-     */
     const wire = countingWire((pathname) =>
       pathname.includes("/bootstrap")
         ? { session: { id: "session_1" }, turns: [], items: [], tasks: [], requests: [], cursor: 3, events: [], subscriptions: [] }
@@ -168,22 +137,14 @@ describe("engine browser adapter", () => {
     );
     const api = createEngineApi(wire.fetcher);
     await Promise.all([api.health(), api.projects(), api.sessionBootstrap("session_1", { turns: 10 })]);
-    // FIRST WAVE, not third. The two polls filled the ordinary budget and the
-    // open went out anyway.
     expect(wire.urls.slice(0, 3)).toContain("/api/sessions/session_1/bootstrap?turns=10");
     expect(wire.peak).toBe(READ_BUDGET + OPEN_BUDGET);
-    // …and #82's arithmetic still holds: six per origin, minus the three this
-    // cockpit can now spend, leaves three for navigation, which needs one.
+    // Six per origin minus what this cockpit can spend leaves three for navigation.
     expect(6 - wire.peak).toBeGreaterThanOrEqual(3);
   });
 
   test("the opening's slot is its own, and ordinary reads cannot take it (#497)", async () => {
-    /**
-     * The other half of "its own slot": a lane of one that only `/bootstrap`
-     * may enter. Six polls at one instant still peak at two, so the extra slot
-     * is not a third read for everybody — it sits idle unless a conversation is
-     * opening.
-     */
+    // The open lane is reserved for `/bootstrap`; polls cannot take it.
     const wire = countingWire();
     const api = createEngineApi(wire.fetcher);
     await Promise.all([api.health(), api.projects(), api.inbox(), api.hosts(), api.orientation(), api.sidebarLayout()]);
@@ -191,12 +152,6 @@ describe("engine browser adapter", () => {
   });
 
   test("two conversations opening at once still take one slot between them (#497)", async () => {
-    /**
-     * WHY THE OPEN LANE IS ONE AND NOT MORE. A person opens one conversation at
-     * a time, and the rail's warm-ups coalesce onto the same `SessionConnection`
-     * the cockpit reads — so the pathological case is a second opening arriving
-     * mid-first, which queues rather than doubling the engine's work.
-     */
     const wire = countingWire((pathname) => ({
       session: { id: pathname.includes("session_2") ? "session_2" : "session_1" },
       turns: [], items: [], tasks: [], requests: [], cursor: 1, events: [], subscriptions: [],
@@ -217,25 +172,19 @@ describe("engine browser adapter", () => {
       order.push(String(url));
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       live -= 1;
-      // THE FIRST TWO THROW while holding the only two slots. A gate that let
-      // go of a slot only on success would deadlock every read behind them —
-      // the cockpit would go quiet under exactly the engine outage it is
-      // supposed to survive.
+      // These two throw while holding both slots; a gate freeing slots only on success would deadlock.
       if (String(url) === "/api/health") throw new Error("socket died");
       return Response.json({});
     }) as unknown as typeof fetch);
     const results = await Promise.allSettled([api.health(), api.health(), api.projects(), api.inbox(), api.hosts()]);
     expect(peak).toBe(READ_BUDGET);
     expect(results.map((result) => result.status)).toEqual(["rejected", "rejected", "fulfilled", "fulfilled", "fulfilled"]);
-    // FIFO: the two that were asked for first went out first, and the rest
-    // followed in the order their callers queued.
     expect(order).toEqual(["/api/health", "/api/health", "/api/projects", "/api/inbox", "/api/hosts"]);
   });
 
   test("a mutation never waits behind background reads", async () => {
     const wire = countingWire(() => ({ turn: { runId: "run_x" }, replayed: false }));
     const api = createEngineApi(wire.fetcher);
-    // Two reads fill the budget; the click must go out anyway, not third.
     const sent = Promise.all([api.health(), api.projects(), api.submitTurn("session_a", { runId: "run_1", input: "hello" })]);
     await sent;
     expect(wire.urls.slice(0, 3)).toContain("/api/sessions/session_a/turns");
@@ -243,19 +192,11 @@ describe("engine browser adapter", () => {
   });
 
   test("one open cockpit leaves four connections free for navigation (#82)", async () => {
-    /**
-     * THE FIXTURE THE BUDGET IS FOR. A cockpit sitting on a working session
-     * holds its own tail once a second while the rail fans out around it; the
-     * measured freeze was that burst reaching six. Counted here over a full
-     * second's worth of work: the opening read, three tail ticks, and a rail
-     * pass landing across them.
-     */
     const wire = countingWire((pathname) => {
       if (pathname.includes("/bootstrap")) {
         return { session: { id: "session_1" }, turns: [], items: [], tasks: [], requests: [], cursor: 3, events: [], subscriptions: [] };
       }
-      // A quiet tick: the tail asks the journal and is told nothing happened,
-      // so no companion snapshot is fetched and the tick costs ONE request.
+      // A quiet tick costs one request: no companion snapshot.
       return pathname.includes("/events") ? { events: [] } : {};
     });
     const api = createEngineApi(wire.fetcher);
@@ -265,17 +206,13 @@ describe("engine browser adapter", () => {
       cockpit.read(),
       cockpit.read(),
       cockpit.read(),
-      // The rail's own pass, which is where the concurrency actually came from.
       api.liveSessions(),
       api.health(),
       api.inbox(),
     ]);
     expect(wire.peak).toBeLessThanOrEqual(READ_BUDGET);
-    // The number the issue is written in: six per origin, minus what the
-    // cockpit spends, is what an App Router navigation has left to fetch with.
     expect(6 - wire.peak).toBeGreaterThanOrEqual(4);
-    // And the tail itself is ONE read a tick — the three concurrent reads above
-    // coalesce onto the single in-flight hydration, as they always have.
+    // Concurrent reads coalesce onto one in-flight hydration.
     expect(wire.urls.filter((url) => url.includes("session_1")).length).toBeLessThanOrEqual(2);
   });
 

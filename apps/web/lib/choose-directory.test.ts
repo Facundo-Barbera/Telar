@@ -1,10 +1,6 @@
 /**
- * Which picker opens, and what its answer means.
- *
- * The interesting cases are all about the THIRD outcome. A picker has three
- * answers, not two — a path, a deliberate cancel, and "there is no picker here" —
- * and every test below is a place where collapsing cancel into failure would show
- * an error to somebody whose machine is working perfectly.
+ * A picker has three answers: a path, a cancel, and "no picker here".
+ * Cancel must never be reported as a failure.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
@@ -58,10 +54,7 @@ describe("chooseDirectory", () => {
   });
 
   test("a 501 from the server is READ, not discarded", () => {
-    // The platform answer arrives with a non-ok status in some shapes of this
-    // route, and its body is the sentence the dialog needs to show. Dropping the
-    // body because the status was not 200 would replace "macOS only" with a
-    // generic failure.
+    // The platform answer can arrive with a non-ok status, and its body is the message to show.
     return chooseDirectory({}, { bridge: undefined, fetcher: server({ unavailable: "macOS only." }, false) }).then((choice) => {
       expect(choice).toEqual({ unavailable: "macOS only." });
     });

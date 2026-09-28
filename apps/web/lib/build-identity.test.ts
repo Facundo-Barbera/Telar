@@ -11,18 +11,15 @@ const roots: string[] = [];
 const savedCwd = process.cwd();
 
 afterEach(() => {
-  // The route handlers read the REAL `process.cwd()`, so a test that moves it
+  // The route handlers read the real `process.cwd()`, so a test that moves it
   // has to put it back or every later test file inherits a temp directory.
   process.chdir(savedCwd);
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
 /**
- * A layout on disk, because that is all `buildIdentity` reads.
- *
- * `web` stands in for the directory the server runs from — `apps/web` under
- * `next dev`, `<standalone>/apps/web` in a packaged app — and the siblings are
- * placed exactly where each of those two layouts puts them.
+ * `web` stands in for the server's directory: `apps/web` under `next dev`,
+ * `<standalone>/apps/web` in a packaged app.
  */
 function layout(options: { icons?: string[]; productName?: string } = {}): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-build-identity-"));
@@ -69,24 +66,20 @@ describe("build identity", () => {
     const identity = buildIdentity({}, layout({ icons: ["icon-dev.png", "icon.png"], productName: "Telar" }));
     expect(identity.channel).toBe("dev");
     expect(identity.appName).toBe("Telar Dev");
-    // The AMBER icon, for the same reason the dock gets it: a dev shell wearing
-    // the release icon is the thing this whole route exists to prevent.
     expect(path.basename(identity.icon!.path)).toBe("icon-dev.png");
   });
 
   test("the channel comes from the packaging stamp, and only from it", () => {
     expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "nightly" })).channel).toBe("nightly");
     expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "nightly" })).appName).toBe("Telar Nightly");
-    // A stamped build with no channel flag is a build somebody cut…
     expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "" })).channel).toBe("stable");
     expect(buildIdentity({}, packagedWeb({ shortSha: "abc1234" })).appName).toBe("Telar");
-    // …and so is a beta, which has no seat of its own in the wire type.
+    // A beta has no seat of its own in the wire type.
     expect(buildIdentity({}, packagedWeb({ channel: "beta" })).channel).toBe("stable");
   });
 
   test("a --dev package is stamped dev and named Telar Dev; a plain local package is not", () => {
-    // What `package-desktop.sh --dev` writes: packaged, yet a checkout — the
-    // phone must see the same name and amber icon the title bar shows.
+    // What `package-desktop.sh --dev` writes: packaged, yet a checkout.
     const dev = buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "dev" }));
     expect(dev.channel).toBe("dev");
     expect(dev.appName).toBe("Telar Dev");
@@ -104,8 +97,7 @@ describe("build identity", () => {
   });
 
   test("a build with no icon of its own falls back to the default one", () => {
-    // Only the plain icon on disk, on a channel that would have preferred its
-    // own — the packaged case, where no icon-nightly.png has ever existed.
+    // Only the plain icon exists, as in a packaged build.
     const identity = buildIdentity({}, packagedWeb({ channel: "nightly" }, ["icon.png"]));
     expect(path.basename(identity.icon!.path)).toBe("icon.png");
   });
@@ -176,9 +168,6 @@ describe("about routes", () => {
 });
 
 test("the layout is found from the repository root, not only from apps/web", () => {
-  // What broke: every path was a fixed hop count from the process cwd, so a
-  // runner starting at the root resolved `../desktop` outside the repository
-  // and fell back to the defaults. Both entry points must agree.
   // The runner may start in either place, so find the root rather than assume.
   const repoRoot = fs.existsSync(path.join(savedCwd, "apps", "web", "package.json")) ? savedCwd : path.resolve(savedCwd, "..", "..");
   const fromWeb = buildIdentity({}, path.join(repoRoot, "apps", "web"));

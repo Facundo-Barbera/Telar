@@ -1,10 +1,3 @@
-/**
- * The drag payload and the caret splice.
- *
- * Both are pure, and both are where this feature is actually decided: what a
- * reference SAYS once it is in the message, and whether dropping one into a
- * half-written sentence produces something a person would have typed.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
@@ -51,8 +44,7 @@ describe("what a reference says", () => {
     // and backticks are what stop a model reading it as prose.
     const reference = fileReference("apps/web/src/auth.ts");
     expect(reference.text).toBe("`apps/web/src/auth.ts`");
-    // The chip says the basename, because a full path in a 12-character chip is
-    // just the middle of a path.
+    // A full path in a 12-character chip is just the middle of a path.
     expect(reference.label).toBe("auth.ts");
   });
 
@@ -62,9 +54,7 @@ describe("what a reference says", () => {
   });
 
   test("a title's double quotes become single ones, because the chip pattern finds a title BY its quotes", () => {
-    // The #167 regression: an issue literally titled `…marked "In use"…`
-    // dropped as prose, because the inner quotes broke the pattern that turns
-    // the text back into a chip. Sanitized at write time, once.
+    // Inner quotes would break the pattern that turns the text back into a chip.
     const issue = issueReference({ number: 167, title: 'kernel runs elsewhere than the env marked "In use"', url: "https://github.com/o/r/issues/167" });
     expect(issue.text).toBe("#167 \"kernel runs elsewhere than the env marked 'In use'\" (https://github.com/o/r/issues/167)");
     const pull = pullReference({ number: 9, title: 'Revert "the revert"', url: "https://github.com/o/r/pull/9" });
@@ -80,8 +70,6 @@ describe("what a reference says", () => {
   });
 
   test("a sub-agent names itself and says how it ended", () => {
-    // It has no address a tool can fetch, so the reference is the transcript's
-    // own words plus the part you are usually asking about.
     expect(taskReference({ id: "task_1", title: "reviewer", state: "failed" }).text).toBe('the "reviewer" sub-agent (failed)');
   });
 });
@@ -90,9 +78,6 @@ describe("project notes", () => {
   const note = { id: "n-abc123", title: "Deploy", body: "run `bun run ship` from main" };
 
   test("A NOTE CARRIES ITS BODY — a reference that inserted only a title is a link the model cannot follow", () => {
-    // The second and last exception in this module, earned the way the check's
-    // log is: the note lives in the engine's notebook, and there is no address
-    // an ordinary agent could dereference.
     const reference = noteReference(note);
     expect(reference.kind).toBe("note");
     expect(reference.label).toBe("Deploy");
@@ -104,8 +89,7 @@ describe("project notes", () => {
   });
 
   test("a note containing its own fence cannot close the block early", () => {
-    // The rule markdown itself uses: one backtick longer than the longest run
-    // inside. A note ABOUT fenced code is an ordinary note.
+    // One backtick longer than the longest run inside, as markdown itself does.
     const text = noteReference({ id: "n-1", title: "Snippet", body: "```ts\nexport const a = 1;\n```" }).text;
     expect(text).toContain("````note\n```ts\nexport const a = 1;\n```\n````");
   });
@@ -117,7 +101,7 @@ describe("project notes", () => {
   });
 
   test("a title's double quotes become single ones here too, for the same reason", () => {
-    // The chip pattern finds a note BY the quotes around its title.
+    // The chip pattern finds a note by the quotes around its title.
     expect(noteReference({ id: "n-3", title: 'The "why" file', body: "x" }).text).toContain("the \"The 'why' file\" project note (n-3)");
   });
 });
@@ -162,18 +146,13 @@ describe("check references", () => {
   const failing = { name: "test", workflow: "CI", status: "COMPLETED", conclusion: "FAILURE", url: "https://gh/job/1" };
 
   test("a check nobody opened drags as its name, status and URL", () => {
-    // Enough for an agent with `gh` to go and look, which is what every other
-    // reference in this module is.
     expect(checkReference(failing).text).toBe('the "CI / test" check (failure) — https://gh/job/1');
   });
 
   test("A CHECK WITH ITS LOG CARRIES THE LOG, which is the one exception in this file", () => {
-    // Every other reference is an address because the agent can fetch the thing. A
-    // GitHub Actions log needs an authenticated call it cannot make, so a URL alone
-    // turns "fix this failure" into "go and find out what it was, which you cannot".
     const text = checkReference({ ...failing, log: ["FAIL src/a.test.ts", "expected 1, got 2"] }).text;
     expect(text).toContain("its failing log");
-    // FENCED, or a stack trace's backticks and hashes are read as markdown.
+    // Fenced, or a stack trace's backticks and hashes are read as markdown.
     expect(text).toContain("```log\nFAIL src/a.test.ts\nexpected 1, got 2\n```");
   });
 
@@ -191,7 +170,6 @@ describe("check references", () => {
   });
 
   test("all the failures in one drag, and one failure is just that failure", () => {
-    // "CI is red, fix it" is one sentence and one drag rather than five.
     const many = failingChecksReference([failing, { name: "build", status: "COMPLETED", conclusion: "TIMED_OUT" }]);
     expect(many.label).toBe("2 failing checks");
     expect(many.text).toContain("2 failing checks:");

@@ -1,23 +1,8 @@
 "use client";
 
 /**
- * WHAT THIS APP'S PROCESSES ARE DOING, as the cockpit sees it — issue #488.
- *
- * TWO WAYS IN, AND THE ORDER MATTERS. Inside the desktop shell a window asks
- * the main process directly over the preload bridge: one hop, no HTTP, and it
- * keeps working when the cockpit's own server is the thing that is wedged.
- * Everywhere else — a phone, a second browser, the remote host — there is no
- * bridge, and `/api/desktop/metrics` proxies to the shell's loopback control
- * server instead. Same figures, same shape, and the caller does not choose.
- *
- * A LOCAL STRUCTURAL TYPE AND AN ACCESSOR, the shape `desktop-store.ts` and
- * `desktop-updates.ts` use, for the same reason: a global `Window`
- * augmentation would imply the bridge is always there, and in a browser tab it
- * never is.
- *
- * NOTHING HERE TALKS TO THE ENGINE. These are the SHELL's processes — the main
- * process, the GPU, the renderers, the utility children. The engine is one
- * forked sibling among them and its own CPU is a separate question (#457).
+ * The desktop shell's process metrics. Inside the shell this reads over the preload bridge;
+ * elsewhere `/api/desktop/metrics` proxies to the shell's loopback control server.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -26,15 +11,13 @@ import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
 export type ProcessTypeTotal = {
   /** Electron's own `ProcessMetric.type`. */
   type: string;
-  /** That type in a sentence a person reads — "Renderer", not "Tab". */
   label: string;
   count: number;
-  /** Percent of ONE core, so a machine with eight can report 800. */
+  /** Percent of one core, so a machine with eight can report 800. */
   cpuPercent: number;
   memoryKb: number;
-  /** Renderers in this bucket hosting no page anybody can see. Zero for every
-   *  type that is not a renderer, and zero when the shell could not read which
-   *  processes hold a page — absent evidence, never an accusation. */
+  /** Renderers hosting no visible page. Zero for other types and when the shell
+   *  could not tell which processes hold a page. */
   pagelessCount: number;
 };
 
@@ -44,7 +27,6 @@ export type ProcessMetricRow = {
   label: string;
   cpuPercent: number;
   memoryKb: number;
-  /** Electron's name for a utility child — "Network Service", "Audio Service". */
   name?: string;
   serviceName?: string;
   /** Present only for renderers, and only when the shell could tell. */
@@ -54,8 +36,7 @@ export type ProcessMetricRow = {
 export type ProcessMetricsSummary = {
   /** When the sample was taken, ms since epoch on the shell's clock. */
   readAt: number;
-  /** How long the CPU figures average over. ZERO MEANS NO RATE YET — one
-   *  sample cannot be a rate, and 0% would read as an idle app. */
+  /** Averaging window of the CPU figures. Zero means no rate yet, not an idle app. */
   windowMs: number;
   totals: { cpuPercent: number; memoryKb: number; processes: number };
   types: ProcessTypeTotal[];
@@ -63,31 +44,22 @@ export type ProcessMetricsSummary = {
   busiest: ProcessMetricRow[];
 };
 
-/**
- * ONE RENDERER THE SHELL'S WATCHDOG IS WORRIED ABOUT — issue #787.
- *
- * Not a second reading of anything. This is `service-worker-watchdog.js`'s own
- * per-poll decision, pushed out of the main process: a renderer at or above the
- * kill threshold, hosting no page, for two consecutive polls.
- */
+/** A renderer the shell's watchdog flagged: over the kill threshold, hosting no page, for two consecutive polls. */
 export type RunawayRenderer = {
   pid: number;
-  /** Percent of ONE core, over the watchdog's own ~30 s window. */
+  /** Percent of one core, over the watchdog's own ~30 s window. */
   percent: number;
   /** How many consecutive polls it has been hot for. */
   polls: number;
-  /** Whether the shell killed it on this poll. `false` is the case #787 names
-   *  as the worst: sustained, page-less, and deliberately NOT killed because no
-   *  service worker is running without a tab to name it as — so it persists. */
+  /** Whether the shell killed it on this poll; it is not killed when no service
+   *  worker is running without a tab to name it as. */
   killed: boolean;
-  /** The origins that could have been it. Candidates, never an identification —
-   *  Electron gives a service-worker renderer no origin. Empty when none. */
+  /** Candidate origins, never an identification: Electron gives a service-worker renderer no origin. */
   origins: string[];
 };
 
 export type RunawayNotice = {
-  /** The shell's clock when the poll was taken. `0` means the shell has not
-   *  polled yet, which is not the same as "nothing is hot". */
+  /** `0` means the shell has not polled yet, which is not the same as "nothing is hot". */
   at: number;
   renderers: RunawayRenderer[];
 };
@@ -104,13 +76,10 @@ export function desktopMetrics(): MetricsBridge | undefined {
   return (window as unknown as { telarDesktop?: { metrics?: MetricsBridge } }).telarDesktop?.metrics;
 }
 
-/** The load at which the shell's own watchdog calls a page-less renderer a
- *  runaway and kills it (`apps/desktop/service-worker-watchdog.js`). The number
- *  is repeated rather than imported because the cockpit cannot import from the
- *  shell — if it moves there, it moves here, and the test says so. */
+/** Mirrors the kill threshold in `apps/desktop/service-worker-watchdog.js`, which the
+ *  cockpit cannot import; a test keeps them in step. */
 const RUNAWAY_CPU_PERCENT = 80;
 
-/** Read once, from whichever door this build has. */
 export async function readProcessMetrics(): Promise<ProcessMetricsSummary> {
   const bridge = desktopMetrics();
   if (bridge) return bridge.read();
@@ -126,9 +95,7 @@ export async function readProcessMetrics(): Promise<ProcessMetricsSummary> {
   return payload as ProcessMetricsSummary;
 }
 
-/** Percent of one core, for a reader. A busy app reports hundreds; a figure
- *  under 1% is shown as such rather than rounded away to a flat zero, because
- *  "0%" and "almost nothing" are answers to different questions. */
+/** Percent of one core; under 1% shows as "<1%" rather than rounding to zero. */
 export function formatCpu(percent: number): string {
   if (!Number.isFinite(percent) || percent <= 0) return "0%";
   if (percent < 1) return "<1%";
@@ -136,17 +103,8 @@ export function formatCpu(percent: number): string {
 }
 
 /**
- * THE PROCESSES WORTH SAYING SOMETHING ABOUT, hottest first.
- *
- * `runaway` is the case the incident was: a renderer at or above the watchdog's
- * threshold that is hosting no page at all. The shell will kill that one within
- * two polls; naming it is how somebody watching learns the fans are not their
- * build. A process over the threshold WITH a page is `hot` — a real reading,
- * and not something anybody should kill, because it is a page doing work.
- *
- * NOTHING IS FLAGGED WITHOUT A WINDOW. Before the second sample every rate is
- * zero, and a section that announced "nothing is busy" a beat before showing a
- * core pinned would be worse than one that said nothing.
+ * Processes over the threshold, hottest first: `runaway` hosts no page, `hot` does.
+ * Nothing is flagged before a rate window exists, since every rate is zero until then.
  */
 export function concerning(summary: ProcessMetricsSummary | undefined, threshold = RUNAWAY_CPU_PERCENT): { row: ProcessMetricRow; kind: "runaway" | "hot" }[] {
   if (!summary || summary.windowMs <= 0) return [];
@@ -158,25 +116,15 @@ export function concerning(summary: ProcessMetricsSummary | undefined, threshold
 type MetricsState = {
   summary: ProcessMetricsSummary | undefined;
   error: string | undefined;
-  /** Whether this build can report at all. `undefined` until the first answer:
-   *  a section that appeared and vanished would be worse than one that arrives. */
+  /** `undefined` until the first answer, so the section does not appear and vanish. */
   supported: boolean | undefined;
   refresh: () => void;
 };
 
 /**
- * POLL WHILE SOMEBODY IS LOOKING, and not otherwise.
- *
- * A hidden tab is nobody watching, and a background poll every two seconds for
- * the rest of the day is the kind of thing this page exists to find. The gate
- * is `hostVisible()`, not `document.visibilityState`, which the desktop shell
- * pins to "visible" (#834) — see host-visibility.ts.
- *
- * A FAILED FIRST READ WITH NO BRIDGE IS SILENCE, deliberately — it cannot tell
- * "no desktop shell" from "the shell is wedged", and telling somebody browsing
- * the cockpit from a phone that their Mac is broken on the strength of a 503 is
- * the worse of those two guesses. Inside the shell the bridge is proof the
- * surface applies, so there an error is shown.
+ * Polls only while the host is visible (`hostVisible()`, since the desktop shell pins
+ * `document.visibilityState` to "visible"). Without a bridge a failed read is silent, as it
+ * cannot tell "no shell" from "shell wedged".
  */
 export function useProcessMetrics(intervalMs = 2_000): MetricsState {
   const [summary, setSummary] = useState<ProcessMetricsSummary>();
@@ -185,8 +133,7 @@ export function useProcessMetrics(intervalMs = 2_000): MetricsState {
   const inFlight = useRef(false);
 
   const refresh = useCallback(async () => {
-    // Never stack requests: a shell too busy to answer in two seconds is
-    // exactly the condition this page is open to look at.
+    // Never stack requests: a shell too busy to answer is what this page exists to show.
     if (inFlight.current) return;
     inFlight.current = true;
     try {
@@ -211,8 +158,6 @@ export function useProcessMetrics(intervalMs = 2_000): MetricsState {
     const tick = () => {
       if (hostVisible()) void refresh();
     };
-    // Back in front of somebody: answer now rather than up to one interval
-    // later, so the first thing they read is not a stale sample.
     const unsubscribe = subscribeHostVisibility(tick);
     tick();
     const timer = window.setInterval(tick, intervalMs);
@@ -226,31 +171,9 @@ export function useProcessMetrics(intervalMs = 2_000): MetricsState {
 }
 
 /**
- * THE AMBIENT HALF — issue #787.
- *
- * `useProcessMetrics` above polls every two seconds and ONLY while its page is
- * visible, which is right for a page of live figures and is exactly why #488 did
- * not close #787: it draws nothing anywhere else, so the runaway is legible only
- * to somebody already looking at it.
- *
- * SO THIS ONE NEVER POLLS. The shell's watchdog is already deciding "hot, with
- * no page, for two consecutive polls" every thirty seconds in order to kill; the
- * decision is pushed here. No timer, no interval, no `visibilitychange` — and
- * crucially no second caller of `app.getAppMetrics()`, which is a CORRECTNESS
- * constraint rather than a cost (`apps/desktop/process-metrics.js`: the API's
- * baseline is per-API, so a second caller silently retunes the watchdog's
- * thirty-second average).
- *
- * THE SEED IS WHY A MOUNT IS NOT BLIND. A renderer that arrived between polls
- * asks for the last thing the shell said rather than waiting up to thirty
- * seconds for the next one.
- *
- * `undefined` MEANS NOTHING HAS BEEN SAID — an older shell with no bridge, a
- * browser tab, or a shell that has not completed its first poll. It is NOT the
- * same as an empty `renderers`, which is a poll that ran and found nothing, and
- * the two must not draw the same thing for the reason the whole issue exists:
- * a surface that cannot tell "quiet" from "not listening" is one people learn
- * to ignore.
+ * The watchdog's runaway notice, pushed from the shell; never polls, because a second caller
+ * of `app.getAppMetrics()` retunes the watchdog's average. `undefined` means nothing has been
+ * said yet, which is distinct from an empty `renderers`.
  */
 export function useRunawayNotice(): RunawayNotice | undefined {
   const [notice, setNotice] = useState<RunawayNotice>();
@@ -259,12 +182,9 @@ export function useRunawayNotice(): RunawayNotice | undefined {
     const bridge = desktopMetrics();
     if (!bridge?.onRunaway) return;
     let live = true;
-    // Seed first, then subscribe. The other order can drop a poll that lands
-    // between the two calls; this one can only ever replace it with a newer
-    // reading, because the push always carries the shell's latest.
+    // Seed first, then subscribe: the other order can drop a poll that lands between the calls.
     void bridge.runaway?.().then((seed) => {
-      // A push that already landed is newer than the seed the shell answered
-      // with, so it is never overwritten by it.
+      // A push that already landed is newer than the seed.
       if (live) setNotice((held) => (held === undefined ? seed : held));
     }).catch(() => {
       /* a shell that cannot answer says nothing, which is what `undefined` is */

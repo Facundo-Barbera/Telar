@@ -1,12 +1,4 @@
-/**
- * One read per host, shared by every mount.
- *
- * `useInboxPolicy` is mounted by several surfaces at once. Measured in a real
- * browser against a copy of the real store: leaving Settings issued **nine**
- * `/api/inbox` requests in one navigation, the slowest 1.78 s, for one number
- * that changes twice a year — and 27 s when the engine was busy. This pins the
- * sharing, and pins that it cannot cross Macs.
- */
+/** `useInboxPolicy` is mounted by several surfaces at once; one read per host is shared, never across Macs. */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import type { InboxPolicy } from "@telar/engine-client";
@@ -58,8 +50,7 @@ describe("readInboxPolicy", () => {
   });
 
   test("one Mac's policy is never served for another", async () => {
-    // The api follows the address bar, so a cache that ignored the host would
-    // band a remote Mac's rail by this one's window — the #204 family of bug.
+    // The api follows the address bar, so a host-blind cache would band a remote rail by this Mac's window.
     const asked: string[] = [];
     const fetchFor = (hostId: string) => async () => {
       asked.push(hostId);
@@ -83,12 +74,7 @@ describe("readInboxPolicy", () => {
   });
 
   test("a read already in flight cannot overwrite what a save just accepted", async () => {
-    /**
-     * THE ORDER THAT MATTERS: a read starts, the person saves, the engine
-     * accepts — and only then does the older read answer, carrying the value
-     * from before the save. Committing it would put the stale window back for
-     * the whole TTL, on the one screen where somebody just changed it.
-     */
+    /** A read that started before a save must not commit its stale value after the save lands. */
     let release: (policy: InboxPolicy) => void = () => undefined;
     const deferred = new Promise<InboxPolicy>((resolve) => {
       release = resolve;
@@ -100,7 +86,6 @@ describe("readInboxPolicy", () => {
     // Its own callers are handed the authoritative value, not the stale one.
     expect((await reading).autoSettleAfterHours).toBe(48);
 
-    // And a later mount reads 48 without asking again.
     let calls = 0;
     const answer = await readInboxPolicy("local", async () => {
       calls += 1;

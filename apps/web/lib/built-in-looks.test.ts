@@ -1,12 +1,3 @@
-/**
- * THE DEFAULTS — "there should be default settings for the composer".
- *
- * They are a TABLE this build rebuilds every load rather than anything stored,
- * so what is worth pinning is that every one of them is a look the composer can
- * actually wear: a base the derivation reads as a colour, layers that compose,
- * and a palette that stays readable. A default that paints nothing is the worst
- * kind of bug here, because the gallery is where a first-time reader starts.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { parseLook, THEME_TOKENS } from "@telar/engine-client";
@@ -43,8 +34,6 @@ describe("the table", () => {
     }
   });
 
-  /** The identity look IS the default composition, which is what makes "wear
-   *  Telar" and "a fresh install" the same state rather than two near-misses. */
   test("Telar's own base derives Telar's own palette, untouched", () => {
     const telar = BUILT_IN_LOOKS[0]!;
     expect(halfFor(telar.composition.light, "light")).toEqual(TELAR_LIGHT);
@@ -72,15 +61,13 @@ describe("every default is wearable", () => {
   });
 
   test("a tinted default actually moves off the neutral it started from", () => {
-    // A base under the saturation floor derives Telar itself — correct for the
-    // identity look and a silent failure for any other.
+    // A base under the saturation floor derives Telar itself: right for the
+    // identity look, a silent failure for any other.
     for (const look of BUILT_IN_LOOKS.slice(1)) {
       expect(halfFromBase(look.composition.light.base, "light"), look.id).not.toEqual(TELAR_LIGHT);
     }
   });
 
-  /** The owner's derivation test, applied to the shipped table rather than to a
-   *  hue wheel: a default that is not readable is one nobody can use. */
   test("every default keeps every foreground readable, in both states", () => {
     for (const look of BUILT_IN_LOOKS) {
       for (const mode of MODES) {
@@ -94,9 +81,7 @@ describe("every default is wearable", () => {
     }
   });
 
-  /** A recipe naming a preset this build dropped is skipped at load, so any
-   *  look that IS here composes — and a flat one composes to nothing on
-   *  purpose, which is what "no backdrop" means. */
+  /** A flat look composes to nothing on purpose; that is what "no backdrop" means. */
   test("every scenic default composes to something paintable, and a flat one to nothing", () => {
     for (const look of BUILT_IN_LOOKS) {
       const composed = composeComposition(look.composition, look.images);
@@ -106,8 +91,6 @@ describe("every default is wearable", () => {
     }
   });
 
-  /** They go over the wire and into files, so they have to survive the same
-   *  total, gated parse anything else does. */
   test("every default round-trips through the Look parser unchanged", () => {
     for (const look of BUILT_IN_LOOKS) {
       expect(parseLook(JSON.parse(JSON.stringify(look)), SCENE_PRESETS), look.id).toEqual(look);

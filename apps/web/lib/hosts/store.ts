@@ -5,20 +5,9 @@ import { remoteHome } from "@/lib/remote/store";
 import { recordDaemonId, removeHost, renameHost, upsertHost, type Host, type HostsFile } from "./book";
 
 /**
- * WHERE THE OTHER MACS LIVE: `$TELAR_HOME/remote/hosts.json`, beside the
- * pairing store, because it is the same kind of fact — who this cockpit is
- * connected to — read by the same process.
- *
- * SERVER-SIDE, IN THE LOCAL NEXT PROCESS, and that is the design decision of
- * this feature. The browser never holds a remote's device token: every call to
- * another Mac goes through this cockpit's own `/api/hosts/:id/…` proxy, which
- * adds the bearer. That keeps the token out of the renderer, keeps the desktop
- * shell's per-launch host cookie the only credential a window carries, and
- * sidesteps CORS entirely — a remote cockpit never sees a cross-origin request.
- *
- * The token is stored in the clear, with the same reasoning as the engine's
- * own `engine.json`: this directory is mode 0700 on a machine the person owns,
- * and hashing it would leave nothing to send.
+ * `$TELAR_HOME/remote/hosts.json`, read only by the local Next process: the
+ * browser never holds a remote's token, since every call goes through the
+ * `/api/hosts/:id/…` proxy. Stored in the clear in a 0700 directory, like `engine.json`.
  */
 export function hostsPath(): string {
   return path.join(remoteHome(), "hosts.json");
@@ -50,8 +39,7 @@ export function addHost(input: { baseUrl: string; deviceToken: string; name?: st
   const file = readHosts();
   const { hosts, result } = upsertHost(file.hosts, input, Date.now(), () => "host_" + crypto.randomBytes(8).toString("hex"));
   let next = hosts;
-  // A daemonId learned at pairing may name a Mac already in the book under
-  // another address — fold the two rows into one before writing.
+  // A learned daemonId may match a Mac already in the book under another address.
   if (input.daemonId) next = recordDaemonId(next, result.host.id, input.daemonId).hosts;
   writeHosts({ ...file, hosts: next });
   return next.find((host) => host.daemonId === input.daemonId || host.id === result.host.id) ?? result.host;
@@ -80,7 +68,6 @@ export function removeStoredHost(id: string): boolean {
   return true;
 }
 
-/** What a browser may know about a host: everything but the token. */
 export function publicHost({ id, name, baseUrl, daemonId, addedAt }: Host) {
   return { id, name, baseUrl, ...(daemonId ? { daemonId } : {}), addedAt };
 }

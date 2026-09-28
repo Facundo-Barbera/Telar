@@ -1,12 +1,4 @@
-/**
- * WHAT A DISMISS SURVIVES, AND WHAT IT DELIBERATELY DOES NOT.
- *
- * Two claims, and they pull in opposite directions: a dismiss has to outlive a
- * reload (it used to outlive nothing), and it has to NOT outlive the compaction
- * that answered it. Both are about the same key, so they are tested against the
- * same fake store — a Map, the way composer-draft.test.ts does it, so nothing
- * here needs a browser.
- */
+// A dismiss outlives a reload but not the compaction that answered it.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
@@ -35,7 +27,6 @@ describe("the key", () => {
     writeContextNoticeDismissed("session_7", store);
     expect([...store.slots.keys()]).toEqual([KEY]);
     expect(readContextNoticeDismissed("session_7", store)).toBe(true);
-    // Another conversation is another decision.
     expect(readContextNoticeDismissed("session_8", store)).toBe(false);
   });
 
@@ -46,7 +37,6 @@ describe("the key", () => {
   });
 
   test("a store that throws is answered, not propagated", () => {
-    // A browser with storage disabled must not take the composer down with it.
     const hostile: DismissalStorage = {
       getItem: () => {
         throw new Error("denied");
@@ -66,14 +56,12 @@ describe("the key", () => {
 
 describe("the whole rule, as the composer memoises it", () => {
   test("a fresh mount with the key already present shows no banner", () => {
-    // The reload case — the one the old `useState` could not express at all.
     const store = storage({ [KEY]: "1" });
     expect(contextNoticeDismissal({ sessionId: "session_7", heavy: true }, store)).toBe(true);
   });
 
   test("dropping back under the threshold clears the key", () => {
-    // Which is what compacting does. A dismiss is "not this one", not "never
-    // for this session".
+    // A dismiss means "not this one", not "never for this session".
     const store = storage({ [KEY]: "1" });
     expect(contextNoticeDismissal({ sessionId: "session_7", heavy: false }, store)).toBe(false);
     expect(store.slots.size).toBe(0);
@@ -88,12 +76,9 @@ describe("the whole rule, as the composer memoises it", () => {
   });
 
   test("the click that storage has not been re-read for still hides it", () => {
-    // `justDismissed` is what makes the banner leave on the same commit as the
-    // press, before the memo has any reason to re-read the store.
+    // `justDismissed` hides the banner on the same commit, before the store is re-read.
     const store = storage();
     expect(contextNoticeDismissal({ sessionId: "session_7", heavy: true, justDismissed: "session_7" }, store)).toBe(true);
-    // And it is not a blanket suppression: another session's press says nothing
-    // about this one.
     expect(contextNoticeDismissal({ sessionId: "session_7", heavy: true, justDismissed: "session_8" }, store)).toBe(false);
   });
 

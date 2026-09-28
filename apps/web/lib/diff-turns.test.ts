@@ -1,11 +1,3 @@
-/**
- * WHAT ONE TURN REPORTED WRITING — issue #694's third scope.
- *
- * A PURE FOLD over two lists, so none of this needs a repository or a
- * transcript. The cases worth pinning are the ones where the journal and git
- * would disagree, because that disagreement is the reason this scope is a
- * different witness and has to say so.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { Item, Turn } from "@telar/engine-client";
@@ -22,8 +14,6 @@ const turn = (runId: string, sequence: number, input: string): Turn =>
 
 describe("the turns a diff can be scoped to", () => {
   test("only turns that reported writing something appear", () => {
-    // A turn that read and reasoned and wrote nothing is ordinary, and a picker
-    // full of them is a picker nobody can use.
     const turns = diffTurns([
       wrote("run_a", "src/a.ts"),
       item({ runId: "run_b", detail: { type: "file_read", read: { path: "src/b.ts" } } as Item["detail"] }),
@@ -37,8 +27,7 @@ describe("the turns a diff can be scoped to", () => {
   });
 
   test("a declined or failed change never landed, so it is not counted", () => {
-    // The same refusal `journalWrites` makes: counting either would claim the
-    // turn edited a file it did not.
+    // The same refusal `journalWrites` makes.
     const turns = diffTurns([
       item({ runId: "run_a", status: "declined", detail: { type: "file_change", change: { path: "a.ts", kind: "edit" } } as Item["detail"] }),
       item({ runId: "run_a", status: "failed", detail: { type: "file_change", change: { path: "b.ts", kind: "edit" } } as Item["detail"] }),
@@ -48,8 +37,6 @@ describe("the turns a diff can be scoped to", () => {
   });
 
   test("a path written twice in one turn is one row, showing the LAST patch", () => {
-    // Two rows for one file in one turn would be two answers to one question;
-    // the turn's net result is what the reviewer is looking at.
     const turns = diffTurns([
       wrote("run_a", "a.ts", { unifiedDiff: "first" }, 1_000),
       wrote("run_a", "a.ts", { unifiedDiff: "second" }, 2_000),
@@ -59,29 +46,18 @@ describe("the turns a diff can be scoped to", () => {
   });
 
   test("a patch cut at its bound carries the FLAG, not a marker in the text (#694)", () => {
-    /**
-     * §2.5. The bound used to announce itself as `… diff truncated at 12000
-     * characters …` INSIDE the string, which the renderer drops as an
-     * unparseable line — so a clipped patch drew as a complete one. The fold
-     * carries the fact beside the text, and the row reports it through the same
-     * `incomplete` channel a git failure uses.
-     *
-     * BOTH DIRECTIONS: an untruncated patch must say `false`, or the flag is a
-     * constant rather than a claim.
-     */
+    // Both directions: an untruncated patch must say `false`, or the flag is a constant.
     const turns = diffTurns([
       wrote("run_a", "big.ts", { unifiedDiff: "diff --git a/big.ts b/big.ts\n--- a/big.ts", diffTruncated: true }),
       wrote("run_a", "small.ts", { unifiedDiff: "diff --git a/small.ts b/small.ts" }),
     ]);
     expect(turns[0]!.patches.get("big.ts")!.truncated).toBe(true);
     expect(turns[0]!.patches.get("small.ts")!.truncated).toBe(false);
-    // The text itself never carries the claim any more.
     expect(turns[0]!.patches.get("big.ts")!.patch).not.toContain("truncated");
   });
 
   test("the journal's kinds arrive in git's vocabulary", () => {
-    // One row component serves both witnesses, so the status letters have to
-    // mean the same thing in every scope.
+    // One row component serves both witnesses, so the status letters must agree.
     const turns = diffTurns([
       wrote("run_a", "made.ts", { kind: "create" }),
       wrote("run_a", "gone.ts", { kind: "delete" }),
@@ -108,16 +84,13 @@ describe("the turns a diff can be scoped to", () => {
   });
 
   test("a path the tool wrote without a patch has a row and no patch", () => {
-    // The row still belongs in the list — the turn did write it — and the
-    // surface says so rather than drawing an empty diff.
     const turns = diffTurns([wrote("run_a", "a.ts")]);
     expect(turns[0]!.files.map((file) => file.path)).toEqual(["a.ts"]);
     expect(turns[0]!.patches.has("a.ts")).toBe(false);
   });
 
   test("the turn record supplies the number and the prompt; the journal alone does not", () => {
-    // The journal says WHICH run wrote a file and nothing about why, so a fold
-    // with no turn records still works and just cannot name them.
+    // The journal names the run but not the turn, so a fold without turn records cannot name it.
     const items = [wrote("run_a", "a.ts")];
     const unnamed = diffTurns(items)[0]!;
     expect(unnamed.sequence).toBeUndefined();
@@ -128,8 +101,6 @@ describe("the turns a diff can be scoped to", () => {
 
 describe("naming and choosing a turn", () => {
   test("a named turn that is gone falls back to the newest rather than to nothing", () => {
-    // A turn can genuinely disappear — the window slid past it, it was
-    // discarded — and an empty surface with no explanation is the worse answer.
     const turns = diffTurns([wrote("run_new", "a.ts", {}, 5_000), wrote("run_old", "b.ts", {}, 1_000)]);
     expect(turnFor(turns, "run_missing")?.runId).toBe("run_new");
     expect(turnFor(turns, "run_old")?.runId).toBe("run_old");

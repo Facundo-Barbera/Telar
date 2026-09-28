@@ -1,22 +1,8 @@
 "use client";
 
 /**
- * HOW YOU LIKE TO READ A DIFF — four toggles, remembered.
- *
- * NOT IN THE TAB'S PARAMS, and that is the distinction this module exists to
- * draw. A Diff tab's FILTER is its identity: it is what the strip names the tab
- * after, what makes two Diff tabs different, and it is persisted with the
- * panel's arrangement for exactly that reason (#335). Stacked-vs-split is not
- * an identity — it is how this person reads code, and somebody who chose split
- * chose it for every diff they will ever open, in both tabs, in every session.
- * Putting it in the params would mean re-choosing it per tab and per project.
- *
- * SO: localStorage, the same place the Look and the keymap live, under the same
- * `telar:` prefix. This is a preference about a person, not about a document.
- *
- * A PURE PARSE WITH A TOTAL FALLBACK. A corrupt record is a first run, never a
- * surface that will not paint — the rule `readOverrides` and `parseAppearance`
- * already follow.
+ * Diff reading preferences, in localStorage rather than tab params: they belong
+ * to the person, not the tab. A corrupt record parses to defaults.
  */
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
@@ -26,34 +12,17 @@ import type { DiffLayout } from "@/components/session/diff-code-view";
 const STORAGE_KEY = "telar:diff-view";
 
 export type DiffView = {
-  /** Stacked is unified, which is what a narrow panel and a code review both
-   *  default to. Split is opt-in and, once opted into, permanent. */
   layout: DiffLayout;
-  /**
-   * OFF, AND NOT BECAUSE OF WIDTH. Wrapping destroys the column alignment that
-   * makes a split diff readable, and a long line scrolls perfectly well. The
-   * measured line lengths in this repository (p50 49, p90 82, p99 136) are
-   * documentation of what you will see at a given width — never a gate (#694).
-   */
+  /** Off: wrapping breaks split-diff column alignment. */
   wrap: boolean;
-  /**
-   * OFF, because a whitespace-only change is still a change until somebody says
-   * otherwise, and a diff that silently hid one would be the surface lying
-   * about the commit that is about to happen.
-   */
+  /** Off: a whitespace-only change is still a change. */
   ignoreWhitespace: boolean;
-  /**
-   * THE FILE TREE BESIDE THE ROWS (#855). ON, because a review of more than a
-   * handful of files is a directory structure and a flat list hides it; folded
-   * away by somebody reading in a narrow panel, and kept folded for them.
-   */
   tree: boolean;
 };
 
 export const DEFAULT_DIFF_VIEW: DiffView = { layout: "stacked", wrap: false, ignoreWhitespace: false, tree: true };
 
-/** Total: anything unrecognised is the default for that field alone, so one bad
- *  key cannot cost the others. */
+/** Total, per field: one bad key doesn't cost the others. */
 export function parseDiffView(raw: string | null): DiffView {
   if (!raw) return DEFAULT_DIFF_VIEW;
   try {
@@ -80,11 +49,7 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-/**
- * CACHED BY RAW STRING, because `useSyncExternalStore` compares snapshots by
- * identity and a fresh object per read is an infinite render loop — the same
- * note `readAppearance` carries, and the same failure its docs warn about.
- */
+/** Cached by raw string: `useSyncExternalStore` compares by identity, so a fresh object would loop. */
 let cache: { raw: string | null; value: DiffView } | undefined;
 
 function read(): DiffView {

@@ -1,13 +1,4 @@
-/**
- * THE COMPOSITION — the store and the compiler.
- *
- * WHAT IS ACTUALLY BEING GUARDED. Two places where a mistake paints the wrong
- * thing SILENTLY: a compiled stylesheet that restates the default palette, and
- * per-state background lists that drift out of alignment. Neither throws.
- *
- * A DOM, because this IS a store — see scripts/test-dom.mjs for why the suite's
- * preload hands the globals back rather than keeping them.
- */
+// Needs a DOM; scripts/test-dom.mjs explains why the preload hands the globals back.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -42,8 +33,6 @@ afterAll(async () => {
 
 const PIXEL = "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==";
 const starter = GRADIENT_STARTERS[0]!;
-/** What a stack holding that starter paints, per state — a gradient layer
- *  carries its own stops now, so there is no id to resolve at paint time. */
 const preset = { id: starter.id, light: composeGradient(starter.light), dark: composeGradient(starter.dark) };
 
 function composition(overrides: Partial<Composition> = {}): Composition {
@@ -51,18 +40,11 @@ function composition(overrides: Partial<Composition> = {}): Composition {
 }
 
 describe("compileComposition", () => {
-  /**
-   * THE IDENTITY COMPOSITION COMPILES TO NOTHING, which is what keeps
-   * globals.css the single source of the default look. The old theme library
-   * had the same contract as a SPECIAL CASE ("telar" was compared by id); here
-   * it falls out of the rule, because the default base derives exactly the
-   * authored values and a token that matches is not emitted.
-   */
+  /** Keeps globals.css the single source of the default look. */
   test("Telar's own composition emits no stylesheet at all", () => {
     expect(compileComposition(DEFAULT_COMPOSITION)).toBe("");
   });
 
-  /** The token names one block declares, in order. */
   function declared(block: string): string[] {
     return [...block.matchAll(/--([a-z-]+):/g)].map((match) => match[1]!);
   }
@@ -71,18 +53,12 @@ describe("compileComposition", () => {
     return { light, dark };
   }
 
-  /**
-   * "MOVED" IS ASKED OF THE PAIR (#907). A token that differs from neutral in
-   * either state is declared in BOTH, each with its own value — because
-   * `html:root` outranks `.dark`, a token only the light block declares keeps
-   * its light value at night. Tokens neither state moved stay out, which is
-   * what keeps the identity composition compiling to nothing.
-   */
+  /** `html:root` outranks `.dark`, so a token declared only in light would keep
+   *  its light value at night. */
   test("a token moved in one state is declared in both, and unmoved tokens in neither", () => {
     const { light, dark } = blocks(compileComposition(patchOverride(composition(), "light", "border", "#aabbcc")));
     expect(declared(light)).toEqual(["border"]);
-    // The dark block carries dark's OWN value — the neutral one, since dark
-    // did not move — never a copy of light's.
+    // Dark carries its own (neutral) value, never a copy of light's.
     expect(declared(dark)).toEqual(["border"]);
     expect(dark).toContain(`--border: ${TELAR_DARK.border};`);
     expect(light).toContain("--border: #aabbcc;");
@@ -112,25 +88,18 @@ describe("compileComposition", () => {
     expect(light).toContain(`--card: ${TELAR_LIGHT.card};`);
   });
 
-  /** `html:root` is one type selector above globals.css's `:root`, which is how
-   *  the composition wins by construction rather than by ordering. */
+  /** `html:root` is one type selector above globals.css's `:root`, so the composition wins by construction. */
   test("each state writes the selector that outranks the authored tokens", () => {
     const both = patchOverride(patchOverride(composition(), "light", "card", "#111111"), "dark", "card", "#222222");
     const css = compileComposition(both);
-    // A near-black LIGHT card also draws the repaired state vocabulary (#705),
-    // so the block carries more than the token that was set — which is why this
-    // pins the selector and the declaration rather than the whole block. The
-    // dark half of the same pair needs no repair and shows the plain shape.
+    // A near-black light card also draws the repaired state tokens, so pin the
+    // selector and declaration rather than the whole block.
     expect(css).toContain("html:root { --card: #111111; ");
     expect(css).toContain("html:root.dark { --card: #222222; }");
   });
 });
 
-/**
- * THE CACHE OUTLIVES THE COMPILER (#907). A window that stored its stylesheet
- * under the old per-state rule keeps injecting it until something recompiles;
- * this is that something, and it must cost nothing when the cache agrees.
- */
+/** A window's cached stylesheet from an older compiler is replaced; a matching cache costs nothing. */
 describe("recompileStaleCss", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -150,18 +119,8 @@ describe("recompileStaleCss", () => {
   });
 });
 
-/**
- * THE STATE VOCABULARY, REPAIRED FOR A HOSTILE CARD — and for nothing else
- * (#705).
- *
- * The rule's whole claim is that it is INVISIBLE to a Look that merely reads:
- * `repairInk` returns the shipped ink unchanged when the shipped ink already
- * clears both separations, so the compiled stylesheet for everything this build
- * ships is byte-for-byte what it was before the rule existed. The first test is
- * that proof, and the way it fails is the way it has to fail — make the repair
- * fire when readability already holds and the identity composition stops
- * compiling to nothing.
- */
+/** `repairInk` returns the shipped ink unchanged when it already reads, so the
+ *  identity composition still compiles to nothing. */
 describe("compileComposition repairs the ink, never the card", () => {
   const TONES = ["success", "warning", "destructive"] as const;
   const stateDeclarations = (css: string) => TONES.filter((tone) => css.includes(`--${tone}:`));
@@ -174,38 +133,24 @@ describe("compileComposition repairs the ink, never the card", () => {
     expect(BUILT_IN_LOOKS.length).toBeGreaterThan(0);
   });
 
-  /**
-   * A near-black LIGHT card: the fill is a tenth of the ink over black, so the
-   * ink is stranded on its own tint while the card is perfectly legitimate.
-   * All three tones move, and the ONE thing that must not move is the card —
-   * which is the title of this whole issue, so it is asserted rather than
-   * described.
-   */
   test("a card that strands the ink draws the ink, and leaves the card alone", () => {
     const hostile = patchOverride(composition(), "light", "card", "#111111");
     const css = compileComposition(hostile);
     expect(stateDeclarations(css)).toEqual([...TONES]);
-    // The card is emitted EXACTLY as authored, once per state (#907 declares a
-    // moved token in both blocks; dark carries its own, untouched, value).
     expect(css.match(/--card: [^;]+;/g)).toEqual(["--card: #111111;", `--card: ${TELAR_DARK.card};`]);
     expect(compositionHalf(hostile, "light").card).toBe("#111111");
-    // Every declaration the light block drew is the card or a state token.
     const [lightBlock = ""] = css.split("html:root.dark");
     for (const declaration of lightBlock.replace(/^html:root \{ | \}\s*$/g, "").split(" ").filter((part) => part.startsWith("--"))) {
       expect(["--card:", ...TONES.map((tone) => `--${tone}:`)]).toContain(declaration);
     }
-    // The dark half's card is fine, so it draws no state ink of its own.
     expect(css).toContain(`html:root.dark { --card: ${TELAR_DARK.card}; }`);
   });
 
   test("a card no lightness can rescue draws nothing, and names what it cost", () => {
-    // The mid-green card from tint-separation.test.ts: it sits on the ink's own
-    // lightness, so ELEVATION is what fails and the fill has nowhere to go.
+    // The mid-green card sits on the ink's own lightness, so elevation fails with nowhere to go.
     const unrescuable = patchOverride(composition(), "light", "card", "oklch(0.50 0.10 162)");
     expect(stateDeclarations(compileComposition(unrescuable))).toEqual([]);
     expect(strandedTones(unrescuable)).toEqual([...TONES]);
-    // Nothing this build ships strands anything, which is what makes the notice
-    // a report about somebody else's Look rather than about ours.
     expect(strandedTones(DEFAULT_COMPOSITION)).toEqual([]);
     for (const look of BUILT_IN_LOOKS) expect(strandedTones(look.composition), `look ${look.id}`).toEqual([]);
   });
@@ -216,11 +161,7 @@ describe("composeComposition", () => {
     expect(composeComposition(DEFAULT_COMPOSITION, {})).toBeNull();
   });
 
-  /**
-   * THE FORK THE OWNER ANSWERED: per-state lists. Entry n of one state can be
-   * an image where the other's is a gradient, and one shared
-   * `background-size/position/repeat` list cannot serve both.
-   */
+  /** One shared `background-size/position/repeat` list cannot serve an image in one state and a gradient in the other. */
   test("each state carries its own four lists", () => {
     const value = composeComposition(
       {
@@ -235,8 +176,6 @@ describe("composeComposition", () => {
     expect(value?.dark).toBe(preset.dark);
   });
 
-  /** A state with nothing over its base contributes an empty list rather than
-   *  failing the pair — and no lists at all, so the CSS falls through. */
   test("one state may carry a scene while the other is bare", () => {
     const value = composeComposition(patchState(composition(), "light", { layers: [{ type: "gradient", spec: starter.light, opacity: 100 }] }), {});
     expect(value?.light).toBe(preset.light);
@@ -272,8 +211,7 @@ describe("editing a composition", () => {
     expect(compositionHalf(set, "light").card).toBe("#ffffff");
     const cleared = patchOverride(set, "light", "card", undefined);
     expect("card" in cleared.light.overrides).toBe(false);
-    // Handed back to the base, rather than pinned at what the base happened to
-    // say when it was cleared.
+    // Handed back to the base, not pinned at the base's value when cleared.
     expect(compositionHalf(cleared, "light").card).toBe(TELAR_LIGHT.card);
   });
 
@@ -283,14 +221,11 @@ describe("editing a composition", () => {
     expect(compositionHalf(set, "dark").card).toBe(TELAR_DARK.card);
   });
 
-  /** The layers copy across; the BASE does not — it is the one thing the two
-   *  states are never the same about. */
   test("copying layers across leaves the other base alone", () => {
     const light = patchState(composition(), "light", { layers: [{ type: "gradient", spec: starter.light, opacity: 60 }] });
     const copied = copyLayersAcross(light, "light");
     expect(copied.dark.layers).toEqual(light.light.layers);
     expect(copied.dark.base).toBe(DEFAULT_COMPOSITION.dark.base);
-    // A copy, not the same array: editing one state must not edit the other.
     expect(copied.dark.layers).not.toBe(light.light.layers);
   });
 
@@ -303,9 +238,7 @@ describe("editing a composition", () => {
     expect(pruneCompositionImages(shared, images)).toEqual({ a: PIXEL, "orig:a": PIXEL, b: PIXEL });
   });
 
-  /** Reference equality is load-bearing: the store skips re-serialising the
-   *  image map when it has not moved, which is what makes dragging a slider
-   *  cost a few hundred bytes a frame rather than a megabyte. */
+  /** Reference equality lets the store skip re-serialising the image map while a slider drags. */
   test("pruning nothing hands back the same object", () => {
     const images = { a: PIXEL };
     const live = patchState(composition(), "light", { layers: [{ type: "image", id: "a", x: 0, y: 0, scale: 50, opacity: 100, tiled: false }] });
@@ -325,8 +258,6 @@ describe("the store", () => {
     expect(currentComposition().composition).toEqual(value);
   });
 
-  /** THE DERIVED CACHES ARE WRITTEN BY THE APPLY AND NOWHERE ELSE, so they can
-   *  never disagree with the composition they cache. */
   test("both pre-paint caches are written by the same call", () => {
     const value = patchState(patchState(composition(), "light", { base: "#4999b6" }), "light", {
       layers: [{ type: "gradient", spec: starter.light, opacity: 100 }],
@@ -351,8 +282,6 @@ describe("the store", () => {
   test("a stored composition is read back through the total parser", () => {
     window.localStorage.setItem("telar-composition", '{"light":{"base":"red } html { display:none","layers":"junk"}}');
     const read = currentComposition().composition;
-    // The unsafe base is refused and the state falls to Telar's own, rather
-    // than a value that could close a declaration reaching the stylesheet.
     expect(read.light.base).toBe(DEFAULT_COMPOSITION.light.base);
     expect(read.light.layers).toEqual([]);
   });

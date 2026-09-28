@@ -2,10 +2,9 @@ import type { SnapshotWindow } from "@telar/engine-client";
 import { appendJournalEvents } from "./journal";
 import { hydrateSession, tailSession, mergeRows, type HydratedSession, type SessionSyncApi } from "./session-sync";
 
-/** A host/session owns the cursor and its projection together. Surface mounts
- * borrow this state; they never advance a cursor without accepting its rows.
- * Reads coalesce, failures retain the last committed view, and dormant entries
- * are bounded so visiting conversations cannot retain unlimited transcripts.
+/**
+ * Owns a host/session's cursor and projection together; mounts borrow it. Reads coalesce,
+ * failures keep the last committed view, and dormant entries are bounded.
  */
 export class SessionConnection {
   private current?: HydratedSession;
@@ -27,13 +26,7 @@ export class SessionConnection {
     const update = await tailSession(this.api, this.id, previous.cursor, this.window);
     const snapshot = update.snapshot;
     const baseCursor = snapshot?.cursor;
-    /**
-     * NOTHING ARRIVED, SO NOTHING IS REBUILT (#407). A quiet tail brings an
-     * empty page and no companion snapshot, and both the merge and the filter
-     * below are then provably no-ops — but each returns a NEW array, which is a
-     * new value to every `useState` downstream and a full re-fold of the
-     * transcript once a second for a conversation nobody is typing into.
-     */
+    // Nothing arrived: reuse the previous array so downstream state and the fold don't churn.
     const events =
       update.events.length === 0 && baseCursor === undefined
         ? previous.events

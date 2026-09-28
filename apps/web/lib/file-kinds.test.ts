@@ -1,22 +1,12 @@
-/**
- * What a file is, from its name.
- *
- * The rules worth pinning are the ones a plain extension split gets wrong:
- * dotfiles, exact filenames that outrank their extension, and the difference
- * between "no language" and "not text at all" — which the viewer renders as two
- * different screens.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { fileExtension, fileKind } from "./file-kinds";
 
 describe("fileExtension", () => {
   test("a leading dot is a NAME, not an extension", () => {
-    // `.gitignore` treated as extension `gitignore` is how a dotfile ends up
-    // labelled as a language nobody has.
     expect(fileExtension(".gitignore")).toBe("");
     expect(fileExtension(".env")).toBe("");
-    // But a dotfile WITH a real extension still has one.
+    // But a dotfile with a real extension still has one.
     expect(fileExtension(".env.example")).toBe("example");
     expect(fileExtension("a/b/c.test.ts")).toBe("ts");
     expect(fileExtension("Makefile")).toBe("");
@@ -44,8 +34,7 @@ describe("fileKind", () => {
   test("a language carries a shiki id and bytes carry none", () => {
     expect(fileKind("a.ts").lang).toBe("typescript");
     expect(fileKind("a.rs").lang).toBe("rust");
-    // Not text: `lang` absent AND `binary` set, which the viewer needs as two
-    // separate facts — one stops it highlighting, the other stops it reading.
+    // `lang` absent and `binary` set: one stops highlighting, the other stops reading.
     expect(fileKind("logo.png")).toMatchObject({ label: "PNG image", binary: true });
     expect(fileKind("logo.png").lang).toBeUndefined();
     // An SVG is both an image and XML, and the useful half is that it is text.
@@ -70,10 +59,7 @@ describe("fileKind", () => {
   });
 
   test("every tint is a token, so a theme can move it", () => {
-    // These were `text-sky-600 dark:text-sky-400` pairs — a fixed sRGB value
-    // that no theme can reach, spelled twice because one ramp step cannot
-    // serve both canvases. `--tint-*` flips with the scheme by itself, so the
-    // `dark:` half is not merely unnecessary here: its absence is the point.
+    // `--tint-*` flips with the scheme by itself, so no `dark:` half is needed.
     for (const path of ["a.ts", "a.py", "a.rs", "package.json", "a.css"]) {
       expect(fileKind(path).tint, path).toMatch(/^text-tint-[a-z]+$/);
     }
@@ -93,8 +79,7 @@ describe("media kinds", () => {
   });
 
   test("the pdf kind also names the pdf viewer, ungated by data science", () => {
-    // `viewer: "pdf"` is the seam other features (compiled LaTeX output)
-    // route through — panelTabForPath reads it without a dataScience gate.
+    // Other features (compiled LaTeX output) route through `viewer: "pdf"` without a dataScience gate.
     expect(fileKind("out/main.pdf").viewer).toBe("pdf");
     expect(fileKind("data.csv").viewer).toBe("table");
     expect(fileKind("notes.md").viewer).toBeUndefined();

@@ -68,17 +68,7 @@ describe("session hydration", () => {
   });
 
   test("an open item's lower prefix watermark does NOT rewind the tail", async () => {
-    /**
-     * #214. A prefix ending below the cursor looks like a gap and is not: the
-     * engine builds it complete through the same cursor it stamps, so a lower
-     * watermark only means no delta for that item arrived in between.
-     *
-     * REWINDING WOULD COST MORE THAN IT SAVED. The events between the two are
-     * not only deltas — `item.completed` for a row that closed, turn
-     * transitions — and replaying those onto a snapshot that already reflects
-     * them is a far larger claim than dropping a duplicate delta. Dedupe by
-     * event id does not establish it.
-     */
+    /** A prefix ending below the cursor is complete through it; rewinding would replay closed items. */
     const asked: number[] = [];
     const open: Item = {
       id: "i1",
@@ -104,8 +94,6 @@ describe("session hydration", () => {
   });
 
   test("a closed item's leftover prefix changes nothing", async () => {
-    // Its text is authoritative in `detail` from the moment it closed, so a
-    // stale `streamed` beside it is inert rather than a second opinion.
     const asked: number[] = [];
     const closed: Item = {
       id: "i1",
@@ -131,7 +119,6 @@ describe("session hydration", () => {
   });
 
   test("a quiet session's cursor is the snapshot's, not zero", async () => {
-    // Nothing after the stamp: the next tail must ask from 7, not restart.
     const result = await hydrateSession(
       {
         events: async () => ({ events: [] }),
@@ -221,9 +208,7 @@ describe("session hydration", () => {
   });
 
   test("high-frequency item and delta events do NOT trigger a snapshot refetch", async () => {
-    // The load-bearing half of this predicate. A streaming turn emits one delta
-    // per token; refetching a snapshot for each would turn streaming into a
-    // request storm for information the event already carried.
+    // A streaming turn emits one delta per token; a snapshot per delta would storm.
     expect(
       needsSessionSnapshot([{ ...envelope, id: 4, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "x" }]),
     ).toBeFalse();
@@ -247,13 +232,7 @@ describe("session hydration", () => {
   });
 });
 
-/**
- * THE JOURNAL ARRIVES IN PAGES NOW (#494), and a reader that folded the first
- * one and stopped would leave the transcript silently short of what the session
- * actually did. These price the two halves of that: a quiet tick still costs
- * ONE request, and a tick that comes back to a session which ran while the tab
- * slept keeps asking until the engine says there is no more.
- */
+/** A quiet tick costs one request; a tick after a sleep keeps paging until `more` is false. */
 describe("paging the journal", () => {
   const event = (id: number): EngineEvent => ({ ...envelope, id, at: id, type: "turn.started" });
 
@@ -272,8 +251,7 @@ describe("paging the journal", () => {
       session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
     };
     const tail = await tailSession(api, session.id, 10);
-    // KEYSET, not offset: each ask names the last id folded, so a delta landing
-    // mid-walk can neither be skipped nor counted twice.
+    // Keyset, not offset: a delta landing mid-walk can't be skipped or counted twice.
     expect(asked).toEqual([10, 12, 14]);
     expect(tail.events.map((each) => each.id)).toEqual([11, 12, 13, 14, 15]);
     expect(tail.cursor).toBe(15);
@@ -291,20 +269,10 @@ describe("paging the journal", () => {
     const tail = await tailSession(api, session.id, 42);
     expect(calls).toBe(1);
     expect(tail.events).toEqual([]);
-    // The cursor does not move backwards on an empty answer.
     expect(tail.cursor).toBe(42);
   });
 
-  /**
-   * THE CONDITIONAL TICK — issue #586, and the half that fails in a reader's
-   * face if it is got wrong.
-   *
-   * `unchanged` MEANS KEEP WHAT YOU HAVE. The tail runs once a second while a
-   * conversation is open, so a caller that folded "unchanged" as "no events,
-   * reset" would blank a transcript 86,400 times a day. The two arms are
-   * therefore different SHAPES, and these tests assert the shape rather than
-   * the emptiness.
-   */
+  /** `unchanged` means keep what you have; folding it as an empty reset would blank the transcript. */
   describe("the conditional tick (#586)", () => {
     test("an unchanged tail asks once, folds nothing, and keeps the cursor", async () => {
       let conditional = 0;
@@ -321,10 +289,8 @@ describe("paging the journal", () => {
         session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
       };
       const tail = await tailSession(api, session.id, 42, undefined, 'W/"events-9-42-200"');
-      // THE SAVING, COUNTED: the expensive read is not made at all.
       expect(conditional).toBe(1);
       expect(unconditional).toBe(0);
-      // ...and the answer says "nothing moved" rather than "there is nothing".
       expect(tail.unchanged).toBe(true);
       expect(tail.events).toEqual([]);
       expect(tail.cursor).toBe(42);
@@ -332,8 +298,7 @@ describe("paging the journal", () => {
     });
 
     test("with NO tag to spend it is the unconditional tail, unchanged from before", async () => {
-      // The first tick of a session, and every tick against an engine too old
-      // to mint a tag. `unchanged` must be absent, not false-y by accident.
+      // `unchanged` must be absent, not falsy by accident.
       let unconditional = 0;
       const api = {
         events: async () => {
@@ -352,12 +317,7 @@ describe("paging the journal", () => {
     });
 
     test("a conditional page that is FULL still pages the rest", async () => {
-      /**
-       * THE CASE THE SAVING MUST NOT BREAK. A tab that slept through a long
-       * turn comes back with a tag AND a backlog: the conditional ask answers
-       * a page with `more`, and the walk has to continue from where it reached
-       * or the transcript is silently short — #494's whole argument.
-       */
+      /** A tag plus a backlog: the drain continues from the conditional page. */
       const asked: number[] = [];
       const api = {
         events: async (_sessionId: string, after: number) => {
@@ -372,7 +332,6 @@ describe("paging the journal", () => {
         session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
       };
       const tail = await tailSession(api, session.id, 10, undefined, 'W/"events-10-10-200"');
-      // The drain resumed from the conditional page's last id, not from `after`.
       expect(asked).toEqual([12]);
       expect(tail.events.map((each) => each.id)).toEqual([11, 12, 13, 14]);
       expect(tail.cursor).toBe(14);
@@ -381,8 +340,6 @@ describe("paging the journal", () => {
   });
 
   test("an engine that never sends `more` is read exactly as it always was", async () => {
-    // A REMOTE host may predate the paged route. Absent must mean "that was
-    // everything" — the meaning it had before the field existed.
     let calls = 0;
     const api = {
       events: async () => {
@@ -396,8 +353,6 @@ describe("paging the journal", () => {
   });
 
   test("a page that claims `more` but moves nothing ends the walk instead of spinning", async () => {
-    // The one way this loop could fail to terminate: re-asking from a cursor
-    // that never advances. A tick runs once a second — it may not hang.
     let calls = 0;
     const api = {
       events: async () => {
@@ -412,12 +367,7 @@ describe("paging the journal", () => {
   });
 
   test("the cursorless fallback walks to the END of the journal, not to the end of page one", async () => {
-    /**
-     * An engine too old to stamp a snapshot cursor makes `hydrateSession` ask
-     * the journal where it ends. A page answers from the BEGINNING, so reading
-     * one and taking its last id would tail from event 2 and re-fold the whole
-     * history — the exact cost paging exists to remove.
-     */
+    /** A page answers from the beginning, so a pre-cursor engine must drain to find the end. */
     const asked: number[] = [];
     const pages = [
       { events: [event(1), event(2)], more: true },
@@ -485,7 +435,6 @@ describe("mergeOlderPage", () => {
     };
     const merged = mergeOlderPage(current, page);
     expect(merged.turns.map((t) => t.runId)).toEqual(["run_1", "run_2", "run_3"]);
-    // The row that stays is CURRENT's — the fresher read of a settling turn.
     expect(merged.turns[1]).toBe(freshRun2);
     expect(merged.items.map((i) => i.id)).toEqual(["i_1", "i_2"]);
   });
@@ -499,10 +448,6 @@ describe("mergeOlderPage", () => {
   });
 });
 
-/**
- * THE ONE-READ OPENING, AND THE QUIET TICK (#407) — the two halves of what made
- * switching conversations cost more than it had to.
- */
 describe("opening in one read", () => {
   test("asks once where the engine offers it, and still meets the journal exactly", async () => {
     const calls: string[] = [];
@@ -531,19 +476,15 @@ describe("opening in one read", () => {
     };
 
     const result = await hydrateSession(api, session.id, { turns: INITIAL_TURNS });
-    // ONE call, and neither of the two it replaces.
     expect(calls).toEqual([`bootstrap:${INITIAL_TURNS}`]);
     expect(result.events).toEqual([started]);
-    // The cursor a tail resumes from is the higher of the snapshot's stamp and
-    // the journal it came with — the same arithmetic as the two-call path.
+    // Tail resumes from the higher of the snapshot's stamp and its journal.
     expect(result.cursor).toBe(2);
     expect(result.turns[0]?.state).toBe("running");
     expect(result.subscriptions).toEqual([]);
   });
 
   test("an engine without the route is not a failed switch", async () => {
-    // A remote Mac may be older than this route. The two-call path is the
-    // fallback, not an error — a 404 per switch would be worse than the wait.
     const calls: string[] = [];
     const api = {
       events: async (_sessionId: string, after: number) => {
@@ -562,21 +503,9 @@ describe("opening in one read", () => {
 });
 
 /**
- * #214 (1): LEAVING A CONVERSATION MID-REPLY AND COMING BACK.
- *
- * The two halves of the fix are tested apart — the engine folds an open item's
- * streamed text into the snapshot at the same watermark it stamps the cursor,
- * and the client's fold seeds `streamedText` from it (journal.test.ts). Neither
- * test exercises the JOIN, which is where a remount actually lives: the prefix
- * comes from one read and the deltas from another, and the only thing keeping
- * them from overlapping or from leaving a hole is that the cursor hydration
- * tails from is the watermark the prefix runs through.
- *
- * So this drives the real sequence — hydrate, fold — against a journal, with
- * the snapshot DERIVED from that journal exactly as the engine derives it. A
- * hand-typed prefix would agree with a hand-typed cursor whatever either of
- * them said; deriving both means an off-by-one in either direction shows up as
- * a duplicated or missing chunk.
+ * The join between snapshot prefix and tailed deltas, with the snapshot derived
+ * from the journal as the engine derives it, so an off-by-one shows as a
+ * duplicated or missing chunk.
  */
 describe("a remount mid-stream", () => {
   const open: Item = {
@@ -585,8 +514,7 @@ describe("a remount mid-stream", () => {
     sessionId: "session_1",
     status: "inProgress",
     startedAt: 1,
-    // Empty until it closes: the engine does not rewrite the whole document per
-    // token, so mid-flight the stored detail is deliberately stale.
+    // The engine doesn't rewrite detail per token, so mid-flight it is stale.
     detail: { type: "assistant_message", text: "" },
   };
   const journal: EngineEvent[] = [
@@ -599,8 +527,7 @@ describe("a remount mid-stream", () => {
   ];
   const live: Turn = { ...turn, state: "running" };
 
-  /** What the engine's `openItemPrefix` builds: the deltas written for an open
-   *  item THROUGH a cursor, and the id of the last one that counted. */
+  /** Mirrors the engine's `openItemPrefix`. */
   const snapshotAt = (cursor: number) => {
     const deltas = journal.filter((event) => event.id <= cursor && event.type === "content.delta" && event.itemId === "i1");
     const last = deltas.at(-1);
@@ -623,8 +550,6 @@ describe("a remount mid-stream", () => {
   const tailFrom = (after: number) => ({ events: journal.filter((event) => event.id > after) });
   const textOf = (turns: ReturnType<typeof projectJournal>) => itemText(turns[0]!.items[0]!);
 
-  // Never left: one fold over the whole journal, which is what the reader saw
-  // before they switched away and what they must see when they come back.
   const uninterrupted = textOf(projectJournal([live], [], journal));
 
   test("the snapshot's prefix and the deltas since reproduce the reply exactly, in one read or two", async () => {
@@ -638,7 +563,6 @@ describe("a remount mid-stream", () => {
       );
       expect(textOf(projectJournal(two.turns, two.items, two.events))).toBe(uninterrupted);
 
-      // …and through the one-read opening, which is the path a switch takes.
       const one = await hydrateSession(
         {
           events: async (_id: string, after: number) => tailFrom(after),
@@ -652,14 +576,7 @@ describe("a remount mid-stream", () => {
   });
 
   test("a tail that re-delivers what the prefix already holds does not double it", async () => {
-    /**
-     * THE OVERLAP IS EXPECTED, NOT A BUG: the snapshot and the journal are
-     * separate reads, and the engine stamps the cursor BEFORE the snapshot so
-     * the tail overlaps rather than gaps. Here the tail is asked from a point
-     * BELOW the prefix's watermark — a conservative client, or an engine whose
-     * stamp lagged — and the watermark is the only thing that tells a delta
-     * already inside the prefix from a new one.
-     */
+    /** Tail asked from below the prefix's watermark; the watermark separates old deltas from new. */
     const snapshot = snapshotAt(5);
     const hydrated = await hydrateSession(
       { events: async () => tailFrom(2), session: async () => snapshot },
@@ -669,8 +586,6 @@ describe("a remount mid-stream", () => {
   });
 
   test("switching back twice during the same reply is the same answer each time", async () => {
-    // Each return is its own hydrate against a further-along snapshot; none of
-    // them may rewind, duplicate, or restart the text.
     const api = (cursor: number) => ({
       events: async (_id: string, after: number) => tailFrom(after),
       session: async () => snapshotAt(cursor),
@@ -688,15 +603,9 @@ describe("mergeRows", () => {
   const id = (row: Turn) => row.runId;
 
   test("a merge that changed nothing hands back the array it was given", () => {
-    /**
-     * The quiet second of a tail: the same row objects arrive again because no
-     * companion snapshot was fetched. A fresh array of identical rows is still
-     * a new value to `useState`, and that is a whole cockpit re-render and a
-     * whole transcript re-fold for a conversation that did not move.
-     */
+    /** A quiet tick returns the same rows; a new array would re-render the whole cockpit. */
     const held = [a, b];
     expect(mergeRows(held, [a, b], id)).toBe(held);
-    // …including when the fresh read carries only some of what is held.
     expect(mergeRows(held, [b], id)).toBe(held);
   });
 
@@ -716,19 +625,7 @@ describe("mergeRows", () => {
   });
 });
 
-/**
- * THE CADENCE PREDICATE — #490.
- *
- * `session-cockpit.tail-cadence.test.tsx` proves the mounted cockpit actually
- * spends fewer requests, which is the claim that matters; this covers the
- * decision itself across every turn state, which a timing test cannot do
- * without one window per state.
- *
- * THE STATE LIST IS EXHAUSTIVE ON PURPOSE. A state added to the protocol and
- * not considered here would silently take the settled branch — a turn that
- * streams while the cockpit watches it every three seconds. Whoever adds one
- * should have to come here.
- */
+/** The state list is exhaustive so a new turn state doesn't silently take the settled branch. */
 describe("how fast the cockpit should tail a conversation in this state", () => {
   const at = (state: Turn["state"]): Turn => ({
     runId: `run_${state}`,
@@ -744,20 +641,11 @@ describe("how fast the cockpit should tail a conversation in this state", () => 
     expect(tailIntervalMs([])).toBe(TAIL_SETTLED_MS);
   });
 
-  /** `isActiveTurn`'s three, including `queued`: a backlog is in motion even
-   *  before the engine claims it, and its position changes as the one ahead
-   *  finishes. */
   test.each([["queued"], ["claimed"], ["running"]] as const)("a %s turn is live, so 1s", (state: Turn["state"]) => {
     expect(tailIntervalMs([at(state)])).toBe(TAIL_LIVE_MS);
   });
 
-  /**
-   * `steering` AND `steered` READ AS SETTLED HERE, and that is correct rather
-   * than an oversight: a steering turn is a message being promoted INTO the
-   * running turn, so the running turn is in `turns` beside it and carries the
-   * cadence. On its own — which the engine's sweep makes transient — there is
-   * nothing streaming to watch.
-   */
+  /** A steering turn's running turn carries the cadence beside it. */
   test.each([["completed"], ["failed"], ["stopped"], ["ambiguous"], ["discarded"], ["steering"], ["steered"]] as const)(
     "a %s turn is not, so 3s",
     (state: Turn["state"]) => {
@@ -773,8 +661,7 @@ describe("how fast the cockpit should tail a conversation in this state", () => 
     expect(tailIntervalMs([at("completed"), at("failed"), at("running")])).toBe(TAIL_LIVE_MS);
   });
 
-  /** The numbers themselves, pinned. The mounted test derives its windows from
-   *  these constants, so without this nothing would notice them both moving. */
+  /** The mounted cadence test derives its windows from these constants. */
   test("and the two periods are the ones iOS uses", () => {
     expect(TAIL_LIVE_MS).toBe(1_000);
     expect(TAIL_SETTLED_MS).toBe(3_000);

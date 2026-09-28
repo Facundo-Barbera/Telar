@@ -69,8 +69,6 @@ describe("parseAppearance", () => {
     expect(parseAppearance(JSON.stringify({ depth: "deep" })).depth).toBe("deep");
   });
 
-  // Every value stored before the elevation ladder existed is one of these,
-  // and a total parser has to read them as "soft" rather than as broken.
   test("a missing or unrecognised depth is soft", () => {
     expect(parseAppearance("{}").depth).toBe("soft");
     expect(parseAppearance(JSON.stringify({ depth: "deeper" })).depth).toBe("soft");
@@ -79,13 +77,7 @@ describe("parseAppearance", () => {
   });
 });
 
-/**
- * THE PRE-PAINT SCRIPT IS A SECOND PARSER and it cannot import the first one —
- * it is a dependency-free string inlined in <head>, and a depth applied one
- * render late is a flat app that visibly gains its shadows on every launch.
- * These run it the way the browser does and read the attributes back off a
- * stand-in <html>.
- */
+/** The pre-paint script is a separate dependency-free parser inlined in <head>; these run it and read the attributes back. */
 describe("APPEARANCE_INIT_SCRIPT and data-depth", () => {
   function runWith(stored: unknown): { get: (name: string) => string | null } {
     const attributes = new Map<string, string>();
@@ -107,8 +99,7 @@ describe("APPEARANCE_INIT_SCRIPT and data-depth", () => {
     expect(runWith({ depth: "flat" }).get("data-depth")).toBe("flat");
   });
 
-  // The default writes NOTHING, so globals.css stays the single source of the
-  // default look — the same contract accent and the typefaces live under.
+  // The default writes nothing so globals.css stays the single source of the default look.
   test("writes nothing for soft, for a missing value, or for junk", () => {
     expect(runWith({ depth: "soft" }).get("data-depth")).toBeNull();
     expect(runWith({}).get("data-depth")).toBeNull();

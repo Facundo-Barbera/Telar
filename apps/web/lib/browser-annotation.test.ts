@@ -1,11 +1,3 @@
-/**
- * THE ANNOTATION MODEL (#474).
- *
- * Pure, so all of it is testable: the marks a person leaves on a frozen frame,
- * the element under the pointer, and the text block "Send to agent" writes.
- * The canvas that DRAWS these lives in the overlay component; nothing here
- * touches one.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
@@ -42,7 +34,6 @@ describe("the marks a person leaves", () => {
     annotation = addMark(annotation, { kind: "pick", element: box() });
     annotation = addMark(annotation, { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 60, y: 60 } });
     expect(annotation.marks.map((mark) => mark.kind)).toEqual(["rect", "pick", "arrow"]);
-    // The ARROW comes off, not the last rectangle: undo is chronological.
     expect(undoMark(annotation).marks.map((mark) => mark.kind)).toEqual(["rect", "pick"]);
   });
 
@@ -61,7 +52,6 @@ describe("the marks a person leaves", () => {
     expect(addMark(empty, { kind: "arrow", from: { x: 10, y: 10 }, to: { x: 12, y: 11 } }).marks).toHaveLength(0);
     expect(addMark(empty, { kind: "freehand", points: [{ x: 1, y: 1 }] }).marks).toHaveLength(0);
     expect(addMark(empty, { kind: "text", at: { x: 1, y: 1 }, text: "   " }).marks).toHaveLength(0);
-    // ...and a real one is.
     expect(addMark(empty, { kind: "rect", box: { x: 0, y: 0, width: 40, height: 40 } }).marks).toHaveLength(1);
   });
 
@@ -69,7 +59,6 @@ describe("the marks a person leaves", () => {
     let annotation = addMark(emptyAnnotation(), { kind: "pick", element: box() });
     annotation = addMark(annotation, { kind: "pick", element: box({ name: "Save changes" }) });
     expect(picksOf(annotation)).toHaveLength(1);
-    // A DIFFERENT element is another pick.
     annotation = addMark(annotation, { kind: "pick", element: box({ selector: "#cancel", name: "Cancel" }) });
     expect(picksOf(annotation).map((element) => element.selector)).toEqual(["#save", "#cancel"]);
   });
@@ -105,7 +94,6 @@ describe("what is under the pointer", () => {
 
   test("the innermost element wins, because the list arrives smallest first", () => {
     expect(elementAt(boxes, { x: 40, y: 30 })?.selector).toBe("#save");
-    // Inside the toolbar but outside the button.
     expect(elementAt(boxes, { x: 200, y: 30 })?.selector).toBe(".toolbar");
     expect(elementAt(boxes, { x: 900, y: 500 })?.selector).toBe("body");
   });

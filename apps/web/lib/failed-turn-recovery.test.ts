@@ -24,22 +24,13 @@ describe("recoverableFailedTurn", () => {
 
   test("never treats an ambiguous turn as an ordinary failure, but no longer hides behind one", () => {
     expect(recoverableFailedTurn([turn("run_1", "ambiguous")])).toBeUndefined();
-    /**
-     * An ambiguous turn elsewhere USED to suppress this, and that suppression
-     * was the last thing keeping a recovered session from behaving like an
-     * ordinary conversation. The two decisions are separate: the ambiguous
-     * turn's card offers its own verbs, and this offers a continuation for the
-     * failed one. Dispatch is held engine-side either way, so nothing runs
-     * before somebody decides.
-     */
+    /** Independent of any ambiguous turn: dispatch is held engine-side, so nothing runs before somebody decides. */
     const failed = turn("run_2", "failed");
     expect(recoverableFailedTurn([turn("run_1", "ambiguous"), failed])).toBe(failed);
   });
 
   test("offers a continuation for a turn Telar interrupted by quitting", () => {
-    // A clean quit now settles the turn as `failed` with `interrupted` rather
-    // than leaving it for the next boot to call ambiguous — so it arrives here,
-    // at the ordinary continuation, with no decision to make.
+    // A clean quit settles the turn as `failed` with `interrupted`, not ambiguous.
     const interrupted = turn("run_1", "failed", { failure: "Telar shut down while this turn was running." });
     expect(recoverableFailedTurn([interrupted])).toBe(interrupted);
   });
@@ -57,9 +48,7 @@ describe("actionableRequests", () => {
   const request = (id: string, runId: string, state: "open" | "resolved" = "open") => ({ id, runId, state });
 
   test("a question left open on a failed turn is not actionable, so the composer is not trapped in answer mode", () => {
-    // The provider was killed while parked on AskUserQuestion; the engine
-    // marked the turn failed. A stale snapshot may still carry the request
-    // as open — it must not block the continuation the failed turn offers.
+    // A stale snapshot may still carry the request as open; it must not block the continuation.
     const turns = [turn("run_1", "completed"), turn("run_2", "failed", { failure: "Claude Code process terminated by signal SIGKILL" })];
     const requests = [request("req_q", "run_2")];
     expect(actionableRequests(requests, turns)).toEqual([]);

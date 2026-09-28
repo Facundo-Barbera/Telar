@@ -1,11 +1,3 @@
-/**
- * The display decisions GitHub's vocabulary needs.
- *
- * Every test here is a wrong answer this module exists to avoid giving — a green
- * badge on a pull request whose whole matrix skipped, a merge button disabled on a
- * pull request that merges fine, a failure count that includes a run somebody
- * cancelled on purpose.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
@@ -46,17 +38,12 @@ const check = (conclusion?: string, status = "COMPLETED") => ({ name: "c", statu
 
 describe("checkSummary", () => {
   test("a check with no conclusion is RUNNING, not passing", () => {
-    // The bug this prevents: a missing conclusion read as "has not failed", so a
-    // pull request mid-CI shows an all-green row.
     const summary = checkSummary([check(undefined, "IN_PROGRESS"), check(undefined, "QUEUED"), check("SUCCESS")]);
     expect(summary).toMatchObject({ running: 2, passed: 1, failed: 0 });
   });
 
   test("skipped is not a pass, and cancelled is not a failure", () => {
-    // A repository whose entire matrix skipped would otherwise report "3 passed",
-    // which is the wrong answer to "did CI run". And a run somebody stopped is
-    // neither a verdict nor a problem — counting it red puts a failure badge on a
-    // pull request with nothing wrong with it.
+    // A fully skipped matrix is not "passed", and a cancelled run is not a failure.
     const summary = checkSummary([check("SKIPPED"), check("SKIPPED"), check("CANCELLED"), check("NEUTRAL")]);
     expect(summary).toEqual({ total: 4, passed: 0, failed: 0, running: 0, skipped: 2, neutral: 2 });
   });
@@ -67,8 +54,6 @@ describe("checkSummary", () => {
   });
 
   test("no checks at all is not the same as everything passing", () => {
-    // Which is why the headline is empty rather than "0 failing" — the surface
-    // says "no checks ran" in its own words.
     expect(checkSummary([])).toMatchObject({ total: 0 });
     expect(checkHeadline(checkSummary([]))).toBe("");
   });
@@ -91,32 +76,23 @@ describe("mergeReadiness", () => {
   });
 
   test("clean and open merges, and still says so", () => {
-    // The bug this prevents: a merge button with nothing beside it. A control
-    // that only speaks when refusing leaves its best case — the one where you are
-    // about to press it — as the only state with no sentence in front of it.
     const readiness = mergeReadiness(pull());
     expect(readiness.canMerge).toBe(true);
     expect(readiness.note).toContain("main");
   });
 
   test("a mergeStateStatus this cockpit has never met still says something", () => {
-    // It already enables the button — GitHub named nothing in the way — so it
-    // takes the same sentence rather than falling back to silence.
     const readiness = mergeReadiness(pull({ mergeStateStatus: "SOMETHING_NEW" }));
     expect(readiness.canMerge).toBe(true);
     expect(readiness.note).toBeTruthy();
   });
 
   test("mergeability GitHub has not computed is ALLOWED, not refused", () => {
-    // GitHub computes it lazily on first ask, so refusing here would disable the
-    // button on the first merge of every quiet pull request. Pressing it is what
-    // makes GitHub work it out.
+    // GitHub computes mergeability lazily; pressing merge is what makes it work it out.
     expect(mergeReadiness(pull({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }))).toMatchObject({ canMerge: true, caution: true });
   });
 
   test("failing checks that nothing requires are ALLOWED, and named", () => {
-    // GitHub allows that merge, so this does too — but a person merging over a red
-    // check should have to read that they are.
     const readiness = mergeReadiness(pull({ mergeStateStatus: "UNSTABLE" }));
     expect(readiness.canMerge).toBe(true);
     expect(readiness.note).toContain("none of them are required");
@@ -132,8 +108,6 @@ describe("mergeReadiness", () => {
   });
 
   test("a closed pull request offers no button and no explanation", () => {
-    // The state badge above it already says MERGED or CLOSED; a sentence under a
-    // missing button would be explaining something nobody asked.
     expect(mergeReadiness(pull({ state: "MERGED" }))).toEqual({ canMerge: false });
     expect(mergeReadiness(pull({ state: "CLOSED" }))).toEqual({ canMerge: false });
   });
@@ -141,25 +115,17 @@ describe("mergeReadiness", () => {
 
 describe("issueStatus", () => {
   test("SIX outcomes, not two — done and abandoned are different answers", () => {
-    // A list that can show closed rows is a list where "was this done?" is the
-    // question every closed row raises, and one word for both would refuse it.
     expect(issueStatus({ state: "OPEN" })).toBe("open");
     expect(issueStatus({ state: "CLOSED", stateReason: "COMPLETED" })).toBe("completed");
     expect(issueStatus({ state: "CLOSED", stateReason: "NOT_PLANNED" })).toBe("abandoned");
-    // A duplicate is not getting done either, so it wears the same word.
     expect(issueStatus({ state: "CLOSED", stateReason: "DUPLICATE" })).toBe("abandoned");
-    // Closed with no reason at all is neither: GitHub simply did not say.
     expect(issueStatus({ state: "CLOSED" })).toBe("closed");
   });
 
   test("green is reserved for finishing", () => {
-    // Painting every closed thing green would make the app's success colour mean
-    // "closed", which the label already says in words.
     expect(STATUS_TONE[issueStatus({ state: "CLOSED", stateReason: "COMPLETED" })]).toBe("done");
     expect(STATUS_TONE[issueStatus({ state: "CLOSED", stateReason: "NOT_PLANNED" })]).toBe("none");
     expect(STATUS_TONE[issueStatus({ state: "OPEN" })]).toBe("active");
-    // And nothing here is destructive: a closed issue is not an error, and
-    // spending red on an ordinary outcome leaves nothing for a failing check.
     for (const status of ["open", "draft", "merged", "closed", "completed", "abandoned"] as const) {
       expect(STATUS_TONE[status]).not.toBe("danger");
       expect(STATUS_LABEL[status].length).toBeGreaterThan(0);
@@ -169,8 +135,7 @@ describe("issueStatus", () => {
 
 describe("pullStatus", () => {
   test("merged wins over every other reading", () => {
-    // GitHub reports a merged pull request as CLOSED in some shapes and MERGED in
-    // others, and `mergedAt` is the fact underneath both.
+    // GitHub reports merged PRs as CLOSED or MERGED; `mergedAt` is the fact underneath.
     expect(pullStatus({ state: "MERGED", isDraft: false })).toBe("merged");
     expect(pullStatus({ state: "CLOSED", isDraft: false, mergedAt: 1 })).toBe("merged");
     expect(pullStatus({ state: "CLOSED", isDraft: false })).toBe("closed");
@@ -178,8 +143,6 @@ describe("pullStatus", () => {
   });
 
   test("a CLOSED draft is closed, not a draft", () => {
-    // Calling it a draft would suggest it is still waiting for somebody to finish
-    // it, when in fact nobody is going to.
     expect(pullStatus({ state: "CLOSED", isDraft: true })).toBe("closed");
     expect(pullStatus({ state: "OPEN", isDraft: true })).toBe("draft");
   });
@@ -191,9 +154,6 @@ describe("offersMerge", () => {
   });
 
   test("nothing that MergeFooter would refuse or omit gets the sign", () => {
-    // Each of these is a row that would point at a control which is disabled on
-    // arrival, or absent entirely — which is worse than saying nothing, because it
-    // teaches the capability by showing it not working.
     expect(offersMerge({ state: "OPEN", isDraft: true })).toBe(false); // MergeFooter disables a draft
     expect(offersMerge({ state: "MERGED", isDraft: false })).toBe(false); // …and renders nothing at all
     expect(offersMerge({ state: "CLOSED", isDraft: false })).toBe(false);
@@ -201,11 +161,7 @@ describe("offersMerge", () => {
   });
 
   test("it is not a mergeability claim, and could not be one", () => {
-    // THE WHOLE POINT, and the reason this is a separate function from
-    // `mergeReadiness`: a list row carries no `mergeable` and no
-    // `mergeStateStatus`, so the two pull requests below — one GitHub would take
-    // and one it is holding — are INDISTINGUISHABLE here and both get the sign.
-    // The detail is what tells them apart.
+    // A list row has no `mergeable`/`mergeStateStatus`, so both PRs below look the same here.
     const row = { state: "OPEN", isDraft: false };
     expect(offersMerge(row)).toBe(true);
     expect(mergeReadiness({ ...row, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" }).canMerge).toBe(true);
@@ -215,16 +171,13 @@ describe("offersMerge", () => {
 
 describe("filterChips", () => {
   test("every narrowing beyond the state gets a removable chip", () => {
-    // A HIDDEN FILTER THAT RETURNS NOTHING LOOKS LIKE AN EMPTY REPOSITORY: pick a
-    // milestone, come back tomorrow, see zero rows, conclude the project is done.
+    // A hidden filter that returns nothing looks like an empty repository.
     const chips = filterChips({ milestone: "v2", assignee: "ada", author: "grace", labels: ["bug", "web"] });
     expect(chips.map((chip) => chip.label)).toEqual(["v2", "@ada", "by grace", "bug", "web"]);
     expect(activeFilterCount({ milestone: "v2", assignee: "ada", author: "grace", labels: ["bug", "web"] })).toBe(5);
   });
 
   test("THE STATE IS NOT A CHIP", () => {
-    // It is always set to something, it is always shown on the trigger, and there is
-    // no "no state" to clear it to — a chip for it could not be removed.
     expect(filterChips({ labels: [] })).toEqual([]);
     expect(activeFilterCount({ labels: [] })).toBe(0);
   });
@@ -238,7 +191,7 @@ describe("filterChips", () => {
   });
 
   test("two labels with the same name as a milestone stay distinct", () => {
-    // The keys are React keys; a collision drops a chip silently.
+    // Keys are React keys; a collision drops a chip silently.
     const chips = filterChips({ milestone: "bug", labels: ["bug"] });
     expect(new Set(chips.map((chip) => chip.key)).size).toBe(2);
   });
@@ -255,9 +208,6 @@ describe("buildForgeTimeline", () => {
   const review = (at: number, state: string, body = "") => ({ state, body, submittedAt: at, author: "grace" });
 
   test("a review that ANSWERS a comment lands after it", () => {
-    // The defect this fixes: the body, then every review, then every comment, in
-    // three sections — so on a pull request where a review answered a comment, the
-    // answer appeared above the thing it answered, in a different part of the page.
     const timeline = buildForgeTimeline({
       body: "the ask",
       author: "ada",
@@ -274,16 +224,12 @@ describe("buildForgeTimeline", () => {
   });
 
   test("the body is first even when something shares its timestamp", () => {
-    // A bot that comments in the same second the issue is filed would otherwise be
-    // able to sort a reply above the thing it replies to.
     const timeline = buildForgeTimeline({ body: "opened", createdAt: 100, comments: [comment(100, "bot"), comment(50, "impossible")] });
     expect(timeline[0]).toMatchObject({ kind: "body", body: "opened" });
   });
 
   test("an EMPTY `COMMENTED` review is dropped — it is not an event", () => {
-    // GitHub creates one every time somebody leaves inline comments on the diff: the
-    // row exists to hold them and its own body is blank. Rendering those puts
-    // "someone commented" cards with nothing in them through the conversation.
+    // GitHub creates an empty one to hold inline diff comments.
     const timeline = buildForgeTimeline({
       body: "b",
       createdAt: 1,
@@ -305,20 +251,16 @@ describe("buildForgeTimeline", () => {
       createdAt: 1,
       comments: [comment(10, "spam", { minimized: true, minimizedReason: "SPAM", authorAssociation: "NONE" })],
     });
-    // `NONE` is not worth a badge, so it does not become an association.
     expect(timeline.at(-1)).toMatchObject({ minimized: true, minimizedReason: "SPAM" });
     expect(timeline.at(-1)!.association).toBeUndefined();
   });
 
   test("an issue with nothing on it is one entry, not zero", () => {
-    // The body IS an entry, so an empty issue still renders one card rather than a
-    // blank surface.
     expect(buildForgeTimeline({ body: "", createdAt: 5, comments: [] })).toHaveLength(1);
   });
 
   test("every entry id is distinct, including two reviews in the same second", () => {
-    // Two reviews submitted in the same second by a bot batch is real, and duplicate
-    // React keys drop one of them silently.
+    // Duplicate React keys would drop one silently.
     const timeline = buildForgeTimeline({
       body: "b",
       createdAt: 1,
@@ -329,9 +271,6 @@ describe("buildForgeTimeline", () => {
   });
 
   test("a face travels with every kind of entry, and an absent one stays absent (#790)", () => {
-    // ALL THREE OR NONE. The card draws the face in the author bar, so an avatar
-    // that reached comments but not reviews would give a thread a column of faces
-    // with holes in it at exactly the rows a review sits in.
     const timeline = buildForgeTimeline({
       body: "b",
       author: "ada",
@@ -343,35 +282,25 @@ describe("buildForgeTimeline", () => {
     expect(timeline.map((entry) => [entry.kind, entry.avatar])).toEqual([
       ["body", "https://github.com/ada.png"],
       ["comment", "https://github.com/grace.png"],
-      // A bot has no face and the entry says so rather than carrying an empty
-      // string — the card draws a monogram off the login instead.
+      // A bot has no avatar; the card draws a monogram instead.
       ["comment", undefined],
       ["review", "https://github.com/alan.png"],
     ]);
   });
 });
 
-/**
- * THE FACE ITSELF — issue #790.
- *
- * These two are the whole of the display decision the engine deliberately does not
- * make: which pixel size to ask GitHub for, and what to draw when there is no URL.
- */
 describe("an author's avatar", () => {
   test("is asked for at ONE size, so a thread of one author is ONE fetch", () => {
-    // The URL including `?size=` is the browser's cache key, and this repository's
-    // threads are the case #790 was filed on — forty comments by one account. Two
-    // sizes for two placements would be two fetches, and a third placement a third.
+    // `?size=` is part of the browser's cache key, so one size means one fetch per author.
     expect(avatarSrc("https://github.com/ada.png")).toBe(`https://github.com/ada.png?size=${AVATAR_PIXELS}`);
     expect(AVATAR_PIXELS).toBeGreaterThan(16);
   });
 
   test("falls back to a letter, never to a blank circle", () => {
     expect(authorMonogram("Facundo-Barbera")).toBe("F");
-    // A bot arrives as `app/<slug>` from a row read, and `a` for every bot in the
-    // repository would be a monogram that identifies nothing.
+    // Bots arrive as `app/<slug>`.
     expect(authorMonogram("app/renovate")).toBe("R");
-    // `gh` sends no author at all for a deleted account.
+    // `gh` sends no author for a deleted account.
     expect(authorMonogram(undefined)).toBe("?");
     expect(authorMonogram("  ")).toBe("?");
   });
@@ -379,8 +308,6 @@ describe("an author's avatar", () => {
 
 describe("the sentences", () => {
   test("every way a read can be unavailable has one, and every refusal too", () => {
-    // A missing key here is a surface that renders `undefined` at the moment it
-    // most needs to explain itself.
     for (const reason of ["not_installed", "not_authenticated", "no_repository", "not_github", "not_found", "failed"] as const) {
       expect(UNAVAILABLE[reason].title.length).toBeGreaterThan(0);
     }
@@ -407,19 +334,13 @@ describe("the sentences", () => {
   });
 
   test("A REPOSITORY THAT IS NOT ON GITHUB IS NOT A MISSING ONE, and the two now say so — #670", () => {
-    // They were one sentence, and for a GitLab or Gitea checkout that sentence
-    // was false about a repository the reader is standing in. The split is only
-    // worth having if the words actually differ.
     expect(UNAVAILABLE.not_github.title).not.toBe(UNAVAILABLE.no_repository.title);
     expect(UNAVAILABLE.not_github.detail).toContain("not a GitHub host");
-    // And it says what still works, because almost everything does.
     expect(UNAVAILABLE.not_github.detail).toContain("pushing");
   });
 
   test("NO PUSH SENTENCE OFFERS A FORCE, least of all the one where it is tempting", () => {
-    // The engine cannot force-push and `scripts/source-invariants.mjs` fails
-    // the build on a second push argv, so a sentence naming it would be
-    // advertising something that does not exist.
+    // The engine cannot force-push (`scripts/source-invariants.mjs` enforces it).
     for (const sentence of Object.values(PUSH_REFUSAL)) {
       expect(sentence.toLowerCase()).not.toContain("--force");
     }
@@ -428,8 +349,6 @@ describe("the sentences", () => {
   });
 
   test("the refusals that are ordinary states do not read as failures", () => {
-    // Three of the ten are what a perfectly healthy project looks like, and a
-    // red banner for all ten is how a reader learns to stop reading them.
     expect(PUSH_REFUSAL.nothing_to_push).toContain("Nothing to push");
     expect(PUSH_REFUSAL.local_checkout).toContain("shares with your editor");
     expect(PULL_CREATE_REFUSAL.exists).toContain("already open");
@@ -441,15 +360,6 @@ describe("the sentences", () => {
   });
 });
 
-/**
- * WHICH SESSION WROTE THIS — issue #791.
- *
- * The timeline's job here is only to carry the engine's answer through to the
- * card. Whether a body CLAIMS a session is `parseComments`'s question and is
- * tested against the real parser in `apps/engine/test/github.test.ts`; what
- * must not drift is that an attributed comment arrives at the card with its
- * session and an unattributed one arrives without one.
- */
 describe("a comment's session", () => {
   const withSession = (at: number, sessionId?: string) => ({
     body: `c${at}`,
@@ -466,8 +376,6 @@ describe("a comment's session", () => {
       comments: [withSession(200, "session_abc"), withSession(300)],
     });
     expect(timeline.find((entry) => entry.at === 200)?.sessionId).toBe("session_abc");
-    // THE FAILURE DIRECTION: without this, a builder that stamped every entry
-    // with the same id would satisfy the assertion above.
     expect(timeline.find((entry) => entry.at === 300)?.sessionId).toBeUndefined();
   });
 });
@@ -551,7 +459,6 @@ describe("applyReaction — optimistic, then GitHub's answer or a rollback (#842
       },
       draw: (reactions) => drawn.push(reactions),
     });
-    // The guess is on screen before GitHub has said anything.
     expect(drawn).toEqual([[{ content: "HEART", count: 2, viewerHasReacted: true }]]);
     release();
     expect(await pending).toBeUndefined();
@@ -587,8 +494,6 @@ describe("applyReaction — optimistic, then GitHub's answer or a rollback (#842
     expect(said).toBe("connection refused");
   });
 });
-
-// ── review threads (#842) ────────────────────────────────────────────────────
 
 const reviewThread = (over: Record<string, unknown> = {}) =>
   ({

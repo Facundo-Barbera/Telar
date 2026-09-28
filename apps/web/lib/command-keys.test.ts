@@ -1,16 +1,3 @@
-/**
- * WHICH ROWS ⌘1..⌘9 COUNT.
- *
- * The registry itself, the chord arithmetic and the focus rule are pinned next
- * door in `commands.test.ts`. What is left here is the one question that is
- * about the RAIL rather than about keys: the jump commands promise the Nth row
- * as drawn, and "as drawn" is a derivation with bands, arranged groups and folds
- * in it.
- *
- * WHAT THIS WOULD HAVE CAUGHT: a jump that counted the flat list by creation
- * time — which is what it did until the groups landed, and which makes ⌘3 a
- * shortcut you have to look at the screen to use.
- */
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { groupSessions, railJumpSlots, railRowsForCommandKeys } from "./session-groups";
@@ -32,8 +19,7 @@ const row = (id: string, title: string, over: Partial<SidebarSession> = {}): Sid
 });
 
 describe("what ⌘1..⌘9 count", () => {
-  // The rail's own derivation, exactly as `app-sidebar.tsx` runs it: banded,
-  // then grouped in the reader's order, then walked top to bottom.
+  // The rail's own derivation, as `app-sidebar.tsx` runs it.
   const counted = (rows: SidebarSession[], options: { order?: string[]; collapsed?: Set<string>; activeSessionId?: string } = {}) =>
     railRowsForCommandKeys(
       groupSessions(
@@ -54,8 +40,6 @@ describe("what ⌘1..⌘9 count", () => {
       row("s2", "Older", { createdAt: NOW - 2_000 }),
       row("s3", "Kept", { createdAt: NOW - 9_000, settledOverride: "active" }),
     ];
-    // A ⌘1 that skipped the row sitting at the top of the rail would be a
-    // shortcut you have to look at the screen to use.
     expect(counted(rows)).toEqual(["Kept", "Newest", "Older"]);
   });
 
@@ -74,8 +58,7 @@ describe("what ⌘1..⌘9 count", () => {
       row("b1", "Beta old", { projectId: "beta", projectName: "Beta", createdAt: NOW - 5_000 }),
       row("b2", "Beta older", { projectId: "beta", projectName: "Beta", createdAt: NOW - 6_000 }),
     ];
-    // Nobody arranged anything: alphabetical, and Alpha's brand-new session
-    // does not hoist it — it was first by name anyway.
+    // No arrangement: alphabetical.
     expect(counted(rows)).toEqual(["Alpha new", "Beta old", "Beta older"]);
     // Beta dragged above Alpha: ⌘1 is now Beta's top row, whatever was created when.
     expect(counted(rows, { order: ["beta", "alpha"] })).toEqual(["Beta old", "Beta older", "Alpha new"]);
@@ -101,8 +84,7 @@ describe("what ⌘1..⌘9 count", () => {
 
   test("never more than nine, whatever the survivor rule pins into view", () => {
     const rows = Array.from({ length: 20 }, (_, index) => row(`s${index}`, `Session ${index}`, { createdAt: NOW - index * 1_000 }));
-    // The open session is pinned onto the page past the limit, which is right
-    // for rendering and meaningless for indexing — hence the slice.
+    // The open session is pinned past the limit; indexing ignores it.
     const recent = counted(rows, { activeSessionId: "s19" });
     expect(recent).toHaveLength(9);
     expect(recent[0]).toBe("Session 0");
@@ -110,15 +92,6 @@ describe("what ⌘1..⌘9 count", () => {
   });
 });
 
-/**
- * WHICH NUMBER EACH ROW WEARS while ⌘ is held — issue #401.
- *
- * The hints are drawn from `railJumpSlots` over the SAME array `useCommandKeys`
- * is handed, which is the only arrangement in which a row's number and the key
- * that fires cannot disagree. So the claim under test is a correspondence rather
- * than a table: whatever the block above says ⌘N counts, the Nth of those rows
- * is the one wearing N.
- */
 describe("the numbers a row wears line up with what the keys count", () => {
   const railRows = (rows: SidebarSession[], collapsed?: Set<string>) =>
     railRowsForCommandKeys(groupSessions(deriveSessionList({ sessions: rows, now: NOW, autoSettleAfterHours: 72 }), []), collapsed);
@@ -133,14 +106,10 @@ describe("the numbers a row wears line up with what the keys count", () => {
     const counted = railRows(rows);
     const slots = railJumpSlots(counted);
     expect(counted.map((session) => slots.get(sessionKey(session)))).toEqual([1, 2, 3, 4]);
-    // Said the other way round, which is the promise a reader makes with their
-    // fingers: the row wearing ⌘1 is the row at the top of the rail.
     expect(counted[0]?.title).toBe("Waiting");
   });
 
   test("a row the keys do not count wears nothing", () => {
-    // The tenth row down: there is no ⌘10, and a number it could not honour is
-    // worse than no number.
     const rows = Array.from({ length: 12 }, (_, index) => row(`s${index}`, `Session ${index}`, { createdAt: NOW - index * 1_000 }));
     const slots = railJumpSlots(railRows(rows));
     expect(slots.size).toBe(9);

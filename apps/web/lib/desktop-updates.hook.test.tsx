@@ -1,17 +1,6 @@
 /**
- * THE UPDATER'S STATE MACHINE, DRIVEN — `useDesktopUpdate()` against a scripted
- * bridge, with no shell anywhere near it.
- *
- * `desktop-updates.test.ts` pins the pure folds beside this one (which sentence,
- * which control, which toast); what needs a React to run is everything the two
- * surfaces used to each own a copy of: the pull that recovers a download a
- * remount missed, the race between that pull and a push, and — the whole of
- * issue #389 — what a press of Apply does, what a SECOND press does, and what
- * happens when the shell takes the press and then does not restart.
- *
- * The ten-second deadline is a parameter for exactly this reason: the test
- * passes twenty milliseconds and asserts the same behaviour a person would wait
- * ten seconds to see.
+ * `useDesktopUpdate()` driven against a scripted bridge; the pure folds are in
+ * `desktop-updates.test.ts`. The restart deadline is a parameter so tests can pass 20 ms.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
@@ -29,7 +18,6 @@ afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
 
-// ── the scripted shell ────────────────────────────────────────────────────
 type Script = {
   /** What `status()` answers — the state a remount has to recover. */
   current: UpdateStatus | null;
@@ -107,7 +95,7 @@ function mount(options?: { restartTimeoutMs?: number }) {
   document.body.appendChild(host);
   const root = createRoot(host);
   // Not StrictMode: its double-invoked effects would subscribe twice and the
-  // point here is what the bridge is ASKED, in order.
+  // point here is what the bridge is asked, in order.
   act(() => root.render(<Probe />));
   return {
     /** The hook's current value — read fresh, never captured. */
@@ -117,8 +105,7 @@ function mount(options?: { restartTimeoutMs?: number }) {
     press: async () => {
       await act(async () => latest!.act());
     },
-    /** Apply is asked first now: the press opens the question, and this is
-     *  the "Restart and update" answer to it. */
+    /** The "Restart and update" answer to the question a press of Apply opens. */
     confirm: async () => {
       await act(async () => latest!.restart.confirm());
     },
@@ -139,8 +126,7 @@ const settle = async () => {
 
 describe("what a surface knows when it mounts", () => {
   test("it recovers a download that finished while it was gone", async () => {
-    // `update-downloaded` is never re-emitted, so a remounted surface that only
-    // listened would lose the one state that matters most.
+    // `update-downloaded` is never re-emitted, so a remount must pull it.
     script.current = { status: "downloaded", version: "0.3.1" };
     const probe = mount();
     await settle();
@@ -151,9 +137,7 @@ describe("what a surface knows when it mounts", () => {
   });
 
   test("a push beats a slow pull, whatever order they resolve in", async () => {
-    // The pull asks what we MISSED; a push that lands while it is in flight is
-    // newer by construction. Without the guard a stale "downloading 40%" would
-    // rewind a "downloaded" that had already arrived.
+    // A push that lands while the pull is in flight is newer; a stale pull must not rewind it.
     script.deferStatus = true;
     script.current = { status: "downloading", version: "0.3.1", percent: 40 };
     const probe = mount();
@@ -228,8 +212,7 @@ describe("the press that applies an update", () => {
   });
 
   test("it says 'restarting' before the shell has even answered", async () => {
-    // THE DEFECT #389 OPENS WITH: the shell takes seconds to stage, and until
-    // now nothing on screen moved in those seconds.
+    // The shell takes seconds to stage; the state must change before it answers.
     const probe = mount();
     await settle();
     await push(ready);
@@ -257,9 +240,7 @@ describe("the press that applies an update", () => {
   });
 
   test("a restart that never happens returns the press, with a sentence", async () => {
-    // The retry the issue asks for, in place of the native warning a second
-    // press used to produce. The update is still downloaded and still
-    // installable — so the control goes back to Apply rather than to Check.
+    // The update is still downloaded and installable, so the control goes back to Apply.
     const probe = mount({ restartTimeoutMs: 20 });
     await settle();
     await push(ready);
@@ -271,7 +252,6 @@ describe("the press that applies an update", () => {
     expect(probe.update.action).toBe("apply");
     expect(probe.update.failure).toContain("has not restarted");
     expect(probe.update.label).toBe(probe.update.failure);
-    // And it is a real retry: asked again, and the shell is asked again.
     await probe.press();
     await probe.confirm();
     expect(calls.filter((call) => call === "install")).toHaveLength(2);
@@ -316,8 +296,7 @@ describe("the press that checks", () => {
   });
 
   test("a build with no feed clears its own spinner", async () => {
-    // "unsupported" comes back from the handler rather than over onStatus, so
-    // nothing else would ever end this state.
+    // "unsupported" comes back from the handler rather than over onStatus.
     script.checkAnswer = { status: "unsupported" };
     const probe = mount();
     await settle();

@@ -1,7 +1,3 @@
-/**
- * The rule: an edit changes the lines somebody edited, and nothing else about
- * the file.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { detectNewline, withNewline } from "./line-endings";
@@ -21,23 +17,19 @@ describe("detectNewline", () => {
   });
 
   test("a majority decides a mixed file", () => {
-    // The distinction is already lost by the time the text reaches the editor
-    // (the textarea normalises it), so the honest choice is to leave a
-    // consistent file as consistent as it was.
+    // The textarea already normalised it, so keep the majority.
     expect(detectNewline("a\r\nb\r\nc\n")).toBe("\r\n");
     expect(detectNewline("a\r\nb\nc\n")).toBe("\n");
   });
 
   test("a lone CR is not a line ending", () => {
-    // Classic-Mac line endings are not CRLF and are not what this is about.
     expect(detectNewline("a\rb\rc")).toBe("\n");
   });
 });
 
 describe("withNewline", () => {
   test("LF text goes back to disk as CRLF", () => {
-    // THE BUG. The textarea can only ever hand back LF, so the carriage returns
-    // have to be put back on the way out or one keystroke rewrites every line.
+    // The textarea only hands back LF; restore the CRs on the way out.
     expect(withNewline("alpha = 1\nbeta = 2\n", "\r\n")).toBe("alpha = 1\r\nbeta = 2\r\n");
   });
 
