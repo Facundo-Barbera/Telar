@@ -129,37 +129,6 @@ export const UsageSnapshot = z.object({
 });
 export type UsageSnapshot = z.infer<typeof UsageSnapshot>;
 
-export const WorktreesRoot = z.object({
-  kind: z.enum(["default", "configured", "absent", "unreadable", "unverifiable"]),
-  /** Where checkouts go, or would go. Absent only when the record is
-   *  unreadable — the one state with no location to name. */
-  root: z.string().min(1).optional(),
-  /** Where they would go with nothing configured. What "put it back" means. */
-  default: z.string().min(1),
-  volume: z.object({ mount: z.string(), uuid: z.string() }).partial({ uuid: true }).optional(),
-  label: z.string().optional(),
-  blocker: z.string().optional(),
-});
-export type WorktreesRoot = z.infer<typeof WorktreesRoot>;
-
-export const WorktreeMoveSkip = z.object({
-  sessionId: z.string().min(1),
-  path: z.string().min(1),
-  reason: z.enum(["dirty", "branch-gone", "detached", "failed"]),
-  /** Git's own words, or the branch that has gone. Never a substitute for
-   *  `reason`: a sentence from git is diagnostic, not copy. */
-  detail: z.string().optional(),
-});
-export type WorktreeMoveSkip = z.infer<typeof WorktreeMoveSkip>;
-
-export const WorktreeMoveResult = z.object({
-  moved: z.array(z.object({ sessionId: z.string().min(1), from: z.string().min(1), to: z.string().min(1) })),
-  skipped: z.array(WorktreeMoveSkip),
-  /** The whole thing said in a sentence, composed where the reasons are known. */
-  summary: z.string(),
-});
-export type WorktreeMoveResult = z.infer<typeof WorktreeMoveResult>;
-
 export const RawProviderEvent = z.object({
   source: ProviderDriverKind,
   /** The provider's own event/method name, verbatim. */
