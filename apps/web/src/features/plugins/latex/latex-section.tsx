@@ -57,6 +57,12 @@ export function inheritedDistribution(machine: ProjectPlugins | undefined, toolc
   return `Inherit (${label})`;
 }
 
+export function latexToggle(project: Project, next: boolean): LatexConfig | null {
+  const config = pluginBlock(project, "latex") as LatexConfig | undefined;
+  if (!next) return config ? { ...config, enabled: false } : null;
+  return { enabled: true, ...(config?.toolchain ? { toolchain: config.toolchain } : {}), ...(config?.mainFile ? { mainFile: config.mainFile } : {}) };
+}
+
 export function LatexSection({ project, onChange }: { project: Project; onChange: (project: Project) => void }) {
   const router = useRouter();
   const config = pluginBlock(project, "latex") as LatexConfig | undefined;
@@ -104,10 +110,6 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
     }
   };
 
-  const setEnabled = (next: boolean) => {
-    if (!next) return void save(config ? { ...config, enabled: false } : null);
-    void save({ enabled: true, ...(config?.toolchain ? { toolchain: config.toolchain } : {}), ...(config?.mainFile ? { mainFile: config.mainFile } : {}) });
-  };
 
   const use = (choice: LatexToolchainChoice) =>
     void save({ enabled: true, toolchain: { ...choice, ...(config?.toolchain?.engine && choice.kind === "texlive" ? { engine: config.toolchain.engine } : {}) }, ...(config?.mainFile ? { mainFile: config.mainFile } : {}) });
@@ -146,7 +148,7 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
           label="LaTeX for this project"
           hint={enabled ? "Sessions get the latex_* tools and the LaTeX panel tab." : "Off. You can enable first, then choose or install a toolchain below."}
           {...(error ? { error } : {})}
-          control={<Switch checked={enabled} disabled={saving} onCheckedChange={setEnabled} aria-label="Enable LaTeX for this project" />}
+          control={<Switch checked={enabled} disabled={saving} onCheckedChange={(next: boolean) => void save(latexToggle(project, next))} aria-label="Enable LaTeX for this project" />}
         />
         <Row
           label="Default document"

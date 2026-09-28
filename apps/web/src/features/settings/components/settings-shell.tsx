@@ -23,10 +23,15 @@ export type SettingsSection = {
 
 const SettingsPaneContext = createContext<string | undefined>(undefined);
 const SettingsGroupContext = createContext<string | undefined>(undefined);
+const SettingsRevealContext = createContext<string | undefined>(undefined);
+
+export function usePendingReveal(): string | undefined {
+  return useContext(SettingsRevealContext);
+}
 
 export function revealSettingsRow(id: string): boolean {
   const row = document.getElementById(id);
-  if (!row) return false;
+  if (!row || row.closest("[hidden]")) return false;
   const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
   row.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
   row.focus({ preventScroll: true });
@@ -70,7 +75,7 @@ function useRestoreRegistry() {
   return { restorers, registry };
 }
 
-function useRevealRow(): (id: string) => void {
+function useRevealRow(): [string | undefined, (id: string) => void] {
   const [pendingRow, setPendingRow] = useState<string>();
   useEffect(() => {
     if (!pendingRow) return;
@@ -86,7 +91,7 @@ function useRevealRow(): (id: string) => void {
     frame = window.requestAnimationFrame(look);
     return () => window.cancelAnimationFrame(frame);
   }, [pendingRow]);
-  return setPendingRow;
+  return [pendingRow, setPendingRow];
 }
 
 function SettingsPaneHeader({
@@ -160,7 +165,7 @@ export function SettingsShell({
   const activeSection = sections.find((s) => s.id === active) ?? sections[0];
   const { restorers, registry: restoreRegistry } = useRestoreRegistry();
   const { navWidth, wrapperRef, startDrag } = useSettingsNavResize();
-  const revealRow = useRevealRow();
+  const [pendingRow, revealRow] = useRevealRow();
 
   const jumpTo = (entry: SettingsSearchEntry) => {
     onSelect(entry.pageId);
@@ -236,7 +241,9 @@ export function SettingsShell({
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-2xl px-5 py-5">
             <SettingsPaneContext.Provider value={activeSection.id}>
-              <SettingsRestoreContext.Provider value={restoreRegistry}>{children}</SettingsRestoreContext.Provider>
+              <SettingsRestoreContext.Provider value={restoreRegistry}>
+                <SettingsRevealContext.Provider value={pendingRow}>{children}</SettingsRevealContext.Provider>
+              </SettingsRestoreContext.Provider>
             </SettingsPaneContext.Provider>
           </div>
         </div>
