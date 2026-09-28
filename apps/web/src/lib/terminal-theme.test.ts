@@ -4,6 +4,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import {
   cssColorReader,
   ensureTerminalSymbolsFont,
+  forgetTerminalSymbolsFont,
   loadTerminalFonts,
   TERMINAL_SYMBOLS_FONT,
   terminalFont,
@@ -119,6 +120,7 @@ describe("the bundled symbols face", () => {
    * first call. Both assertions live in one test for that reason.
    */
   test("registers once for the whole page, and a failure is silent", async () => {
+    forgetTerminalSymbolsFont();
     const loaded: string[] = [];
     const added: unknown[] = [];
     class FakeFontFace {

@@ -1,11 +1,12 @@
 /** `useInboxPolicy` is mounted by several surfaces at once; one read per host is shared, never across Macs. */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { InboxPolicy } from "@telar/engine-client";
 import { forgetInboxPolicies, INBOX_POLICY_TTL_MS, readInboxPolicy, rememberInboxPolicy } from "./inbox-policy";
 
 const policy = (hours: number | null): InboxPolicy => ({ autoSettleAfterHours: hours }) as InboxPolicy;
 
+beforeEach(() => forgetInboxPolicies());
 afterEach(() => forgetInboxPolicies());
 
 describe("readInboxPolicy", () => {

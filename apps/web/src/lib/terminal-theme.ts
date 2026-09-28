@@ -164,6 +164,10 @@ let symbolsFontLoad: Promise<void> | null = null;
  * before. A terminal that refused to open because a decoration did not download
  * would be the worse outcome by a long way.
  */
+export function forgetTerminalSymbolsFont(): void {
+  symbolsFontLoad = null;
+}
+
 export function ensureTerminalSymbolsFont(): Promise<void> {
   if (symbolsFontLoad !== null) return symbolsFontLoad;
   symbolsFontLoad = (async () => {

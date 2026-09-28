@@ -11,7 +11,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { modifierHeldAfter, modifierHeldSnapshot, subscribeModifierHeld } from "./modifier-held";
+import { forgetModifierPlatform, modifierHeldAfter, modifierHeldSnapshot, subscribeModifierHeld } from "./modifier-held";
 
 describe("the rule, as a fold", () => {
   const field = { tagName: "INPUT" };
@@ -59,6 +59,7 @@ describe("the store, driven", () => {
     // A Mac agent, so `metaKey` is the modifier under test. Read once and
     // cached by the module, which is why it is seated before the first press.
     Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", configurable: true });
+    forgetModifierPlatform();
     const seen: boolean[] = [];
     unsubscribe = subscribeModifierHeld(() => seen.push(modifierHeldSnapshot()));
     return seen;

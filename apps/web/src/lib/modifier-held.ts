@@ -75,6 +75,10 @@ function commandModifierPlatform(): KeyCapPlatform {
   return platform;
 }
 
+export function forgetModifierPlatform(): void {
+  platform = undefined;
+}
+
 function onKey(event: KeyboardEvent) {
   publish(modifierHeldAfter(event, commandModifierPlatform(), document.activeElement));
 }
