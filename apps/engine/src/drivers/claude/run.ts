@@ -37,6 +37,7 @@ import { onProviderWait } from "./turn-frames";
 import { onOwnResult } from "./turn-result";
 import { onMessageStart } from "./turn-stream";
 import { onEndTurnGrace } from "./turn-result";
+import { agentEnv } from "../../platform/process/agent-env";
 
 function defaultClaudeExecutable(binaryPath?: string): string {
   try {
@@ -258,7 +259,7 @@ function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void
 
   /** The child's environment with the patch's deletions APPLIED, resolved
    *  once so the query options and the fingerprint cannot disagree. */
-  turn.childEnv = resolveChildEnv(process.env, turn.defaultEnv, env, turn.contextEnv, turn.compactionEnv);
+  turn.childEnv = resolveChildEnv(agentEnv(), turn.defaultEnv, env, turn.contextEnv, turn.compactionEnv);
 }
 
 async function claimTurnRuntime(deps: DriverDeps, input: DriverRun, scope: TurnScope): Promise<void> {

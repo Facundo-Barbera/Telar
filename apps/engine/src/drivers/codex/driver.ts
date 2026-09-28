@@ -7,6 +7,7 @@ import { pumpCodexSteers } from "./steer";
 import { codexSandboxPolicy, codexThreadParams, codexTurnInput, defaultThreadConfig, type CodexThreadConfig } from "./thread";
 import { CodexTurn } from "./turn";
 import { codexWindowConfig, readCodexWindows, type CodexWindow } from "./windows";
+import { agentEnv } from "../../platform/process/agent-env";
 
 export type CodexDriverOptions = {
   model?: string;
@@ -47,7 +48,7 @@ async function runCodexTurn(options: CodexDriverOptions, run: DriverRun): Promis
   const { model, config: windowConfig } = codexWindowConfig(requestedModel, windows, run.autoCompact);
   const threadConfig = options.threadConfig ?? defaultThreadConfig(Boolean(onRequest));
   // The turn's login env wins over the worker's; a variable patched to undefined is removed.
-  const client = new CodexAppServer(bin, { ...process.env, ...options.env, ...run.env });
+  const client = new CodexAppServer(bin, { ...agentEnv(), ...options.env, ...run.env });
 
   let cancelled = false;
   const pending: TurnObservation[] = [];

@@ -10,6 +10,7 @@ import { createOutputSplitter } from "./stream";
 import type { TerminalFacts } from "./terminal-client";
 import { isTerminal, type RunConfiguration, RunError, type RunProbe, redactText, secretValues, unhideableSecrets } from "./types";
 import { CLOSE_SETTLE_MS, compile, defaultProbe, KEEP_FINISHED, type LiveRun, MAX_BYTE_CHARS, MAX_BYTE_CHUNKS, MAX_LINE_CHARS, MAX_LINES, portOf, READY_POLL_MS, type RunManagerOptions, type StartRunInput, WAIT_TICK_MS } from "./live-run";
+import { agentEnv } from "../../platform/process/agent-env";
 
 export class RunManager {
   private readonly runs = new Map<string, LiveRun>();
@@ -267,7 +268,7 @@ export class RunManager {
     }
     if (this.shuttingDown) throw new RunError("conflict", "Telar is shutting down, so it did not open this terminal");
 
-    const env: NodeJS.ProcessEnv = { ...process.env };
+    const env = agentEnv();
     for (const entry of run.config.env ?? []) env[entry.key] = entry.value;
     const launch = resolveShell(run.config, this.platform, process.env);
     let handle: RunHandle;

@@ -9,6 +9,7 @@ import { RUN_BRIEFING } from "../../domains/terminal";
 import { pluginBriefings } from "../../domains/plugins";
 import { writeOrientationInstructions } from "../../domains/sessions";
 import type { DriverRun } from "../contract";
+import { agentEnv } from "../../platform/process/agent-env";
 
 export type OpenCodeRuntime = { client: OpencodeClient; closed: boolean; close(): void };
 
@@ -134,7 +135,7 @@ export async function startOpenCodeRuntime(input: DriverRun): Promise<OpenCodeRu
     ? await writeOrientationInstructions(briefings.join("\n\n")).catch(() => undefined)
     : undefined;
   const binary = input.binaryPath ?? "opencode";
-  const inheritedEnv = { ...process.env, ...input.env };
+  const inheritedEnv = { ...agentEnv(), ...input.env };
   const limits = input.autoCompact?.mode === "limits" && input.model
     ? await openCodeModelLimits(binary, input.model, { cwd: input.cwd, env: inheritedEnv })
     : undefined;
