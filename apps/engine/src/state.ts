@@ -164,7 +164,7 @@ import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, rea
 import { type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
-import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER, defaultGhRunner, mergePull, openPullRequest, reactOn, readCheckLog, readForgeFacets, readGitHub, readIssue, readPull, readPullFiles, readPullForBranch, replyToThread, resolveThread, type GhRunner } from "./domains/github";
+import { GitHubStore, commentOnPullLine, defaultGhRunner, openPullRequest, readPullFiles, readPullForBranch, type GhRunner } from "./domains/github";
 import {  } from "zod";
 import { providerProcessEnv } from "./domains/providers";
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
@@ -557,9 +557,6 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 /** Per turn, so one message cannot smuggle 16 × 20 MB past the per-file cap. */
 const MAX_TURN_ATTACHMENTS = 16;
 
-/** How long a GitHub read stays fresh. Longer than a glance, shorter than the
- *  time it takes to file an issue and come back for it. */
-const GITHUB_CACHE_MS = 30_000;
 
 
 
@@ -578,9 +575,6 @@ const PROGRESS_STAMP_MS = 60_000;
 
 
 
-/** Milestones and labels change on the timescale of a sprint, not of a page view,
- *  so what there is to FILTER BY is held far longer than the rows themselves. */
-const FACET_CACHE_MS = 5 * 60_000;
 
 /**
  * THE STORE ROOT'S FILE LIST, RE-EXPORTED — it moved to `./state-paths` in #665
@@ -1011,6 +1005,7 @@ export class EngineStore {
   private readonly projectProbes: ProjectProbes;
   private readonly projectRegistry: ProjectRegistry;
   private readonly toolchains: PluginToolchains;
+  private readonly github: GitHubStore;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1133,31 +1128,6 @@ export class EngineStore {
   /** What a provider process would inherit from this engine — read to say what
    *  a newly-configured login is about to stop inheriting (#594). */
   private readonly ambientEnv: Record<string, string | undefined>;
-  /** In memory and never persisted: it is a cache of somebody else's state, and
-   *  a stale one surviving a restart would be worse than a slow first read. */
-  private readonly githubCache = new Map<string, GitHubSnapshot>();
-  /**
-   * One issue or one pull request, keyed `<projectId>:issue:<number>`.
-   *
-   * SEPARATE FROM THE SNAPSHOT CACHE rather than folded into it, because the two
-   * expire independently: reopening a detail tab must not have to re-read the
-   * whole list, and a list refresh must not silently answer a detail read with
-   * rows that have no body. Only successful reads are cached — caching "gh is not
-   * signed in" for thirty seconds would outlive the `gh auth login` that fixes it.
-   */
-  private readonly githubDetailCache = new Map<string, GitHubIssueRead | GitHubPullRead>();
-  /**
-   * Whether this machine's `gh` token has told us it cannot read Projects.
-   *
-   * IN MEMORY AND NOT PERSISTED, like the caches beside it: it describes a token
-   * that the user can re-scope at any moment, and a "no" that survived a restart
-   * would outlive the `gh auth refresh` that fixed it. Cleared by any forced read,
-   * so the refresh button is the way back.
-   */
-  private noProjectScope = false;
-  /** What there is to filter by, per project. In memory like every cache here: it
-   *  describes somebody else's repository settings. */
-  private readonly facetCache = new Map<string, GitHubFacets>();
   /**
    * Set by the daemon when it owns a browser. ATTACHED RATHER THAN CONSTRUCTED
    * so the store keeps no provider dependency — every test builds an
@@ -2144,7 +2114,7 @@ export class EngineStore {
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
     ({
       settings: this.settings, appearance: this.appearance, mcpOAuth: this.mcpOAuth, mcpServers: this.mcpServers, usageSources: this.usageSources,
-      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers, toolchains: this.toolchains,
+      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers, toolchains: this.toolchains, github: this.github,
     } = this.leafStores(options));
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
@@ -2193,7 +2163,8 @@ export class EngineStore {
     });
     const providers = new ProviderRegistry(this.kernel, this.ambientEnv);
     const toolchains = new PluginToolchains(this.kernel, { getProject: (id) => projectRegistry.get(id) });
-    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers, toolchains };
+    const github = new GitHubStore(this.kernel, { gh: this.gh, getProject: (id) => projectRegistry.get(id), requireSenderClaim: (proof) => this.requireSenderClaim(proof) });
+    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers, toolchains, github };
   }
 
   /** How many projects the legacy-field fold changed on this open (0 on most). */
@@ -3494,108 +3465,18 @@ export class EngineStore {
     return this.catalogues.setOverlay(instanceId, patch);
   }
 
-  /**
-   * WHICH ROWS, IN THE CACHE KEY.
-   *
-   * Without the states in the key, switching the Pull requests surface from open
-   * to all would be answered instantly from a cache of open ones — a filter that
-   * silently does nothing for thirty seconds, which is worse than a slow one.
-   */
-  private githubKey(projectId: string, issues: GitHubIssueFilter, pulls: GitHubPullFilter): string {
-    /**
-     * NORMALISED, so two spellings of the same question share one cache entry —
-     * labels chosen in a different order are the same filter, and `gh` ANDs them
-     * regardless. Without the sort, picking `bug` then `web` and `web` then `bug`
-     * would spend two network reads to get the same rows.
-     */
-    const shape = (filter: GitHubIssueFilter | GitHubPullFilter) => ({
-      state: filter.state,
-      milestone: (filter as GitHubIssueFilter).milestone ?? "",
-      assignee: filter.assignee ?? "",
-      author: filter.author ?? "",
-      labels: [...filter.labels].sort(),
-    });
-    return `${projectId}:${JSON.stringify([shape(issues), shape(pulls)])}`;
+
+
+  projectGitHub(projectId: string, options: { force?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {}): Promise<GitHubSnapshot> {
+    return this.github.list(projectId, options);
   }
 
-  /**
-   * Drop EVERY cached list for a project, whichever filter it was read under.
-   *
-   * A project id cannot contain a colon (`ID` above), so the prefix is unambiguous.
-   * Deleting one key would leave the others stale, which is precisely the bug the
-   * merge invalidation exists to prevent — and precisely the bug that appeared the
-   * moment the filter joined the key, because the old invalidation deleted a key
-   * shape that no longer existed. Caught by the merge test, not by reasoning.
-   */
-  private forgetGitHub(projectId: string): void {
-    for (const key of this.githubCache.keys()) {
-      if (key === projectId || key.startsWith(`${projectId}:`)) this.githubCache.delete(key);
-    }
+  projectForgeFacets(projectId: string, options: { force?: boolean } = {}): Promise<GitHubFacets> {
+    return this.github.facetsOf(projectId, options);
   }
 
-  async projectGitHub(
-    projectId: string,
-    options: { force?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {},
-  ): Promise<GitHubSnapshot> {
-    const project = this.getProject(projectId);
-    const issues = options.issues ?? DEFAULT_ISSUE_FILTER;
-    const pulls = options.pulls ?? DEFAULT_PULL_FILTER;
-    const key = this.githubKey(project.id, issues, pulls);
-    const cached = this.githubCache.get(key);
-    if (cached && !options.force && this.now() - cached.readAt < GITHUB_CACHE_MS) return structuredClone(cached);
-    // Once a token has said it has no `read:project`, stop paying two network calls
-    // per read to be told again. A forced read clears the verdict, so adding the
-    // scope and pressing refresh is all it takes to get boards back.
-    const skipProjects = this.noProjectScope && !options.force;
-    const snapshot = await readGitHub(this.gh, project.root, this.now, { issues, pulls, ...(skipProjects ? { skipProjects: true } : {}) });
-    if (snapshot.projectsUnavailable === "scope") this.noProjectScope = true;
-    else if (snapshot.projectsUnavailable === undefined && options.force) this.noProjectScope = false;
-    /**
-     * THE REASON SURVIVES THE SKIP.
-     *
-     * Found by driving it: the cockpit's own first read consumed the scope failure,
-     * so every read after it reported no reason at all — and a panel opened a minute
-     * later showed every row on no boards with nothing to explain it. "Nothing was
-     * attempted so there is nothing to report" sounded principled and produced a
-     * surface that cannot account for itself. What is true is that boards ARE
-     * unavailable, for a reason we already know; not re-asking does not unlearn it.
-     */
-    const answer = skipProjects && this.noProjectScope ? { ...snapshot, projectsUnavailable: "scope" as const } : snapshot;
-    this.githubCache.set(key, answer);
-    return structuredClone(answer);
-  }
-
-  /**
-   * What there is to filter by in a project's repository.
-   *
-   * CACHED FIVE TIMES LONGER THAN A LIST READ, because milestones and labels change
-   * on the timescale of a sprint rather than of a page view — the same reason the
-   * model catalogue gets five minutes. Only asked when a client opens a filter menu,
-   * so a reader who never filters never pays for this at all.
-   */
-  async projectForgeFacets(projectId: string, options: { force?: boolean } = {}): Promise<GitHubFacets> {
-    const project = this.getProject(projectId);
-    const cached = this.facetCache.get(project.id);
-    if (cached && !options.force && this.now() - cached.readAt < FACET_CACHE_MS) return structuredClone(cached);
-    const facets = await readForgeFacets(this.gh, project.root, this.now);
-    this.facetCache.set(project.id, facets);
-    return structuredClone(facets);
-  }
-
-  /**
-   * One failing check's log.
-   *
-   * NOT CACHED. A job's log is immutable once the job has finished, so a cache would
-   * only ever save a repeat of a request nobody makes twice — and while a job is
-   * still running the log is exactly the thing that must not be stale.
-   *
-   * The job id comes from a check this engine already handed out, so it is a number
-   * we produced; it is still validated, because a client is a client.
-   */
   projectCheckLog(projectId: string, jobId: string): Promise<GitHubCheckLog> {
-    const project = this.getProject(projectId);
-    if (!/^\d+$/.test(jobId)) throw new EngineStateError("invalid_request", "a job id is a number");
-    return readCheckLog(this.gh, project.root, jobId);
+    return this.github.checkLog(projectId, jobId);
   }
 
   /**
@@ -3648,167 +3529,41 @@ export class EngineStore {
     return this.registerProject({ name: input.name?.trim() || folder, root: outcome.root });
   }
 
-  /** A positive whole number, because it is going into an argv and a URL. */
-  private forgeNumber(value: number): number {
-    if (!Number.isInteger(value) || value <= 0) throw new EngineStateError("invalid_request", "an issue or pull request number is required");
-    return value;
-  }
 
-  /**
-   * One issue or one pull request, opened.
-   *
-   * CACHED LIKE THE LIST AND FOR THE SAME THIRTY SECONDS — it is the same rate
-   * limit — but only when the read WORKED. A failure is not cached: the four
-   * reasons a detail read fails are all things a person fixes in less than thirty
-   * seconds, and a cached "not signed in" would tell them their fix did not work.
-   */
-  private async forgeDetail<T extends GitHubIssueRead | GitHubPullRead>(
-    projectId: string,
-    kind: "issue" | "pull",
-    number: number,
-    read: (root: string) => Promise<T>,
-    options: { force?: boolean },
-  ): Promise<T> {
-    const project = this.getProject(projectId);
-    const key = `${project.id}:${kind}:${this.forgeNumber(number)}`;
-    const cached = this.githubDetailCache.get(key) as T | undefined;
-    const readAt = cached && "issue" in cached ? cached.issue.readAt : cached && "pull" in cached ? cached.pull.readAt : undefined;
-    if (readAt !== undefined && !options.force && this.now() - readAt < GITHUB_CACHE_MS) return structuredClone(cached!);
-    const answer = await read(project.root);
-    if ("issue" in answer || "pull" in answer) this.githubDetailCache.set(key, answer);
-    return structuredClone(answer);
-  }
 
   projectIssue(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubIssueRead> {
-    return this.forgeDetail(projectId, "issue", number, (root) => readIssue(this.gh, root, number, this.now), options);
+    return this.github.issue(projectId, number, options);
   }
 
   projectPull(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubPullRead> {
-    return this.forgeDetail(projectId, "pull", number, (root) => readPull(this.gh, root, number, this.now), options);
+    return this.github.pull(projectId, number, options);
   }
 
-  /**
-   * Merge a pull request.
-   *
-   * NOT CACHED — obviously — AND IT DROPS TWO CACHES ON THE WAY OUT. A merged
-   * pull request that goes on reporting itself as open for the next thirty
-   * seconds, in the panel that just merged it, is the worst possible moment for
-   * this cache to be right about a stale answer. The LIST goes too: the row this
-   * merge just closed is in it.
-   *
-   * `expectedHeadOid` is the reader's precondition and is required. There is no
-   * "merge whatever is there now" path, because that is the merge nobody meant.
-   */
-  async projectPullMerge(
-    projectId: string,
-    number: number,
-    input: { method: GitHubMergeMethod; expectedHeadOid: string },
-  ): Promise<GitHubMergeResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(number);
-    if (!input.expectedHeadOid.trim()) throw new EngineStateError("invalid_request", "the head commit this merge was reviewed against is required");
-    const result = await mergePull(this.gh, project.root, { number: target, method: input.method, expectedHeadOid: input.expectedHeadOid }, this.now);
-    this.githubDetailCache.delete(`${project.id}:pull:${target}`);
-    if (result.merged) {
-      this.forgetGitHub(project.id);
-      // The merge's own re-read is fresher than anything a cache could hold, so
-      // it becomes the cached answer rather than being thrown away.
-      this.githubDetailCache.set(`${project.id}:pull:${target}`, { pull: result.pull });
-    }
-    return structuredClone(result);
+  projectPullMerge(projectId: string, number: number, input: { method: GitHubMergeMethod; expectedHeadOid: string }): Promise<GitHubMergeResult> {
+    return this.github.merge(projectId, number, input);
   }
 
-  /**
-   * Post one comment, attributed to the session that wrote it — issue #791.
-   *
-   * ── THE SESSION ID IS READ OFF A CLAIM, NEVER OFF AN ARGUMENT ───────────────
-   * This is the whole reason the write lives here rather than in a tool. `proof`
-   * is the CLAIM of the turn doing the commenting — a session id, a run id and
-   * the token this engine minted for that claim — and `requireSenderClaim` looks
-   * it up and refuses unless it is live. The id that reaches the comment body is
-   * the one the STORE found, not the one the caller named, so a model cannot
-   * attribute its words to a session it is not. Identical in mechanism to
-   * `submitAgentTurn`'s sender and to `Session.startedFrom`, deliberately: a
-   * second way to prove who is speaking would be a second way to get it wrong.
-   *
-   * ── AND WHAT THIS DOES NOT PROVE ────────────────────────────────────────────
-   * It binds the marker on comments that come through HERE. It cannot bind a
-   * comment an agent posts by running `gh issue comment` in its own worktree,
-   * which is how every agent comment in this repository is written today: that
-   * body is typed by the model, and a model can type any marker, including one
-   * it read off a public comment belonging to another session. The attribution
-   * is therefore a CLAIM that is ordinarily true rather than a signature, and
-   * `GitHubComment.attribution` says so to every reader. Nothing authorises on it.
-   *
-   * ── NO CACHE TO DROP, AND ONE TO ─────────────────────────────────────────────
-   * The detail read carries the thread, so a comment that posted while the panel
-   * holds a thirty-second-old copy would be invisible for the rest of that
-   * window — the same staleness `projectPullMerge` refuses. The LIST is left
-   * alone: a comment changes `updatedAt` and nothing a row renders.
-   */
-  async projectGitHubComment(
+  projectGitHubComment(
     projectId: string,
     input: { kind: "issue" | "pull"; number: number; body: string },
     proof: { sessionId: string; runId: string; claimToken: string },
   ): Promise<GitHubCommentResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(input.number);
-    assertId(proof.sessionId, "sender session id");
-    // Throws unless the claim is live and really is this session's. The id below
-    // is the store's finding, not the caller's claim.
-    const claimed = this.requireSenderClaim(proof);
-    const result = await commentOn(this.gh, project.root, {
-      kind: input.kind,
-      number: target,
-      body: input.body,
-      sessionId: claimed.sessionId,
-    });
-    if (result.posted) this.githubDetailCache.delete(`${project.id}:${input.kind}:${target}`);
-    return structuredClone(result);
+    return this.github.comment(projectId, input, proof);
   }
 
-  /**
-   * Add or remove one reaction — #842.
-   *
-   * A PERSON'S GESTURE, NOT AN AGENT'S, so unlike `projectGitHubComment` there is
-   * no claim to check: a reaction carries no body to attribute and lands under
-   * whoever `gh` is signed in as, which is the person pressing the pill.
-   *
-   * THE DETAIL IT BELONGS TO IS DROPPED ON SUCCESS, for the staleness reason the
-   * comment write gives: a refresh within thirty seconds would otherwise redraw
-   * the count the person just changed.
-   */
-  async projectGitHubReaction(
+  projectGitHubReaction(
     projectId: string,
     input: { kind: "issue" | "pull"; number: number; subjectId: string; content: GitHubReactionContent; react: boolean },
   ): Promise<GitHubReactionResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(input.number);
-    const result = await reactOn(this.gh, project.root, { subjectId: input.subjectId, content: input.content, react: input.react });
-    if (result.reacted) this.githubDetailCache.delete(`${project.id}:${input.kind}:${target}`);
-    return structuredClone(result);
+    return this.github.react(projectId, input);
   }
 
-  /**
-   * Reply to, resolve or unresolve one review thread on a pull request — #842.
-   *
-   * Person-driven like a reaction, so no claim is checked; the detail is dropped
-   * on success for the same staleness reason.
-   */
-  async projectThreadReply(projectId: string, number: number, input: { threadId: string; body: string }): Promise<GitHubThreadReplyResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(number);
-    const result = await replyToThread(this.gh, project.root, input);
-    if (result.replied) this.githubDetailCache.delete(`${project.id}:pull:${target}`);
-    return structuredClone(result);
+  projectThreadReply(projectId: string, number: number, input: { threadId: string; body: string }): Promise<GitHubThreadReplyResult> {
+    return this.github.threadReply(projectId, number, input);
   }
 
-  async projectThreadResolve(projectId: string, number: number, input: { threadId: string; resolved: boolean }): Promise<GitHubThreadResolveResult> {
-    const project = this.getProject(projectId);
-    const target = this.forgeNumber(number);
-    const result = await resolveThread(this.gh, project.root, input);
-    if (result.changed) this.githubDetailCache.delete(`${project.id}:pull:${target}`);
-    return structuredClone(result);
+  projectThreadResolve(projectId: string, number: number, input: { threadId: string; resolved: boolean }): Promise<GitHubThreadResolveResult> {
+    return this.github.threadResolve(projectId, number, input);
   }
 
   /**
@@ -3934,7 +3689,7 @@ export class EngineStore {
     // A new pull request belongs in the project's next forge read; the cached
     // list would otherwise not have it for the rest of its window — the same
     // staleness `projectPullMerge` refuses.
-    if (result.opened) this.forgetGitHub(project.id);
+    if (result.opened) this.github.forgetLists(project.id);
     return structuredClone(result);
   }
 
@@ -3978,7 +3733,7 @@ export class EngineStore {
       return { commented: false, refusal: "stale", message: "The branch moved after this diff was read. Refresh and select the lines again." };
     }
     const result = await commentOnPullLine(this.gh, cwd, pull.number, input);
-    if (result.commented && session.projectId !== undefined) this.githubDetailCache.delete(`${session.projectId}:pull:${pull.number}`);
+    if (result.commented && session.projectId !== undefined) this.github.forgetDetail(session.projectId, "pull", pull.number);
     return structuredClone(result);
   }
 
