@@ -1,8 +1,7 @@
 import { BotIcon, CircleDotIcon, FileCode2Icon, FileDiffIcon, FileIcon, GitPullRequestIcon, GlobeIcon, NotebookIcon, SquareTerminalIcon, TableIcon, TerminalIcon, type LucideIcon } from "lucide-react";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import { fileKind } from "@/lib/file-kinds";
-import { isPluginSurface, PLUGIN_SURFACES, pluginSurfaces, viewerAvailable, type PluginSurfaceId } from "@/lib/plugins/registry";
-import type { PluginPanelSource } from "@/lib/plugins/panels";
+import { isPluginSurface, PLUGIN_SURFACES, pluginSurfaces, viewerAvailable, type PluginSurfaceId, type PluginPanelSource } from "@/features/plugins";
 import type { PanelTabInstance, PanelTabParams } from "./tabs";
 
 const SURFACES = [

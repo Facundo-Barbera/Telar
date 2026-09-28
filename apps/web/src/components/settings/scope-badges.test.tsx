@@ -2,10 +2,10 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComponentType } from "react";
-import { BrowserLoginsSection } from "./browser-logins-section";
-import { BrowserProfilesSection } from "./browser-profiles-section";
-import { DictationMicrophoneSection } from "./dictation-microphone-section";
-import { DictationSection } from "./dictation-section";
+import { BrowserLoginsSection } from "@/features/browser/panes/browser-logins-section";
+import { BrowserProfilesSection } from "@/features/browser/panes/browser-profiles-section";
+import { DictationMicrophoneSection } from "@/features/dictation/components/dictation-microphone-section";
+import { DictationSection } from "@/features/dictation/components/dictation-section";
 import { InboxSection } from "@/features/sessions/components/inbox-section";
 import { LinksSection } from "./links-section";
 import { SECTIONS } from "./settings-sections";

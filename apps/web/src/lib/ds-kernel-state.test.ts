@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { latestKernelState } from "./ds";
+import { latestKernelState } from "@/features/plugins/data-science/ds";
 
 const state = (value: string) => ({ type: "kernel.state.changed", state: value });
 const other = (type: string) => ({ type });

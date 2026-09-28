@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import type { PermissionPrompt, SitePermissionRecord } from "@/lib/desktop-site-permissions";
+import type { PermissionPrompt, SitePermissionRecord } from "../desktop-site-permissions";
 import type { AnnotateCapture } from "../components/annotate-overlay";
 import { makeScopeGuard } from "../scope-guard";
 import type { DesktopBrowserDownload, DesktopBrowserPanelState, DesktopExtensionStatus } from "../types";

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type RefObject } from "react";
-import type { SitePermissionKind } from "@/lib/desktop-site-permissions";
+import type { SitePermissionKind } from "../desktop-site-permissions";
 import { claimChords, useCommandHandlers } from "@/features/commands";
 import { captionFor } from "../annotation";
 import { describePermissionDenial, type PermissionAnswer } from "../components/permission-prompt";

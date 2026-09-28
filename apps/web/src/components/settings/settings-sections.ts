@@ -1,7 +1,7 @@
 import { BlocksIcon, DownloadIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, InfoIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { PluginStatus } from "@telar/engine-client";
 import { type SettingsSearchIndex, SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "@/features/settings";
-import { pluginSettingsSearchEntries } from "@/lib/plugins/settings-form";
+import { pluginSettingsSearchEntries } from "@/features/plugins";
 import type { SettingsSection } from "./settings-shell";
 
 // The ids are routes: bookmarks and the OAuth callback (`section=mcp`) name them.

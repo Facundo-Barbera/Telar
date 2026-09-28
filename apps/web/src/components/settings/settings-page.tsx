@@ -30,7 +30,7 @@ import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
 import { Row, SettingsGroup, SettingsShell } from "./settings-shell";
 import { SECTION_IDS, SECTIONS, settingsSearchIndex } from "./settings-sections";
-import { projectPaneFor } from "@/components/plugins/settings-panes";
+import { projectPaneFor } from "@/features/plugins";
 import { useSectionFromUrl } from "./use-section-from-url";
 
 /**
@@ -63,10 +63,10 @@ import { useSectionFromUrl } from "./use-section-from-url";
 const AppearanceSection = dynamic(() => import("@/features/appearance/components/appearance-section").then((mod) => mod.AppearanceSection));
 const InboxSection = dynamic(() => import("@/features/sessions/components/inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
-const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
+const DictationSection = dynamic(() => import("@/features/dictation/components/dictation-section").then((mod) => mod.DictationSection));
 const McpSection = dynamic(() => import("@/features/agent-tools/components/mcp-section").then((mod) => mod.McpSection));
 const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
-const IntegrationsPage = dynamic(() => import("./integrations-page").then((mod) => mod.IntegrationsPage));
+const IntegrationsPage = dynamic(() => import("@/features/browser/panes/integrations-page").then((mod) => mod.IntegrationsPage));
 const KeybindingsPage = dynamic(() => import("./keybindings-page").then((mod) => mod.KeybindingsPage));
 const ProjectsPage = dynamic(() => import("@/features/projects/components/projects-page").then((mod) => mod.ProjectsPage));
 const PermissionsSection = dynamic(() => import("@/features/providers/components/permissions-section").then((mod) => mod.PermissionsSection));
@@ -75,7 +75,7 @@ const RemoteSection = dynamic(() => import("@/features/remote/components/remote-
 const SourceControlPage = dynamic(() => import("./source-control-page").then((mod) => mod.SourceControlPage));
 const OtherMacsSection = dynamic(() => import("@/features/hosts/components/other-macs-section").then((mod) => mod.OtherMacsSection));
 const TextGenSection = dynamic(() => import("@/features/providers/components/textgen-section").then((mod) => mod.TextGenSection));
-const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.PluginsPage));
+const PluginsPage = dynamic(() => import("@/features/plugins/components/plugins-page").then((mod) => mod.PluginsPage));
 const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
 const CleanupSection = dynamic(() => import("@/features/worktrees/components/cleanup-section").then((mod) => mod.CleanupSection));

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ComputerUseStatus } from "@telar/engine-client";
 import { buttonLabelled as button, click, flush, mount, press, stubFetch, installTestDom, type Route } from "@/lib/testing/dom";
 import { typeInto } from "@/lib/testing/type-into";
-import { BrowserLoginsSection } from "./browser-logins-section";
+import { BrowserLoginsSection } from "@/features/browser/panes/browser-logins-section";
 import { McpSection } from "@/features/agent-tools/components/mcp-section";
 import { OrientationSection } from "./orientation-section";
 import { ComputerUseProviders, computerUseHint, computerUseState, grantFollowUp, GRANT_POLL_MS, GRANT_WAIT_MS, PermissionsSection } from "@/features/providers/components/permissions-section";

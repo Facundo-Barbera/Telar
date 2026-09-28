@@ -37,7 +37,7 @@ import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref, newSessionId, withSnooze, sessionLink, isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity, useInboxPolicy, useSessionDefaults, LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore, buildSessionActionMenuItems, type SessionActionHandlers, type SessionActionMenuState, dropdownSessionMenuParts, SessionActionContextMenu, SessionActionMenuItems } from "@/features/sessions";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
-import { usePluginPanels } from "@/components/plugins/use-plugin-panels";
+import { usePluginPanels, pluginCommands } from "@/features/plugins";
 import { projectLabel } from "@/features/hosts";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
@@ -101,7 +101,6 @@ import {
   type EditorState,
   type OpenIntent,
 } from "@/lib/editor-workspace";
-import { pluginCommands } from "@/lib/plugins/registry";
 import { forgeParams, openForge, readForgeOpen } from "@/lib/forge-workspace";
 import { ApprovalCard } from "./approval-card";
 import { MainSidebarTrigger, useMainIsLeftmost } from "@/components/ui/main-sidebar-trigger";
@@ -170,7 +169,7 @@ export function describeTurnState(state: TurnState): { label: string; tone: "act
 
 /**
  * WHICH PLUGINS THIS PROJECT HAS ON, as ids — what the panel's surfaces, the
- * Editor's viewers and the plugin commands are gated on (`lib/plugins/registry.ts`).
+ * Editor's viewers and the plugin commands are gated on (`features/plugins/registry.ts`).
  * A plugin with no web contributions (the proof plugin `hello`) is listed and
  * simply contributes nothing.
  *
@@ -2343,7 +2342,7 @@ export function SessionCockpit({
             "panel-previous-tab": () => stepPanelTab(-1),
             "open-diff": () => showPanelTab("diff"),
             "open-editor": () => showPanelTab("editor"),
-            // A plugin's openers (`lib/plugins/registry.ts`). Bound only while
+            // A plugin's openers (`features/plugins/registry.ts`). Bound only while
             // the plugin is on, so ⇧⌘B on a project with no notebooks does
             // nothing rather than opening a tab whose surface is not there —
             // hence the dependency array.

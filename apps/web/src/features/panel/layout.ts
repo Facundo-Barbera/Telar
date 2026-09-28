@@ -1,4 +1,4 @@
-import { PLUGIN_SURFACES } from "@/lib/plugins/registry";
+import { PLUGIN_SURFACES } from "@/features/plugins";
 
 export const RIGHT_PANEL_WIDTH_STORAGE_KEY = "right-panel";
 export const RIGHT_PANEL_DEFAULT_WIDTH = 480;

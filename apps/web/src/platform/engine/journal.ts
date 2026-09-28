@@ -1,4 +1,4 @@
-import { pluginJournalRow } from "@/lib/plugins/journal";
+import { pluginJournalRow } from "@/platform/engine/plugin-journal";
 import { displayToolName, type EngineEvent, type Item, type RateLimitType, type Task, type Turn, type TurnAttachment, type TurnFailureCode, type TurnState, type UsageSnapshot } from "@telar/engine-client";
 
 /**
@@ -541,7 +541,7 @@ export function projectJournal(
         break;
       default: {
         // A PLUGIN'S EVENT draws the row its plugin registered
-        // (lib/plugins/journal.ts) — plots, compiles, watch violations.
+        // (platform/engine/plugin-journal.ts) — plots, compiles, watch violations.
         const pluginRow = turn ? pluginJournalRow(event) : undefined;
         if (turn && pluginRow) turn.items.push(pluginRow);
         // Every other family (runtime.*, request.*, browser.*, mcp.*) is
