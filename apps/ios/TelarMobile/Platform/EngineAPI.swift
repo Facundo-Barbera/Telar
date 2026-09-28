@@ -430,7 +430,7 @@ struct HTTPEngineAPI: EngineAPI {
     }
 
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data {
-        try await raw(makeRequest(url("api/projects/\(escape(projectId))/icon", query: [URLQueryItem(name: "v", value: icon)])))
+        try await raw(makeRequest(url("api/projects/\(escape(projectId))/icon", query: [URLQueryItem(name: "v", value: icon), URLQueryItem(name: "format", value: "png")])))
     }
 
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]? = nil) async throws -> TurnSubmissionResult {
