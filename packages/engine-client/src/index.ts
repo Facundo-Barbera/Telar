@@ -1,18 +1,6 @@
-import { agentToolsClient } from "./agent-tools/client";
-import { appearanceClient } from "./appearance/client";
-import { dictationClient } from "./dictation/client";
-import { gitClient } from "./git/client";
-import { githubClient } from "./github/client";
-import { notesClient } from "./notes/client";
 import type { EngineTransport } from "./platform/transport";
+import { domainClients, type EngineDomainMethods } from "./platform/domains";
 import type { InboxPolicy, SidebarLayout } from "./settings/schema";
-import { promptsClient } from "./prompts/client";
-import { providersClient } from "./providers/client";
-import { schedulesClient } from "./schedules/client";
-import { settingsClient } from "./settings/client";
-import { storageClient } from "./storage/client";
-import { usageClient } from "./usage/client";
-import { worktreesClient } from "./worktrees/client";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
@@ -368,20 +356,7 @@ function runCursor(input: RunTargetInput & { after?: number } & RunOutputFilter)
 export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery, type DiffBaseOption, type FilePatchOptions } from "./git/diff-query";
 export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
 
-export interface EngineClient
-  extends Methods<typeof agentToolsClient>,
-    Methods<typeof appearanceClient>,
-    Methods<typeof dictationClient>,
-    Methods<typeof gitClient>,
-    Methods<typeof githubClient>,
-    Methods<typeof notesClient>,
-    Methods<typeof promptsClient>,
-    Methods<typeof providersClient>,
-    Methods<typeof schedulesClient>,
-    Methods<typeof settingsClient>,
-    Methods<typeof storageClient>,
-    Methods<typeof usageClient>,
-    Methods<typeof worktreesClient> {}
+export interface EngineClient extends EngineDomainMethods {}
 
 export class EngineClient implements EngineTransport {
   constructor(
@@ -1366,23 +1341,9 @@ export class EngineClient implements EngineTransport {
   }
 }
 
-type Methods<T> = { [K in keyof T]: OmitThisParameter<T[K]> };
+Object.assign(EngineClient.prototype, ...domainClients);
 
-Object.assign(
-  EngineClient.prototype,
-  agentToolsClient,
-  appearanceClient,
-  dictationClient,
-  gitClient,
-  githubClient,
-  notesClient,
-  promptsClient,
-  providersClient,
-  schedulesClient,
-  settingsClient,
-  storageClient,
-  usageClient,
-  worktreesClient,
-);
+export { domainMethods, type EngineDomainMethods } from "./platform/domains";
+export type { EngineTransport };
 
 export { ENGINE_PROTOCOL_VERSION };

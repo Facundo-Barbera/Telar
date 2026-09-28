@@ -11,16 +11,16 @@ Loader2Icon,
 HourglassIcon,
 Minimize2Icon
 } from "lucide-react";
-import { itemLabel,itemText,type JournalItem,type JournalTask,type JournalTurn } from "@/platform/engine";
+import { itemLabel, itemText, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
 import { fmtTokens } from "@/lib/format";
 import { attachmentUrl } from "@/lib/ds";
-import { MessageMenu,MessageResponse } from "@/components/ui/message";
-import { ContextMenu,ContextMenuContent,ContextMenuItem,ContextMenuTrigger } from "@/components/ui/context-menu";
+import { MessageMenu, MessageResponse } from "@/components/ui/message";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Shimmer } from "@/components/ui/shimmer";
 import { ROW } from "./transcript-fold";
-import { AgentMessageBubble,ConversationMessage,type OpenTab } from "@/components/session/conversation-message";
+import { AgentMessageBubble, ConversationMessage, type OpenTab } from "@/components/session/conversation-message";
 import { cn } from "@/lib/utils";
-import { notificationLabel,reasoningPaints,reasoningTokens,running } from "../model";
+import { notificationLabel, reasoningPaints, reasoningTokens, running } from "../model";
 import { RowGestures } from "./tool-row";
 
 /** Extended thinking. Italic, hairline-indented, quiet — never a card. */

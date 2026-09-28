@@ -2,9 +2,9 @@ import {
 BotIcon
 } from "lucide-react";
 import { type Item } from "@telar/engine-client";
-import { itemLabel,itemText,type JournalItem,type JournalTask,type JournalTurn } from "@/platform/engine";
-import { notificationHead,notificationVerbs,type NotificationSubject } from "./notifications";
-import { CONSULT_TALLY_LABEL,harnessConsult } from "./harness-paths";
+import { itemLabel, itemText, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
+import { notificationHead, notificationVerbs, type NotificationSubject } from "./notifications";
+import { CONSULT_TALLY_LABEL, harnessConsult } from "./harness-paths";
 import { toolInputSummary } from "./tool-input-summary";
 import { rowPath } from "./components/tool-row";
 

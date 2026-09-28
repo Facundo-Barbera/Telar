@@ -3,12 +3,12 @@
 import {
 TriangleAlertIcon
 } from "lucide-react";
-import { isToolItem,itemLabel,itemText,type JournalItem,type JournalTask } from "@/platform/engine";
-import { MessageMenu,MessageResponse } from "@/components/ui/message";
+import { isToolItem, itemLabel, itemText, type JournalItem, type JournalTask } from "@/platform/engine";
+import { MessageMenu, MessageResponse } from "@/components/ui/message";
 import { type OpenTab } from "@/components/session/conversation-message";
-import { RowGestures,ToolRow } from "./tool-row";
-import { running,transcriptTasks } from "../model";
-import { AgentRow,CompactionRow,ConversationImportRow,PlanRow,PlotRow,ProviderWaitRow,ReasoningRow,SteeredMessageRow } from "./item-rows";
+import { RowGestures, ToolRow } from "./tool-row";
+import { running, transcriptTasks } from "../model";
+import { AgentRow, CompactionRow, ConversationImportRow, PlanRow, PlotRow, ProviderWaitRow, ReasoningRow, SteeredMessageRow } from "./item-rows";
 import { NotificationRow } from "./notification-row";
 
 export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, onOpenFile, onOpenFileInNewTab }: {
