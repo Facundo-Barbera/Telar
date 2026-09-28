@@ -16,7 +16,7 @@ import { latexTools } from "../src/latex/latex-tools";
 import { dsTools } from "../src/ds/ds-tools";
 import { notebookTools } from "../src/ds/notebook-tools";
 import { displayTools } from "../src/display/tools";
-import { TelarToolSocket, collectTelarWall, telarWallIdentity } from "../src/telar-socket";
+import { TelarToolSocket, collectTelarWall } from "../src/telar-socket";
 
 const sockets: TelarToolSocket[] = [];
 afterEach(async () => {
@@ -206,23 +206,6 @@ test("an in-flight call finishes against the capability it STARTED with", async 
   // …and the NEXT request sees the new one, because collection happens per
   // request rather than once at bind.
   expect(JSON.stringify((await mcp(lease, "tools/call", { name: "latex_log", arguments: {} })).body)).toContain("second");
-});
-
-test("the wall's IDENTITY changes when the capability set does — a stable token is not catalog coherence", async () => {
-  // Re-collecting per request keeps DISPATCH honest server-side, but a reused
-  // provider keeps the catalog it was started with. So the set has to be
-  // fingerprintable, or a model sees a tool it can no longer call.
-  let latex: unknown = latexLike("on");
-  const parts = [
-    { name: "latex", build: latexTools, capability: () => latex },
-    { name: "display", build: displayTools, capability: () => ({ open: async () => ({ ok: true }) }) },
-  ];
-
-  expect(telarWallIdentity(parts)).toEqual(["display", "latex"]);
-  latex = undefined;
-  expect(telarWallIdentity(parts)).toEqual(["display"]);
-  latex = latexLike("back");
-  expect(telarWallIdentity(parts)).toEqual(["display", "latex"]);
 });
 
 test("dispatch refuses a disabled tool server-side, whatever catalog the provider cached", async () => {

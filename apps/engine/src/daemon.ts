@@ -5493,7 +5493,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
     let browser: import("./browser").BrowserRuntime | undefined;
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
-    let sessionsRunSocket: import("./sessions-tools/run-socket").SessionsToolSocket | undefined;
     let telarRunSocket: import("./telar-socket").TelarToolSocket | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
@@ -5521,11 +5520,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
       // the way it owns the browser: it outlives any turn and is closed once.
       browserSocket = (await import("./drivers")).createBrowserToolSocket(routed);
-      // The sessions wall for Codex turns — worker-hosted like the browser's,
-      // per-session tokens, no persisted secret. Distinct from the daemon's
-      // outward `/v2/sessions/mcp` door below, deliberately: two doors, two
-      // credentials, and only this one carries a `self` to be woken in.
-      sessionsRunSocket = new (await import("./sessions-tools/run-socket")).SessionsToolSocket();
+      // The `telar` wall for Codex and OpenCode turns — worker-hosted like the
+      // browser's, per-session tokens, no persisted secret. Distinct from the
+      // daemon's outward `/v2/sessions/mcp` door below, which is for clients
+      // outside any turn.
       telarRunSocket = new (await import("./telar-socket")).TelarToolSocket();
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
@@ -5541,7 +5539,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // distinguish a dead worker from a stalled daemon. Its supervisor owns
       // liveness; remote workers still need the ordinary heartbeat lease.
       const socket = browserSocket;
-      const sessionsSocket = sessionsRunSocket;
       const telarSocket = telarRunSocket;
       const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
         connect: async () => {
@@ -5570,7 +5567,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // The same file the settings list and revoke path read — see the
             // note on `createLoginGrantStore`.
             loginGrants: createLoginGrantStore(store.paths.root),
-            ...(sessionsSocket ? { sessionsSocket } : {}),
             ...(telarSocket ? { telarSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
             // TRUSTED, and in-process: this is the registration `pruneWorkers`
@@ -5680,7 +5676,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // The socket before the browser it fronts: a listener that outlived
         // its browser would answer tool calls with a runtime already closing.
         await browserSocket?.close();
-        await sessionsRunSocket?.close();
         await telarRunSocket?.close();
         // Kernels beside the browser: both are processes a turn borrowed and
         // the daemon owns, and both leak past a daemon that does not stop them.

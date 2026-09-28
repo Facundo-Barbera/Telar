@@ -2011,10 +2011,10 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
      *
      * THEY ARE INSIDE `sessionsTools` RATHER THAN COMPOSED AT EACH DOOR, and
      * that is the whole of how the issue's "both deployments" requirement is
-     * met. This function has four callers — the outward MCP socket, the Codex
-     * run-socket, Claude's in-process registration in `driver.ts`, and the
-     * out-of-process worker — and a wall assembled per caller is a wall that is
-     * complete at three of them. Composed here, a tool added to this array is
+     * met. This function has two callers — the outward MCP socket and the
+     * `telar` wall (`telarWall`), which Claude registers in-process and Codex
+     * and OpenCode reach over the worker's socket — and a wall assembled per
+     * caller is a wall that is complete at only some of them. Composed here, a tool added to this array is
      * on every door by construction.
      *
      * `deferredQuery` IS NOT CEREMONY: one of those four binds this wall over a

@@ -66,11 +66,9 @@ export function createBrowserToolSocket(browser: EngineBrowser): BrowserToolSock
  * providers — Claude as an `http` entry in `mcpServers`, Codex through
  * `thread/start`'s `config.mcp_servers` overlay. One transport, both drivers.
  *
- * The SESSIONS wall is closed the same way (`./sessions-tools/run-socket.ts`):
- * a Codex turn is pointed at a worker-hosted socket under `telar-sessions`,
- * with the session's own `self` bound behind the token so subscriptions wake
- * it. Claude deliberately KEEPS its in-process registration under `telar` —
- * one wall, two transports, and the wall itself is the shared piece.
+ * The rest of Telar's tools are one wall (`telarWall` in `./telar-socket.ts`)
+ * under `telar`: Claude in-process, Codex and OpenCode over the worker-hosted
+ * socket — one parts list, two transports.
  *
  * SO THE GAP IS NOW EMPTY. The last entry here was the fan-out tool, which only
  * ever existed as an in-process Claude SDK server; #877 retired it, and no tool

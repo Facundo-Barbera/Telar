@@ -5,7 +5,6 @@ import { connectEngine } from "@telar/engine-client/node";
 import { BrowserRuntime } from "./browser";
 import { createBrowserToolSocket, createDefaultDrivers } from "./drivers";
 import { hydrateHostPath } from "./host-path";
-import { SessionsToolSocket } from "./sessions-tools/run-socket";
 import { TelarToolSocket } from "./telar-socket";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { bundledPluginToolModules, setPluginToolModules } from "./plugins/bundled";
@@ -60,9 +59,6 @@ let stopping = false;
  */
 const browser = new BrowserRuntime();
 const browserSocket = createBrowserToolSocket(browser);
-// The sessions wall for Codex turns, served from the same place and for the
-// same reason: the tools live where the worker's client is.
-const sessionsSocket = new SessionsToolSocket();
 // The `telar` wall for providers that take MCP servers as config.
 const telarSocket = new TelarToolSocket();
 /**
@@ -87,7 +83,6 @@ const supervisor = new WorkerReconnectController({
       workerId,
       driver: drivers,
       browserSocket,
-      sessionsSocket,
       telarSocket,
       loginGrants,
       refreshPlugins: loadPluginTools,
@@ -109,7 +104,7 @@ const stop = async (exitCode: number) => {
   // live Chromium holding a profile lock outlives the process that spawned it
   // otherwise.
   await browserSocket.close();
-  await sessionsSocket.close();
+  await telarSocket.close();
   await browser.close("worker shutting down");
   process.exit(exitCode);
 };

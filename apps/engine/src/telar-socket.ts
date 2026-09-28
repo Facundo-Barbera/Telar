@@ -18,11 +18,17 @@ import { TELAR_MCP_SERVER } from "@telar/engine-client";
 import { bearerIsValid } from "./http-auth";
 import { collectTools, handleSocketMessage, readSocketBody, type SocketTool } from "./mcp-socket";
 import type { ToolFactory } from "./tool-kit";
+import { displayTools } from "./display/tools";
+import { notesTools } from "./notes-tools/tools";
+import { pluginToolModules } from "./plugins/bundled";
+import { promptsTools } from "./prompts-tools/tools";
+import { runTools } from "./run/tools";
+import { sessionsTools } from "./sessions-tools/tools";
 
 export type TelarSocketLease = {
   url: string;
   token: string;
-  /** Non-secret name for this lease, for a driver fingerprint. See `plugins/socket.ts`. */
+  /** Non-secret name for this lease: every binding shares one url, so this is what tells two apart. */
   generation: string;
   release(): void;
 };
@@ -80,27 +86,69 @@ export function collectTelarWall(parts: readonly TelarWallPart[]): SocketTool[] 
   return collected;
 }
 
+/** What one turn carries onto the `telar` wall. An absent field is no tools. */
+export type TelarCapabilities = {
+  sessions?: unknown;
+  notes?: unknown;
+  prompts?: unknown;
+  display?: unknown;
+  run?: unknown;
+  /** Every enabled plugin's capability, by id. */
+  plugins?: Record<string, unknown>;
+};
+
 /**
- * THE IDENTITY OF A WALL, for a driver fingerprint — the sorted names of the
- * parts a turn actually carries.
- *
- * A STABLE TOKEN IS NOT CATALOG COHERENCE, and conflating the two is the bug
- * this exists to prevent. Re-collecting per request fixes DISPATCH: a tool that
- * was turned off stops working immediately, server-side, whatever the provider
- * believes. It does NOT refresh a provider's CACHED tool catalog — a reused
- * query keeps advertising the list it was started with, so a model would still
- * see a tool it can no longer call, and would not see one that was just added.
- *
- * So the capability SET still has to move the fingerprint and cold-start the
- * provider. Token lifecycle and tool-set identity are different things with
- * different jobs: the token keeps a reused query authenticated, this keeps its
- * catalog honest.
+ * THE ONE PARTS LIST for the `telar` wall, whichever transport serves it. It
+ * used to be written out three times — the socket in the driver, its
+ * in-process twin, and the worker's lease — and the copies drifted: Claude
+ * lost `prompts_*` and Codex/OpenCode lost `display_*`. A toolkit added here
+ * is on every provider by construction.
  */
-export function telarWallIdentity(parts: readonly TelarWallPart[]): string[] {
+export function telarWall(caps: () => TelarCapabilities | undefined): TelarWallPart[] {
+  return [
+    { name: "sessions", build: sessionsTools as never, capability: () => caps()?.sessions },
+    { name: "notes", build: notesTools as never, capability: () => caps()?.notes },
+    { name: "prompts", build: promptsTools as never, capability: () => caps()?.prompts },
+    { name: "display", build: displayTools as never, capability: () => caps()?.display },
+    { name: "run", build: runTools as never, capability: () => caps()?.run },
+    // Every plugin on the same key: a plugin tool must have one qualified name.
+    ...pluginToolModules().map((module) => ({
+      name: `plugin:${module.meta.id}`,
+      build: (tool: ToolFactory, capability: never) => module.tools(tool, capability),
+      capability: () => caps()?.plugins?.[module.meta.id],
+    })),
+  ];
+}
+
+/**
+ * A capability that reads through to THE CURRENT TURN'S instance on every
+ * property access. The in-process tools are registered once per session
+ * runtime, but each turn arrives with its own capability object — one
+ * captured at creation would call back into a turn that has already settled.
+ */
+export function delegatingCapability<T extends object>(get: () => T | undefined): T {
+  return new Proxy({} as T, {
+    get(_, prop) {
+      const current = get();
+      if (!current) throw new Error("this capability is not bound to a running turn");
+      return Reflect.get(current, prop);
+    },
+    has(_, prop) {
+      const current = get();
+      return current ? Reflect.has(current, prop) : false;
+    },
+  });
+}
+
+/**
+ * The same wall for Claude's in-process SDK server. Which parts exist is fixed
+ * now (the driver's fingerprint cold-starts on a changed set); each handler
+ * then dispatches to whatever the current turn carries.
+ */
+export function toSdkTools(parts: readonly TelarWallPart[], tool: ToolFactory): unknown[] {
   return parts
     .filter((part) => part.capability() !== undefined)
-    .map((part) => part.name)
-    .sort();
+    .flatMap((part) => part.build(tool, delegatingCapability(part.capability as () => object | undefined) as never));
 }
 
 export class TelarToolSocket {
@@ -109,7 +157,7 @@ export class TelarToolSocket {
   private boundUrl: string | undefined;
   private readonly bindings = new Map<string, () => SocketTool[]>();
   private generations = 0;
-  /** Set by `close`; checked on both sides of the listener await. See `plugins/socket.ts`. */
+  /** Set by `close`; checked on both sides of the listener await, so a bind racing a close mints nothing. */
   private closed = false;
 
   get url(): string | undefined {

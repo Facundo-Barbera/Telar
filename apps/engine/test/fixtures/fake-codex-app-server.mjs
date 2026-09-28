@@ -353,9 +353,6 @@ async function playTurn() {
       return;
     }
 
-    // The SAME elicitation for Telar's SESSIONS socket. Unlike the browser's,
-    // this one MUST reach `onRequest`: the sessions socket carries no gate of
-    // its own, so the engine's ladder is the one card.
     /**
      * THE PLUGIN WALL'S APPROVAL, END TO END. On accept it actually calls the
      * `telar` socket it was configured with; on decline it calls nothing — so a
@@ -394,11 +391,14 @@ async function playTurn() {
       return;
     }
 
+    // The SAME elicitation for a `sessions_*` tool on the `telar` wall. Unlike
+    // the browser's, this one MUST reach `onRequest`: the wall carries no gate
+    // of its own, so the engine's ladder is the one card.
     case "mcp-elicitation-telar-sessions": {
       const reply = ask("mcpServer/elicitation/request", {
         threadId,
         turnId,
-        serverName: "telar-sessions",
+        serverName: "telar",
         mode: "form",
         _meta: {
           codex_approval_kind: "mcp_tool_call",
@@ -407,14 +407,14 @@ async function playTurn() {
           tool_params: { projectId: "proj_1", envMode: "worktree" },
           tool_params_display: [],
         },
-        message: 'Allow the telar-sessions MCP server to run tool "sessions_create"?',
+        message: 'Allow the telar MCP server to run tool "sessions_create"?',
         requestedSchema: { type: "object", properties: {} },
       });
       const action = (await reply).result?.action;
       done({
         type: "mcpToolCall",
         id: "item-mcp-telar-sessions",
-        server: "telar-sessions",
+        server: "telar",
         tool: "sessions_create",
         arguments: { projectId: "proj_1", envMode: "worktree" },
         status: action === "accept" ? "completed" : "declined",

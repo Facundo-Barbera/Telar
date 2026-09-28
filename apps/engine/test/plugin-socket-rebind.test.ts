@@ -14,8 +14,8 @@
  *
  *   A → B      rebinds, the new credential works, and the OLD bearer is refused
  *   A → A      does not rebind, so a reused query keeps working
- *   A → B      moves the driver's fingerprint, so a Claude query cold-starts
- *              onto the new credential instead of holding the revoked one
+ *   A → B      moves the Claude driver's fingerprint, so its in-process
+ *              query cold-starts onto the new wall
  *
  * Temp engine root, temp project. No real home, no provider process, no token
  * is ever logged.
@@ -28,7 +28,6 @@ import { EngineClient, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver } from "../src/driver";
 import type { DriverRun, TurnDriver } from "../src/provider-contract";
-import { TelarToolSocket } from "../src/telar-socket";
 import { bundledPluginToolModules, setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import type { PluginToolModule } from "../src/plugins/tool-module";
@@ -45,7 +44,6 @@ pinFakeClaudeInThisFile();
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
-const telarSockets: TelarToolSocket[] = [];
 const root = (): string => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-plugin-rebind-"));
   roots.push(directory);
@@ -54,7 +52,6 @@ const root = (): string => {
 
 afterEach(async () => {
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
-  for (const socket of telarSockets.splice(0)) await socket.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
   setPluginToolModules(bundledPluginToolModules());
 });
@@ -278,15 +275,10 @@ test("a REUSED lease serves the current turn's capabilities, not the ones it was
   expect(sends[1]!.text).not.toContain("already settled");
 });
 
-test("a DRIVER-owned lease cold-starts the Claude query when the enabled set changes", async () => {
-  /**
-   * The other half of the rebind story. Claude's driver binds its own telar
-   * socket, so its fingerprint keys on the lease that socket minted — a set
-   * change must rebuild the query, and an unchanged set must reuse it.
-   */
+test("the Claude query cold-starts when the enabled set changes, and only then", async () => {
+  // The in-process half of the rebind story: the fingerprint carries the
+  // enabled set, so a change rebuilds the query and an unchanged set reuses it.
   setPluginToolModules([helloToolModule, secondModule]);
-  const socket = new TelarToolSocket();
-  telarSockets.push(socket);
 
   const seen = { queryCalls: 0 };
   const driver = createClaudeDriver(async () => ({
@@ -309,16 +301,15 @@ test("a DRIVER-owned lease cold-starts the Claude query when the enabled set cha
       cwd: "/tmp",
       signal: new AbortController().signal,
       onObservations: async () => undefined,
-      telarSocket: socket,
       plugins,
     });
 
   await turn({ hello });
   expect(seen.queryCalls).toBe(1);
-  // Same set: the lease is reused and so is the query.
+  // Same set: the query is reused.
   await turn({ hello });
   expect(seen.queryCalls).toBe(1);
-  // A changed set rebinds, which moves the fingerprint and rebuilds the query.
+  // A changed set moves the fingerprint and rebuilds the query.
   await turn({ hello, second: {} });
   expect(seen.queryCalls).toBe(2);
 });
