@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { CircleCheckIcon } from "lucide-react";
 import type { LiveSessionRow } from "@telar/engine-client";
@@ -184,6 +184,7 @@ export function SessionRow({
   onRowChanged,
   drag,
   jumpSlot,
+  disclosure,
 }: {
   session: SidebarSession;
   active: boolean;
@@ -196,6 +197,7 @@ export function SessionRow({
   renderedAt: number;
   onRowChanged: SessionRowChanged;
   drag?: RowDrag;
+  disclosure?: ReactNode;
 }) {
   const { isMobile } = useSidebar();
   const router = useRouter();
@@ -235,7 +237,7 @@ export function SessionRow({
   const marks = <RowMarks session={session} band={band} renderedAt={renderedAt} heldTerminals={heldTerminals} />;
   const rowBody =
     variant === "card" ? (
-      <CardBody session={session} showProject={showProject} marks={marks} hostMark={<HostMark hostName={session.hostName} />} trailing={trailingSlot} />
+      <CardBody session={session} showProject={showProject} marks={marks} hostMark={<HostMark hostName={session.hostName} />} trailing={trailingSlot} reserve={disclosure !== undefined} />
     ) : (
       <SlimBody session={session} recedes={band === "settled" || band === "snoozed"} marks={marks} trailing={trailingSlot} />
     );
@@ -279,6 +281,7 @@ export function SessionRow({
       >
         {rowBody}
       </RowLink>
+      {disclosure}
       {!searchable && (
         <RowActions
           menuProps={menuProps}

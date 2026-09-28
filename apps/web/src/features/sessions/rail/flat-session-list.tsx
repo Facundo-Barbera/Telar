@@ -1,9 +1,9 @@
 "use client";
 
-import { ChevronRightIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import type { SidebarMode } from "@telar/engine-client";
 import { SessionRow } from "./session-row";
-import { summarizeChildren, type FlatEntry } from "./flat-rail";
+import { summarizeChildren, type ChildSummary, type FlatEntry } from "./flat-rail";
 import type { RailJumpSlot } from "../session-groups";
 import type { SessionRowChanged } from "../session-mutations";
 import { sessionKey, type SessionBand, type SidebarSession } from "../session-list";
@@ -17,7 +17,34 @@ type RowContext = {
   jumpSlot: (key: string) => RailJumpSlot | undefined;
 };
 
-function FlatRow({ session, variant, context }: { session: SidebarSession; variant: "card" | "slim"; context: RowContext }) {
+function ChildrenToggle({ summary, count, open, onToggle }: { summary: ChildSummary; count: number; open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-label={open ? `Hide ${summary.label}` : `Show ${summary.label}`}
+      title={summary.label}
+      onClick={onToggle}
+      className="absolute right-6 bottom-2 z-10 flex h-4 items-center gap-0.5 rounded px-1 text-2xs tabular-nums text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+    >
+      {summary.needsYou > 0 && <span aria-hidden className="size-1.5 rounded-full bg-destructive" />}
+      {count}
+      <ChevronDownIcon className={cn("size-3 transition-transform", !open && "-rotate-90")} />
+    </button>
+  );
+}
+
+function FlatRow({
+  session,
+  variant,
+  context,
+  disclosure,
+}: {
+  session: SidebarSession;
+  variant: "card" | "slim";
+  context: RowContext;
+  disclosure?: React.ReactNode;
+}) {
   const key = sessionKey(session);
   const slot = context.jumpSlot(key);
   return (
@@ -30,6 +57,7 @@ function FlatRow({ session, variant, context }: { session: SidebarSession; varia
       renderedAt={context.renderedAt}
       onRowChanged={context.onRowChanged}
       {...(slot === undefined ? {} : { jumpSlot: slot })}
+      {...(disclosure === undefined ? {} : { disclosure })}
     />
   );
 }
@@ -37,21 +65,12 @@ function FlatRow({ session, variant, context }: { session: SidebarSession; varia
 function FlatEntryItem({ entry, open, onToggle, context }: { entry: FlatEntry; open: boolean; onToggle: () => void; context: RowContext }) {
   const summary = entry.children.length > 0 ? summarizeChildren(entry.children, context.activeSessionId) : undefined;
   const shown = open ? entry.children : (summary?.surfaced ?? []);
+  const disclosure = summary && <ChildrenToggle summary={summary} count={entry.children.length} open={open} onToggle={onToggle} />;
   return (
     <div>
-      <FlatRow session={entry.session} variant="card" context={context} />
-      {summary && (
-        <div className="ml-4 space-y-0.5 border-l border-sidebar-border pl-1.5" role="group" aria-label={`Started from ${entry.session.title || "this session"}`}>
-          <button
-            type="button"
-            aria-expanded={open}
-            onClick={onToggle}
-            className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-2xs text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-          >
-            <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
-            {summary.needsYou > 0 && <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-destructive" />}
-            <span className="min-w-0 truncate tabular-nums">{summary.label}</span>
-          </button>
+      <FlatRow session={entry.session} variant="card" context={context} {...(disclosure ? { disclosure } : {})} />
+      {shown.length > 0 && (
+        <div className="ml-3" role="group" aria-label={`Started from ${entry.session.title || "this session"}`}>
           {shown.map((child) => (
             <FlatRow key={sessionKey(child)} session={child} variant="slim" context={context} />
           ))}
@@ -104,7 +123,7 @@ export function RailModeSwitch({ mode, onChange }: { mode: SidebarMode; onChange
   );
   return (
     <div role="group" aria-label="Group by" className="app-no-drag flex shrink-0 items-center gap-1">
-      <span className="text-2xs text-sidebar-foreground/45">Group by</span>
+      <span className="hidden text-2xs text-sidebar-foreground/45 @[15rem]/rail-header:inline">Group by</span>
       <div className="flex items-center rounded-md border border-sidebar-border/60 p-px">
         {option("grouped", "Project", "Group conversations under their project.")}
         {option("flat", "None", "One list, newest first, with spawned conversations under their parent.")}

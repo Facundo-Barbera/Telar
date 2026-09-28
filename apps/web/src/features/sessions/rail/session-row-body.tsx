@@ -28,13 +28,16 @@ export function CardBody({
   marks,
   hostMark,
   trailing,
+  reserve = false,
 }: {
   session: SidebarSession;
   showProject: boolean;
   marks: ReactNode;
   hostMark: ReactNode;
   trailing: ReactNode;
+  reserve?: boolean;
 }) {
+  const room = reserve ? <span aria-hidden className="w-7 shrink-0" /> : null;
   const subtitle = rowSubtitle(session, { projectShown: showProject });
   return (
     <span className="min-w-0 flex-1 space-y-1">
@@ -55,6 +58,7 @@ export function CardBody({
         <span className="min-w-0 flex-1 truncate text-sm font-medium leading-snug text-sidebar-foreground">
           {session.title || "Untitled session"}
         </span>
+        {!subtitle && room}
         {!subtitle && (
           <span className="shrink-0 opacity-50">
             <ProviderIcon provider={session.driver} size={11} />
@@ -65,6 +69,7 @@ export function CardBody({
         <span className="flex min-w-0 items-center gap-1.5 text-2xs text-sidebar-foreground/45">
           {subtitle.kind === "branch" ? <GitBranchIcon className="size-3 shrink-0" /> : null}
           <span className="min-w-0 flex-1 truncate">{subtitle.text}</span>
+          {room}
           <span className="shrink-0 opacity-60">
             <ProviderIcon provider={session.driver} size={11} />
           </span>
