@@ -576,7 +576,7 @@ test("a settled turn keeps its completed items and drops the rows they supersede
     write.complete("item_one", "Once upon a time");
     write.endTurn();
 
-    const swept = store.compactJournal();
+    const swept = store.sweep(["compact"]).journal;
     expect(swept).toEqual({ deltas: 2, starts: 1, sessions: 1 });
     // The completed item survives, and with it the text both dropped kinds held.
     expect(types(store, "session_one")).toEqual(["item.completed", "turn.completed"]);
@@ -584,7 +584,7 @@ test("a settled turn keeps its completed items and drops the rows they supersede
 
     // AND IT IS INCREMENTAL. The watermark means the second sweep looks at
     // nothing, rather than re-scanning a settled journal every day forever.
-    expect(store.compactJournal()).toEqual({ deltas: 0, starts: 0, sessions: 0 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: 0, starts: 0, sessions: 0 });
   } finally { store.close(); }
 });
 
@@ -602,7 +602,7 @@ test("the guard keeps the deltas a completed item cannot account for", () => {
     write.complete("item_short", "truncated");
     write.endTurn();
 
-    expect(store.compactJournal()).toEqual({ deltas: 0, starts: 1, sessions: 1 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: 0, starts: 1, sessions: 1 });
     expect(types(store, "session_one")).toEqual(["content.delta", "item.completed", "turn.completed"]);
   } finally { store.close(); }
 });
@@ -619,11 +619,11 @@ test("an unfinished turn is left entirely alone, and swept once it ends", () => 
     write.delta("item_two", "an item with no completion at all");
 
     // No terminal turn event yet: nothing below it is final, so nothing goes.
-    expect(store.compactJournal()).toEqual({ deltas: 0, starts: 0, sessions: 0 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: 0, starts: 0, sessions: 0 });
     expect(store.events("session_one")).toHaveLength(4);
 
     write.endTurn();
-    expect(store.compactJournal()).toEqual({ deltas: 1, starts: 1, sessions: 1 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: 1, starts: 1, sessions: 1 });
     // `item_two` never completed, so its delta is the only record of that text
     // and it stays — the same rule as the guard, for the same reason.
     expect(types(store, "session_one")).toEqual(["item.completed", "content.delta", "turn.completed"]);
@@ -734,7 +734,7 @@ test("compaction reaches exactly the kinds whose settled row keeps the streamed 
 
     // The sweep's own accounting: 3 reachable kinds × 3 deltas, and an
     // `item.started` dropped for each of the 18 items that completed.
-    expect(store.compactJournal()).toEqual({ deltas: REACHABLE.length * DELTAS_PER_KIND, starts: REACH.length, sessions: 1 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: REACHABLE.length * DELTAS_PER_KIND, starts: REACH.length, sessions: 1 });
 
     // AFTER, per kind and in both directions.
     const after = deltasPerItem();
@@ -777,7 +777,7 @@ test("compaction reaches exactly the kinds whose settled row keeps the streamed 
  *  item they open keeps its text at `detail.text`. */
 const COMPACTABLE: ContentStream[] = ["assistant_text", "reasoning_text"];
 /** Streams no driver in this repository emits. Moving one out of here means
- *  deciding what `compactJournal` should do with its deltas — the answer is
+ *  deciding what the compaction should do with its deltas — the answer is
  *  "keep them", and the reach test above is where that gets written down. */
 const NOT_EMITTED: ContentStream[] = ["command_output", "tool_output", "unknown"];
 
@@ -832,7 +832,7 @@ test("opening the store does not sweep; the sweep follows and says what it took"
     expect(store.events("session_one").filter((event) => event.type === "content.delta")).toHaveLength(1600);
 
     // The sweep the timer would run, without waiting five seconds for it.
-    const swept = store.compactJournal();
+    const swept = store.sweep(["compact"]).journal;
     expect(swept.deltas).toBe(1600);
     expect(swept.starts).toBe(40);
 
@@ -954,7 +954,7 @@ test("the background sweep hands the event loop back between sessions, one at a 
   let expected: { deltas: number; starts: number; sessions: number };
   try {
     threeSessions(reference, sync);
-    expected = sync.compactJournal();
+    expected = sync.sweep(["compact"]).journal;
   } finally { sync.close(); }
   expect(expected).toEqual({ deltas: 6, starts: 3, sessions: 3 });
 
@@ -1057,7 +1057,7 @@ test("the terminal-turn bound is written by the append that creates it, and read
     expect(metadataValue(root, `${TERMINAL_HIGH}session_one`)).toBe(String(terminal.id));
 
     // …and the sweep bounded by it removes exactly what it always did.
-    expect(store.compactJournal()).toEqual({ deltas: 2, starts: 1, sessions: 1 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: 2, starts: 1, sessions: 1 });
     expect(types(store, "session_one")).toEqual(["item.completed", "turn.completed"]);
 
     // A SECOND TURN MOVES IT, so a settled store does not go permanently blind
@@ -1068,7 +1068,7 @@ test("the terminal-turn bound is written by the append that creates it, and read
     write.endTurn();
     const second = store.events("session_one").at(-1)!;
     expect(Number(metadataValue(root, `${TERMINAL_HIGH}session_one`))).toBe(second.id);
-    expect(store.compactJournal()).toEqual({ deltas: 1, starts: 1, sessions: 1 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: 1, starts: 1, sessions: 1 });
 
     // And it goes with the session, like the two watermarks beside it: a bound
     // outliving its journal would send a reused id past its whole history.
@@ -1104,7 +1104,7 @@ test("a journal written before the bound existed still sweeps, and pays the pars
     expect(metadataValue(root, `${TERMINAL_HIGH}session_one`)).toBeNull();
 
     // The sweep takes what it would have taken with the key present…
-    expect(store.compactJournal()).toEqual({ deltas: 2, starts: 1, sessions: 1 });
+    expect(store.sweep(["compact"]).journal).toEqual({ deltas: 2, starts: 1, sessions: 1 });
     expect(types(store, "session_one")).toEqual(["item.completed", "turn.completed"]);
     // …and the answer is written down, so the parse is paid once more and
     // never again. This is the whole claim of #894's part 4.

@@ -59,7 +59,7 @@ const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RECEIPT_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * THE TURN STATES AFTER WHICH A TURN'S ITEMS ARE FINAL — see `compactJournal`.
+ * THE TURN STATES AFTER WHICH A TURN'S ITEMS ARE FINAL — see `compactChunk`.
  *
  * `turn.steered`, `turn.requeued` and `turn.released` are deliberately absent:
  * they move a turn without ending it, and the items under them are still open.
@@ -499,7 +499,7 @@ export type ExecutionHousekeeping = {
   /** The migration backup, when there was one to consider. `removed: false`
    *  means it is still inside its week. */
   backup?: { removed: boolean; bytes: number; files: number; ageMs: number };
-  /** Superseded journal rows dropped by `compactJournal` — issue #646. Zero on
+  /** Superseded journal rows dropped by the compaction — issue #646. Zero on
    *  every open after the first unless turns have ended since. */
   journal?: { deltas: number; starts: number; sessions: number };
   /** `usage.updated` rows folded into a per-turn aggregate — issue #697.
@@ -654,6 +654,23 @@ export type ExecutionStoreOptions = {
  */
 export const ITEM_ROWS_FOR_RUNS_SQL =
   "SELECT value FROM items WHERE session_id=? AND run_id IN (SELECT value FROM json_each(?)) ORDER BY ord";
+
+type SweepTotals = {
+  journal: { deltas: number; starts: number; sessions: number };
+  usage: { rows: number; turns: number; sessions: number; refused: number };
+  slimmed: { rows: number; sessions: number };
+  requests: { pairs: number; turns: number; sessions: number; refused: number };
+};
+type SweepStep = "compact" | "fold" | "slim" | "prune";
+const ALL_STEPS: readonly SweepStep[] = ["compact", "fold", "slim", "prune"];
+type SessionSweep = { deltas: number; starts: number; slimmed: number; pairs: number; turns: number; refused: number; folded: boolean };
+const emptySweep = (): SweepTotals => ({
+  journal: { deltas: 0, starts: 0, sessions: 0 },
+  usage: { rows: 0, turns: 0, sessions: 0, refused: 0 },
+  slimmed: { rows: 0, sessions: 0 },
+  requests: { pairs: 0, turns: 0, sessions: 0, refused: 0 },
+});
+const emptySessionSweep = (): SessionSweep => ({ deltas: 0, starts: 0, slimmed: 0, pairs: 0, turns: 0, refused: 0, folded: false });
 
 export class ExecutionStore {
   private readonly db: Database;
@@ -1120,39 +1137,8 @@ export class ExecutionStore {
     this.compactTimer.unref?.();
   }
 
-  /**
-   * THE SWEEP AS HOUSEKEEPING RUNS IT — ONE SESSION PER MACROTASK (issue #894).
-   *
-   * It used to be three synchronous calls in a timer callback, and that is the
-   * defect: `sweepJournal` → `compactJournal` + `foldJournalUsage` walked every
-   * session without ever returning to the event loop. On the owner's store —
-   * 605 sessions, a 1.26 GB journal — that measured at ABOUT SIX MINUTES AT
-   * 100% CPU after every open, and for those six minutes the daemon answered
-   * nothing: not `/v2/health`, and not a Stop. The turn the owner could not
-   * stop was not stuck; the request was never serviced, because there was no
-   * event loop to service it. Restarting made it worse, because the timer
-   * re-arms five seconds after each open and puts the same backlog back.
-   *
-   * So the walk yields between sessions. Each session keeps its own
-   * transaction exactly as before — the per-session `alone` is what already
-   * kept a turn arriving mid-sweep waiting on one DELETE rather than on the
-   * backlog — and the yield is what keeps the gaps BETWEEN those transactions
-   * available to everything else.
-   *
-   * ══ WHAT IS DELIBERATELY UNCHANGED ══
-   *
-   * THE TOTALS AND THE ONE LINE. `onJournalCompacted` and `housekeeping` still
-   * describe the whole walk, and still only when something went, so the daemon
-   * prints the same single line it always did — at the end of the walk rather
-   * than at the end of the loop.
-   *
-   * THE THREE INDEPENDENT `try`s (#697), now per session for the two that are
-   * per session: a compaction that threw must not be the reason that session's
-   * fold never ran, nor the reason the NEXT session is never reached — which
-   * the old store-wide `try` could not promise. Retention stays one call after
-   * the walk; it is one call, and it is the only one of the three that deletes
-   * something a reader would miss.
-   */
+  // The background sweep: one chunk per macrotask (#894), so a large store never
+  // holds the event loop. Totals and the one log line cover the whole walk.
   private sweepJournal(): void {
     // A WALK ALREADY RUNNING IS NOT RESTARTED. The daily `pruneTimer` fires on
     // its own schedule, and a second walk over the same sessions would double
@@ -1162,81 +1148,91 @@ export class ExecutionStore {
     try { sessions = this.sessionIds(); } catch { return; }
     const walk: { cancelled: boolean } = { cancelled: false };
     this.walk = walk;
-    const swept = { deltas: 0, starts: 0, sessions: 0 };
-    const folded = { rows: 0, turns: 0, sessions: 0, refused: 0 };
-    const slimmed = { rows: 0, sessions: 0 };
-    const pruned = { pairs: 0, turns: 0, sessions: 0, refused: 0 };
+    const totals = emptySweep();
     let index = 0;
     // A session with more than one chunk left (`SWEEP_CHUNK_IDS`) is stepped
     // again before the walk moves on; `session` sums its chunks so the totals
     // count it once.
-    let resuming = false;
-    const fresh = () => ({ deltas: 0, starts: 0, slimmed: 0, pairs: 0, turns: 0, refused: 0 });
-    let session = fresh();
+    let session = emptySessionSweep();
     const done = (): void => {
       this.walk = undefined;
       // A cancelled walk announces nothing: `close()` took it mid-store, so
-      // the totals describe a fraction of the sessions and reporting them
-      // would be a claim about a sweep that did not finish.
+      // the totals describe a fraction of the sessions.
       if (walk.cancelled || this.closed) return;
-      if (swept.deltas > 0 || swept.starts > 0) {
-        this.housekeeping.journal = swept;
-        this.onJournalCompacted?.(swept);
+      const { journal, usage, slimmed, requests } = totals;
+      if (journal.deltas > 0 || journal.starts > 0) {
+        this.housekeeping.journal = journal;
+        this.onJournalCompacted?.(journal);
       }
-      if (folded.turns > 0 || folded.refused > 0) this.housekeeping.usage = folded;
+      if (usage.turns > 0 || usage.refused > 0) this.housekeeping.usage = usage;
       if (slimmed.rows > 0) this.housekeeping.slimmed = slimmed;
-      if (pruned.pairs > 0 || pruned.refused > 0) this.housekeeping.requests = pruned;
+      if (requests.pairs > 0 || requests.refused > 0) this.housekeeping.requests = requests;
       try { this.onRetentionSweep?.(); } catch { /* the next sweep covers whatever this one missed */ }
     };
     const step = (): void => {
       if (walk.cancelled || this.closed) { if (this.walk === walk) this.walk = undefined; return; }
       if (index >= sessions.length) return done();
-      const sessionId = sessions[index]!;
-      let more = false;
-      try {
-        const chunk = this.compactChunk(sessionId);
-        session.deltas += chunk.deltas;
-        session.starts += chunk.starts;
-        more ||= chunk.more;
-      } catch { /* as above */ }
-      if (!resuming) try { this.foldInto(sessionId, folded); } catch { /* as above */ }
-      // LAST, because it is bounded by what the compaction has already read:
-      // the compaction measures deltas against `item.completed` text.
-      try {
-        const chunk = this.slimChunk(sessionId);
-        session.slimmed += chunk.rows;
-        more ||= chunk.more;
-      } catch { /* as above */ }
-      try {
-        const chunk = this.pruneRequestsChunk(sessionId);
-        session.pairs += chunk.pairs;
-        session.turns += chunk.turns;
-        session.refused += chunk.refused;
-        more ||= chunk.more;
-      } catch { /* as above */ }
-      resuming = more;
-      if (!more) {
+      if (!this.sweepStep(sessions[index]!, session, totals)) {
         index += 1;
-        if (session.deltas > 0 || session.starts > 0) { swept.deltas += session.deltas; swept.starts += session.starts; swept.sessions += 1; }
-        if (session.slimmed > 0) { slimmed.rows += session.slimmed; slimmed.sessions += 1; }
-        pruned.refused += session.refused;
-        if (session.pairs > 0) { pruned.pairs += session.pairs; pruned.turns += session.turns; pruned.sessions += 1; }
-        session = fresh();
+        session = emptySessionSweep();
       }
       this.sweepYield(step);
     };
     this.sweepYield(step);
   }
 
-  /** One session's compaction, added to a running total. The accounting the
-   *  synchronous `compactJournal` and the cooperative walk SHARE, so the two
-   *  cannot come to different opinions about what a swept session counts as. */
-  private compactInto(sessionId: string, total: { deltas: number; starts: number; sessions: number }): void {
-    const swept = this.compactSession(sessionId);
-    if (swept.deltas === 0 && swept.starts === 0) return;
-    total.deltas += swept.deltas;
-    total.starts += swept.starts;
-    total.sessions += 1;
+  /**
+   * THE SWEEP, SYNCHRONOUSLY — for `reclaim`, a button somebody waits in front
+   * of. Same per-session step as the background walk; `steps` lets a test run
+   * one of them alone.
+   */
+  sweep(steps: readonly SweepStep[] = ALL_STEPS): SweepTotals {
+    const totals = emptySweep();
+    for (const sessionId of this.sessionIds()) {
+      const session = emptySessionSweep();
+      while (this.sweepStep(sessionId, session, totals, steps));
+    }
+    return totals;
+  }
+
+  /**
+   * ONE CHUNK OF EACH SWEEP FOR ONE SESSION, each in its own `try` (#697) so a
+   * compaction that threw is not the reason the fold never ran. Returns whether
+   * the session has chunks left; its totals are added once it has none.
+   */
+  private sweepStep(sessionId: string, session: SessionSweep, totals: SweepTotals, steps: readonly SweepStep[] = ALL_STEPS): boolean {
+    let more = false;
+    if (steps.includes("compact")) try {
+      const chunk = this.compactChunk(sessionId);
+      session.deltas += chunk.deltas;
+      session.starts += chunk.starts;
+      more ||= chunk.more;
+    } catch { /* as above */ }
+    if (steps.includes("fold") && !session.folded) {
+      session.folded = true;
+      try { this.foldInto(sessionId, totals.usage); } catch { /* as above */ }
+    }
+    // After the compaction, which bounds it: the compaction measures deltas
+    // against `item.completed` text.
+    if (steps.includes("slim")) try {
+      const chunk = this.slimChunk(sessionId);
+      session.slimmed += chunk.rows;
+      more ||= chunk.more;
+    } catch { /* as above */ }
+    if (steps.includes("prune")) try {
+      const chunk = this.pruneRequestsChunk(sessionId);
+      session.pairs += chunk.pairs;
+      session.turns += chunk.turns;
+      session.refused += chunk.refused;
+      more ||= chunk.more;
+    } catch { /* as above */ }
+    if (more) return true;
+    const { journal, slimmed, requests } = totals;
+    if (session.deltas > 0 || session.starts > 0) { journal.deltas += session.deltas; journal.starts += session.starts; journal.sessions += 1; }
+    if (session.slimmed > 0) { slimmed.rows += session.slimmed; slimmed.sessions += 1; }
+    requests.refused += session.refused;
+    if (session.pairs > 0) { requests.pairs += session.pairs; requests.turns += session.turns; requests.sessions += 1; }
+    return false;
   }
 
   /** One session's fold, added to a running total — and its conservation check
@@ -1275,71 +1271,9 @@ export class ExecutionStore {
     return removed;
   }
 
-  /**
-   * DROP THE JOURNAL ROWS A SETTLED TURN HAS SUPERSEDED — issue #646.
-   *
-   * `events` is 68% of a gigabyte database on the dogfood home and grows
-   * ~35 MB a day with nothing bounding it. Most of that is not history: a
-   * streamed item is journalled three ways over its life, and once the turn
-   * that made it has ended, two of the three add nothing a reader can use.
-   *
-   *   - `content.delta` is the streaming increments. `journal.ts` folds them
-   *     into `item.streamedText` for an item it has already seen, and the
-   *     closing `item.completed` carries that same text in the item itself.
-   *   - `item.started` is the same item with `status: "inProgress"`. The
-   *     completed event carries the same id, the same `startedAt`, and the
-   *     final detail; both go through one `upsert` in the fold.
-   *
-   * Measured on the owner's store: 443,738 deltas and 127,213 `item.started`
-   * rows qualified — 57% of a million-row journal — and the file went from
-   * 1005.6 MiB to 695.1 MiB once a VACUUM returned the pages.
-   *
-   * ══ THE GUARD IS THE WHOLE DESIGN, AND IT IS NOT AN OPTIMISATION ══
-   *
-   * A delta is dropped ONLY where its item's own `item.completed` text is at
-   * least as long as the deltas summed. That comparison is what makes the
-   * deletion LOSSLESS BY CONSTRUCTION rather than by belief: where the claim
-   * "the completed item already holds this text" is true the sum proves it,
-   * and where it is false the rows stay and nothing is lost.
-   *
-   * It is not a formality. Sampling 4,000 items on the owner's store, 3,991
-   * passed and NINE DID NOT — items whose completed text was shorter than what
-   * was streamed into them. Those nine are the reason this is written as a
-   * comparison and not as `WHERE type='content.delta'`. Do not simplify it
-   * into the unconditional delete it looks like it wants to be: the 99.8% is
-   * the argument FOR the guard, not against it.
-   *
-   * ══ WHY IT ONLY LOOKS BELOW A TERMINAL TURN EVENT ══
-   *
-   * An item belongs to a turn, so a turn that has ended is a range in which
-   * every item is final. Bounding the sweep at the last terminal turn event
-   * keeps it off anything in flight without needing to know what is running:
-   * a delta still streaming has no `item.completed` to be measured against,
-   * and a turn that died mid-item keeps its deltas, which are then the only
-   * record of that text. The lower bound is the previous sweep's watermark,
-   * so each event is examined once in its life rather than daily forever.
-   *
-   * ONE TRANSACTION PER SESSION, not one for the store. The first sweep on a
-   * year-old store is most of the work this will ever do — around a minute
-   * over the owner's 446 sessions, against 0.13 s for every sweep after it —
-   * and holding a write lock across a million rows for that long would stall
-   * the streaming path behind housekeeping. Per session
-   * it is a fraction of a second, so a turn arriving mid-sweep waits for one
-   * session's DELETE rather than for the backlog. That length is also why the
-   * constructor no longer calls this; see the timer it arms instead.
-   *
-   * Returns what went, so the daemon can say it and a test can hold it to it.
-   */
-  compactJournal(): { deltas: number; starts: number; sessions: number } {
-    const total = { deltas: 0, starts: 0, sessions: 0 };
-    // SYNCHRONOUS AND STAYING THAT WAY: `reclaim()` is a button somebody
-    // pressed and waits in front of, and the tests call it directly. The
-    // cooperative walk (#894) is the background sweep, and it shares this
-    // method's per-session body rather than reimplementing it.
-    for (const sessionId of this.sessionIds()) this.compactInto(sessionId, total);
-    return total;
-  }
-
+  // Compaction (#646): a delta goes only where its item's `item.completed` text
+  // is at least as long as the deltas summed, so it is lossless by construction.
+  // Real items fail that test; keep the guard.
   /**
    * HOW FAR UP THIS SESSION IS SETTLED — the bound both sweeps open with, read
    * from the row `append` keeps rather than parsed out of the journal (#894).
@@ -1363,18 +1297,6 @@ export class ExecutionStore {
     this.statement("INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
       .run(key, String(high));
     return high;
-  }
-
-  /** One session's share of `compactJournal`, a transaction per chunk. */
-  private compactSession(sessionId: string): { deltas: number; starts: number } {
-    const swept = { deltas: 0, starts: 0 };
-    for (let more = true; more;) {
-      const chunk = this.compactChunk(sessionId);
-      swept.deltas += chunk.deltas;
-      swept.starts += chunk.starts;
-      more = chunk.more;
-    }
-    return swept;
   }
 
   /** At most `SWEEP_CHUNK_IDS` of one session's compaction, in a transaction of
@@ -1438,69 +1360,18 @@ export class ExecutionStore {
     return swept;
   }
 
-  /**
-   * FOLD A SETTLED TURN'S `usage.updated` ROWS INTO ONE AGGREGATE — issue #697.
-   *
-   * A token count is restated after every item, so a turn leaves behind as many
-   * of these as it had envelopes. Measured on the owner's store (#646): 281k
-   * rows across `usage.updated` and its neighbour, ~106 MB of a journal that is
-   * 68% of the database. Unlike a delta, none of it is text a reader will ever
-   * scroll past — the transcript takes the last one and the meter reads the
-   * tail, so every row but the last is superseded the instant the next arrives.
-   *
-   * ══ WHY THE ROWS CANNOT SIMPLY GO ══
-   *
-   * See the columns this writes into for the long version. Short: on Codex each
-   * row is ONE CALL's tokens and no turn total is ever emitted, so keeping the
-   * last row and dropping the rest would destroy the turn's spend and leave the
-   * last call's in its place. So the sum is written down BEFORE anything is
-   * deleted, and the delete is refused for any turn that cannot hold it.
-   *
-   * ══ THE TWO THINGS THAT WOULD REFUSE THE DELETION ══
-   *
-   * 1. SUM CONSERVATION, checked inside the transaction and against a second,
-   *    independent computation: the aggregate is folded in TypeScript over the
-   *    parsed rows, sqlite sums the same range with `SUM(json_extract(...))`,
-   *    and the two must agree field by field and on the row count. An
-   *    implementation that recorded the SURVIVOR instead of the total fails
-   *    this on any turn whose rows are not monotonic — which is every
-   *    multi-call Codex turn. A disagreement throws, so `alone` rolls the whole
-   *    session's fold back and the rows are still there.
-   * 2. A PLACE TO PUT IT. A turn with no `turn_summaries` row has nowhere to
-   *    record the sum, so its rows stay and it is counted as `refused` rather
-   *    than quietly skipped.
-   *
-   * IDEMPOTENT BY SEEKING ON `usage_rows IS NULL` as well as by watermark. The
-   * watermark is the cheap half — it keeps the daily sweep off a settled
-   * journal — but a turn folded twice would sum a set of rows one delete had
-   * already shrunk and overwrite a right answer with a wrong one, and a
-   * watermark is not a strong enough thing to hang that on.
-   *
-   * SAME BOUNDS AS `compactSession`, for its reasons: one transaction per
-   * session, and nothing above the session's last terminal turn event, so a
-   * turn in flight is untouched without the sweep needing to know what is
-   * running. Its own watermark, for the reason `USAGE_WATERMARK_PREFIX` gives.
-   */
-  foldJournalUsage(): { rows: number; turns: number; sessions: number; refused: number } {
-    const total = { rows: 0, turns: 0, sessions: 0, refused: 0 };
-    // Synchronous for `reclaim`'s reason, and sharing its per-session body with
-    // the cooperative walk — see `compactJournal` above.
-    for (const sessionId of this.sessionIds()) this.foldInto(sessionId, total);
-    return total;
-  }
-
-  /** One session's share of `foldJournalUsage`, in a transaction of its own.
-   *  `rows` is what went; `turns` is what now has an aggregate. */
+  /** One session's fold, in a transaction of its own. `rows` is what went;
+   *  `turns` is what now has an aggregate. */
   foldUsage(sessionId: string): { rows: number; turns: number; refused: number } {
     const folded = { rows: 0, turns: 0, refused: 0 };
     this.alone(() => {
       // A held usage row belongs in the database before anything sums it, for
-      // the reason `compactSession` drains: a row still in the buffer would be
+      // the reason `compactChunk` drains: a row still in the buffer would be
       // absent from the sum and present in the journal afterwards.
       this.drain(this.depth > 0);
       const key = `${USAGE_WATERMARK_PREFIX}${sessionId}`;
       const low = Number(this.statement("SELECT value FROM metadata WHERE key=?").get(key)?.value ?? 0);
-      // The same bound `compactSession` takes, from the same row — see
+      // The same bound `compactChunk` takes, from the same row — see
       // `TERMINAL_HIGH_PREFIX`. This was the second of the two whole-journal
       // parses a sweep paid per session (#894).
       const high = this.terminalHigh(sessionId);
@@ -1603,57 +1474,8 @@ export class ExecutionStore {
     return folded;
   }
 
-  /**
-   * SLIM A SETTLED TURN'S `item.completed` ROWS TO A REFERENCE — issue #858.
-   *
-   * After #646 and #697 the journal a settled turn leaves behind is mostly
-   * `item.completed`, and each one is the same item the `items` row holds
-   * (#658) — measured on a synthetic 1,000-turn session at 19.8 of 23.0 MB of
-   * events, beside 19.0 MB of items. So the row keeps its id, `at`, `runId`
-   * and type, its `item` becomes `{ id }`, and `events()` puts the row's item
-   * back on every read.
-   *
-   * ══ LOSSLESS BY CONSTRUCTION, NOT BY BELIEF ══
-   *
-   * A row is slimmed ONLY where the `items` row is byte-identical to the event's
-   * item once both are minified by `json()`. Where they differ — an item a
-   * later event rewrote, a session whose items are still a blob — the row stays
-   * whole and nothing is lost. `upsertItems` restores a stub before it lets a
-   * row change under it, so the equality holds for as long as the stub exists.
-   *
-   * NOTIFICATIONS ARE NEVER SLIMMED: `rewriteNotificationItem` rewrites a
-   * completed notification's row when a coalesce supersedes it, and those rows
-   * are small anyway.
-   *
-   * BOUNDED BY THE COMPACTION, not only by `terminalHigh`: the compaction reads
-   * `item.completed` text to decide which deltas may go, so nothing it has not
-   * read yet is slimmed. One transaction per session and its own watermark, for
-   * `compactSession`'s reasons.
-   */
-  slimJournal(): { rows: number; sessions: number } {
-    const total = { rows: 0, sessions: 0 };
-    for (const sessionId of this.sessionIds()) this.slimInto(sessionId, total);
-    return total;
-  }
-
-  private slimInto(sessionId: string, total: { rows: number; sessions: number }): void {
-    const rows = this.slimSession(sessionId);
-    if (rows === 0) return;
-    total.rows += rows;
-    total.sessions += 1;
-  }
-
-  /** One session's share of `slimJournal`, a transaction per chunk. */
-  slimSession(sessionId: string): number {
-    let rows = 0;
-    for (let more = true; more;) {
-      const chunk = this.slimChunk(sessionId);
-      rows += chunk.rows;
-      more = chunk.more;
-    }
-    return rows;
-  }
-
+  // Slimming (#858): only where the `items` row is byte-identical to the event's
+  // item, never a notification, and never past what the compaction has read.
   /** At most `SWEEP_CHUNK_IDS` of one session's slim, in a transaction of its own. */
   private slimChunk(sessionId: string): { rows: number; more: boolean } {
     let slimmed = 0;
@@ -1705,65 +1527,8 @@ export class ExecutionStore {
     return past !== undefined && past !== null ? Number(past) : high;
   }
 
-  /**
-   * PRUNE THE REQUEST PAIRS THE POLICY RESOLVED — issue #697 part B.
-   *
-   * A request the runtime mode allows is opened and resolved in the same
-   * instant, and both rows say only "the engine permitted what it was always
-   * going to permit". Measured on the owner's store (26 Sep): 94,775 such pairs,
-   * 109.8 of 110.1 MiB of request rows. A request a person, a session or a
-   * cancellation resolved is a decision somebody made, and is never touched.
-   *
-   * ══ THE PREDICATE — ALL OF IT, OR THE PAIR STAYS ══
-   *
-   * 1. BOTH HALVES, EXACTLY ONCE, IN THIS RANGE: one `request.opened` whose
-   *    request is resolved by `policy`, one `request.resolved` by `policy` after
-   *    it, on the same run and with the same decision.
-   * 2. THE TURN HAS ENDED — its own terminal event, as `foldUsage` requires.
-   * 3. THE POLICY WOULD HAVE SAID SO: `autoResolution(mode, kind)` equals the
-   *    decision, with `mode` read from the newest `session.created`/`updated`
-   *    below the opened row. A row claiming `policy` that the mode at the time
-   *    would not have produced is a bug or a tampered row, and it survives.
-   *
-   * WHAT IS KEPT IN THEIR PLACE: a per-turn count by kind and decision in
-   * `turn_summaries.policy_requests`, so "how many did this turn auto-run"
-   * stays answerable. "Which command" lives on in the item's `item.completed`.
-   * A turn with no summary row has nowhere to put the count, so its pairs stay
-   * and it is counted as `refused`.
-   *
-   * IDEMPOTENT because a pruned pair is gone and cannot be counted twice; the
-   * counts are ADDED to, so a turn swept in two ranges sums correctly. Same
-   * per-session transaction and terminal bound as `compactSession`, with its
-   * own watermark for the reason `REQUEST_PRUNE_WATERMARK_PREFIX` gives.
-   */
-  pruneJournalRequests(): { pairs: number; turns: number; sessions: number; refused: number } {
-    const total = { pairs: 0, turns: 0, sessions: 0, refused: 0 };
-    for (const sessionId of this.sessionIds()) this.pruneRequestsInto(sessionId, total);
-    return total;
-  }
-
-  private pruneRequestsInto(sessionId: string, total: { pairs: number; turns: number; sessions: number; refused: number }): void {
-    const pruned = this.pruneRequests(sessionId);
-    total.refused += pruned.refused;
-    if (pruned.pairs === 0) return;
-    total.pairs += pruned.pairs;
-    total.turns += pruned.turns;
-    total.sessions += 1;
-  }
-
-  /** One session's share of `pruneJournalRequests`, a transaction per chunk. */
-  pruneRequests(sessionId: string): { pairs: number; turns: number; refused: number } {
-    const pruned = { pairs: 0, turns: 0, refused: 0 };
-    for (let more = true; more;) {
-      const chunk = this.pruneRequestsChunk(sessionId);
-      pruned.pairs += chunk.pairs;
-      pruned.turns += chunk.turns;
-      pruned.refused += chunk.refused;
-      more = chunk.more;
-    }
-    return pruned;
-  }
-
+  // Request pruning (#697 B): only pairs the policy resolved, counted per turn in
+  // `turn_summaries.policy_requests`; a turn with no summary keeps its pairs.
   /**
    * At most `SWEEP_CHUNK_IDS` of one session's prune, in a transaction of its own.
    *
@@ -2110,7 +1875,7 @@ export class ExecutionStore {
    * which is the vacuous-guard shape this repository has already shipped once.
    * `{ retired, skipped, events }` distinguishes the states; a string does not.
    *
-   * ONE TRANSACTION PER SESSION, reusing `compactSession`'s argument verbatim:
+   * ONE TRANSACTION PER SESSION, reusing `compactChunk`'s argument verbatim:
    * the first run after enabling is the whole backlog, and a single transaction
    * across it would stall the streaming path behind housekeeping.
    */
@@ -2224,7 +1989,7 @@ export class ExecutionStore {
    * GIVE THE FREED PAGES BACK TO THE FILESYSTEM — issue #646, and ONLY on ask.
    *
    * A `DELETE` moves pages to sqlite's freelist, where later inserts reuse
-   * them; the file itself never shrinks. So `compactJournal` above makes the
+   * them; the file itself never shrinks. So the compaction above makes the
    * database hold less without making it WEIGH less, and this is the half that
    * finishes the job. Measured on the owner's store: the compaction dropped
    * 570,951 rows and left the file at 1005.6 MiB to the byte, and the VACUUM
@@ -2253,13 +2018,8 @@ export class ExecutionStore {
    */
   reclaim(): { before: number; after: number; deltas: number; starts: number; sessions: number; usage: number } {
     const before = this.journalBytes();
-    const journal = this.compactJournal();
-    // The usage fold rides the same press for the reason the compaction does:
-    // its DELETEs return no bytes either, and the VACUUM below is the only
-    // thing that turns either sweep into a smaller file.
-    const usage = this.foldJournalUsage();
-    this.slimJournal();
-    this.pruneJournalRequests();
+    // The sweeps' DELETEs return no bytes; the VACUUM below is what does.
+    const { journal, usage } = this.sweep();
     // Everything held must be on disk before the rewrite: VACUUM cannot run
     // inside a transaction, so there is no scope here to carry them into.
     this.flush();
