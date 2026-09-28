@@ -14,7 +14,7 @@
  * it counts its own renders. Under the old shape the state lived in that parent,
  * so every tick rendered the probe again.
  *
- * THE TICK IS FIRED, NOT WAITED FOR. `useSecondsClock` asks `window.setInterval`
+ * THE TICK IS FIRED, NOT WAITED FOR. `useNow` asks `window.setInterval`
  * for it, so the test takes the callback and calls it with the system clock
  * moved on. Nothing here sleeps, and nothing depends on a timer landing inside a
  * test's budget.
@@ -31,7 +31,7 @@ GlobalRegistrator.register({ url: "http://localhost/" });
 
 const STARTED = 1_700_000_000_000;
 
-/** The callbacks `useSecondsClock` has handed to `window.setInterval`. */
+/** The callbacks `useNow` has handed to `window.setInterval`. */
 let ticks: Array<() => void> = [];
 const realSetInterval = window.setInterval;
 const realClearInterval = window.clearInterval;

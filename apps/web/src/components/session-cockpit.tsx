@@ -1,5 +1,6 @@
 "use client";
 
+import { useNow } from "@/ui/hooks/use-now";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -3152,28 +3153,8 @@ export function SessionCockpit({
    * the affordance. A turn Telar interrupted by quitting lands here too, which
    * is the whole point of recording it as a failure rather than as ambiguity.
    */
-  /**
-   * THE WALL CLOCK, AND IT IS NO LONGER THE TRANSCRIPT'S (#498).
-   *
-   * A 1 s `setInterval` used to live here and be threaded into every turn as a
-   * `now` prop, so one tick re-rendered the cockpit and all ten turns mounted
-   * under it in order to advance the elapsed seconds inside ONE
-   * `WorkingIndicator`. That clock belongs to the thing that reads it and now
-   * lives there (`useSecondsClock`, transcript.tsx).
-   *
-   * WHAT IS LEFT HERE READS AT HUMAN SCALE, and 30 s is generous for both of
-   * them: `isSettled`, whose window is hours and which returns false on a
-   * working session before it reads this at all, and the header menu's snooze
-   * presets, whose smallest offset is an hour. It is not a regression on the
-   * old clock either way — that one only ticked while a turn was RUNNING, so on
-   * an idle session both of these were already frozen at whatever the cockpit
-   * mounted with.
-   */
-  const [settlingNow, setSettlingNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setSettlingNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  // Settling windows are hours and snooze labels minutes, so 30 s is fine.
+  const settlingNow = useNow(30_000);
 
   // Only OPEN requests on a turn that can still take the answer are actionable;
   // resolved ones are history, and one left on an ended turn has no worker
