@@ -7,6 +7,9 @@ import { hydrateHostPath } from "./host-path";
 import { SessionsToolSocket } from "./sessions-tools/run-socket";
 import { TelarToolSocket } from "./telar-socket";
 import { createLoginGrantStore } from "./secrets/login-grants";
+import { bundledPluginToolModules, setPluginToolModules } from "./plugins/bundled";
+import { externalPluginsDir, loadInstalledPlugins } from "./plugins/external/manifest";
+import { externalToolModule } from "./plugins/external/module";
 import { engineRootFromEnv, statePaths } from "./state";
 import { EngineWorker, workerConcurrencyFromEnv } from "./worker";
 import { WorkerReconnectController } from "./worker-supervisor";
@@ -25,6 +28,13 @@ const workerId = process.env.TELAR_WORKER_ID?.trim() || `worker_${process.pid}_$
 if (!/^[A-Za-z0-9_-]+$/.test(workerId)) {
   throw new Error("TELAR_WORKER_ID must contain only letters, numbers, underscores, or hyphens");
 }
+
+// The installed plugins' walls, from the same folder the daemon reads: a tool
+// the daemon routes must be one this worker offers.
+setPluginToolModules([
+  ...bundledPluginToolModules(),
+  ...loadInstalledPlugins(externalPluginsDir(root)).loaded.map(externalToolModule),
+]);
 
 let stopping = false;
 

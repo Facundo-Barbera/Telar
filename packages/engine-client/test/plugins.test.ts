@@ -239,7 +239,8 @@ describe("the manifest schema discriminates", () => {
     expect(PluginMeta.safeParse({ ...valid, toolPrefixes: ["ds_"] }).success).toBe(false);
   });
 
-  test("a manifest with no tool prefixes is rejected", () => {
-    expect(PluginMeta.safeParse({ ...valid, toolPrefixes: [] }).success).toBe(false);
+  test("a manifest with no tool prefixes is accepted", () => {
+    // A UI-only external plugin, or a refused manifest, owns no prefix.
+    expect(PluginMeta.safeParse({ ...valid, toolPrefixes: [] }).success).toBe(true);
   });
 });

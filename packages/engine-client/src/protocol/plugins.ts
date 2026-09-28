@@ -97,8 +97,12 @@ export const PluginMeta = z.object({
   version: z.string().min(1).max(32),
   blurb: z.string().max(300).optional(),
   icon: z.string().min(1).max(64).optional(),
-  /** Tool prefixes this plugin owns, without trailing underscores. */
-  toolPrefixes: z.array(PluginToolPrefix).min(1),
+  /**
+   * Tool prefixes this plugin owns, without trailing underscores. EMPTY IS
+   * ALLOWED: an external plugin may contribute only UI, and a manifest the
+   * host refused is still listed (with its reason) and owns nothing.
+   */
+  toolPrefixes: z.array(PluginToolPrefix),
   /**
    * Tools this plugin CLAIMS are pure reads. A claim, not a grant — the host
    * ratifies. Names are unqualified (`latex_status`, not `mcp__telar__…`).
@@ -131,6 +135,74 @@ export const PluginMeta = z.object({
   settings: z.array(PluginSettingsSection).default([]),
 });
 export type PluginMeta = z.infer<typeof PluginMeta>;
+
+/**
+ * AN EXTERNAL PLUGIN'S MANIFEST — `<TELAR_HOME>/plugins/<id>/plugin.json`.
+ *
+ * Everything the host needs without running it: who it is, how to start it,
+ * which tools it will answer (declared here, so an approval and a provider's
+ * catalog never depend on a process having started), its settings as JSON
+ * Schema, and the route verbs it serves. STRICT: an unknown key is a typo the
+ * author should hear about, so it refuses rather than being ignored — and a
+ * refused manifest is listed on Settings ▸ Plugins with the reason, never
+ * fatal to the engine.
+ *
+ * THE PROCESS speaks newline-delimited JSON-RPC 2.0 on stdio: MCP's
+ * `initialize` and `tools/call` for tools, and `telar/route` for route verbs.
+ * See docs/design/plugins-contract.md, "External plugins".
+ */
+export const ExternalPluginTool = z.strictObject({
+  /** Must start with the manifest's `toolPrefix` and an underscore. */
+  name: z.string().regex(/^[a-z][a-z0-9]*_[a-z0-9_]+$/, "a tool name is <prefix>_<name>, lowercase"),
+  description: z.string().min(1).max(2000),
+  /** The arguments, as a JSON Schema object. */
+  inputSchema: z.record(z.string(), z.unknown()).default({ type: "object", properties: {} }),
+});
+export type ExternalPluginTool = z.infer<typeof ExternalPluginTool>;
+
+/** A route key as the host's scoped tables spell it: `"GET status"`, `"POST jobs/:id"`. */
+const ExternalRouteKey = z.string().regex(/^(GET|POST|DELETE) [a-z][a-z0-9-]*(\/(:?[a-z][a-z0-9-]*))*$/, "a route is '<METHOD> <path>'");
+
+export const ExternalPluginManifest = z
+  .strictObject({
+    id: PluginId,
+    api: z.literal(PLUGIN_API_VERSION),
+    name: z.string().min(1).max(80),
+    version: z.string().min(1).max(32),
+    description: z.string().max(300).optional(),
+    icon: z.string().min(1).max(64).optional(),
+    /** argv. A first element starting with `./` is resolved inside the plugin's folder. */
+    command: z.array(z.string().min(1)).min(1),
+    /** Required once the plugin declares a tool. */
+    toolPrefix: PluginToolPrefix.optional(),
+    tools: z.array(ExternalPluginTool).max(64).default([]),
+    /** The paragraph a session is told while the plugin is on. */
+    briefing: z.string().min(1).max(2000).optional(),
+    settingsSchema: z.record(z.string(), z.unknown()).optional(),
+    machineSettingsSchema: z.record(z.string(), z.unknown()).optional(),
+    routes: z
+      .strictObject({
+        /** POST verbs a session calls, e.g. `"refresh"`. */
+        session: z.array(z.string().regex(/^[a-z][a-z0-9-]*$/)).default([]),
+        project: z.array(ExternalRouteKey).default([]),
+        machine: z.array(ExternalRouteKey).default([]),
+      })
+      .default({ session: [], project: [], machine: [] }),
+  })
+  .superRefine((manifest, context) => {
+    if (manifest.tools.length > 0 && !manifest.toolPrefix) {
+      context.addIssue({ code: "custom", path: ["toolPrefix"], message: "a plugin that declares tools needs a toolPrefix" });
+    }
+    for (const [index, tool] of manifest.tools.entries()) {
+      if (manifest.toolPrefix && !tool.name.startsWith(`${manifest.toolPrefix}_`)) {
+        context.addIssue({ code: "custom", path: ["tools", index, "name"], message: `must start with "${manifest.toolPrefix}_"` });
+      }
+    }
+    if (new Set(manifest.tools.map((tool) => tool.name)).size !== manifest.tools.length) {
+      context.addIssue({ code: "custom", path: ["tools"], message: "two tools share a name" });
+    }
+  });
+export type ExternalPluginManifest = z.infer<typeof ExternalPluginManifest>;
 
 /** What a plugin's runtime is doing, as the health document reports it. */
 export const PluginRuntimeState = z.enum(["ready", "failed", "disposed"]);
