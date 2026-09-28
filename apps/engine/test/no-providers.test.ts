@@ -12,10 +12,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CLI_TEST_REFUSAL, cliSpawnAllowed, loadClaudeModelSdk, readClaudeModels, requireCli } from "../src/domains/providers";
-import { loadClaudeCommandSdk, readClaudeSupportedCommands } from "../src/provider-skills";
+import { CLI_TEST_REFUSAL, cliSpawnAllowed, generateSessionTitle, loadClaudeCommandSdk, loadClaudeModelSdk, maybeRetitleSession, readClaudeModels, readClaudeSupportedCommands, requireCli, textGenDisabledByEnv, type RetitleStore } from "../src/domains/providers";
 import { EngineStore } from "../src/state";
-import { generateSessionTitle, maybeRetitleSession, textGenDisabledByEnv, type RetitleStore } from "../src/textgen";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {

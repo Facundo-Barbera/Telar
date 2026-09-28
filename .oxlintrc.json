@@ -38,7 +38,7 @@
     {
       "files": [
         "apps/engine/src/domains/providers/models.ts",
-        "apps/engine/src/provider-skills.ts",
+        "apps/engine/src/domains/providers/skills.ts",
         "apps/engine/test/driver.test.ts"
       ],
       "rules": {

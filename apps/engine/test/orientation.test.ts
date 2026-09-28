@@ -34,7 +34,7 @@ import {
   writeOrientationInstructions,
 } from "../src/orientation";
 import { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "../src/orchestrate-skill";
-import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/provider-skills";
+import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/domains/providers";
 import { openCodeBriefings, openCodeConfigContent } from "../src/drivers/opencode";
 import { sessionsTools } from "../src/sessions-tools/tools";
 import { notesTools } from "../src/domains/notes";

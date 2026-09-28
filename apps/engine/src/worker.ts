@@ -19,7 +19,7 @@ import { RateLimitedError, setPluginReadTools } from "./driver";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
 import { createOnePasswordSecrets, type SecretsProvider } from "./domains/browser";
 import type { LoginGrantStore } from "./domains/browser";
-import { providerProcessEnv } from "./provider-instances";
+import { providerProcessEnv } from "./domains/providers";
 import { framedTurnInput, SteerMailbox, withTurnNotes } from "./domains/turns";
 
 type WorkerClient = Pick<
