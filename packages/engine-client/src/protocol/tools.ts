@@ -1,4 +1,4 @@
-import { BUNDLED_PLUGIN_TOOL_PREFIXES } from "./plugins";
+import { BUNDLED_PLUGIN_TOOL_PREFIXES } from "../plugins/schema";
 
 /** The server Telar's in-process tools are registered under. */
 export const TELAR_MCP_SERVER = "telar";

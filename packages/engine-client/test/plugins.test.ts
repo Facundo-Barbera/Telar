@@ -12,7 +12,7 @@ import {
   PluginMeta,
   ProjectPlugins,
   readProjectPlugins,
-} from "../src/protocol/plugins";
+} from "../src/plugins/schema";
 import { TELAR_CAPABILITIES, parseToolName } from "../src/protocol/tools";
 
 const latexLegacy = { enabled: true, mainFile: "paper.tex", toolchain: { kind: "tectonic" } };

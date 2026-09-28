@@ -4,35 +4,9 @@ import type { InboxPolicy, SidebarLayout } from "./settings/schema";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
-  type BrowserSnapshot,
-  type EnvMode,
-  type ComputerUseGrant,
-  type ComputerUseStatus,
-  type RememberedLogin,
-  type WorkspaceConfig,
-  type ProjectWorkspaceOverrides,
-  type ProjectWorkspaceView,
   type TurnAttachment,
   type TaskOutputPage,
   type TurnModelSelection,
-  type DataScienceBootstrap,
-  type DataScienceConfig,
-  type DataScienceCreateEnvironment,
-  type DataScienceEnvironments,
-  type DataScienceJob,
-  type DataScienceInstallCommand,
-  type DataScienceManager,
-  type DataSciencePackage,
-  type DataSciencePreflight,
-  type DataScienceRequirementsSource,
-  type DataScienceToolchain,
-  type LatexBootstrap,
-  type LatexConfig,
-  type LatexDistributions,
-  type LatexJob,
-  type LatexPackagesAnswer,
-  type LatexToolchain,
-  type ManagedTectonic,
   type EngineErrorBody,
   type EngineErrorCode,
   type EngineEvent,
@@ -65,13 +39,7 @@ import {
   type ProviderTurnOpenInput,
   type AgentTurnInput,
   type WorkerStatus,
-  type ProviderSkills,
-  type ClaudeConversation,
-  type ConversationImportDetail,
-  type WorkspaceFile,
-  type WorkspaceListing,
   type WorkerTurnFailure,
-  type WorkspaceWriteResult,
   type RunConfigurationDraft,
   type RunView,
   type RunConfigurationView,
@@ -88,13 +56,13 @@ import {
   type RunOpenInput,
   type RunStatusAnswer,
   type SessionAssignment,
-  type PluginInstallInput,
-  type PluginStatus,
-  type ProjectPlugins,
 } from "./protocol";
 
 export * from "./protocol";
 export * from "./notes/schema";
+export * from "./plugins/schema";
+export * from "./plugins/toolchains";
+export * from "./projects/workspace";
 export * from "./prompts/schema";
 export * from "./providers/compaction";
 export * from "./providers/schema";
@@ -104,6 +72,7 @@ export * from "./storage/schema";
 export * from "./usage/schema";
 export * from "./worktrees/schema";
 export * from "./agent-tools/schema";
+export * from "./computer-use/schema";
 export * from "./appearance/schema";
 export * from "./dictation/schema";
 export * from "./files/schema";
@@ -466,206 +435,11 @@ export class EngineClient implements EngineTransport {
     return this.request("GET", "/v2/health");
   }
 
-  projectIcon(projectId: string, options: { format?: "png" } = {}): Promise<{ data: Uint8Array; contentType: string }> {
-    return this.readBytes(`/v2/projects/${encodeURIComponent(projectId)}/icon${options.format ? `?format=${options.format}` : ""}`);
-  }
-
-  listProjects(options: { includeRemoved?: boolean } = {}): Promise<{ projects: Project[] }> {
-    return this.request("GET", options.includeRemoved ? "/v2/projects?includeRemoved=1" : "/v2/projects");
-  }
-
-  registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: Project }> {
-    return this.request("POST", "/v2/projects", input);
-  }
-
-  cloneProject(input: { url: string; parent: string; name?: string }): Promise<{ project: Project }> {
-    return this.request("POST", "/v2/projects/clone", input);
-  }
-
-  unregisterProject(projectId: string): Promise<{ project: Project; sessions: number }> {
-    return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}`);
-  }
-
-  /** Put a removed project back: same id, same settings, same sessions. */
-  restoreProject(projectId: string): Promise<{ project: Project }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/restore`, {});
-  }
-
-  updateProject(
-    projectId: string,
-    patch: {
-      name?: string;
-      /** One id from `TELAR_ICONS` — see `Project.iconName`. */
-      iconName?: string | null;
-      iconEmoji?: string | null;
-      defaultModel?: ModelSelection | null;
-      envMode?: EnvMode | null;
-      /**
-       * @deprecated An input alias for `plugins["data-science"]`, accepted for
-       * one more release so a released cockpit keeps working. The engine writes
-       * it into the map; nothing stores or returns this key.
-       */
-      dataScience?: DataScienceConfig | null;
-      /** @deprecated An input alias for `plugins.latex`, as `dataScience` above. */
-      latex?: LatexConfig | null;
-      plugins?: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>;
-    },
-  ): Promise<{ project: Project }> {
-    return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}`, patch);
-  }
-
-  /** Every environment a project could run on, each probed, with the toolchain
-   *  and the checkout's dependency manifests. Spawns interpreters; call it from
-   *  a page, never from a poll. */
-  dataScienceEnvironments(projectId: string): Promise<DataScienceEnvironments> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/data-science/environments`);
-  }
-
-  /** Start making an environment. Returns a job to poll with `dataScienceJob`;
-   *  its `result` is a `DataScienceCreatedEnvironment`. */
-  dataScienceCreateEnvironment(projectId: string, request: DataScienceCreateEnvironment): Promise<{ jobId: string }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/environments`, request);
-  }
-
-  /** What is installed in the project's configured environment. */
-  dataSciencePackages(projectId: string): Promise<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string; command: DataScienceInstallCommand } }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/data-science/packages`);
-  }
-
-  /** Install into / remove from the project's environment, as a job. */
-  dataScienceInstall(projectId: string, input: { add?: string[]; remove?: string[]; requirements?: DataScienceRequirementsSource }): Promise<{ jobId: string }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/packages`, input);
-  }
-
-  /** Install uv, a Python version, or Miniforge — machine-wide, as a job. */
-  dataScienceBootstrap(request: DataScienceBootstrap): Promise<{ jobId: string }> {
-    return this.request("POST", "/v2/data-science/bootstrap", request);
-  }
-
-  dataScienceToolchain(fresh = false): Promise<{ toolchain: DataScienceToolchain }> {
-    return this.request("GET", `/v2/data-science/toolchain${fresh ? "?fresh=1" : ""}`);
-  }
-
-  /** A job's status and the log lines after `after`. */
-  dataScienceJob(jobId: string, after = 0): Promise<{ job: DataScienceJob }> {
-    return this.request("GET", `/v2/data-science/jobs/${encodeURIComponent(jobId)}?after=${after}`);
-  }
-
-  dataScienceCancelJob(jobId: string): Promise<Record<string, never>> {
-    return this.request("DELETE", `/v2/data-science/jobs/${encodeURIComponent(jobId)}`);
-  }
-
-  /** Probe one interpreter, venv or conda env directory a person named. */
-  dataScienceProbe(projectId: string, path: string): Promise<{ probe: DataSciencePreflight & { relativePath?: string; root?: string; manager?: DataScienceManager } }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/probe`, { path });
-  }
-
-  /** Every TeX distribution the machine carries plus the checkout's main-file
-   *  candidates. Spawns `--version` probes; call it from a page, never a poll. */
-  latexDistributions(projectId: string): Promise<LatexDistributions> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/latex/distributions`);
-  }
-
-  /** Installed TeX packages — or the sentence that this manager self-serves. */
-  latexPackages(projectId: string): Promise<LatexPackagesAnswer> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/latex/packages`);
-  }
-
-  /** `tlmgr install`/`remove`, as a job. Refused for tectonic projects. */
-  latexInstall(projectId: string, input: { add?: string[]; remove?: string[] }): Promise<{ jobId: string }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/latex/packages`, input);
-  }
-
-  /** Install Tectonic or TinyTeX — machine-wide, as a job. */
-  latexBootstrap(request: LatexBootstrap): Promise<{ jobId: string }> {
-    return this.request("POST", "/v2/latex/bootstrap", request);
-  }
-
-  latexToolchain(fresh = false): Promise<{ toolchain: LatexToolchain }> {
-    return this.request("GET", `/v2/latex/toolchain${fresh ? "?fresh=1" : ""}`);
-  }
-
-  /** Telar's own Tectonic: whether it is here, and whether one is downloading. */
-  managedTectonic(): Promise<{ managed: ManagedTectonic }> {
-    return this.request("GET", "/v2/latex/managed");
-  }
-
-  installManagedTectonic(): Promise<{ managed: ManagedTectonic }> {
-    return this.request("POST", "/v2/latex/managed", {});
-  }
-
-  /** A latex job's status and the log lines after `after`. */
-  latexJob(jobId: string, after = 0): Promise<{ job: LatexJob }> {
-    return this.request("GET", `/v2/latex/jobs/${encodeURIComponent(jobId)}?after=${after}`);
-  }
-
-  latexCancelJob(jobId: string): Promise<Record<string, never>> {
-    return this.request("DELETE", `/v2/latex/jobs/${encodeURIComponent(jobId)}`);
-  }
-
-  /** The inbox's standing rule — see `InboxPolicy`. Environment-wide, so every
-   *  client that reads this engine bands its list the same way. */
-  /** This Mac's workspace defaults — see `protocol/workspace.ts`. */
-  machineWorkspace(): Promise<{ machine: WorkspaceConfig }> {
-    return this.request("GET", "/v2/workspace");
-  }
-
-  /** Replaces the whole machine layer; the engine validates and answers with what it kept. */
-  setMachineWorkspace(machine: WorkspaceConfig): Promise<{ machine: WorkspaceConfig }> {
-    return this.request("PUT", "/v2/workspace", { machine });
-  }
-
-  /** One project's overrides, the repo's proposal, and what they resolve to. */
-  projectWorkspace(projectId: string): Promise<{ workspace: ProjectWorkspaceView }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/workspace`);
-  }
-
-  /** Replaces the project's overrides: absent inherits, `null` turns a field off. */
-  setProjectWorkspace(projectId: string, overrides: ProjectWorkspaceOverrides): Promise<{ workspace: ProjectWorkspaceView }> {
-    return this.request("PUT", `/v2/projects/${encodeURIComponent(projectId)}/workspace`, { overrides });
-  }
-
   sessionsStream(): { url: string; headers: Record<string, string> } {
     return {
       url: `http://${this.discovery.host}:${this.discovery.port}/v2/sessions/stream`,
       headers: { authorization: `Bearer ${this.discovery.token}` },
     };
-  }
-
-  computerUseStatus(): Promise<{ computerUse: ComputerUseStatus }> {
-    return this.request("GET", "/v2/computer-use");
-  }
-
-  /** Ask macOS for Accessibility + Screen Recording — through Telar's bundled
-   *  helper when there is one (the prompts name it), else cua's own flow — and
-   *  open the Settings pane the person finishes in. Answers what happened. */
-  grantComputerUseAccess(): Promise<ComputerUseGrant> {
-    return this.request("POST", "/v2/computer-use/grant", {});
-  }
-
-  /** Reveal the bundled helper in Finder, to drag into a Settings list that
-   *  does not show it yet. `revealed: false` without a bundled helper. */
-  revealComputerUseHelper(): Promise<{ revealed: boolean }> {
-    return this.request("POST", "/v2/computer-use/reveal", {});
-  }
-
-  /** Reset the bundled helper's two macOS grants (`tccutil reset`, its bundle
-   *  id only). `reset: false` when there is no bundled helper. */
-  resetComputerUseAccess(): Promise<{ reset: boolean; message?: string }> {
-    return this.request("POST", "/v2/computer-use/reset", {});
-  }
-
-  /**
-   * The logins a person allowed agents to fill without being asked again —
-   * metadata only (profile, origin, item title, field kinds), never a value.
-   */
-  browserLogins(): Promise<{ logins: RememberedLogin[] }> {
-    return this.request("GET", "/v2/browser/logins");
-  }
-
-  /** Take one back. The next fill of that item asks again. */
-  revokeBrowserLogin(id: string): Promise<{ ok: boolean }> {
-    return this.request("DELETE", `/v2/browser/logins/${encodeURIComponent(id)}`);
   }
 
   completeStructured(
@@ -675,95 +449,8 @@ export class EngineClient implements EngineTransport {
     return this.request("POST", "/v2/textgen/complete", input, options.signal);
   }
 
-  projectFiles(projectId: string): Promise<{ listing: WorkspaceListing }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/files`);
-  }
-
-  sessionFiles(sessionId: string): Promise<{ listing: WorkspaceListing }> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/files`);
-  }
-
-  sessionSkills(sessionId: string): Promise<ProviderSkills> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/skills`);
-  }
-
-  claudeConversations(options: { instanceId?: string; cwd?: string } = {}): Promise<{ conversations: ClaudeConversation[] }> {
-    const query = new URLSearchParams();
-    if (options.instanceId) query.set("instanceId", options.instanceId);
-    if (options.cwd) query.set("cwd", options.cwd);
-    const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    return this.request("GET", `/v2/claude/conversations${suffix}`);
-  }
-
-  adoptClaudeConversation(
-    sessionId: string,
-    input: { sourceSessionId: string; cut?: "whole" | "since_compact_boundary"; sourceCwd?: string },
-  ): Promise<{ session: Session; turn: Turn; provenance: ConversationImportDetail }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/adopt`, input);
-  }
-
-  projectSkills(projectId: string, driver?: ProviderDriverKind): Promise<ProviderSkills> {
-    const query = driver ? `?${new URLSearchParams({ driver }).toString()}` : "";
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/skills${query}`);
-  }
-
-  /** One file's text, as it is on disk. Fenced inside the checkout by the
-   *  engine — see `readFenced` there for why the check is not at the route. */
-  projectFile(projectId: string, path: string): Promise<{ file: WorkspaceFile }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/files?${new URLSearchParams({ path }).toString()}`);
-  }
-
-  sessionFile(sessionId: string, path: string): Promise<{ file: WorkspaceFile }> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`);
-  }
-
-  projectFileBytes(projectId: string, path: string): Promise<{ data: Uint8Array; contentType: string }> {
-    return this.readBytes(`/v2/projects/${encodeURIComponent(projectId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
-  }
-
-  sessionFileBytes(sessionId: string, path: string): Promise<{ data: Uint8Array; contentType: string }> {
-    return this.readBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
-  }
-
-  writeProjectFile(projectId: string, path: string, text: string, expectedSha256: string): Promise<WorkspaceWriteResult> {
-    return this.request(
-      "PUT",
-      `/v2/projects/${encodeURIComponent(projectId)}/files?${new URLSearchParams({ path }).toString()}`,
-      { text, expectedSha256 },
-    );
-  }
-
-  writeSessionFile(sessionId: string, path: string, text: string, expectedSha256: string): Promise<WorkspaceWriteResult> {
-    return this.request(
-      "PUT",
-      `/v2/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`,
-      { text, expectedSha256 },
-    );
-  }
-
   listSessions(projectId: string): Promise<{ sessions: Session[] }> {
     return this.request("GET", `/v2/sessions?projectId=${encodeURIComponent(projectId)}`);
-  }
-
-  machinePlugins(): Promise<{ plugins: PluginStatus[]; machine: ProjectPlugins }> {
-    return this.request("GET", "/v2/plugins");
-  }
-
-  /** Install a plugin from a folder. Refused with the manifest's problem when it would not load. */
-  installPlugin(input: PluginInstallInput): Promise<{ plugin: PluginStatus }> {
-    return this.request("POST", "/v2/plugins/installed", input);
-  }
-
-  /** Stop an installed plugin and remove its folder (a linked one is only unlinked). */
-  uninstallPlugin(id: string): Promise<{ removed: true }> {
-    return this.request("DELETE", `/v2/plugins/installed/${encodeURIComponent(id)}`);
-  }
-
-  /** Turn a plugin on or off for this Mac, or change its machine settings. */
-  updateMachinePlugins(
-    plugins: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>,
-  ): Promise<{ machine: ProjectPlugins }> {
-    return this.request("PATCH", "/v2/plugins", { plugins });
   }
 
   liveSessions(options: { all?: boolean } = {}): Promise<LiveSessionsAnswer> {
@@ -809,10 +496,6 @@ export class EngineClient implements EngineTransport {
       throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "engine request failed", response.status, { operation: "liveSessionsMatching" });
     }
     return { ...(payload as LiveSessionsAnswer), ...(etag === undefined ? {} : { etag }) };
-  }
-
-  projectActivity(): Promise<{ projects: Array<{ projectId: string; updatedAt: number }> }> {
-    return this.request("GET", "/v2/sessions/activity");
   }
 
   createSession(input: {
@@ -1110,21 +793,6 @@ export class EngineClient implements EngineTransport {
       // header may not — a raw newline here would end the header block.
       "x-telar-attachment-name": encodeURIComponent(file.name),
     });
-  }
-
-  browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<{ browser: BrowserSnapshot }> {
-    const query = new URLSearchParams();
-    if (options.screenshot) query.set("screenshot", "1");
-    if (options.start) query.set("start", "1");
-    const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/browser${suffix}`);
-  }
-
-  /** Open an http(s) page as a new tab in the session's browser, as the human
-   *  would — for clients without a desktop shell of their own. Journals the
-   *  tab set like a hand-started browser does. */
-  browserOpen(sessionId: string, url: string): Promise<{ browser: BrowserSnapshot }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/browser/open`, { url });
   }
 
   stopTurn(sessionId: string, runId?: string): Promise<{ turn?: Turn; stopped: boolean }> {

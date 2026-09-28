@@ -1,9 +1,14 @@
 import { agentToolsClient } from "../agent-tools/client";
 import { appearanceClient } from "../appearance/client";
+import { browserClient } from "../browser/client";
+import { computerUseClient } from "../computer-use/client";
 import { dictationClient } from "../dictation/client";
+import { filesClient } from "../files/client";
 import { gitClient } from "../git/client";
 import { githubClient } from "../github/client";
 import { notesClient } from "../notes/client";
+import { pluginsClient } from "../plugins/client";
+import { projectsClient } from "../projects/client";
 import { promptsClient } from "../prompts/client";
 import { providersClient } from "../providers/client";
 import { schedulesClient } from "../schedules/client";
@@ -15,14 +20,19 @@ import type { EngineTransport } from "./transport";
 
 type Methods<T> = { [K in keyof T]: OmitThisParameter<T[K]> };
 
-export const domainClients = [agentToolsClient, appearanceClient, dictationClient, gitClient, githubClient, notesClient, promptsClient, providersClient, schedulesClient, settingsClient, storageClient, usageClient, worktreesClient];
+export const domainClients = [agentToolsClient, appearanceClient, browserClient, computerUseClient, dictationClient, filesClient, gitClient, githubClient, notesClient, pluginsClient, projectsClient, promptsClient, providersClient, schedulesClient, settingsClient, storageClient, usageClient, worktreesClient];
 
 export type EngineDomainMethods = Methods<typeof agentToolsClient> &
   Methods<typeof appearanceClient> &
+  Methods<typeof browserClient> &
+  Methods<typeof computerUseClient> &
   Methods<typeof dictationClient> &
+  Methods<typeof filesClient> &
   Methods<typeof gitClient> &
   Methods<typeof githubClient> &
   Methods<typeof notesClient> &
+  Methods<typeof pluginsClient> &
+  Methods<typeof projectsClient> &
   Methods<typeof promptsClient> &
   Methods<typeof providersClient> &
   Methods<typeof schedulesClient> &

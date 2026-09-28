@@ -88,7 +88,7 @@
     "packages/engine-client/src/protocol/entities.ts": [
       "duplicates"
     ],
-    "packages/engine-client/src/protocol/plugins.ts": [
+    "packages/engine-client/src/plugins/{schema,toolchains}.ts": [
       "duplicates"
     ],
     "apps/desktop/src/{handoff/desktop-handoff-core,handoff/desktop-handoff,dev/dev-update-core,dev/dev-update,main/tailscale,main/update-watchdog,store/store-location,store/store-migrate}.js": [
