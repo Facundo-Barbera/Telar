@@ -54,4 +54,3 @@ export function resolveCommandForEvent(keymap: Readonly<Keymap>, event: CommandK
  *  Computed against the LIVE chords, so a rebind hands the chord back. */
 export function claimedCommandIds(keymap: Readonly<Keymap>, chords: readonly string[] | undefined): string[];
 export function menuCommands(keymap: Readonly<Keymap>, menu: CommandMenu): (Command & { accelerator: string })[];
-export function commandById(id: string): Command | undefined;

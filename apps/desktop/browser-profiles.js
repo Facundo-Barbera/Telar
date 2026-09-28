@@ -34,8 +34,6 @@ function legacyPartitionFor(profileKey, mapping) {
   return `persist:telar-project-${key.slice("project_".length)}`;
 }
 
-const partitionFor = legacyPartitionFor;
-
 function cleanLabel(value, { field = "label", max = MAX_LABEL, required = true } = {}) {
   const text = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
   if (!text) {
@@ -321,7 +319,6 @@ function writeMapping(userDataDir, legacyOwnerProjectId, { force = false, ...dep
 module.exports = {
   ProfileRegistry,
   readProfileRegistry,
-  partitionFor,
   legacyPartitionFor,
   requireProjectKey,
   readMapping,
