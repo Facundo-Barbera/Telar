@@ -1,27 +1,3 @@
-/**
- * nbformat 4 in and out, without losing anything we do not understand.
- *
- * A NOTEBOOK IS SOMEBODY'S FILE. VS Code, JupyterLab and every extension leave
- * keys on the notebook, on `metadata`, and on each cell; a round-trip that
- * dropped them would show up as a git diff nobody asked for. So the parse
- * keeps every unknown key, cells are minted ids only when they lack one
- * (nbformat < 4.5), and the write uses nbformat's own 1-space indent and
- * trailing newline so an untouched notebook diffs to nothing.
- *
- * A MINTED ID IS DERIVED, NOT RANDOM (#351). Most notebooks on disk predate
- * nbformat 4.5 and carry no cell ids at all, and the id is what every later
- * call names a cell by — so a random one made the id the panel rendered
- * different from the id the run's own fresh parse produced, and `findCell`
- * answered "no cell with id …" for every cell of every notebook Telar had not
- * written itself. Deriving from position and source makes any two parses of
- * the same bytes agree; `parseNotebookText` also reports that it minted, so
- * the reader can write the ids back and stop deriving them.
- *
- * OUTPUTS ARE TRANSLATED BOTH WAYS. The engine's `CellOutput` union becomes
- * `stream` / `execute_result` / `display_data` / `error` on write; images
- * carry an `attachmentId` in `metadata.telar` and the PNG bytes in
- * `data["image/png"]` so the file still opens anywhere.
- */
 import crypto from "node:crypto";
 import type { CellOutput } from "./outputs";
 
@@ -49,19 +25,7 @@ export function mintCellId(): string {
   return crypto.randomBytes(4).toString("hex");
 }
 
-/**
- * The id a cell that has none gets: a hash of where it sits and what it says,
- * in `mintCellId`'s own 8-hex shape and inside nbformat's `^[a-zA-Z0-9-_]{1,64}$`.
- *
- * DETERMINISTIC BECAUSE THE READER MAY NOT BE ABLE TO WRITE. Persisting the
- * ids is the real fix and `readNotebook` does it, but a checkout mounted
- * read-only, or a write refused because the file changed underneath, would
- * otherwise put the id-less notebook straight back into #351's failure. Two
- * parses of the same bytes agreeing costs a hash and removes that whole class.
- */
 function derivedCellId(index: number, source: string, salt = ""): string {
-  // `index` and `salt` are digits, so a colon separates them from the source
-  // unambiguously without smuggling a control character into this file.
   return crypto.createHash("sha256").update(`${index}:${salt}:${source}`).digest("hex").slice(0, 8);
 }
 
@@ -78,12 +42,6 @@ export function parseNotebook(text: string): Notebook {
   return parseNotebookText(text).nb;
 }
 
-/**
- * The same parse, plus whether any cell's id came from us rather than the file.
- *
- * `mintedIds` is the reader's cue to write the notebook back so the ids the
- * client is about to be shown are the ids on disk — see `readNotebook`.
- */
 export function parseNotebookText(text: string): { nb: Notebook; mintedIds: boolean } {
   let raw: unknown;
   try {
@@ -104,9 +62,6 @@ export function parseNotebookText(text: string): { nb: Notebook; mintedIds: bool
     const given = typeof c.id === "string" && c.id ? c.id : "";
     if (!given) mintedIds = true;
     let id = given || derivedCellId(index, source);
-    // A duplicate is the file's own bug (or two id-less twins at one index,
-    // which cannot happen) — salted rather than randomised so this parse and
-    // the next still agree, and reported so the resolved ids get written back.
     for (let salt = 1; seen.has(id); salt += 1) {
       id = derivedCellId(index, source, String(salt));
       mintedIds = true;
@@ -133,7 +88,6 @@ export function parseNotebookText(text: string): { nb: Notebook; mintedIds: bool
   };
 }
 
-/** nbformat writes sources as line arrays and indents by one space. */
 export function serializeNotebook(nb: Notebook): string {
   const cells = nb.cells.map((cell) => {
     const { source, ...rest } = cell;
@@ -158,7 +112,6 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-/** Engine outputs → nbformat outputs. */
 export function toNbOutputs(outputs: CellOutput[], images: (attachmentId: string) => string | undefined): unknown[] {
   const out: unknown[] = [];
   for (const o of outputs) {
@@ -193,7 +146,6 @@ export function toNbOutputs(outputs: CellOutput[], images: (attachmentId: string
   return out;
 }
 
-/** nbformat outputs → engine outputs, for reading a notebook somebody else ran. */
 export function fromNbOutputs(outputs: unknown[]): CellOutput[] {
   const result: CellOutput[] = [];
   for (const raw of outputs) {
@@ -215,7 +167,7 @@ export function fromNbOutputs(outputs: unknown[]): CellOutput[] {
             const frame = JSON.parse(data["application/vnd.telar.dataframe+json"] as string) as Omit<Extract<CellOutput, { kind: "dataframe" }>, "kind">;
             result.push({ kind: "dataframe", ...frame });
             break;
-          } catch { /* fall through */ }
+          } catch { }
         }
         if (data["image/png"]) result.push({ kind: "image", mediaType: "image/png", dataB64: joinSource(data["image/png"]).trim(), ...(typeof telar.attachmentId === "string" ? { attachmentId: telar.attachmentId } : {}) });
         else if (data["image/svg+xml"]) result.push({ kind: "image", mediaType: "image/svg+xml", dataB64: Buffer.from(joinSource(data["image/svg+xml"])).toString("base64") });
@@ -229,44 +181,12 @@ export function fromNbOutputs(outputs: unknown[]): CellOutput[] {
   return result;
 }
 
-/**
- * Reorder, carrying THE CELL OBJECT rather than its text.
- *
- * A move expressed as delete-then-insert would mint a new id and drop
- * `outputs` and `execution_count` — the record of what actually ran, and the
- * reason a person scrolls back up a notebook at all. So the cell is spliced
- * out and back in whole: id, source, type, metadata, outputs and count are the
- * same object at a different index, and every unknown vendor key rides along
- * with it.
- *
- * `to` is the index the cell OCCUPIES AFTERWARDS, so `to === from` leaves the
- * array — and therefore the file — untouched. Out of range is refused rather
- * than clamped, in `findCell`'s voice: a caller asking to move the top cell up
- * has a bug in its own disabled-button state, and a silent no-op hides it the
- * way an out-of-range `index` on `set` is not allowed to.
- */
 export function moveCell(nb: Notebook, from: number, to: number): void {
   if (!Number.isInteger(to) || to < 0 || to >= nb.cells.length) throw new Error(`move target ${to} is out of range (0..${nb.cells.length - 1})`);
   const [cell] = nb.cells.splice(from, 1);
   if (cell) nb.cells.splice(to, 0, cell);
 }
 
-/**
- * Drop one cell's outputs and the count beside them.
- *
- * THE COUNT GOES WITH THEM. `execution_count` is not a separate fact from the
- * outputs — it is the label on them ("[7]" beside what [7] printed) — so a
- * cell left holding a count with nothing under it claims to have run and to
- * have said nothing, which is a different and untrue thing. `null` is
- * nbformat's own "never ran", and it is what `emptyNotebook` and the type
- * change in `set` already write.
- *
- * A CELL THAT CANNOT HAVE OUTPUTS IS REFUSED, in `notebookRun`'s voice and for
- * its reason: markdown and raw cells carry no `outputs` key at all (`set`
- * deletes it on the way out of `code`), so clearing one is a caller asking for
- * something that does not exist, and answering "done" would hide the bug in
- * whatever offered the verb.
- */
 export function clearCellOutputs(nb: Notebook, at: number): void {
   const cell = nb.cells[at]!;
   if (cell.cell_type !== "code") throw new Error(`cell ${cell.id} is ${cell.cell_type}, not code`);

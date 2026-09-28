@@ -1,8 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { TELAR_MCP_SERVER, assertTelarToolNames, canonicalToolName } from "@telar/engine-client";
-import { latexTools } from "../../latex/latex-tools";
-import { dsTools } from "../../ds/ds-tools";
-import { notebookTools } from "../../ds/notebook-tools";
+import { dsTools, latexTools, notebookTools } from "../plugins";
 import { displayTools } from "./display-tools";
 import { TelarToolSocket, collectTelarWall } from "./telar-socket";
 

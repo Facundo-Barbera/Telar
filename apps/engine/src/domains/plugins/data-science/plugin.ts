@@ -1,14 +1,3 @@
-/**
- * DATA SCIENCE, AS A PLUGIN — the second migration, and the one with a runtime.
- *
- * LaTeX migrated a job registry; this migrates a KERNEL: a long-lived process
- * per session that a project can turn off while a cell is still running. So
- * `busy`, `releaseProject` and `releaseSession` are all load-bearing here.
- *
- * TWO PREFIXES, ONE PLUGIN. `ds` and `notebook` are both this plugin's — that
- * is why `toolPrefixes` is a list. Renaming either to match the id would split
- * every approval granted to it, for a tidier string.
- */
 import { z } from "zod";
 import {
   DataScienceBootstrap,
@@ -19,38 +8,21 @@ import {
   PLUGIN_API_VERSION,
   type PluginMeta,
 } from "@telar/engine-client";
-import type { EngineStore } from "../state";
-import { jobCursor, PluginInputError, requiredString, type PluginMachineRoutes, type PluginProjectRoutes } from "./routes";
-import type { DsCapability } from "../ds/capability";
-import { KernelHost, type KernelHostOptions } from "../ds/kernel-host";
-import { clientDsCapability } from "../ds/client-capability";
-import { dsTools } from "../ds/ds-tools";
-import { notebookTools } from "../ds/notebook-tools";
-import type { PluginEngineModule, PluginInitContext } from "./contract";
-import type { PluginToolModule } from "./tool-module";
+import type { EngineStore } from "../../../state";
+import { jobCursor, PluginInputError, requiredString, type PluginMachineRoutes, type PluginProjectRoutes } from "../scoped-routes";
+import type { DsCapability } from "./capability";
+import { KernelHost, type KernelHostOptions } from "./kernel-host";
+import { clientDsCapability } from "./client-capability";
+import { dsTools } from "./ds-tools";
+import { notebookTools } from "./notebook-tools";
+import type { PluginEngineModule, PluginInitContext } from "../contract";
+import type { PluginToolModule } from "../tool-module";
 
-/** The lenient reader, for the store's own resolve. See `protocol/plugins.ts`. */
 export { DataScienceMachineSettings };
 
-/**
- * WHAT THE PROJECT STORES under `plugins.entries["data-science"].settings`: the
- * chosen interpreter (`python.path` may be RELATIVE, so a worktree resolves its
- * own `.venv`) and the one-click stack. The same fields the retired
- * `Project.dataScience` block held, which is what the load-time fold relies on.
- */
 export const DataScienceSettings = DataScienceConfig.omit({ enabled: true });
 export type DataScienceSettings = z.infer<typeof DataScienceSettings>;
 
-/**
- * `readTools` names what the HOST has already ratified for this plugin —
- * `ds_packages` and `ds_kernel`, which only look. It is still a CLAIM:
- * `policy.ts` intersects it with the host's own table and with this plugin's
- * namespace, so editing this list cannot widen anything.
- *
- * `sessionStateDir` is `ds` rather than `data-science`, and deliberately so: a
- * live user's kernel state lives under `sessions/<id>/ds/` today, and renaming
- * the directory to match the plugin id would move their files for nothing.
- */
 export const dataScienceMeta: PluginMeta = {
   id: "data-science",
   api: PLUGIN_API_VERSION,
@@ -80,11 +52,6 @@ export const dataScienceMeta: PluginMeta = {
       blurb: "The Python environment this project's kernel runs in.",
       icon: "FlaskConical",
     },
-    /**
-     * THE MAC-WIDE DEFAULTS. Declared as a machine section so the Plugins pane
-     * renders them beside LaTeX's; what they mean is "what a project that has
-     * not chosen gets", never "what every project uses".
-     */
     {
       id: "defaults",
       scope: "machine",
@@ -95,11 +62,6 @@ export const dataScienceMeta: PluginMeta = {
   ],
 };
 
-/**
- * THE WALL, registered wherever the host's tool modules are — the Claude
- * in-process server, the `telar` socket, the worker's lease — under the names
- * it always shipped with (`mcp__telar__ds_*`, `mcp__telar__notebook_*`).
- */
 export const dataScienceToolModule: PluginToolModule = {
   meta: dataScienceMeta,
   capability: (call) => clientDsCapability(call),
@@ -109,30 +71,13 @@ export const dataScienceToolModule: PluginToolModule = {
   ],
 };
 
-/**
- * What the daemon supplies. `resolve` is the store's existing
- * `store.dataScience(sessionId)` — the SAME capability the `/ds/` arm and the
- * tool wall already use, so migrating the door cannot change what is behind it.
- *
- * `kernelHost` is what `init` builds the host of the live Python processes
- * from — the store's half of it (where sessions live, how a state change and a
- * plot are recorded) and where to attach it. ABSENT ON A DAEMON THAT RUNS NO
- * TURNS (no embedded worker), which has never had kernels: every kernel verb
- * there refuses with "no kernel host", exactly as before.
- */
 export type DataSciencePluginDeps = {
   resolve: (sessionId: string) => DsCapability;
   kernelHost?: {
     options: KernelHostOptions;
-    /** Hands the built host to the store, whose `dataScience()` runs cells on it. */
     attach(host: KernelHost): void;
   };
-  /** Which project a session belongs to, for per-project `busy` and release. */
   projectOf: (sessionId: string) => string | undefined;
-  /**
-   * The settings pages' verbs, which are still the store's: environments,
-   * packages and installers run as jobs on the store's `dsJobs` runner.
-   */
   settings: Pick<
     EngineStore,
     | "dataScienceEnvironments"
@@ -147,11 +92,6 @@ export type DataSciencePluginDeps = {
   >;
 };
 
-/**
- * THE PROJECT AND MACHINE DOORS — what the settings pages call. Same verbs,
- * bodies, statuses and refusals as the hand-written routes they replace, which
- * now forward here.
- */
 function dataScienceScopedRoutes(settings: DataSciencePluginDeps["settings"]): {
   project: PluginProjectRoutes;
   machine: PluginMachineRoutes;
@@ -160,7 +100,6 @@ function dataScienceScopedRoutes(settings: DataSciencePluginDeps["settings"]): {
     Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined;
   return {
     project: {
-      // Choosing an environment comes before turning data science on.
       "GET environments": { beforeEnable: true, handle: (_request, { projectId }) => settings.dataScienceEnvironments(projectId) },
       "POST environments": {
         status: 202,
@@ -212,7 +151,6 @@ function dataScienceScopedRoutes(settings: DataSciencePluginDeps["settings"]): {
 }
 
 export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModule<DataScienceSettings> {
-  /** Sessions whose kernel belongs to a project, resolved fresh each time. */
   let kernels: KernelHost | undefined;
   const live = () => kernels?.list() ?? [];
   const sessionsOf = (projectId: string): string[] =>
@@ -224,23 +162,8 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
   return {
     meta: dataScienceMeta,
     settingsSchema: DataScienceSettings,
-    /**
-     * THE MAC-WIDE DEFAULTS — a different shape from the project's, and
-     * deliberately so. A project stores `python.path`, which may be RELATIVE so
-     * a worktree resolves its own `.venv`; a machine default cannot be relative
-     * to a checkout it knows nothing about, so `python` is absolute. Sharing one
-     * schema would have made each half accept the other's lie.
-     *
-     * THE STRICT VARIANT, because this is the WRITE path — see LaTeX's.
-     */
     machineSettingsSchema: DataScienceMachineSettingsWrite,
 
-    /**
-     * THE KERNEL HOST IS ACQUIRED HERE, and its cleanup registered at once, so
-     * shutdown gives every kernel back through the host's bounded teardown.
-     * Building it starts the idle reaper and kills what a crashed daemon left
-     * behind — both belong to data science, not to daemon startup.
-     */
     init(context: PluginInitContext) {
       if (!deps.kernelHost) return;
       const host = new KernelHost(deps.kernelHost.options);
@@ -250,47 +173,18 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
     },
 
     hooks: {
-      /**
-       * DISABLE MEANS DRAIN, and here that matters more than anywhere else.
-       *
-       * Unticking "Data science" while a 20-minute training cell is running has
-       * not asked to kill it. New work is already refused at the GATE —
-       * `store.dataScience` throws the moment the project's entry is gone — so
-       * this is a no-op rather than a missing hook: writing a second refusal
-       * would be two places to get one rule wrong. The host then polls `busy`
-       * and only releases once nothing is executing.
-       */
       drain: () => undefined,
 
-      /**
-       * PER PROJECT, unlike LaTeX's. A kernel belongs to a session and a session
-       * belongs to a project, so "is this project still working" is answerable
-       * exactly rather than approximately.
-       */
       busy: (projectId) =>
         live().some((kernel) => deps.projectOf(kernel.sessionId) === projectId && kernel.state === "busy"),
 
-      /** Every idle kernel this project owns, once `busy` has gone false. */
       releaseProject: async (projectId) => {
         await Promise.all(sessionsOf(projectId).map((sessionId) => kernels?.dispose(sessionId, "data science disabled")));
       },
 
-      /**
-       * A session went away. REPLACES the store's hardcoded
-       * `releaseDataScience` call — the store now announces a departure and the
-       * host decides who cares, which is the line that stops `state.ts` naming
-       * features one by one.
-       */
       releaseSession: (sessionId, reason) => void kernels?.dispose(sessionId, reason),
     },
 
-    /**
-     * THE HTTP DOOR, AS DATA. One entry per verb the cockpit calls, replacing
-     * the switch in `daemon.ts` — which stays only as an ALIAS so a released
-     * client keeps working. A refusal thrown here becomes `plugin_error`
-     * carrying `data-science`, so a dead kernel reads as this plugin's failure
-     * rather than the engine's.
-     */
     routes: {
       kernel: (_input, capability) => (capability as DsCapability).kernel(),
       execute: (input, capability) =>
@@ -305,19 +199,12 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
       vars: (input, capability) => (capability as DsCapability).vars(typeof input.limit === "number" ? input.limit : undefined),
       inspect: (input, capability) =>
         (capability as DsCapability).inspect(String(input.name ?? ""), typeof input.depth === "number" ? input.depth : undefined),
-      /**
-       * THE NOTEBOOK VERBS, KEYED AS THE WIRE SPELLS THEM. `notebook` is this
-       * plugin's second tool prefix, and both doors deliver the two-segment
-       * name — so a table keyed on the first segment routes nothing.
-       */
       "notebook/read": (input, capability) =>
         (capability as DsCapability).notebookRead(String(input.path ?? ""), {
           ...(typeof input.from === "number" ? { from: input.from } : {}),
           ...(typeof input.to === "number" ? { to: input.to } : {}),
           ...(input.withOutputs === true ? { withOutputs: true } : {}),
         }),
-      /** `edit` is the capability's own union — create, insert, set, delete,
-       *  move, clearOutputs — validated there rather than flattened here. */
       "notebook/edit": (input, capability) =>
         (capability as DsCapability).notebookEdit(String(input.path ?? ""), input.edit as Parameters<DsCapability["notebookEdit"]>[1]),
       "notebook/run": (input, capability) =>

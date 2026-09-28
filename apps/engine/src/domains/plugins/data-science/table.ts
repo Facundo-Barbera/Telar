@@ -1,9 +1,3 @@
-/**
- * A window of rows from a delimited file, for the table viewer. Parsed here,
- * in TypeScript, so a CSV opens with no kernel; a Parquet file goes through
- * pandas in `sessionTable`. RFC 4180 quoting, no more — a CSV that needs a
- * dialect sniffer needs pandas, and the viewer says so when this fails.
- */
 export type TableWindow = {
   path: string;
   columns: string[];
@@ -44,7 +38,6 @@ export function parseDelimited(text: string, delimiter: string): string[][] {
 
 const NUMERIC = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
-/** A guess per column from the first 200 rows: number, boolean, or string. */
 function inferTypes(rows: string[][], width: number): string[] {
   const types: string[] = [];
   for (let c = 0; c < width; c++) {

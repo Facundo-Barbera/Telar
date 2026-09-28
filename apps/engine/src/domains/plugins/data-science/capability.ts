@@ -1,12 +1,3 @@
-/**
- * What the `notebook_*` and `ds_*` toolkits may do — a thin port, one member
- * per store method, exactly as `SessionsCapability` and `NotesCapability` are.
- * Validation lives behind it; the walls compose sentences.
- *
- * TWO IMPLEMENTATIONS, ONE SHAPE: the worker builds this out of `EngineClient`
- * HTTP calls (it holds no store handle), the daemon's tests build it out of
- * `store.*`. Both land on the same kernel, because the kernel is the daemon's.
- */
 import type { CellOutput, ExecResult, KernelState } from "./outputs";
 import type { Experiment, LineageRow, Snapshot, Watch } from "./state-files";
 
@@ -31,13 +22,10 @@ export type KernelStatus = {
   state: KernelState | "none";
   executionCount?: number;
   modules?: Record<string, boolean>;
-  /** The interpreter of the environment marked "In use". */
   python?: string;
-  /** `sys.executable` as the live kernel reports it — the proof they agree. */
   executable?: string;
 };
 
-/** One environment `ds_env` can list or switch to. */
 export type EnvironmentRow = {
   id: string;
   name: string;
@@ -51,7 +39,6 @@ export type EnvironmentRow = {
 export type VarRow = { name: string; type: string; shape?: number[]; len?: number; sizeBytes?: number; repr?: string };
 
 export type DsCapability = {
-  /** Which analysis libraries import in this session's kernel, once started. */
   kernel(): Promise<KernelStatus>;
   execute(input: { code: string; cellId?: string; timeoutMs?: number; producer?: string }): Promise<ExecResult>;
   interrupt(): Promise<void>;
@@ -61,10 +48,8 @@ export type DsCapability = {
 
   notebookRead(path: string, options?: { from?: number; to?: number; withOutputs?: boolean }): Promise<NotebookRead>;
   notebookEdit(path: string, edit: NotebookEdit): Promise<NotebookRead>;
-  /** Execute one cell (or all), writing outputs back into the file. */
   notebookRun(path: string, input: { cellId?: string; all?: boolean; stopOnError?: boolean }): Promise<{ results: Array<{ cellId: string; result: ExecResult }>; notebook: NotebookRead }>;
 
-  /** A rendered figure, stored. Returns the attachment id and what the model can say about it. */
   plot(input: { code: string; title?: string }): Promise<{ attachmentId?: string; outputs: CellOutput[]; ok: boolean; error?: string }>;
 
   snapshot(name: string, vars?: string[]): Promise<Snapshot>;
@@ -76,49 +61,19 @@ export type DsCapability = {
   watch(input: { name: string; assert?: string; remove?: boolean }): Promise<Watch[]>;
   experiment(input: { action: "start" | "log" | "end" | "list"; name?: string; params?: Record<string, unknown>; metrics?: Record<string, number> }): Promise<Experiment[]>;
 
-  /**
-   * The environments this project could run on; `use` (an id, name or path
-   * from the list) switches to one and restarts the kernel into it.
-   */
   environment(input?: { use?: string }): Promise<{ environments: EnvironmentRow[]; switched?: string }>;
 
-  /** The project's environment as this session resolves it, and what is installed in it. */
   packages(): Promise<{ packages: PackageRow[]; environment: { manager: string; root: string; python: string } }>;
-  /**
-   * Install into or remove from the project's environment, WAITING for the
-   * result. The store runs it as a job; this returns the job's log once it
-   * has finished, because a model wants an answer rather than a cursor.
-   */
   install(input: { add?: string[]; remove?: string[]; requirements?: string }): Promise<{ ok: boolean; lines: string[]; error?: string }>;
 };
 
-/** `direct` is set only when the project declares dependencies: true for a declared one, false for what came along with them. */
 export type PackageRow = { name: string; version: string; channel?: string; direct?: boolean };
 
 export type NotebookEdit =
   | { kind: "set"; cellId?: string; index?: number; source?: string; cellType?: "code" | "markdown" | "raw" }
   | { kind: "insert"; after?: string | number; source: string; cellType?: "code" | "markdown" | "raw" }
   | { kind: "delete"; cellId?: string; index?: number }
-  /**
-   * Reorder one cell, keeping its outputs and execution count — the thing
-   * delete-then-insert throws away. `to` is ABSOLUTE (the index the cell ends
-   * up at), not a relative `by`, because every other member of this union
-   * names a position rather than a step, and because absolute survives the
-   * sha-fenced write: two clients that each say "move it up one" compound into
-   * two steps, while two that say "put it at 3" agree. Move-up is `to - 1`.
-   */
   | { kind: "move"; cellId?: string; index?: number; to: number }
-  /**
-   * Throw away what one cell PRINTED, keeping what it says. The pair of
-   * `move`: that one carries the outputs somewhere else, this one drops them
-   * where they are — and neither is expressible as delete-then-insert, which
-   * loses the id as well.
-   *
-   * ONE CELL, addressed like every other member. A whole-notebook clear is not
-   * offered because nothing asks for one: the surface's item sits on a cell,
-   * and "clear all outputs" spelled as a loop of these is a caller's decision
-   * to make out loud rather than a scope this union quietly grows.
-   */
   | { kind: "clearOutputs"; cellId?: string; index?: number }
   | { kind: "create" };
 

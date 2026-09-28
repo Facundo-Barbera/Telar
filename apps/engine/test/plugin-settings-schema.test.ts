@@ -10,8 +10,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { PluginHost } from "../src/plugins/host";
-import { helloPlugin } from "../src/plugins/hello";
+import { PluginHost } from "../src/domains/plugins/host";
+import { helloPlugin } from "../src/domains/plugins/hello";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -46,8 +46,8 @@ test("a plugin without a schema publishes none, and one that cannot be expressed
 });
 
 test("Data Science's and LaTeX's Mac fields are published for the generated pane — and the web fixture matches", async () => {
-  const { latexPlugin } = await import("../src/plugins/latex");
-  const { dataSciencePlugin } = await import("../src/plugins/data-science");
+  const { latexPlugin } = await import("../src/domains/plugins/latex/plugin");
+  const { dataSciencePlugin } = await import("../src/domains/plugins/data-science/plugin");
   const never = () => {
     throw new Error("not used");
   };

@@ -15,9 +15,9 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, type EngineClientError } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { KernelHost } from "../src/ds/kernel-host";
-import { dataSciencePlugin } from "../src/plugins/data-science";
-import type { PluginInitContext } from "../src/plugins/contract";
+import { KernelHost } from "../src/domains/plugins/data-science/kernel-host";
+import { dataSciencePlugin } from "../src/domains/plugins/data-science/plugin";
+import type { PluginInitContext } from "../src/domains/plugins/contract";
 import { stubModels } from "./stub-models";
 
 const roots: string[] = [];

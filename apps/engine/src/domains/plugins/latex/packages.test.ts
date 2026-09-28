@@ -31,33 +31,22 @@ test("install and remove become tlmgr steps; no tlmgr refuses with the TinyTeX p
   expect(() => texInstallSteps(bare, ["siunitx"])).toThrow("TinyTeX");
 });
 
-/**
- * What "install missing packages automatically" actually installs. Read out of
- * a real log rather than from hand-built diagnostics, because the setting is
- * only as good as the parse behind it.
- */
 test("a failed compile's own log names the packages to install", () => {
   const log = [
     "(./paper.tex",
     "! LaTeX Error: File `siunitx.sty' not found.",
     "! LaTeX Error: File `pgf-blur.sty' not found.",
-    // A .cls is a package too — a missing document class is the same problem.
     "! LaTeX Error: File `acmart.cls' not found.",
-    // Not a package: a figure the author has not drawn yet. Installing
-    // "diagram" from tlmgr would be nonsense.
     "! LaTeX Error: File `figures/diagram.png' not found.",
   ].join("\n");
   expect(missingTexPackages(parseLatexLog(log, { kind: "texlive" }))).toEqual(["acmart", "pgf-blur", "siunitx"]);
 });
 
 test("A NAME FROM A LOG IS STILL VALIDATED — a .tex somebody was sent is untrusted input", () => {
-  // The log is TeX's echo of a filename the document chose, so it reaches this
-  // function under the author's control and leaves it heading for argv.
   const nasty = missingTexPackages([
     { code: "missing-package", message: "File --repository=evil.sty not found" },
     { code: "missing-package", message: "File ../../etc/passwd.sty not found" },
     { code: "missing-package", message: "File siunitx.sty not found" },
-    // Not a package error at all; it must not be collected whatever it says.
     { code: "overfull", message: "File booktabs.sty not found" },
   ]);
   expect(nasty).toEqual(["siunitx"]);

@@ -1,19 +1,3 @@
-/**
- * The transport to one `bridge.py` process: newline-delimited JSON-RPC over
- * stdio. A near copy of `drivers/codex/app-server.ts`, and the differences are the
- * point:
- *
- *   - `write()` IS DRAIN-AWARE AND SERIALIZED. `notebook_run_all` posts many
- *     executes back to back; ignoring `false` from `stdin.write` (as the codex
- *     transport can afford to) would buffer a notebook's worth of source in
- *     this process while the kernel is busy with cell one.
- *   - Notifications are dispatched to a handler rather than queued. An output
- *     is an event to journal NOW; the caller waiting on `execute` collects its
- *     own by `execId`.
- *
- * NO RESTART LOGIC HERE. A dead bridge rejects everything; the host decides
- * whether to spawn a new one. Restarting the KERNEL is a protocol verb.
- */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
@@ -43,8 +27,6 @@ export class KernelBridge {
     this.child = spawnImpl(python, script, { cwd: options.cwd, env: { ...process.env, ...options.env, PYTHONUNBUFFERED: "1" } });
     this.child.on("error", (error) => this.close(error));
     createInterface({ input: this.child.stdout }).on("line", (line) => this.consume(line));
-    // Kept, bounded, for the error a failed spawn produces — "ModuleNotFoundError:
-    // jupyter_client" is the whole diagnosis and it only ever appears here.
     createInterface({ input: this.child.stderr }).on("line", (line) => {
       this.stderrTail.push(line);
       if (this.stderrTail.length > 40) this.stderrTail.shift();

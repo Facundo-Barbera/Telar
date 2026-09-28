@@ -1,16 +1,5 @@
-/**
- * TeX packages, honestly: the two managers disagree about what "packages"
- * even means, and the answer type refuses to paper over it. Tectonic fetches
- * on first use (nothing to list, nothing to install); TeX Live has tlmgr's
- * real inventory; a TeX Live whose tlmgr is missing or root-owned says so
- * instead of showing an empty list that reads as "none installed".
- *
- * NAMES ARE VALIDATED BEFORE THEY REACH ARGV — the `ds/packages.ts` rule.
- * tlmgr takes no version clauses, so the pattern is a bare name and nothing
- * that starts with a dash.
- */
-import type { JobStep } from "../ds/jobs";
-import { defaultExec, type Exec } from "../ds/python-env";
+import type { JobStep } from "../data-science/jobs";
+import { defaultExec, type Exec } from "../data-science/python-env";
 import type { TexliveDistribution } from "./toolchain";
 
 export type TexPackage = { name: string; revision?: string; description?: string };
@@ -33,7 +22,6 @@ export function assertTexPackageNames(names: string[]): string[] {
   return clean;
 }
 
-/** `tlmgr info --only-installed --data name,localrev,shortdesc` — CSV-ish, one row per line. */
 export function parseTlmgrList(output: string): TexPackage[] {
   const packages: TexPackage[] = [];
   for (const line of output.split(/\r?\n/)) {
@@ -60,7 +48,6 @@ export async function listTexPackages(dist: TexliveDistribution, exec: Exec = de
   return { mode: "managed", packages: parseTlmgrList(result.stdout) };
 }
 
-/** The steps that add packages. Validated first; tlmgr only. */
 export function texInstallSteps(dist: TexliveDistribution, names: string[]): JobStep[] {
   if (!dist.tlmgr) throw new Error("this TeX Live has no tlmgr — install TinyTeX for a Telar-managed distribution");
   const clean = assertTexPackageNames(names);
@@ -73,23 +60,6 @@ export function texRemoveSteps(dist: TexliveDistribution, names: string[]): JobS
   return [{ title: `Removing ${clean.join(", ")}`, file: dist.tlmgr.path, args: ["remove", ...clean] }];
 }
 
-/**
- * The tlmgr names a failed compile is probably missing, taken from its own
- * diagnostics.
- *
- * "PROBABLY" IS THE HONEST WORD and it is why this feeds an opt-in setting
- * rather than happening by default. `\usepackage{foo}` that cannot be resolved
- * reports `File foo.sty not found`, and the tlmgr package is USUALLY named
- * after the file — but not always (`algorithm2e.sty` is `algorithm2e`, while
- * `subfigure.sty` lives in a bundle called something else). A guess that misses
- * costs one failed `tlmgr install` and a compile that fails the way it already
- * was; a guess that hits saves the person a round trip. Neither is worth doing
- * behind their back, which is what the setting is for.
- *
- * Names are run through `assertTexPackageNames`'s own pattern here rather than
- * trusted from a log — a filename in TeX's output is attacker-adjacent input
- * the moment somebody compiles a `.tex` they were sent.
- */
 export function missingTexPackages(diagnostics: { code?: string; message: string }[]): string[] {
   const names = new Set<string>();
   for (const diagnostic of diagnostics) {

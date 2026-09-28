@@ -1,14 +1,5 @@
-/**
- * `latex_*` — the document tools. Every one is a shaped call into the
- * session's compile capability; the shapes exist so a model gets structured
- * errors with file:line instead of grepping a 3000-line TeX log.
- *
- * TOOLS ALWAYS REGISTER when the project opted in; a handler that cannot
- * proceed answers a sentence naming what is missing, never hides — the same
- * discipline as `ds-tools.ts`.
- */
 import { z } from "zod";
-import { err, failure, json, ok, type ToolFactory } from "../domains/agent-tools";
+import { err, failure, json, ok, type ToolFactory } from "../../agent-tools";
 import type { LatexCapability } from "./capability";
 import type { LatexDiagnostic } from "./log-parser";
 

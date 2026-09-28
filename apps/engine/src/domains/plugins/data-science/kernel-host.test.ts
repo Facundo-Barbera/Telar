@@ -1,35 +1,18 @@
-/**
- * The real thing: a PROJECT `.venv` built with uv (analysis stack, NO
- * ipykernel — exactly what a person's checkout looks like), marked in use,
- * a kernel started through the host, cells executed, images persisted, a
- * notebook run and written back. Telar's bridge venv is built lazily by the
- * first ensure(), and the kernel must run the PROJECT'S interpreter — the
- * regression that motivated issue #167.
- * SKIPPED WHEN UV IS ABSENT — the unit of value here is the bridge and the
- * host working against a live ipykernel, which no stub can stand in for.
- * One venv per test file, cached under a temp dir; ~10s cold.
- */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../state";
+import { EngineStore } from "../../../state";
 import { KernelHost } from "./kernel-host";
 import { telarVenvDir, telarVenvPython } from "./telar-venv";
 import { parseNotebook } from "./notebook-file";
 
-/**
- * A Claude default this temp home already knows, so a claim is not withheld
- * waiting for a model list nobody is going to read here. Real homes learn this
- * from the provider; see `rememberClaudeDefault`.
- */
 function knownClaudeDefault(directory: string): string {
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
   return directory;
 }
-
 
 function hasUv(): boolean {
   try { execFileSync("uv", ["--version"], { stdio: "ignore" }); return true; } catch { return false; }
@@ -46,7 +29,6 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
   const states: string[] = [];
 
   beforeAll(async () => {
-    // realpathed: the store realpaths project roots, and ids hash paths as spelled.
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "telar-kernel-")));
     project = path.join(root, "project");
     fs.mkdirSync(project);
@@ -93,8 +75,6 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     const status = await ds.kernel();
     expect(status.python).toBe(projectPython);
     expect(status.executable).toBe(projectPython);
-    // The bridge venv was built lazily on the same interpreter and grafted in;
-    // the kernel imports ipykernel while the project's env stays untouched.
     expect(fs.existsSync(telarVenvPython(telarVenvDir(store.paths.root, "project_k"))!)).toBe(true);
     const spec = await ds.execute({ code: "import importlib.util, json; print(json.dumps(importlib.util.find_spec('ipykernel') is not None))" });
     expect((spec.outputs[0] as { text: string }).text.trim()).toBe("true");
@@ -192,7 +172,6 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     expect(status.executable).toBe(telarPython);
     expect(await store.dataScience("session_k").vars()).toEqual([]);
 
-    // And back, so the archive test below kills a kernel on the project venv.
     await store.dataScienceUseEnvironment("session_k", ".venv");
     expect((await store.dataScience("session_k").kernel()).executable).toBe(projectPython);
   }, 300_000);

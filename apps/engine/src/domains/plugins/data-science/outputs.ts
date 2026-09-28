@@ -1,16 +1,3 @@
-/**
- * What a cell produces, as the engine and the cockpit both read it.
- *
- * ONE CLOSED UNION, shaped in the bridge before the bytes cross stdio. Jupyter's
- * mime bundles are open-ended and a client that had to handle them would grow
- * a `switch` per renderer; here there are six kinds and every consumer — the
- * journal, the notebook file, the tool result — meets the same six.
- *
- * `image` CARRIES BYTES ONLY IN FLIGHT. The host persists them to the session's
- * attachment store and replaces `dataB64` with `attachmentId` before anything
- * is journaled or written to a notebook, so a plot is a file on disk that the
- * gallery, the transcript and the model all address the same way.
- */
 import { z } from "zod";
 
 const TextOutput = z.object({
@@ -59,17 +46,11 @@ export type ExecResult = {
   outputs: CellOutput[];
 };
 
-/** Strip ANSI escapes IPython puts in tracebacks — a model reads them as noise. */
 export function plainTraceback(lines: string[]): string[] {
   // eslint-disable-next-line no-control-regex
   return lines.map((line) => line.replace(/\u001b\[[0-9;]*m/g, ""));
 }
 
-/**
- * The outputs as a model should read them: text inline, tables as a compact
- * grid, images by attachment id, errors as a plain traceback. Bounded, because
- * this lands in a context window.
- */
 export function describeOutputs(outputs: CellOutput[], limit = 12_000): string {
   const parts: string[] = [];
   for (const output of outputs) {
@@ -103,26 +84,8 @@ export function describeOutputs(outputs: CellOutput[], limit = 12_000): string {
   return text.length > limit ? `${text.slice(0, limit)}\n… [${text.length - limit} chars elided]` : text;
 }
 
-/**
- * HOW A FIGURE TELLS US ITS OWN NAME.
- *
- * A plot arrives as bytes. Nothing in a PNG says what it is of, and the
- * execution that drew it is called `exec_9` — so the gallery could only caption
- * a figure with a counter, and could not tell one figure drawn three times from
- * three different figures (#353). `ds_plot`'s `title:` argument covers the case
- * where the caller happened to name it; most plots are drawn by code that calls
- * `plt.title` itself, and that title is the one a person would recognise.
- *
- * So the composed plot asks, in the kernel, just before the figure is shown —
- * after which the inline backend has closed it and there is nothing left to ask.
- * The answer comes back on stdout behind a marker, in the same idiom the watch
- * checks already use, and is taken back out of the outputs before anybody sees
- * them. A kernel with no matplotlib, no figure or no title says nothing and the
- * plot keeps the name its maker had.
- */
 const PLOT_TITLE_MARKER = "__TELAR_PLOT_TITLE__";
 
-/** Run this BEFORE `plt.show()`: after it, the figure is gone. */
 export const PLOT_TITLE_PROBE = [
   "try:",
   "    import matplotlib.pyplot as _tplt",
@@ -135,7 +98,6 @@ export const PLOT_TITLE_PROBE = [
   "",
 ].join("\n");
 
-/** The title the probe printed, if it printed one. */
 export function plotTitleFrom(outputs: readonly CellOutput[]): string | undefined {
   for (const output of outputs) {
     if (output.kind !== "text") continue;
@@ -148,8 +110,6 @@ export function plotTitleFrom(outputs: readonly CellOutput[]): string | undefine
   return undefined;
 }
 
-/** The same outputs with the probe's line taken out — and with any text output
- *  that was nothing but the probe dropped, rather than left as a blank line. */
 export function withoutPlotTitle(outputs: readonly CellOutput[]): CellOutput[] {
   const kept: CellOutput[] = [];
   for (const output of outputs) {

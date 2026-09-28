@@ -15,7 +15,7 @@
  *
  * The managed Tectonic is represented here by a real file in the place the
  * installer publishes to — `resolveLatex` asks the filesystem, so a stub would
- * be testing the stub. Nothing downloads: `src/latex/managed.test.ts` owns the
+ * be testing the stub. Nothing downloads: `src/domains/plugins/latex/managed.test.ts` owns the
  * installer itself, with a fetch that never leaves the process.
  */
 import { afterEach, expect, test } from "bun:test";
@@ -24,7 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, latexMachineSettings, dataScienceMachineSettings } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { MANAGED_TECTONIC_VERSION, managedTectonicBinary } from "../src/latex/managed";
+import { MANAGED_TECTONIC_VERSION, managedTectonicBinary } from "../src/domains/plugins/latex/managed";
 import { stubModels } from "./stub-models";
 
 const roots: string[] = [];

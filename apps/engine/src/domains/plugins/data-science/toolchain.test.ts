@@ -55,7 +55,6 @@ test("findBinary looks on PATH first, then in the known install directories", ()
   const dir = root();
   const uv = bin(dir, "uv");
   expect(findBinary("uv", { PATH: dir })).toBe(uv);
-  // Off PATH, the fallbacks are consulted: found or not depending on the machine, never a throw.
   const fallback = findBinary("uv", { PATH: root() });
   expect(fallback === undefined || fallback.endsWith("/uv")).toBe(true);
   expect(findBinary("definitely-not-a-tool", { PATH: dir })).toBeUndefined();

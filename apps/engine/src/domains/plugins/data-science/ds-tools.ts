@@ -1,27 +1,15 @@
-/**
- * `ds_*` — the analysis tools. Every one of them is a shaped call into the
- * session's kernel; the shapes exist so a model can ask "what is in df" or
- * "which rows" without composing pandas from scratch, and so the answer comes
- * back sized for a context window rather than as a repr of a million rows.
- *
- * GATED BY WHAT IMPORTS, NOT BY WHAT WAS INSTALLED. A tool whose library is
- * missing in this kernel still registers — a model should learn it exists and
- * why it will not work here — but its handler refuses in one sentence naming
- * the library, and `ds_kernel` says the same up front.
- */
 import { z } from "zod";
-import { err, failure, json, ok, type ToolFactory } from "../domains/agent-tools";
+import { err, failure, json, ok, type ToolFactory } from "../../agent-tools";
 import type { DsCapability } from "./capability";
 import { describeOutputs, PLOT_TITLE_PROBE } from "./outputs";
 
 const NAME = z.string().min(1).regex(/^[A-Za-z_][A-Za-z0-9_]*$/).describe("A Python identifier in the kernel's namespace.");
 
-/** Python source that, run in the kernel, evaluates `expr` and prints JSON. */
 const py = (expr: string) => `import json as _tj\nprint(_tj.dumps(${expr}, default=str))`;
 
 async function needs(capability: DsCapability, module: string): Promise<string | undefined> {
   const kernel = await capability.kernel();
-  if (kernel.state === "none") return undefined; // starts on first use; probe then
+  if (kernel.state === "none") return undefined;
   if (kernel.modules && kernel.modules[module] === false) return `${module} is not importable in this session's kernel. Install it with ds_install (the person will be asked to approve), then restart the kernel.`;
   return undefined;
 }
@@ -193,9 +181,6 @@ ${py("_out")}`;
           code = `import matplotlib.pyplot as plt\n${code.replace(/^\s*plt\.show\(\)\s*$/gm, "")}\n`;
         }
         if (typeof args.title === "string") code += `plt.title(${JSON.stringify(args.title)})\n`;
-        // The figure names itself while it still exists — see PLOT_TITLE_PROBE.
-        // After `show()` the inline backend has closed it and there is nothing
-        // left to ask, which is why this goes here and not after.
         code += `plt.tight_layout()\n${PLOT_TITLE_PROBE}plt.show()\n`;
         try {
           const outcome = await capability.plot({ code, ...(typeof args.title === "string" ? { title: args.title } : {}) });

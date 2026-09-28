@@ -1,14 +1,3 @@
-/**
- * FINDING EXTERNAL PLUGINS — `<TELAR_HOME>/plugins/<id>/plugin.json`, read and
- * validated strictly, NEVER FATAL.
- *
- * A folder whose manifest does not parse, names another folder's id, reuses a
- * bundled id or a tool prefix somebody already owns, or points at a program
- * that is not there, is REFUSED: it is listed on Settings ▸ Plugins as failed,
- * with the sentence that says why, and it contributes nothing. The engine
- * starts either way — a typo in somebody's plugin is not a reason Telar did
- * not open.
- */
 import fs from "node:fs";
 import path from "node:path";
 import { BUNDLED_PLUGIN_TOOL_PREFIXES, ExternalPluginManifest, PLUGIN_API_VERSION, PluginId, type PluginMeta } from "@telar/engine-client";
@@ -19,31 +8,22 @@ const MANIFEST_FILE = "plugin.json";
 export type LoadedExternalPlugin = { dir: string; manifest: ExternalPluginManifest };
 export type RefusedExternalPlugin = { dir: string; meta: PluginMeta; error: string };
 
-/** Where external plugins live, beside the engine's own state: `<TELAR_HOME>/plugins`. */
 export function externalPluginsDir(engineRoot: string): string {
   return path.join(path.dirname(engineRoot), "plugins");
 }
 
-/** A refused plugin's listing: enough to name it, and nothing it could claim. */
 function refusedMeta(id: string, name: string): PluginMeta {
   return { id, api: PLUGIN_API_VERSION, name, version: "?", toolPrefixes: [], readTools: [], eventKinds: [], settings: [] };
 }
 
-/** Every issue as one sentence: "tools.0.name: must start with …". */
 function describe(error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] }): string {
   return error.issues.map((issue) => `${issue.path.length ? `${issue.path.map(String).join(".")}: ` : ""}${issue.message}`).join("; ");
 }
 
 export type Reservations = { ids: ReadonlySet<string>; prefixes: ReadonlySet<string> };
 
-/** Ids the engine's own routes use under `/v2/plugins/`, so no plugin may take them. */
 const ROUTE_IDS = ["installed"];
 
-/**
- * One folder's manifest, checked. `expectedId` is the name it will be
- * installed under: the folder's own name when loading, the manifest's id when
- * installing from somewhere else. Never throws.
- */
 export function checkPluginFolder(
   folder: string,
   expectedId: string | undefined,
@@ -72,7 +52,6 @@ export function checkPluginFolder(
   return { manifest };
 }
 
-/** A folder name as a listing id: itself when it is one, a safe stand-in when not. */
 function listedId(name: string): string {
   return PluginId.safeParse(name).success ? name : `invalid-${name.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`.slice(0, 64);
 }
@@ -90,7 +69,6 @@ function loadExternalPlugins(dir: string, reserved: Reservations): { loaded: Loa
     names = fs
       .readdirSync(dir)
       .filter((name) => !name.startsWith("."))
-      // A linked plugin is a symlink to a folder: follow it.
       .filter((name) => {
         try {
           return fs.statSync(path.join(dir, name)).isDirectory();
@@ -100,7 +78,6 @@ function loadExternalPlugins(dir: string, reserved: Reservations): { loaded: Loa
       })
       .sort();
   } catch {
-    // No folder yet is the normal case: nothing installed.
     return { loaded, refused };
   }
   const ids = new Set(reserved.ids);
@@ -119,10 +96,6 @@ function loadExternalPlugins(dir: string, reserved: Reservations): { loaded: Loa
   return { loaded, refused };
 }
 
-/**
- * What the daemon and the out-of-process worker both load: the same folder,
- * the same reservations, so they agree on which plugins exist.
- */
 export function loadInstalledPlugins(dir: string) {
   return loadExternalPlugins(dir, BUNDLED_RESERVATIONS);
 }

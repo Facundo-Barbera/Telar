@@ -47,7 +47,7 @@
     },
     {
       "files": [
-        "apps/engine/src/ds/kernel-host.ts"
+        "apps/engine/src/domains/plugins/data-science/kernel-host.ts"
       ],
       "rules": {
         "typescript/triple-slash-reference": "off"

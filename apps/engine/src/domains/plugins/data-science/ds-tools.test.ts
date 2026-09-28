@@ -3,7 +3,7 @@ import { assertTelarToolNames } from "@telar/engine-client";
 import type { DsCapability } from "./capability";
 import { dsTools } from "./ds-tools";
 import { notebookTools } from "./notebook-tools";
-import type { ToolFactory } from "../domains/agent-tools";
+import type { ToolFactory } from "../../agent-tools";
 
 type Registered = { name: string; description: string; shape: Record<string, unknown>; run: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }> };
 
@@ -79,8 +79,6 @@ test("notebook_open lists cells by id and notebook_edit_cell refuses an empty ed
 });
 
 test("notebook_edit_cell takes moveTo and hands the capability an absolute move", async () => {
-  // The agent-facing half of the iPad's Move up / Move down: a model that can
-  // insert and delete should be able to reorder without losing what ran.
   const edits: unknown[] = [];
   const tools = build({
     notebookEdit: async (_path, edit) => {
@@ -98,14 +96,10 @@ test("notebook_edit_cell takes moveTo and hands the capability an absolute move"
   await edit.run({ path: "a.ipynb", index: 3, moveTo: 1 });
   expect(edits[1]).toEqual({ kind: "move", to: 1, index: 3 });
 
-  // moveTo: 0 is a real edit, not a falsy "nothing to change".
   expect(edits).toHaveLength(2);
 });
 
 test("notebook_edit_cell takes clearOutputs, and it outranks the bare-set fallthrough", async () => {
-  // The agent-facing half of the cell menu's Clear outputs. A model could not
-  // fake this one: `set` with the same source rewrites the file unchanged, and
-  // delete-then-insert would take the cell's id with it.
   const edits: unknown[] = [];
   const tools = build({
     notebookEdit: async (_path, edit) => {
@@ -123,8 +117,6 @@ test("notebook_edit_cell takes clearOutputs, and it outranks the bare-set fallth
   await edit.run({ path: "a.ipynb", index: 3, clearOutputs: true });
   expect(edits[1]).toEqual({ kind: "clearOutputs", index: 3 });
 
-  // `clearOutputs: false` is not an edit — it falls through to the "nothing to
-  // change" refusal rather than quietly clearing the cell.
   const nothing = await edit.run({ path: "a.ipynb", cellId: "c2", clearOutputs: false });
   expect(nothing.isError).toBe(true);
   expect(edits).toHaveLength(2);

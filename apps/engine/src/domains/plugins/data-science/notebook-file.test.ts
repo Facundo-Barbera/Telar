@@ -34,14 +34,6 @@ test("a notebook round-trips with every unknown key kept and ids minted for cell
   expect((again as { top_level_vendor?: boolean }).top_level_vendor).toBe(true);
 });
 
-/**
- * THE ID IS A NAME, SO TWO PARSES MUST AGREE ON IT (#351).
- *
- * A random mint made the id the panel rendered a different string from the id
- * `notebook/run`'s own fresh parse produced, and every Run on a notebook Telar
- * had not written itself came back "no cell with id …". Most notebooks on disk
- * are exactly that: nbformat < 4.5, no cell ids at all.
- */
 test("an id-less notebook parses to the same ids every time, and says it minted them", () => {
   const text = JSON.stringify(FIXTURE);
   const once = parseNotebookText(text);
@@ -49,8 +41,6 @@ test("an id-less notebook parses to the same ids every time, and says it minted 
   expect(once.mintedIds).toBe(true);
   expect(again.nb.cells.map((c) => c.id)).toEqual(once.nb.cells.map((c) => c.id));
   expect(once.nb.cells.every((c) => /^[0-9a-f]{8}$/.test(c.id))).toBe(true);
-  // Distinct cells get distinct ids: position is in the derivation, so even
-  // two cells with identical source cannot collide.
   const twins = parseNotebookText(JSON.stringify({ nbformat: 4, nbformat_minor: 4, metadata: {}, cells: [{ cell_type: "code", source: "x" }, { cell_type: "code", source: "x" }] }));
   expect(new Set(twins.nb.cells.map((c) => c.id)).size).toBe(2);
 });
@@ -103,24 +93,16 @@ test("findCell addresses by id or index and refuses the rest", () => {
   expect(() => findCell(nb, {})).toThrow(/id or index/);
 });
 
-/**
- * MOVE KEEPS THE RECORD OF WHAT RAN. The reason the engine owns a `move` at
- * all is that a client faking one as delete-then-insert mints a new id and
- * loses `outputs` and `execution_count` — so these cases assert the cell comes
- * out the other side as the same object, not merely the same text.
- */
 test("a cell moves down and up carrying its outputs, execution count and metadata", () => {
   const nb = parseNotebook(JSON.stringify(FIXTURE));
   const [markdown, code] = [nb.cells[0]!, nb.cells[1]!];
 
-  // DOWN is the same verb as up: `to` is where it lands, either way.
   moveCell(nb, 0, 1);
   expect(nb.cells.map((c) => c.id)).toEqual([code.id, markdown.id]);
 
   moveCell(nb, 1, 0);
   expect(nb.cells.map((c) => c.id)).toEqual([markdown.id, code.id]);
 
-  // The same object, not a copy — which is what makes the outputs survive.
   expect(nb.cells[1]).toBe(code);
   expect(nb.cells[1]!.execution_count).toBe(2);
   expect(nb.cells[1]!.outputs).toEqual([{ output_type: "stream", name: "stdout", text: ["hi\n"] }]);
@@ -140,33 +122,22 @@ test("a move target outside the notebook is refused rather than clamped", () => 
   expect(() => moveCell(nb, 0, 2)).toThrow(/out of range \(0\.\.1\)/);
   expect(() => moveCell(nb, 0, -1)).toThrow(/out of range/);
   expect(() => moveCell(nb, 0, 0.5)).toThrow(/out of range/);
-  // Refused means UNCHANGED: a rejected move must not leave a hole behind.
   expect(nb.cells).toHaveLength(2);
 });
 
-/**
- * CLEAR IS MOVE'S PAIR, and the cases say so: one carries the outputs to a new
- * index, the other drops them where they stand. Neither is delete-then-insert,
- * which would take the id too.
- */
 test("clearing a cell's outputs takes the execution count with them and leaves the source alone", () => {
   const nb = parseNotebook(JSON.stringify(FIXTURE));
   clearCellOutputs(nb, 1);
   expect(nb.cells[1]!.outputs).toEqual([]);
-  // The count is the LABEL on the outputs ("[2]" beside what [2] printed), so
-  // a cleared cell that kept it would claim to have run and said nothing.
   expect(nb.cells[1]!.execution_count).toBeNull();
   expect(nb.cells[1]!.source).toBe("print('hi')");
   expect(nb.cells[1]!.metadata).toEqual({ tags: ["keep"] });
-  // Nothing else in the notebook moved.
   expect(nb.cells).toHaveLength(2);
   expect(nb.cells[0]!.cell_type).toBe("markdown");
 });
 
 test("a cell with no outputs to clear is refused rather than answered", () => {
   const nb = parseNotebook(JSON.stringify(FIXTURE));
-  // Markdown carries no `outputs` key at all, so clearing one is a caller
-  // asking for something that does not exist — the same refusal a run gets.
   expect(() => clearCellOutputs(nb, 0)).toThrow(/is markdown, not code/);
   expect(nb.cells[0]!.outputs).toBeUndefined();
 });

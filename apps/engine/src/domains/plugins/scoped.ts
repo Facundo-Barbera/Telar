@@ -3,8 +3,8 @@ import { machineAllows } from "@telar/engine-client";
 import { EngineStateError } from "../../platform/kernel/errors";
 import { body, HttpError } from "../../platform/http/http";
 import type { Route, RouteAnswer } from "../../platform/http/route";
-import type { PluginHost } from "../../plugins/host";
-import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type PluginScopedRoute } from "../../plugins/routes";
+import type { PluginHost } from "./host";
+import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type PluginScopedRoute } from "./scoped-routes";
 import type { EngineStore } from "../../state";
 
 type ScopedInput = { pluginId: string; scope: "project" | "machine"; projectId?: string; verb: string; legacy?: boolean };

@@ -1,11 +1,3 @@
-/**
- * TeX logs into structured diagnostics — the thing that makes `latex_compile`
- * worth an agent's while. TeX logs are unstructured prose; this parser reads
- * the reliable channels first (`-file-line-error` lines, tectonic's own
- * `error:` framing) and falls back to the classic `! …` blocks. AN UNPARSED
- * ERROR STILL SURFACES: anything that looks like an error but matches no rule
- * lands in the `other` bucket with its raw block, never on the floor.
- */
 import path from "node:path";
 
 type LatexDiagnosticCode =
@@ -32,7 +24,6 @@ const MAX_DETAIL = 600;
 
 type ParseOptions = { workspace?: string; kind?: "texlive" | "tectonic" };
 
-/** `(./chapters/intro.tex` opens a file in the log; `)` closes one. */
 const OPEN_FILE = /\((\.?\.?\/[^\s()]+|[A-Za-z]:[^\s()]+)/g;
 
 function relativise(file: string, workspace?: string): string {
@@ -42,24 +33,17 @@ function relativise(file: string, workspace?: string): string {
   return relative.startsWith("..") ? cleaned : relative;
 }
 
-/** The `.sty`/`.cls` basename is the LIKELY tlmgr name — often but not always. */
 function packageSuggestion(missing: string, kind?: "texlive" | "tectonic"): string | undefined {
   if (kind === "tectonic") return "Tectonic downloads packages automatically — check the name, or compile again while online.";
   const base = missing.replace(/\.(sty|cls)$/i, "");
   return `Likely \`latex_install\` with add: ["${base}"] — the tlmgr package is usually, not always, named after the file.`;
 }
 
-/**
- * Join a warning block: TeX wraps prose onto continuation lines until a blank
- * line. `max_print_line=1000` in the compile env keeps most messages on one
- * line; this handles the ones that wrap anyway.
- */
 function joinBlock(lines: string[], start: number): { text: string; end: number } {
   let text = lines[start] ?? "";
   let end = start;
   for (let i = start + 1; i < lines.length; i += 1) {
     const line = lines[i] ?? "";
-    // "(hyperref)      removing …" is how a package continues its own warning.
     const continuation = /^\((\S+)\)\s{2,}(.*)$/.exec(line);
     if (continuation) {
       text += ` ${continuation[2]}`;
@@ -77,7 +61,6 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
   const { workspace, kind } = options;
   const lines = log.split(/\r?\n/);
   const diagnostics: LatexDiagnostic[] = [];
-  /** Parenthesis stack, the fallback attribution when file-line-error is absent. */
   const fileStack: string[] = [];
 
   const push = (diagnostic: LatexDiagnostic) => {
@@ -92,7 +75,6 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] ?? "";
 
-    // Track which file the log is inside, cheaply and best-effort.
     for (const match of line.matchAll(OPEN_FILE)) if (/\.(tex|sty|cls|bib|def|cfg|ltx)$/i.test(match[1]!)) fileStack.push(match[1]!);
     if (fileStack.length) {
       const closes = (line.match(/\)/g) ?? []).length;
@@ -100,7 +82,6 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
       for (let c = closes - opens; c > 0 && fileStack.length; c -= 1) fileStack.pop();
     }
 
-    // ── the reliable channel: -file-line-error ─────────────────────────────
     const fle = /^(.+?\.\w{2,4}):(\d+): (.+)$/.exec(line);
     if (fle && !line.startsWith("l.")) {
       const message = fle[3]!.trim();
@@ -116,7 +97,6 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
       continue;
     }
 
-    // ── missing file / package ─────────────────────────────────────────────
     const missing = /^! LaTeX Error: File [`']([^']+)' not found/.exec(line);
     if (missing) {
       const name = missing[1]!;
@@ -131,7 +111,6 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
       continue;
     }
 
-    // ── the classic channel: "! <message>", context "l.<n> …" follows ──────
     if (line.startsWith("! ")) {
       const message = line.slice(2).trim();
       let lineNumber: number | undefined;
@@ -153,7 +132,6 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
       continue;
     }
 
-    // ── tectonic's own framing ─────────────────────────────────────────────
     const tectonic = /^(error|warning): (.+)$/.exec(line);
     if (tectonic) {
       push({
@@ -164,7 +142,6 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
       continue;
     }
 
-    // ── warnings ───────────────────────────────────────────────────────────
     const warning = /^(?:LaTeX|Package (\S+)|Class (\S+)) Warning: (.+)$/.exec(line);
     if (warning) {
       const block = joinBlock(lines, i);
@@ -201,7 +178,6 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
   return diagnostics;
 }
 
-/** One sentence for the journal event — the first error, or nothing. */
 export function firstErrorSentence(diagnostics: LatexDiagnostic[]): string | undefined {
   const first = diagnostics.find((d) => d.severity === "error");
   if (!first) return undefined;

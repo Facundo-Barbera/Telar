@@ -1,10 +1,4 @@
-/**
- * `DsCapability` over the generic plugin wire — the worker's copy. Every verb
- * lands on `/v2/sessions/:id/plugins/data-science/*`, whose route table calls
- * `store.dataScience()`, so there is one implementation of every rule and the
- * worker holds no kernel.
- */
-import type { PluginCall } from "../plugins/tool-module";
+import type { PluginCall } from "../tool-module";
 import type { DsCapability } from "./capability";
 
 export function clientDsCapability(call: PluginCall): DsCapability {

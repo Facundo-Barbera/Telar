@@ -1,27 +1,3 @@
-/**
- * THE REGISTRY. What holds the plugins, starts them without letting one hang the
- * daemon, takes them down without lying about what it took down, and answers
- * "which plugin owns this tool name" so that nothing else in the tree has to
- * know the answer by name.
- *
- * Three properties are worth stating because each replaces something the tree
- * used to do by hand:
- *
- *   ONE PREFIX, ONE OWNER, asserted at construction. `parseToolName` finds a
- *   capability by `startsWith`, so two plugins claiming `ds` would make tool
- *   routing depend on registration order — a bug that would appear as tools
- *   silently going to the wrong plugin. It fails loudly at startup instead.
- *
- *   INIT IS BOUNDED AND UNWINDS. A plugin that hangs, throws, or half-succeeds
- *   loses only itself: its registered cleanups run in reverse, its state becomes
- *   `failed` with the reason, and the daemon carries on. `startAll` runs the
- *   plugins concurrently, so one slow probe does not add its timeout to the
- *   others'.
- *
- *   DISABLE DRAINS. Flipping a project's switch off refuses new work
- *   immediately, lets running work finish, and releases resources once idle —
- *   see `contract.ts` for why that is three verbs and not one.
- */
 import path from "node:path";
 import { z } from "zod";
 import { BUNDLED_PLUGIN_TOOL_PREFIXES, type PluginMeta, type PluginStatus } from "@telar/engine-client";
@@ -35,31 +11,20 @@ import {
 import { ratifiedReadToolSet, unratifiedReadClaims } from "./policy";
 import { PluginWorkLog, type PluginWorkRecord } from "./work-log";
 
-/** How often a drain re-checks whether a plugin's work has finished. */
 const DRAIN_POLL_MS = 1_000;
-/**
- * How long a drain keeps POLLING for running work to finish. Generous, because
- * the point of a drain is to let work finish. Reaching it stops the poll loop
- * and reports which project is still holding resources — it does NOT release
- * them, because a bound on a loop is not a reason to kill a running cell.
- */
 const DRAIN_MAX_MS = 10 * 60_000;
 
 type HostLog = (message: string, detail?: Record<string, unknown>) => void;
 
 export type DrainOutcome = {
-  /** New work is refused. True as soon as `drain` returned. */
   drained: boolean;
-  /** Whether work was still running, so release is happening in the background. */
   stillBusy: boolean;
 };
 
 export class PluginHost {
   private readonly records = new Map<string, PluginRecord>();
-  /** prefix → plugin id, built once and asserted unique. */
   private readonly prefixOwners = new Map<string, string>();
   private readonly drains = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Per (plugin, project): which drain is current. See `watchDrain`. */
   private readonly drainGenerations = new Map<string, number>();
   readonly work: PluginWorkLog;
   private disposed = false;
@@ -70,22 +35,10 @@ export class PluginHost {
       daemonId: string;
       stateDir: string;
       log?: HostLog;
-      /** Overridable so a test can prove the bound without waiting for it. */
       initTimeoutMs?: number;
       drainPollMs?: number;
-      /** Overridable so a test can prove the ceiling without waiting ten minutes. */
       drainMaxMs?: number;
-      /**
-       * The declared prefix set to assert against: the bundled list, plus the
-       * prefixes installed external manifests declare (checked for collisions
-       * by the loader before they get here).
-       */
       declaredPrefixes?: readonly string[];
-      /**
-       * Plugins that were found but REFUSED — an external manifest that did not
-       * validate. Listed as failed with the reason, so Settings ▸ Plugins can
-       * say why; never initialised, never serving anything.
-       */
       refused?: readonly { meta: PluginMeta; error: string; installed?: { linked: boolean } }[];
     },
   ) {
@@ -96,10 +49,6 @@ export class PluginHost {
       for (const prefix of toolPrefixes) {
         const owner = this.prefixOwners.get(prefix);
         if (owner) throw new Error(`tool prefix "${prefix}" is claimed by both ${owner} and ${id}`);
-        // A prefix the protocol does not declare would still WORK — the tool
-        // registers and the model can call it — but every call would render as
-        // an anonymous MCP row and approvals would lose their type. That is a
-        // silent degradation, so it fails here instead.
         if (!declared.includes(prefix)) {
           throw new Error(
             `plugin ${id} claims tool prefix "${prefix}", which is not declared in BUNDLED_PLUGIN_TOOL_PREFIXES; ` +
@@ -114,7 +63,6 @@ export class PluginHost {
     this.work = new PluginWorkLog(path.join(options.stateDir, "plugins", "work"), options.daemonId);
   }
 
-  /** List a plugin that was found but refused, with the reason. Never started. */
   refuse(meta: PluginMeta, error: string, installed?: { linked: boolean }): void {
     if (this.records.has(meta.id)) return;
     this.records.set(meta.id, { module: { meta, ...(installed ? { installed } : {}) }, state: "failed", error, cleanups: [] });
@@ -124,17 +72,14 @@ export class PluginHost {
     this.options.log?.(message, detail);
   }
 
-  /** Every registered manifest, in registration order. */
   metas(): PluginMeta[] {
     return [...this.records.values()].map((record) => record.module.meta);
   }
 
-  /** Tool prefixes, for the protocol's capability list. */
   toolPrefixes(): string[] {
     return [...this.prefixOwners.keys()];
   }
 
-  /** Which plugin owns a tool, by its prefix. Undefined for a tool nobody claims. */
   ownerOfTool(tool: string): string | undefined {
     for (const [prefix, id] of this.prefixOwners) if (tool.startsWith(`${prefix}_`)) return id;
     return undefined;
@@ -144,7 +89,6 @@ export class PluginHost {
     return this.records.get(id)?.module;
   }
 
-  /** A plugin whose `init` succeeded — the only kind whose tools may be served. */
   ready(id: string): PluginEngineModule | undefined {
     const record = this.records.get(id);
     return record?.state === "ready" ? record.module : undefined;
@@ -166,17 +110,10 @@ export class PluginHost {
     });
   }
 
-  /** The read classifications the host honours. See `policy.ts`. */
   ratifiedReadTools(): Set<string> {
     return ratifiedReadToolSet(this.metas());
   }
 
-  /**
-   * A PLUGIN INSTALLED WHILE THE ENGINE RUNS — an external folder. Registered
-   * and started exactly as one found at startup; a refused listing under the
-   * same id (its broken folder, now replaced) gives way. Its prefix was
-   * checked for collisions by the installer, and is declared by being here.
-   */
   async add(module: PluginEngineModule): Promise<PluginStatus> {
     const { id, toolPrefixes } = module.meta;
     const existing = this.records.get(id);
@@ -192,11 +129,6 @@ export class PluginHost {
     return this.statuses().find((status) => status.meta.id === id)!;
   }
 
-  /**
-   * Unregister a plugin and give back everything it acquired — for an
-   * installed plugin being removed. Running work is not waited for: removing
-   * a plugin is the owner saying it should stop.
-   */
   async remove(id: string): Promise<void> {
     const record = this.records.get(id);
     if (!record) return;
@@ -211,11 +143,6 @@ export class PluginHost {
     await this.unwind(record, "disabled");
   }
 
-  /**
-   * Start every plugin. Concurrent, individually bounded, and never throwing:
-   * a plugin that cannot start is a feature that is unavailable, which the
-   * status list reports — not a daemon that refuses to boot.
-   */
   async startAll(): Promise<PluginStatus[]> {
     const interrupted = this.work.claimInterrupted();
     if (interrupted.length > 0) {
@@ -229,8 +156,6 @@ export class PluginHost {
     for (const meta of this.metas()) {
       const refused = unratifiedReadClaims(meta);
       if (refused.length > 0) {
-        // Visible, not fatal: the plugin still works, its tools just park for
-        // approval. Silence here would leave an author guessing.
         this.log("plugin read-tool claims not ratified by the host; they will require approval", {
           plugin: meta.id,
           tools: refused,
@@ -242,11 +167,6 @@ export class PluginHost {
 
   private interrupted: PluginWorkRecord[] = [];
 
-  /**
-   * Work lost to a previous engine exit, swept at startup. Read by plugins so
-   * `latex_status` can say "interrupted" instead of "never". Scoped by session
-   * because that is how every caller asks.
-   */
   interruptedWork(filter?: { plugin?: string; sessionId?: string }): PluginWorkRecord[] {
     return this.interrupted.filter(
       (record) =>
@@ -276,10 +196,6 @@ export class PluginHost {
       );
       record.initMs = Date.now() - startedAt;
     } catch (error) {
-      // PARTIAL INITIALISATION IS THE POINT. Whatever the hook managed to
-      // acquire before it failed is registered, and giving it back matters more
-      // than the error message does — a failed start that leaks a subprocess is
-      // worse than one that does not.
       record.state = "failed";
       record.error = error instanceof Error ? error.message : String(error);
       record.initMs = Date.now() - startedAt;
@@ -302,7 +218,6 @@ export class PluginHost {
           `plugin ${record.module.meta.id} cleanup "${cleanup.name}" did not finish`,
         );
       } catch (error) {
-        // One stuck cleanup must not strand the ones behind it.
         this.log("plugin cleanup failed", {
           plugin: record.module.meta.id,
           cleanup: cleanup.name,
@@ -313,14 +228,6 @@ export class PluginHost {
     }
   }
 
-  /**
-   * A project turned a plugin off. Refuse new work now, let running work finish,
-   * release when idle.
-   *
-   * RETURNS AS SOON AS NEW WORK IS REFUSED, which is what the HTTP caller
-   * actually needs to know — the settings write is not going to sit open for ten
-   * minutes waiting for a training cell. The release happens on a timer.
-   */
   async drainProject(id: string, projectId: string, reason: PluginDisposeReason = "disabled"): Promise<DrainOutcome> {
     const record = this.records.get(id);
     if (!record || record.state !== "ready") return { drained: true, stillBusy: false };
@@ -334,7 +241,6 @@ export class PluginHost {
       await this.release(record, projectId);
       return { drained: true, stillBusy: false };
     }
-    // A fresh drain SUPERSEDES any pending one for this project.
     const key = `${record.module.meta.id}:${projectId}`;
     const pending = this.drains.get(key);
     if (pending) clearTimeout(pending);
@@ -345,36 +251,12 @@ export class PluginHost {
     return { drained: true, stillBusy: true };
   }
 
-  /**
-   * Poll until the project goes idle, then release.
-   *
-   * ── THE DEADLINE IS COMPUTED ONCE ───────────────────────────────────────────
-   * It is a parameter, not a local. The first version recomputed
-   * `Date.now() + DRAIN_MAX_MS` on every recursion, so the ceiling moved forward
-   * with each poll and could never be reached — a busy project watched forever.
-   *
-   * ── A RE-ENABLE SUPERSEDES A PENDING DRAIN ─────────────────────────────────
-   * disable → still busy → re-enable was a real hazard: the old timer kept
-   * ticking and, once the project finally went idle, disposed the kernels of a
-   * project that was live again. Every watch carries the GENERATION it started
-   * in; `cancelDrain` bumps it, and a tick from a superseded generation returns
-   * without touching anything.
-   *
-   * ── THE CEILING STOPS WATCHING; IT DOES NOT KILL ───────────────────────────
-   * Reaching the ceiling while work is still running means we stop POLLING and
-   * say so. It does NOT release. Disabling a plugin lets existing work finish —
-   * that is the semantics — and a bound on a poll loop is not a licence to tear
-   * a running training cell out from under someone. The resources stay held
-   * until the work ends or the daemon shuts down, and the log says which
-   * project is holding them.
-   */
   private watchDrain(record: PluginRecord, projectId: string, deadline: number, generation: number): void {
     const key = `${record.module.meta.id}:${projectId}`;
-    if (this.drains.has(key)) return; // already watching
+    if (this.drains.has(key)) return;
     const tick = async () => {
       this.drains.delete(key);
       if (this.disposed) return;
-      // Superseded: the project turned this plugin back on while we waited.
       if ((this.drainGenerations.get(key) ?? 0) !== generation) return;
       const busy = record.module.hooks?.busy?.(projectId) ?? false;
       if (busy && Date.now() < deadline) {
@@ -396,10 +278,6 @@ export class PluginHost {
     this.drains.set(key, timer);
   }
 
-  /**
-   * The project turned this plugin back ON. Stops any pending drain and bumps
-   * the generation, so a tick already scheduled cannot release a live project.
-   */
   cancelDrain(id: string, projectId: string): void {
     const key = `${id}:${projectId}`;
     const timer = this.drains.get(key);
@@ -420,11 +298,6 @@ export class PluginHost {
     }
   }
 
-  /**
-   * A session went away. Fans out to every ready plugin — which is what
-   * replaces the store reaching for `releaseDataScience` by name, and means the
-   * next plugin with per-session state does not need a line added there.
-   */
   async releaseSession(sessionId: string, reason: string): Promise<void> {
     await Promise.all(
       [...this.records.values()]
@@ -443,15 +316,6 @@ export class PluginHost {
     );
   }
 
-  /**
-   * Shutdown. Drops the drain watchers first — a timer firing mid-teardown would
-   * release into a half-disposed host — then unwinds every plugin.
-   *
-   * NOTE WHAT THIS DOES NOT PROMISE. Shutdown does not wait for running work;
-   * the process is going away and pretending otherwise would hang it. Work still
-   * running keeps its breadcrumb, and the next startup reports it as interrupted
-   * — which is the honest account of what happened.
-   */
   async disposeAll(reason: PluginDisposeReason = "shutdown"): Promise<void> {
     this.disposed = true;
     for (const timer of this.drains.values()) clearTimeout(timer);
@@ -463,7 +327,6 @@ export class PluginHost {
   }
 }
 
-/** Bound a hook without leaving a timer behind on the happy path. */
 async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -479,15 +342,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
   }
 }
 
-/**
- * A PLUGIN'S SETTINGS SCHEMA, AS DATA A COCKPIT CAN RENDER — JSON Schema from
- * its own zod schema, so the settings pane is generated from the one definition
- * the host already validates writes against. Titles, descriptions and the
- * renderer's hints (`info`, `widget`, `inherits`) come from the schema's
- * `.meta()`. The INPUT shape, because that is what a pane writes. A schema that
- * cannot be expressed is left out rather than failing the health answer: the
- * pane falls back to enable-only.
- */
 function settingsJsonSchema(schema: z.ZodType<unknown> | undefined): Record<string, unknown> | undefined {
   if (!schema) return undefined;
   try {

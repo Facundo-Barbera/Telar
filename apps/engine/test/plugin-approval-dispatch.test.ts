@@ -43,7 +43,7 @@ import path from "node:path";
 import { TELAR_MCP_SERVER } from "@telar/engine-client";
 import { createCodexDriver } from "../src/drivers/codex";
 import type { DriverRequest } from "../src/drivers";
-import { helloToolModule } from "../src/plugins/hello";
+import { helloToolModule } from "../src/domains/plugins/hello";
 import { collectTelarWall, TelarToolSocket } from "../src/domains/agent-tools";
 import { allowCliInThisFile } from "./allow-cli";
 

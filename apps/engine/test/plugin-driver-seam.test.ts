@@ -24,9 +24,9 @@ import {
 import { codexApprovalRequest, codexItemDetail, MCP_ELICITATION } from "../src/drivers/codex";
 import { createClaudeDriver } from "../src/drivers/claude";
 import { requestKindForTool, setPluginReadTools } from "../src/drivers/claude";
-import { bundledPluginToolModules, setPluginToolModules } from "../src/plugins/bundled";
-import { helloToolModule } from "../src/plugins/hello";
-import { HOST_RATIFIED_READ_TOOLS } from "../src/plugins/policy";
+import { bundledPluginToolModules, setPluginToolModules } from "../src/domains/plugins/bundled";
+import { helloToolModule } from "../src/domains/plugins/hello";
+import { HOST_RATIFIED_READ_TOOLS } from "../src/domains/plugins/policy";
 import { collectTelarWall, TelarToolSocket, telarWall } from "../src/domains/agent-tools";
 import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
 

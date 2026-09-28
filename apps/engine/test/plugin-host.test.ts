@@ -19,10 +19,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
-import type { PluginEngineModule } from "../src/plugins/contract";
-import { PluginHost } from "../src/plugins/host";
-import { HOST_RATIFIED_READ_TOOLS, ratifiedReadTools, unratifiedReadClaims } from "../src/plugins/policy";
-import { PluginWorkLog } from "../src/plugins/work-log";
+import type { PluginEngineModule } from "../src/domains/plugins/contract";
+import { PluginHost } from "../src/domains/plugins/host";
+import { HOST_RATIFIED_READ_TOOLS, ratifiedReadTools, unratifiedReadClaims } from "../src/domains/plugins/policy";
+import { PluginWorkLog } from "../src/domains/plugins/work-log";
 
 const temps: string[] = [];
 const tempDir = (): string => {

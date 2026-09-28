@@ -6,7 +6,7 @@ import { collectTools, handleSocketMessage, readSocketBody, type SocketTool } fr
 import type { ToolFactory } from "./tool-kit";
 import { displayTools } from "./display-tools";
 import { notesTools } from "../notes";
-import { pluginToolModules } from "../../plugins/bundled";
+import { pluginToolModules } from "../plugins";
 import { promptsTools } from "../prompts";
 import { runTools } from "../../run/tools";
 import { sessionsTools } from "../sessions";

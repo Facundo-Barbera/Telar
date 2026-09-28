@@ -29,7 +29,6 @@ function fakeVenv(dir: string, kind: "venv" | "conda" | "bare" = "venv"): string
 
 const PROBE_OK = JSON.stringify({ version: "3.12.1", versionInfo: [3, 12], sitePackages: [], modules: {} });
 
-/** An exec that answers only what the test scripts. Any python binary probes ok. */
 function scriptedExec(answers: Record<string, { status: number; stdout: string }>): Exec {
   return async (file, args) => {
     const key = `${file} ${args.join(" ")}`;

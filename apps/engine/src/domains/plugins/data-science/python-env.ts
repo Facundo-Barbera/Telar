@@ -1,34 +1,18 @@
-/**
- * Proving a Python works, and the path rules for storing one.
- *
- * PREFLIGHT IS A SUBPROCESS, NOT A GUESS. The only honest way to know whether
- * `pandas` imports under an interpreter is to ask that interpreter. The probe
- * script is tiny, prints one JSON line, and never imports anything the caller
- * did not name — so a broken optional library reports as missing rather than
- * taking the probe down with it.
- *
- * Finding interpreters is `environments.ts`'s job; this file is what every
- * finder calls on each one it finds.
- */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-/** The libraries the `ds_*` tools gate on. Probed, never assumed. */
 export const STACK_MODULES = ["pandas", "matplotlib", "duckdb", "pyarrow"] as const;
 
-/** What the bridge needs; lives in Telar's venv, never installed into the project's. */
 export const BRIDGE_MODULES = ["ipykernel", "jupyter_client"] as const;
 
 export type PythonPreflight = {
   ok: boolean;
   path: string;
   version?: string;
-  /** `[major, minor]` — the ABI a compiled wheel is locked to. */
   versionInfo?: [number, number];
   sitePackages?: string[];
   modules?: Record<string, boolean>;
-  /** Distribution name → installed version, null when absent. Only the names the caller asked about. */
   dists?: Record<string, string | null>;
   reason?: string;
 };
@@ -84,14 +68,12 @@ function isExecutable(file: string): boolean {
   }
 }
 
-/** Marker files whose presence says "this project has a Python environment story". */
 const ENV_SIGNALS = ["uv.lock", "pyproject.toml", "poetry.lock", "Pipfile.lock", "requirements.txt", "environment.yml"] as const;
 
 export function projectEnvSignals(root: string): string[] {
   return ENV_SIGNALS.filter((name) => fs.existsSync(path.join(root, name)));
 }
 
-/** Ask an interpreter what it is, which of `modules` it can import, and which of `dists` (distribution names) are installed. */
 export async function preflightPython(
   pythonPath: string,
   modules: readonly string[] = [...STACK_MODULES],
@@ -115,11 +97,6 @@ export async function preflightPython(
   }
 }
 
-/**
- * Store a path relative to the project root when it lives inside it — so a
- * worktree resolves `.venv/bin/python` against its own tree — and absolute
- * otherwise. `resolvePythonPath` is the inverse.
- */
 export function relativisePythonPath(root: string, pythonPath: string): string {
   const relative = path.relative(root, pythonPath);
   if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) return relative;

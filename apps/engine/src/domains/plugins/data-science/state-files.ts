@@ -1,17 +1,6 @@
-/**
- * Everything the data-science tools keep beside a session, under
- * `sessions/<id>/ds/`. Plain files, written atomically like the rest of the
- * store; a corrupt one costs that file's history, never the session.
- *
- *   snapshots/<name>.json   a namespace summary — shapes, dtypes, stats, digests
- *   checkpoints/<name>.pkl  the namespace itself, pickled by the kernel
- *   watches.json            assertions re-evaluated after every execution
- *   lineage.ndjson          which cell/tool touched which variable, append-only
- *   experiments.json        params and metrics per run
- */
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWrite } from "../platform/fs/atomic";
+import { atomicWrite } from "../../../platform/fs/atomic";
 
 export type Snapshot = { name: string; at: number; vars: Record<string, SnapshotVar> };
 export type SnapshotVar = {
@@ -51,7 +40,6 @@ export class DsFiles {
     atomicWrite(this.file(name), value);
   }
 
-  // ── snapshots ─────────────────────────────────────────────────────────
   saveSnapshot(snapshot: Snapshot): void {
     this.writeJson(`snapshots/${safe(snapshot.name)}.json`, snapshot);
   }
@@ -62,7 +50,6 @@ export class DsFiles {
     return this.listDir("snapshots", ".json").map((name) => this.readSnapshot(name)).filter((s): s is Snapshot => Boolean(s)).map(({ name, at }) => ({ name, at }));
   }
 
-  // ── checkpoints ───────────────────────────────────────────────────────
   checkpointPath(name: string): string {
     fs.mkdirSync(this.file("checkpoints"), { recursive: true });
     return this.file(`checkpoints/${safe(name)}.pkl`);
@@ -74,7 +61,6 @@ export class DsFiles {
     });
   }
 
-  // ── watches ───────────────────────────────────────────────────────────
   watches(): Watch[] {
     return this.readJson<{ watches: Watch[] }>("watches.json", { watches: [] }).watches;
   }
@@ -82,7 +68,6 @@ export class DsFiles {
     this.writeJson("watches.json", { watches });
   }
 
-  // ── lineage ───────────────────────────────────────────────────────────
   appendLineage(row: LineageRow): void {
     fs.mkdirSync(this.dir, { recursive: true });
     fs.appendFileSync(this.file("lineage.ndjson"), `${JSON.stringify(row)}\n`);
@@ -95,7 +80,6 @@ export class DsFiles {
     }
   }
 
-  // ── experiments ───────────────────────────────────────────────────────
   experiments(): Experiment[] {
     return this.readJson<{ experiments: Experiment[] }>("experiments.json", { experiments: [] }).experiments;
   }
@@ -112,18 +96,12 @@ export class DsFiles {
   }
 }
 
-/** A name that is a filename and nothing else. */
 function safe(name: string): string {
   const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "").slice(0, 80);
   if (!cleaned) throw new Error("name must contain a letter or digit");
   return cleaned;
 }
 
-/**
- * Which names a cell assigns and which it reads — a regex over the source,
- * good enough for lineage, and deliberately not a parser: the goal is "what
- * do I rerun if I change this", not correctness under `exec`.
- */
 export function namesIn(code: string): { assigned: string[]; read: string[] } {
   const assigned = new Set<string>();
   const read = new Set<string>();

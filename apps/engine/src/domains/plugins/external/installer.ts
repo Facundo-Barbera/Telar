@@ -1,15 +1,3 @@
-/**
- * INSTALLING AND REMOVING A PLUGIN FOLDER — `<TELAR_HOME>/plugins/<id>`.
- *
- *   copy   the folder is copied in; the source can then move or go away
- *   link   a symlink to the source, for a plugin being written: edits apply
- *          on the next start of its process, without reinstalling
- *
- * The manifest is checked BEFORE anything is written, with the same rules the
- * loader applies at start, so a folder that would be refused is never
- * installed. Removing deletes a copied folder and only UNLINKS a linked one —
- * the source is the owner's, never Telar's to delete.
- */
 import fs from "node:fs";
 import path from "node:path";
 import { checkPluginFolder, type LoadedExternalPlugin, type Reservations } from "./manifest";
@@ -25,7 +13,6 @@ export function installPluginFolder(pluginsDir: string, source: string, mode: In
   try {
     isDirectory = fs.statSync(from).isDirectory();
   } catch {
-    // Reported below.
   }
   if (!isDirectory) throw new PluginInstallError(`${from} is not a folder`);
   const checked = checkPluginFolder(from, undefined, reserved);
@@ -38,7 +25,6 @@ export function installPluginFolder(pluginsDir: string, source: string, mode: In
   if (mode === "link") {
     fs.symlinkSync(from, target, "dir");
   } else {
-    // Into a staging name first, so a copy that fails half-way never looks installed.
     const staging = path.join(pluginsDir, `.installing-${manifest.id}-${process.pid}`);
     fs.rmSync(staging, { recursive: true, force: true });
     try {
@@ -52,7 +38,6 @@ export function installPluginFolder(pluginsDir: string, source: string, mode: In
   return { dir: target, manifest };
 }
 
-/** Remove what `install` put there. Returns whether it was a link. */
 export function removePluginFolder(pluginsDir: string, id: string): { linked: boolean } {
   const target = path.resolve(pluginsDir, id);
   if (path.dirname(target) !== path.resolve(pluginsDir) || id.startsWith(".")) throw new PluginInstallError(`"${id}" is not a plugin folder`);

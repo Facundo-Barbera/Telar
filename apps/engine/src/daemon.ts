@@ -38,12 +38,7 @@ import {
   type EngineNotifier,
   type StoppedClaim,
 } from "./state";
-import { bundledPlugins } from "./plugins/bundled";
-import { isSymlink } from "./plugins/external/installer";
-import { externalPluginsDir, loadInstalledPlugins, type LoadedExternalPlugin } from "./plugins/external/manifest";
-import { externalPlugin } from "./plugins/external/module";
-import { PluginHost } from "./plugins/host";
-import { PluginInputError } from "./plugins/routes";
+import { bundledPlugins, externalPlugin, externalPluginsDir, installedPlugins, isSymlink, type LoadedExternalPlugin, loadInstalledPlugins, PluginHost, PluginInputError, pluginRoutes, pluginScopedRoutes, pluginSessionRoutes } from "./domains/plugins";
 import { setPluginReadTools } from "./drivers/claude";
 import { createRunMount } from "./run/mount";
 import { maybeRetitleSession, sessionProviderRoutes, type ProviderSkillsOptions } from "./domains/providers";
@@ -70,7 +65,6 @@ import { filesRoutes, sessionFilesRoutes } from "./domains/files";
 import { sessionGitRoutes } from "./domains/git";
 import { runRoutes } from "./domains/terminal";
 import { projectCheckoutRoutes, projectRoutes } from "./domains/projects";
-import { installedPlugins, pluginRoutes, pluginScopedRoutes, pluginSessionRoutes } from "./domains/plugins";
 import { settingsRoutes } from "./domains/settings";
 import { dictationRoutes } from "./domains/dictation";
 import { WorktreeError, worktreesRoutes } from "./domains/worktrees";

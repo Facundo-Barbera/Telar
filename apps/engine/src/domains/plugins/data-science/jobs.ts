@@ -1,20 +1,7 @@
-/**
- * Long-running toolchain work — building an environment, installing a package
- * set, fetching a Python — as JOBS a client polls, rather than as an HTTP
- * request that blocks for two minutes and then says "ok".
- *
- * A job is a list of subprocess steps run in order. Every line either writes
- * lands in a bounded log; a step that exits non-zero fails the job and the
- * rest is skipped. Finished jobs stay readable for ten minutes so a page that
- * was mid-poll when the last line arrived can still show it. No journal event:
- * these are project-scoped and short-lived, and the settings page is already
- * on a timer while a drawer is open.
- */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 
 export type JobStep = {
-  /** Shown above the step's output. */
   title: string;
   file: string;
   args: string[];
@@ -28,13 +15,9 @@ export type JobRead = {
   jobId: string;
   kind: string;
   status: JobStatus;
-  /** Lines after `after`, oldest first. */
   lines: string[];
-  /** Pass back as `after` to read only what is new. */
   cursor: number;
-  /** Set when the job finished well: whatever the starter attached. */
   result?: unknown;
-  /** Set when it did not. */
   error?: string;
   startedAt: number;
   finishedAt?: number;
@@ -43,11 +26,9 @@ export type JobRead = {
 type Job = {
   jobId: string;
   kind: string;
-  /** What two jobs must not share: "<projectId>:<kind>" or similar. */
   lock?: string;
   status: JobStatus;
   lines: string[];
-  /** Index of `lines[0]` in the full stream — the ring buffer's offset. */
   dropped: number;
   result?: unknown;
   error?: string;
@@ -65,7 +46,6 @@ export type StartJob = {
   kind: string;
   lock?: string;
   steps: JobStep[];
-  /** Runs after the last step succeeds; its return is the job's `result`. */
   onDone?: () => Promise<unknown> | unknown;
 };
 
@@ -148,7 +128,6 @@ export class JobRunner {
     };
   }
 
-  /** Waits for a job to leave `running`. For the agent's tool, which wants an answer, not a cursor. */
   async wait(jobId: string, timeoutMs: number): Promise<JobRead> {
     const deadline = this.now() + timeoutMs;
     for (;;) {
@@ -166,7 +145,6 @@ export class JobRunner {
     this.jobs.get(jobId)?.cancel();
   }
 
-  /** Every job still readable, newest first. */
   list(): JobRead[] {
     this.sweep();
     return [...this.jobs.keys()].map((id) => this.read(id)).sort((a, b) => b.startedAt - a.startedAt);

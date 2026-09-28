@@ -1,6 +1,5 @@
 import type { WorkerClaim } from "@telar/engine-client";
-import { pluginToolModules } from "../plugins/bundled";
-import { pluginCall } from "../plugins/tool-module";
+import { pluginCall, pluginToolModules } from "../domains/plugins";
 import { notesCapability } from "../domains/notes";
 import { sessionsCapability, windowedReads } from "../domains/sessions";
 import { promptsForComposer, type PromptsCapability } from "../domains/prompts";

@@ -1,13 +1,3 @@
-/**
- * `DsCapability` over the daemon's own kernel host and files. THE ONE
- * IMPLEMENTATION OF EVERY RULE: the worker's copy is HTTP calls that land on
- * routes that call this; the cockpit's notebook panel calls the same routes.
- *
- * What lives here and not in the toolkits: the kernel's lazy start, the
- * notebook file's hash-fenced write-back, watch evaluation after every
- * execution, lineage recording, snapshot diffing. The walls only compose
- * sentences.
- */
 import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceFile, WorkspaceWriteResult, TurnAttachment, EngineEvent } from "@telar/engine-client";
@@ -19,11 +9,6 @@ import { preflightPython } from "./python-env";
 import { ensureTelarVenv, removeTelarVenv, telarVenvPython } from "./telar-venv";
 import { namesIn, type DsFiles, type Snapshot, type SnapshotVar, type Watch } from "./state-files";
 
-/**
- * A NOTEBOOK IS BIGGER THAN A SOURCE FILE — a few plots in it and it passes
- * the workspace's 512 KB ceiling, which is sized for things a person edits in
- * a textarea. 32 MB is where nbformat itself starts to hurt.
- */
 export const NOTEBOOK_MAX_BYTES = 32 * 1024 * 1024;
 
 type JournalEntry = Omit<Extract<EngineEvent, { type: "notebook.cell.output" }>, "id" | "at" | "sessionId" | "runId">
@@ -33,9 +18,7 @@ type JournalEntry = Omit<Extract<EngineEvent, { type: "notebook.cell.output" }>,
 export type StoreDsDeps = {
   sessionId: string;
   cwd: string;
-  /** The project's interpreter, resolved. */
   python: string;
-  /** Telar's venv dir for this session's scope — where jupyter_client lives. */
   telarVenv: string;
   host: KernelHost;
   files: DsFiles;
@@ -45,42 +28,16 @@ export type StoreDsDeps = {
   attachmentBytes: (id: string) => Uint8Array;
   appendEvent: (event: JournalEntry) => void;
   now: () => number;
-  /** The store's package operations for this session's project, resolved against its workspace. */
   packages: () => Promise<{ packages: PackageRow[]; environment: { manager: string; root: string; python: string } }>;
-  /** Starts the job; the capability waits on it. */
   startInstall: (input: { add?: string[]; remove?: string[]; requirements?: string }) => Promise<{ jobId: string }>;
   waitJob: (jobId: string, timeoutMs: number) => Promise<{ status: string; lines: string[]; error?: string }>;
-  /** Every environment this project could run on, discovered against this session's workspace. */
   environments: () => Promise<{ environments: EnvironmentRow[] }>;
-  /** Persist a choice and restart the kernel into it — what the settings page's Use button does. */
   useEnvironment: (target: string) => Promise<{ environments: EnvironmentRow[]; switched: string }>;
 };
 
 export function storeDsCapability(deps: StoreDsDeps): DsCapability {
   const { sessionId, host, files } = deps;
 
-  /**
-   * The bridge runs on Telar's venv; THE KERNEL RUNS THE PROJECT'S OWN
-   * INTERPRETER — the environment marked "In use" — so `sys.executable` and
-   * every import are exactly what that environment says, and what `ds_install`
-   * writes is what the kernel sees.
-   *
-   * TELAR'S VENV IS BUILT HERE, LAZILY, ON THE PROJECT'S INTERPRETER. A person
-   * who picked `.venv/bin/python` should never be told to go build a second
-   * environment they did not ask for — the bridge's two packages are Telar's
-   * concern. Built (or rebuilt on an ABI mismatch) at first kernel start:
-   * a few seconds with uv, once per project. When the project's environment
-   * lacks ipykernel, Telar's venv — same interpreter, so wheels ABI-match —
-   * is grafted onto the kernel's PYTHONPATH; the project's environment is
-   * never written to.
-   *
-   * A KERNEL ALREADY RUNNING ON A DIFFERENT INTERPRETER IS DISPOSED FIRST, so
-   * pressing Use on another environment takes effect on the next call instead
-   * of being silently ignored until the kernel happens to die.
-   *
-   * Returns true when a kernel was started fresh, false when a live one was
-   * reused — so restart() can skip a redundant second restart.
-   */
   async function ensure(): Promise<boolean> {
     const live = host.info(sessionId);
     if (live && live.state !== "dead") {
@@ -118,10 +75,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
 
   async function run(input: { code: string; cellId?: string; timeoutMs?: number; producer?: string; title?: string }): Promise<ExecResult> {
     await ensure();
-    // The producer and the title travel WITH the execution: an image arrives on
-    // a notification that knows only its execution counter, and a figure filed
-    // under `exec_9` can be neither named nor recognised as the same figure
-    // drawn again (#353).
     const result = await host.execute(sessionId, {
       code: input.code,
       ...(input.cellId ? { cellId: input.cellId } : {}),
@@ -158,22 +111,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     files.saveWatches(watches);
   }
 
-  /**
-   * Read, AND PUT THE IDS ON DISK the answer is about to be phrased in (#351).
-   *
-   * Most notebooks on disk predate nbformat 4.5 and carry no cell ids, and
-   * every verb after the read — `notebook/run`, `notebook/edit` — names a cell
-   * by the id this answer gave the client and re-reads the file to find it. So
-   * the ids cannot be a fact about one parse: they are written back on the
-   * first read that mints them, nbformat_minor 5, which is the same upgrade
-   * JupyterLab performs and leaves the file readable everywhere.
-   *
-   * A REFUSED WRITE IS NOT A FAILED READ. A read-only checkout, or a file that
-   * changed between the read and the write-back, must still open — so the
-   * refusal is swallowed and the answer carries the pre-write sha. That path
-   * still resolves because `parseNotebookText` derives the ids from position
-   * and source rather than randomly, so the next parse agrees anyway.
-   */
   function readNotebook(target: string): { nb: Notebook; file: WorkspaceFile } {
     const file = deps.readFile(target);
     if (file.binary) throw new Error("that file is not text");
@@ -188,7 +125,7 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     try {
       const outcome = deps.writeFile(target, serializeNotebook(parsed.nb), file.sha256);
       if (outcome.written) return { nb: parsed.nb, file: outcome.file };
-    } catch { /* the notebook opens either way */ }
+    } catch { }
     return { nb: parsed.nb, file };
   }
 
@@ -230,8 +167,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
         ...(info?.executionCount !== undefined ? { executionCount: info.executionCount } : {}),
         ...(info?.modules ? { modules: info.modules } : {}),
         python: deps.python,
-        // What the LIVE kernel reports as sys.executable — after a start it
-        // matches `python`; a mismatch is the bug the two fields exist to show.
         ...(info?.executable ? { executable: info.executable } : {}),
       };
     },
@@ -261,10 +196,7 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     async notebookEdit(target, edit: NotebookEdit) {
       if (edit.kind === "create") {
         let existing: WorkspaceFile | undefined;
-        try { existing = deps.readFile(target); } catch { /* absent */ }
-        // `readNotebook`'s own sha, not the probe's: an id-less notebook is
-        // rewritten on that read, and answering with the pre-write hash would
-        // fence the client's next edit against a file that no longer exists.
+        try { existing = deps.readFile(target); } catch { }
         if (existing) { const { nb, file } = readNotebook(target); return summarise(target, nb, file.sha256); }
         const nb = emptyNotebook();
         const absolute = path.resolve(deps.cwd, target);
@@ -290,9 +222,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
       } else if (edit.kind === "delete") {
         nb.cells.splice(findCell(nb, edit), 1);
       } else if (edit.kind === "move") {
-        // Through the same read → mutate → sha-fenced write as every other
-        // edit, so a reorder racing an agent's `set` is refused rather than
-        // clobbering it.
         moveCell(nb, findCell(nb, edit), edit.to);
       } else if (edit.kind === "clearOutputs") {
         clearCellOutputs(nb, findCell(nb, edit));
@@ -310,9 +239,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
         const result = await run({ code: cell.source, cellId: cell.id, producer: target });
         cell.execution_count = result.executionCount;
         cell.outputs = toNbOutputs(result.outputs, imageBase64);
-        // Write after EVERY cell so an interrupted run_all leaves the file
-        // showing what ran, and a concurrent editor conflicts on the next cell
-        // rather than losing the whole batch.
         const written = writeNotebook(target, nb, sha);
         sha = written.sha256;
         results.push({ cellId: cell.id, result });
@@ -322,10 +248,6 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     },
 
     async plot(input) {
-      // `title` is the caller's own name for it, and a fallback: the composed
-      // code asks the figure what IT is called, and that answer — which covers
-      // a plot drawn by code that set its own title — reaches the attachment
-      // through the kernel host.
       const result = await run({ code: input.code, producer: "ds_plot", ...(input.title ? { title: input.title } : {}) });
       const image = result.outputs.find((o): o is Extract<CellOutput, { kind: "image" }> => o.kind === "image");
       return { ok: result.ok, outputs: result.outputs.filter((o) => o.kind !== "image"), ...(image?.attachmentId ? { attachmentId: image.attachmentId } : {}), ...(result.error ? { error: `${result.error.ename}: ${result.error.evalue}` } : {}) };

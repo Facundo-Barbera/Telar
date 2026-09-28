@@ -1,26 +1,17 @@
-/**
- * The TeX programs this machine carries — Tectonic, and every TeX Live root
- * (MacTeX, TinyTeX, a vanilla install) — FOUND, NEVER ASSUMED, the same
- * courtesy `ds/toolchain.ts` extends to uv and conda. Discovery returns a
- * LIST, never a choice: a missed root costs the person a manual path entry,
- * a wrong guess costs them a compile against the wrong distribution.
- */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { defaultExec, type Exec } from "../ds/python-env";
-import { compareVersions, findBrew, type ToolInfo } from "../ds/toolchain";
+import { defaultExec, type Exec } from "../data-science/python-env";
+import { compareVersions, findBrew, type ToolInfo } from "../data-science/toolchain";
 
 type TexliveFlavour = "mactex" | "tinytex" | "texlive";
 
-/** The programs a compile and a package install lean on, per root. */
 const TEXLIVE_BINARIES = ["latexmk", "pdflatex", "lualatex", "xelatex", "tlmgr", "kpsewhich"] as const;
 type TexliveBinary = (typeof TEXLIVE_BINARIES)[number];
 
 export type TexliveDistribution = {
   binDir: string;
   flavour: TexliveFlavour;
-  /** "2025", parsed from the pdflatex banner when it names one. */
   year?: string;
 } & Partial<Record<TexliveBinary, ToolInfo>>;
 
@@ -28,16 +19,8 @@ export type LatexToolchain = {
   tectonic?: ToolInfo;
   texlive: TexliveDistribution[];
   brew?: ToolInfo;
-  /**
-   * TELAR'S OWN TECTONIC — see `managed.ts`. Not discovered like the rest of
-   * this answer: it is reported by the store, which is the only thing that
-   * knows where the engine's state root is. Present whether or not it has been
-   * fetched, because the pane has to be able to OFFER an install, and a field
-   * that appeared only after the install would leave nothing to press.
-   */
   managed?: {
     version: string;
-    /** False on a platform with no release in the table. */
     supported: boolean;
     installed: boolean;
     path?: string;
@@ -48,7 +31,6 @@ export type LatexToolchain = {
 
 const home = () => os.homedir();
 
-/** Where installers put tectonic when it is not on PATH yet. */
 const TECTONIC_FALLBACK_DIRS = () => [
   "/opt/homebrew/bin",
   "/usr/local/bin",
@@ -65,8 +47,6 @@ function executable(file: string): boolean {
   }
 }
 
-/** PATH first, then the fallbacks. Same shape as `ds/toolchain.findBinary`,
- *  kept separate because the fallback table is TeX's own. */
 export function findLatexBinary(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   for (const dir of (env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
     const candidate = path.join(dir, name);
@@ -83,12 +63,10 @@ export function findLatexBinary(name: string, env: NodeJS.ProcessEnv = process.e
 async function version(exec: Exec, file: string): Promise<string | undefined> {
   const result = await exec(file, ["--version"], { timeoutMs: 10_000 }).catch(() => undefined);
   if (!result || result.status !== 0) return undefined;
-  // "Tectonic 0.15.0", "Latexmk, John Collins, ... Version 4.85", "pdfTeX 3.141592653-2.6-1.40.26 (TeX Live 2024)"
   const match = /(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)/.exec(result.stdout || result.stderr);
   return match?.[1];
 }
 
-/** "pdfTeX 3.14… (TeX Live 2025)" → "2025". MacTeX and TinyTeX both say it. */
 export function parseTexliveYear(banner: string): string | undefined {
   return /TeX Live (\d{4})/.exec(banner)?.[1];
 }
@@ -110,12 +88,6 @@ function glob(dir: string): string[] {
   }
 }
 
-/**
- * Every place a TeX Live bin directory lives on the platforms we run on:
- * MacTeX's symlink farm, year-versioned vanilla roots, TinyTeX's per-arch
- * directory — plus wherever PATH's latexmk/pdflatex actually are, so an
- * exotic install is found through the same door a shell finds it.
- */
 function texliveRootCandidates(env: NodeJS.ProcessEnv = process.env): RootCandidate[] {
   const candidates: RootCandidate[] = [{ binDir: "/Library/TeX/texbin", flavour: "mactex" }];
   for (const yearRoot of glob("/usr/local/texlive")) for (const arch of glob(path.join(yearRoot, "bin"))) candidates.push({ binDir: arch, flavour: "texlive" });
@@ -129,7 +101,6 @@ function texliveRootCandidates(env: NodeJS.ProcessEnv = process.env): RootCandid
   return candidates;
 }
 
-/** Probe one bin directory for the six programs. Undefined when it holds none. */
 export async function probeTexliveRoot(candidate: RootCandidate, exec: Exec = defaultExec): Promise<TexliveDistribution | undefined> {
   const tools: Partial<Record<TexliveBinary, ToolInfo>> = {};
   let year: string | undefined;
@@ -139,7 +110,6 @@ export async function probeTexliveRoot(candidate: RootCandidate, exec: Exec = de
     const result = await exec(file, ["--version"], { timeoutMs: 10_000 }).catch(() => undefined);
     if (!result || result.status !== 0) continue;
     const banner = result.stdout || result.stderr;
-    // tlmgr says "revision 70671" and never a dotted version; take either.
     const found = /(\d+\.\d+(?:\.\d+)?(?:[.-][\d.]+)?)/.exec(banner)?.[1] ?? /revision (\d+)/.exec(banner)?.[1];
     if (!found) continue;
     tools[name] = { path: file, version: found };
@@ -149,11 +119,6 @@ export async function probeTexliveRoot(candidate: RootCandidate, exec: Exec = de
   return { binDir: candidate.binDir, flavour: candidate.flavour, ...(year ? { year } : {}), ...tools };
 }
 
-/**
- * One probe of the whole TeX toolchain. Spawns several `--version` processes;
- * call it from a page, never from a poll. Roots are deduped by realpath so
- * MacTeX's symlink farm and the year directory it points at count once.
- */
 export async function latexToolchainStatus(exec: Exec = defaultExec, env = process.env): Promise<LatexToolchain> {
   const [tectonic, brew] = await Promise.all([findTectonic(exec, env), findBrew(exec, env)]);
   const seen = new Set<string>();

@@ -1,16 +1,3 @@
-/**
- * Every Python ENVIRONMENT a project could run on — not every interpreter.
- *
- * The distinction is the whole feature. A person thinks in environments the
- * way PyCharm and Anaconda Navigator show them: "the project's .venv", "my
- * conda env ds-3.12", "Homebrew's Python 3.14" — each with a manager that
- * knows how to install into it. An interpreter path is what the kernel needs;
- * an environment is what a person picks and what a package manager acts on.
- *
- * Discovery is a LIST, NEVER A CHOICE (see python-env.ts). The order is the
- * order a person would guess: what is in the checkout, then conda envs, then
- * bare interpreters, then Telar's own.
- */
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,21 +9,16 @@ import { telarVenvPython } from "./telar-venv";
 export type EnvManager = "venv" | "conda" | "system" | "telar";
 
 export type PythonEnvironment = {
-  /** Stable across probes: a digest of the environment's root. */
   id: string;
   manager: EnvManager;
-  /** ".venv", "ds-3.12", "Python 3.14 (Homebrew)". */
   name: string;
-  /** The env directory; for a bare interpreter, its bin directory. */
   root: string;
-  /** Absolute interpreter. */
   python: string;
   location: "project" | "user" | "telar";
   reason: string;
   preflight: PythonPreflight;
 };
 
-/** Sans preflight — what discovery finds before it asks each interpreter. */
 type Found = Omit<PythonEnvironment, "id" | "preflight">;
 
 export function environmentId(root: string): string {
@@ -59,17 +41,14 @@ function venvPython(dir: string): string | undefined {
   return undefined;
 }
 
-/** A venv's `pyvenv.cfg` is the one file that says "this is an environment, not a Python". */
 export function isVenv(dir: string): boolean {
   return fs.existsSync(path.join(dir, "pyvenv.cfg"));
 }
 
-/** A conda env carries `conda-meta/`; a base install carries it too. */
 export function isCondaEnv(dir: string): boolean {
   return fs.existsSync(path.join(dir, "conda-meta"));
 }
 
-/** Env dir for a python path when it is a venv or conda env, else undefined. */
 export function environmentRootOf(python: string): { root: string; manager: "venv" | "conda" } | undefined {
   const bin = path.dirname(python);
   const root = path.basename(bin) === "bin" || path.basename(bin) === "Scripts" ? path.dirname(bin) : bin;
@@ -81,11 +60,8 @@ export function environmentRootOf(python: string): { root: string; manager: "ven
 export type DiscoverOptions = {
   exec?: Exec;
   toolchain: Toolchain;
-  /** Telar's managed venv for this project, if any. */
   telarVenv?: string;
-  /** The project's declared dependencies (distribution names), asked of every interpreter. */
   dists?: string[];
-  /** Test seam: the user's conda registry file. */
   condaEnvironmentsFile?: string;
 };
 
@@ -95,20 +71,15 @@ async function listCondaEnvs(conda: string, exec: Exec, environmentsFile?: strin
   if (result && result.status === 0) {
     try {
       for (const env of (JSON.parse(result.stdout) as { envs?: string[] }).envs ?? []) roots.add(env);
-    } catch { /* fall through to the registry file */ }
+    } catch { }
   }
   const registry = environmentsFile ?? path.join(os.homedir(), ".conda", "environments.txt");
   try {
     for (const line of fs.readFileSync(registry, "utf8").split("\n")) if (line.trim()) roots.add(line.trim());
-  } catch { /* no registry */ }
+  } catch { }
   return [...roots].filter((root) => isCondaEnv(root));
 }
 
-/**
- * Everything, most specific first, deduped by the interpreter's bin directory
- * (a venv's `python` and `python3.12` are one environment; a venv and the
- * Python it was built from are two — see python-env.ts).
- */
 export async function discoverEnvironments(projectRoot: string, options: DiscoverOptions): Promise<PythonEnvironment[]> {
   const exec = options.exec ?? defaultExec;
   const found: Found[] = [];

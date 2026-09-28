@@ -1,15 +1,5 @@
-/**
- * `notebook_*` — a session's `.ipynb` files, read, edited and run in the
- * session's own kernel.
- *
- * THE FILE IS THE TRUTH. Every tool reads the notebook fresh and writes it
- * back with the outputs the kernel produced, so a human opening the same file
- * in the panel sees what the model did, and a model reading it sees what the
- * human ran. The hash-fenced write lives in the capability; a stale write is
- * refused there, and the wall says so in words.
- */
 import { z } from "zod";
-import { err, failure, json, ok, type ToolFactory } from "../domains/agent-tools";
+import { err, failure, json, ok, type ToolFactory } from "../../agent-tools";
 import type { DsCapability, NotebookCellSummary } from "./capability";
 import { describeOutputs } from "./outputs";
 

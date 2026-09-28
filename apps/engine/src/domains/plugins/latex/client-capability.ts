@@ -1,10 +1,4 @@
-/**
- * `LatexCapability` over the generic plugin wire — the worker's copy. Every
- * verb lands on `/v2/sessions/:id/plugins/latex/*`, whose route table calls
- * `store.latex()`, so there is one implementation of every rule and the worker
- * runs no TeX.
- */
-import type { PluginCall } from "../plugins/tool-module";
+import type { PluginCall } from "../tool-module";
 import type { LatexCapability } from "./capability";
 
 export function clientLatexCapability(call: PluginCall): LatexCapability {

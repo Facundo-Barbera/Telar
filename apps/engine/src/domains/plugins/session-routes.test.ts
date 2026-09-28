@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type http from "node:http";
 import { Readable } from "node:stream";
-import type { PluginEngineModule } from "../../plugins/contract";
+import type { PluginEngineModule } from "./contract";
 import { matchRoute } from "../../platform/http/router";
 import { pluginSessionRoutes } from "./session-routes";
 

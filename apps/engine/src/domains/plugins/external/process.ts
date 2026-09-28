@@ -1,34 +1,8 @@
-/**
- * ONE EXTERNAL PLUGIN'S PROCESS, SUPERVISED — started when first needed, kept
- * alive while it is wanted, restarted with backoff when it dies, and stopped
- * when nobody uses it any more.
- *
- * ── THE WIRE: NEWLINE-DELIMITED JSON-RPC 2.0 ON STDIO ───────────────────────
- * The simplest channel there is: no port to allocate, no socket file to clean
- * up, and it dies with the process. One JSON object per line each way.
- *
- *   initialize   MCP's handshake, once per start (`protocolVersion`, `clientInfo`)
- *   tools/call   MCP's, for the tools the manifest declares
- *   telar/route  Telar's, for a route verb: `{ scope, verb, input, query?,
- *                params?, sessionId?, projectId?, settings }` → any JSON value
- *
- * A `tools/call` carries `_meta.telar = { sessionId, projectId, settings }`.
- *
- * stderr is the plugin's log: captured, kept as a short tail in memory for
- * Settings, and appended to `<stateDir>/log.txt`.
- *
- * ── NOT A SANDBOX ────────────────────────────────────────────────────────────
- * External plugins are the owner's own code for now. The child gets a minimal
- * environment (no engine token, no provider keys), its own folder as cwd and a
- * state directory; it can still do anything the user can. Isolation is a later
- * design, and nothing here pretends otherwise.
- */
 import { spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 
-/** The part of a child process this needs — so a test can hand in its own. */
 export type PluginChild = {
   stdin: Writable | null;
   stdout: Readable | null;
@@ -48,19 +22,15 @@ export type ExternalProcessOptions = {
   id: string;
   dir: string;
   command: readonly string[];
-  /** Where the plugin may keep state, and where its log is appended. */
   stateDir: string;
   spawn?: (command: string, args: readonly string[], options: { cwd: string; env: Record<string, string> }) => PluginChild;
   timers?: PluginTimers;
-  /** A request that has not answered by then is refused. */
   requestTimeoutMs?: number;
-  /** How long `initialize` may take before the start counts as failed. */
   startTimeoutMs?: number;
 };
 
 export type ExternalProcessState = "stopped" | "starting" | "running" | "backoff";
 
-/** 1s, 2s, 4s … capped — and reset once a start has stayed up this long. */
 export const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const;
 const STABLE_AFTER_MS = 60_000;
 const LOG_TAIL = 200;
@@ -88,7 +58,6 @@ export class ExternalPluginProcess {
   private restartTimer: unknown;
   private startedAt = 0;
   private failures = 0;
-  /** Starts after the first, for the status line. */
   restarts = 0;
   state: ExternalProcessState = "stopped";
   lastError: string | undefined;
@@ -104,12 +73,10 @@ export class ExternalPluginProcess {
         nodeSpawn(command, [...args], { cwd: spawnOptions.cwd, env: spawnOptions.env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "pipe"] }) as PluginChild);
   }
 
-  /** The last lines the plugin wrote to stderr, oldest first. */
   logs(): readonly string[] {
     return this.tail;
   }
 
-  /** Start if needed and wait until `initialize` has answered. */
   ensureStarted(): Promise<void> {
     this.wanted = true;
     if (this.state === "running") return Promise.resolve();
@@ -117,13 +84,11 @@ export class ExternalPluginProcess {
     return this.starting;
   }
 
-  /** One JSON-RPC request, starting the process first if it is not running. */
   async request(method: string, params: unknown): Promise<unknown> {
     await this.ensureStarted();
     return this.send(method, params);
   }
 
-  /** Stop and stay stopped: no restart, every in-flight request refused. */
   async stop(): Promise<void> {
     this.wanted = false;
     if (this.restartTimer !== undefined) this.timers.clearTimeout(this.restartTimer);
@@ -139,7 +104,6 @@ export class ExternalPluginProcess {
     });
   }
 
-  /** Whether any request is in flight — the host's `busy`. */
   get busy(): boolean {
     return this.pending.size > 0;
   }
@@ -151,8 +115,6 @@ export class ExternalPluginProcess {
     fs.mkdirSync(this.options.stateDir, { recursive: true });
     const child = this.spawnChild(command, args, {
       cwd: this.options.dir,
-      // MINIMAL ON PURPOSE: the plugin needs a PATH and a HOME to run, and its
-      // own two directories — not the engine's token or a provider's key.
       env: {
         ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
         ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
@@ -216,7 +178,6 @@ export class ExternalPluginProcess {
       try {
         message = JSON.parse(line);
       } catch {
-        // Not a protocol line — something the plugin printed. Keep it as log.
         this.log(`${line}\n`);
         continue;
       }
@@ -238,8 +199,6 @@ export class ExternalPluginProcess {
       this.state = "stopped";
       return;
     }
-    // A start that stayed up long enough was healthy; the next crash starts
-    // the backoff over rather than waiting thirty seconds for a one-off.
     if (this.startedAt && this.timers.now() - this.startedAt >= STABLE_AFTER_MS) this.failures = 0;
     const delay = RESTART_BACKOFF_MS[Math.min(this.failures, RESTART_BACKOFF_MS.length - 1)]!;
     this.failures += 1;
@@ -267,7 +226,6 @@ export class ExternalPluginProcess {
     try {
       fs.appendFileSync(path.join(this.options.stateDir, "log.txt"), text);
     } catch {
-      // A log that cannot be written costs the log, never the plugin.
     }
   }
 }

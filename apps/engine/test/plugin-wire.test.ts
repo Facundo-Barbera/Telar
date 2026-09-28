@@ -25,9 +25,9 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, assertTelarToolNames, type EngineClientError } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { HELLO_GATE, bundledPluginToolModules } from "../src/plugins/bundled";
-import { helloToolModule, type HelloCapability } from "../src/plugins/hello";
-import { pluginCall } from "../src/plugins/tool-module";
+import { HELLO_GATE, bundledPluginToolModules } from "../src/domains/plugins/bundled";
+import { helloToolModule, type HelloCapability } from "../src/domains/plugins/hello";
+import { pluginCall } from "../src/domains/plugins/tool-module";
 import type { ToolFactory } from "../src/domains/agent-tools";
 import { stubModels } from "./stub-models";
 
