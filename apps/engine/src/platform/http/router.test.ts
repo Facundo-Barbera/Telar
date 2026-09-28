@@ -13,6 +13,12 @@ test("a literal path beats a pattern declared before it", () => {
   expect(matchRoute([sessionPattern, socket], "GET", "/v2/sessions/abc")).toEqual({ route: sessionPattern, params: ["abc"] });
 });
 
+test("an optional group that did not match stays undefined", () => {
+  const items: Route = { method: "GET", path: /^\/v2\/runs\/([a-z]+)\/items(?:\/([a-z]+))?$/, auth: "engine", handle: () => ok({}) };
+  expect(matchRoute([items], "GET", "/v2/runs/abc/items")?.params).toEqual(["abc", undefined] as unknown as string[]);
+  expect(matchRoute([items], "GET", "/v2/runs/abc/items/xy")?.params).toEqual(["abc", "xy"]);
+});
+
 test("patterns are tried in declaration order and a method mismatch does not match", () => {
   const tail: Route = { method: "GET", path: /^\/v2\/sessions\/(.+)$/, auth: "engine", handle: () => ok({}) };
   expect(matchRoute([tail, sessionPattern], "GET", "/v2/sessions/abc")?.route).toBe(tail);

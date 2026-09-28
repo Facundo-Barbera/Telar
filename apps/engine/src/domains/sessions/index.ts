@@ -16,3 +16,5 @@ export { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSoc
 export { pageEvents, type SessionsCapability } from "./tools/shared";
 export { sessionsTools } from "./tools/tools";
 export { sessionsRoutes } from "./routes";
+export { sessionReadRoutes, sessionRoute } from "./reads";
+export { sessionLifecycleRoutes } from "./lifecycle";

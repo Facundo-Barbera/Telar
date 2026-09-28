@@ -20,20 +20,11 @@ import {
   parseForgeQuery,
   PluginInstallInput,
   registerPluginToolPrefixes,
-  AgentTurnInput,
   ProviderDriverKind,
-  ProviderTurnOpenInput,
-  SessionTaskReport,
   resolveMcpServers,
-  TurnModelSelection,
-  WakeKind as WakeKindSchema,
-  type WakeKind,
   type ComputerUseGrant,
   type EngineDiscovery,
   type EngineHealth,
-  type ModelSelection,
-  type RuntimeMode,
-  type TurnSubmissionResult,
   type WorkerClaim,
   pluginEnabled,
   machineAllows,
@@ -115,15 +106,16 @@ import { usageRoutes } from "./domains/usage";
 import { createIconPng } from "./domains/projects";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
 import { createHostsStore, hostsRoutes } from "./domains/hosts";
-import { mcpOAuthRoutes } from "./domains/agent-tools";
+import { mcpOAuthRoutes, mcpSocketRoute } from "./domains/agent-tools";
 import { aboutRoutes } from "./domains/updates";
 import { createPushService } from "./domains/push";
 import { body, errorFor as httpErrorFor, HttpError, matchesETag, writeError, writeJson } from "./platform/http/http";
 import { router } from "./platform/http/router";
+import type { Route } from "./platform/http/route";
 import { positiveParam, stringValue } from "./platform/http/params";
-import { sessionsRoutes } from "./domains/sessions";
+import { sessionLifecycleRoutes, sessionReadRoutes, sessionsRoutes } from "./domains/sessions";
 import { schedulesRoutes } from "./domains/schedules";
-import { turnRoutes, workerRoutes } from "./domains/turns";
+import { sessionTurnRoutes, turnRoutes, workerRoutes } from "./domains/turns";
 
 /**
  * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
@@ -355,31 +347,6 @@ function domainError(error: unknown): HttpError | undefined {
 const errorFor = (error: unknown): HttpError => httpErrorFor(error, domainError);
 
 /**
- * THE SESSION TAIL'S OWN TAG — issue #586, and the largest single loop in the
- * cockpit.
- *
- * ────────────────────────────────────────────────────────────────────────────
- * The rail's tick was made nearly free by #459/#462/#493. NOTHING EQUIVALENT
- * WAS EVER DONE FOR THE TAIL, which runs at 1 s against the rail's 10 — so a
- * cockpit sitting inside one conversation spends ~86,400 requests a day asking
- * a question whose answer is almost always `events: []`, and pays a fold and a
- * body for every one of them.
- *
- * THE TAG IS THE CURSOR AND THE WINDOW TOGETHER, and both halves are load
- * bearing. `after` selects which rows an answer would contain, so two asks at
- * one cursor with DIFFERENT `after` are two different answers — a tag carrying
- * only the cursor would hand a client paging backwards a 304 for a page it has
- * never seen. `limit` is in it for the same reason.
- * ────────────────────────────────────────────────────────────────────────────
- *
- * WEAK, like the live list's and for the same reason: the claim is that the
- * rows are the same, never that the bytes are.
- */
-function sessionEventsETag(cursor: number, after: number, limit: number): string {
-  return `W/"events-${cursor}-${after}-${limit}"`;
-}
-
-/**
  * The attachment route's body — raw bytes, with its own much larger cap.
  *
  * SEPARATE FROM `body()` RATHER THAN A PARAMETER ON IT. The 1 MB JSON cap is a
@@ -510,113 +477,6 @@ function requestedBase(url: URL): DiffBaseOption {
   return parseDiffBaseQuery(url.searchParams);
 }
 
-/**
- * `?turns=N[&before=runId]` — the newest N settled turns plus everything
- * unsettled, or the whole session when absent (the read a client older than the
- * window still makes). Shared by the snapshot route and `/bootstrap`, so the
- * two cannot disagree about what a window means or which inputs are rejected.
- */
-function snapshotWindowParam(url: URL): SessionBootstrapWindow | undefined {
-  const raw = url.searchParams.get("turns");
-  const before = url.searchParams.get("before") ?? undefined;
-  if (raw === null) {
-    if (before !== undefined) throw new HttpError(400, "invalid_request", "before needs turns");
-    return undefined;
-  }
-  const turns = Number(raw);
-  if (!Number.isSafeInteger(turns) || turns < 1) throw new HttpError(400, "invalid_request", "turns must be a positive integer");
-  return { turns, ...(before === undefined ? {} : { before }) };
-}
-
-/**
- * HOW MANY JOURNAL ROWS ONE `GET /v2/sessions/:id/events` MAY ANSWER WITH.
- *
- * 200 is the tail a cockpit actually folds per tick. A client that wants fewer
- * says so; one that wants more is capped, because the cap is what stops a
- * caller from asking for the run back in one piece and reinstating the cost
- * this page size exists to remove.
- *
- * WHAT THAT IS WORTH, from `bench/events-page.ts` — run it rather than trusting
- * this. At 2,000-character bodies a 200-row page is **206 KB and stays 206 KB**
- * at 40, 120, 200 and 400 turns, which is the whole point of a cap: the answer
- * is the page, not the conversation. Folding the same journal whole costs
- * 826 KB over 5 round trips at 40 turns and 4,138 KB over 21 at 200 — it grows
- * with the session because it is the session.
- *
- * THIS COMMENT USED TO CITE "185 KB / 106 ms against 36.5 MB / 2.48 s for the
- * same session unpaged", attributed to #490's audit. That audit was never
- * produced, so the figure had no invocation behind it. Re-measured, the 185 KB holds — 206 KB here, and
- * the gap is body size. The other two do not survive as stated: 106 ms is 1.7 ms
- * at 40 turns and 10.7 ms at 400 at the ENGINE boundary, so whatever it measured
- * was end-to-end through a route handler and is not checkable from here; and
- * "the same session unpaged" cannot be measured at all any more, because
- * `EVENT_PAGE_MAX` below means the route will not serve a journal unpaged. That
- * number describes the world before this cap existed.
- *
- * One thing the bench shows that nobody has explained: the page's SIZE is flat
- * across session lengths and its TIME is not — 1.7 ms at 40 turns, 10.7 ms at
- * 400, for the identical 206 KB answer. The query is a `(session_id, id)`
- * primary-key range scan with a `LIMIT` and `requireSession` reads only
- * constant-size metadata, so the obvious candidates are excluded; B-tree depth
- * and page-cache pressure both fit the sub-linear shape, and neither has been
- * confirmed. **Recorded as an observation, not a diagnosis.** At 10 ms it is
- * nobody's user-visible latency — it is a note for whoever touches the journal
- * read next, not a defect to chase.
- *
- * A LIMIT THAT IS NOT A NUMBER IS A BUG IN THE CALLER, not a reason to serve
- * the whole journal — it is refused rather than defaulted, the same way an
- * unparseable `turns` is.
- */
-const EVENT_PAGE_DEFAULT = 200;
-const EVENT_PAGE_MAX = 1000;
-
-function eventPageLimit(raw: string | null): number {
-  if (raw === null) return EVENT_PAGE_DEFAULT;
-  const limit = Number(raw);
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new HttpError(400, "invalid_request", "limit must be a positive integer");
-  return Math.min(limit, EVENT_PAGE_MAX);
-}
-
-/**
- * WHAT THE QUERY ROUTES MAY ANSWER WITH — issue #516.
- *
- * Every one of these is a CEILING, not a suggestion. The routes exist because a
- * tool answer lands in a model's context window (#515), so a caller that asks
- * for more than the ceiling is clamped rather than served: the point of the
- * bound is that it cannot be argued out of. A caller that wants the rest pages
- * for it, and every answer says whether there is a rest.
- *
- * THE DEFAULTS ARE WHAT THE ISSUE ASKED FOR: an outline page of 20 turns, a
- * grep page of 20 matches, ten sessions from `find`, 8,000 characters of one
- * step. The maxima are where one answer stops being something a model can hold
- * beside the rest of its work.
- */
-const OUTLINE_PAGE_DEFAULT = 20;
-const OUTLINE_PAGE_MAX = 100;
-const GREP_PAGE_DEFAULT = 20;
-const GREP_PAGE_MAX = 100;
-const ITEM_CHARS_DEFAULT = 8_000;
-const ITEM_CHARS_MAX = 64_000;
-const ANSWER_SLICE_DEFAULT = 8_000;
-const ANSWER_SLICE_MAX = 64_000;
-
-/**
- * `/runs/:runId/items` and `/runs/:runId/items/:step` — one shape, because the
- * list and the step are the same address at two depths and parsing them apart
- * would let the two disagree about what a run id may contain.
- *
- * `step` IS A NUMBER WHEN IT LOOKS LIKE ONE and an item id otherwise: a caller
- * that has just read the list names a position, and one that found the item in a
- * journal page names its id. See `runItem`.
- */
-function runItemsPath(tail: string): { runId: string; step?: number | string } | undefined {
-  const match = /^\/runs\/([A-Za-z0-9_-]+)\/items(?:\/([A-Za-z0-9_-]+))?$/.exec(tail);
-  if (!match) return undefined;
-  const raw = match[2];
-  if (raw === undefined) return { runId: decodeURIComponent(match[1]) };
-  const index = Number(raw);
-  return { runId: decodeURIComponent(match[1]), step: Number.isSafeInteger(index) && index >= 0 ? index : decodeURIComponent(raw) };
-}
 
 
 
@@ -1385,93 +1245,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   }, activeWorker);
 
-  const authorize = (_auth: "engine", request: http.IncomingMessage): void => {
-    if (!bearerIsValid(request.headers.authorization, token)) {
+  const authorize = (auth: Route["auth"], request: http.IncomingMessage): void => {
+    if (auth === "engine" && !bearerIsValid(request.headers.authorization, token)) {
       throw new HttpError(401, "engine_unauthorized", "engine authentication failed");
+    }
+    if (auth === "sessions-socket" && !bearerIsValid(request.headers.authorization, sessionsSecret())) {
+      throw new HttpError(401, "engine_unauthorized", "the sessions socket answers to its own secret — see /v2/sessions/mcp-info");
+    }
+    if (auth === "notes-socket" && !bearerIsValid(request.headers.authorization, notesSecret())) {
+      throw new HttpError(401, "engine_unauthorized", "the notes socket answers to its own secret — see /v2/notes/mcp-info");
     }
   };
   const legacyRoutes = async (request: http.IncomingMessage, response: http.ServerResponse, url: URL): Promise<void> => {
     try {
-      /**
-       * THE SESSIONS SOCKET — an OUTWARD MCP socket, before the bearer check,
-       * because its auth is DELIBERATELY NOT the management token: it answers
-       * to its OWN dedicated secret and to nothing else, in both directions.
-       * The engine token does not open it, and a leaked socket secret opens no
-       * other route (every other path still demands the bearer above) —
-       * including, deliberately, the archive and delete verbs, which stay a
-       * person's: a chat client that could archive a session could erase
-       * another agent's work.
-       *
-       * Streamable HTTP, stateless, tools only: POST carries one JSON-RPC
-       * message; GET (the server-initiated stream) is declined 405, which the
-       * protocol permits; DELETE has no session to end and says so with a 200.
-       *
-       * IT MUST STAY ABOVE `sessionPath`, which would otherwise read
-       * `/v2/sessions/mcp` as a session whose id is "mcp" and answer 404. That
-       * is only true because the literal arms sit here; hoisting `sessionPath`
-       * breaks this and the two routes below it.
-       */
-      if (url.pathname === "/v2/sessions/mcp") {
-        if (!bearerIsValid(request.headers.authorization, sessionsSecret())) {
-          writeJson(response, 401, {
-            error: { code: "engine_unauthorized", message: "the sessions socket answers to its own secret — see /v2/sessions/mcp-info" },
-          });
-          return;
-        }
-        if (request.method === "POST") {
-          const message = await body(request);
-          const answer = await handleSessionsSocketMessage(sessionsSocketTools(), message);
-          if (answer === undefined) {
-            response.writeHead(202).end();
-            return;
-          }
-          writeJson(response, 200, answer);
-          return;
-        }
-        if (request.method === "DELETE") {
-          writeJson(response, 200, {});
-          return;
-        }
-        writeJson(response, 405, { error: { code: "invalid_request", message: "the sessions socket is POST-only — it keeps no stream open" } });
-        return;
-      }
-      /**
-       * THE NOTES SOCKET — the user's "other app" door, beside the two above and
-       * before the bearer check for the identical reason: it answers to its OWN
-       * secret in both directions. The engine token does not open it, and its
-       * secret opens nothing else — a client holding it can read and write this
-       * machine's project notebooks and cannot touch a session, a file or a turn.
-       */
-      if (url.pathname === "/v2/notes/mcp") {
-        if (!bearerIsValid(request.headers.authorization, notesSecret())) {
-          writeJson(response, 401, {
-            error: { code: "engine_unauthorized", message: "the notes socket answers to its own secret — see /v2/notes/mcp-info" },
-          });
-          return;
-        }
-        if (request.method === "POST") {
-          const message = await body(request);
-          const answer = await handleNotesSocketMessage(notesSocketTools(), message);
-          if (answer === undefined) {
-            response.writeHead(202).end();
-            return;
-          }
-          writeJson(response, 200, answer);
-          return;
-        }
-        if (request.method === "DELETE") {
-          writeJson(response, 200, {});
-          return;
-        }
-        writeJson(response, 405, { error: { code: "invalid_request", message: "the notes socket is POST-only — it keeps no stream open" } });
-        return;
-      }
       authorize("engine", request);
-      if (request.method === "GET" && url.pathname === "/v2/health") {
-        writeJson(response, 200, health());
-        return;
-      }
-      if (push.serveStream(request, response, url.pathname)) return;
       if (request.method === "GET" && url.pathname === "/v2/models") {
         const driver = url.searchParams.get("driver") ?? "claude";
         const instanceId = url.searchParams.get("instanceId");
@@ -2724,167 +2511,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       const session = sessionPath(url.pathname);
       if (session) {
-        if (request.method === "GET" && session.tail === "") {
-          writeJson(response, 200, sessionSnapshot(store, session.sessionId, snapshotWindowParam(url)));
-          return;
-        }
-        /**
-         * ONE READ TO OPEN A CONVERSATION (#407) — the snapshot, the journal
-         * from its cursor, and this session's subscriptions.
-         *
-         * The two reads it replaces were strictly SERIAL: the journal's `after`
-         * is the snapshot's own cursor, so the second request could not be sent
-         * until the first had come back, and a cockpit paid the full
-         * browser → cockpit route → engine round trip twice before it could
-         * paint a transcript. The engine holds both halves at one instant, so
-         * it can answer both at once. The fold is `session-bootstrap.ts`;
-         * `GET /v2/sessions/:id` above goes through the same one, so the two
-         * cannot drift.
-         */
-        if (request.method === "GET" && session.tail === "/bootstrap") {
-          writeJson(response, 200, sessionBootstrap(store, session.sessionId, snapshotWindowParam(url)));
-          return;
-        }
-        /**
-         * THE JOURNAL, A PAGE AT A TIME — issue #494.
-         *
-         * This route used to answer with the whole tail above `after`, which on
-         * the biggest dogfood session was 36.5 MB serialised in 2.48 s — one
-         * response the engine builds entirely in memory, the cockpit route
-         * relays entirely in memory, and the client parses entirely in memory
-         * before it can fold a single row. A 200-row page of the same journal
-         * is 185 KB.
-         *
-         * KEYSET, NEVER OFFSET. `after` is an event id, so the window does not
-         * shift under a journal that is being appended to while a client pages
-         * it: `LIMIT ... OFFSET` would drop or repeat rows the moment a turn
-         * streamed a delta mid-walk, which on a live session is always.
-         *
-         * `more` IS EXACT, not "the page came back full". One row beyond the
-         * limit is read and dropped, so a client that pages until `more` is
-         * false never pays a final round trip to be told there was nothing —
-         * and `next` carries the `after` for the following page, present
-         * exactly when `more` is true so the two cannot disagree.
-         */
-        if (request.method === "GET" && session.tail === "/events") {
-          const after = Number(url.searchParams.get("after") ?? "0");
-          const limit = eventPageLimit(url.searchParams.get("limit"));
-          /**
-           * `If-None-Match` ON THE TAIL — issue #586, and the same conditional
-           * read the live list has had since #462.
-           *
-           * BEFORE `readEvents`, because the whole point is to answer without
-           * folding: a 304 here costs one indexed cursor read against a page
-           * this route would otherwise build in memory and serialise.
-           *
-           * A CLIENT THAT GETS 304 MUST KEEP WHAT IT HAS, which is the one way
-           * this design fails in a reader's face — the rule `liveSessionsSince`
-           * already states for `unchanged`. `tailSession` treats it that way,
-           * and the engine test asserts both directions on the same fixture.
-           */
-          const etag = sessionEventsETag(store.eventCursor(session.sessionId), Number.isSafeInteger(after) ? after : 0, limit);
-          if (matchesETag(request.headers["if-none-match"], etag)) {
-            response.writeHead(304, { etag, "cache-control": "no-store" });
-            response.end();
-            return;
-          }
-          // One over, to tell a full page from a full page with more behind it.
-          const read = store.readEvents(session.sessionId, after, limit + 1);
-          const events = read.length > limit ? read.slice(0, limit) : read;
-          const cursor = events.at(-1)?.id ?? (Number.isSafeInteger(after) ? after : 0);
-          writeJson(
-            response,
-            200,
-            {
-              events,
-              cursor,
-              more: read.length > limit,
-              ...(read.length > limit ? { next: cursor } : {}),
-            },
-            // THE TAG A CLIENT SPENDS ON THE NEXT TICK. Minted from the same
-            // three values the 304 above compares, so an answer and the tag
-            // that would suppress its repeat cannot disagree.
-            { etag },
-          );
-          return;
-        }
-        /**
-         * ══ SCROLLING A CONVERSATION RATHER THAN PAGING IT — issue #516 ══
-         *
-         * `/events` above is the journal: every row, in order, from a cursor. It
-         * is the right read for a transcript and the wrong one for an agent,
-         * which wants to ask a question — which turn, what did it conclude, what
-         * did step twelve do — and gets there today only by paging 38 MB.
-         *
-         * The four routes below answer those questions from the `turn_summary`
-         * projection and from indexed document spans. NONE OF THEM FOLDS EVENTS
-         * (except `/grep`, which is a question about event text and says so),
-         * and every one states `more` with the cursor for the next page, so a
-         * caller never has to fetch everything to learn there was nothing.
-         *
-         * ONE TURN PER ROW, NEWEST FIRST. `before` is a sequence rather than an
-         * offset, for the reason `/events` gives about `after`: a session being
-         * appended to under a paging caller must not shift its window.
-         */
-        if (request.method === "GET" && session.tail === "/outline") {
-          writeJson(response, 200, store.turnOutline(session.sessionId, {
-            limit: positiveParam(url.searchParams.get("limit"), OUTLINE_PAGE_DEFAULT, OUTLINE_PAGE_MAX, "limit"),
-            ...(url.searchParams.get("before") === null ? {} : { before: positiveParam(url.searchParams.get("before"), 0, Number.MAX_SAFE_INTEGER, "before") }),
-          }));
-          return;
-        }
-        /**
-         * WHAT ONE RUN DID — the list, then one step of it.
-         *
-         * TWO ROUTES RATHER THAN ONE FAT ANSWER, because the list exists so a
-         * caller can choose before it pays: `{index, id, title, status, bytes}`
-         * is under a kilobyte for a long run, and `bytes` is what tells an agent
-         * which step it can afford. The step itself is clamped to `maxChars`
-         * with the marker that says how much was left behind.
-         */
-        const run = runItemsPath(session.tail);
-        if (request.method === "GET" && run) {
-          if (run.step === undefined) {
-            writeJson(response, 200, { items: store.runItems(session.sessionId, run.runId) });
-            return;
-          }
-          writeJson(response, 200, store.runItem(
-            session.sessionId,
-            run.runId,
-            run.step,
-            positiveParam(url.searchParams.get("maxChars"), ITEM_CHARS_DEFAULT, ITEM_CHARS_MAX, "maxChars"),
-          ));
-          return;
-        }
-        /**
-         * THE ANSWER ALONE, SLICED — the most common orchestrator read, as its
-         * own verb. `totalChars` rides every slice so a caller knows what it is
-         * choosing not to read; the default run is the latest turn that actually
-         * left text.
-         */
-        if (request.method === "GET" && session.tail === "/answer") {
-          writeJson(response, 200, store.turnAnswer(session.sessionId, {
-            ...(url.searchParams.get("runId") ? { runId: url.searchParams.get("runId")! } : {}),
-            from: positiveParam(url.searchParams.get("from"), 0, Number.MAX_SAFE_INTEGER, "from"),
-            limit: positiveParam(url.searchParams.get("limit"), ANSWER_SLICE_DEFAULT, ANSWER_SLICE_MAX, "limit"),
-          }));
-          return;
-        }
-        /**
-         * WHERE A PHRASE APPEARS IN THIS JOURNAL — the one route here that does
-         * read events, because no projection worth keeping could answer it. The
-         * scan runs inside sqlite and only the matching page is materialised;
-         * see `grepEvents`.
-         */
-        if (request.method === "GET" && session.tail === "/grep") {
-          const pattern = url.searchParams.get("pattern");
-          if (!pattern) throw new HttpError(400, "invalid_request", "pattern is required");
-          writeJson(response, 200, store.grepSession(session.sessionId, pattern, {
-            limit: positiveParam(url.searchParams.get("limit"), GREP_PAGE_DEFAULT, GREP_PAGE_MAX, "limit"),
-            ...(url.searchParams.get("before") === null ? {} : { before: positiveParam(url.searchParams.get("before"), 0, Number.MAX_SAFE_INTEGER, "before") }),
-          }));
-          return;
-        }
         /**
          * The session's review: what it has done to the repository since it
          * started. `?path=` narrows it to ONE file's patch, because a review of
@@ -3337,248 +2963,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
-        if (request.method === "POST" && session.tail === "/subscriptions") {
-          const input = await body(request);
-          const events = Array.isArray(input.events) ? input.events.filter((each): each is WakeKind => WakeKindSchema.safeParse(each).success) : undefined;
-          writeJson(response, 201, {
-            subscription: store.subscribe(session.sessionId, {
-              targetSessionId: stringValue(input.targetSessionId, "target session id")!,
-              ...(events && events.length > 0 ? { events } : {}),
-              ...(input.once === true ? { once: true } : {}),
-              // A CLOSED SET, read off the body rather than trusted from it:
-              // anything else is absent, which the store reads as the default.
-              ...(input.completionWake === "always" || input.completionWake === "settled_only"
-                ? { completionWake: input.completionWake }
-                : {}),
-            }),
-          });
-          return;
-        }
-        if (request.method === "GET" && session.tail === "/subscriptions") {
-          writeJson(response, 200, { subscriptions: store.subscriptionsFor(session.sessionId) });
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/cohorts") {
-          const input = await body(request);
-          const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.filter((each): each is string => typeof each === "string") : [];
-          writeJson(response, 201, {
-            cohort: store.subscribeCohort(session.sessionId, {
-              sessionIds,
-              ...(typeof input.timeoutMinutes === "number" ? { timeoutMinutes: input.timeoutMinutes } : {}),
-              ...(input.completionWake === "always" || input.completionWake === "settled_only" ? { completionWake: input.completionWake } : {}),
-            }),
-          });
-          return;
-        }
-        if (request.method === "GET" && session.tail === "/cohorts") {
-          writeJson(response, 200, { cohorts: store.cohortsFor(session.sessionId) });
-          return;
-        }
-        // How many peer notifications are waiting for this session's next turn.
-        if (request.method === "GET" && session.tail === "/held-reports") {
-          writeJson(response, 200, {
-            held: store.pendingNotifications(session.sessionId).length,
-          });
-          return;
-        }
-        /**
-         * A MESSAGE FROM AN AGENT — the worker's `sessions_send`. Separate
-         * route rather than a body flag on `/turns`, because the difference is
-         * WHO IS SPEAKING and that must not be a field a cockpit can set.
-         * `proof` is the sending turn's own claim; the store checks it is live
-         * and stamps the sender from it, so a model cannot name a session it is
-         * not. Without proof the turn is still an agent's, unattributed.
-         */
-        if (request.method === "POST" && session.tail === "/turns/agent") {
-          pruneWorkers();
-          if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no worker is registered");
-          const parsed = AgentTurnInput.safeParse(await body(request));
-          if (!parsed.success) throw new HttpError(400, "invalid_request", "agent turn payload is invalid");
-          const { proof, ...message } = parsed.data;
-          const result: TurnSubmissionResult = await store.submitAgentTurnAsync(session.sessionId, message, proof);
-          writeJson(response, result.replayed ? 200 : 202, result);
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/turns") {
-          pruneWorkers();
-          if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no worker is registered");
-          // `origin`, `wakeReason` and `sender` are DELIBERATELY NOT READ from
-          // the body: a wake is the engine's own, queued by `fireSubscriptions`,
-          // an agent's message has its own route above, and a cockpit body that
-          // could forge either could impersonate a peer.
-          const input = await body(request);
-          const model = TurnModelSelection.safeParse(input.model);
-          if (input.model !== undefined && !model.success) {
-            throw new HttpError(400, "invalid_request", "turn model selection is invalid");
-          }
-          /**
-           * THE CLAUDE DEFAULT, REFRESHED OFF THE CRITICAL PATH.
-           *
-           * Never awaited: reading a model list spawns the provider's CLI, and
-           * neither this request nor the claim behind it may wait on that — the
-           * claim runs against a worker lease and would lose the turn. The
-           * remembered default (see `rememberedClaudeDefault`) is what the
-           * synchronous claim reads; this only keeps it current, and only when a
-           * turn would actually need it, so a Codex-only machine never probes a
-           * Claude CLI it may not have installed.
-           */
-          if (store.claudeAdmissionNeedsCatalogue(session.sessionId, model.success ? model.data : undefined)) {
-            void store.prepareClaudeCatalogue();
-          }
-          const accepted = await store.submitTurnAsync(session.sessionId, {
-            runId: stringValue(input.runId, "run id")!,
-            input: stringValue(input.input, "turn input")!,
-            ...(input.kind === "compact" ? { kind: "compact" as const } : {}),
-            ...(model.success ? { model: model.data } : {}),
-            ...(Array.isArray(input.attachments) ? { attachments: input.attachments.map((id) => stringValue(id, "attachment id")!) } : {}),
-          });
-          const result: TurnSubmissionResult = accepted;
-          writeJson(response, accepted.replayed ? 200 : 202, result);
-          /**
-           * THE FIRST TURN ALSO NAMES THE SESSION. Sequence 1 is the moment
-           * both placeholders exist — the truncated-message title and the
-           * branch slugged from it — and the only moment worth a model call:
-           * a session that already has a real name keeps it (`titleIsSeed`).
-           * After the response and unawaited, because a title is never worth
-           * a millisecond of turn latency, let alone a failure.
-           */
-          if (!accepted.replayed && accepted.turn.sequence === 1) {
-            void maybeRetitleSession(store, session.sessionId, accepted.turn.input);
-          }
-          return;
-        }
-        if (request.method === "PATCH" && session.tail === "") {
-          const input = await body(request);
-          const updated = store.updateSession(session.sessionId, {
-              ...(input.title === undefined ? {} : { title: stringValue(input.title, "session title")! }),
-              // Validated in the store against the contract's own list, so the
-              // HTTP surface and an in-process caller refuse the same set.
-              ...(input.runtimeMode === undefined ? {} : { runtimeMode: input.runtimeMode as RuntimeMode }),
-              ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
-              // Parsed in the store against `ModelSelection`, same reasoning.
-              // `null` is forwarded rather than dropped: it is how a client says
-              // "clear it", which `undefined` cannot express over JSON.
-              ...(input.model === undefined ? {} : { model: input.model as ModelSelection | null }),
-              // Both forwarded verbatim, `null` included, and both validated in
-              // the store — same reasoning as the two above: a check that only
-              // ran on this hop would not protect an in-process caller.
-              ...(input.settledOverride === undefined ? {} : { settledOverride: input.settledOverride as "settled" | "active" | null }),
-              ...(input.snoozedUntil === undefined ? {} : { snoozedUntil: input.snoozedUntil as number | null }),
-              ...(input.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: input.resumeAfterRateLimit as boolean | null }),
-            });
-          /**
-           * AN EXPLICIT SETTLE ENDS WHAT THE SESSION LEFT RUNNING — issue #883.
-           * After the settle is written, and answered with the counts so the
-           * surface that settled it can say what ended. The clock's settle never
-           * comes through here; `sweepSettledTerminals` gives it a grace.
-           */
-          if (input.settledOverride === "settled") {
-            const ended = await store.endSessionLeftovers(session.sessionId);
-            writeJson(response, 200, { session: store.getSession(session.sessionId), ended });
-            return;
-          }
-          writeJson(response, 200, { session: updated });
-          return;
-        }
-        // A read receipt names the turn that was on screen; the store decides whether it moves the mark.
-        if (request.method === "POST" && session.tail === "/read") {
-          const input = await body(request);
-          writeJson(response, 200, { session: store.markSessionRead(session.sessionId, stringValue(input.runId, "run id")!) });
-          push.dismiss(session.sessionId);
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/archive") {
-          await body(request);
-          writeJson(response, 200, { session: store.archiveSession(session.sessionId) });
-          return;
-        }
-        /**
-         * DELETE ON THE SESSION ITSELF, not a `/delete` verb hanging off it.
-         * The method IS the operation here, and a POST that destroys a resource
-         * is the shape that makes a stray retry expensive.
-         */
-        if (request.method === "DELETE" && session.tail === "") {
-          writeJson(response, 200, { deleted: store.deleteSession(session.sessionId) });
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/stop") {
-          const input = await body(request);
-          /**
-           * TWO VERBS, NAMED. `scope: "session"` is the Stop button — end what
-           * is running and settle what was waiting; absent is the historical
-           * one-turn stop. VALIDATED RATHER THAN DEFAULTED: an unrecognised
-           * scope is refused, because the one thing worse than rejecting a
-           * typo is silently stopping something other than what was asked for.
-           */
-          const scope = input.scope === undefined ? undefined : stringValue(input.scope, "scope");
-          if (scope !== undefined && scope !== "session") throw new HttpError(400, "invalid_request", 'scope must be "session" when given');
-          const runId = stringValue(input.runId, "run id", true);
-          // Contradictory: one names a turn, the other says every turn.
-          if (scope === "session" && runId) throw new HttpError(400, "invalid_request", 'a session-scope stop names no run id');
-          // WHO PRESSED IT, validated like the scope. Only the record differs
-          // — a person's stop and an agent's do the same thing.
-          const by = input.by === undefined ? "user" : stringValue(input.by, "by");
-          if (by !== "user" && by !== "agent") throw new HttpError(400, "invalid_request", 'by must be "user" or "agent" when given');
-          const commandId = stringValue(input.commandId, "command id", true);
-          writeJson(response, 200, scope === "session"
-            ? store.executeCommand(JSON.stringify({ operation: "stopSession", sessionId: session.sessionId, by }), () => store.stopSession(session.sessionId, by), commandId)
-            : store.stopTurn(session.sessionId, runId));
-          return;
-        }
-        // A turn the PROVIDER started (a wake-up between turns). Worker-only,
-        // like claim: the worker is the party holding the process that spoke.
-        if (request.method === "POST" && session.tail === "/turns/provider") {
-          const parsed = ProviderTurnOpenInput.safeParse(await body(request));
-          if (!parsed.success) throw new HttpError(400, "invalid_request", "provider turn payload is invalid");
-          activeWorker(parsed.data.workerId);
-          writeJson(response, 200, await execution.openProviderTurn(session.sessionId, parsed.data));
-          return;
-        }
-        // Task reports between turns — no claim, worker-authenticated.
-        if (request.method === "POST" && session.tail === "/tasks") {
-          const parsed = SessionTaskReport.safeParse(await body(request));
-          if (!parsed.success) throw new HttpError(400, "invalid_request", "task report payload is invalid");
-          activeWorker(parsed.data.workerId);
-          writeJson(response, 200, await execution.reportSessionTasks(session.sessionId, parsed.data.workerId, parsed.data.observations));
-          return;
-        }
-        // The "N tasks still working" chip's Stop. Names no turn — a background
-        // task outlives its turn, so this is a different verb from /stop.
-        if (request.method === "POST" && session.tail === "/stop-background") {
-          writeJson(response, 200, { stopped: store.stopBackgroundTasks(session.sessionId) });
-          return;
-        }
-        /**
-         * THE SESSION'S TERMINALS, WHOEVER OPENED THEM — issue #883. `GET` is
-         * what Settle would close, asked as a menu opens; `close` is a settled
-         * row's "close them", recorded as the person's.
-         */
-        if (request.method === "GET" && session.tail === "/terminals") {
-          writeJson(response, 200, { open: await store.sessionTerminalCount(session.sessionId) });
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/terminals/close") {
-          await body(request);
-          writeJson(response, 200, { closed: await store.closeSessionTerminals(session.sessionId) });
-          return;
-        }
-        /**
-         * PAUSE AND RESUME — the session-level stop. `/stop` ends one run and
-         * the worker takes the next; `/pause` stops the run AND holds the
-         * session until `/resume`. `by` is the only body field, and only
-         * `"session"` is honoured (the worker's `sessions_stop`); anything
-         * else is a human. Resume takes no body and has no agent caller.
-         */
-        if (request.method === "POST" && session.tail === "/pause") {
-          const input = await body(request);
-          writeJson(response, 200, store.pauseSession(session.sessionId, input.by === "session" ? "session" : "human"));
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/resume") {
-          await body(request);
-          writeJson(response, 200, store.resumeSession(session.sessionId));
-          return;
-        }
       }
       throw new HttpError(404, "not_found", "engine endpoint does not exist");
     } catch (error) {
@@ -3586,8 +2970,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
   };
   domainRoutes.push(
+    mcpSocketRoute("/v2/sessions/mcp", "sessions-socket", "sessions", (message) => handleSessionsSocketMessage(sessionsSocketTools(), message)),
+    mcpSocketRoute("/v2/notes/mcp", "notes-socket", "notes", (message) => handleNotesSocketMessage(notesSocketTools(), message)),
+    { method: "GET", path: "/v2/health", auth: "engine", handle: () => ({ status: 200, body: health() }) },
     ...sessionsRoutes(store, { daemonId, openStreams, mcpInfo: () => sessionsSocketConnectCard(`http://127.0.0.1:${(server.address() as AddressInfo | null)?.port ?? 0}/v2/sessions/mcp`, sessionsSecret()) }),
     ...schedulesRoutes(store), ...workerRoutes(execution), ...turnRoutes(store, execution),
+    ...sessionReadRoutes(store), ...sessionLifecycleRoutes(store, push.dismiss),
+    ...sessionTurnRoutes(store, {
+      execution,
+      activeWorker,
+      requireWorker: () => {
+        pruneWorkers();
+        if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no worker is registered");
+      },
+      retitle: (sessionId, input) => setImmediate(() => void maybeRetitleSession(store, sessionId, input)),
+    }),
   );
   const server = http.createServer(router(domainRoutes, { authorize, errorFor, fallback: legacyRoutes }));
 

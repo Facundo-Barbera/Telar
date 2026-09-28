@@ -12,13 +12,13 @@ type RouterOptions = {
 
 /** Exact paths win over patterns, whatever the order; patterns are tried in declaration order. */
 export function matchRoute(routes: readonly Route[], method: string, pathname: string): { route: Route; params: string[] } | undefined {
-  const candidates = routes.filter((route) => route.method === method);
+  const candidates = routes.filter((route) => route.method === method || route.method === "*");
   const exact = candidates.find((route) => route.path === pathname);
   if (exact) return { route: exact, params: [] };
   for (const route of candidates) {
     if (typeof route.path === "string") continue;
     const match = route.path.exec(pathname);
-    if (match) return { route, params: match.slice(1).map(decodeURIComponent) };
+    if (match) return { route, params: match.slice(1).map((group) => (group === undefined ? group : decodeURIComponent(group))) as string[] };
   }
   return undefined;
 }

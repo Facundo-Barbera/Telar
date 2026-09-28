@@ -15,9 +15,11 @@ type RouteInput = {
  * `body: "raw"` leaves the request body unread for the handler; a handler that answers `undefined` has written the response itself.
  */
 export type Route = {
-  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  /** `*` answers every method, ahead of any pattern. */
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "*";
   path: string | RegExp;
-  auth: "engine";
+  /** Which secret opens it: the engine token, or one socket's own. */
+  auth: "engine" | "sessions-socket" | "notes-socket";
   body?: "raw";
   handle(input: RouteInput): RouteAnswer | undefined | Promise<RouteAnswer | undefined>;
 };
