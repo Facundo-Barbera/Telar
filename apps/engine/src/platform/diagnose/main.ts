@@ -1,25 +1,7 @@
-/**
- * `telar diagnose` — read-only questions about a store, run by hand.
- *
- * Today there is one: `stalled`, which answers #813's frequency question
- * without anybody opening the live store with `sqlite3`. See `diagnose.ts` for
- * what it reads and why it refuses to go through `EngineStore`.
- *
- * THE ROOT IS ALWAYS EXPLICIT — `--root`, or `TELAR_HOME` via
- * `engineRootFromEnv`, which itself refuses to guess. There is deliberately no
- * built-in path to the store in `~/Library/Application Support`: a diagnostic
- * that defaults to somebody's live conversations is one typo away from being
- * pointed at them by accident, and naming the directory is no effort at all
- * next to reading the answer.
- *
- * `--json` IS THE DEFAULT AND THE ONLY FORMAT. The answer is a shape to count
- * and compare across days, not prose to read once, and a second format would be
- * a second thing to keep true.
- */
-import { engineRootFromEnv } from "./state";
-import { DiagnoseError, scanStalled } from "./diagnose";
+import { engineRootFromEnv } from "../../state";
+import { DiagnoseError, scanStalled } from "./stalled";
 
-const USAGE = `telar diagnose stalled [--root <engine root>] [--minutes N] [--json]
+const USAGE = `telar diagnose stalled [--root <engine root>] [--minutes N]
 
 Which runs in a store have been silent for longer than a threshold, as ids and
 times. Read-only: the database is opened readonly and nothing is written.
@@ -28,7 +10,6 @@ times. Read-only: the database is opened readonly and nothing is written.
                   execution.sqlite). Defaults to TELAR_HOME's engine root.
   --minutes N     How long counts as silent. Defaults to the engine's own
                   STALLED_AFTER_MS.
-  --json          Emit JSON. This is the default and the only format.
 `;
 
 function flag(argv: string[], name: string): string | undefined {
@@ -52,8 +33,6 @@ export function runDiagnose(argv: string[]): string {
   return `${JSON.stringify(scan, null, 2)}\n`;
 }
 
-// Only when this file IS the process, so the function above stays testable
-// without a subprocess — and so importing it never runs a scan.
 if (import.meta.main) {
   try {
     process.stdout.write(runDiagnose(process.argv.slice(2)));
