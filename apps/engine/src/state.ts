@@ -227,7 +227,7 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
 import { inlineExcerpt, quotedExcerpt } from "./agent-notice";
-import { RELAY_RULE } from "./attribution";
+import { RELAY_RULE } from "./domains/turns";
 import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import {
   commentOn,

@@ -51,7 +51,7 @@ import { pluginBriefings } from "./plugins/bundled";
 import type { ItemDetail, ItemSeed, McpServer, NotificationDetail, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot, UserInputField } from "@telar/engine-client";
 import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./domains/computer-use";
-import { framedSteerText, RELAY_RULE, steerRowTitle } from "./attribution";
+import { framedSteerText, RELAY_RULE, steerRowTitle } from "./domains/turns";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexWindowConfig, readCodexWindows, type CodexWindow } from "./codex/windows";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
