@@ -29,7 +29,7 @@ import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
 import { Row, SettingsGroup, SettingsShell } from "./settings-shell";
-import { SECTION_ALIASES, SECTION_IDS, SECTIONS, settingsSearchIndex } from "./settings-sections";
+import { SECTION_IDS, SECTIONS, settingsSearchIndex } from "./settings-sections";
 import { projectPaneFor } from "@/components/plugins/settings-panes";
 import { useSectionFromUrl } from "./use-section-from-url";
 
@@ -133,9 +133,9 @@ function AboutSection({
 }
 
 export function SettingsPage() {
-  // `?section=mcp` is how a sign-in gets the user back to the pane they left —
+  // `?section=` is how a sign-in gets the user back to the pane they left —
   // see use-section-from-url.ts for the failure that made this necessary.
-  const [active, setActive] = useSectionFromUrl("general", SECTION_IDS, SECTION_ALIASES);
+  const [active, setActive] = useSectionFromUrl("general", SECTION_IDS);
   const [about, setAbout] = useState<{ appVersion: string; stateRoot?: string }>();
   const [health, setHealth] = useState<EngineHealth>();
   const [unreachable, setUnreachable] = useState(false);

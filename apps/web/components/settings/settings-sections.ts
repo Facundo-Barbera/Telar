@@ -25,17 +25,6 @@ export const SECTIONS: SettingsSection[] = [
 
 export const SECTION_IDS = SECTIONS.map((section) => section.id);
 
-/** Retired pane ids, still routed to the pane that took over their rows. */
-export const SECTION_ALIASES: Record<string, string> = {
-  sessions: "general",
-  inbox: "general",
-  textgen: "general",
-  mcp: "tools",
-  permissions: "tools",
-  application: "about",
-  settled: "general",
-};
-
 /** The static index plus every plugin's generated rows, on the Projects and Plugins panes. */
 export function settingsSearchIndex(
   plugins: readonly PluginStatus[] | undefined,

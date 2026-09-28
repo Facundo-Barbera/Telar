@@ -45,8 +45,7 @@
  * second settings shell with a second nav, holding the two things this pane had
  * no room for — MCP servers scoped to the project, and each plugin's own editor
  * — so a reader answering "what is this project set to" had to know which of two
- * screens held which half. Both halves are groups here, and the old route
- * redirects rather than 404s (`app/projects/[projectId]/settings/page.tsx`).
+ * screens held which half. Both halves are groups here.
  *
  * A PLUGIN'S EDITOR APPEARS WHEN THE PLUGIN IS ON. Off, it is one row with a
  * switch (`PluginSettings`); on, it is the plugin's own pane. That is not
