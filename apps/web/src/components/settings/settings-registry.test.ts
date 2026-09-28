@@ -3,8 +3,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { PluginStatus } from "@telar/engine-client";
-import { searchSettings } from "@/lib/settings-search";
-import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "./settings-registry";
+import { searchSettings, SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "@/features/settings";
 import { SECTION_IDS, settingsSearchIndex } from "./settings-sections";
 
 const here = fileURLToPath(new URL(".", import.meta.url));

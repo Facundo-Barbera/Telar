@@ -9,7 +9,7 @@ import Link from "next/link";
 import { ArrowLeftIcon, CircleAlertIcon, InfoIcon, Undo2Icon } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { settingsRowId, type SettingsSearchEntry, type SettingsSearchIndex } from "@/lib/settings-search";
+import { settingsRowId, type SettingsSearchEntry, type SettingsSearchIndex } from "@/features/settings";
 import { SettingsSearchNav } from "./settings-search-nav";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";

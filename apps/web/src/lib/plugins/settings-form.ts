@@ -17,7 +17,7 @@
  * select's choices for people, and `icon` is the row's glyph (a Lucide name).
  */
 import type { PluginStatus } from "@telar/engine-client";
-import { foldForSearch, settingsRowId, type SettingsSearchEntry } from "@/lib/settings-search";
+import { foldForSearch, settingsRowId, type SettingsSearchEntry } from "@/features/settings";
 
 type SettingsFieldKind = "toggle" | "select" | "text" | "path" | "number";
 

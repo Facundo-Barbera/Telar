@@ -2,8 +2,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { resolveWorkspace, type ProjectWorkspaceOverrides, type ProjectWorkspaceView, type WorkspaceConfig } from "@telar/engine-client";
-import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
-import { searchSettings } from "@/lib/settings-search";
+import { SETTINGS_SEARCH_INDEX, searchSettings } from "@/features/settings";
 import {
   formatArtifacts,
   parseArtifacts,

@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 GlobalRegistrator.register({ url: "http://localhost/settings" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { SETTINGS_SEARCH_INDEX } = await import("./settings-registry");
+const { SETTINGS_SEARCH_INDEX } = await import("@/features/settings");
 const { SettingsSearchNav } = await import("./settings-search-nav");
 const { SettingsShell, revealSettingsRow } = await import("./settings-shell");
 const { SECTIONS } = await import("./settings-sections");

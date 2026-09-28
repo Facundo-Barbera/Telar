@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
-import { foldForSearch, indexSettings, searchSettings, settingsRowId, type SettingsPageSpec } from "./settings-search";
+import { foldForSearch, indexSettings, searchSettings, settingsRowId, type SettingsPageSpec } from "./search";
 
 test("folding makes accents and apostrophes invisible to a search", () => {
   // Both directions: the typed query and the indexed copy go through the same
