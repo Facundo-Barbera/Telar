@@ -32,7 +32,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ProjectNote, PROJECT_NOTE_SCHEMA_VERSION, type ProjectNoteAuthor } from "@telar/engine-client";
-import { atomicWrite } from "./atomic";
+import { atomicWrite } from "./platform/fs/atomic";
 import type { EngineStatePaths } from "./state";
 
 /** Thrown for every refusal. The daemon maps this to a 400/404 the same way it

@@ -22,7 +22,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWrite } from "../atomic";
+import { atomicWrite } from "../platform/fs/atomic";
 import { RunConfiguration, RunConfigurationInput, RunError, newConfigId } from "./types";
 
 /** Keep a project id from escaping into a path. Same rule as `ds/state-files`. */

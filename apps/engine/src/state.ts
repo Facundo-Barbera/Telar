@@ -197,7 +197,7 @@ import {
   migrateClaudeCompaction,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
-import { atomicWrite } from "./atomic";
+import { atomicWrite } from "./platform/fs/atomic";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
 import {
   boundedOutline,
@@ -1212,11 +1212,6 @@ function assertAbsolutePath(value: unknown, label: string): asserts value is str
     throw new EngineStateError("invalid_request", `${label} must be an absolute path`);
   }
 }
-
-// `atomicWrite` MOVED TO `./atomic` and is imported at the top of this file.
-// It is unchanged; it left so a module this one imports can share the same
-// writer without reaching back here for it, which would be a cycle. See that
-// file's header.
 
 /**
  * DOCUMENT VERSIONS TRACK THE PROTOCOL, and v2 is a HARD BREAK: a v1 document

@@ -26,7 +26,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type http from "node:http";
 import { z } from "zod";
-import { atomicWrite } from "./atomic";
+import { atomicWrite } from "./platform/fs/atomic";
 import type { ToolCallContext } from "./tool-kit";
 
 /** One wall tool, as the collecting factory sees it — name, prose, argument

@@ -30,7 +30,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWrite } from "../atomic";
+import { atomicWrite } from "../platform/fs/atomic";
 
 export type PluginWorkRecord = {
   /** Opaque handle, returned by `begin` and passed back to `end`. */
