@@ -10,7 +10,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { parseLook, THEME_TOKENS } from "@telar/engine-client";
-import { BUILT_IN_LOOKS, BUILT_IN_NOTES, BUILT_IN_PREFIX, builtInComposition, isBuiltInLook } from "./built-in-looks";
+import { BUILT_IN_LOOKS, BUILT_IN_NOTES, BUILT_IN_PREFIX, isBuiltInLook } from "./built-in-looks";
 import { composeComposition, MODES } from "./composition";
 import { halfFor, halfFromBase } from "./palette-from-image";
 import { SCENE_PRESETS } from "./scene-composer";
@@ -124,13 +124,5 @@ describe("every default is wearable", () => {
         }
       }
     }
-  });
-});
-
-describe("builtInComposition", () => {
-  test("answers by the id the OLD theme library used, which is what the migration has", () => {
-    expect(builtInComposition("tide")).toEqual(BUILT_IN_LOOKS.find((look) => look.id === `${BUILT_IN_PREFIX}tide`)?.composition);
-    expect(builtInComposition("custom-1")).toBeUndefined();
-    expect(builtInComposition("dusk")).toBeDefined();
   });
 });

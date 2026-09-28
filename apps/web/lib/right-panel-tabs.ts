@@ -39,9 +39,8 @@ export type PanelTabParams = Readonly<Record<string, string>>;
 export type PanelTabInstance<Kind extends string = string> = {
   /**
    * UNIQUE, STABLE AND PERSISTED. The first instance of a kind takes the kind
-   * itself as its id, which is what makes the migration from the old string
-   * list a no-op and lets everything keyed on "the Editor" (its stored files,
-   * the browser's native scope) keep the key it already had.
+   * itself as its id, so everything keyed on "the Editor" (its stored files,
+   * the browser's native scope) keeps one key.
    */
   id: string;
   kind: Kind;
@@ -293,9 +292,7 @@ function sameTabs<Kind extends string>(a: readonly PanelTabInstance<Kind>[], b: 
 }
 
 type StoredInstance = { id: string; kind: string; params?: Record<string, string> };
-/** A tab as some build wrote it: a bare kind (before #322) or an instance. */
-type StoredTab = string | StoredInstance;
-type StoredPanel = { version: number; sessions: Record<string, { tabs: StoredTab[]; activeTab?: string; open: boolean; touchedAt: number }> };
+type StoredPanel = { version: number; sessions: Record<string, { tabs: StoredInstance[]; activeTab?: string; open: boolean; touchedAt: number }> };
 
 function readStore(): StoredPanel {
   if (typeof window === "undefined") return { version: VERSION, sessions: {} };
@@ -314,18 +311,7 @@ function readStore(): StoredPanel {
   }
 }
 
-/**
- * ONE STORED ENTRY, IN THIS BUILD'S SHAPE — and the whole of the #322 migration.
- *
- * A build before instances wrote `"editor"`; this one writes
- * `{ id: "editor", kind: "editor", params: {} }`. A bare string is wrapped as
- * one instance with empty params, which is exactly what it meant. `legacy` says
- * which it was, because the two are deduped differently on the way out: two old
- * `file:` strings both migrate to the Editor and must collapse into one tab,
- * while two deliberate Editor instances must not.
- */
-function storedTab(entry: StoredTab): { id?: string; kind: string; params: PanelTabParams; legacy: boolean } | undefined {
-  if (typeof entry === "string") return entry ? { kind: entry, params: {}, legacy: true } : undefined;
+function storedTab(entry: StoredInstance): { id?: string; kind: string; params: PanelTabParams } | undefined {
   if (!entry || typeof entry !== "object" || typeof entry.kind !== "string" || !entry.kind) return undefined;
   const params: Record<string, string> = {};
   if (entry.params && typeof entry.params === "object") {
@@ -333,7 +319,7 @@ function storedTab(entry: StoredTab): { id?: string; kind: string; params: Panel
       if (typeof value === "string") params[key] = value;
     }
   }
-  return { ...(typeof entry.id === "string" && entry.id ? { id: entry.id } : {}), kind: entry.kind, params, legacy: false };
+  return { ...(typeof entry.id === "string" && entry.id ? { id: entry.id } : {}), kind: entry.kind, params };
 }
 
 /**
@@ -350,35 +336,8 @@ export function canvasPanelKey(projectId: string): string {
 }
 
 /**
- * The stored KINDS, exactly as they were written — before validation, before
- * migration.
- *
- * FOR MIGRATIONS THAT NEED MORE THAN A RENAME. `readPanelTabs` maps an old id
- * to a new one and drops what it cannot place, which is the right answer when a
- * tab became another tab. It is not enough when a tab became CONTENT: every
- * open file used to be its own panel tab, and those ids are the only record of
- * which files somebody had open. The Editor reads them here and restores the
- * files (lib/editor-workspace.ts `editorFromLegacyTabs`), then the ordinary
- * restore collapses the ids themselves into the one Editor tab.
- *
- * KINDS RATHER THAN INSTANCES because that is the question this answers: the
- * ids it is looking for (`file:src/a.ts`) were written by a build that had no
- * instances at all, so an instance's `id` would tell its caller nothing.
- */
-export function readPanelTabIds(sessionId: string): { tabs: string[]; activeTab?: string } {
-  const stored = readStore().sessions[sessionId];
-  if (!stored) return { tabs: [] };
-  const tabs = (Array.isArray(stored.tabs) ? stored.tabs : []).map(storedTab).filter((entry) => entry !== undefined);
-  const active = tabs.find((entry) => (entry.id ?? entry.kind) === stored.activeTab);
-  return {
-    tabs: tabs.map((entry) => entry.kind),
-    ...(active ? { activeTab: active.kind } : {}),
-  };
-}
-
-/**
  * Restore a session's panel, validating each KIND against what this build
- * understands — a tab kind that has since been renamed or removed must not
+ * understands — a tab kind that has since been removed must not
  * resurrect as a blank pane.
  *
  * A PREDICATE rather than a list, because tab kinds are not a closed set: a
@@ -386,63 +345,18 @@ export function readPanelTabIds(sessionId: string): { tabs: string[]; activeTab?
  * "is this a tab" is a question about SHAPE and cannot be answered by
  * membership.
  */
-export function readPanelTabs<Kind extends string>(
-  sessionId: string,
-  isKnown: (kind: string) => kind is Kind,
-  migrate: (kind: string) => string = (kind) => kind,
-): PanelTabState<Kind> {
+export function readPanelTabs<Kind extends string>(sessionId: string, isKnown: (kind: string) => kind is Kind): PanelTabState<Kind> {
   const stored = readStore().sessions[sessionId];
   if (!stored) return emptyPanelTabs<Kind>();
   const tabs: PanelTabInstance<Kind>[] = [];
-  /**
-   * Which kinds a RENAMED entry has already claimed — a renamed tab restores
-   * under its new name once, so a layout that held both of two merged tabs
-   * holds one of the merger. Instances written by this build are deduped by
-   * their own id instead: two Editors are two Editors.
-   *
-   * RENAMED, NOT MERELY OLD. This used to key off the stored SHAPE — a bare
-   * string was written before instances existed (#322), an object after — which
-   * was enough while every merge was also a format change. It stopped being
-   * enough at #693: `issue:675` and `issue:666` were written by THIS build, as
-   * instances, and both now name `issues`, so shape-based dedupe restored two
-   * tabs both labelled Issues. The precise question was never "how old is this
-   * entry" but "did `migrate` move it", which is what is asked here.
-   */
-  const collapsed = new Set<string>();
-  /** Which stored id each restored instance came from, so `activeTab` can be
-   *  resolved whichever vocabulary it was written in. */
-  const from = new Map<string, string>();
   for (const entry of Array.isArray(stored.tabs) ? stored.tabs : []) {
     const parsed = storedTab(entry);
-    if (!parsed) continue;
-    const kind = migrate(parsed.kind);
-    if (!isKnown(kind)) continue;
-    if (parsed.legacy || kind !== parsed.kind) {
-      if (collapsed.has(kind)) {
-        // Still remembered — under BOTH vocabularies, since a renamed entry may
-        // have been stored as a bare kind or as an instance with its own id — so
-        // an `activeTab` naming the SECOND of two merged ids selects the merger
-        // rather than falling back to the first tab.
-        const existing = tabs.find((tab) => tab.kind === kind);
-        if (existing) {
-          from.set(parsed.kind, existing.id);
-          if (parsed.id !== undefined) from.set(parsed.id, existing.id);
-        }
-        continue;
-      }
-      collapsed.add(kind);
-    }
-    /** A RENAMED ENTRY DOES NOT KEEP ITS STORED ID. `issue:675` is the id of a
-     *  tab kind that no longer exists; carrying it onto the `issues` tab would
-     *  break the rule that the first instance of a kind IS the kind (which is
-     *  what everything keyed on "the first Editor" and "the first Browser"
-     *  depends on) and would read as an id nothing can explain. */
-    const keep = parsed.id !== undefined && kind === parsed.kind && !tabs.some((tab) => tab.id === parsed.id);
-    const id = keep ? parsed.id! : nextPanelTabId({ tabs, open: false }, kind);
-    tabs.push({ id, kind, params: parsed.params });
-    from.set(parsed.id ?? parsed.kind, id);
+    if (!parsed || !isKnown(parsed.kind)) continue;
+    const kind = parsed.kind;
+    const keep = parsed.id !== undefined && !tabs.some((tab) => tab.id === parsed.id);
+    tabs.push({ id: keep ? parsed.id! : nextPanelTabId({ tabs, open: false }, kind), kind, params: parsed.params });
   }
-  const activeTab = (stored.activeTab === undefined ? undefined : from.get(stored.activeTab) ?? from.get(migrate(stored.activeTab))) ?? tabs[0]?.id;
+  const activeTab = tabs.some((tab) => tab.id === stored.activeTab) ? stored.activeTab : tabs[0]?.id;
   return { tabs, ...(activeTab ? { activeTab } : {}), open: Boolean(stored.open) && tabs.length > 0 };
 }
 

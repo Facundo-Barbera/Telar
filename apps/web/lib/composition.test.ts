@@ -1,13 +1,9 @@
 /**
- * THE COMPOSITION — the store, the compiler, and the one-shot migration.
+ * THE COMPOSITION — the store and the compiler.
  *
- * WHAT IS ACTUALLY BEING GUARDED. Three of these are places where a mistake
- * paints the wrong thing SILENTLY, with nothing to notice it: a compiled
- * stylesheet that restates the default palette (so globals.css stops being the
- * source of the default look), per-state background lists that drift out of
- * alignment (so CSS cycles them and every layer paints at someone else's size),
- * and a migration that reads an install's old keys wrongly (so somebody's window
- * changes colour on an upgrade). None of them throws; all three are assertions.
+ * WHAT IS ACTUALLY BEING GUARDED. Two places where a mistake paints the wrong
+ * thing SILENTLY: a compiled stylesheet that restates the default palette, and
+ * per-state background lists that drift out of alignment. Neither throws.
  *
  * A DOM, because this IS a store — see scripts/test-dom.mjs for why the suite's
  * preload hands the globals back rather than keeping them.
@@ -33,7 +29,7 @@ import {
   writeDerived,
 } from "./composition";
 import { BUILT_IN_LOOKS } from "./built-in-looks";
-import { BACKDROP_CSS_KEY, notifyBackdropCss, parseBackdropCss, subscribeBackdropCss } from "./backdrop";
+import { BACKDROP_CSS_KEY, parseBackdropCss, subscribeBackdropCss } from "./backdrop";
 import { composeGradient, GRADIENT_STARTERS } from "./gradient-starters";
 import { splitTopLevel } from "./scene-composer";
 
@@ -350,25 +346,6 @@ describe("the store", () => {
   test("the identity composition writes an empty stylesheet, not the base palette", () => {
     writeComposition(DEFAULT_COMPOSITION, {});
     expect(window.localStorage.getItem(THEME_CSS_KEY)).toBe("");
-  });
-
-  /**
-   * THE MIGRATION RUNS INSIDE A SNAPSHOT READ, so it may not tell a subscriber
-   * anything while it is running — that is a store update during another
-   * component's render, and React says so. The caches still have to be on disk
-   * before the effects that replay them, so the write is quiet and the telling
-   * is queued.
-   */
-  test("writing the derived caches quietly stores them without notifying", () => {
-    const value = patchState(composition(), "light", { layers: [{ type: "gradient", spec: starter.light, opacity: 100 }] });
-    let told = 0;
-    const stop = subscribeBackdropCss(() => (told += 1));
-    writeDerived(value, {}, true);
-    expect(window.localStorage.getItem(BACKDROP_CSS_KEY)).not.toBeNull();
-    expect(told).toBe(0);
-    notifyBackdropCss();
-    expect(told).toBe(1);
-    stop();
   });
 
   test("a stored composition is read back through the total parser", () => {

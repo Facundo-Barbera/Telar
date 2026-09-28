@@ -20,7 +20,6 @@ import {
   nextPanelTabId,
   openNewPanelTab,
   openPanelTab,
-  readPanelTabIds,
   readPanelTabs,
   revealPanelTab,
   setPanelTabParams,
@@ -146,9 +145,7 @@ describe("emptyPanelTabs", () => {
 
 describe("nextPanelTabId", () => {
   test("the FIRST instance of a kind takes the kind as its id", () => {
-    // Which is what makes the #322 migration a no-op and lets everything keyed
-    // on "the Editor" — its stored files, the browser's native scope — keep the
-    // key it already had.
+    // So everything keyed on "the Editor" keeps one key.
     expect(nextPanelTabId(emptyPanelTabs<Tab>(), "editor")).toBe("editor");
   });
 
@@ -444,14 +441,6 @@ function storeWindow(): unknown {
   };
 }
 
-/** What a build before #322 wrote: a flat list of kind strings. */
-function writeLegacy(sessionId: string, tabs: string[], activeTab?: string) {
-  window.localStorage.setItem(
-    "telar:right-panel",
-    JSON.stringify({ version: 1, sessions: { [sessionId]: { tabs, ...(activeTab ? { activeTab } : {}), open: true, touchedAt: 1 } } }),
-  );
-}
-
 const isKnown = (kind: string): kind is PanelTab => isPanelTab(kind);
 
 describe("persistence", () => {
@@ -463,87 +452,6 @@ describe("persistence", () => {
   afterEach(() => {
     (globalThis as { window?: unknown }).window = previous;
   });
-
-describe("migrates the old string list into instances", () => {
-  test("each stored kind becomes ONE instance with empty params, keeping its order", () => {
-    writeLegacy("session_a", ["issues", "editor", "processes"], "editor");
-    const restored = readPanelTabs<PanelTab>("session_a", isKnown);
-    expect(restored.tabs).toEqual([
-      { id: "issues", kind: "issues", params: {} },
-      { id: "editor", kind: "editor", params: {} },
-      { id: "processes", kind: "processes", params: {} },
-    ]);
-    // The stored `activeTab` was a KIND; it resolves to that kind's instance.
-    expect(restored.activeTab).toBe("editor");
-    expect(restored.open).toBe(true);
-  });
-
-  test("ids minted by the migration are exactly the ids a fresh open would take", () => {
-    // Which is what keeps the first Editor's files and the first Browser's
-    // native scope where they already were.
-    writeLegacy("session_a", ["editor"]);
-    expect(ids(readPanelTabs<PanelTab>("session_a", isKnown))).toEqual(["editor"]);
-  });
-
-  test("several old ids that migrate to one kind collapse into one instance", () => {
-    // Every open file used to be a top-level tab; they are restored INTO the
-    // Editor by `editorFromLegacyTabs` and collapse to one tab here.
-    writeLegacy("session_a", ["file:a.ts", "diff", "file:b.ts"], "file:b.ts");
-    const restored = readPanelTabs<PanelTab>("session_a", isKnown, (kind) => (kind.startsWith("file:") ? "editor" : kind));
-    expect(kinds(restored)).toEqual(["editor", "diff"]);
-    // …and an `activeTab` naming the SECOND of the merged ids still selects
-    // the merger rather than falling back to the first tab.
-    expect(restored.activeTab).toBe("editor");
-  });
-
-  test("a kind this build no longer understands is dropped rather than restored blank", () => {
-    writeLegacy("session_a", ["agents", "usage"]);
-    expect(kinds(readPanelTabs<PanelTab>("session_a", isKnown))).toEqual(["agents"]);
-  });
-
-  test("INSTANCES that migrate to one kind collapse too, not just old bare strings (#693)", () => {
-    /**
-     * The defect this pins. Collapsing used to key off the stored SHAPE — a bare
-     * string meant "written before instances existed", and every merge so far had
-     * also been a format change, so that held. It stopped holding when `issue:675`
-     * and `issue:666` — written by THIS build, as instances — both began naming
-     * `issues`: shape-based dedupe restored two tabs, both labelled Issues, both
-     * showing the same list. The question was never how old an entry is but
-     * whether `migrate` moved it.
-     */
-    let panel = openPanelTab(emptyPanelTabs<PanelTab>(), "diff");
-    panel = openNewPanelTab(panel, "issue:675" as PanelTab);
-    panel = openNewPanelTab(panel, "issue:666" as PanelTab);
-    writePanelTabs("session_a", panel, 1);
-    const migrate = (kind: string) => (kind.startsWith("issue:") ? "issues" : kind);
-    const restored = readPanelTabs<PanelTab>("session_a", isKnown, migrate);
-    expect(kinds(restored)).toEqual(["diff", "issues"]);
-    // ONE tab, and it takes the id a fresh open would — not `issue:675`, which
-    // names a kind that no longer exists and would break "the first instance of
-    // a kind IS the kind".
-    expect(ids(restored)).toEqual(["diff", "issues"]);
-    // The active tab was the SECOND of the merged ids; it still selects the
-    // merger rather than falling back to the first tab in the strip.
-    expect(restored.activeTab).toBe("issues");
-  });
-
-  test("two instances of a kind that was NOT migrated are still two tabs", () => {
-    // The other half of the rule above: `migrate` leaves `editor` alone, so two
-    // deliberate Editors must not collapse into one.
-    let panel = openPanelTab(emptyPanelTabs<PanelTab>(), "editor");
-    panel = openNewPanelTab(panel, "editor");
-    writePanelTabs("session_a", panel, 1);
-    const restored = readPanelTabs<PanelTab>("session_a", isKnown, (kind) => (kind.startsWith("issue:") ? "issues" : kind));
-    expect(ids(restored)).toEqual(["editor", "editor#2"]);
-  });
-
-  test("`readPanelTabIds` still answers in KINDS, which is the vocabulary its callers speak", () => {
-    // The Editor reads it to find the files an older layout had open, and
-    // those ids (`file:src/a.ts`) were written by a build with no instances.
-    writeLegacy("session_a", ["file:a.ts", "diff"], "file:a.ts");
-    expect(readPanelTabIds("session_a")).toEqual({ tabs: ["file:a.ts", "diff"], activeTab: "file:a.ts" });
-  });
-});
 
 describe("round-trips instances", () => {
   test("two Editors come back as two Editors, with their params and their order", () => {

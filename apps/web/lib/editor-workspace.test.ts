@@ -14,7 +14,6 @@ import {
   activeEditorFile,
   closeEditorFile,
   editorFileForPath,
-  editorFromLegacyTabs,
   editorPathsAfter,
   emptyEditor,
   otherEditorPaths,
@@ -255,36 +254,5 @@ describe("what survives a reload", () => {
       (globalThis as { window: { localStorage: { setItem: (k: string, v: string) => void } } }).window.localStorage.setItem("telar:editor", JSON.stringify({ version: 99, sessions: { s: { files: [{ path: "a.ts", view: "code" }] } } }));
       expect(readEditor("s").files).toEqual([]);
     });
-  });
-});
-
-describe("editorFromLegacyTabs (the upgrade path)", () => {
-  test("files that were top-level panel tabs come back as the Editor's files, pinned", () => {
-    // They were deliberate opens under the old rules; demoting them to one
-    // shared preview slot would throw all but one of them away on upgrade.
-    const state = editorFromLegacyTabs(["diff", "file:src/a.ts", "notebook:nb.ipynb", "issues", "pdf:doc.pdf", "table:d.csv"], "notebook:nb.ipynb");
-    expect(state).toBeDefined();
-    expect(state!.files).toEqual([
-      { path: "src/a.ts", view: "code", pinned: true },
-      { path: "nb.ipynb", view: "notebook", pinned: true },
-      { path: "doc.pdf", view: "pdf", pinned: true },
-      { path: "d.csv", view: "table", pinned: true },
-    ]);
-    expect(state!.activePath).toBe("nb.ipynb");
-  });
-
-  test("a path with a colon survives, and a bare prefix names nothing", () => {
-    expect(editorFromLegacyTabs(["file:src/weird:name.ts"])!.files[0]!.path).toBe("src/weird:name.ts");
-    expect(editorFromLegacyTabs(["file:", "pdf:"])).toBeUndefined();
-  });
-
-  test("a panel with no files at all has nothing to migrate", () => {
-    // Which is the signal not to open an Editor tab for a session that never
-    // had a file open.
-    expect(editorFromLegacyTabs(["diff", "issues", "browser:p1"])).toBeUndefined();
-  });
-
-  test("the last file is active when the stored active tab was not a file", () => {
-    expect(editorFromLegacyTabs(["file:a.ts", "file:b.ts"], "diff")!.activePath).toBe("b.ts");
   });
 });

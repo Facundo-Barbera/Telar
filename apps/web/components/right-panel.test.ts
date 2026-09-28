@@ -18,7 +18,7 @@ import {
   describePanelTab,
   filePanelTabPath,
   isFilePanelTab,
-  migratePanelTab,
+  isRestorablePanelTab,
   isLiveTask,
   isMultiInstancePanelTab,
   isPanelTab,
@@ -97,17 +97,7 @@ describe("file tabs", () => {
     expect(isPanelTab("diff")).toBe(true);
     expect(isPanelTab("changes")).toBe(false);
     expect(isPanelTab("git")).toBe(false);
-    // Retired in favour of Editor (#193), so it is no longer a tab this build
-    // will restore — `migratePanelTab` is what a saved one goes through.
     expect(isPanelTab("files")).toBe(false);
-  });
-
-  test("a saved Files tab opens on Editor rather than on nothing (#193)", () => {
-    // Removing the CHOICE must not strand an arrangement that already made it.
-    // Editor mounts the same tree component, so this lands where the reader was
-    // going: the checkout, browsable, with files openable from it.
-    expect(migratePanelTab("files")).toBe("editor");
-    expect(isPanelTab(migratePanelTab("files"))).toBe(true);
   });
 });
 
@@ -118,17 +108,6 @@ describe("the Run surface, which is now the Terminal's strip (#890)", () => {
     // kind valid would let a saved layout restore a pane nothing renders.
     expect(isPanelTab("run")).toBe(false);
   });
-
-  test("a saved Run tab opens the Terminal rather than nothing", () => {
-    // The whole migration: the rename is what stops it restoring as a blank
-    // pane, and `collapseTerminalTabs` (#889) is what folds it into the
-    // Terminal somebody also had open, params and all, so their shells are not
-    // orphaned. The CHIP comes from the surface's own status read on mount.
-    expect(migratePanelTab("run")).toBe("terminal");
-    expect(isPanelTab(migratePanelTab("run"))).toBe(true);
-    // Not file-shaped: it must not be collapsed into the Editor instead.
-    expect(isFilePanelTab("run")).toBe(false);
-  });
 });
 
 describe("the Terminal surface", () => {
@@ -137,7 +116,6 @@ describe("the Terminal surface", () => {
     // validate here is one that silently disappears on the next reload — and
     // with it the id of a shell that is still running.
     expect(isPanelTab("terminal")).toBe(true);
-    expect(migratePanelTab("terminal")).toBe("terminal");
     expect(isFilePanelTab("terminal")).toBe(false);
   });
 
@@ -216,17 +194,9 @@ describe("files are the Editor's, not the strip's", () => {
     expect(isFilePanelTab("browser:p1")).toBe(false);
   });
 
-  test("a panel saved with four open files restores as ONE Editor tab", () => {
-    // The defect this closes: four files pushed Diff and Issues off the end of
-    // the strip. They collapse to one id here, and `readPanelTabs` dedupes it —
-    // the files themselves are restored INTO the Editor by
-    // `editorFromLegacyTabs`, which reads the same stored ids first.
-    const stored = ["diff", "file:a.ts", "notebook:b.ipynb", "issues", "pdf:c.pdf", "table:d.csv"];
-    expect(stored.map(migratePanelTab)).toEqual(["diff", "editor", "editor", "issues", "editor", "editor"]);
-    // And the surfaces it already migrated keep migrating.
-    expect(migratePanelTab("plots")).toBe("data");
-    expect(migratePanelTab("diff")).toBe("diff");
-    expect(isPanelTab("editor")).toBe(true);
+  test("a file-shaped id never restores into the strip", () => {
+    const stored = ["diff", "file:a.ts", "notebook:b.ipynb", "issues", "pdf:c.pdf", "table:d.csv", "editor"];
+    expect(stored.filter(isRestorablePanelTab)).toEqual(["diff", "issues", "editor"]);
   });
 });
 
@@ -253,17 +223,10 @@ describe("issue and pull-request tabs", () => {
     expect(isPanelTab("pull:1.5")).toBe(false);
   });
 
-  test("a detail id is a REQUEST and never a tab of its own (#693)", () => {
-    // `issue:675` still NAMES an issue — a conversation chip, a GitHub link and
-    // a layout saved before the change all say it that way — but it resolves to
-    // the LIST surface, which opens the number inside itself. The same turn
-    // `file:` took when files moved into the Editor.
-    expect(migratePanelTab(issuePanelTab(675))).toBe("issues");
-    expect(migratePanelTab(pullPanelTab(666))).toBe("pulls");
-    // A malformed one is not a request for anything, so it is left alone and
-    // the validator drops it, exactly as before.
-    expect(migratePanelTab("issue:12abc")).toBe("issue:12abc");
-    expect(isPanelTab("issue:12abc")).toBe(false);
+  test("a detail id is a request and never restores as a tab of its own", () => {
+    expect(isRestorablePanelTab(issuePanelTab(675))).toBe(false);
+    expect(isRestorablePanelTab(pullPanelTab(666))).toBe(false);
+    expect(isRestorablePanelTab("issues")).toBe(true);
   });
 });
 

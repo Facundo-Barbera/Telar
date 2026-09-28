@@ -198,9 +198,7 @@ const SURFACES = [
    *
    * THE SURFACE ITSELF IS NOT DELETED — Editor mounts the same
    * `FilesSurface` component as its tree (session/editor-surface.tsx), which
-   * is what makes this a removed CHOICE rather than removed functionality. A
-   * session that saved `files` as its tab opens on Editor instead of on
-   * nothing; see `migratePanelTab`.
+   * is what makes this a removed CHOICE rather than removed functionality.
    */
   /**
    * THE EDITOR, and the reason it is ONE tab.
@@ -275,10 +273,6 @@ const ALL_SURFACES: readonly Surface[] = [...SURFACES, ...PLUGIN_SURFACES];
 const NO_PLUGINS: readonly string[] = [];
 const NO_PANELS: readonly PluginPanelSource[] = [];
 
-/** The two tabs "data" replaced. A layout saved by the previous build names
- *  them; they restore as the one tab rather than vanishing. */
-const LEGACY_DS_TABS: ReadonlySet<string> = new Set(["plots", "variables"]);
-
 /** The four prefixes that used to mint a top-level tab per open file. */
 const FILE_TAB_PREFIXES = ["file:", "notebook:", "table:", "pdf:"] as const;
 
@@ -304,43 +298,10 @@ export function isFilePanelTab(value: string): boolean {
   return filePanelTabPath(value) !== undefined;
 }
 
-/**
- * Whatever a previous build called this tab, in this build's vocabulary.
- *
- * EVERY OPEN FILE BECOMES THE EDITOR — one tab where there were four, deduped
- * by `readPanelTabs`. The files themselves are not lost with the tabs: they are
- * restored INTO the Editor by `editorFromLegacyTabs`, which reads the same
- * stored ids before this collapses them (see the cockpit's restore effect).
- *
- * AND EVERY OPEN ISSUE BECOMES THE ISSUES SURFACE (#693), on the same terms:
- * `issue:675` and `issue:9` both name `issues`, `readPanelTabs` leaves one tab
- * where there were two, and the NUMBERS are read out first by
- * `forgeFromLegacyTabs` and seeded as that surface's open set. Without that
- * second half this rename would quietly close every issue anybody had open —
- * the exact thing moving them inside the list is meant to stop happening.
- */
-export function migratePanelTab(value: string): string {
-  if (LEGACY_DS_TABS.has(value)) return "data";
-  // `files` was retired in favour of Editor (#193). A saved arrangement that
-  // names it opens on Editor's tree rather than on nothing.
-  if (value === "files") return "editor";
-  /**
-   * AND `run` WAS RETIRED INTO THE TERMINAL (#890) — a run is a chip in that
-   * tab's strip now, not a surface of its own.
-   *
-   * THE RENAME IS THE WHOLE MIGRATION, AND IT IS NOT DOING IT ALONE. Pointing
-   * the id at `terminal` is what stops a saved Run tab restoring as a blank
-   * pane; what folds it INTO the Terminal somebody also had open — params and
-   * all, so their shells are not orphaned — is `collapseTerminalTabs`, which
-   * #889 already built for exactly this shape and which the cockpit already
-   * runs on every restore. The CHIP is not seeded here either: the surface
-   * reads `/run/status` once on mount and gives the project's live run a chip,
-   * which is the same path a run started by an agent takes.
-   */
-  if (value === "run") return "terminal";
-  if (issuePanelNumber(value as PanelTab) !== undefined) return "issues";
-  if (pullPanelNumber(value as PanelTab) !== undefined) return "pulls";
-  return isFilePanelTab(value) ? "editor" : value;
+/** A tab id that may restore into the strip. File, issue and pull ids are
+ *  requests to open something inside a surface, never tabs of their own. */
+export function isRestorablePanelTab(value: string): value is PanelTab {
+  return isPanelTab(value) && !isFilePanelTab(value) && issuePanelNumber(value) === undefined && pullPanelNumber(value) === undefined;
 }
 
 /** The surfaces a project offers: the core ones, with the enabled plugins'
@@ -370,8 +331,8 @@ function surfacesFor(enabledPlugins: readonly string[], pluginPanels: readonly P
  * the Editor (#193) and #693 respectively. They stay in this union because the
  * gestures that open a file or an issue still NAME one this way, from a dozen
  * call sites; `showPanelTab` reads the subject back out and opens it inside the
- * surface that holds it. `migratePanelTab` is what stops one ever reaching the
- * strip, including out of a layout saved before either change.
+ * surface that holds it. `isRestorablePanelTab` keeps one from reaching the
+ * strip out of storage.
  */
 export type PanelTab =
   | SurfaceId
@@ -1512,10 +1473,8 @@ export function PanelSurface({
   /**
    * THE FILE ARMS ARE A FALLBACK NOW, not a route anybody takes. A file opens
    * in the Editor: the cockpit reads the path out of a file-shaped id and hands
-   * it there (`showPanelTab`), and a layout persisted by an older build has its
-   * file ids collapsed into the Editor tab on restore (`migratePanelTab`). They
-   * stay because they are still correct, and a tab that somehow arrives here
-   * should draw its file rather than nothing.
+   * it there (`showPanelTab`). They stay because a tab that somehow arrives
+   * here should draw its file rather than nothing.
    */
   const kind = tab.kind;
   const notebookPath = notebookPanelPath(kind);
