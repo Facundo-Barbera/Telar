@@ -16,6 +16,8 @@ test("an Anthropic request with full schemas counts only Telar's tools", () => {
   expect(cost.fullSchemas).toBe(2);
   expect(cost.fullSchemaBytes).toBe(JSON.stringify(body.tools[1]).length + JSON.stringify(body.tools[2]).length);
   expect(cost.deferredNames).toBe(0);
+  expect(cost.perTool.map((tool) => tool.name)).toEqual(["mcp__telar__sessions_read", "mcp__telar-browser__browser_click"]);
+  expect(cost.perTool[0]!.bytes).toBe(JSON.stringify(body.tools[1]).length);
 });
 
 test("deferred Telar tools are counted once by name from the messages", () => {

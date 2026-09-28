@@ -3,7 +3,14 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-export type ToolCost = { fullSchemas: number; fullSchemaBytes: number; deferredNames: number; deferredNameBytes: number; requestBytes: number };
+export type ToolCost = {
+  fullSchemas: number;
+  fullSchemaBytes: number;
+  perTool: { name: string; bytes: number }[];
+  deferredNames: number;
+  deferredNameBytes: number;
+  requestBytes: number;
+};
 
 const BYTES_PER_TOKEN = 4.1;
 export const approxTokens = (bytes: number): number => Math.round(bytes / BYTES_PER_TOKEN);
@@ -15,9 +22,11 @@ const isTelar = (name: string): boolean => /(^|__|^)telar([-_]|$)/.test(name) ||
 export function telarToolCost(body: { tools?: Tool[]; messages?: unknown; input?: unknown }): ToolCost {
   const telar = (body.tools ?? []).filter((tool) => isTelar(toolName(tool)));
   const names = [...new Set(JSON.stringify([body.messages ?? [], body.input ?? []]).match(/mcp__telar[\w-]*__\w+/g) ?? [])];
+  const perTool = telar.map((tool) => ({ name: toolName(tool), bytes: JSON.stringify(tool).length }));
   return {
     fullSchemas: telar.length,
-    fullSchemaBytes: telar.reduce((sum, tool) => sum + JSON.stringify(tool).length, 0),
+    fullSchemaBytes: perTool.reduce((sum, tool) => sum + tool.bytes, 0),
+    perTool,
     deferredNames: names.length,
     deferredNameBytes: names.join("\n").length,
     requestBytes: JSON.stringify(body).length,
@@ -105,6 +114,7 @@ async function capture(): Promise<void> {
     console.log(
       `${name}: ${cost.fullSchemas} full schemas ≈${approxTokens(cost.fullSchemaBytes)} tok, ${cost.deferredNames} deferred names ≈${approxTokens(cost.deferredNameBytes)} tok, request ≈${approxTokens(cost.requestBytes)} tok`,
     );
+    if (process.argv.includes("--per-tool")) for (const tool of cost.perTool) console.log(`  ${tool.name}\t≈${approxTokens(tool.bytes)}`);
   }
   server.close();
   process.exit(0);
