@@ -53,8 +53,8 @@ import {
   type ForkCut,
   type ForkOutcome,
   type ListOptions,
-} from "./claude-fork";
-import { readClaudeTranscriptFile, type ImportedRow, type TranscriptImport } from "./claude-transcript";
+} from "./drivers/claude";
+import { readClaudeTranscriptFile, type ImportedRow, type TranscriptImport } from "./drivers/claude";
 
 /**
  * WHERE ADOPTED CONVERSATIONS LIVE — one directory, not the session's own

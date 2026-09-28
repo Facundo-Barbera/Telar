@@ -217,8 +217,7 @@ import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER
 import { z } from "zod";
 import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerProcessEnv, stoppedInheriting } from "./domains/providers";
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
-import type { ClaudeConversation, ForkCut } from "./claude-fork";
-import { describeImport } from "./claude-transcript";
+import { describeImport, type ClaudeConversation, type ForkCut } from "./drivers/claude";
 import { applyModelManifest, applyModelOverlay, BUNDLED_MANIFEST, chosenDefault, legacyLongSpelling, longDefaultOf, type ModelManifest, readModelCatalogue, refuseCliSpawnUnderTest, resolveCliAsync } from "./domains/providers";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";

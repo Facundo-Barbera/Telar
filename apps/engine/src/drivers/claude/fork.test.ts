@@ -4,23 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   claudeProjectSlug,
-  describeFork,
   findTranscript,
   forkClaudeConversation,
   listClaudeConversations,
-} from "../src/claude-fork";
-
-/**
- * ADOPTING A CONVERSATION WITHOUT WRITING IN SOMEBODY'S HISTORY. The promise
- * #616 makes is that Telar forks rather than continuing in place, and the test
- * that matters most here is the dullest one: after a fork, the source file is
- * byte-identical. Everything else is in service of that.
- *
- * These run against a REAL store in a temp directory, pointed at by
- * `CLAUDE_CONFIG_DIR`, because the thing under test is the SDK's own fork —
- * a file operation on a store laid out the way the CLI lays one out. A mock of
- * `forkSession` would only assert that we call it.
- */
+} from "./fork";
 
 const SOURCE_CWD = "/tmp/telar-fork-source";
 const TELAR_CWD = "/tmp/telar-fork-home/worktree-a";
@@ -29,11 +16,6 @@ let roots: string[] = [];
 let restore: { config?: string; telar?: string } | undefined;
 
 afterEach(() => {
-  // THE STORE MUST BE THE TEMP ONE, ALWAYS. The SDK reads `process.env` at
-  // call time rather than any env handed to it, so a test that forgot to
-  // point it somewhere safe would fork inside the real `~/.claude` — which is
-  // somebody's actual conversation history, and exactly what #616 promises
-  // not to touch. Setting it is therefore setup, and restoring it is this.
   if (restore) {
     if (restore.config === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = restore.config;
@@ -47,12 +29,6 @@ afterEach(() => {
 
 type Built = { env: NodeJS.ProcessEnv; projects: string; sessionId: string; transcript: string };
 
-/**
- * A transcript in the shape the CLI writes one: a parent-linked chain of
- * user/assistant records under a cwd-slug directory. Field names and flags are
- * read off working transcripts; the content is invented, for the reason the
- * fixtures README beside `claude-transcript` gives at length.
- */
 function buildStore(options: { compacted?: boolean; turns?: number } = {}): Built {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-fork-"));
   roots.push(root);
@@ -126,7 +102,6 @@ const records = (file: string) =>
 
 test("the project slug is Claude's own encoding, not just a path separator swap", () => {
   expect(claudeProjectSlug("/tmp/plain/path")).toBe("-tmp-plain-path");
-  // Measured against `listSessions({ dir })`: dots, underscores and spaces go too.
   expect(claudeProjectSlug("/Users/x/My Project/a.b_c")).toBe("-Users-x-My-Project-a-b-c");
 });
 
@@ -155,8 +130,6 @@ test("a fork gets a new id, lands in Telar's own directory, and leaves none behi
     path.join(built.projects, claudeProjectSlug(TELAR_CWD), `${outcome.sessionId}.jsonl`),
   );
   expect(fs.existsSync(outcome.transcriptPath)).toBe(true);
-  // The whole point of relocating: the person's own project directory still
-  // holds exactly what it held before.
   expect(fs.readdirSync(sourceDir)).toEqual([`${built.sessionId}.jsonl`]);
 });
 
@@ -176,7 +149,6 @@ test("the original is byte-identical after a fork — the promise the decision w
   expect(after.size).toBe(before.size);
   expect(after.mtimeMs).toBe(before.mtimeMs);
   expect(fs.readFileSync(built.transcript).equals(bytes)).toBe(true);
-  // Reported too, so a caller can assert it without re-stating the path.
   expect(outcome.source.bytes).toBe(before.size);
   expect(outcome.source.mtimeMs).toBe(before.mtimeMs);
 });
@@ -196,8 +168,6 @@ test("every carried record says what it was forked from, and carries the new ses
   for (const record of carried) {
     const from = record.forkedFrom as { sessionId: string; messageUuid: string };
     expect(from.sessionId).toBe(built.sessionId);
-    // The uuid remap costs no traceability: every new record still names the
-    // source record it copies.
     expect(sourceUuids.has(from.messageUuid)).toBe(true);
     expect(record.sessionId).toBe(outcome.sessionId);
   }
@@ -232,7 +202,6 @@ test("a boundary cut with no boundary in the transcript keeps it whole", async (
     cut: "since_compact_boundary",
     env: built.env,
   });
-  // There is no principled place to cut, so nothing is thrown away.
   expect(JSON.stringify(records(outcome.transcriptPath))).toContain("question 0");
 });
 
@@ -268,15 +237,4 @@ test("a relocated fork is still findable by id, which is what keeps it resumable
     env: built.env,
   });
   expect(findTranscript(built.projects, outcome.sessionId)).toBe(outcome.transcriptPath);
-});
-
-test("the cockpit is told the copy happened, not left to discover it", async () => {
-  const built = buildStore();
-  const outcome = await forkClaudeConversation({
-    sourceSessionId: built.sessionId,
-    cwd: TELAR_CWD,
-    title: "Adopted into Telar",
-    env: built.env,
-  });
-  expect(describeFork(outcome)).toContain("untouched");
 });

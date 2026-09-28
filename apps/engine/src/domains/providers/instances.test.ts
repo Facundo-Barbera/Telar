@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../../state";
 import { createProviderProber, providerProcessEnv, signInOf, statusOf } from "./instances";
-import { resolveChildEnv } from "../../claude-identity";
+import { resolveChildEnv } from "../../drivers/claude";
 
 function knownClaudeDefault(directory: string): string {
   fs.mkdirSync(directory, { recursive: true });
