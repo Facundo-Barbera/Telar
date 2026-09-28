@@ -79,5 +79,5 @@ export function useDraftConfig({ projectId, fresh, projectDefaults }: {
     setRuntimeMode(mode);
   };
   const choices: DraftChoices = { driver, envMode, base, pick: modelTouched ? model : {}, runtimeMode };
-  return { ...choices, model, runtimeModeTouched, sessionDefaults, chooseEnvMode, chooseBase, chooseRuntimeMode, chooseModel, chooseDriver, choices };
+  return { ...choices, model, runtimeModeTouched, sessionDefaults, chooseEnvMode, chooseBase, chooseRuntimeMode, chooseModel, chooseDriver };
 }

@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Session, Turn } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/platform/engine/host-client";
 import { hostVisible, subscribeHostVisibility } from "@/platform/desktop/host-visibility";
 import { newestResultTurn, ReadReceiptCourier, type ReceiptAnswer, type ReceiptIdentity } from "../session-read-receipt";
+import type { useSessionSync } from "../hooks/use-session-sync";
 
 function useForeground(): boolean {
   const [foreground, setForeground] = useState(false);
@@ -25,14 +25,7 @@ function useForeground(): boolean {
 }
 
 /** The newest answer's read marker, and the read sequence it advances when the reader reaches it. */
-export function useReadReceipt({ hostId, sessionId, session, turns, loading, setSession }: {
-  hostId: string;
-  sessionId: string | undefined;
-  session: Session | undefined;
-  turns: Turn[];
-  loading: boolean;
-  setSession: (next: (current: Session | undefined) => Session | undefined) => void;
-}) {
+export function useReadReceipt(hostId: string, sessionId: string | undefined, { session, turns, loading, setSession }: ReturnType<typeof useSessionSync>) {
   const candidate = useMemo(() => (session?.id === sessionId ? newestResultTurn(turns) : undefined), [session, sessionId, turns]);
   const readSequence = session?.lastReadTurnSequence;
   const foreground = useForeground();

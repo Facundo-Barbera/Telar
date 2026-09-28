@@ -2,20 +2,19 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { createEngineApi } from "@/platform/engine";
-import { issuePanelTab, pullPanelTab, type PanelTab, type PanelTabState } from "@/features/panel";
+import { issuePanelTab, pullPanelTab } from "@/features/panel";
 import { hostFetcher } from "@/platform/engine/host-client";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/platform/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "../session-links";
+import type { useCockpitPanel } from "./use-cockpit-panel";
 
 /** Routes web links from the conversation (and ones claimed app-wide) to this project's forge tabs or the session browser. */
-export function useLinkRouting({ hostId, projectId, sessionId, solo, showPanelTab, showSessionBrowser, updatePanel }: {
+export function useLinkRouting({ hostId, projectId, sessionId, solo, panel: { showPanelTab, showSessionBrowser, updatePanel } }: {
   hostId: string;
   projectId: string | undefined;
   sessionId: string | undefined;
   solo: boolean;
-  showPanelTab: (tab: PanelTab) => void;
-  showSessionBrowser: () => void;
-  updatePanel: (next: (current: PanelTabState<PanelTab>) => PanelTabState<PanelTab>) => void;
+  panel: ReturnType<typeof useCockpitPanel>;
 }) {
   const projectRepo = useRef<Promise<string | undefined> | undefined>(undefined);
   const routeLink = useCallback(

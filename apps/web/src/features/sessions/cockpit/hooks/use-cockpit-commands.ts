@@ -12,7 +12,7 @@ export function useCockpitCommands({ solo, enabledPlugins, panel, pinSession }: 
   panel: ReturnType<typeof useCockpitPanel>;
   pinSession: () => void;
 }) {
-  const { togglePanel, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel } = panel;
+  const { togglePanel, stepPanelTab, showPanelTab } = panel;
   useCommandHandlers(
     {
       ...(solo
@@ -27,6 +27,6 @@ export function useCockpitCommands({ solo, enabledPlugins, panel, pinSession }: 
           }),
       "pin-session": pinSession,
     },
-    [solo, enabledPlugins, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
+    [solo, enabledPlugins],
   );
 }

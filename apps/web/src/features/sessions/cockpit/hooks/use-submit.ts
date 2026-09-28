@@ -1,20 +1,22 @@
 "use client";
 
 import type { RefObject } from "react";
-import { seedSessionTitle, turnHasContent, type ClaudeConversation, type Session, type TurnModelSelection } from "@telar/engine-client";
+import { seedSessionTitle, turnHasContent, type ClaudeConversation, type TurnModelSelection } from "@telar/engine-client";
 import { asEngineError, createEngineApi, EngineApiError, newRunId } from "@/platform/engine";
 import { isCompactDraft, writeDraft } from "@/features/composer";
 import { splitImages } from "@/features/prompts";
 import { choiceNamesAnything, choiceOf, sessionModelSelection } from "@/features/providers";
-import type { PanelTab, PanelTabState } from "@/features/panel";
-import type { EditorState } from "@/features/files";
 import type { ConversationFollowHandle } from "@/ui/conversation";
 import { hostFetcher } from "@/platform/engine/host-client";
 import { sessionHref } from "../../session-list";
 import { handOffCanvas } from "../canvas-handoff";
 import { createFromCanvas } from "../create-from-canvas";
+import type { useCockpitPanel } from "./use-cockpit-panel";
 import type { useComposerDraft } from "./use-composer-draft";
-import type { DraftChoices } from "./use-session-browser";
+import type { useDraftConfig } from "./use-draft-config";
+import type { useSessionActions } from "./use-session-actions";
+import type { useSessionBrowser } from "./use-session-browser";
+import type { useSessionSync } from "./use-session-sync";
 
 const api = createEngineApi();
 
@@ -22,62 +24,57 @@ type Args = {
   hostId: string;
   sessionId: string | undefined;
   projectId: string | undefined;
-  session: Session | undefined;
-  composer: ReturnType<typeof useComposerDraft>;
-  draft: DraftChoices & { runtimeModeTouched: boolean };
   busy: boolean;
-  browserDraftFlight: RefObject<Promise<string> | null>;
-  browserDraftSendPending: RefObject<boolean>;
+  sync: ReturnType<typeof useSessionSync>;
+  composer: ReturnType<typeof useComposerDraft>;
+  draft: ReturnType<typeof useDraftConfig>;
+  browser: ReturnType<typeof useSessionBrowser>;
+  panel: ReturnType<typeof useCockpitPanel>;
+  actions: ReturnType<typeof useSessionActions>;
   follow: RefObject<ConversationFollowHandle | null>;
-  canvas: { panel: PanelTabState<PanelTab>; editors: Record<string, EditorState> };
-  compact: () => Promise<void>;
-  hydrate: () => Promise<void>;
-  setSending: (sending: boolean) => void;
-  setSession: (session: Session) => void;
-  setError: (error: EngineApiError | undefined) => void;
-  clearTranscript: () => void;
   setCreatedSessionId: (id: string) => void;
 };
 
 /** Sending the composer's message, which on a fresh canvas first creates the session; and adopting a Claude Code conversation. */
 export function useSubmit(args: Args) {
-  const { hostId, sessionId, projectId, session, composer, draft, setSession, setError } = args;
+  const { hostId, sessionId, projectId, composer, draft, sync, browser, actions } = args;
+  const { session, setSession, setError } = sync;
 
   const landOn = (target: string, projectId: string) => {
-    handOffCanvas(target, projectId, args.canvas, { clearCanvas: false });
-    args.clearTranscript();
+    handOffCanvas(target, projectId, args.panel, { clearCanvas: false });
+    sync.clearTranscript();
     composer.claim({ sessionId: target, projectId });
     args.setCreatedSessionId(target);
   };
 
   const submit = async () => {
     const { draft: text0, attachments } = composer;
-    if (!turnHasContent(text0, attachments.map((file) => file.type)) || args.browserDraftSendPending.current) return;
+    if (!turnHasContent(text0, attachments.map((file) => file.type)) || browser.browserDraftSendPending.current) return;
     if (isCompactDraft(text0) && sessionId && session?.driver === "claude" && !args.busy) {
       composer.setDraft("");
       writeDraft(sessionId, projectId, "");
-      await args.compact();
+      await actions.compact();
       return;
     }
     // A send racing the first browser open joins its stable session identity.
     let browserTarget: string | undefined;
-    if (args.browserDraftFlight.current) {
-      args.browserDraftSendPending.current = true;
+    if (browser.browserDraftFlight.current) {
+      browser.browserDraftSendPending.current = true;
       const origin = window.location.pathname;
       try {
-        browserTarget = await args.browserDraftFlight.current;
+        browserTarget = await browser.browserDraftFlight.current;
       } catch (cause) {
         setError(asEngineError(cause, "Could not save the browser draft. Your message is still here."));
         return;
       } finally {
-        args.browserDraftSendPending.current = false;
+        browser.browserDraftSendPending.current = false;
       }
       const destination = sessionHref({ id: browserTarget, projectId, hostId });
       if (window.location.pathname !== origin && window.location.pathname !== destination) return;
     }
     const runId = composer.draftRunId ?? newRunId();
     composer.setDraftRunId(runId);
-    args.setSending(true);
+    actions.setSending(true);
     args.follow.current?.toBottom();
     // Cleared before the round trip: the box emptying is the acknowledgement.
     const text = text0.trim();
@@ -113,7 +110,7 @@ export function useSubmit(args: Args) {
         ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
       });
       // A just-created session is hydrated by the effect keyed on `sessionId`; this closure holds the old id.
-      if (sessionId) await args.hydrate();
+      if (sessionId) await sync.hydrate();
       setError(undefined);
     } catch (cause) {
       // Give the words and the files back.
@@ -122,7 +119,7 @@ export function useSubmit(args: Args) {
       composer.setAttachments(files);
       setError(asEngineError(cause, "Could not submit the turn."));
     } finally {
-      args.setSending(false);
+      actions.setSending(false);
     }
   };
 

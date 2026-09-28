@@ -2,14 +2,15 @@
 
 import { useState, type ComponentProps } from "react";
 import { useRouter } from "next/navigation";
-import { workspacePath, type Session } from "@telar/engine-client";
-import { asEngineError, type EngineApiError } from "@/platform/engine";
+import { workspacePath } from "@telar/engine-client";
+import { asEngineError } from "@/platform/engine";
 import { projectSettingsHref } from "@/features/projects";
 import { desktopApp } from "@/platform/desktop/desktop-app";
 import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { canvasHref } from "../../session-list";
 import { sessionLink } from "../../session-link";
 import type { SessionMasthead } from "../components/masthead";
+import type { useSessionSync } from "./use-session-sync";
 import type { useSettling } from "./use-settling";
 
 type Menu = NonNullable<ComponentProps<typeof SessionMasthead>["menu"]>;
@@ -17,15 +18,15 @@ type Menu = NonNullable<ComponentProps<typeof SessionMasthead>["menu"]>;
 const copyText = (text: string) => void navigator.clipboard.writeText(text).catch(() => window.alert("The browser refused to copy that."));
 
 /** The masthead title's menu, the same verbs as the rail's row menu, for the session on screen. */
-export function useTitleMenu({ hostId, projectId, projectName, sessionId, session, settling, setError }: {
+export function useTitleMenu({ hostId, projectId, projectName, sessionId, sync, settling }: {
   hostId: string;
   projectId: string | undefined;
   projectName: string | undefined;
   sessionId: string | undefined;
-  session: Session | undefined;
+  sync: ReturnType<typeof useSessionSync>;
   settling: ReturnType<typeof useSettling>;
-  setError: (error: EngineApiError | undefined) => void;
 }): Menu | undefined {
+  const { session, setError } = sync;
   const router = useRouter();
   const [menuTerminals, setMenuTerminals] = useState<{ sessionId: string; open: number }>();
   if (!session || !sessionId) return undefined;

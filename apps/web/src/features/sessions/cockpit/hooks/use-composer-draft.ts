@@ -4,14 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_ATTACHMENTS, readDraft, writeDraft } from "@/features/composer";
 import { appendToDraft } from "../model";
 
-export type DraftOwner = { sessionId: string | undefined; projectId: string | undefined };
-
 /** The composer's unsent text, files and recalled run id, saved per session (or per project canvas) as it changes. */
 export function useComposerDraft({ sessionId, projectId }: { sessionId: string | undefined; projectId: string | undefined }) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [draftRunId, setDraftRunId] = useState<string>();
-  const owner = useRef<DraftOwner>({ sessionId, projectId });
+  const owner = useRef({ sessionId, projectId });
   /** The live text, readable from an effect that must not re-run per keystroke. */
   const draftText = useRef(draft);
 
@@ -52,7 +50,7 @@ export function useComposerDraft({ sessionId, projectId }: { sessionId: string |
     if (caption) insertIntoComposer(caption);
   }, [insertIntoComposer]);
 
-  const claim = useCallback((next: DraftOwner) => {
+  const claim = useCallback((next: typeof owner.current) => {
     owner.current = next;
   }, []);
 

@@ -1,23 +1,16 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import type { EngineEvent, EngineRequest, Item, Task, Turn } from "@telar/engine-client";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, taskRoster } from "@/platform/engine";
 import type { PanelTab, TaskFocus } from "@/features/panel";
 import { questionFields } from "@/features/composer";
 import { actionableRequests } from "../failed-turn-recovery";
 import { processToReveal, stillWorking } from "../background-presence";
+import type { useSessionSync } from "./use-session-sync";
 
 /** The folded transcript and what the cockpit reads off it: the live turn, open requests, and which agent the panel should focus. */
-export function useTranscriptModel({ sessionId, turns, items, events, tasks, requests, showPanelTab }: {
-  sessionId: string | undefined;
-  turns: Turn[];
-  items: Item[];
-  events: EngineEvent[];
-  tasks: Task[];
-  requests: EngineRequest[];
-  showPanelTab: (tab: PanelTab) => void;
-}) {
+export function useTranscriptModel(sessionId: string | undefined, sync: ReturnType<typeof useSessionSync>, showPanelTab: (tab: PanelTab) => void) {
+  const { turns, items, events, tasks, requests } = sync;
   const [projectTranscript] = useState(createJournalProjector);
   // A peer's passive report is drawn inside the turn it arrived during.
   const transcript = useMemo(

@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import type { EngineEvent, ProviderDriverKind, RuntimeMode, Session } from "@telar/engine-client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ProviderDriverKind, RuntimeMode } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { writeDraft } from "@/features/composer";
 import { sessionModelSelection, type ModelChoice } from "@/features/providers";
-import { browserPanelTab, describeBrowserStart, latestBrowserState, type BrowserStartState, type PanelTab, type PanelTabState } from "@/features/panel";
-import type { EditorState } from "@/features/files";
+import { browserPanelTab, describeBrowserStart, latestBrowserState, type BrowserStartState } from "@/features/panel";
 import { desktopBrowserBridge } from "@/features/browser/desktop-browser-bridge";
 import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { sessionHref } from "../../session-list";
 import { newSessionId } from "../../session-mutations";
 import { handOffCanvas } from "../canvas-handoff";
-import type { DraftOwner } from "./use-composer-draft";
+import type { useCockpitPanel } from "./use-cockpit-panel";
+import type { useComposerDraft } from "./use-composer-draft";
+import type { useSessionSync } from "./use-session-sync";
 
 export type DraftChoices = {
   driver: ProviderDriverKind;
@@ -23,22 +24,17 @@ export type DraftChoices = {
 };
 
 /** The session's browser: whether it can start, and opening it — which first turns a fresh canvas into a draft session. */
-export function useSessionBrowser(args: {
+export function useSessionBrowser({ hostId, sessionId, projectId, sync, draft, composer, panel, setCreatedSessionId }: {
   hostId: string;
   sessionId: string | undefined;
   projectId: string | undefined;
-  transcriptLanded: boolean;
-  events: EngineEvent[];
+  sync: ReturnType<typeof useSessionSync>;
   draft: DraftChoices;
-  composer: { draftText: RefObject<string>; claim: (owner: DraftOwner) => void };
-  panel: PanelTabState<PanelTab>;
-  editors: Record<string, EditorState>;
-  setSession: (session: Session) => void;
+  composer: ReturnType<typeof useComposerDraft>;
+  panel: ReturnType<typeof useCockpitPanel>;
   setCreatedSessionId: (id: string) => void;
-  showSessionBrowser: () => void;
-  showPanelTab: (tab: PanelTab) => void;
 }) {
-  const { hostId, sessionId, projectId, transcriptLanded, events, draft, composer, panel, editors, setSession, setCreatedSessionId, showSessionBrowser, showPanelTab } = args;
+  const { transcriptLanded, events } = sync;
   /** Folded once here so the panel and the pinned summary cannot disagree about which tabs are open. */
   const browser = useMemo(() => latestBrowserState(events), [events]);
 
@@ -92,9 +88,9 @@ export function useSessionBrowser(args: {
       if (window.location.pathname !== origin) return id;
       writeDraft(id, projectId, composer.draftText.current);
       writeDraft(undefined, projectId, "");
-      handOffCanvas(id, projectId, { panel, editors }, { clearCanvas: true });
+      handOffCanvas(id, projectId, panel, { clearCanvas: true });
       composer.claim({ sessionId: id, projectId });
-      setSession(patched.session);
+      sync.setSession(patched.session);
       setCreatedSessionId(id);
       const destination = sessionHref({ id, projectId, hostId });
       browserDraftIdentity.current = { path: destination, id };
@@ -124,8 +120,8 @@ export function useSessionBrowser(args: {
       setBrowserStart(describeBrowserStart(result.browser));
       const active = result.browser.tabs.find((tab) => tab.active) ?? result.browser.tabs[0];
       if (active) {
-        if (desktopBrowserBridge()) showSessionBrowser();
-        else showPanelTab(browserPanelTab(active.id));
+        if (desktopBrowserBridge()) panel.showSessionBrowser();
+        else panel.showPanelTab(browserPanelTab(active.id));
       }
     } catch (error) {
       if (window.location.pathname === origin || window.location.pathname === destination) {
