@@ -1,6 +1,6 @@
 import type { GitChangeStatus, GitFileChange, GitFilePatch, ProjectAvailability, SessionDiff } from "@telar/engine-client";
 import { countDirty, GIT_LOG_FORMAT, parseAheadBehind, parseGitLog, parseNameStatus, parseNumstat, parseUntracked, parseWorktreeList, type GitWorktreeEntry } from "../../platform/git/parse";
-import type { AsyncGitRunner, GitResult } from "../../worktree";
+import type { AsyncGitRunner, GitResult } from "../../platform/git/runner";
 
 type GitRefEntry = {
   name: string;

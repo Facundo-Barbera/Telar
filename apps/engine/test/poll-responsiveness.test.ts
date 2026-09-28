@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
-import { defaultAsyncGitRunner, type GitResult } from "../src/worktree";
+import { defaultAsyncGitRunner, type GitResult } from "../src/platform/git/runner";
 import { stubModels } from "./stub-models";
 
 const roots: string[] = [];

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
 import { worktreeReady } from "./worktree-ready";
-import type { GitRunner } from "../src/worktree";
+import type { GitRunner } from "../src/platform/git/runner";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });

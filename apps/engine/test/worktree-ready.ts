@@ -33,7 +33,7 @@
  * Nothing pays this ceiling in the ordinary case: the loop returns the moment
  * the row settles, which on an idle machine is a few milliseconds.
  */
-import { DEFAULT_GIT_TIMEOUT_MS } from "../src/worktree";
+import { DEFAULT_GIT_TIMEOUT_MS } from "../src/platform/git/runner";
 import type { EngineStore } from "../src/state";
 
 /** What the git runner is allowed per invocation, which is the only honest

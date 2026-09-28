@@ -1485,7 +1485,7 @@ test("a project whose git stalls or throws is still listed, without a branch, un
   // every project. Neither may cost the row.
   const projectRoot = fs.realpathSync.native(root());
   const calls: Array<{ args: string[]; timeoutMs?: number }> = [];
-  const git: import("../src/worktree").GitRunner = (_cwd, args, options) => {
+  const git: import("../src/platform/git/runner").GitRunner = (_cwd, args, options) => {
     calls.push({ args, ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) });
     if (args[0] === "rev-parse") return { status: 124, stdout: "", stderr: "git rev-parse ... did not finish within 5000ms and was killed", timedOut: true };
     throw new Error("runner exploded");
@@ -1535,7 +1535,7 @@ test("a commit needs a message and the message has a ceiling", () => {
  */
 describe("cloneProject", () => {
   /** A git that creates what it claims to have cloned, and records its argv. */
-  const cloningGit = (calls: string[][] = []): import("../src/worktree").GitRunner => (_cwd, args) => {
+  const cloningGit = (calls: string[][] = []): import("../src/platform/git/runner").GitRunner => (_cwd, args) => {
     calls.push(args);
     if (args[0] === "clone") fs.mkdirSync(args[args.length - 1], { recursive: true });
     return { status: 0, stdout: "", stderr: "" };

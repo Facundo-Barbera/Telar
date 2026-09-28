@@ -20,7 +20,8 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { lockSessionWorktree, WORKTREE_ADD_TIMEOUT_MS, WorktreeError, type AsyncGitRunner } from "./worktree";
+import { lockSessionWorktree, WORKTREE_ADD_TIMEOUT_MS, WorktreeError } from "./domains/worktrees";
+import { type AsyncGitRunner } from "./platform/git/runner";
 
 export type ReleaseRefusal = "dirty" | "unpushed" | "process" | "not-telars" | "not-found";
 

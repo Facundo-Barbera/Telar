@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { defaultAsyncGitRunner } from "../src/worktree";
+import { defaultAsyncGitRunner } from "../src/platform/git/runner";
 import { describeOutcome, moveCheckouts, WorktreeMoveError, type Checkout } from "../src/worktrees-move";
 
 const made: string[] = [];

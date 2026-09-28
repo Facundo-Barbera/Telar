@@ -30,7 +30,7 @@ import path from "node:path";
 import { assertTelarToolNames, parseToolName, qualifyTelarTool, STALLED_AFTER_MS, TELAR_CAPABILITIES } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { sessionDiffAsync } from "../src/domains/git";
-import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/worktree";
+import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner, type GitRunner } from "../src/platform/git/runner";
 import { pageEvents, sessionsTools, type SessionsCapability } from "../src/domains/sessions";
 import { TELAR_SKILL } from "../src/domains/sessions";
 import { collectSessionsWallTools } from "../src/domains/sessions";

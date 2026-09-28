@@ -17,7 +17,7 @@ import path from "node:path";
 import { fakeMounts, type FakeMounts } from "./fake-mount";
 import { EngineStore } from "../src/state";
 import { assertProjectRoot } from "../src/worker";
-import { prepareSessionWorktree } from "../src/worktree";
+import { prepareSessionWorktree } from "../src/domains/worktrees";
 
 const drives: FakeMounts[] = [];
 const homes: string[] = [];

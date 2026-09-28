@@ -27,7 +27,7 @@ import os from "node:os";
 import path from "node:path";
 import { STALLED_AFTER_MS, type Turn } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
-import { GIT_TIMEOUT_STATUS, type AsyncGitRunner } from "../src/worktree";
+import { GIT_TIMEOUT_STATUS, type AsyncGitRunner } from "../src/platform/git/runner";
 import { worktreeReady } from "./worktree-ready";
 
 const roots: string[] = [];
