@@ -1,3 +1,5 @@
+import type { DeviceIdentity } from "@telar/engine-client";
+
 
 const KNOWN_DEVICE_KINDS = [
   "browser",
@@ -12,14 +14,6 @@ export type KnownDeviceKind = (typeof KNOWN_DEVICE_KINDS)[number];
 
 export type DeviceKind = string;
 
-export interface DeviceIdentity {
-  kind: DeviceKind;
-  client?: string;
-  machine?: string;
-  os?: string;
-  address?: string;
-  origin?: string;
-}
 
 export function cleanDeclared(value: unknown, limit = 64): string | undefined {
   if (typeof value !== "string") return undefined;

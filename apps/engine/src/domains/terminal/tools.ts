@@ -1,7 +1,7 @@
+import { RunIcon, RunShell, type RunStopSignal, type RunView } from "@telar/engine-client";
 import { z } from "zod";
 import { err, failure, json, ok, type ToolFactory } from "../agent-tools";
-import type { RunCapability, RunStopSignal, RunTarget } from "./capability";
-import { RunIcon, RunShell, type RunView } from "./types";
+import type { RunCapability, RunTarget } from "./capability";
 
 function closedPhrase(run: RunView): string | undefined {
   if (run.status !== "closed") return undefined;

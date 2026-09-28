@@ -1,7 +1,7 @@
+import { type RunOrigin } from "@telar/engine-client";
 import fs from "node:fs";
 import path from "node:path";
 import { atomicWrite } from "../../platform/fs/atomic";
-import type { RunOrigin } from "./types";
 
 export type RunRecord = {
   terminalId: string;

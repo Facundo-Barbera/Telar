@@ -1,17 +1,7 @@
-import type { RunOpenInput } from "@telar/engine-client";
-import type { RunOutputFilter, RunWaitOutcome } from "./live-run";
-import type { RunClosedBy, RunConfigurationInput, RunConfigurationView, RunOutputLine, RunView } from "./types";
-
-export type RunStopSignal = "SIGTERM" | "SIGINT" | "SIGKILL";
-
-type RunWaitAnswer = RunWaitOutcome;
+import type { RunClosedBy, RunOpenInput, RunOutputFilter, RunOutputLine, RunStatusAnswer, RunStopSignal, RunView, RunWaitAnswer } from "@telar/engine-client";
+import type { RunConfigurationInput, RunConfigurationView } from "./types";
 
 export type RunTarget = { terminalId?: string; runId?: string };
-
-export type RunStatusAnswer = {
-  terminals: RunView[];
-  sessionWorktreePath?: string;
-};
 
 export type RunCapability = {
   configurations(): Promise<RunConfigurationView[]>;

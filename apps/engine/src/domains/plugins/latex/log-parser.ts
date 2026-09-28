@@ -1,23 +1,5 @@
 import path from "node:path";
-
-type LatexDiagnosticCode =
-  | "missing-package"
-  | "missing-file"
-  | "undefined-control-sequence"
-  | "undefined-reference"
-  | "citation-undefined"
-  | "overfull"
-  | "other";
-
-export type LatexDiagnostic = {
-  severity: "error" | "warning";
-  file?: string;
-  line?: number;
-  message: string;
-  code?: LatexDiagnosticCode;
-  detail?: string;
-  suggestion?: string;
-};
+import type { LatexDiagnostic } from "@telar/engine-client";
 
 const MAX_DIAGNOSTICS = 100;
 const MAX_DETAIL = 600;
@@ -148,7 +130,7 @@ export function parseLatexLog(log: string, options: ParseOptions = {}): LatexDia
       i = block.end;
       const text = block.text.replace(/^(?:LaTeX|Package \S+|Class \S+) Warning:\s*/, "");
       const onLine = /on input line (\d+)/.exec(text);
-      const code: LatexDiagnosticCode | undefined = /Citation [`'].+' .*undefined/.test(text)
+      const code: LatexDiagnostic["code"] = /Citation [`'].+' .*undefined/.test(text)
         ? "citation-undefined"
         : /Reference [`'].+' .*undefined|There were undefined references/.test(text)
           ? "undefined-reference"

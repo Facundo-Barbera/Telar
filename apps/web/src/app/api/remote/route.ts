@@ -4,11 +4,11 @@ import {
   deviceCookieHeader,
   identifyCaller,
   describeDevice,
-  type DeviceIdentity,
   machineName,
   observeIdentity,
   HOST_TOKEN_ENV,
 } from "@/features/remote/server";
+import type { DeviceIdentity } from "@telar/engine-client";
 import { readServeError } from "@/features/remote";
 import { engineRoute } from "@/platform/engine/server";
 import { engineCall } from "@/platform/engine/server";

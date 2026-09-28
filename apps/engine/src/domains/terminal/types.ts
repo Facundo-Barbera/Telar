@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { RunIcon, RunShell, type RunStatus } from "@telar/engine-client";
 import { z } from "zod";
 
 const MIN_SECRET_CHARS = 4;
@@ -37,17 +38,6 @@ const RelativeCwd = z
   .max(1024)
   .refine((value) => !value.startsWith("/") && !value.split(/[\\/]/).includes(".."), "the working directory must stay inside the worktree");
 
-export const RunIcon = z.enum(["play", "server", "globe", "terminal", "flask", "database", "package", "bug", "rocket", "hammer"]);
-export type RunIcon = z.infer<typeof RunIcon>;
-
-export const DEFAULT_RUN_ICON: RunIcon = "play";
-
-export const RunShell = z.object({
-  program: z.string().min(1).max(1024),
-  args: z.array(z.string().max(4000)).max(32).optional(),
-});
-export type RunShell = z.infer<typeof RunShell>;
-
 export const RunConfigurationInput = z.object({
   name: z.string().min(1).max(120),
   icon: RunIcon.optional(),
@@ -75,56 +65,12 @@ export type RunConfigurationView = Omit<RunConfiguration, "env"> & {
   env: Array<{ key: string; value?: string; secret?: boolean }>;
 };
 
-export const RunStatus = z.enum(["running", "ready", "exited", "failed", "closed"]);
-export type RunStatus = z.infer<typeof RunStatus>;
-
 export function isTerminal(status: RunStatus): boolean {
   return status === "exited" || status === "failed" || status === "closed";
 }
 
-export const RunOrigin = z.enum(["run", "agent"]);
-export type RunOrigin = z.infer<typeof RunOrigin>;
-
-export const RunClosedBy = z.enum(["person", "agent", "telar"]);
-export type RunClosedBy = z.infer<typeof RunClosedBy>;
-
-export type RunReadiness =
-  | { kind: "none" }
-  | { kind: "pending" }
-  | { kind: "ready"; at: number }
-  | { kind: "unattributable"; reason: string };
-
 export type RunProbeResult = { answered: boolean; serving: boolean };
 export type RunProbe = (url: string) => Promise<RunProbeResult>;
-
-export type RunOutputLine = { at: number; stream: "stdout" | "stderr"; text: string };
-
-export type RunView = {
-  terminalId: string;
-  runId: string;
-  projectId: string;
-  sessionId: string;
-  origin: RunOrigin;
-  title: string;
-  configId?: string;
-  configName: string;
-  command: string;
-  worktreePath: string;
-  worktreeBranch?: string;
-  cwd: string;
-  status: RunStatus;
-  readiness: RunReadiness;
-  readinessUrl?: string;
-  pid?: number;
-  startedAt: number;
-  endedAt?: number;
-  exitCode?: number;
-  signal?: string;
-  closedBy?: RunClosedBy;
-  warning?: string;
-  error?: string;
-  env: Array<{ key: string; value?: string; secret?: boolean }>;
-};
 
 export class RunError extends Error {
   constructor(

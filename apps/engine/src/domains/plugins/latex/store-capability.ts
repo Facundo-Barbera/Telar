@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { EngineEvent } from "@telar/engine-client";
+import { type EngineEvent, type LatexDiagnostic, type LatexPackagesAnswer } from "@telar/engine-client";
 import type { JobRunner } from "../data-science/jobs";
 import type { CompileResult, CompileStatus, LatexCapability, ResolvedToolchainAnswer } from "./capability";
 import { LATEX_AUX_DIR, logFileFor, planCompile, type ResolvedLatex } from "./compile";
-import { firstErrorSentence, parseLatexLog, type LatexDiagnostic } from "./log-parser";
-import { listTexPackages, missingTexPackages, TECTONIC_PACKAGES_NOTE, texInstallSteps, texRemoveSteps, type LatexPackagesAnswer } from "./packages";
+import { firstErrorSentence, parseLatexLog } from "./log-parser";
+import { listTexPackages, missingTexPackages, TECTONIC_PACKAGES_NOTE, texInstallSteps, texRemoveSteps } from "./packages";
 import type { LatexToolchain, TexliveDistribution } from "./toolchain";
 
 const LOG_TAIL = 40;

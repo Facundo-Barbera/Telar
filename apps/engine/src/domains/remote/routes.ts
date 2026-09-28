@@ -1,13 +1,6 @@
 import pkg from "../../../package.json" with { type: "json" };
-import {
-  mintDeviceToken,
-  RemoteStoreError,
-  type DeviceIdentity,
-  type DevicePlatform,
-  type PairedDevice,
-  type PairingRefusal,
-  type RemoteStore,
-} from "./store";
+import type { DeviceIdentity, DevicePlatform, PairingRefusal, RemoteDevice, RemoteState } from "@telar/engine-client";
+import { mintDeviceToken, RemoteStoreError, type PairedDevice, type RemoteStore } from "./store";
 import { fail, ok, type Route } from "../../platform/http/route";
 import { authRoutes } from "./auth";
 
@@ -34,7 +27,7 @@ function identityOf(value: unknown): DeviceIdentity | undefined {
   return identity;
 }
 
-const publicDevice = ({ id, name, createdAt, lastSeenAt, role, platform, identity }: PairedDevice) => ({
+const publicDevice = ({ id, name, createdAt, lastSeenAt, role, platform, identity }: PairedDevice): RemoteDevice => ({
   id,
   name,
   createdAt,
@@ -58,13 +51,14 @@ export function remoteRoutes(store: RemoteStore): Route[] {
       auth: "engine",
       handle() {
         const file = store.read();
-        return ok({
+        const state: RemoteState = {
           requireAuth: file.requireAuth,
           exposure: file.exposure ?? "local-only",
           tailscaleServe: file.tailscaleServe === true,
           devices: file.devices.map(publicDevice),
           ...(file.pairing ? { pairing: { expiresAt: file.pairing.expiresAt } } : {}),
-        });
+        };
+        return ok(state);
       },
     },
     {

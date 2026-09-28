@@ -1,32 +1,11 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { DeviceIdentity, DevicePlatform, DeviceRole, ExposureMode, PairingRefusal, RemoteDevice } from "@telar/engine-client";
 
 export class RemoteStoreError extends Error {}
 
-export type DeviceRole = "full" | "observer";
-export type DevicePlatform = "ios" | "browser";
-export type ExposureMode = "local-only" | "network-accessible";
-
-export interface DeviceIdentity {
-  kind: string;
-  client?: string;
-  machine?: string;
-  os?: string;
-  address?: string;
-  origin?: string;
-}
-
-export interface PairedDevice {
-  id: string;
-  name: string;
-  tokenHash: string;
-  createdAt: number;
-  lastSeenAt?: number;
-  role: DeviceRole;
-  platform?: DevicePlatform;
-  identity?: DeviceIdentity;
-}
+export type PairedDevice = RemoteDevice & { tokenHash: string };
 
 interface PendingPairing {
   tokenHash: string;
@@ -43,8 +22,6 @@ export interface RemoteFile {
   devices: PairedDevice[];
   pairing?: PendingPairing;
 }
-
-export type PairingRefusal = "none-pending" | "expired" | "mismatch" | "burned";
 
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 export const PAIRING_MAX_ATTEMPTS = 5;

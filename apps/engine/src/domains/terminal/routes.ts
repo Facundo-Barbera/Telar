@@ -1,7 +1,7 @@
-import { RunOpenInput } from "@telar/engine-client";
+import { RunOpenInput, RunClosedBy } from "@telar/engine-client";
 import { z } from "zod";
 import type { RunCapability } from "./capability";
-import { RunClosedBy, RunConfigurationInput, RunError } from "./types";
+import { RunConfigurationInput, RunError } from "./types";
 
 type RunRouteContext = {
   params: string[];

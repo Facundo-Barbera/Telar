@@ -2,7 +2,7 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient, type FetchLike } from "@telar/engine-client";
+import { EngineClient, type FetchLike, type RunView } from "@telar/engine-client";
 import { withTurnNotes } from "../turns";
 import { clientRunCapability } from "./client-capability";
 import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "./launcher";
@@ -12,7 +12,6 @@ import { matchRunRoute } from "./routes";
 import { RunStore } from "./store";
 import { storeRunCapability } from "./store-capability";
 import { runTools } from "./tools";
-import type { RunView } from "./types";
 import { EngineStore } from "../../state";
 
 const tempDirs: string[] = [];

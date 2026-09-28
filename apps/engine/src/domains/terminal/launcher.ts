@@ -1,7 +1,8 @@
+import { type RunOrigin } from "@telar/engine-client";
 import { spawn } from "node:child_process";
 import type { RunProcessGroup } from "./platform";
 import type { RunTerminalClient, TerminalEnding, TerminalFacts } from "./terminal-client";
-import { newPipeTerminalId, type RunOrigin } from "./types";
+import { newPipeTerminalId } from "./types";
 
 export type RunLaunchRequest = {
   file: string;

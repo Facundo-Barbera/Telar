@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import os from "node:os";
-import { cleanDeclared, cleanKind, sniffUserAgent, type DeviceIdentity } from "./identity";
+import type { DeviceIdentity } from "@telar/engine-client";
+import { cleanDeclared, cleanKind, sniffUserAgent } from "./identity";
 
 export function peerAddress(request: Request): string | undefined {
   const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
