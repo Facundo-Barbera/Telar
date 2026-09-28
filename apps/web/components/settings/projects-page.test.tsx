@@ -1,33 +1,28 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { searchSettings } from "@/lib/settings-search";
+import { projectSettingsHref } from "@/lib/project-settings-link";
+import { enablePatch } from "@/lib/plugins/sections";
 import { isTelarIcon, TELAR_ICONS, type ProviderModel } from "@telar/engine-client";
 import type { ModelChoice } from "@/lib/models";
 import { modelOptionsOf } from "@/components/composer-controls";
-import {
-  ProjectConversationRows,
-  ProjectIdentityRows,
-  ProjectModelOptionsRow,
-  ProjectPluginPanes,
-  ProjectPluginRows,
-  ProjectsPage,
-  type ScopedProject,
-} from "./projects-page";
+import type { ScopedProject } from "./projects-page";
 
-/**
- * THE ONE THING THIS PANE HAS TO GET RIGHT is the difference between its two
- * scopes — a row that stays live at All projects would write somebody's change
- * into a project they never named, and a row that vanished would teach them the
- * setting does not exist. Both states are rendered here, which is why the rows
- * take their project as a prop rather than fetching it.
- *
- * The pane itself fetches on mount, so a static render is its All-projects
- * first paint; what only exists after a click is pinned against source.
- */
-const source = readFileSync(new URL("./projects-page.tsx", import.meta.url), "utf8");
+const navigation = await import("next/navigation");
+mock.module("next/navigation", () => ({
+  ...navigation,
+  useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {}, back: () => {}, forward: () => {}, prefetch: () => {} }),
+}));
+
+const { ProjectConversationRows, ProjectIdentityRows, ProjectModelOptionsRow, ProjectPluginPanes, ProjectPluginRows, ProjectsPage } = await import("./projects-page");
+
+GlobalRegistrator.register({ url: "http://localhost/settings" });
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function project(patch: Partial<ScopedProject> = {}): ScopedProject {
   return {
@@ -41,379 +36,414 @@ function project(patch: Partial<ScopedProject> = {}): ScopedProject {
   } as ScopedProject;
 }
 
-test("at All projects every per-project row is still drawn, and says which choice would answer it", () => {
-  const html = renderToStaticMarkup(
-    <>
-      <ProjectIdentityRows />
-      <ProjectConversationRows envMode="local" />
-    </>,
-  );
-  // Present, not hidden.
-  expect(html).toContain("Name");
-  expect(html).toContain("Icon");
-  expect(html).toContain("Default model");
-  expect(html).toContain("Where new conversations start");
-  // And each one names the step that would make it answer.
-  expect(html).toContain("Select a project to rename it.");
-  expect(html).toContain("Select a project to mark it.");
-  expect(html).toContain("Select a project to set the model its conversations open on.");
-  expect(html).toContain("Select a project to say where its conversations start.");
+const LATEX = { meta: { id: "latex", name: "LaTeX", settings: [] }, state: "ready" } as never;
+
+let local: ScopedProject[] = [];
+let remote: ScopedProject[] = [];
+let hosts: { id: string; name: string }[] = [];
+let calls: { method: string; url: string; body?: Record<string, unknown> }[] = [];
+
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const realFetch = globalThis.fetch;
+const realSetTimeout = window.setTimeout;
+
+beforeEach(() => {
+  local = [project()];
+  remote = [];
+  hosts = [];
+  calls = [];
+  window.history.replaceState(null, "", "/settings");
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ method, url, ...(body ? { body } : {}) });
+    if (method === "PATCH" && url.startsWith("/api/projects/")) {
+      const found = local.find((entry) => url.endsWith(entry.id))!;
+      return json({ project: { ...found, ...body, ...(body.name ? { name: `${body.name} (kept)` } : {}) } });
+    }
+    if (url === "/api/hosts") return json({ hosts });
+    if (url === "/api/projects") return json({ projects: local });
+    if (url === "/api/hosts/host_mini/projects") return json({ projects: remote });
+    if (url === "/api/health") return json({ plugins: [LATEX] });
+    return json({ error: { code: "not_found", message: "no" } }, 404);
+  }) as typeof fetch;
+  window.setTimeout = ((fn: () => void, ms?: number) => {
+    if (ms) return realSetTimeout(fn, ms);
+    queueMicrotask(fn);
+    return 0;
+  }) as unknown as typeof window.setTimeout;
 });
 
-test("an inert row's control is rendered and taken out of reach, never removed", () => {
-  const html = renderToStaticMarkup(<ProjectIdentityRows />);
-  // `inert` is what Row does with `unavailable` — the control stays in the
-  // markup so the reader sees the shape of the setting, and answers nothing.
-  expect(html).toContain("inert");
-  expect(html).toContain("opacity-50");
+afterEach(() => {
+  globalThis.fetch = realFetch;
+  window.setTimeout = realSetTimeout;
 });
 
-test("naming a project binds the rows to it and takes the inert reason off", () => {
-  const html = renderToStaticMarkup(<ProjectIdentityRows project={project()} />);
-  expect(html).toContain("Telar");
-  expect(html).toContain("/Users/someone/code/telar");
-  expect(html).not.toContain("Select a project to rename it.");
-  /**
-   * LIVE, NOT INERT — the write path #308 added is what this asserts. The rows
-   * were inert at every scope while `PATCH /v2/projects/:id` took plugin
-   * switches only; a named project now binds them to a real field.
-   */
-  expect(html).not.toContain("inert");
-  expect(html).toContain('aria-label="Project name"');
-  expect(html).toContain('aria-label="Project icon"');
+afterAll(async () => {
+  await GlobalRegistrator.unregister();
 });
 
-test("a project on another Mac keeps every identity row read-only, and says whose", () => {
-  // The patch would have to reach that Mac's engine and this pane's api is
-  // this one's — the same rule the plugin switches follow.
-  const html = renderToStaticMarkup(
-    <>
-      <ProjectIdentityRows project={project({ hostId: "host_mini", hostName: "mini" })} />
-      <ProjectConversationRows project={project({ hostId: "host_mini", hostName: "mini" })} envMode="local" />
-    </>,
-  );
-  expect(html).toContain("Registered on mini");
-  expect(html).toContain("inert");
-});
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await act(async () => await Promise.resolve());
+};
 
-test("a picked glyph outranks the checkout's icon, and can be cleared", () => {
-  const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "flask-conical", icon: "etag_abc" })} />);
-  // The glyph itself, not the engine-served file the derived key points at.
-  expect(marked).toContain("lucide-flask-conical");
-  expect(marked).not.toContain("etag_abc");
-  // And a revert arrow, which is how the stored answer is removed — `null`,
-  // rather than a value the row would then have to explain.
-  expect(marked).toContain('aria-label="Revert to the default"');
-  // With nothing picked there is nothing to revert to.
-  expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).not.toContain('aria-label="Revert to the default"');
-});
-
-test("a mark typed before the picker existed still renders, and Auto-detect is its undo", () => {
-  /**
-   * `iconEmoji` is the field this picker replaced (#364). Dropping it on the
-   * next write would delete somebody's mark for them; rendering it keeps the
-   * registry honest, and the row treats it as a pick — so the revert arrow is
-   * there, and it clears both fields.
-   */
-  const typed = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconEmoji: "🧵", icon: "etag_abc" })} />);
-  expect(typed).toContain("🧵");
-  expect(typed).toContain('aria-label="Revert to the default"');
-  expect(typed).toContain("Typed mark");
-});
-
-test("the picker offers the SHARED icon set, not a field that takes anything", () => {
-  /**
-   * The row was a text input that took any grapheme, which made a project's
-   * mark whatever emoji font the reader's OS shipped — a different size, weight
-   * and colour from every other glyph in the list it sits in.
-   *
-   * And the set is `TELAR_ICONS`, the vocabulary browser profiles spend too
-   * (#366): two pickers offering two different forties would be the same choice
-   * made twice with different answers.
-   */
-  expect(source).not.toContain('aria-label="Project mark"');
-  expect(source).toContain("<ProjectIconPicker");
-  const picker = readFileSync(new URL("../projects/project-icon-picker.tsx", import.meta.url), "utf8");
-  expect(picker).toContain('from "@telar/engine-client"');
-  expect(picker).toContain("TELAR_ICONS.map");
-  // Every id the protocol's own shape accepts, so nothing in the grid is a
-  // value the engine would refuse when it is picked.
-  for (const id of TELAR_ICONS) expect(id).toMatch(/^[a-z][a-z0-9-]*$/);
-});
-
-test("a glyph name this build does not know falls through to auto-detect", () => {
-  /**
-   * A record may be written by a build whose set had one more glyph. The shared
-   * renderer draws a quiet ring for an unknown id — right for a browser profile,
-   * whose ring IS its identity, and wrong here: a project has three better
-   * answers behind this one, so `isTelarIcon` guards rather than the fallback.
-   */
-  expect(isTelarIcon("not-a-glyph-in-this-build")).toBe(false);
-  const html = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "not-a-glyph-in-this-build" })} />);
-  expect(html).toContain("Auto-detect");
-});
-
-test("a project with no workspace answer follows the app default, and says what it is following", () => {
-  const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
-  // The first option is selected — absence is a CHOICE here, not a blank, and
-  // it names the value it inherits rather than only where from.
-  expect(html).toContain("Inherit (Own worktree)");
-  expect(html).not.toContain("Follow the Mac");
-  expect(html).toContain("Following the app default, which says each session gets its own checkout");
-  expect(html).toContain("General ▸ Workspace");
-});
-
-test("a project that pinned an answer states it, whatever the app default says", () => {
-  const html = renderToStaticMarkup(<ProjectConversationRows project={project({ envMode: "local" })} envMode="worktree" />);
-  // `renderToStaticMarkup` escapes the apostrophe, so the assertion stops
-  // short of it rather than pinning the entity.
-  expect(html).toContain("Sessions here share the project");
-  expect(html).toContain("checkout, whatever the app default says");
-  expect(html).not.toContain("Following the app default");
-});
-
-test("the checkout path appears only once a project is named", () => {
-  expect(renderToStaticMarkup(<ProjectIdentityRows />)).not.toContain("Checkout");
-  expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).toContain("Checkout");
-});
-
-test("the workspace row offers both per-project answers beside the app default", () => {
-  // The options live in a portal the list only mounts when it is opened, so
-  // the three answers are pinned against source and the TRIGGER against markup.
-  expect(source).toContain('{ value: "local", label: "Project checkout" }');
-  expect(source).toContain('{ value: "worktree", label: "Own worktree" }');
-  expect(source).toContain('{ value: FOLLOW_APP, label: `Inherit (${envMode === "worktree" ? "Own worktree" : "Project checkout"})` }');
-
-  /**
-   * A DROPDOWN, NOT THREE BUTTONS (#364). The control spent the row's whole
-   * width stating the two options nobody chose, and grew the next time one was
-   * added. The trigger states the ANSWER — and states its LABEL, never the
-   * sentinel value, which is the #318 bug a hand-written Select reintroduces.
-   */
-  const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
-  expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">Inherit (Own worktree)<');
-  expect(renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="local" />)).toContain(">Inherit (Project checkout)<");
-  expect(html).toContain('aria-label="Where new conversations start"');
-  // No segment left: three buttons is what this row stopped being.
-  expect(html).not.toContain('aria-pressed');
-});
-
-test("a project on another Mac has read-only plugin switches, and the row says whose", () => {
-  const html = renderToStaticMarkup(
-    <ProjectPluginRows
-      project={project({ hostId: "host_mini", hostName: "mini" })}
-      plugins={[
-        {
-          meta: { id: "latex", name: "LaTeX", settings: [] },
-          state: "ready",
-        } as never,
-      ]}
-    />,
-  );
-  expect(html).toContain("LaTeX");
-  expect(html).toContain("Registered on mini");
-  expect(html).toContain("inert");
-});
-
-test("a plugin off for the whole Mac is inert in every project, and says where to turn it on", () => {
-  const latex = { meta: { id: "latex", name: "LaTeX", settings: [] }, state: "ready" } as never;
-  const machine = { version: 1, entries: { latex: { enabled: false } } };
-  // The project asked for LaTeX; the Mac said no, and the Mac wins.
-  const asked = project({ plugins: { version: 1, entries: { latex: { enabled: true } } } } as Partial<ScopedProject>);
-
-  const rows = renderToStaticMarkup(<ProjectPluginRows project={asked} plugins={[latex]} machine={machine} />);
-  expect(rows).toContain("LaTeX is off for every project on this Mac.");
-  expect(rows).toContain('href="/settings?section=plugins"');
-  expect(rows).toContain("inert");
-
-  // The bespoke pane would offer compiling; the generic one explains instead.
-  const panes = renderToStaticMarkup(<ProjectPluginPanes project={asked} plugins={[latex]} machine={machine} onChange={() => {}} />);
-  expect(panes).toContain("LaTeX is off for every project on this Mac.");
-  expect(panes).toContain("inert");
-
-  // With the Mac allowing it the reason is gone.
-  expect(renderToStaticMarkup(<ProjectPluginRows project={asked} plugins={[latex]} />)).not.toContain("off for every project");
-});
-
-test("with no plugins registered the group says so rather than heading empty air", () => {
-  const html = renderToStaticMarkup(<ProjectPluginRows plugins={[]} />);
-  expect(html).toContain("No plugins registered");
-});
-
-test("the pane opens on All projects, so nothing is bound before a reader names one", () => {
-  const html = renderToStaticMarkup(<ProjectsPage />);
-  expect(html).toContain("All projects");
-  expect(html).toContain("Select a project to rename it.");
-  // The Danger group belongs to a named project; at this scope there is none.
-  expect(html).not.toContain("Remove project from Telar");
-});
-
-test("the scope select's trigger reads the label, never the value (#318)", () => {
-  /**
-   * The bug: a bare `<SelectValue />` renders the Select's VALUE when nothing
-   * maps it to a label, so the trigger read `__all-projects` at rest and a
-   * `project_…` id after a pick — while the list beside it showed the right
-   * names the whole time.
-   */
-  const html = renderToStaticMarkup(<ProjectsPage />);
-  // The trigger's own value element, not "the sentinel appears nowhere": base-ui
-  // also renders a hidden form input carrying the real value, which is right.
-  expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">All projects<');
-});
-
-test("an id the registry has not answered for yet still reads as words", () => {
-  /**
-   * `?project=` is read on the first paint and a remote Mac's registry is a
-   * request away, so there is a window where the selected id names no project
-   * this pane has. A value-to-label mapping would print the id in exactly that
-   * window — which is the bug — so the trigger states the label itself.
-   */
-  expect(source).toContain('{selected === ALL_PROJECTS ? "All projects" : (project?.name ?? "Select a project")}');
-});
-
-test("the scope is a bar above the first card, machine left and project right", () => {
-  // Both controls on one line, outside any SettingsGroup — the frame that
-  // used to make the picker read as one more setting to configure.
-  expect(source).toContain('<div className="mb-6 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">');
-  expect(source).not.toContain('<SettingsGroup title="Scope"');
-});
-
-test("the Mac segmented control appears only when a Mac has been paired", () => {
-  // A one-segment control is a button that does nothing, and a cockpit with no
-  // paired Mac is the common one.
-  expect(source).toContain("{hosts.length > 0 && (");
-  // The host control's own segment, matched as a whole label rather than as a
-  // substring: the workspace row below now says "Mac" too, and a bare
-  // `not.toContain("This Mac")` would pass or fail on that row's wording.
-  expect(renderToStaticMarkup(<ProjectsPage />)).not.toContain(">This Mac<");
-});
-
-test("a write goes to the named project only, and never to one on another Mac", () => {
-  // The guard that makes the inert rows above more than cosmetic: a control
-  // reached some other way still cannot patch this Mac's registry for a
-  // project that does not live in it.
-  expect(source).toContain("if (!project || project.hostId) return;");
-  // And the row's state advances on the ENGINE's record, never on the patch —
-  // a control that moved on the request would show a value it refused.
-  expect(source).toContain(".then((answer) => replaceProject(answer.project))");
-});
-
-test("clearing a per-project answer writes null, which is what removes it", () => {
-  // `null` is a VALUE on this route and the only way back to "follow this
-  // Mac"; an empty string or an absent key would mean something else.
-  expect(source).toContain('writer?.save("defaultModel", { defaultModel: null })');
-  expect(source).toContain("envMode: next === FOLLOW_APP ? null : (next as EnvMode)");
-  // Auto-detect clears BOTH icon fields: a registry written before the picker
-  // may carry a typed mark, and leaving it would answer for a row that now says
-  // it is auto-detecting.
-  expect(source).toContain('next === null ? { iconName: null, iconEmoji: null } : { iconName: next }');
-});
-
-/** Two catalogue rows: one with effort levels and fast mode, one with neither. */
-function modelRow(id: string, options: { efforts?: string[]; fastMode?: boolean } = {}): ProviderModel {
-  return { id, label: id, isDefault: false, hidden: false, hiddenByUser: false, legacy: false, efforts: options.efforts ?? [], fastMode: options.fastMode ?? false, source: "provider" };
+async function mount(node: React.ReactNode) {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => root.render(node));
+  await flush();
+  return {
+    host,
+    button: (label: string) => [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label || candidate.getAttribute("aria-label") === label),
+    trigger: () => host.querySelector<HTMLElement>('[aria-label="Project these settings are about"]')!,
+    scope: () => host.querySelector('[aria-label="Project these settings are about"] [data-slot="select-value"]')?.textContent,
+    done: () => {
+      act(() => root.unmount());
+      host.remove();
+    },
+  };
 }
-const MODELS = [modelRow("opus", { efforts: ["low", "medium", "high"], fastMode: true }), modelRow("haiku")];
 
-test("the options row shows effort and fast mode only for a model that has them", () => {
-  const render = (choice: ModelChoice) =>
-    renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={choice} models={MODELS} onChange={() => undefined} />);
-  const opus = render({ model: "opus", effort: "medium", fastMode: true });
-  expect(opus).toContain("Model options");
-  expect(opus).toContain("New conversations in this project start with this model and these options.");
-  expect(opus).toContain("Medium");
-  expect(opus).toContain("Fast");
-  // A model with neither has nothing to set, so there is no row at all.
-  expect(render({ model: "haiku" })).toBe("");
-  // Nor before the catalogue has answered: no guessed list of levels.
-  expect(renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={{ model: "opus" }} onChange={() => undefined} />)).toBe("");
+const press = async (element: Element | undefined) => {
+  if (!element) throw new Error("nothing to press");
+  await act(async () => {
+    element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
+    (element as HTMLElement).click();
+  });
+  await flush();
+};
+
+const options = () => [...document.querySelectorAll('[role="option"]')].map((option) => option.textContent?.trim());
+const option = (label: string) => [...document.querySelectorAll('[role="option"]')].find((candidate) => candidate.textContent?.trim() === label);
+
+async function rename(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+  await flush();
+}
+
+function writerSpy() {
+  const saved: [string, unknown][] = [];
+  return { saved, writer: { save: (field: string, patch: unknown) => void saved.push([field, patch]) } };
+}
+
+describe("static rows", () => {
+  test("at All projects every per-project row is still drawn, and says which choice would answer it", () => {
+    const html = renderToStaticMarkup(
+      <>
+        <ProjectIdentityRows />
+        <ProjectConversationRows envMode="local" />
+      </>,
+    );
+    expect(html).toContain("Name");
+    expect(html).toContain("Icon");
+    expect(html).toContain("Default model");
+    expect(html).toContain("Where new conversations start");
+    expect(html).toContain("Select a project to rename it.");
+    expect(html).toContain("Select a project to mark it.");
+    expect(html).toContain("Select a project to set the model its conversations open on.");
+    expect(html).toContain("Select a project to say where its conversations start.");
+  });
+
+  test("an inert row's control is rendered and taken out of reach, never removed", () => {
+    const html = renderToStaticMarkup(<ProjectIdentityRows />);
+    expect(html).toContain("inert");
+    expect(html).toContain("opacity-50");
+  });
+
+  test("naming a project binds the rows to it and takes the inert reason off", () => {
+    const html = renderToStaticMarkup(<ProjectIdentityRows project={project()} />);
+    expect(html).toContain("Telar");
+    expect(html).toContain("/Users/someone/code/telar");
+    expect(html).not.toContain("Select a project to rename it.");
+    expect(html).not.toContain("inert");
+    expect(html).toContain('aria-label="Project name"');
+    expect(html).toContain('aria-label="Project icon"');
+  });
+
+  test("a project on another Mac keeps every identity row read-only, and says whose", () => {
+    const html = renderToStaticMarkup(
+      <>
+        <ProjectIdentityRows project={project({ hostId: "host_mini", hostName: "mini" })} />
+        <ProjectConversationRows project={project({ hostId: "host_mini", hostName: "mini" })} envMode="local" />
+      </>,
+    );
+    expect(html).toContain("Registered on mini");
+    expect(html).toContain("inert");
+  });
+
+  test("a picked glyph outranks the checkout's icon, and can be cleared", () => {
+    const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "flask-conical", icon: "etag_abc" })} />);
+    expect(marked).toContain("lucide-flask-conical");
+    expect(marked).not.toContain("etag_abc");
+    expect(marked).toContain('aria-label="Revert to the default"');
+    expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).not.toContain('aria-label="Revert to the default"');
+  });
+
+  test("a mark typed before the picker existed still renders, and is revertible", () => {
+    const typed = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconEmoji: "🧵", icon: "etag_abc" })} />);
+    expect(typed).toContain("🧵");
+    expect(typed).toContain('aria-label="Revert to the default"');
+    expect(typed).toContain("Typed mark");
+  });
+
+  test("a glyph name this build does not know falls through to auto-detect", () => {
+    expect(isTelarIcon("not-a-glyph-in-this-build")).toBe(false);
+    const html = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "not-a-glyph-in-this-build" })} />);
+    expect(html).toContain("Auto-detect");
+  });
+
+  test("a project with no workspace answer follows the app default, and says what it is following", () => {
+    const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
+    expect(html).toContain("Inherit (Own worktree)");
+    expect(html).not.toContain("Follow the Mac");
+    expect(html).toContain("Following the app default, which says each session gets its own checkout");
+    expect(html).toContain("General ▸ Workspace");
+  });
+
+  test("a project that pinned an answer states it, whatever the app default says", () => {
+    const html = renderToStaticMarkup(<ProjectConversationRows project={project({ envMode: "local" })} envMode="worktree" />);
+    expect(html).toContain("Sessions here share the project");
+    expect(html).toContain("checkout, whatever the app default says");
+    expect(html).not.toContain("Following the app default");
+  });
+
+  test("the checkout path appears only once a project is named", () => {
+    expect(renderToStaticMarkup(<ProjectIdentityRows />)).not.toContain("Checkout");
+    expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).toContain("Checkout");
+  });
+
+  test("the workspace trigger states the inherited label, never the sentinel", () => {
+    const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
+    expect(html).toContain(">Inherit (Own worktree)<");
+    expect(html).not.toContain(">__follow-app<");
+    expect(renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="local" />)).toContain(">Inherit (Project checkout)<");
+    expect(html).toContain('aria-label="Where new conversations start"');
+    expect(html).not.toContain("aria-pressed");
+  });
+
+  test("a project on another Mac has read-only plugin switches, and the row says whose", () => {
+    const html = renderToStaticMarkup(<ProjectPluginRows project={project({ hostId: "host_mini", hostName: "mini" })} plugins={[LATEX]} />);
+    expect(html).toContain("LaTeX");
+    expect(html).toContain("Registered on mini");
+    expect(html).toContain("inert");
+  });
+
+  test("a plugin off for the whole Mac is inert in every project, and says where to turn it on", () => {
+    const machine = { version: 1, entries: { latex: { enabled: false } } };
+    const asked = project({ plugins: { version: 1, entries: { latex: { enabled: true } } } } as Partial<ScopedProject>);
+
+    const rows = renderToStaticMarkup(<ProjectPluginRows project={asked} plugins={[LATEX]} machine={machine} />);
+    expect(rows).toContain("LaTeX is off for every project on this Mac.");
+    expect(rows).toContain('href="/settings?section=plugins"');
+    expect(rows).toContain("inert");
+
+    const panes = renderToStaticMarkup(<ProjectPluginPanes project={asked} plugins={[LATEX]} machine={machine} onChange={() => {}} />);
+    expect(panes).toContain("LaTeX is off for every project on this Mac.");
+    expect(panes).toContain("inert");
+
+    expect(renderToStaticMarkup(<ProjectPluginRows project={asked} plugins={[LATEX]} />)).not.toContain("off for every project");
+  });
+
+  test("with no plugins registered the group says so rather than heading empty air", () => {
+    expect(renderToStaticMarkup(<ProjectPluginRows plugins={[]} />)).toContain("No plugins registered");
+  });
+
+  test("the pane's first paint is All projects, with nothing bound", () => {
+    const html = renderToStaticMarkup(<ProjectsPage />);
+    expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">All projects<');
+    expect(html).toContain("Select a project to rename it.");
+    expect(html).not.toContain("Remove project from Telar");
+    expect(html).not.toContain(">This Mac<");
+  });
 });
 
-test("the options row reverts to the bare model, and the model row's revert clears both", () => {
-  const revert = (choice: ModelChoice) =>
-    renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={choice} models={MODELS} onChange={() => undefined} />).includes("Revert to the default");
-  expect(revert({ model: "opus", effort: "high" })).toBe(true);
-  expect(revert({ model: "opus" })).toBe(false);
-  expect(source).toContain("onChange(model ? { model } : {})");
-  // The model row's revert writes `null`, which takes the options with it.
-  expect(source).toContain('{...(stored ? { onRevert: () => writer?.save("defaultModel", { defaultModel: null }) } : {})}');
+describe("model rows", () => {
+  const modelRow = (id: string, options: { efforts?: string[]; fastMode?: boolean } = {}): ProviderModel => ({
+    id,
+    label: id,
+    isDefault: false,
+    hidden: false,
+    hiddenByUser: false,
+    legacy: false,
+    efforts: options.efforts ?? [],
+    fastMode: options.fastMode ?? false,
+    source: "provider",
+  });
+  const MODELS = [modelRow("opus", { efforts: ["low", "medium", "high"], fastMode: true }), modelRow("haiku")];
+
+  test("the options row shows effort and fast mode only for a model that has them", () => {
+    const render = (choice: ModelChoice) =>
+      renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={choice} models={MODELS} onChange={() => undefined} />);
+    const opus = render({ model: "opus", effort: "medium", fastMode: true });
+    expect(opus).toContain("Model options");
+    expect(opus).toContain("New conversations in this project start with this model and these options.");
+    expect(opus).toContain("Medium");
+    expect(opus).toContain("Fast");
+    expect(render({ model: "haiku" })).toBe("");
+    expect(renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={{ model: "opus" }} onChange={() => undefined} />)).toBe("");
+  });
+
+  test("the options row's revert keeps the bare model", async () => {
+    const changes: ModelChoice[] = [];
+    const view = await mount(<ProjectModelOptionsRow driver="claude" choice={{ model: "opus", effort: "high" }} models={MODELS} onChange={(next) => void changes.push(next)} />);
+    await press(view.button("Revert to the default"));
+    expect(changes).toEqual([{ model: "opus" }]);
+    view.done();
+    expect(renderToStaticMarkup(<ProjectModelOptionsRow driver="claude" choice={{ model: "opus" }} models={MODELS} onChange={() => undefined} />)).not.toContain("Revert to the default");
+  });
+
+  test("the model row's revert writes null, which clears the options with it", async () => {
+    const { saved, writer } = writerSpy();
+    const view = await mount(<ProjectConversationRows project={project({ defaultModel: { instanceId: "claude", model: "opus" } } as Partial<ScopedProject>)} envMode="local" writer={writer} />);
+    await press(view.button("Revert to the default"));
+    expect(saved).toEqual([["defaultModel", { defaultModel: null }]]);
+    view.done();
+  });
+
+  test("the options on offer are the composer's own, per model", () => {
+    expect(modelOptionsOf(MODELS, { model: "opus" })).toEqual({ efforts: ["low", "medium", "high"], fastMode: true, serviceTiers: [], ultracode: false });
+    expect(modelOptionsOf(MODELS, { model: "haiku" })).toEqual({ efforts: [], fastMode: false, serviceTiers: [], ultracode: false });
+  });
 });
 
-test("the options on offer are the composer's own, per model", () => {
-  expect(modelOptionsOf(MODELS, { model: "opus" })).toEqual({ efforts: ["low", "medium", "high"], fastMode: true, serviceTiers: [], ultracode: false });
-  expect(modelOptionsOf(MODELS, { model: "haiku" })).toEqual({ efforts: [], fastMode: false, serviceTiers: [], ultracode: false });
+describe("row writes", () => {
+  test("the icon picker offers the shared set, and a pick writes the glyph's name", async () => {
+    const { saved, writer } = writerSpy();
+    const view = await mount(<ProjectIdentityRows project={project()} writer={writer} />);
+    await press(view.button("Project icon"));
+    for (const id of TELAR_ICONS) expect(document.querySelector(`button[aria-pressed][aria-label="${id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, " ")}"]`)).not.toBeNull();
+    await press(view.button("Flask conical"));
+    expect(saved).toEqual([["iconName", { iconName: "flask-conical" }]]);
+    view.done();
+  });
+
+  test("Auto-detect clears both icon fields, a typed mark included", async () => {
+    const { saved, writer } = writerSpy();
+    const view = await mount(<ProjectIdentityRows project={project({ iconEmoji: "🧵" })} writer={writer} />);
+    await press(view.button("Revert to the default"));
+    await press(view.button("Project icon"));
+    await press([...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes("No icon file found")));
+    expect(saved).toEqual([
+      ["iconName", { iconName: null, iconEmoji: null }],
+      ["iconName", { iconName: null, iconEmoji: null }],
+    ]);
+    view.done();
+  });
+
+  test("the workspace row pins either answer, and Inherit writes null", async () => {
+    const { saved, writer } = writerSpy();
+    const view = await mount(<ProjectConversationRows project={project({ envMode: "local" })} envMode="worktree" writer={writer} />);
+    const trigger = view.host.querySelector('[aria-label="Where new conversations start"]')!;
+    await press(trigger);
+    expect(options()).toEqual(["Inherit (Own worktree)", "Project checkout", "Own worktree"]);
+    await press(option("Own worktree"));
+    await press(trigger);
+    await press(option("Inherit (Own worktree)"));
+    expect(saved).toEqual([
+      ["envMode", { envMode: "worktree" }],
+      ["envMode", { envMode: null }],
+    ]);
+    view.done();
+  });
+
+  test("a plugin switch patches the named project, and does nothing without one", async () => {
+    const unbound = await mount(<ProjectPluginRows plugins={[LATEX]} />);
+    await press(unbound.host.querySelector('[role="switch"]')!);
+    unbound.done();
+    expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+
+    const bound = await mount(<ProjectPluginRows project={project()} plugins={[LATEX]} />);
+    await press(bound.host.querySelector('[role="switch"]')!);
+    expect(calls.filter((call) => call.method === "PATCH")).toEqual([{ method: "PATCH", url: "/api/projects/project_abc", body: enablePatch("latex", true) }]);
+    bound.done();
+  });
 });
 
-test("a remote Mac's registry is read when it is asked for, not on mount", () => {
-  expect(source).toContain("if (hostId === LOCAL_HOST_ID || byHost[hostId]) return;");
-  // And every read names its host explicitly rather than following the URL.
-  expect(source).toContain("createEngineApi(hostFetcher(id))");
+describe("the pane", () => {
+  test("a registry of one is selected at once, with no way back to All projects", async () => {
+    const view = await mount(<ProjectsPage />);
+    expect(view.scope()).toBe("Telar");
+    expect(view.host.querySelector<HTMLInputElement>('[aria-label="Project name"]')!.value).toBe("Telar");
+    await press(view.trigger());
+    expect(options()).toEqual(["Telar"]);
+    view.done();
+  });
+
+  test("with several projects it stays on All projects and offers each", async () => {
+    local = [project(), project({ id: "project_b", name: "Other" })];
+    const view = await mount(<ProjectsPage />);
+    expect(view.scope()).toBe("All projects");
+    expect(view.host.textContent).toContain("Which of this Mac's plugins this project has opted into.");
+    expect(view.host.textContent).not.toContain("Tool servers only this project's sessions see.");
+    await press(view.trigger());
+    expect(options()).toEqual(["All projects", "Telar", "Other"]);
+    view.done();
+  });
+
+  test("?project= opens on that project; an id the registry lacks reads as words", async () => {
+    local = [project(), project({ id: "project_b", name: "Other" })];
+    window.history.replaceState(null, "", "/settings?section=projects&project=project_b");
+    const named = await mount(<ProjectsPage />);
+    expect(named.scope()).toBe("Other");
+    named.done();
+
+    window.history.replaceState(null, "", "/settings?section=projects&project=project_gone");
+    const missing = await mount(<ProjectsPage />);
+    expect(missing.scope()).toBe("Select a project");
+    missing.done();
+  });
+
+  test("a named local project gets its own groups instead of the compact switch list", async () => {
+    const view = await mount(<ProjectsPage />);
+    const text = view.host.textContent ?? "";
+    expect(text).toContain("Tool servers only this project's sessions see.");
+    expect(text).toContain("Remove project from Telar");
+    expect(text).not.toContain("Which of this Mac's plugins this project has opted into.");
+    view.done();
+  });
+
+  test("a rename patches the named project and shows the engine's record", async () => {
+    const view = await mount(<ProjectsPage />);
+    await rename(view.host.querySelector<HTMLInputElement>('[aria-label="Project name"]')!, "Loom");
+    expect(calls.filter((call) => call.method === "PATCH")).toEqual([{ method: "PATCH", url: "/api/projects/project_abc", body: { name: "Loom" } }]);
+    expect(view.host.querySelector<HTMLInputElement>('[aria-label="Project name"]')!.value).toBe("Loom (kept)");
+    view.done();
+  });
+
+  test("a paired Mac's registry is read only when chosen, and its project is never written", async () => {
+    hosts = [{ id: "host_mini", name: "mini" }];
+    remote = [project({ id: "project_far", name: "Far" })];
+    const view = await mount(<ProjectsPage />);
+    expect(view.button("This Mac")).toBeDefined();
+    expect(calls.some((call) => call.url.startsWith("/api/hosts/host_mini"))).toBe(false);
+
+    await press(view.button("mini"));
+    expect(calls.some((call) => call.url === "/api/hosts/host_mini/projects")).toBe(true);
+    expect(view.scope()).toBe("Far");
+    expect(view.host.textContent).toContain("Registered on mini");
+    expect(view.host.textContent).toContain("Which of this Mac's plugins this project has opted into.");
+    expect(view.host.textContent).not.toContain("Tool servers only this project's sessions see.");
+
+    await rename(view.host.querySelector<HTMLInputElement>('[aria-label="Project name"]')!, "Near");
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+    view.done();
+  });
 });
 
-test("a plugin write goes through the generic arm, for the named project only", () => {
-  expect(source).toContain("api.updateProject(project.id, enablePatch(pluginId, next))");
-  expect(source).toContain("if (!project) return;");
-});
-
-test("a registry of one selects it, rather than opening on an inert pane", () => {
-  /**
-   * #357: a cockpit with a single registered folder landed on "All projects",
-   * so every row was "Select a project to …" behind a picker with one answer.
-   *
-   * A render-phase adjustment keyed on the engine's OWN answer — `byHost[hostId]`
-   * rather than the `?? []` the render uses, whose identity changes every render
-   * while the read is still in flight — and only from ALL_PROJECTS, so it can
-   * never overwrite a project `?project=` named.
-   */
-  expect(source).toContain("const answered = byHost[hostId];");
-  expect(source).toContain("if (answered?.length === 1 && selected === ALL_PROJECTS) setSelected(answered[0]!.id);");
-  // And the filter that leads back there is not offered when it filters nothing.
-  expect(source).toContain("{projects.length !== 1 && <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>}");
-});
-
-test("?project= opens the pane on one project, read after the first paint", () => {
-  // Seeding from window.location in initial state would make the server and the
-  // client disagree about the same markup — the reason use-section-from-url.ts
-  // defers too.
-  expect(source).toContain('new URLSearchParams(window.location.search).get("project")');
-});
-
-test("the standalone per-project page's two halves are groups on this pane (#363)", () => {
-  // MCP servers scoped to the project, and every plugin's own editor — the two
-  // things `/projects/:id/settings` held that this pane had no room for.
-  expect(source).toContain("<McpSection scope={{ projectId: project.id, projectName: project.name }} />");
-  expect(source).toMatch(/<ProjectPluginPanes\s+project={project}/);
-  // On THIS Mac only: every write goes through this pane's `api`, and there is
-  // no `/hosts/:id/…` counterpart to send a foreign project id to.
-  expect(source).toContain("{project && !project.hostId && (");
-});
-
-test("a plugin's editor mounts only once the plugin is on", () => {
-  /**
-   * Not tidiness: LaTeX probes for TeX distributions and Data science probes
-   * for interpreters the moment their editors mount, and a project that asked
-   * for neither would pay for both to open this pane. Rendered for both cases
-   * in components/plugins/settings-panes.test.tsx.
-   */
-  expect(source).toContain("pluginEnabled(enabled, entry.pluginId) ? projectPaneFor(entry.pluginId) : undefined");
-  // Otherwise the generic pane, which draws its generated fields only once on.
-  expect(source).toMatch(/<PluginSettings\s+key=\{entry\.key\}\s+entry=\{entry\}\s+project=\{project\}\s+onChange=\{onChange\}/);
-});
-
-test("the compact switch list is the unbound scope's answer, and only that", () => {
-  // With a project named, each plugin's own group carries the same switch —
-  // rendering both would be the enable twice.
-  expect(source).toContain("{(!project || project.hostId) && (");
-  const html = renderToStaticMarkup(<ProjectsPage />);
-  expect(html).toContain("Plugins");
-});
-
-test("the retired route redirects here rather than 404ing", () => {
-  const route = readFileSync(new URL("../../app/projects/[projectId]/settings/page.tsx", import.meta.url), "utf8");
-  expect(route).toContain("redirect(projectSettingsHref(projectId))");
-  // And the one link helper every gear uses already points at this pane.
-  const link = readFileSync(new URL("../../lib/project-settings-link.ts", import.meta.url), "utf8");
-  expect(link).toContain("`/settings?section=projects&project=${encodeURIComponent(projectId)}`");
+test("the retired per-project route redirects to this pane", async () => {
+  expect(projectSettingsHref("a b")).toBe("/settings?section=projects&project=a%20b");
+  const { default: RetiredProjectSettings } = await import("../../app/projects/[projectId]/settings/page");
+  const thrown = await RetiredProjectSettings({ params: Promise.resolve({ projectId: "project_abc" }) }).catch((error: { digest?: string }) => error);
+  expect(String((thrown as { digest?: string }).digest)).toContain(projectSettingsHref("project_abc"));
 });
 
 test("the pane's rows are findable by search before the pane has ever been opened", () => {

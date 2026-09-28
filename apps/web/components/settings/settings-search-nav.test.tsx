@@ -1,27 +1,19 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 
-/**
- * MOUNTED AND DRIVEN (#760). These rules were once pinned as lines of source,
- * because a static render cannot type; `lib/testing/type-into.ts` (#732) can,
- * so the keyboard is now exercised the way a person uses it: `/` must not steal
- * a slash from a text field, the highlight must be announced, Escape clears
- * before it leaves, and choosing puts the panes back.
- */
 GlobalRegistrator.register({ url: "http://localhost/settings" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const { SETTINGS_SEARCH_INDEX } = await import("./settings-registry");
 const { SettingsSearchNav } = await import("./settings-search-nav");
+const { SettingsShell, revealSettingsRow } = await import("./settings-shell");
+const { SECTIONS } = await import("./settings-sections");
 const { typeInto } = await import("@/lib/testing/type-into");
 type Entry = Parameters<Parameters<typeof SettingsSearchNav>[0]["onChoose"]>[0];
-
-const shell = readFileSync(new URL("./settings-shell.tsx", import.meta.url), "utf8");
 
 let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -66,7 +58,6 @@ test("at rest it is a combobox showing the key that focuses it", () => {
   expect(html).toContain('role="combobox"');
   expect(html).toContain('aria-expanded="false"');
   expect(html).toContain(">/</kbd>");
-  // Nothing is replaced until something is typed.
   expect(html).toContain("the panes");
 });
 
@@ -124,14 +115,49 @@ test("Enter chooses the highlighted result and puts the panes back", async () =>
   expect(host.textContent).toContain("the panes");
 });
 
-test("choosing a result navigates, centres, focuses and pulses", () => {
-  // Still read from source: this is the shell's half, and the shell is not
-  // mounted here. All four live in one place because the shell owns the pane
-  // switch and the scroll.
-  expect(shell).toContain("onSelect(entry.pageId)");
-  expect(shell).toContain('block: "center"');
-  expect(shell).toContain("focus({ preventScroll: true })");
-  expect(shell).toContain('classList.add("settings-search-target-pulse")');
-  // And asking for less motion drops both motions rather than the jump.
-  expect(shell).toContain('prefers-reduced-motion: reduce');
+test("choosing a result in the shell selects the pane it lives on", async () => {
+  const selected: string[] = [];
+  await act(async () => {
+    root.render(
+      <SettingsShell title="Settings" sections={SECTIONS} active="general" onSelect={(id) => selected.push(id)} search={SETTINGS_SEARCH_INDEX}>
+        <p>pane</p>
+      </SettingsShell>,
+    );
+  });
+  await typeInto(field(), "tailscale");
+  await press(field(), "Enter");
+  expect(selected).toEqual(["remote"]);
+});
+
+function stubRow(reducedMotion: boolean) {
+  window.matchMedia = ((query: string) => ({ matches: reducedMotion && query.includes("reduce") })) as unknown as typeof window.matchMedia;
+  const row = document.createElement("div");
+  row.id = "settings-row-target";
+  row.tabIndex = -1;
+  const scrolls: unknown[] = [];
+  row.scrollIntoView = (options?: unknown) => void scrolls.push(options);
+  document.body.appendChild(row);
+  return { row, scrolls };
+}
+
+test("revealing a row centres, focuses and pulses it", () => {
+  const { row, scrolls } = stubRow(false);
+  expect(revealSettingsRow(row.id)).toBe(true);
+  expect(scrolls).toEqual([{ block: "center", behavior: "smooth" }]);
+  expect(document.activeElement).toBe(row);
+  expect(row.classList.contains("settings-search-target-pulse")).toBe(true);
+  row.dispatchEvent(new Event("animationend"));
+  expect(row.classList.contains("settings-search-target-pulse")).toBe(false);
+});
+
+test("with reduced motion the row is still centred and focused, without motion", () => {
+  const { row, scrolls } = stubRow(true);
+  revealSettingsRow(row.id);
+  expect(scrolls).toEqual([{ block: "center", behavior: "auto" }]);
+  expect(document.activeElement).toBe(row);
+  expect(row.classList.contains("settings-search-target-pulse")).toBe(false);
+});
+
+test("a row that is not rendered is not revealed", () => {
+  expect(revealSettingsRow("settings-row-missing")).toBe(false);
 });

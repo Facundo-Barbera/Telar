@@ -1,218 +1,239 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComputerUseStatus } from "@telar/engine-client";
+import { buttonLabelled as button, click, flush, mount, press, stubFetch, useTestDom, type Route } from "@/lib/testing/dom";
+import { typeInto } from "@/lib/testing/type-into";
+import { BrowserLoginsSection } from "./browser-logins-section";
+import { McpSection } from "./mcp-section";
+import { OrientationSection } from "./orientation-section";
 import { ComputerUseProviders, computerUseHint, computerUseState, grantFollowUp, GRANT_POLL_MS, GRANT_WAIT_MS, PermissionsSection } from "./permissions-section";
+
+useTestDom();
 
 const probe = (over: Partial<ComputerUseStatus> = {}) =>
   ({ installed: true, hostRunning: true, backend: "cua", permission: "granted", ...over }) as unknown as ComputerUseStatus;
 
-/**
- * The Agent tools pane's states, and the one that was lying.
- *
- * The readout is a pure function, so every branch is testable without a
- * network; the structural claims are read from source, because these components
- * fetch on mount and what is being pinned is the COPY and the branch structure.
- */
-const permissions = readFileSync(new URL("./permissions-section.tsx", import.meta.url), "utf8");
-const mcp = readFileSync(new URL("./mcp-section.tsx", import.meta.url), "utf8");
-const logins = readFileSync(new URL("./browser-logins-section.tsx", import.meta.url), "utf8");
-const orientation = readFileSync(new URL("./orientation-section.tsx", import.meta.url), "utf8");
-const pane = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
+let calls: { route: string; body: unknown }[] = [];
+const stubEngine = (routes: Record<string, Route>) => (calls = stubFetch(routes));
+const called = (route: string) => calls.filter((call) => call.route === route);
 
-test("the probe states each say something different, and a failure is not 'checking'", () => {
-  // The regression this pins: once the request rejected, `checking` went false
-  // and `status` stayed undefined, so a `!status` branch said "Checking" forever.
-  expect(computerUseState({ checking: true, failed: false })).toBe("checking");
-  expect(computerUseState({ checking: false, failed: true })).toBe("unknown");
-  expect(computerUseHint("unknown")).toContain("Could not reach the engine");
-  // Neither may name an engine before one has been measured.
-  for (const state of ["checking", "unknown"] as const) {
-    expect(computerUseHint(state) ?? "").not.toContain("cua-driver");
+async function mountPermissions(status: () => ComputerUseStatus, routes: Record<string, Route> = {}) {
+  stubEngine({ "GET /api/computer-use": () => ({ computerUse: status() }), ...routes });
+  const { host } = await mount(<PermissionsSection />);
+  await flush(() => called("GET /api/computer-use").length > 0 && !host.querySelector('[data-slot="spinner"]'));
+  return host;
+}
+
+describe("computer use", () => {
+  test("the probe states each say something different, and a failure is not 'checking'", () => {
+    expect(computerUseState({ checking: true, failed: false })).toBe("checking");
+    expect(computerUseState({ checking: false, failed: true })).toBe("unknown");
+    expect(computerUseHint("unknown")).toContain("Could not reach the engine");
+    for (const state of ["checking", "unknown"] as const) {
+      expect(computerUseHint(state) ?? "").not.toContain("cua-driver");
+    }
+  });
+
+  test("one readout, ordered by what stops the feature first", () => {
+    expect(computerUseState({ status: probe(), checking: false, failed: false })).toBe("ready");
+    expect(computerUseState({ status: probe({ permission: "denied" }), checking: false, failed: false })).toBe("not-granted");
+    expect(computerUseState({ status: probe({ permission: "unauthenticated" }), checking: false, failed: false })).toBe("not-accepted");
+    expect(computerUseState({ status: probe({ hostRunning: false, permission: "denied" }), checking: false, failed: false })).toBe("not-running");
+    expect(computerUseState({ status: probe({ installed: false, hostRunning: false }), checking: false, failed: false })).toBe("not-installed");
+  });
+
+  test("the fix names the grants and what to install; bundled, it names Telar's helper", () => {
+    expect(computerUseHint("not-granted")).toContain("Accessibility + Screen Recording");
+    expect(computerUseHint("not-granted")).toContain("CuaDriver.app");
+    expect(computerUseHint("not-installed")).toContain("Install cua-driver");
+    expect(computerUseHint("not-installed")).not.toContain("Codex");
+    const bundled = computerUseHint("not-granted", { bundled: true }) ?? "";
+    expect(bundled).toContain("Accessibility + Screen Recording");
+    expect(bundled).toContain("Computer Use for Telar");
+    expect(bundled).not.toContain("CuaDriver.app");
+    expect(bundled).not.toContain("Finder");
+    expect(computerUseHint("ready", { bundled: true })).toBeUndefined();
+  });
+
+  test("a working setup says so with its badge and no sentence at all", async () => {
+    const host = await mountPermissions(() => probe());
+    expect(host.textContent).toContain("Ready");
+    expect(computerUseHint("ready")).toBeUndefined();
+    for (const gone of ["Open source", "Codex's bundled client", "Launches automatically"]) expect(host.textContent).not.toContain(gone);
+    expect(button("Test access")).toBeDefined();
+  });
+
+  test("a client that refuses Telar as its caller is 'Not accepted', with no grant to go find", async () => {
+    const host = await mountPermissions(() => probe({ permission: "unauthenticated" }));
+    expect(host.textContent).toContain("Not accepted");
+    expect(host.textContent).toContain("does not accept Telar");
+    expect(host.textContent).not.toContain("Automation");
+    expect(button("Grant access")).toBeUndefined();
+  });
+
+  test("the ⓘ says the probe is the gate; bundled, it adds Finder and what Remove clears", async () => {
+    const plain = await mountPermissions(() => probe());
+    expect(plain.querySelector("[data-info]")?.getAttribute("data-info")).toBe("Sessions get the desktop tools only after a check here answers Ready.");
+
+    const bundled = await mountPermissions(() => probe({ bundled: true }));
+    const info = bundled.querySelector("[data-info]")?.getAttribute("data-info") ?? "";
+    expect(info).toStartWith("Sessions get the desktop tools only after a check here answers Ready.");
+    expect(info).toContain("drag it in");
+    expect(info).toContain("clears only Telar's bundled helper, not a separately installed cua");
+  });
+
+  test("Remove permissions is the bundled helper's alone, and asks first", async () => {
+    await mountPermissions(() => probe());
+    expect(button("Remove permissions")).toBeUndefined();
+
+    await mountPermissions(() => probe({ bundled: true }), { "POST /api/computer-use/reset": () => ({ reset: true }) });
+    await click(button("Remove permissions"));
+    expect(called("POST /api/computer-use/reset")).toHaveLength(0);
+    await click(button("Cancel"));
+    expect(button("Confirm remove")).toBeUndefined();
+
+    await click(button("Remove permissions"));
+    const probes = called("GET /api/computer-use").length;
+    await click(button("Confirm remove"));
+    expect(called("POST /api/computer-use/reset")).toHaveLength(1);
+    expect(called("GET /api/computer-use").length).toBe(probes + 1);
+  });
+
+  test("the row names whose sessions it governs, from the engine's own list", () => {
+    const html = renderToStaticMarkup(<ComputerUseProviders />);
+    for (const provider of ["Claude", "Codex", "OpenCode"]) expect(html).toContain(provider);
+    // Nobody uses their own today; that half must reappear the moment a provider does.
+    expect(html).not.toContain("uses its own");
+  });
+
+  test("a failed probe renders Unknown with a Retry, never a spinner", async () => {
+    expect(renderToStaticMarkup(<PermissionsSection />)).not.toContain("Not granted");
+    let answers = false;
+    const host = await mountPermissions(() => {
+      if (!answers) throw new Error("down");
+      return probe();
+    });
+    expect(host.textContent).toContain("Unknown");
+    expect(host.textContent).toContain("Could not reach the engine");
+    answers = true;
+    await click(button("Retry"));
+    expect(host.textContent).toContain("Ready");
+  });
+
+  test("while System Settings is open the pane re-measures on focus, moves on to Screen Recording, and flips to Ready", async () => {
+    expect(grantFollowUp("accessibility", probe({ permission: "denied", missing: ["accessibility", "screen-recording"] }))).toBe("wait");
+    expect(grantFollowUp("screen-recording", probe({ permission: "denied", missing: ["screen-recording"] }))).toBe("wait");
+    expect(grantFollowUp(undefined, probe())).toBe("done");
+    expect(GRANT_POLL_MS).toBeLessThanOrEqual(5_000);
+    expect(GRANT_WAIT_MS).toBe(600_000);
+
+    let status = probe({ permission: "denied", missing: ["accessibility", "screen-recording"] });
+    let opened = "accessibility";
+    const host = await mountPermissions(() => status, { "POST /api/computer-use/grant": () => ({ started: true, opened }) });
+    await click(button("Grant access"));
+    expect(called("POST /api/computer-use/grant")).toHaveLength(1);
+
+    status = probe({ permission: "denied", missing: ["screen-recording"] });
+    opened = "screen-recording";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await flush();
+    expect(called("POST /api/computer-use/grant")).toHaveLength(2);
+
+    status = probe();
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await flush();
+    expect(host.textContent).toContain("Ready");
+  });
+
+  test("Grant's failures reach the row, and the bundled helper can be shown in Finder", async () => {
+    const host = await mountPermissions(() => probe({ bundled: true, permission: "denied" }), {
+      "POST /api/computer-use/grant": () => ({ started: false, message: "macOS refused the prompt." }),
+      "POST /api/computer-use/reveal": () => ({ revealed: true }),
+    });
+    await click(button("Grant access"));
+    expect(host.textContent).toContain("macOS refused the prompt.");
+    await click(button("Show in Finder"));
+    expect(called("POST /api/computer-use/reveal")).toHaveLength(1);
+  });
+});
+
+describe("MCP servers", () => {
+  const empty = { "GET /api/mcp-servers": () => ({ mcpServers: [] }), "GET /api/mcp/oauth": () => ({ statuses: [] }) };
+
+  test("the empty list is one row, not a row and a pill", async () => {
+    stubEngine(empty);
+    const { host } = await mount(<McpSection />);
+    await flush(() => Boolean(host.textContent?.includes("No servers configured")));
+    expect(host.textContent).toContain("No servers configured");
+    expect(host.textContent).not.toContain("None");
+  });
+
+  test("Add opens the form from the list's header, Cancel closes it, and a saved server closes it too", async () => {
+    stubEngine({ ...empty, "PUT /api/mcp-servers": (body) => ({ mcpServer: body }) });
+    const { host } = await mount(<McpSection />);
+    await flush(() => Boolean(button("Add")));
+    expect(host.textContent).not.toContain("Add a server");
+
+    await click(button("Add"));
+    expect(host.textContent).toContain("Add a server");
+    expect(button("Add")).toBeUndefined();
+    await click(button("Cancel"));
+    expect(host.textContent).not.toContain("Add a server");
+
+    await click(button("Add"));
+    await typeInto(host.querySelector('[aria-label="Server id"]') as HTMLInputElement, "linear");
+    await typeInto(host.querySelector('[aria-label="Command"]') as HTMLInputElement, "node server.js --port 9000");
+    await click(button("Add server"));
+    expect(called("PUT /api/mcp-servers").map((call) => call.body)).toEqual([
+      { id: "linear", spec: { transport: "stdio", command: "node", args: ["server.js", "--port", "9000"] } },
+    ]);
+    expect(host.textContent).not.toContain("Add a server");
+  });
+});
+
+test("remembered logins' empty state is a row that says Telar asks before every fill", async () => {
+  stubEngine({ "GET /api/browser-logins": () => ({ logins: [] }) });
+  const { host } = await mount(<BrowserLoginsSection />);
+  await flush(() => Boolean(host.textContent?.includes("No remembered logins")));
+  expect(host.querySelector('[id$="no-remembered-logins"]')?.textContent).toContain("Telar asks before every fill");
+});
+
+describe("Telar orientation", () => {
+  const ENGINE_TEXT = "The paragraph the engine injects.";
+
+  async function mountOrientation(orientation: { preamble: boolean; skill: boolean }, answers = true) {
+    stubEngine({
+      "GET /api/orientation": () => {
+        if (!answers) throw new Error("down");
+        return { orientation, text: ENGINE_TEXT };
+      },
+      "PATCH /api/orientation": (patch) => ({ orientation: { ...orientation, ...(patch as object) }, text: ENGINE_TEXT }),
+    });
+    const { host } = await mount(<OrientationSection />);
+    await flush(() => called("GET /api/orientation").length > 0);
+    await flush();
+    return host;
   }
-});
 
-test("three rows became one readout, ordered by what stops the feature first", () => {
-  // Engine / Driver daemon / Access were three badges a reader had to combine
-  // to answer one question (#357). An engine that is not installed cannot be
-  // ungranted, and one that is not running cannot be tested.
-  expect(computerUseState({ status: probe(), checking: false, failed: false })).toBe("ready");
-  expect(computerUseState({ status: probe({ permission: "denied" }), checking: false, failed: false })).toBe("not-granted");
-  expect(computerUseState({ status: probe({ permission: "unauthenticated" }), checking: false, failed: false })).toBe("not-accepted");
-  expect(computerUseState({ status: probe({ hostRunning: false, permission: "denied" }), checking: false, failed: false })).toBe("not-running");
-  expect(computerUseState({ status: probe({ installed: false, hostRunning: false }), checking: false, failed: false })).toBe("not-installed");
-});
+  test("the disclosure shows the engine's own paragraph, even with the switch off", async () => {
+    const host = await mountOrientation({ preamble: false, skill: true });
+    expect(host.textContent).not.toContain(ENGINE_TEXT);
+    await click(button("Show the text"));
+    expect(host.textContent).toContain(ENGINE_TEXT);
+  });
 
-test("a working setup says so with its badge and no sentence at all", () => {
-  // "Open source — Telar holds the grants through CuaDriver.app" was an
-  // implementation note printed at every reader who had nothing to fix.
-  expect(computerUseHint("ready")).toBeUndefined();
-  expect(permissions).not.toContain("Open source");
-  expect(permissions).not.toContain("Codex's bundled client");
-  expect(permissions).not.toContain("Launches automatically when a session first needs it");
-});
+  test("with no answer from the engine, the disclosure says so rather than inventing a paragraph", async () => {
+    const host = await mountOrientation({ preamble: true, skill: true }, false);
+    await click(button("Show the text"));
+    expect(host.textContent).toContain("The engine did not answer.");
+  });
 
-test("the security semantics survive the copy edit", () => {
-  // Compacting must not drop what a person needs to act: which grants are
-  // required, and what to install.
-  expect(computerUseHint("not-granted")).toContain("Accessibility + Screen Recording");
-  expect(computerUseHint("not-installed")).toContain("Install cua-driver");
-  expect(logins).toContain("Telar asks before every fill");
-});
-
-test("a client that refuses Telar as its caller is 'Not accepted', not a grant to go find", () => {
-  // Sky answered "-10000: Sender process is not authenticated" to every call
-  // from Telar, and the row sent readers to an Automation pane that could not
-  // fix it. The refusal is its own state now, and the Sky fallback is gone.
-  const hint = computerUseHint("not-accepted") ?? "";
-  expect(hint).toContain("does not accept Telar");
-  expect(hint).not.toContain("Automation");
-  expect(computerUseHint("not-installed")).not.toContain("Codex");
-  expect(permissions).toContain('"Not accepted"');
-  expect(permissions).not.toContain("Privacy & Security → Automation");
-  expect(permissions).not.toContain("AUTOMATION_PANE");
-  expect(permissions).not.toContain("wakeComputerUseHost");
-});
-
-test("the row says the probe is the gate, behind its ⓘ", () => {
-  expect(permissions).toContain('const GATE_INFO = "Sessions get the desktop tools only after a check here answers Ready."');
-  expect(permissions).toContain("info={bundled ? `${GATE_INFO} ${FINDER_INFO} ${REMOVE_INFO}` : GATE_INFO}");
-});
-
-test("bundled, the prompts name Telar's helper, not an app the reader installed", () => {
-  const hint = computerUseHint("not-granted", { bundled: true }) ?? "";
-  expect(hint).toContain("Accessibility + Screen Recording");
-  expect(hint).toContain("Computer Use for Telar");
-  expect(hint).not.toContain("CuaDriver.app");
-  // Dev builds still drive an external install, and say so.
-  expect(computerUseHint("not-granted")).toContain("CuaDriver.app");
-  expect(computerUseHint("ready", { bundled: true })).toBeUndefined();
-});
-
-test("Remove permissions is the bundled helper's alone, and asks first", () => {
-  expect(permissions).toContain("{bundled &&");
-  expect(permissions).toContain('state !== "checking"');
-  expect(permissions).toContain("Confirm remove");
-  // What it removes and what it leaves is not inferable from the button: ⓘ.
-  expect(permissions).toContain("clears only Telar's bundled helper, not a separately installed cua");
-  expect(permissions).toContain("api.resetComputerUseAccess()");
-});
-
-test("the Computer use row says WHOSE sessions it governs, in one line", () => {
-  /**
-   * #368. The row measured a macOS grant and named no provider, which reads as
-   * "all of them". Since #521 every provider Telar drives does get this
-   * desktop, so "all of them" is now TRUE — the row names them anyway, because
-   * a reader cannot tell a silent promise from a silent assumption, and this
-   * row has already been wrong in both directions.
-   */
-  const html = renderToStaticMarkup(<ComputerUseProviders />);
-  expect(html).toContain("Claude");
-  expect(html).toContain("Codex");
-  expect(html).toContain("OpenCode");
-  // Nobody is on the "uses its own" side today. Asserted as absent rather than
-  // dropped: that half must reappear the moment a provider stops taking ours.
-  expect(html).not.toContain("uses its own");
-  // The engine's own list decides — not a hand-kept copy that can drift from
-  // what a claim actually folds in.
-  expect(permissions).toContain("driverTakesComputerUse");
-  // It rides the row rather than the hint: the hint is the sentence that
-  // changes with the state, and a working setup still has none.
-  expect(computerUseHint("ready")).toBeUndefined();
-  expect(permissions).toContain("<ComputerUseProviders />");
-});
-
-test("the FAILED state renders Unknown with a Retry, never a spinner", () => {
-  const html = renderToStaticMarkup(<PermissionsSection />);
-  // First paint, before the probe lands: a spinner, and no claim about a grant.
-  expect(html).not.toContain("Not granted");
-  expect(permissions).toContain('state === "unknown" && (');
-  expect(permissions).toContain("Retry");
-});
-
-test("the empty server list does not repeat itself in a pill", () => {
-  const empty = mcp.slice(mcp.indexOf('label="No servers configured"'));
-  expect(empty.slice(0, 200)).not.toContain('<Badge variant="outline">None</Badge>');
-});
-
-test("Add is the list's own header button, not a card whose row is a button", () => {
-  // It used to be a whole SettingsGroup titled "Add a server" holding one row
-  // whose entire content was an Add button (#357) — the shape Browser profiles
-  // already avoids with "New profile" on the group header.
-  expect(mcp).toContain("const [adding, setAdding] = useState(false)");
-  expect(mcp).toContain("onClick={() => setAdding(true)}");
-  expect(mcp).toContain("{adding && <AddServerForm");
-  expect(mcp).not.toContain('label="Add a server"');
-});
-
-test("adding is progressive, and closes once one lands", () => {
-  // The pane used to lead with an empty three-transport form instead of with
-  // what is configured. Opening is reversible, and success returns to the list.
-  expect(mcp).toContain("Cancel");
-  const save = mcp.slice(mcp.indexOf("onAdded();"));
-  expect(save.slice(0, 200)).toContain("onClose();");
-});
-
-test("remembered logins' empty state is a row on the same grid, not a loose paragraph", () => {
-  expect(logins).toContain('<Row label="No remembered logins"');
-  expect(logins).not.toContain("None. Telar asks before every credential fill");
-});
-
-test("orientation leads the pane, because it is what Telar does before you have said anything", () => {
-  // The two groups under it decide what an agent may REACH; this decides what
-  // it is TOLD, which is the first thing somebody auditing Telar looks for.
-  const tools = pane.slice(pane.indexOf('active === "tools"'));
-  expect(tools.indexOf("<OrientationSection />")).toBeLessThan(tools.indexOf("<McpSection />"));
-});
-
-test("the disclosure shows the engine's own paragraph, never a copy kept in the cockpit", () => {
-  /**
-   * THE DRIFT THIS FORBIDS. A second copy of the preamble in this file would
-   * be right until the first edit on the engine side — and a paired Mac may be
-   * running a different release entirely, so a hard-coded paragraph could
-   * disagree with what is actually injected on the machine being configured.
-   */
-  expect(orientation).toContain("setText(answer.text)");
-  expect(orientation).toContain("{text ||");
-  expect(orientation).not.toContain("You are running inside Telar");
-});
-
-test("both switches move independently, and each is one patch", () => {
-  // `preamble` and `skill` are separate questions: patching one must not
-  // re-decide the other, which is what a single combined write would do.
-  expect(orientation).toContain("save({ preamble: next })");
-  expect(orientation).toContain("save({ skill: next })");
-});
-
-test("the text stays readable with the switch off", () => {
-  // "What would you inject?" is a fair question to ask BEFORE turning it back
-  // on, so the disclosure is not nested under the preamble's own state.
-  const disclosure = orientation.slice(orientation.indexOf("Show the text"));
-  expect(disclosure).not.toContain("policy.preamble &&");
-});
-
-test("while System Settings is open the pane waits, moves on to Screen Recording, and flips to Ready by itself", () => {
-  const denied = (missing: ("accessibility" | "screen-recording")[]) => probe({ permission: "denied", missing });
-  expect(grantFollowUp("accessibility", denied(["accessibility", "screen-recording"]))).toBe("wait");
-  // Accessibility on, Screen Recording left: Grant again, which opens that list.
-  expect(grantFollowUp("accessibility", denied(["screen-recording"]))).toBe("next-pane");
-  // Already in the Screen Recording list: never loops back.
-  expect(grantFollowUp("screen-recording", denied(["screen-recording"]))).toBe("wait");
-  expect(grantFollowUp("screen-recording", probe())).toBe("done");
-  expect(grantFollowUp(undefined, probe())).toBe("done");
-  // Re-measured on a clock AND on focus, and bounded like cua's own gate.
-  expect(permissions).toContain("window.setInterval(() => void tick(), GRANT_POLL_MS)");
-  expect(permissions).toContain('window.addEventListener("focus", tick)');
-  expect(GRANT_POLL_MS).toBeLessThanOrEqual(5_000);
-  expect(GRANT_WAIT_MS).toBe(600_000);
-});
-
-test("Grant's failures reach the row, and the helper can be shown in Finder", () => {
-  expect(permissions).toContain("if (answer.message) setError(answer.message);");
-  expect(permissions).toContain("api.revealComputerUseHelper()");
-  expect(permissions).toContain("Show in Finder");
-  // Why Finder is there is not inferable from the button: ⓘ, not a hint.
-  expect(permissions).toContain("drag it in");
-  expect(computerUseHint("not-granted", { bundled: true })).not.toContain("Finder");
+  test("both switches move independently, and each is one patch", async () => {
+    const host = await mountOrientation({ preamble: true, skill: true });
+    await press(host.querySelector('[aria-label="Tell agents they are inside Telar"]')!);
+    await press(host.querySelector('[aria-label="Install the telar skill"]')!);
+    expect(called("PATCH /api/orientation").map((call) => call.body)).toEqual([{ preamble: false }, { skill: false }]);
+  });
 });

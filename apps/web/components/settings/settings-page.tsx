@@ -24,15 +24,13 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { BlocksIcon, DownloadIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, HardDriveIcon, InfoIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
-import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
-import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "./settings-registry";
+import { Row, SettingsGroup, SettingsShell } from "./settings-shell";
+import { SECTION_ALIASES, SECTION_IDS, SECTIONS, settingsSearchIndex } from "./settings-sections";
 import { projectPaneFor } from "@/components/plugins/settings-panes";
-import { pluginSettingsSearchEntries } from "@/lib/plugins/settings-form";
 import { useSectionFromUrl } from "./use-section-from-url";
 
 /**
@@ -86,108 +84,6 @@ const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) 
 
 const api = createEngineApi();
 
-/**
- * FIVE GROUPS, EACH ANSWERING ONE QUESTION ABOUT WHERE A SETTING APPLIES:
- *
- *   - Cockpit: this window and how it behaves — what a new session is built
- *     with, how it looks, which keys it answers to, its browser, dictation.
- *   - Agents: what runs a turn and what it can reach — provider logins, the
- *     tools and permissions a session gets, plugins.
- *   - Projects: one project at a time, chosen on the pane.
- *   - This Mac: facts about the machine itself — who may reach it, and what it
- *     keeps on disk.
- *   - About: this install — its build, its updates, and the CLIs it reads
- *     through rather than holding a token for.
- *
- * GENERAL IS FIRST, AND IS WHERE SETTINGS OPENS. The pane used to land on
- * Appearance, which put a theme editor in front of somebody who came here to
- * change how their work behaves — the most decorative screen in the app as the
- * answer to "settings". General is the ordinary set: what a new session is
- * built with, when one leaves your list, who names it.
- *
- * "SESSIONS" BECAME "GENERAL" rather than gaining a sibling. Its rows were
- * already the general ones, and a General pane beside a Sessions pane would
- * make every reader guess which of the two holds the row they want.
- */
-const SECTIONS: SettingsSection[] = [
-  { id: "general", label: "General", icon: SlidersHorizontalIcon, group: "Cockpit" },
-  { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit", scope: "browser" },
-  /**
-   * A chord is a decision about this window and the shell around it — the table
-   * is what builds the Mac app's own menu. See keybindings-page.tsx.
-   */
-  { id: "keybindings", label: "Keybindings", icon: KeyboardIcon, group: "Cockpit", scope: "browser" },
-  /**
-   * The accounts THIS WINDOW browses and signs in as, and where its links open.
-   *
-   * CALLED "BROWSER", NOT "INTEGRATIONS" (#357). Every group on it is about
-   * Telar's own browser. THE ID STAYS `integrations`: it is a route, bookmarks
-   * point at it, and renaming a nav label is not a reason to strand one.
-   *
-   * THE GLYPH IS A BROWSER'S (#430) — what the right panel draws for it.
-   */
-  { id: "integrations", label: "Browser", icon: GlobeIcon, group: "Cockpit" },
-  /**
-   * ITS OWN PANE RATHER THAN A GROUP INSIDE GENERAL (#544). It ships OFF, so
-   * the thing a reader is most often looking for is the switch that turns it
-   * on, and a name in the nav is the cheapest answer to "can Telar dictate".
-   */
-  { id: "dictation", label: "Dictation", icon: MicIcon, group: "Cockpit" },
-  { id: "providers", label: "Providers", icon: PlugIcon, group: "Agents", scope: "mac" },
-  { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Agents", scope: "mac" },
-  /**
-   * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. The
-   * list grows; a nav that grew with it would crowd out the things a person
-   * opens settings for.
-   */
-  { id: "plugins", label: "Plugins", icon: BlocksIcon, group: "Agents", scope: "mac" },
-  { id: "projects", label: "Projects", icon: FolderKanbanIcon, group: "Projects", scope: "project" },
-  /**
-   * Pairing decides who may reach this Mac's engine and cockpit; the engine
-   * itself stays on loopback either way.
-   */
-  { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "This Mac", scope: "mac" },
-  /**
-   * WHAT THIS MAC IS KEEPING, AND WHERE — issue #642: the checkouts sessions are
-   * built in, the logs, and the store itself. A paired phone reading this pane
-   * is reading THIS Mac's disk. The store's location lives here rather than
-   * beside Updates because a pane that reports what is in the store and a row
-   * elsewhere that moves it would be one question answered in two places.
-   */
-  { id: "storage", label: "Storage", icon: HardDriveIcon, group: "This Mac", scope: "mac" },
-  { id: "about", label: "This build", icon: InfoIcon, group: "About", scope: "mac" },
-  { id: "updates", label: "Updates", icon: DownloadIcon, group: "About", scope: "mac" },
-  /**
-   * The gh CLI already signed in on this Mac, which Telar reads through rather
-   * than holding a token for.
-   */
-  { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "About", scope: "mac" },
-];
-
-/**
- * The retired pane ids keep answering. `section=mcp` is baked into the OAuth
- * callback's redirect (app/api/mcp/oauth/callback/route.ts), and the rest may
- * live in bookmarks; an alias costs one map entry and never strands a link on
- * the default pane.
- */
-export const SECTION_ALIASES: Record<string, string> = {
-  sessions: "general",
-  inbox: "general",
-  textgen: "general",
-  mcp: "tools",
-  permissions: "tools",
-  // THE OLD APPLICATION PANE, later folded into General, is This build again.
-  application: "about",
-  /**
-   * SETTLED IS NOT A SETTING, AND THE PANE IS GONE (#364). It listed the
-   * conversations this rail has shelved — a shelf, which the rail already
-   * draws and is where anyone looking for one goes. What IS a setting is the
-   * rule that puts them there, and that is General ▸ Settling, so a bookmark
-   * lands on the one row it could have meant.
-   */
-  settled: "general",
-};
-
 /** A figure the engine reported, in the register the rest of the app uses for
  *  machine-supplied values. */
 function Mono({ children }: { children: React.ReactNode }) {
@@ -236,11 +132,6 @@ function AboutSection({
   );
 }
 
-/** Exported with `SECTION_ALIASES` above so a test can resolve a link the way
- *  the page does — through the real table and the real hook — rather than by
- *  matching a string in this file's source. */
-export const SECTION_IDS = SECTIONS.map((section) => section.id);
-
 export function SettingsPage() {
   // `?section=mcp` is how a sign-in gets the user back to the pane they left —
   // see use-section-from-url.ts for the failure that made this necessary.
@@ -286,26 +177,11 @@ export function SettingsPage() {
     return () => window.clearTimeout(task);
   }, [load]);
 
-  /**
-   * THE STATIC INDEX, PLUS EVERY GENERATED PLUGIN ROW. A plugin's settings are
-   * its schema, which arrives with the engine's answer — so its rows join the
-   * index when health does, anchored exactly where the generated pane draws
-   * them. A plugin whose project pane is bespoke draws no generated rows there.
-   */
-  const search = useMemo(() => {
-    if (!health?.plugins?.length) return SETTINGS_SEARCH_INDEX;
-    const page = (id: string) => {
-      const found = SETTINGS_SEARCH_PAGES.find((entry) => entry.id === id);
-      return { id, label: found?.label ?? id };
-    };
-    const generated = pluginSettingsSearchEntries(
-      health.plugins,
-      { project: page("projects"), machine: page("plugins") },
-      // The Mac scope is always generated; a bespoke PROJECT pane draws its own rows.
-      (scope, id) => scope === "project" && projectPaneFor(id) !== undefined,
-    );
-    return { entries: [...SETTINGS_SEARCH_INDEX.entries, ...generated] };
-  }, [health]);
+  // A bespoke project pane draws its own rows; the Mac scope is always generated.
+  const search = useMemo(
+    () => settingsSearchIndex(health?.plugins, (scope, id) => scope === "project" && projectPaneFor(id) !== undefined),
+    [health],
+  );
 
   return (
     <SettingsShell

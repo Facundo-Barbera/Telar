@@ -1,20 +1,14 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { GlobeIcon } from "lucide-react";
+import { SECTION_ALIASES, SECTION_IDS, SECTIONS } from "./settings-sections";
+import { resolveSection } from "./use-section-from-url";
 
-/**
- * THE NAV: five groups (Cockpit, Agents, Projects, This Mac, About), one Plugins
- * destination instead of an item per plugin, and every retired id still routed.
- *
- * Read from the source rather than rendered, because what is being pinned is the
- * ROUTE CONTRACT — a section id that stops answering strands a bookmark, and the
- * OAuth callback redirects to one of these by name.
- */
-const source = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
+const route = (raw: string | null) => resolveSection(raw, SECTION_IDS, SECTION_ALIASES);
+const section = (id: string) => SECTIONS.find((entry) => entry.id === id);
 
-test("the nav is five groups, in order, each holding the panes S1 assigned it", () => {
-  const groups = [...source.matchAll(/\{ id: "([^"]+)", label: "[^"]+", icon: \w+, group: "([^"]+)"(?:, scope: "\w+")? \}/g)].map(([, id, group]) => `${group}:${id}`);
-  expect(groups).toEqual([
+test("the nav is five groups, in order, each holding its panes", () => {
+  expect(SECTIONS.map(({ group, id }) => `${group}:${id}`)).toEqual([
     "Cockpit:general",
     "Cockpit:appearance",
     "Cockpit:keybindings",
@@ -32,110 +26,37 @@ test("the nav is five groups, in order, each holding the panes S1 assigned it", 
   ]);
 });
 
-test("This build and Updates are panes under About, and the old Application id lands on This build", () => {
-  expect(source).toContain('{ id: "about", label: "This build"');
-  expect(source).toContain('{ id: "updates", label: "Updates"');
-  expect(source).toContain('application: "about"');
-  // Real ids now, so they must not also be aliases pointing elsewhere.
-  expect(source).not.toContain('updates: "general"');
-  expect(source).not.toContain('about: "general"');
-  const general = source.slice(source.indexOf('active === "general"'), source.indexOf('active === "about"'));
-  expect(general).not.toContain("<AboutSection");
-  expect(general).not.toContain("<UpdatesSection");
-  expect(general).not.toContain("<LinksSection");
-  expect(source).toContain('active === "updates" && <UpdatesSection />');
+test("panes are labelled for what they hold", () => {
+  expect(section("about")?.label).toBe("This build");
+  expect(section("updates")?.label).toBe("Updates");
+  expect(section("storage")?.label).toBe("Storage");
+  expect(section("integrations")?.label).toBe("Browser");
+  expect(section("integrations")?.icon).toBe(GlobeIcon);
 });
 
-test("Links moved to the Browser pane", () => {
-  const browser = source.slice(source.indexOf('active === "integrations"'), source.indexOf('active === "tools"'));
-  expect(browser).toContain("<IntegrationsPage />");
-  expect(browser).toContain("<LinksSection />");
+test("every current pane id routes to itself", () => {
+  for (const id of SECTION_IDS) expect(route(id)).toBe(id);
 });
 
-test("ONE Plugins destination, not an item per plugin", () => {
-  // Two plugins ship today and the list grows; a nav item each would crowd out
-  // the things a person opens settings for.
-  expect(source).toContain('{ id: "plugins"');
-  expect(source).not.toContain('{ id: "latex"');
-  expect(source).not.toContain('{ id: "data-science"');
-  expect(source).toContain("<PluginsPage />");
+test("retired ids land on the pane that took over their rows", () => {
+  expect(route("application")).toBe("about");
+  expect(route("settled")).toBe("general");
+  expect(route("sessions")).toBe("general");
+  expect(route("inbox")).toBe("general");
+  expect(route("textgen")).toBe("general");
+  expect(route("permissions")).toBe("tools");
+  // Baked into app/api/mcp/oauth/callback/route.ts.
+  expect(route("mcp")).toBe("tools");
 });
 
-test("Browser is a pane of its own, under Cockpit, and holds both groups", () => {
-  // Profiles and remembered logins are one subject: a grant is scoped to a
-  // profile, so reading one while the other lived in Agent tools meant holding a
-  // profile list in your head.
-  expect(source).toContain('{ id: "integrations"');
-  // Named for what it is (#357) — "Integrations" is every app's word for the
-  // drawer of things it connects to, and named a category rather than this pane.
-  expect(source).toContain('label: "Browser"');
-  expect(source).not.toContain('label: "Integrations"');
-  expect(source).toContain("<IntegrationsPage />");
-  const tools = source.slice(source.indexOf('active === "tools"'));
-  expect(tools.slice(0, 300)).not.toContain("<BrowserLoginsSection");
+test("no alias shadows a real pane id", () => {
+  for (const alias of Object.keys(SECTION_ALIASES)) expect(SECTION_IDS).not.toContain(alias);
 });
 
-test("the Browser pane wears a browser's glyph, not the plug it had as Integrations", () => {
-  // #430: the label was fixed in #357 and the icon was not, so the nav kept
-  // saying "things Telar connects to" in the one place a label cannot. The
-  // right panel already draws the browser as a globe — same subject, same glyph.
-  expect(source).toContain('{ id: "integrations", label: "Browser", icon: GlobeIcon');
-  expect(source).not.toContain("PlugZapIcon");
-});
-
-test("the renamed pane keeps its route, so a bookmark still lands", () => {
-  // The label is nav copy; the id is a contract. Renaming one is not a reason
-  // to strand the other.
-  expect(source).toContain('active === "integrations"');
-});
-
-test("Settled is gone from the nav, and its id lands on the rule that fills it", () => {
-  /**
-   * #364: the pane listed the conversations this rail has shelved, which is a
-   * SHELF — the rail already draws one, and that is where anyone looking for a
-   * settled conversation goes. What is genuinely a setting is the rule that
-   * puts them there, so a bookmark lands on General ▸ Settling rather than on
-   * the default pane.
-   */
-  expect(source).not.toContain('{ id: "settled"');
-  expect(source).not.toContain("<SettledPage");
-  expect(source).toContain('settled: "general"');
-});
-
-test("Schedules is not a Settings pane: a schedule belongs to its session", () => {
-  // It lives in the session's masthead now (session/session-schedules.tsx).
-  expect(source).not.toContain('{ id: "schedules"');
-  expect(source).not.toContain("SchedulesSection");
-  expect(source).not.toContain('agent: "schedules"');
-});
-
-test("the OAuth callback's section id is still routable", () => {
-  // `section=mcp` is baked into app/api/mcp/oauth/callback/route.ts.
-  expect(source).toContain('mcp: "tools"');
-});
-
-test("Storage is a pane under This Mac: automatic cleanup, then the store", () => {
-  expect(source).toContain('{ id: "storage", label: "Storage"');
-  const pane = source.slice(source.indexOf('active === "storage"'), source.indexOf('active === "plugins"'));
-  expect(pane).toContain("<CleanupSection />");
-  expect(pane).toContain("<StoreSection />");
-  expect(pane.indexOf("<CleanupSection />")).toBeLessThan(pane.indexOf("<StoreSection />"));
-  // Folded into the cleanup section or retired; none of them stands beside it.
-  for (const retired of ["<StorageSection", "<RetentionSection", "<WorktreesRootSection", "<WorktreeListSection", "<MachineWorkspaceSection"]) {
-    expect(pane).not.toContain(retired);
+test("plugins share one destination, and removed panes are not routed", () => {
+  for (const gone of ["latex", "data-science", "schedules", "store"]) {
+    expect(SECTION_IDS).not.toContain(gone);
+    expect(route(gone)).toBeNull();
   }
-});
-
-test("the store's location left General with the pane that reports what is in it", () => {
-  /**
-   * #630 put it beside Updates — both facts about this install, applied at the
-   * next launch — which was right while it was one row. A pane that reports
-   * what the store holds and a row on ANOTHER pane that moves the store are one
-   * question answered in two places, and the half that can move it was the half
-   * further from the numbers.
-   */
-  const general = source.slice(source.indexOf('active === "general"'), source.indexOf('active === "storage"'));
-  expect(general).not.toContain("<StoreSection");
-  // Nothing is stranded: the row never had a section id of its own to bookmark.
-  expect(source).not.toContain('store: "');
+  expect(route(null)).toBeNull();
 });
