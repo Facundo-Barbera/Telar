@@ -27,7 +27,7 @@ export function DictationGlow({ phase, stream, children }: { phase: DictationPha
   }, [stream]);
 
   return (
-    <div ref={frame} className="relative">
+    <div ref={frame} className="relative z-[1]">
       <span aria-hidden data-phase={phase} className="dictation-glow dictation-glow-halo" />
       {children}
       <span aria-hidden data-phase={phase} className="dictation-glow dictation-glow-ring" />

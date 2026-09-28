@@ -158,13 +158,13 @@ export function Composer(props: ComposerProps) {
             onCancelTurn={() => props.question && props.onCancelQuestion?.(props.question.id)}
           />
         )}
-        <DictationGlow phase={dictation.phase} stream={dictation.stream}>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              trySubmit();
-            }}
-          >
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            trySubmit();
+          }}
+        >
+          <DictationGlow phase={dictation.phase} stream={dictation.stream}>
             <ComposerCard
               editor={editor}
               editorId={EDITOR_ID}
@@ -211,9 +211,9 @@ export function Composer(props: ComposerProps) {
                 )
               }
             />
-          </form>
-          <ComposerFoot props={props} compact={compactNow} pills={pills} onAvailability={setDriveAway} />
-        </DictationGlow>
+          </DictationGlow>
+        </form>
+        <ComposerFoot props={props} compact={compactNow} pills={pills} hidden={dictation.phase !== "idle"} onAvailability={setDriveAway} />
       </div>
     </div>
   );

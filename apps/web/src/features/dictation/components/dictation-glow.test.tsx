@@ -66,10 +66,16 @@ describe("the composer's dictation control", () => {
 });
 
 describe("the dictation glow follows the voice", () => {
-  test("wraps the whole composer form, not just the message box", async () => {
+  test("wraps the message box, while the strip under it steps aside until dictation stops", async () => {
     const host = await listening();
-    expect(glowOf(host).querySelector("form")).not.toBeNull();
+    const foot = host.querySelector<HTMLElement>('[data-slot="composer-foot"]')!;
+    expect(glowOf(host).querySelector('[data-slot="composer-editor"]')).not.toBeNull();
+    expect(glowOf(host).contains(foot)).toBe(false);
     expect(host.querySelector(".dictation-glow-ring")!.getAttribute("data-phase")).toBe("listening");
+    expect(foot.hasAttribute("inert")).toBe(true);
+
+    await press(micIn(host));
+    expect(foot.hasAttribute("inert")).toBe(false);
   });
 
   test("stays calm in silence and rises while the person speaks", async () => {
