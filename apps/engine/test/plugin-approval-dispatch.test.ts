@@ -2,7 +2,7 @@
  * DOES THE APPROVAL ACTUALLY DECIDE WHETHER A PLUGIN'S WRITE RUNS.
  *
  * `plugin-approval.test.ts` asserts CLASSIFICATION — that both wires call a
- * given tool the same kind. `codex-driver.test.ts` asserts REGISTRATION — that
+ * given tool the same kind. `drivers/codex/driver.test.ts` asserts REGISTRATION — that
  * the socket's url reaches `thread/start`. Neither is evidence that a declined
  * plugin write cannot execute anyway, because in neither does the provider ever
  * touch the socket.
@@ -41,7 +41,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { TELAR_MCP_SERVER } from "@telar/engine-client";
-import { createCodexDriver } from "../src/codex-driver";
+import { createCodexDriver } from "../src/drivers/codex";
 import type { DriverRequest } from "../src/driver";
 import { helloToolModule } from "../src/plugins/hello";
 import { TelarToolSocket, collectTelarWall } from "../src/telar-socket";
@@ -56,7 +56,7 @@ allowCliInThisFile();
 const FIXTURE = path.join(import.meta.dir, "fixtures", "fake-codex-app-server.mjs");
 
 /**
- * THE FIXTURE IS PINNED THROUGH `CODEX_BIN`, exactly as `codex-driver.test.ts`
+ * THE FIXTURE IS PINNED THROUGH `CODEX_BIN`, exactly as `drivers/codex/driver.test.ts`
  * does it — and it MUST be. `binaryPath` alone let the driver's own resolution
  * find the real `codex` on this machine and spawn it, which is a live provider
  * process this suite has no business starting.

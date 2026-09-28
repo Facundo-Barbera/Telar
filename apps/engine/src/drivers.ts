@@ -20,7 +20,7 @@ import { createOpenCodeDriver } from "./drivers/opencode";
 import type { ProviderDriverKind } from "@telar/engine-client";
 import { BROWSER_TOOLS, type EngineBrowser } from "./domains/browser";
 import { BrowserToolSocket, type BrowserSocketCapability } from "./domains/browser";
-import { createCodexDriver } from "./codex-driver";
+import { createCodexDriver } from "./drivers/codex";
 import { createClaudeDriver, type TurnDriver } from "./driver";
 import type { DriverSelector } from "./worker";
 

@@ -15,7 +15,7 @@
  *      under one provider and park a card under the other, for the same read.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { codexApprovalRequest, MCP_ELICITATION } from "../src/codex/items";
+import { codexApprovalRequest, MCP_ELICITATION } from "../src/drivers/codex";
 import { requestKindForTool, setPluginReadTools } from "../src/driver";
 import { HOST_RATIFIED_READ_TOOLS, ratifiedReadTools } from "../src/plugins/policy";
 

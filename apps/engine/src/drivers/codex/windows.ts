@@ -1,22 +1,3 @@
-/**
- * CODEX'S CONTEXT WINDOWS, AND THE LONG ONE IT KEEPS OFF BY DEFAULT (#587).
- *
- * `model/list` carries no window at all, so they are read from Codex's own
- * catalog: `codex debug models` prints each model's `context_window` (what it
- * runs by default — 272k on codex-cli 0.157.0) and `max_context_window` (what
- * `model_context_window` may raise it to — 872k on the GPT-6 and 5.6 families,
- * 272k on gpt-5.5, which has no long window).
- *
- * THE LONG WINDOW IS A SECOND ROW, spelled with Claude's `[1m]` suffix, so the
- * pickers that already offer 200k / 1M for Claude (#986) offer it for Codex
- * with no second vocabulary. The driver strips the suffix and sets
- * `model_context_window` from the same catalog.
- *
- * THE LIMIT IS `model_auto_compact_token_limit`, an absolute token count on the
- * thread's config overlay — the channel the driver already uses, never argv.
- * Codex has no verified switch that turns auto-compaction off, so Never writes
- * nothing and the settings card says so.
- */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { type AutoCompact, autoCompactLimitFor, type ProviderModel } from "@telar/engine-client";
@@ -47,8 +28,6 @@ export function parseCodexWindows(stdout: string): Map<string, CodexWindow> {
 
 const cache = new Map<string, Promise<Map<string, CodexWindow>>>();
 
-/** Per binary, once per process. A Codex that cannot answer has no long rows
- *  and no known windows, which is the menu and the thread it had before. */
 export function readCodexWindows(bin: string): Promise<Map<string, CodexWindow>> {
   let windows = cache.get(bin);
   if (!windows) {
@@ -60,8 +39,6 @@ export function readCodexWindows(bin: string): Promise<Map<string, CodexWindow>>
   return windows;
 }
 
-/** The long row after each standard row whose model has one. The standard row
- *  stays the default window, which is Codex's own default. */
 export function withCodexLongRows(models: readonly ProviderModel[], windows: ReadonlyMap<string, CodexWindow>): ProviderModel[] {
   return models.flatMap((model) => {
     const window = windows.get(model.id);
@@ -73,12 +50,8 @@ export function withCodexLongRows(models: readonly ProviderModel[], windows: Rea
   });
 }
 
-/**
- * The slug Codex runs, and the config the thread carries for it: the long
- * window where the row asked for one, and the login's limit for the window
- * the thread ends up with. A long row whose model has no long window runs its
- * standard one rather than a number nobody verified.
- */
+// Codex's long window is a second model row with Claude's `[1m]` suffix; the driver strips it
+// and sets `model_context_window` from `codex debug models`.
 export function codexWindowConfig(
   model: string,
   windows: ReadonlyMap<string, CodexWindow>,
