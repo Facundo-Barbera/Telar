@@ -21,7 +21,6 @@ import {
   PluginInstallInput,
   registerPluginToolPrefixes,
   ProviderDriverKind,
-  resolveMcpServers,
   type ComputerUseGrant,
   type EngineDiscovery,
   type EngineHealth,
@@ -34,10 +33,10 @@ import {
   readProjectPlugins,
   workspacePath,
 } from "@telar/engine-client";
-import { runCliUpdate, type CliUpdateRun } from "./domains/providers";
+import { providersRoutes, type CliUpdateRun } from "./domains/providers";
 import { computerUseRoutes, createComputerUseGate, type ComputerUseGate } from "./domains/computer-use";
 import { bearerIsValid } from "./platform/http/auth";
-import { createProviderProber, readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
+import { readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS, type SocketTool } from "./domains/agent-tools";
 import { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionBootstrap, type SessionBootstrapWindow, sessionsCapability, sessionSnapshot, sessionsSocketConnectCard, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
 import { browserRoutes, createLoginGrantStore } from "./domains/browser";
@@ -62,35 +61,20 @@ import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type Plugin
 import { setPluginReadTools } from "./drivers/claude";
 import { createRunMount } from "./run/mount";
 import { RunError } from "./run/types";
-import { maybeRetitleSession, runStructuredForPolicy } from "./domains/providers";
-import {
-  isAppearanceId,
-  listImages,
-  putImage,
-  readProjectIconBytes,
-  readImage,
-  readLooks,
-  readSettings,
-  readThemes,
-  removeEntry,
-  writeLook,
-  writeSettings,
-  writeTheme,
-} from "./domains/appearance";
+import { maybeRetitleSession } from "./domains/providers";
+import { appearanceRoutes, readProjectIconBytes } from "./domains/appearance";
 import { warmUsageScanCache } from "./usage";
 import {
   collectNotesWallTools,
   ensureNotesSocketSecret,
   handleNotesSocketMessage,
-  notesSocketConnectCard,
   notesCapability,
   ProjectNotesError,
   storeNoteRead,
   storeNotesPort,
+  notesRoutes,
 } from "./domains/notes";
-import * as notebook from "./domains/notes";
-import * as shelf from "./domains/prompts";
-import { PreparedPromptsError } from "./domains/prompts";
+import { PreparedPromptsError, promptsRoutes } from "./domains/prompts";
 import type { GhRunner } from "./domains/github";
 import { createStorageMeter, reapNodeModules, storageRoutes, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, type CheckoutSizesOptions } from "./domains/storage";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
@@ -109,10 +93,10 @@ import { createHostsStore, hostsRoutes } from "./domains/hosts";
 import { mcpOAuthRoutes, mcpSocketRoute } from "./domains/agent-tools";
 import { aboutRoutes } from "./domains/updates";
 import { createPushService } from "./domains/push";
-import { body, errorFor as httpErrorFor, HttpError, matchesETag, writeError, writeJson } from "./platform/http/http";
+import { body, errorFor as httpErrorFor, HttpError, rawBody, writeError, writeJson } from "./platform/http/http";
 import { router } from "./platform/http/router";
 import type { Route } from "./platform/http/route";
-import { positiveParam, stringValue } from "./platform/http/params";
+import { stringValue } from "./platform/http/params";
 import { sessionLifecycleRoutes, sessionReadRoutes, sessionsRoutes } from "./domains/sessions";
 import { schedulesRoutes } from "./domains/schedules";
 import { sessionTurnRoutes, turnRoutes, workerRoutes } from "./domains/turns";
@@ -346,108 +330,10 @@ function domainError(error: unknown): HttpError | undefined {
 
 const errorFor = (error: unknown): HttpError => httpErrorFor(error, domainError);
 
-/**
- * The attachment route's body — raw bytes, with its own much larger cap.
- *
- * SEPARATE FROM `body()` RATHER THAN A PARAMETER ON IT. The 1 MB JSON cap is a
- * guard worth keeping tight on every other route, and one shared reader with a
- * size argument is how that guard drifts: the next route to want a big body
- * passes the big number and nobody notices which limit applies where.
- */
 /** The HTTP edge's own ceiling. The store enforces the same number again —
  *  an in-process caller must not be able to walk past a check that only ever
  *  ran on the socket. */
 const MAX_ATTACHMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
-
-/**
- * A backdrop picture's ceiling. Generous next to the 3.5MB the browser store
- * had to enforce — that number was a share of one origin's localStorage, and
- * this one is a file on a disk. It exists so a mis-aimed upload cannot fill
- * the volume, not to make anyone compress a photograph.
- */
-const MAX_APPEARANCE_IMAGE_BYTES = 32 * 1024 * 1024;
-
-/** The four formats `imageExtension` will admit, by the extension it returns. */
-const IMAGE_TYPES: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-};
-
-async function rawBody(request: http.IncomingMessage, limit: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > limit) throw new HttpError(400, "invalid_request", "attachment is larger than the engine accepts");
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
-/**
- * The appearance route's body — JSON like `body()`, but with the cap the
- * published look actually needs.
- *
- * ITS OWN READER RATHER THAN A BIGGER `body()`, for the reason stated above
- * `rawBody`: the 1 MB JSON ceiling is worth keeping tight on every other route,
- * and one shared reader with a size argument is exactly how such a guard drifts.
- * A published look carries its backdrop's pixels — the cockpit's picker
- * compresses to at most 3.5 MB — so this one route reads up to 8 MiB and no
- * other route can accidentally inherit that.
- *
- * REFUSED BEFORE IT IS BUFFERED, twice over: a declared `content-length` past
- * the cap is answered without reading a byte, and a body that lies about (or
- * omits) its length still stops at the limit mid-stream. Buffering eight
- * megabytes only to measure them is the denial of service the cap exists to
- * prevent.
- */
-const MAX_APPEARANCE_UPLOAD_BYTES = 8 * 1024 * 1024;
-
-async function appearanceBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
-  const tooLarge = () => new HttpError(413, "invalid_request", `appearance must be under ${MAX_APPEARANCE_UPLOAD_BYTES} bytes`, true);
-  const declared = Number(request.headers["content-length"]);
-  if (Number.isFinite(declared) && declared > MAX_APPEARANCE_UPLOAD_BYTES) throw tooLarge();
-  // The bounded read, inline rather than through `rawBody`: this one refuses
-  // with a connection-ending error, and `rawBody`'s caller (attachments) reads
-  // its body to the end and must keep its socket.
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > MAX_APPEARANCE_UPLOAD_BYTES) throw tooLarge();
-    chunks.push(buffer);
-  }
-  const bytes = Buffer.concat(chunks);
-  if (bytes.length === 0) throw new HttpError(400, "invalid_request", "request body must be an object");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new HttpError(400, "invalid_request", "request body is invalid JSON");
-  }
-  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
-    throw new HttpError(400, "invalid_request", "request body must be an object");
-  }
-  return parsed as Record<string, unknown>;
-}
-
-/**
- * The published look's validator, as one string.
- *
- * CUT FROM THE ENGINE'S OWN STAMP, not from a hash of the blob. Hashing would
- * mean walking megabytes on every GET to answer a question the mailbox already
- * knows: there is exactly one published look, it is replaced wholesale, and
- * `updatedAt` is when this engine accepted that replacement. A republish of
- * byte-identical content does mint a new tag and cost one re-download; that is
- * the honest trade against hashing every read forever.
- */
-function appearanceEtag(updatedAt: number): string {
-  return `"a${updatedAt.toString(36)}"`;
-}
 
 function sessionPath(pathname: string): { sessionId: string; tail: string } | undefined {
   const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
@@ -802,7 +688,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const domainRoutes = [...filesRoutes(), ...remoteRoutes(remoteStore), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)()), ...aboutRoutes(root), ...push.routes,
     ...settingsRoutes(store, syncOrientationSkill), ...dictationRoutes(store, options.dictationFetch), ...browserRoutes(store.paths.root),
     ...computerUseRoutes(computerUseGate, { ...(options.grantComputerUse ? { grant: options.grantComputerUse } : {}), ...(options.resetComputerUse ? { reset: options.resetComputerUse } : {}) }),
-    ...storageRoutes(store, storageMeter), ...worktreesRoutes(store, storageMeter.checkoutsChanged), ...usageRoutes(store)];
+    ...storageRoutes(store, storageMeter), ...worktreesRoutes(store, storageMeter.checkoutsChanged), ...usageRoutes(store),
+    ...providersRoutes(store, {
+      now: options.now ?? Date.now,
+      ...(options.probeProviderVersion ? { probeVersion: options.probeProviderVersion } : {}),
+      ...(options.runProviderUpdate ? { runUpdate: options.runProviderUpdate } : {}),
+    }),
+    ...appearanceRoutes(store), ...promptsRoutes(store),
+    ...notesRoutes(store, {
+      port: (): number => {
+        const bound: ReturnType<http.Server["address"]> = server.address();
+        return bound && typeof bound === "object" ? bound.port : 0;
+      },
+      secret: () => notesSecret(),
+    })];
   const external = loadInstalledPlugins(pluginsDir);
   const externalModule = (loaded: LoadedExternalPlugin) =>
     externalPlugin(loaded, {
@@ -953,20 +852,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * Comfortably inside the lease either way: the watchdog runs at lease/3.
    */
   const DEFAULT_EMBEDDED_IDLE_POLL_MS = 1_000;
-  /**
-   * INJECTED so a test never shells out to a real CLI. The default probes for
-   * real; every engine test in this repo passes its own, which is also what
-   * keeps the suite fast and offline.
-   */
-  const probeProviders = createProviderProber({
-    ...(options.probeProviderVersion ? { version: options.probeProviderVersion } : {}),
-    now,
-  });
-  const updateProvider =
-    options.runProviderUpdate ??
-    ((driver: ProviderDriverKind, binaryPath: string | undefined) => {
-      return runCliUpdate(driver, binaryPath ? { binaryPath } : {});
-    });
   /**
    * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
    * ending the work it held are the same event, so they are the same function
@@ -1259,52 +1144,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const legacyRoutes = async (request: http.IncomingMessage, response: http.ServerResponse, url: URL): Promise<void> => {
     try {
       authorize("engine", request);
-      if (request.method === "GET" && url.pathname === "/v2/models") {
-        const driver = url.searchParams.get("driver") ?? "claude";
-        const instanceId = url.searchParams.get("instanceId");
-        writeJson(response, 200, {
-          catalogue: await store.modelCatalogue(driver as "claude" | "codex", {
-            force: url.searchParams.get("refresh") === "1",
-            // Absent means the driver's built-in slot — the same fallback
-            // `resolveProviderInstance` makes for a session naming an id nobody
-            // configured. The PROVIDER answer is still driver-wide; the instance
-            // is what selects the overlay laid over it.
-            ...(instanceId ? { instanceId } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS — `/resume`'s picker (#616).
-       *
-       * NOT UNDER A SESSION, and that is the whole reason it is here rather
-       * than beside `/skills`: the picker runs on a CANVAS, before the session
-       * it would adopt into exists. `projectSkills` learned the same thing in
-       * #500 — a question a canvas has to ask cannot be scoped to a session.
-       *
-       * IT IS STILL A LOGIN'S QUESTION. A configured instance keeps its own
-       * config directory with its own history in it, so `?instanceId=` selects
-       * whose conversations these are; absent is the built-in slot, which is
-       * where a terminal `claude` writes.
-       *
-       * `?cwd=` narrows to one project directory. Absent lists every project,
-       * which is the right default: resume finds a conversation BY ID from any
-       * directory, so filtering to cwd-matched projects would hide
-       * conversations that would adopt perfectly well. The project path is on
-       * each row instead, and the person decides.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/claude/conversations") {
-        const instanceId = url.searchParams.get("instanceId")?.trim();
-        const cwd = url.searchParams.get("cwd")?.trim();
-        writeJson(response, 200, {
-          conversations: await store.listAdoptableClaudeConversations({
-            ...(instanceId ? { instanceId } : {}),
-            ...(cwd ? { cwd } : {}),
-            limit: positiveParam(url.searchParams.get("limit"), 100, 500, "limit"),
-          }),
-        });
-        return;
-      }
       if (request.method === "GET" && url.pathname === "/v2/projects") {
         // `?includeRemoved=1` OPTS IN to the put-away ones. Absent by default,
         // so every picker and the sidebar drop a removed project without
@@ -1333,261 +1172,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, store.reprobeProjects());
         return;
       }
-      /** Who writes generated titles and branch names — a document of the
-       *  environment, like the inbox rule above and for the same reason. */
-      if (url.pathname === "/v2/textgen" && (request.method === "GET" || request.method === "PATCH")) {
-        if (request.method === "GET") {
-          writeJson(response, 200, { textGen: store.getTextGenPolicy() });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 200, {
-          textGen: store.setTextGenPolicy({
-            ...("titles" in input ? { titles: input.titles } : {}),
-            ...("renameBranches" in input ? { renameBranches: input.renameBranches } : {}),
-            ...("driver" in input ? { driver: input.driver } : {}),
-            // `null` returns to the driver's default model; the key's presence
-            // is the question, same rule as the inbox window above.
-            ...("model" in input ? { model: input.model } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * ONE STRUCTURED COMPLETION, for a caller that brought its own schema.
-       *
-       * THE GENERALISATION OF THE TITLE JOB above it: same policy, same
-       * built-in instance, same short-lived `claude -p` / `codex exec` child
-       * that cannot touch any session's transcript. What changes is who writes
-       * the prompt — a cockpit feature that needs one small model answer no
-       * longer has to grow its own subprocess plumbing.
-       *
-       * SYNCHRONOUS AND SLOW BY NATURE (a cold harness start plus a completion,
-       * bounded by textgen's own timeout). Callers must treat it as a request
-       * that can take a minute, and must survive it failing.
-       *
-       * A FAILURE IS A 502, NOT AN EMPTY 200. textgen's contract is that every
-       * failure — missing CLI, timeout, refusal, unparseable output — resolves
-       * to `undefined`, which is exactly right for a background nicety and
-       * exactly wrong for a caller that ASKED for an answer. The gateway status
-       * says the truth: this daemon is fine, the harness behind it did not
-       * deliver.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/textgen/complete") {
-        const input = await body(request);
-        const prompt = input["prompt"];
-        if (typeof prompt !== "string" || prompt.trim().length === 0) {
-          throw new HttpError(400, "invalid_request", "prompt must be a non-empty string");
-        }
-        // Well past any reasonable one-shot prompt, well short of a context
-        // window — a caller pasting a whole repository in here has taken a
-        // wrong turn, and the CLI would only fail slower.
-        if (prompt.length > 20_000) {
-          throw new HttpError(400, "invalid_request", "prompt must be under 20000 characters");
-        }
-        const schema = input["schema"];
-        if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
-          throw new HttpError(400, "invalid_request", "schema must be a JSON schema object");
-        }
-        const model = input["model"];
-        if (model !== undefined && (typeof model !== "string" || model.trim().length === 0)) {
-          throw new HttpError(400, "invalid_request", "model must be a non-empty string when given");
-        }
-        const effort = input["effort"];
-        if (effort !== undefined && effort !== "low" && effort !== "medium" && effort !== "high") {
-          throw new HttpError(400, "invalid_request", "effort must be low, medium or high when given");
-        }
-        // A caller that hangs up mid-completion kills the harness child rather
-        // than leaving it to burn its two-minute timeout. `close` also fires
-        // after a normal end, where aborting a finished run is a no-op.
-        const abort = new AbortController();
-        response.on("close", () => abort.abort());
-        const result = await runStructuredForPolicy(store, {
-          prompt,
-          schema: schema as object,
-          ...(typeof model === "string" ? { model } : {}),
-          ...(typeof effort === "string" ? { effort: effort as "low" | "medium" | "high" } : {}),
-          signal: abort.signal,
-        });
-        if (abort.signal.aborted) return; // Nobody is listening for the answer.
-        if (result === undefined) throw new HttpError(502, "textgen_failed", "the harness did not answer");
-        writeJson(response, 200, { result });
-        return;
-      }
-      /**
-       * THE HOST'S LOOK, PUBLISHED — see `EngineStore.getAppearance`.
-       *
-       * WHY THE ENGINE HOLDS A BROWSER'S PREFERENCE, which is otherwise against
-       * the grain here: appearance lives in localStorage because that is where a
-       * person configures it, and a paired iOS client has no way to read another
-       * device's localStorage. The cockpit republishes its RESOLVED look through
-       * `PUT`, and every paired client reads the same answer from `GET`.
-       *
-       * OPAQUE ON PURPOSE. The daemon does not know what an accent or a theme
-       * half is and must not learn — the store's only rules are "a JSON object"
-       * and "under the cap", which is what keeps the vocabulary additive across
-       * an engine and an app that ship on different days. The SHAPE is a real
-       * type now (`PublishedAppearance` in @telar/engine-client) and the client
-       * parses it on the way out; the engine still does not read a key of it.
-       *
-       * CACHEABLE, BECAUSE IT GOT BIG. A published look carries its backdrop's
-       * pixels, so a phone polling this on every foreground would re-download
-       * megabytes to learn nothing changed. GET answers with `updatedAt` and an
-       * `ETag`; a matching `If-None-Match` gets a bodyless 304.
-       *
-       * DELETE IS A REAL OPERATION, not the absence of one. "I do not want my
-       * look published any more" had no expression at all, and the closest
-       * available move — PUTting an empty object — publishes a look that
-       * describes nothing rather than withdrawing the one on file.
-       *
-       * PAIRED-ONLY, like everything else under `/v2`: this is a description of
-       * one person's machine, and the bearer check upstream is the whole access
-       * story. Nothing here is exempt from it.
-       */
-      /**
-       * THE APPEARANCE HOME — the files themselves, over HTTP.
-       *
-       * /v2/appearance is a MAILBOX: one resolved blob a browser published for
-       * paired clients to wear. This is the RECORD: the themes, looks, settings
-       * and pictures that a person or an agent edits on disk, which the cockpit
-       * reads and writes so both authors see one truth. Two routes because they
-       * are two different things, not two spellings of one.
-       */
-      if (url.pathname === "/v2/appearance/home") {
-        if (request.method === "GET") {
-          const themes = readThemes(store.paths.root);
-          const looks = readLooks(store.paths.root);
-          writeJson(response, 200, {
-            settings: readSettings(store.paths.root) ?? null,
-            themes: themes.entries,
-            looks: looks.entries,
-            images: listImages(store.paths.root),
-            // NAMED, not swallowed: a hand-edited directory grows broken files,
-            // and someone hunting for a theme that will not appear deserves to
-            // be told which one it is.
-            skipped: [...themes.skipped, ...looks.skipped],
-          });
-          return;
-        }
-        writeJson(response, 405, { error: { code: "invalid_request", message: "the appearance home accepts GET" } }, { allow: "GET" });
-        return;
-      }
-      if (url.pathname === "/v2/appearance/home/settings" && request.method === "PUT") {
-        const body_ = await body(request);
-        writeSettings(store.paths.root, body_);
-        writeJson(response, 200, { ok: true });
-        return;
-      }
-      {
-        // themes/<id> and looks/<id>, which differ only in the folder.
-        const entry = /^\/v2\/appearance\/home\/(themes|looks)\/([^/]+)$/.exec(url.pathname);
-        if (entry) {
-          const kind = entry[1] as "themes" | "looks";
-          const id = decodeURIComponent(entry[2]!);
-          if (!isAppearanceId(id)) {
-            throw new HttpError(400, "invalid_request", "id must contain only letters, numbers, underscores or hyphens");
-          }
-          if (request.method === "PUT") {
-            const value = await body(request);
-            if (kind === "themes") writeTheme(store.paths.root, id, value);
-            else writeLook(store.paths.root, id, value);
-            writeJson(response, 200, { ok: true, id });
-            return;
-          }
-          if (request.method === "DELETE") {
-            removeEntry(store.paths.root, kind, id);
-            writeJson(response, 200, { ok: true });
-            return;
-          }
-          writeJson(response, 405, { error: { code: "invalid_request", message: "accepts PUT and DELETE" } }, { allow: "PUT, DELETE" });
-          return;
-        }
-      }
-      if (url.pathname === "/v2/appearance/home/images" && request.method === "POST") {
-        const bytes = await rawBody(request, MAX_APPEARANCE_IMAGE_BYTES);
-        const name = putImage(store.paths.root, bytes);
-        // REFUSED HERE rather than stored and discovered broken later: the
-        // format is sniffed from the bytes, so "this is not an image" is a
-        // fact this route already knows.
-        if (name === undefined) throw new HttpError(400, "invalid_request", "the body must be a PNG, JPEG, GIF or WebP image");
-        writeJson(response, 200, { ok: true, name });
-        return;
-      }
-      {
-        const image = /^\/v2\/appearance\/home\/images\/([^/]+)$/.exec(url.pathname);
-        if (image && request.method === "GET") {
-          const bytes = readImage(store.paths.root, decodeURIComponent(image[1]!));
-          if (bytes === undefined) throw new HttpError(404, "not_found", "no such image");
-          response.writeHead(200, {
-            "content-type": IMAGE_TYPES[path.extname(image[1]!).slice(1)] ?? "application/octet-stream",
-            // The name IS a content hash, so the bytes behind it can never change.
-            "cache-control": "public, max-age=31536000, immutable",
-            "content-length": String(bytes.byteLength),
-          });
-          response.end(Buffer.from(bytes));
-          return;
-        }
-      }
-      if (url.pathname === "/v2/appearance") {
-        if (request.method === "GET") {
-          const stored = store.getAppearance();
-          // No look published: no ETag either. There is nothing to revalidate,
-          // and a tag for "nothing" would let a client cache an empty mailbox
-          // past the moment somebody fills it.
-          if (!stored) {
-            writeJson(response, 200, { appearance: null, updatedAt: null });
-            return;
-          }
-          const etag = appearanceEtag(stored.updatedAt);
-          if (matchesETag(request.headers["if-none-match"], etag)) {
-            response.writeHead(304, { etag, "cache-control": "no-store" });
-            response.end();
-            return;
-          }
-          writeJson(response, 200, { appearance: stored.blob, updatedAt: stored.updatedAt }, { etag });
-          return;
-        }
-        if (request.method === "PUT") {
-          // THE BODY IS THE BLOB ITSELF, not a wrapper around it. A snapshot of
-          // a browser's whole resolved look has no partial form worth
-          // expressing, so there is nothing for an envelope to carry.
-          const written = store.setAppearance(await appearanceBody(request));
-          writeJson(response, 200, { ok: true, updatedAt: written.updatedAt, etag: appearanceEtag(written.updatedAt) }, { etag: appearanceEtag(written.updatedAt) });
-          return;
-        }
-        if (request.method === "DELETE") {
-          store.clearAppearance();
-          writeJson(response, 200, { ok: true });
-          return;
-        }
-        // 405, NOT 404. Falling through to the catch-all told a client that
-        // POSTs here that the route does not exist — sending it looking for a
-        // typo in the path rather than at the verb it chose. Written here
-        // rather than thrown so `Allow` can say what would have worked, which
-        // is the whole point of answering 405 instead of 404.
-        writeJson(
-          response,
-          405,
-          { error: { code: "invalid_request", message: "appearance accepts GET, PUT and DELETE" } },
-          { allow: "GET, PUT, DELETE" },
-        );
-        return;
-      }
-      /**
-       * THE CONNECT CARD — where the notebook's outward socket listens and its
-       * dedicated secret. BEHIND THE NORMAL BEARER, deliberately: the card
-       * mints and reveals the socket's credential, so only something already
-       * holding engine access may read it. The composed `claude mcp add` line
-       * comes from the engine so the card and the socket cannot disagree.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/notes/mcp-info") {
-        const bound = server.address();
-        const port = bound && typeof bound === "object" ? bound.port : 0;
-        writeJson(response, 200, {
-          mcp: notesSocketConnectCard(`http://127.0.0.1:${port}/v2/notes/mcp`, notesSecret()),
-        });
-        return;
-      }
       /**
        * A project's git state, for the composer's pinned environment.
        *
@@ -1610,138 +1194,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           setup: store.setups.status(sessionId) ?? null,
           ...store.setups.output(sessionId, Number.isFinite(after) && after > 0 ? after : 0),
         });
-        return;
-      }
-      /**
-       * THE PROJECT NOTEBOOK. Under
-       * `/v2/projects/:id/` for the same reason the git route is: notes belong
-       * to the PROJECT, and every session on it opens the same notebook.
-       *
-       * `store.getProject` FIRST ON EVERY ONE OF THESE. It is the registration
-       * check (an unknown id 404s rather than minting a file) and it is also
-       * what keeps a caller-supplied id from being treated as a path before
-       * anything has vouched for it — `notesPath` re-checks the shape anyway,
-       * which is belt and braces on the one route family where a string becomes
-       * a filename.
-       */
-      const projectNotes = /^\/v2\/projects\/([^/]+)\/notes$/.exec(url.pathname);
-      if (projectNotes && (request.method === "GET" || request.method === "POST")) {
-        const projectId = decodeURIComponent(projectNotes[1]);
-        store.getProject(projectId);
-        if (request.method === "GET") {
-          writeJson(response, 200, { notes: notebook.readNotes(store.paths, projectId) });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 201, {
-          // ABSENT `author` MEANS THE HUMAN'S. Only the tool wall declares
-          // "session" — so a note that arrives with no declaration is a hand's.
-          note: notebook.createNote(store.paths, projectId, {
-            title: input.title as string,
-            body: (input.body ?? "") as string,
-            ...(input.pinned !== undefined ? { pinned: Boolean(input.pinned) } : {}),
-            author: input.author === "session" ? "session" : "you",
-          }),
-        });
-        return;
-      }
-      const projectNote = /^\/v2\/projects\/([^/]+)\/notes\/([^/]+)$/.exec(url.pathname);
-      if (projectNote && (request.method === "GET" || request.method === "PATCH" || request.method === "DELETE")) {
-        const projectId = decodeURIComponent(projectNote[1]);
-        const noteId = decodeURIComponent(projectNote[2]);
-        store.getProject(projectId);
-        if (request.method === "DELETE") {
-          // `deleted: false` RATHER THAN A 404 on a note that is already gone:
-          // a retried delete has reached the state it asked for, and the strip's
-          // optimistic removal must not be undone by an error on the retry.
-          writeJson(response, 200, { deleted: notebook.deleteNote(store.paths, projectId, noteId) });
-          return;
-        }
-        if (request.method === "GET") {
-          const note = notebook.getNote(store.paths, projectId, noteId);
-          if (!note) throw new HttpError(404, "not_found", "no note goes by that id in this project's notebook");
-          writeJson(response, 200, { note });
-          return;
-        }
-        const patch = await body(request);
-        const note = notebook.updateNote(store.paths, projectId, noteId, patch);
-        if (!note) throw new HttpError(404, "not_found", "no note goes by that id in this project's notebook");
-        writeJson(response, 200, { note });
-        return;
-      }
-      /**
-       * THE PROMPT SHELF — unsent messages kept by name, either hand's.
-       *
-       * Under `/v2/projects/:id/` for the notebook's reason, and with the same
-       * `store.getProject` FIRST on every one of them: it is the registration
-       * check, and it is what keeps a caller-supplied id from becoming a
-       * filename before anything has vouched for it.
-       *
-       * A prompt may also carry the SESSION it was prepared for. This route
-       * answers the whole shelf rather than filtering by session, because the
-       * caller that wants one composer's list (`promptsForComposer`) and the
-       * caller that wants the project's count are both real.
-       */
-      const projectPrompts = /^\/v2\/projects\/([^/]+)\/prompts$/.exec(url.pathname);
-      if (projectPrompts && (request.method === "GET" || request.method === "POST")) {
-        const projectId = decodeURIComponent(projectPrompts[1]);
-        store.getProject(projectId);
-        if (request.method === "GET") {
-          writeJson(response, 200, { prompts: shelf.readPrompts(store.paths, projectId) });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 201, {
-          // ABSENT `author` MEANS THE HUMAN'S, as on the notebook: only the tool
-          // wall declares "session", so a prompt arriving undeclared is a hand's.
-          prompt: shelf.createPrompt(store.paths, projectId, {
-            title: input.title as string,
-            text: (input.text ?? "") as string,
-            ...(input.sessionId ? { sessionId: String(input.sessionId) } : {}),
-            ...(input.reason !== undefined ? { reason: String(input.reason) } : {}),
-            author: input.author === "session" ? "session" : "you",
-          }),
-        });
-        return;
-      }
-      const projectPrompt = /^\/v2\/projects\/([^/]+)\/prompts\/([^/]+)$/.exec(url.pathname);
-      if (projectPrompt && (request.method === "GET" || request.method === "PATCH" || request.method === "DELETE")) {
-        const projectId = decodeURIComponent(projectPrompt[1]);
-        const promptId = decodeURIComponent(projectPrompt[2]);
-        store.getProject(projectId);
-        if (request.method === "DELETE") {
-          // `deleted: false` RATHER THAN A 404 on one that is already gone: the
-          // ordinary way a prompt leaves this shelf is being sent, possibly from
-          // the other window, and a retried delete has reached the state it asked
-          // for.
-          writeJson(response, 200, { deleted: shelf.deletePrompt(store.paths, projectId, promptId) });
-          return;
-        }
-        if (request.method === "GET") {
-          const prompt = shelf.getPrompt(store.paths, projectId, promptId);
-          if (!prompt) throw new HttpError(404, "not_found", "no prepared prompt goes by that id on this project's shelf");
-          writeJson(response, 200, { prompt });
-          return;
-        }
-        const patch = await body(request);
-        const prompt = shelf.updatePrompt(store.paths, projectId, promptId, patch);
-        if (!prompt) throw new HttpError(404, "not_found", "no prepared prompt goes by that id on this project's shelf");
-        writeJson(response, 200, { prompt });
-        return;
-      }
-      /** Pin or unpin. Its own route rather than a PATCH field on the caller's
-       *  side, because it is one gesture from one control and the surface should
-       *  not have to compose a patch to express a toggle. */
-      const projectNotePin = /^\/v2\/projects\/([^/]+)\/notes\/([^/]+)\/pin$/.exec(url.pathname);
-      if (request.method === "POST" && projectNotePin) {
-        const projectId = decodeURIComponent(projectNotePin[1]);
-        store.getProject(projectId);
-        const input = await body(request);
-        const note = notebook.updateNote(store.paths, projectId, decodeURIComponent(projectNotePin[2]), {
-          pinned: input.pinned === undefined ? true : Boolean(input.pinned),
-        });
-        if (!note) throw new HttpError(404, "not_found", "no note goes by that id in this project's notebook");
-        writeJson(response, 200, { note });
         return;
       }
       // `?v=` only busts caches; `?format=png` is for clients that cannot decode SVG.
@@ -2261,182 +1713,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             name: stringValue(input.name, "project name")!,
             root: stringValue(input.root, "project root")!,
           }),
-        });
-        return;
-      }
-      /**
-       * The user's MCP servers. NOT under a project or a session, because they
-       * are not scoped to one — a tool server is configured once for the
-       * environment and every session on it gets the enabled ones.
-       */
-      /**
-       * TWO SCOPES, TWO ROUTE SHAPES, and the URL says which one you are in.
-       * `/v2/mcp-servers` is the machine's; `/v2/projects/:id/mcp-servers` is
-       * one repository's. Hanging the project scope off a query parameter would
-       * have made "all of them" and "the global ones" the same request, which is
-       * how a delete ends up in the wrong scope.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/mcp-servers") {
-        writeJson(response, 200, { mcpServers: store.listMcpServers({ projectId: null }) });
-        return;
-      }
-      const projectMcp = /^\/v2\/projects\/([^/]+)\/mcp-servers(?:\/([A-Za-z0-9_-]+))?$/.exec(url.pathname);
-      const globalMcp = /^\/v2\/mcp-servers\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
-      if (projectMcp && request.method === "GET" && projectMcp[2] === undefined) {
-        const projectId = decodeURIComponent(projectMcp[1]);
-        writeJson(response, 200, {
-          mcpServers: store.listMcpServers({ projectId }),
-          // The merge this project's sessions actually run with, answered by
-          // the engine rather than re-derived by the page — so the surface that
-          // EXPLAINS the shadowing cannot disagree with the one that performs it.
-          effective: resolveMcpServers(store.listMcpServers(), projectId),
-        });
-        return;
-      }
-      const mcpSlot = projectMcp?.[2] !== undefined ? { id: projectMcp[2], projectId: decodeURIComponent(projectMcp[1]) } : globalMcp ? { id: globalMcp[1] } : undefined;
-      if (mcpSlot && (request.method === "PUT" || request.method === "DELETE")) {
-        const id = decodeURIComponent(mcpSlot.id);
-        const scope = mcpSlot.projectId === undefined ? {} : { projectId: mcpSlot.projectId };
-        if (request.method === "DELETE") {
-          writeJson(response, 200, { removed: store.removeMcpServer(id, mcpSlot.projectId) });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 200, {
-          mcpServer: store.saveMcpServer({
-            id,
-            ...scope,
-            ...(input.label === undefined ? {} : { label: stringValue(input.label, "mcp server label")! }),
-            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
-            spec: input.spec,
-          }),
-        });
-        return;
-      }
-      /**
-       * The configured logins — the account registry.
-       *
-       * THE LIST AND THE PROBE ARRIVE TOGETHER because a settings page needs
-       * both to render one row, and two round trips would let it paint a green
-       * dot beside an instance the second call is about to call missing.
-       *
-       * SENSITIVE ENVIRONMENT VALUES NEVER COME BACK. `listProviderInstances`
-       * is the redacting read; the store keeps the only unredacting one for the
-       * worker claim, and it is not reachable from here.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/provider-instances") {
-        const providerInstances = store.listProviderInstances();
-        writeJson(response, 200, {
-          providerInstances,
-          probes: await probeProviders(providerInstances, { force: url.searchParams.get("refresh") === "1" }),
-        });
-        return;
-      }
-      /**
-       * UPDATE THE CLI BEHIND ONE LOGIN.
-       *
-       * KEYED ON THE INSTANCE, because a login can now pin its own binary. It
-       * was keyed on the driver, on the reasoning that every login of a provider
-       * runs the same executable — true until `binaryPath` existed, and the
-       * failure would have been the worst kind: pressing Update on the login
-       * pinned to a beta build would have updated the DEFAULT install instead,
-       * reported success, and left the beta exactly where it was.
-       *
-       * THE COMMAND IS NOT IN THE REQUEST AND NEVER WILL BE. The body is empty;
-       * the instance id is the whole input. `cli-updates.ts` derives what to
-       * run from the install it detected on disk. A route that accepted a
-       * command string would be a remote shell wearing a settings button — and
-       * this daemon is already reachable by anything on the tailnet.
-       *
-       * THE FRESH PROBES COME BACK WITH IT, forced past both caches, so the
-       * pane cannot spend the next minute showing the version it just replaced.
-       */
-      const providerUpdate = /^\/v2\/provider-updates\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);
-      if (providerUpdate && request.method === "POST") {
-        const id = decodeURIComponent(providerUpdate[1]!);
-        const instance = store.listProviderInstances().find((entry) => entry.id === id);
-        if (!instance) throw new HttpError(404, "not_found", `unknown provider instance ${id}`);
-        const result = await updateProvider(instance.driver, instance.binaryPath);
-        const providerInstances = store.listProviderInstances();
-        writeJson(response, 200, { result, providerInstances, probes: await probeProviders(providerInstances, { force: true }) });
-        return;
-      }
-      /**
-       * ONE LOGIN'S CURATED MODEL LIST — starred, hidden, ordered, and the ids
-       * somebody added because the installed CLI does not publish them yet.
-       *
-       * NOT ON `/v2/provider-instances/:id`. That PUT is the login's
-       * configuration — the folder, the binary, the environment — and it is read
-       * on every session claim. This is a chatty preference document where a
-       * reorder is a burst of writes, and it belongs behind its own verb in its
-       * own file, the same way the provider secrets do.
-       *
-       * DELIBERATELY DOES NOT 404 ON AN UNCONFIGURED ID, mirroring
-       * `resolveProviderInstance`'s permissive stance: refusing would mean a
-       * session on a since-deleted instance loses its curation, which is the
-       * wrong way round.
-       */
-      const modelOverlay = /^\/v2\/provider-instances\/([A-Za-z][A-Za-z0-9_-]*)\/models$/.exec(url.pathname);
-      if (modelOverlay && (request.method === "GET" || request.method === "PATCH")) {
-        const id = decodeURIComponent(modelOverlay[1]);
-        if (request.method === "GET") {
-          writeJson(response, 200, { overlay: store.getModelOverlay(id) });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 200, {
-          overlay: store.setModelOverlay(id, {
-            // Presence, not truthiness — `[]` is "I cleared this list" and is a
-            // different request from "I did not touch it".
-            ...("favorites" in input ? { favorites: input.favorites } : {}),
-            ...("hidden" in input ? { hidden: input.hidden } : {}),
-            ...("order" in input ? { order: input.order } : {}),
-            ...("custom" in input ? { custom: input.custom } : {}),
-            ...("default" in input ? { default: input.default } : {}),
-          }),
-        });
-        return;
-      }
-      const providerInstance = /^\/v2\/provider-instances\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);
-      if (providerInstance && (request.method === "PUT" || request.method === "DELETE")) {
-        const id = decodeURIComponent(providerInstance[1]);
-        if (request.method === "DELETE") {
-          writeJson(response, 200, { removed: store.removeProviderInstance(id) });
-          return;
-        }
-        const input = await body(request);
-        const saved = store.saveProviderInstance({
-          id,
-          // Every field is forwarded VERBATIM, including an explicit `null`:
-          // the store owns the three-state rule (clear / keep / set), and a
-          // route that coerced null away here would make "remove the accent
-          // colour" unexpressible over HTTP.
-          ...(input.driver === undefined ? {} : { driver: input.driver }),
-          ...(input.displayName === undefined ? {} : { displayName: input.displayName as string | null }),
-          ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor as string | null }),
-          ...(input.contextNoticePercent === undefined ? {} : { contextNoticePercent: input.contextNoticePercent as number | null }),
-          ...(input.autoCompact === undefined ? {} : { autoCompact: input.autoCompact }),
-          ...(input.configDir === undefined ? {} : { configDir: input.configDir as string | null }),
-          ...(input.binaryPath === undefined ? {} : { binaryPath: input.binaryPath as string | null }),
-          ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
-          ...(input.env === undefined ? {} : { env: input.env }),
-          ...(input.carryOverInherited === undefined ? {} : { carryOverInherited: input.carryOverInherited }),
-        });
-        /**
-         * WHAT THIS SAVE STOPPED THE LOGIN INHERITING — #594, and NAMES ONLY.
-         *
-         * Present only when there is something to say, so a client can treat
-         * its presence as the event rather than comparing an empty array. It is
-         * on the SAVE rather than on the list because it is a fact about a
-         * change: an instance that was already configured lost nothing here.
-         *
-         * NO VALUE IS IN THIS ANSWER. Three of the names it can carry are
-         * credentials, and a response that showed what was about to be lost
-         * would be the leak this warning exists to avoid.
-         */
-        writeJson(response, 200, {
-          providerInstance: saved.instance,
-          ...(saved.stoppedInheriting.length > 0 ? { stoppedInheriting: saved.stoppedInheriting } : {}),
         });
         return;
       }

@@ -19,9 +19,12 @@ export {
   resolveCli,
   resolveCliAsync,
 } from "./cli";
-export { runCliUpdate, type CliUpdateRun } from "./cli-updates";
+export { type CliUpdateRun } from "./cli-updates";
 export {
   createProviderProber,
+  inheritedOwnedEnv,
+  providerEnvIsCredential,
+  providerOwnsEnv,
   providerProcessEnv,
   type VersionProbe,
 } from "./instances";
@@ -39,8 +42,8 @@ export {
 export {
   generateSessionTitle,
   maybeRetitleSession,
-  runStructuredForPolicy,
   textGenDisabledByEnv,
   type RetitleStore,
 } from "./textgen";
 export { assertInstanceId, ProviderRegistry, type ProviderInstanceInput } from "./registry";
+export { providersRoutes } from "./routes";
