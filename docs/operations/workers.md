@@ -28,14 +28,14 @@ The routes, the App Attest registration, send-key signatures and rate limits are
 
 Deploys run from `deploy-push-relay.yml` ("Deploy personal push relay"). It runs the relay tests, then `node workers/push-relay/deploy.mjs`.
 
-It triggers on a manual dispatch, or on a push to a `telar/push-relay-*` branch that touches `workers/push-relay/**` or the workflow file. A merge to `main` doesn't deploy. Dispatch after merging:
+It triggers on a push to `main` that touches `workers/push-relay/**` or the workflow file, so merging a relay change deploys it. To redeploy without a change, dispatch it:
 
 ```sh
 gh workflow run deploy-push-relay.yml --ref main
 gh run watch
 ```
 
-A dispatch deploys whatever ref you give it, and so does a push to a `telar/push-relay-*` branch. Both reach the production relay.
+A dispatch deploys whatever ref you give it, and it reaches the production relay.
 
 ### Deploying by hand
 
