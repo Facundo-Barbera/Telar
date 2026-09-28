@@ -1,24 +1,10 @@
-/**
- * Keeps the executable worker attached across daemon restarts and lease loss.
- * It is separate from worker-main so the narrow initial-registration race is
- * regression-testable, and shared with the daemon's embedded worker so both
- * deployments recover the same way.
- */
 export type SupervisedWorker = {
   start(): Promise<void>;
-  /**
-   * `"shutdown"` is Telar quitting; `"connection_lost"` is this worker being
-   * REPLACED because its connection could not be recovered. The worker settles
-   * its interrupted turns differently for each, because they are different
-   * events and only one of them is a shutdown — see #208. Optional so a
-   * supervised worker that does not care may ignore it.
-   */
   stop(reason?: "shutdown" | "connection_lost"): Promise<void>;
 };
 
 export type WorkerReconnectControllerOptions<Client, Worker extends SupervisedWorker> = {
   connect(): Promise<Client>;
-  /** May be async: a fresh driver per attempt is built here. */
   createWorker(client: Client, onConnectionLost: () => void): Worker | Promise<Worker>;
   pause(ms: number): Promise<void>;
   retryMs?: number;
@@ -29,8 +15,6 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
   private connecting: Promise<void> | undefined;
   private stopping = false;
   private reconnectRequestedWhileStarting = false;
-  /** A reconnect is between "stopping the old worker" and "connecting", where
-   *  `connecting` is not yet set — see `requestReconnect`. */
   private reconnecting = false;
 
   constructor(private readonly options: WorkerReconnectControllerOptions<Client, Worker>) {}
@@ -40,15 +24,10 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
   }
 
   async stop(): Promise<void> {
-    // SET FIRST, so a recovery already in flight sees it and gives up rather
-    // than publishing a worker nobody asked for: `connectLoop` re-checks
-    // `stopping` after every await, and `requestReconnect` refuses outright.
     this.stopping = true;
     const previous = this.worker;
     this.worker = undefined;
     await previous?.stop("shutdown");
-    // A connect loop mid-flight exits on its own; wait for it so no attempt
-    // outlives the daemon that owns it.
     await this.connecting?.catch(() => undefined);
   }
 
@@ -83,9 +62,6 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
           await candidate.stop("shutdown");
           return;
         }
-        // `EngineWorker.start()` can report a connection loss while its first
-        // tick is in flight. Do not publish that candidate as healthy: retry
-        // in this same loop after it has been stopped.
         if (lostDuringStart || this.reconnectRequestedWhileStarting) {
           this.reconnectRequestedWhileStarting = false;
           await candidate.stop("connection_lost");
@@ -94,8 +70,6 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
         this.worker = candidate;
         return;
       } catch {
-        // A candidate whose start() threw still holds a driver: dispose it
-        // before the next attempt builds another.
         await candidate?.stop("connection_lost").catch(() => undefined);
         if (!this.stopping) await this.options.pause(this.options.retryMs ?? 250);
       }
@@ -104,10 +78,6 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
 
   private requestReconnect(): void {
     if (this.stopping) return;
-    // `reconnecting` as well as `connecting`: `reconnect` awaits the previous
-    // worker's `stop()` BEFORE `connect()` sets `connecting`, so a second
-    // report landing inside that await saw neither guard and started a rival
-    // reconnect — two connect loops for one loss.
     if (this.connecting || this.reconnecting) {
       this.reconnectRequestedWhileStarting = true;
       return;
@@ -120,13 +90,7 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
     try {
       const previous = this.worker;
       this.worker = undefined;
-      // Named as a replacement: the daemon may be perfectly alive, and these
-      // turns must not be told Telar shut down.
       await previous?.stop("connection_lost");
-      // Reports that arrived while the old worker was stopping are ANSWERED by
-      // this reconnect; carrying them into the connect loop made it discard a
-      // healthy new candidate and build another for a loss already handled.
-      // Reports landing during `connect()` still set the flag and still count.
       this.reconnectRequestedWhileStarting = false;
       await this.connect();
     } finally {

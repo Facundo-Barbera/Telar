@@ -2,19 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "./state";
-import { claudeProjectSlug } from "./drivers/claude";
-
-/**
- * THE ADOPT WIRING, THROUGH THE STORE — what `/resume` actually does to a
- * session, against a real Claude store in a temp directory.
- *
- * The three things being asserted are the three that make it a feature rather
- * than a file copy: the session's next turn RESUMES the fork, the history is
- * readable as rows the cockpit can draw, and the row at the head of it says
- * where the conversation came from. Plus the one that makes it safe — the
- * person's own transcript is byte-identical afterwards.
- */
+import { EngineStore } from "../../state";
+import { claudeProjectSlug } from ".";
 
 const SOURCE_CWD = "/tmp/telar-adopt-store-source";
 
@@ -35,11 +24,6 @@ afterEach(() => {
 function setup(options: { turns?: number } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-adopt-store-"));
   roots.push(root);
-  /**
-   * THE CONFIG DIRECTORY IS SET BEFORE ANY SDK CALL — the near-miss #616
-   * records. The SDK reads `process.env` at call time, so a test that left this
-   * alone would fork inside the real `~/.claude`.
-   */
   restore = { config: process.env.CLAUDE_CONFIG_DIR };
   const claudeHome = path.join(root, "claude");
   process.env.CLAUDE_CONFIG_DIR = claudeHome;
@@ -100,10 +84,8 @@ test("an adopted session resumes the FORK, never the person's own conversation",
   const { provenance } = await store.adoptClaudeConversation("session_one", { sourceSessionId });
 
   const session = store.getSession("session_one");
-  // The cursor is what makes the next turn a continuation.
   expect(session.resumeCursor).toBe(provenance.sessionId);
   expect(session.resumeCursor).not.toBe(sourceSessionId);
-  // And it is on the turn as well, so recovery heals from either.
   expect(store.turns("session_one")[0]?.providerSessionId).toBe(provenance.sessionId);
 });
 
@@ -124,8 +106,6 @@ test("the history lands as rows on one turn, and the turn is not the person's wo
   const { store, sourceSessionId } = setup({ turns: 2 });
   const { turn } = await store.adoptClaudeConversation("session_one", { sourceSessionId });
 
-  // `kind: "import"` is what tells a renderer not to draw `input` as a bubble —
-  // the lesson `/compact` taught this enum.
   expect(turn.kind).toBe("import");
   expect(turn.state).toBe("completed");
 
@@ -136,9 +116,7 @@ test("the history lands as rows on one turn, and the turn is not the person's wo
   const text = JSON.stringify(history);
   expect(text).toContain("question 0");
   expect(text).toContain("answer 1");
-  // Every carried row says it was not produced by a turn this engine ran.
   expect(history.every((item) => item.imported === true)).toBe(true);
-  // And every one can be traced back to the record it came from.
   expect(history.every((item) => Boolean(item.providerRefs?.itemId))).toBe(true);
 });
 
@@ -148,7 +126,6 @@ test("the head of the history says where it came from", async () => {
 
   const stamp = store.items("session_one").find((item) => item.detail.type === "conversation_import");
   expect(stamp).toBeDefined();
-  // FIRST, ahead of the history it explains.
   expect(store.items("session_one")[0]?.id).toBe(stamp!.id);
   if (stamp?.detail.type !== "conversation_import") throw new Error("unreachable");
   expect(stamp.detail.import.sourceSessionId).toBe(sourceSessionId);
@@ -156,11 +133,6 @@ test("the head of the history says where it came from", async () => {
   expect(stamp.detail.import.firstPrompt).toContain("question 0");
   expect(stamp.detail.import.rows).toBeGreaterThan(0);
 
-  /**
-   * AND `sessions_read` REACHES IT. Both doors: the journal carries the item
-   * events, and the turn's own line names the conversation without opening a
-   * single row.
-   */
   const events = store.readEvents("session_one");
   expect(events.some((event) => event.type === "item.completed" && event.item.detail.type === "conversation_import")).toBe(true);
   expect(turn.input).toContain(sourceSessionId);
@@ -174,8 +146,6 @@ test("the fork lands under the engine root, and is not offered back as adoptable
     fs.existsSync(path.join(projects, claudeProjectSlug(path.join(engineRoot, "adopted")), `${provenance.sessionId}.jsonl`)),
   ).toBe(true);
 
-  // The picker must not offer a fork: adopting an adoption is a thing a person
-  // could do without ever being told that is what they did.
   const offered = await store.listAdoptableClaudeConversations();
   expect(offered.map((row) => row.sessionId)).toEqual([sourceSessionId]);
 });

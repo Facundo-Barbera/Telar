@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { EngineRequest, Turn } from "@telar/engine-client";
 import { EngineStateError, STATE_VERSION, type Kernel } from "../../platform/kernel";
-import type { EngineStatePaths } from "../../state-paths";
+import type { EngineStatePaths } from "../../platform/fs/state-paths";
 import { sessionDir } from "./metadata";
 
 // The same tail a snapshot renders; an open request is never dropped.

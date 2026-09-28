@@ -1,76 +1,10 @@
-/**
- * The usage report — spend over time, scanned from the provider CLIs' own
- * transcripts. t3 code's architecture (itself modeled on ccusage), adopted
- * over folding Telar's journals because the transcripts know two things the
- * journals never will: WHICH model a default-riding turn actually ran, and
- * everything this machine spent OUTSIDE Telar. Telar's own turns land in the
- * same directories, so one source counts everything exactly once.
- *
- * Verified against the real files on disk, not the docs:
- *
- *   Claude — `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`, one record
- *   per assistant message: `{type:"assistant", timestamp, sessionId,
- *   requestId, costUSD, message:{id, model, usage:{input_tokens,
- *   cache_read_input_tokens, cache_creation_input_tokens, output_tokens}}}`.
- *   `input_tokens` already EXCLUDES cache reads. `costUSD` is null on
- *   subscription plans. Dedupe by `messageId:requestId`.
- *
- *   THAT DEDUPE IS LOAD-BEARING, AND NOT FOR THE REASON THIS COMMENT USED TO
- *   GIVE. It said a resumed session copies its parent's history into a new
- *   file. Re-measured at CLI 2.1.275 (#616): resume appends to the SAME file
- *   and keeps the same session id, and across the 2,533 transcripts on a
- *   working machine there is not one `messageId:requestId` that appears in two
- *   files — the copying the dedupe was written for no longer happens.
- *
- *   What it actually suppresses is INSIDE a single file. The CLI writes one
- *   record PER CONTENT BLOCK of an assistant response — `apiBlockIndex` 0, 1,
- *   2 for a reply that thought, spoke and called a tool — and stamps every one
- *   of them with the SAME `usage` object. Measured: 52,526 of 113,359 usage
- *   records are such re-emissions, 46%. Counting them would bill a three-block
- *   answer three times.
- *
- *   So this key must not be removed on the grounds that resume no longer
- *   forks. Left as it was, the stale rationale invited exactly that.
- *
- *   Codex — `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`:
- *   `{type:"event_msg", payload:{type:"token_count", info:{last_token_usage:
- *   {input_tokens, cached_input_tokens, cache_write_input_tokens,
- *   output_tokens, reasoning_output_tokens}}}}` — `input_tokens` INCLUDES the
- *   cached and cache-write figures, so uncached input is the difference. The
- *   model rides separately on `turn_context` records and is carried forward.
- *   Consecutive identical usage payloads are re-emissions, not new spend.
- *
- * Cost: the transcript's own figure when present, else the LiteLLM rate
- * table (usage-pricing.ts), else absent — never guessed.
- *
- * THE SCAN IS BUILT FOR A GIGABYTE OF TRANSCRIPTS, because that is what a
- * week of agent work leaves behind (measured: 4,200 files, 933 MB, of which
- * usage lines are a quarter of the lines and a fraction of the bytes). Three
- * things keep a cold report under a second and a warm one near free:
- *
- *   BYTES, NOT STRINGS. A transcript is mostly tool output, and decoding all
- *   of it to find the handful of usage lines allocated the whole gigabyte as
- *   JS strings. The scanner searches the raw buffer for the bytes a usage
- *   line must contain and decodes only those lines.
- *
- *   THE TAIL, NOT THE FILE. Transcripts append. Each file's parse is kept
- *   with the byte offset it reached, and a file that grew is read from there.
- *   A trailing line with no newline yet is parsed but not committed — the
- *   next read re-covers it — so a record mid-write is neither lost nor
- *   counted twice.
- *
- *   ON DISK, NOT ONLY IN MEMORY. The per-file cache lives in the state root,
- *   so an engine restart (every nightly install) does not re-read a gigabyte
- *   before the first Usage page can draw.
- */
-
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
 import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport, UsageResolution, UsageSource } from "@telar/engine-client";
-import { loadRates, priceTokens, type RatesTable } from "./domains/usage";
+import { loadRates, priceTokens, type RatesTable } from ".";
 
 type UsageRecord = {
   at: number;
@@ -78,23 +12,12 @@ type UsageRecord = {
   tokens: TokenUsage;
   costUsd?: number;
   sessionId: string;
-  /** Cross-file dedupe key; undefined means "trust the file order dedupe". */
   dedupe?: string;
-  /** The 1-hour-TTL slice of `tokens.cacheCreate` — billed at 2× input, so
-   *  pricing needs the split (see usage-pricing.ts). Claude only. */
   cacheCreate1h?: number;
 };
 
-/**
- * Files whose mtime predates the window by more than this cannot contain
- * records inside it — minus clock skew and long sessions, hence the generous
- * slack (t3 code's own figure). This is what keeps a 90-day scan from
- * re-reading a year of transcripts.
- */
 const MTIME_SLACK_MS = 36 * 3_600_000;
 
-/** How far back the start-up warm-up reaches: the widest window the usage
- *  page offers, so every one of its buttons is warm. */
 const WARM_WINDOW_MS = 90 * 86_400_000;
 
 const NL = 0x0a;
@@ -109,13 +32,6 @@ function tokensOf(input: number, output: number, cacheRead: number, cacheCreate:
   };
 }
 
-/**
- * The lines in `buf[from, to)` that contain any of the needles, decoded, in
- * file order. Every other line stays bytes: this is the whole saving.
- *
- * `from` must sit at a line start. A line that runs past `to` is cut there
- * — the caller decides whether a cut line is a partial record.
- */
 function candidateLines(buf: Buffer, from: number, to: number, needles: readonly Buffer[]): string[] {
   const starts = new Set<number>();
   for (const needle of needles) {
@@ -142,7 +58,6 @@ const CLAUDE_NEEDLES = [Buffer.from('"usage"')];
 function parseClaudeLines(buf: Buffer, from: number, to: number, fallbackSession: string): UsageRecord[] {
   const records: UsageRecord[] = [];
   for (const line of candidateLines(buf, from, to, CLAUDE_NEEDLES)) {
-    // The cheap gate before JSON.parse — most lines are content, not usage.
     if (!line.includes('"assistant"')) continue;
     let entry: Record<string, unknown>;
     try {
@@ -181,18 +96,10 @@ function parseClaudeLines(buf: Buffer, from: number, to: number, fallbackSession
   return records;
 }
 
-/**
- * What a Codex parse carries from one line to the next — and, because a
- * file is read in pieces, from one read to the next. Serialisable, so the
- * disk cache can resume a file exactly where the last read stopped.
- */
 type CodexState = {
   model: string;
   sessionId: string;
   lastSignature: string;
-  /** token_count events can precede the first turn_context; those records
-   *  land as "unknown" and are never priced. The session's first NAMED model
-   *  owns them — backfilled once it is known. */
   firstNamedModel?: string;
 };
 
@@ -228,7 +135,6 @@ function parseCodexLines(buf: Buffer, from: number, to: number, state: CodexStat
     if (typeof last !== "object" || last === null) continue;
     const u = last as Record<string, unknown>;
     const n = (key: string): number => (typeof u[key] === "number" ? (u[key] as number) : 0);
-    // The same figures re-stamped are a UI refresh, not new spend.
     const signature = `${n("input_tokens")}:${n("cached_input_tokens")}:${n("cache_write_input_tokens")}:${n("output_tokens")}`;
     if (signature === state.lastSignature) continue;
     state.lastSignature = signature;
@@ -251,15 +157,6 @@ function parseCodexLines(buf: Buffer, from: number, to: number, state: CodexStat
   return records;
 }
 
-/**
- * One transcript's parse, and where it stopped.
- *
- * `records` come from lines that ended in a newline before `offset`; they
- * are final. `tail` comes from whatever followed the last newline — a record
- * still being written, or a file that simply never got its final newline —
- * and is thrown away and re-read on the next growth, so it can neither go
- * missing nor be counted twice.
- */
 type FileEntry = {
   size: number;
   mtimeMs: number;
@@ -269,8 +166,6 @@ type FileEntry = {
   codex?: CodexState;
 };
 
-/** The disk shape of a record — positional, because sixty thousand of them
- *  with spelled-out keys is a file the cold path has to parse. */
 type StoredRecord = [
   at: number,
   model: string,
@@ -347,19 +242,6 @@ function unpackEntry(stored: unknown): FileEntry | undefined {
   return { size: e.size, mtimeMs: e.mtimeMs, offset: e.offset, records, tail, ...(codex ? { codex } : {}) };
 }
 
-/**
- * Every transcript's parse, by path, optionally mirrored to one JSON file.
- *
- * ONE PER PATH, module-wide, because two reports in flight (the page's
- * stale-while-revalidate fires them) must share a parse rather than race two.
- * With no path the cache is memory only — the shape every test wants, and
- * what the engine had before the disk copy existed.
- *
- * WRITTEN AFTER THE REPORT, NOT DURING IT. The report answers first; the save
- * (a stringify plus an async write-and-rename) follows on its own, coalesced
- * so a burst of reports costs one write. A cache that fails to load or save
- * costs a re-scan, never a report.
- */
 class UsageScanCache {
   private readonly files = new Map<string, FileEntry>();
   private loaded: Promise<void> | undefined;
@@ -398,13 +280,6 @@ class UsageScanCache {
     this.dirty = true;
   }
 
-  /**
-   * Persist, keeping only the files a walk just saw — a deleted transcript
-   * should not live on in the cache — and only those young enough to matter
-   * to the widest window the page offers, so the file is bounded by recent
-   * activity rather than by everything ever scanned. No-op without a path or
-   * a change.
-   */
   save(visited: ReadonlySet<string>, now = Date.now()): Promise<void> {
     const horizon = now - WARM_WINDOW_MS - MTIME_SLACK_MS;
     for (const [file, entry] of this.files) {
@@ -448,7 +323,6 @@ class UsageScanCache {
     }
   }
 
-  /** Test seam: the pending write, if one is in flight or queued. */
   async flushed(): Promise<void> {
     while (this.saving) await this.saving;
   }
@@ -467,8 +341,6 @@ function cacheFor(file: string | undefined): UsageScanCache {
   return cache;
 }
 
-/** Test seams: wait for every pending cache write; forget every in-memory
- *  cache (so a test can prove the disk copy is what gets read). */
 export async function flushUsageScanCaches(): Promise<void> {
   await Promise.all([...cachesByPath.values()].map((cache) => cache.flushed()));
 }
@@ -494,13 +366,6 @@ async function readRange(file: string, from: number, to: number): Promise<Buffer
   }
 }
 
-/**
- * One transcript's records, from the cache when nothing changed, from its
- * new tail when it grew, and from the top when it did anything else.
- *
- * `undefined` is "could not read", which the report surfaces as a failed
- * source; `[]` is "nothing in the window", which it does not.
- */
 async function scanFile(file: string, provider: ProviderDriverKind, sinceMs: number, cache: UsageScanCache): Promise<{ records: UsageRecord[]; read: boolean } | undefined> {
   let stat: fs.Stats;
   try {
@@ -513,9 +378,6 @@ async function scanFile(file: string, provider: ProviderDriverKind, sinceMs: num
   if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
     return { records: cached.tail.length ? [...cached.records, ...cached.tail] : cached.records, read: false };
   }
-  // GROWTH IS AN APPEND; anything else is a rewrite. Same size with a new
-  // mtime, or a smaller file, is a transcript somebody edited or replaced,
-  // and the only honest answer is to start over.
   const resume = cached && stat.size > cached.size ? cached : undefined;
   const from = resume?.offset ?? 0;
   let buf: Buffer;
@@ -525,7 +387,6 @@ async function scanFile(file: string, provider: ProviderDriverKind, sinceMs: num
     return undefined;
   }
   const fallbackSession = path.basename(file, ".jsonl");
-  // Everything before the last newline is committed; the rest is the tail.
   const committed = buf.lastIndexOf(NL) + 1;
   let records: UsageRecord[];
   let tail: UsageRecord[];
@@ -538,8 +399,6 @@ async function scanFile(file: string, provider: ProviderDriverKind, sinceMs: num
     codex = resume?.codex ? { ...resume.codex } : { model: "unknown", sessionId: fallbackSession, lastSignature: "" };
     const fresh = parseCodexLines(buf, 0, committed, codex);
     records = resume ? [...resume.records, ...fresh] : fresh;
-    // The tail parses from a COPY of the committed state, so a partial line
-    // cannot move the cursor's own state forward.
     tail = parseCodexLines(buf, committed, buf.length, { ...codex });
     if (codex.firstNamedModel) {
       for (const record of records) if (record.model === "unknown") record.model = codex.firstNamedModel;
@@ -574,14 +433,10 @@ export type UsageScanRoots = {
   codexArchive?: string;
 };
 
-/** Where each CLI keeps its transcripts, honouring the same env vars the
- *  CLIs themselves read. */
 function defaultScanRoots(env: NodeJS.ProcessEnv = process.env): UsageScanRoots {
   const home = os.homedir();
   const claudeHome = env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
   const codexHome = env.CODEX_HOME?.trim() || path.join(home, ".codex");
-  // `archived_sessions` is where `codex` moves rollouts a user archives from
-  // its picker — archived, not deleted, and still spend.
   return {
     claude: path.join(claudeHome, "projects"),
     codex: path.join(codexHome, "sessions"),
@@ -595,13 +450,6 @@ type ProviderScan = {
   failed: boolean;
 };
 
-/**
- * Every record from one provider's roots, cache-assisted. Yields to the
- * event loop after every file it actually read and every so often while it
- * only stats, so the daemon keeps answering session and browser traffic
- * while a report is assembled. `visited` collects every path seen, for the
- * cache to prune against.
- */
 async function scanProvider(
   provider: ProviderDriverKind,
   roots: readonly string[],
@@ -630,8 +478,6 @@ async function scanProvider(
   return { records, files, failed };
 }
 
-/** `YYYY-MM-DD` in the requested zone. `en-CA` is the locale whose short date
- *  IS that shape — the same trick t3 code uses. */
 function dayFormatter(timeZone: string): Intl.DateTimeFormat {
   const options = { year: "numeric", month: "2-digit", day: "2-digit" } as const;
   try {
@@ -643,23 +489,14 @@ function dayFormatter(timeZone: string): Intl.DateTimeFormat {
 
 const HOUR_MS = 3_600_000;
 
-/** Whole-report memo: the UI's window buttons re-request with a fresh
- *  untilMs every click, so the raw args never repeat — rounded to the
- *  minute they do, and a minute-old report of a 90-day window is the same
- *  report. Bounds the walk+parse to once a minute per window shape. */
 const reportMemo = new Map<string, { at: number; report: UsageReport }>();
 const REPORT_MEMO_TTL_MS = 60_000;
 
 export type UsageScanOptions = {
   roots?: UsageScanRoots;
-  /** Where the rates snapshot lives — the engine state root. */
   ratesCachePath: string;
-  /** Where the per-transcript parse cache lives. Absent keeps it in memory
-   *  only — every test wants that; the daemon does not. */
   scanCachePath?: string;
-  /** Test seam; the default fetches LiteLLM's table. */
   loadRatesTable?: () => Promise<RatesTable>;
-  /** Test seam: memoization off so fixtures don't bleed between tests. */
   memo?: boolean;
 };
 
@@ -688,7 +525,6 @@ export async function readUsageReport(
   const cache = cacheFor(options.scanCachePath);
   const [rates] = await Promise.all([(options.loadRatesTable ?? (() => loadRates(options.ratesCachePath)))(), cache.load()]);
 
-  // Constructing an ICU formatter for every record dominated range changes.
   const calendar = input.resolution === "day" ? dayFormatter(input.timeZone) : undefined;
   const buckets = new Map<string, UsageBucket & { allPriced: boolean }>();
   const sessions = new Set<string>();
@@ -697,8 +533,6 @@ export async function readUsageReport(
   const visited = new Set<string>();
 
   for (const [provider, candidates] of providerRoots(roots)) {
-    // The archive is an extra shelf of the same store, not a second source —
-    // one row reports the primary path, and a missing archive is ordinary.
     const present = candidates.filter((candidate) => fs.existsSync(candidate));
     if (!present.includes(candidates[0]!)) {
       sources.push({ provider, status: "missing", path: candidates[0]!, files: 0, sessions: 0 });
@@ -761,24 +595,15 @@ export async function readUsageReport(
   };
   if (options.memo !== false) {
     reportMemo.set(memoKey, { at: Date.now(), report });
-    // Four window buttons × two resolutions is the whole working set.
     if (reportMemo.size > 8) {
       const oldest = [...reportMemo.entries()].sort((a, b) => a[1].at - b[1].at)[0];
       if (oldest) reportMemo.delete(oldest[0]);
     }
   }
-  // The answer is on its way before the cache is written; see UsageScanCache.
   void cache.save(visited);
   return report;
 }
 
-/**
- * Bring the scan cache up to date without producing a report — what the
- * daemon does shortly after it starts, so the first Usage page a person opens
- * after an update finds the transcripts already read. Reaches back the
- * widest window the page offers. Rates are not touched: they are the page's
- * concern, and fetching them here would put a network call on start-up.
- */
 export async function warmUsageScanCache(options: { roots?: UsageScanRoots; scanCachePath: string; now?: () => number }): Promise<void> {
   const roots = options.roots ?? defaultScanRoots();
   const cache = cacheFor(options.scanCachePath);

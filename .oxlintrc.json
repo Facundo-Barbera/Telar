@@ -21,7 +21,7 @@
         "apps/desktop/src/browser/browser-downloads.js",
         "apps/engine/src/domains/remote/routes.ts",
         "apps/engine/src/state.ts",
-        "apps/engine/src/worker-diagnostics.ts"
+        "apps/engine/src/worker/diagnostics.ts"
       ],
       "rules": {
         "no-control-regex": "off"

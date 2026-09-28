@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Session, workspacePath } from "@telar/engine-client";
 import { assertId, EngineStateError } from "../../platform/kernel";
-import type { EngineStatePaths } from "../../state-paths";
+import type { EngineStatePaths } from "../../platform/fs/state-paths";
 
 const MAX_UNSETTLED_ASSIGNMENTS = 64;
 

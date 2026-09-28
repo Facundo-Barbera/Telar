@@ -6,7 +6,7 @@ import { EngineClient, EngineClientError, sanitizeTransportCause } from "@telar/
 import { startEngine } from "../daemon";
 import type { TurnDriver } from "../drivers";
 import { EngineWorker } from ".";
-import { WorkerReconnectController, type SupervisedWorker } from "../worker-supervisor";
+import { WorkerReconnectController, type SupervisedWorker } from "./supervisor";
 import { stubModels } from "../../test/stub-models";
 
 /**

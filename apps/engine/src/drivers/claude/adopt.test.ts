@@ -8,22 +8,8 @@ import {
   describeAdoption,
   listAdoptableConversations,
   withClaudeConfigDir,
-} from "./claude-adopt";
-import { claudeProjectSlug, forkClaudeConversation } from "./drivers/claude";
-
-/**
- * THE ADOPT STEP, against a REAL Claude store in a temp directory.
- *
- * Two of these tests are the ones that matter. One proves the original is
- * byte-identical after an adoption — the promise the fork decision was made for
- * — and the other proves the wiring would REFUSE if it were not, because a
- * guarantee whose failure branch has never run is a comment.
- *
- * `CLAUDE_CONFIG_DIR` IS SET BEFORE ANY SDK CALL, ALWAYS. The SDK reads it off
- * `process.env` at call time, so a test that forgot would fork inside the real
- * `~/.claude` — somebody's actual conversation history, and the exact thing
- * #616 promises not to touch.
- */
+} from "./adopt";
+import { claudeProjectSlug, forkClaudeConversation } from ".";
 
 const SOURCE_CWD = "/tmp/telar-adopt-source";
 
@@ -44,8 +30,6 @@ afterEach(() => {
 
 type Built = { env: NodeJS.ProcessEnv; projects: string; telarHome: string; sessionId: string; transcript: string };
 
-/** A transcript in the shape the CLI writes one — the same builder the fork
- *  tests use, with a tool call so the reader has something to fold. */
 function buildStore(options: { turns?: number; compacted?: boolean } = {}): Built {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-adopt-"));
   roots.push(root);
@@ -145,22 +129,16 @@ test("an adoption that disturbed the original is REFUSED, and leaves no copy beh
       title: "Adopted into Telar",
       configDir: built.env.CLAUDE_CONFIG_DIR!,
       env: built.env,
-      // A REAL fork that also writes to the source — the failure the whole
-      // design exists to prevent, made to happen so the guard can be seen to
-      // fire. Nothing in production passes this.
       fork: async (options) => {
         const outcome = await forkClaudeConversation(options);
         forkedTo = outcome.transcriptPath;
         fs.appendFileSync(built.transcript, "\n");
-        // Reported AFTER the write, exactly as the real one reports it.
         const source = fs.statSync(built.transcript);
         return { ...outcome, source: { ...outcome.source, bytes: source.size, mtimeMs: source.mtimeMs } };
       },
     }),
   ).rejects.toThrow(/changed the original transcript/);
 
-  // The refusal is not enough on its own: a fork left in Telar's directory
-  // would be a file no session will ever resume.
   expect(forkedTo).toBeDefined();
   expect(fs.existsSync(forkedTo!)).toBe(false);
 });
@@ -177,7 +155,6 @@ test("the fork lands in Telar's own directory, never in the session's checkout",
   expect(adoption.fork.transcriptPath).toBe(
     path.join(built.projects, claudeProjectSlug(adoptedForkHome(built.env)), `${adoption.fork.sessionId}.jsonl`),
   );
-  // The person's own project directory still holds exactly what it held.
   expect(fs.readdirSync(path.join(built.projects, claudeProjectSlug(SOURCE_CWD)))).toEqual([`${built.sessionId}.jsonl`]);
 });
 
@@ -209,12 +186,9 @@ test("the stamp says where it came from, what was kept, and what it is now", asy
   const stamp = adoption.provenance;
   expect(stamp.provider).toBe("claude");
   expect(stamp.sourceSessionId).toBe(built.sessionId);
-  // NEVER the source: the resumed id is the fork's.
   expect(stamp.sessionId).toBe(adoption.fork.sessionId);
   expect(stamp.sessionId).not.toBe(built.sessionId);
   expect(stamp.sourceCwd).toBe(SOURCE_CWD);
-  // The field that actually distinguishes two conversations — the CLI's own
-  // titles do not.
   expect(stamp.firstPrompt).toContain("question 0");
   expect(stamp.cut).toBe("whole");
   expect(stamp.rows).toBe(adoption.rows.length);
@@ -266,13 +240,6 @@ test("an adopted conversation is not offered back as something to adopt", async 
   expect(offered.map((row) => row.sessionId)).toEqual([built.sessionId]);
 });
 
-/**
- * THE NEAR-MISS FROM #616, AS A TEST. The SDK takes no config-directory
- * argument: it reads `process.env` when it is called, inside a process the
- * engine owns. So the adopt path has to put the login's directory ON the
- * process for the length of the call — and put back exactly what was there,
- * including the case where there was nothing.
- */
 test("the config directory is in effect during the call and restored after it", async () => {
   const before = process.env.CLAUDE_CONFIG_DIR;
   let seen: string | undefined = "not-run";
@@ -291,9 +258,6 @@ test("the built-in login DELETES the variable rather than pointing it at the def
   try {
     let present = true;
     await withClaudeConfigDir(undefined, async () => {
-      // Claude keys its credentials per config directory, so pointing the
-      // variable at `~/.claude` is NOT the same as leaving it unset — it
-      // selects a different, empty Keychain entry.
       present = Object.hasOwn(process.env, "CLAUDE_CONFIG_DIR");
     });
     expect(present).toBe(false);

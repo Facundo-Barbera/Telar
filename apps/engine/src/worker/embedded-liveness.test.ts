@@ -5,7 +5,7 @@ import path from "node:path";
 import { EngineClientError } from "@telar/engine-client";
 import type { TurnDriver } from "../drivers";
 import { EngineWorker } from ".";
-import { createWorkerDiagnostics, sanitizeDiagnostic } from "../worker-diagnostics";
+import { createWorkerDiagnostics, sanitizeDiagnostic } from "./diagnostics";
 
 /**
  * #208 follow-up — THE WORKER MUST NOT EXPIRE ITSELF ON A CLOCK THE ENGINE DOES

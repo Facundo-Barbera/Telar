@@ -16,7 +16,7 @@ import {
   updatePrompt,
   PreparedPromptsError,
 } from "./store";
-import { statePaths } from "../../state";
+import { statePaths } from "../../platform/fs/state-paths";
 import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];

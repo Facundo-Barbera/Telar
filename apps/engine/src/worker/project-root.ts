@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { isMountPoint, mountPointForRoot, type VolumeDeps } from "../volumes";
+import { isMountPoint, mountPointForRoot, type VolumeDeps } from "../platform/fs/volumes";
 
 /** Present exactly when the session's cwd is a worktree rather than the project's checkout. */
 type WorktreeFacts = { branch: string; repoRoot: string };

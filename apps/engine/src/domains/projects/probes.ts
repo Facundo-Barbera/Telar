@@ -1,7 +1,7 @@
 import type { Project } from "@telar/engine-client";
 import type { Kernel } from "../../platform/kernel";
 import { projectRemoteAsync } from "../git";
-import { probeAvailability, type ProjectAvailability, type VolumeDeps } from "../../volumes";
+import { probeAvailability, type ProjectAvailability, type VolumeDeps } from "../../platform/fs/volumes";
 import type { AsyncGitRunner } from "../../platform/git/runner";
 import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "../appearance";
 

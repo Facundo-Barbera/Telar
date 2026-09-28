@@ -4,8 +4,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { atomicWrite } from "../../platform/fs/atomic";
-import { statePaths } from "../../state-paths";
-import { findVolumeMount, isMountPoint, volumeForRoot, volumeSupportOn, type VolumeDeps, type VolumeIdentity } from "../../volumes";
+import { statePaths } from "../../platform/fs/state-paths";
+import { findVolumeMount, isMountPoint, volumeForRoot, volumeSupportOn, type VolumeDeps, type VolumeIdentity } from "../../platform/fs/volumes";
 
 // Not marked for Spotlight or Time Machine: .metadata_never_index only works at a volume root,
 // and excluding uncommitted work from backups is the owner's call.

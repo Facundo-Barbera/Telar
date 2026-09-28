@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { flushUsageScanCaches, readUsageReport, resetUsageScanCaches, warmUsageScanCache, type UsageScanRoots } from "./usage";
-import type { RatesTable } from "./domains/usage";
+import { flushUsageScanCaches, readUsageReport, resetUsageScanCaches, warmUsageScanCache, type UsageScanRoots } from "./scan";
+import type { RatesTable } from ".";
 
 const roots: string[] = [];
 const tmp = (): string => {
@@ -18,8 +18,6 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-/** Fixture transcript trees, in the CLIs' own shapes (verified against real
- *  files on disk — see usage.ts's header). */
 function scanRoots(): UsageScanRoots {
   const base = tmp();
   const claude = path.join(base, "claude-projects");
@@ -81,7 +79,6 @@ const RATES: RatesTable = {
 const WINDOW = { sinceMs: AT - 86_400_000, untilMs: AT + 86_400_000, resolution: "day" as const, timeZone: "UTC" };
 
 async function read(scan: UsageScanRoots, window = WINDOW, rates: RatesTable = RATES, scanCachePath?: string) {
-  // memo off: every test reuses WINDOW with different fixture roots.
   return readUsageReport(window, {
     roots: scan,
     ratesCachePath: path.join(tmp(), "rates.json"),
@@ -93,8 +90,6 @@ async function read(scan: UsageScanRoots, window = WINDOW, rates: RatesTable = R
 
 const turns = (report: Awaited<ReturnType<typeof read>>) => report.buckets.reduce((sum, bucket) => sum + bucket.turns, 0);
 
-/** Bump a file's mtime past what the OS may have coalesced with the last
- *  write, so "grew" and "same size, new mtime" are both observable. */
 function touch(file: string, plusMs = 5_000): void {
   const later = new Date(fs.statSync(file).mtimeMs + plusMs);
   fs.utimesSync(file, later, later);
@@ -108,13 +103,10 @@ test("both transcripts land with their REAL model names, priced from the table w
   const report = await read(scan);
   expect(report.buckets.map((bucket) => `${bucket.driver}:${bucket.model}`)).toEqual(["claude:claude-opus-5", "codex:gpt-5.6-sol"]);
   const [claude, codex] = report.buckets;
-  // Claude input already excludes cache; priced from the table (costUSD null).
   expect(claude!.tokens).toEqual({ input: 10, output: 50, cacheRead: 100, cacheCreate: 20 });
   expect(claude!.priced).toBe(true);
   expect(claude!.costUsd).toBeCloseTo(10 * 1e-5 + 50 * 5e-5 + 100 * 1e-6 + 20 * 1.25e-5);
-  // Codex input is INCLUSIVE of cached+write: uncached = 1100-1000-50 = 50.
   expect(codex!.tokens).toEqual({ input: 50, output: 200, cacheRead: 1000, cacheCreate: 50, reasoning: 40 });
-  // Missing cache-write rate falls back to the input rate — never free.
   expect(codex!.costUsd).toBeCloseTo(50 * 1e-6 + 200 * 2e-6 + 1000 * 1e-7 + 50 * 1e-6);
   expect(report.sessions).toBe(2);
   expect(report.sources.map((source) => `${source.provider}:${source.status}`)).toEqual(["claude:ok", "codex:ok"]);
@@ -123,8 +115,6 @@ test("both transcripts land with their REAL model names, priced from the table w
 test("token_count before the first turn_context is owned by the session's first named model", async () => {
   const scan = scanRoots();
   const lines = codexLines({ input: 1100, cached: 1000, write: 0, output: 200 });
-  // Real rollouts can emit a token_count before any turn_context; without
-  // backfill those tokens land as "unknown" and are never priced.
   const reordered = [lines[0]!, lines[2]!, lines[1]!, JSON.stringify({
     timestamp: iso(AT + 1000),
     type: "event_msg",
@@ -198,20 +188,14 @@ test("an appended transcript is re-read on the next report", async () => {
 
 describe("the scan cache", () => {
   test("a record still being written counts once, and once only, as the line completes", async () => {
-    // THE TAIL RULE. A transcript is appended one line at a time, and a read
-    // can land mid-line. The half-line must not vanish (it is spend), and it
-    // must not be counted again when the rest of it arrives.
     const scan = scanRoots();
     const file = path.join(scan.claude, "-tmp-proj", "sess-claude-1.jsonl");
     const whole = claudeLine({ mid: "msg_2" });
     fs.writeFileSync(file, claudeLine({ mid: "msg_1" }) + "\n" + whole.slice(0, 40));
-    // The cut line is not JSON yet: one turn.
     expect(turns(await read(scan))).toBe(1);
     fs.appendFileSync(file, whole.slice(40));
-    // Complete but unterminated: it counts, from the tail.
     expect(turns(await read(scan))).toBe(2);
     fs.appendFileSync(file, "\n" + claudeLine({ mid: "msg_3" }) + "\n");
-    // Terminated and committed, plus one more: still each once.
     expect(turns(await read(scan))).toBe(3);
   });
 
@@ -226,8 +210,6 @@ describe("the scan cache", () => {
     const first = before.files[file]!;
     expect(first.offset).toBe(first.size);
 
-    // Corrupt the committed prefix on disk. A read from the top would now
-    // lose msg_1; a read from the cursor never looks at it.
     const original = fs.readFileSync(file);
     const mangled = Buffer.from(original);
     mangled.write("xxxxxxxxxx", 2);
@@ -243,11 +225,9 @@ describe("the scan cache", () => {
     const one = claudeLine({ mid: "msg_1", input: 10 });
     fs.writeFileSync(file, one + "\n");
     expect((await read(scan)).buckets[0]!.tokens.input).toBe(10);
-    // Same length, different content: the cursor cannot be trusted.
     fs.writeFileSync(file, claudeLine({ mid: "msg_1", input: 99 }).padEnd(one.length) + "\n");
     touch(file);
     expect((await read(scan)).buckets[0]!.tokens.input).toBe(99);
-    // Shrunk: likewise.
     fs.writeFileSync(file, claudeLine({ mid: "msg_9", input: 5 }) + "\n");
     expect((await read(scan)).buckets[0]!.tokens.input).toBe(5);
   });
@@ -257,17 +237,12 @@ describe("the scan cache", () => {
     const file = path.join(scan.claude, "-tmp-proj", "sess-claude-1.jsonl");
     const cachePath = path.join(tmp(), "scan.json");
     fs.writeFileSync(file, claudeLine({ mid: "msg_1" }) + "\n" + claudeLine({ mid: "msg_2" }) + "\n");
-    // A whole-second mtime, so the rewrite below can reproduce it exactly:
-    // APFS stamps sub-millisecond, and utimes cannot put that back.
     const pinned = new Date(Math.floor(Date.now() / 1000) * 1000);
     fs.utimesSync(file, pinned, pinned);
     expect(turns(await read(scan, WINDOW, RATES, cachePath))).toBe(2);
     await flushUsageScanCaches();
     expect(fs.statSync(cachePath).mode & 0o777).toBe(0o600);
 
-    // "Restart": forget everything in memory, then make the transcript
-    // unreadable-as-usage while keeping its size and mtime. Only a process
-    // that trusts the disk cache still sees two turns.
     resetUsageScanCaches();
     fs.writeFileSync(file, "x".repeat(fs.statSync(file).size));
     fs.utimesSync(file, pinned, pinned);
@@ -308,14 +283,11 @@ describe("the scan cache", () => {
     const cachePath = path.join(tmp(), "scan.json");
     fs.writeFileSync(fresh, claudeLine({ mid: "msg_f" }) + "\n");
     fs.writeFileSync(ancient, claudeLine({ mid: "msg_a" }) + "\n");
-    // A year-old mtime: inside no window the page can ask for.
     const longAgo = new Date(Date.now() - 365 * 86_400_000);
     fs.utimesSync(ancient, longAgo, longAgo);
-    // A window wide enough to make the scanner READ the ancient file...
     await read(scan, { ...WINDOW, sinceMs: longAgo.getTime() - 86_400_000 }, RATES, cachePath);
     await flushUsageScanCaches();
     const stored = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { files: Record<string, unknown> };
-    // ...and it still is not kept: the widest window the page offers is 90 days.
     expect(Object.keys(stored.files)).toEqual([fresh]);
   });
 
@@ -325,13 +297,10 @@ describe("the scan cache", () => {
     const [meta, context, count] = codexLines({ input: 100, cached: 0, write: 0, output: 10 });
     fs.writeFileSync(file, [meta, context, count].join("\n") + "\n");
     expect((await read(scan)).buckets.map((bucket) => `${bucket.model}:${bucket.turns}`)).toEqual(["gpt-5.6-sol:1"]);
-    // A second token_count with new figures and NO turn_context of its own:
-    // the model comes from the state the cursor carried, not from the file.
     const [, , later] = codexLines({ input: 300, cached: 0, write: 0, output: 30 }, AT + 60_000);
     fs.appendFileSync(file, later + "\n");
     touch(file);
     expect((await read(scan)).buckets.map((bucket) => `${bucket.model}:${bucket.turns}`)).toEqual(["gpt-5.6-sol:2"]);
-    // …and a re-stamp of the same figures across the cut is still not spend.
     fs.appendFileSync(file, later + "\n");
     touch(file);
     expect((await read(scan)).buckets[0]!.turns).toBe(2);
@@ -348,7 +317,6 @@ describe("the scan cache", () => {
     expect(stored.files[file]!.records).toHaveLength(1);
   });
 });
-
 
 test("daily buckets honor local midnight and fall back to UTC for an invalid zone", async () => {
   const scan = scanRoots();

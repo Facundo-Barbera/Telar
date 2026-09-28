@@ -25,25 +25,17 @@ import { providersRoutes, type CliUpdateRun } from "./domains/providers";
 import { computerUseRoutes, createComputerUseGate, type ComputerUseGate } from "./domains/computer-use";
 import { bearerIsValid } from "./platform/http/auth";
 import { type VersionProbe } from "./domains/providers";
-import { BUNDLED_SKILLS, type SocketTool } from "./domains/agent-tools";
+import { BUNDLED_SKILLS, mcpOAuthRoutes, mcpSocketRoute, type SocketTool } from "./domains/agent-tools";
 import { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionsCapability, sessionsSocketConnectCard, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
 import { browserRoutes, browserSessionRoutes, createLoginGrantStore } from "./domains/browser";
-import {
-  acquireDaemonLock,
-  EngineStateError,
-  EngineStore,
-  migrateLegacyEngineRoot,
-  statePaths,
-  engineRootFromEnv,
-  type EngineNotifier,
-  type StoppedClaim,
-} from "./state";
+import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, engineRootFromEnv, type EngineNotifier, type StoppedClaim } from "./state";
+import { statePaths } from "./platform/fs/state-paths";
 import { bundledPlugins, externalPlugin, externalPluginsDir, installedPlugins, isSymlink, type LoadedExternalPlugin, loadInstalledPlugins, PluginHost, PluginInputError, pluginRoutes, pluginScopedRoutes, pluginSessionRoutes } from "./domains/plugins";
 import { setPluginReadTools } from "./drivers/claude";
 import { createRunMount, runRoutes } from "./domains/terminal";
 import { maybeRetitleSession, sessionProviderRoutes, type ProviderSkillsOptions } from "./domains/providers";
 import { appearanceRoutes } from "./domains/appearance";
-import { warmUsageScanCache } from "./usage";
+import { usageRoutes, warmUsageScanCache } from "./domains/usage";
 import {
   collectNotesWallTools,
   ensureNotesSocketSecret,
@@ -58,7 +50,7 @@ import { PreparedPromptsError, promptsRoutes } from "./domains/prompts";
 import { githubRoutes, sessionGitHubRoutes, type GhRunner } from "./domains/github";
 import { createStorageMeter, reapNodeModules, storageRoutes, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, type CheckoutSizesOptions } from "./domains/storage";
 import { type AsyncGitRunner, type GitRunner } from "./platform/git/runner";
-import type { VolumeDeps } from "./volumes";
+import type { VolumeDeps } from "./platform/fs/volumes";
 import type { DriverSelector } from "./worker";
 import { filesRoutes, sessionFilesRoutes } from "./domains/files";
 import { sessionGitRoutes } from "./domains/git";
@@ -66,10 +58,8 @@ import { projectCheckoutRoutes, projectRoutes } from "./domains/projects";
 import { settingsRoutes } from "./domains/settings";
 import { dictationRoutes } from "./domains/dictation";
 import { readWorktreesRoot, WorktreeError, worktreesRoutes } from "./domains/worktrees";
-import { usageRoutes } from "./domains/usage";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
 import { createHostsStore, hostsRoutes } from "./domains/hosts";
-import { mcpOAuthRoutes, mcpSocketRoute } from "./domains/agent-tools";
 import { aboutRoutes } from "./domains/updates";
 import { createPushService } from "./domains/push";
 import { errorFor as httpErrorFor, HttpError } from "./platform/http/http";
@@ -853,8 +843,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       telarRunSocket = new (await import("./domains/agent-tools")).TelarToolSocket();
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
-      const { WorkerReconnectController } = await import("./worker-supervisor");
-      const { createWorkerDiagnostics } = await import("./worker-diagnostics");
+      const { WorkerReconnectController } = await import("./worker/supervisor");
+      const { createWorkerDiagnostics } = await import("./worker/diagnostics");
       // Built once up front so a driver that cannot be constructed fails the
       // boot, not a retry loop; every later attempt builds its own.
       let initialDriver: DriverSelector | undefined = await createDriver();

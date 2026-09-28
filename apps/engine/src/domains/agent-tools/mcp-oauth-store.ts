@@ -1,4 +1,4 @@
-import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "../../mcp-oauth";
+import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { SECRET_KEY_SEPARATOR, STATE_VERSION, type Kernel } from "../../platform/kernel";
 
 /** A sign-in mid-flight; the callback needs everything in `ctx` and is given none of it. */

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { mountRootsFor } from "../../volumes";
+import { mountRootsFor } from "../../platform/fs/volumes";
 import { createAsyncGitRunner, type GitRunner, type AsyncGitRunner } from "../../platform/git/runner";
 
 export const WORKTREE_ADD_TIMEOUT_MS = 120_000;

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { TurnAttachment as TurnAttachmentSchema, type TurnAttachment } from "@telar/engine-client";
 import { assertId, EngineStateError, STATE_VERSION, type Kernel } from "../../platform/kernel";
-import type { EngineStatePaths } from "../../state-paths";
+import type { EngineStatePaths } from "../../platform/fs/state-paths";
 import { sessionDir } from "./metadata";
 
 // Held in memory to be written, so the cap sits here as well as on the HTTP edge.

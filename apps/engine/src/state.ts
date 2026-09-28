@@ -143,13 +143,12 @@ import {
   type DictationLanguage,
   type DictationProviderId,
 } from "@telar/engine-client";
-import { WorkspaceConfigStore } from "./workspace-config";
+import { type ProjectPatch, ProjectProbes, ProjectRegistry, WorkspaceConfigStore } from "./domains/projects";
 import { assertId, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
 import { RUNTIME_MODES, SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
-import { McpOAuthStore, McpServers, type PendingMcpOAuth } from "./domains/agent-tools";
+import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, type PendingMcpOAuth } from "./domains/agent-tools";
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
-import { ProjectProbes, ProjectRegistry, type ProjectPatch } from "./domains/projects";
 import { dataScienceBlock, latexBlock, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
@@ -158,15 +157,13 @@ import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDi
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
 import { listWorkspaceFilesAsync, readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
-import { type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
 import { type AttachedBrowser, SessionBrowser } from "./domains/browser";
 import { GitHubStore, commentOnPullLine, defaultGhRunner, openPullRequest, readPullFiles, readPullForBranch, type GhRunner } from "./domains/github";
 import {  } from "zod";
 import { providerProcessEnv } from "./domains/providers";
-import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
-import { describeImport, type ClaudeConversation, type ForkCut } from "./drivers/claude";
+import { adoptClaudeConversation, type Adoption, type ClaudeConversation, describeAdoption, describeImport, type ForkCut, listAdoptableConversations } from "./drivers/claude";
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
 import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, listPackages, listTexPackages, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, removeTelarVenv, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, windowCsv } from "./domains/plugins";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
@@ -174,7 +171,7 @@ import { createSessionWorktreeAsync, createWorktreeQueue, defaultWorktreeGitRunn
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { CheckoutSizes, CleanupStore, copyStore, diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizesOptions } from "./domains/storage";
 import { pipeLauncher, processGroupFor } from "./domains/terminal";
-import { findVolumeMount, mountSignature, type ProjectAvailability, type VolumeDeps } from "./volumes";
+import { findVolumeMount, mountSignature, type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
 
 /** The first line with anything on it, clamped for a cohort's member line. */
 /** A cohort member's `excerpt` and `chars` — see `CohortMember`. */
@@ -556,16 +553,8 @@ const MAX_TURN_ATTACHMENTS = 16;
  */
 const PROGRESS_STAMP_MS = 60_000;
 
-/**
- * THE STORE ROOT'S FILE LIST, RE-EXPORTED — it moved to `./state-paths` in #665
- * so that `execution-store.ts` and `worktrees-location.ts` can import it too;
- * `state.ts` importing either of them made the old home a cycle. Re-exported
- * rather than moved-and-updated at every call site, because the list did not
- * change and 40 imports rewritten is 40 chances to rewrite one wrongly.
- */
-import { statePaths, type EngineStatePaths } from "./state-paths";
+import { statePaths, type EngineStatePaths } from "./platform/fs/state-paths";
 import type { ReapCandidate } from "./domains/storage";
-export { statePaths, type EngineStatePaths };
 export { EngineStateError };
 
 
@@ -853,7 +842,6 @@ export type SenderProof = { sessionId: string; runId: string; claimToken: string
  * what dropped the ignore-whitespace flag in silence. Re-exported so the
  * engine's own callers need not reach past their own module boundary.
  */
-export type { DiffBaseOption, FilePatchOptions } from "@telar/engine-client";
 import type { DiffBaseOption, FilePatchOptions } from "@telar/engine-client";
 
 /** Absent keeps the recorded base; `null` drops it; a string replaces it. */
