@@ -118,6 +118,19 @@ describe("commentRatchet", () => {
     expect(failures).toContain("apps/engine/b.ts:1-7: a new 7-line comment. The limit is 6; AGENTS.md allows 3.");
   });
 
+  test("moving a file carries its comments without counting them as new", () => {
+    const root = repo();
+    const essay = Array.from({ length: 7 }, (_, k) => `// line ${k}`).join("\n");
+    writeFileSync(join(root, "apps/engine/old.ts"), `${essay}\nexport const x = 1;\n`);
+    run(root, "add", ".");
+    run(root, "commit", "-qm", "essay");
+    run(root, "branch", "-f", "base");
+    mkdirSync(join(root, "apps/engine/src"));
+    run(root, "mv", "apps/engine/old.ts", "apps/engine/src/new.ts");
+    run(root, "commit", "-qm", "move");
+    expect(commentRatchet(root, "base")).toEqual([]);
+  });
+
   test("deleting code and comments passes", () => {
     const root = repo();
     writeFileSync(join(root, "apps/engine/a.ts"), "const a = 1;\n");
