@@ -1,23 +1,18 @@
 export {
-  applyModelManifest,
   BUNDLED_MANIFEST,
   claudeEffortFor,
   claudeFixedWindowOf,
   claudeWindowTokensOf,
   legacyLongSpelling,
-  longDefaultOf,
   type ModelManifest,
 } from "./manifest";
 export { loadClaudeModelSdk, readClaudeModels, readModelCatalogue } from "./models";
-export { applyModelOverlay, chosenDefault } from "./overlay";
 export {
   CLI_TEST_REFUSAL,
   cliSpawnAllowed,
   cliUsable,
-  refuseCliSpawnUnderTest,
   requireCli,
   resolveCli,
-  resolveCliAsync,
 } from "./cli";
 export { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 export {
@@ -43,4 +38,5 @@ export {
   textGenDisabledByEnv,
   type RetitleStore,
 } from "./textgen";
-export { assertInstanceId, ProviderRegistry, type ProviderInstanceInput } from "./registry";
+export { ProviderRegistry, type ProviderInstanceInput } from "./registry";
+export { installedCli, ModelCatalogues, type InstalledCli } from "./catalogues";

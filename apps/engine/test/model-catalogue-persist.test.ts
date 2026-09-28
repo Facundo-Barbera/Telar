@@ -13,7 +13,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ModelCatalogue, ProviderDriverKind } from "@telar/engine-client";
-import { EngineStore, type InstalledCli } from "../src/state";
+import { EngineStore } from "../src/state";
+import type { InstalledCli } from "../src/domains/providers";
 
 const homes: string[] = [];
 afterEach(() => {
