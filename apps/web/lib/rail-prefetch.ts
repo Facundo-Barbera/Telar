@@ -126,7 +126,7 @@ export function warmConversation(hostId: string | undefined, sessionId: string):
    * A ROW CARRIES NO `hostId` WHEN IT IS LOCAL; the cockpit reaches the same
    * connection through `hostFromPathname`, which answers `LOCAL_HOST_ID` rather
    * than nothing. So the two must stand for the same string, and they do —
-   * `lib/hosts/book.ts` and `lib/snapshot-cache.ts` both spell it `"local"`.
+   * `@telar/engine-client` and `lib/snapshot-cache.ts` both spell it `"local"`.
    * If they ever diverged this would warm a cache entry the cockpit never
    * reads, silently, so the suite pins the two together.
    */

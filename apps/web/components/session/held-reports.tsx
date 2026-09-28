@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { InboxIcon } from "lucide-react";
 import { PanelRow, PanelSectionLabel } from "@/components/ui/panel";
 import { createEngineApi } from "@/lib/engine/client";
-import { LOCAL_HOST_ID } from "@/lib/hosts/book";
+import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { hostFetcher } from "@/lib/hosts/client";
 
 /** The trailing count — only when something is held; nothing held is not a fact worth a number. */

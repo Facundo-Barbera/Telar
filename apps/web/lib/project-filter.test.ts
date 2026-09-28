@@ -29,7 +29,7 @@ describe("a project's key", () => {
     // Both halves carry a prefix, so there is no unprefixed form to collide with.
     expect(projectFilterKey("p", "local")).toBe("local:p");
     // ...which is the one collision this shape does admit, and it needs a paired
-    // Mac whose id is literally "local". Host ids are UUIDs (`hosts/book.ts`).
+    // Mac whose id is literally "local". Host ids are UUIDs (the engine's `domains/hosts/book.ts`).
     expect(projectFilterKey("p")).toBe("local:p");
   });
 });

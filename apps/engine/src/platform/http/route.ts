@@ -7,7 +7,7 @@ export type Route = {
   method: "GET" | "POST" | "PATCH" | "DELETE";
   path: string | RegExp;
   auth: "engine";
-  handle(input: RouteInput): RouteAnswer;
+  handle(input: RouteInput): RouteAnswer | Promise<RouteAnswer>;
 };
 
 export function matchRoute(routes: readonly Route[], method: string, pathname: string): { route: Route; params: string[] } | undefined {

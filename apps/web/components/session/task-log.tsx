@@ -16,7 +16,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { TaskOutputPage } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
-import { LOCAL_HOST_ID } from "@/lib/hosts/book";
+import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { hostFetcher } from "@/lib/hosts/client";
 import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
 import { cn } from "@/lib/utils";

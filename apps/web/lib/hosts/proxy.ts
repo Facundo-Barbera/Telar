@@ -1,4 +1,4 @@
-import type { Host } from "./book";
+import type { Host } from "./store";
 import { HOST_NAME_HEADER } from "./client";
 import { HOST_HEADER } from "@/lib/remote/host-token";
 

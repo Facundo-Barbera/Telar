@@ -205,7 +205,7 @@ export function projectGroupKey(session: Pick<SidebarSession, "projectId" | "hos
  * A paired host can be THIS cockpit's own engine — its own pairing link pasted
  * back in, or the desktop shell opened against a Mac that is also in its book
  * — and two hosts in the book can be one Mac under two addresses before the
- * merge in `hosts/book.ts` has had a daemon id to merge on. Every session then
+ * merge in the engine's `domains/hosts/book.ts` has had a daemon id to merge on. Every session then
  * arrives twice with two keys, and the rail draws two groups with one name and
  * the same rows, which is the "sessions duplicate" report.
  *

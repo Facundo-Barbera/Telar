@@ -139,7 +139,7 @@ import type { DirectoryListing } from "@telar/engine-client";
 import type { ExecResult, KernelState, NotebookRead, TableWindow, VarRow } from "@/lib/ds";
 // Type-only, like `Channel` above: the store reads the filesystem and must not
 // follow into the browser bundle.
-import type { PublicHost } from "@/lib/hosts/store";
+import type { PublicHost } from "@telar/engine-client";
 
 /**
  * DERIVED FROM THE CONTRACT, not re-listed beside it. This union used to be ten

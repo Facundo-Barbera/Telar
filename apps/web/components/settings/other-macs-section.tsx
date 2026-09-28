@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { MonitorIcon, XIcon } from "lucide-react";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
-import type { PublicHost } from "@/lib/hosts/store";
+import type { PublicHost } from "@telar/engine-client";
 import { forgetRows, readSidebarCache, writeSidebarCache } from "@/lib/sidebar-cache";
 import { snapshotStore } from "@/lib/snapshot-cache";
 import { Button } from "@/components/ui/button";

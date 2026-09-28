@@ -13,7 +13,7 @@
  * or the local id itself, sends `/api/…` unchanged.
  */
 
-import { LOCAL_HOST_ID } from "./book";
+import { LOCAL_HOST_ID } from "@telar/engine-client";
 
 export { LOCAL_HOST_ID };
 
