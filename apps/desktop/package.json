@@ -58,6 +58,7 @@
     "afterPack": "./after-pack.js",
     "files": [
       "main.js",
+      "main/*.js",
       "chord-scope.js",
       "terminal-host.js",
       "kitty-image-file.js",

@@ -1,14 +1,12 @@
 const path = require("node:path");
 const http = require("node:http");
-const net = require("node:net");
 const fs = require("node:fs");
 const os = require("node:os");
-const { randomBytes, randomUUID } = require("node:crypto");
+const { randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, Notification, powerMonitor, session, shell, webContents } = require("electron");
 const { autoUpdater, CancellationToken } = require("electron-updater");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
-const { attachHostHeader } = require("./host-header");
 const { createLinkRouting } = require("./link-routing");
 const { startBrowserControlServer } = require("./browser-control-server");
 const { startRunTerminalServer } = require("./run-terminal-server");
@@ -42,6 +40,9 @@ const { createProcessMetricsReader } = require("./process-metrics");
 const { clearPlannedRestart, createInstallGate, writePlannedRestart } = require("./update-install");
 const { wireLoginOffer } = require("./login-offer-window");
 const { discoverOpeners, openWith, openersWithIcons, bundleIcon } = require("./workspace-openers");
+const uiServer = require("./main/ui-server");
+const { findFreePort, getStablePort, seatHostCookie, seatHostHeader, sendToServer, waitForServer } = uiServer;
+const { jsonPrefs } = require("./main/prefs");
 
 const SMOKE = process.argv.includes("--smoke");
 
@@ -70,7 +71,6 @@ if (E2E_USER_DATA) {
   app.setPath("userData", path.join(app.getPath("appData"), "Telar (dev)"));
 }
 
-let serverChild = null;
 let engineChild = null;
 
 let browserManager = null;
@@ -121,70 +121,6 @@ function captureLoginShellEnv() {
   } catch (err) {
     console.error("[telar-desktop] login-shell env capture failed:", err.message);
   }
-}
-
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.on("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-function isPortFree(port) {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.once("error", () => resolve(false));
-    srv.listen(port, "127.0.0.1", () => {
-      srv.close(() => resolve(true));
-    });
-  });
-}
-
-function jsonPrefs(file, defaults, validate, label) {
-  const fs = require("node:fs");
-  const filePath = () => path.join(app.getPath("userData"), file);
-  return {
-    path: filePath,
-    read() {
-      try {
-        return validate(JSON.parse(fs.readFileSync(filePath(), "utf8")));
-      } catch {
-        return defaults && { ...defaults };
-      }
-    },
-    write(value) {
-      try {
-        fs.mkdirSync(app.getPath("userData"), { recursive: true });
-        fs.writeFileSync(filePath(), JSON.stringify(value), "utf8");
-      } catch (err) {
-        console.error(`[telar-desktop] failed to persist ${label}:`, err.message);
-      }
-    },
-  };
-}
-
-const portPrefs = jsonPrefs(
-  "server-port.json",
-  null,
-  (data) => {
-    const port = Number(data.port);
-    return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
-  },
-  "port",
-);
-
-async function getStablePort() {
-  const stored = portPrefs.read();
-  if (stored !== null && (await isPortFree(stored))) return stored;
-  const fresh = await findFreePort();
-  portPrefs.write({ port: fresh });
-  return fresh;
 }
 
 function readBuildInfo() {
@@ -247,20 +183,6 @@ function resolveEngineJs() {
   }
   throw new Error(
     `engine bundle not found (looked in: ${candidates.join(", ")}). Run \`bun run build:app\` first.`,
-  );
-}
-
-function resolveServerJs() {
-  const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, "standalone", "apps", "web", "server.js")]
-    : [path.join(__dirname, "..", "web", ".next-desktop", "standalone", "apps", "web", "server.js")];
-  const fs = require("node:fs");
-  for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
-  }
-  throw new Error(
-    `standalone server.js not found (looked in: ${candidates.join(", ")}). ` +
-      `Run \`bun run build:app\` first.`,
   );
 }
 
@@ -334,28 +256,6 @@ function nodeExecPath() {
   return process.execPath;
 }
 
-const HOST_TOKEN = process.env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
-
-function seatHostHeader(url) {
-  if (!attachHostHeader(session.defaultSession, { appUrl: url, token: HOST_TOKEN })) {
-    console.error(`[telar-desktop] could not attach the host header for ${url}; the window falls back to its cookie.`);
-  }
-}
-
-async function seatHostCookie(url) {
-  try {
-    const { protocol, host } = new URL(url);
-    await session.defaultSession.cookies.set({
-      url: `${protocol}//${host}`,
-      name: "telar_device",
-      value: HOST_TOKEN,
-      httpOnly: true,
-      sameSite: "lax",
-    });
-  } catch {
-  }
-}
-
 function wireShellDiagnostics() {
   app.on("child-process-gone", (_event, details) => {
     logShell(
@@ -390,10 +290,6 @@ function watchForUnpairing(webContents) {
       logShell("warn", `the host window was sent to the pairing page by ${parsed.origin}`);
     }
   });
-}
-
-function serverBindHost(home) {
-  return remoteFile.serverBindHost(home);
 }
 
 let tailscaleServeUrl = null;
@@ -592,51 +488,28 @@ function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150, requireWork
 }
 
 function startServer(port, home) {
-  const serverJs = resolveServerJs();
-  serverChild = fork(serverJs, [], {
-    cwd: path.dirname(serverJs),
+  const child = uiServer.startServer(port, home, {
     execPath: nodeExecPath(),
-
-    execArgv: ["--require", path.join(__dirname, "server-preload.js")],
     env: {
       ...childEnv(home),
-
       TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-ui-dev" : "telar-ui",
-      PORT: String(port),
-      HOSTNAME: serverBindHost(home),
-
       ...(tailscaleServeUrl ? { TELAR_TAILSCALE_URL: tailscaleServeUrl } : {}),
-
       ...(tailscaleServeError ? { [TAILSCALE_SERVE_ERROR_ENV]: tailscaleServeError } : {}),
-
-      TELAR_HOST_TOKEN: HOST_TOKEN,
-
-      TELAR_HOST_CLIENT: app.getName(),
-      NODE_ENV: "production",
-
-      TELAR_COCKPIT: "1",
-
       [DESKTOP_NOTIFICATIONS_ENV]: "1",
     },
-    stdio: ["ignore", "inherit", "inherit", "ipc"],
+    onMessage: (message) => desktopNotifier.handleServerMessage(message),
+    onExit: (code, signal) => {
+      presenceReporter.stop();
+      if (!SMOKE && !app.isQuitting) {
+        console.error(`[telar-desktop] server exited (code=${code} signal=${signal})`);
+        app.quit();
+      }
+    },
   });
-  serverChild.on("message", (message) => desktopNotifier.handleServerMessage(message));
   watchPresence();
-  serverChild.on("exit", (code, signal) => {
-    serverChild = null;
-    presenceReporter.stop();
-
-    if (!SMOKE && !app.isQuitting) {
-      console.error(`[telar-desktop] server exited (code=${code} signal=${signal})`);
-      app.quit();
-    }
-  });
-  return serverChild;
+  return child;
 }
 
-const sendToServer = (message) => {
-  if (serverChild?.connected) serverChild.send(message);
-};
 function cockpitFocus() {
   const focused = BrowserWindow.getFocusedWindow();
   const cockpit = focused && [...browserManagers].some((manager) => manager.window === focused);
@@ -673,33 +546,6 @@ function openNotificationPath(route) {
   win.show();
   win.focus();
   win.webContents.send("telar:notifications:open", route);
-}
-
-function waitForServer(port, { timeoutMs = 30_000, intervalMs = 250 } = {}) {
-  const url = `http://127.0.0.1:${port}/`;
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      const req = http.get(url, (res) => {
-        res.resume();
-        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 500) {
-          resolve(port);
-        } else {
-          retry();
-        }
-      });
-      req.on("error", retry);
-      req.setTimeout(2_000, () => req.destroy());
-    };
-    const retry = () => {
-      if (Date.now() > deadline) {
-        reject(new Error(`server did not answer on :${port} within ${timeoutMs}ms`));
-      } else {
-        setTimeout(tick, intervalMs);
-      }
-    };
-    tick();
-  });
 }
 
 function openInSystemBrowser(url) {
@@ -2055,15 +1901,13 @@ ipcMain.handle("telar:appearance:set", (_event, patch) => {
 });
 
 function killServer() {
-  for (const [name, child] of [["server", serverChild], ["engine", engineChild]]) {
-    if (!child || child.killed) continue;
-    try {
-      child.kill("SIGTERM");
-    } catch {
-    }
-    if (name === "server") serverChild = null;
-    else engineChild = null;
+  uiServer.stopServer();
+  if (!engineChild || engineChild.killed) return;
+  try {
+    engineChild.kill("SIGTERM");
+  } catch {
   }
+  engineChild = null;
 }
 
 function stopComputerUseHelper() {

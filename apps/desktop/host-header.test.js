@@ -1,19 +1,7 @@
-// THE HEADER NAME IS A CONTRACT BETWEEN TWO LANGUAGES, AND NOTHING ELSE
-// CHECKS IT.
-//
-// The shell writes `x-telar-host` from CommonJS; the gate reads it from
-// TypeScript in another app. Neither half can import the other's constant, so a
-// rename on one side is not a type error, not a lint error, and not a failing
-// route test — it is the desktop app quietly deciding it is a stranger to its
-// own server again (issue #259), which is exactly the failure that took months
-// to name the first time.
-//
-// Same idea as packaging.test.js: read the source of the thing that must agree
-// and assert it does.
-
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const path = require("node:path");
+const { mainSource } = require("./main-source");
 
 const { HOST_HEADER, isOwnServer, attachHostHeader } = require("./host-header");
 
@@ -28,10 +16,6 @@ describe("the shell and the gate name the same header", () => {
   });
 
   test("the name is lower-case — the shell writes it verbatim and Headers.get is not", () => {
-    // Electron's requestHeaders is a plain object with no case folding of its
-    // own, so a mixed-case key here would arrive as a header the runtime's
-    // lower-cased lookup on the web side still finds — but the two would only
-    // agree by accident. Pinned so the agreement is on purpose.
     expect(HOST_HEADER).toBe(HOST_HEADER.toLowerCase());
   });
 });
@@ -50,8 +34,6 @@ describe("only the app's own server is handed the secret", () => {
   });
 
   test("another port on loopback is somebody else's app", () => {
-    // A Vite dev server, another Telar, a random tool — a different server, and
-    // the one case a widened rule would leak the launcher secret to.
     expect(isOwnServer("http://127.0.0.1:5173/", app)).toBe(false);
     expect(isOwnServer("http://localhost/", app)).toBe(false);
   });
@@ -106,13 +88,7 @@ describe("attachHostHeader", () => {
 });
 
 describe("main.js wires it to the default session only", () => {
-  /**
-   * THE SCOPE IS THE SECURITY PROPERTY. `session.defaultSession` is the app's
-   * own window; the integrated browser's tabs live in `persist:` partitions and
-   * point at the open web. A call that passed a partition here would hand this
-   * app's launcher secret to whatever page an agent had open.
-   */
-  const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+  const main = mainSource();
 
   test("attachHostHeader is called with session.defaultSession and the host token", () => {
     expect(main).toMatch(/attachHostHeader\(session\.defaultSession, \{ appUrl: url, token: HOST_TOKEN \}\)/);
