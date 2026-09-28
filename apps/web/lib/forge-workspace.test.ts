@@ -17,7 +17,6 @@ import {
   activateForge,
   closeForge,
   emptyForge,
-  forgeFromLegacyTabs,
   forgeNumbersAfter,
   forgeParams,
   openForge,
@@ -89,31 +88,5 @@ describe("the round trip through a tab's params", () => {
     // than to a detail that would spin forever.
     expect(readForgeOpen({ open: "675", at: "999" })).toEqual({ numbers: [675] });
     expect(forgeParams({ numbers: [675], at: 999 })).toEqual({ open: "675" });
-  });
-});
-
-describe("what a panel saved by the previous build meant", () => {
-  test("the issues somebody left open survive the upgrade", () => {
-    // `migratePanelTab` folds `issue:675` into `issues`; without this the fold
-    // would close every issue anybody had open.
-    const stored = ["diff", "issues", "issue:675", "pulls", "pull:666", "issue:9", "file:a.ts"];
-    expect(forgeFromLegacyTabs(stored, "issue:675")).toEqual({
-      issues: { numbers: [675, 9], at: 675 },
-      pulls: { numbers: [666] },
-    });
-  });
-
-  test("only the surface you were READING restores onto a detail", () => {
-    // Pull requests was in the background, so it comes back on its list with the
-    // chip a click away. Nothing says you were reading it.
-    const read = forgeFromLegacyTabs(["issue:1", "pull:2"], "issue:1");
-    expect(read.issues).toEqual({ numbers: [1], at: 1 });
-    expect(read.pulls).toEqual({ numbers: [2] });
-  });
-
-  test("a layout with no detail tabs seeds nothing", () => {
-    expect(forgeFromLegacyTabs(["diff", "issues", "editor"], "issues")).toEqual({});
-    // And a malformed id is not a number to restore.
-    expect(forgeFromLegacyTabs(["issue:12abc", "pull:"], undefined)).toEqual({});
   });
 });

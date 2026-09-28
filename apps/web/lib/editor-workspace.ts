@@ -290,31 +290,3 @@ export function writeEditor(sessionId: string, state: EditorState, now: number):
     // A full or disabled localStorage must not break the editor.
   }
 }
-
-/**
- * WHAT A PANEL SAVED BY THE PREVIOUS BUILD MEANT.
- *
- * Before the Editor, every open file was a top-level panel tab (`file:src/a.ts`,
- * `notebook:…`, `table:…`, `pdf:…`). Those ids are still in localStorage for
- * every session anybody had open, and dropping them on upgrade would close the
- * files somebody left open — the exact thing the Editor exists to stop
- * happening. So they restore as the Editor's files, in their original order,
- * PINNED: they were deliberate opens under the old rules, and demoting them to
- * one shared preview slot would throw all but one of them away.
- */
-export function editorFromLegacyTabs(tabs: readonly string[], activeTab?: string): EditorState | undefined {
-  const legacy: Record<string, EditorView> = { "file:": "code", "notebook:": "notebook", "table:": "table", "pdf:": "pdf" };
-  const files: EditorFile[] = [];
-  let activePath: string | undefined;
-  for (const tab of tabs) {
-    for (const [prefix, view] of Object.entries(legacy)) {
-      if (!tab.startsWith(prefix) || tab.length === prefix.length) continue;
-      const path = tab.slice(prefix.length);
-      if (!files.some((file) => file.path === path)) files.push({ path, view, pinned: true });
-      if (tab === activeTab) activePath = path;
-      break;
-    }
-  }
-  if (files.length === 0) return undefined;
-  return { files, activePath: activePath ?? files[files.length - 1]!.path, explorerOpen: true };
-}

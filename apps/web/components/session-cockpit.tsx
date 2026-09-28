@@ -69,7 +69,7 @@ import { CohortFold, foldCohortTurns } from "./session/cohort-fold";
 // one function every notification verb in this app comes from (#572) — so this
 // header cannot name a happening differently from the row below it.
 import { ActivityGroup, groupNotificationTurns, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator, withoutOpeningNotification } from "./transcript";
-import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, isRestorablePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
@@ -92,7 +92,6 @@ import {
   nextPanelTabId,
   openNewPanelTab,
   openPanelTab,
-  readPanelTabIds,
   readPanelTabs,
   revealPanelTab,
   setPanelTabParams,
@@ -108,7 +107,6 @@ import { freshTerminals, revealTerminal } from "@/lib/terminal-reveal";
 import type { RunView } from "@/lib/run/types";
 import {
   editorFileForPath,
-  editorFromLegacyTabs,
   emptyEditor,
   openInEditor,
   readEditor,
@@ -118,7 +116,7 @@ import {
   type OpenIntent,
 } from "@/lib/editor-workspace";
 import { pluginCommands } from "@/lib/plugins/registry";
-import { forgeFromLegacyTabs, forgeParams, openForge, readForgeOpen } from "@/lib/forge-workspace";
+import { forgeParams, openForge, readForgeOpen } from "@/lib/forge-workspace";
 import {
   buildSessionActionMenuItems,
   type SessionActionHandlers,
@@ -2032,19 +2030,8 @@ export function SessionCockpit({
     // setState there is a cascading render, and it is the same rule the git
     // readout in workspace-environment.tsx follows.
     const task = window.setTimeout(() => {
-      /**
-       * THE FILES SOMEBODY LEFT OPEN SURVIVE THE UPGRADE. Before the Editor,
-       * each was its own panel tab; `migratePanelTab` collapses those ids into
-       * the single Editor tab, so they have to be read for their PATHS first or
-       * the change would silently close every file anybody had open. Only when
-       * this Editor has nothing stored of its own — a session migrated once
-       * stays migrated, and re-seeding would resurrect files closed since.
-       */
       const stored = readEditor(panelKey);
-      const ids = readPanelTabIds(panelKey);
-      const legacy = stored.files.length === 0 ? editorFromLegacyTabs(ids.tabs, ids.activeTab) : undefined;
-      if (legacy) writeEditor(panelKey, legacy, Date.now());
-      const restored = readPanelTabs<PanelTab>(panelKey, isPanelTab, migratePanelTab);
+      const restored = readPanelTabs<PanelTab>(panelKey, isRestorablePanelTab);
       // On desktop the native strip owns the pages: collapse any per-page
       // browser tabs persisted before this change into one "Browser" tab, so
       // an upgraded session does not still show the old per-page outer tabs.
@@ -2062,33 +2049,14 @@ export function SessionCockpit({
        * to answer for them, and a strip that still showed three Terminals in a
        * browser tab would be wrong about this build either way.
        */
-      const collapsed = collapseTerminalTabs(browsers, (tab) => tab === "terminal", "terminal", foldTerminalParams);
-      /**
-       * THE ISSUES SOMEBODY LEFT OPEN SURVIVE THE UPGRADE (#693) — the same
-       * two-step the Editor's files take above, for the same reason.
-       * `migratePanelTab` folds `issue:675` into `issues`, which on its own
-       * would silently close it, so the NUMBERS are read off the stored ids
-       * first and seeded as that surface's open set.
-       *
-       * ONLY ONTO A SURFACE WITH NOTHING OF ITS OWN. A session migrated once
-       * stays migrated: re-seeding a tab that already carries an open set would
-       * resurrect issues closed since, and the first write after the upgrade
-       * replaces those ids in storage anyway.
-       */
-      const legacyForge = forgeFromLegacyTabs(ids.tabs, ids.activeTab);
-      let next = collapsed;
-      for (const entry of collapsed.tabs) {
-        const seed = entry.kind === "issues" ? legacyForge.issues : entry.kind === "pulls" ? legacyForge.pulls : undefined;
-        if (!seed || readForgeOpen(entry.params).numbers.length > 0) continue;
-        next = setPanelTabParams(next, entry.id, forgeParams(seed));
-      }
+      const next = collapseTerminalTabs(browsers, (tab) => tab === "terminal", "terminal", foldTerminalParams);
       /**
        * THE FIRST EDITOR IS LOADED WHETHER OR NOT ITS TAB IS OPEN — closing the
        * Editor has never thrown away the files in it, and reopening must still
        * find them. Any FURTHER Editor instance is loaded only because its tab
        * came back, since nothing else could name it.
        */
-      const loaded: Record<string, EditorState> = { editor: legacy ?? stored };
+      const loaded: Record<string, EditorState> = { editor: stored };
       for (const entry of next.tabs) {
         if (entry.kind === "editor" && !(entry.id in loaded)) loaded[entry.id] = readEditor(editorInstanceKey(panelKey, entry.id));
       }
