@@ -939,6 +939,9 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         ...(subscriberSessionId ? { subscriberSessionId } : {}),
       }),
     machinePlugins: () => request<{ plugins: PluginStatus[]; machine: ProjectPlugins }>(fetcher, "GET", "/api/plugins"),
+    installPlugin: (input: { path: string; mode: "copy" | "link" }) =>
+      request<{ plugin: PluginStatus }>(fetcher, "POST", "/api/plugins/installed", input),
+    uninstallPlugin: (id: string) => request<{ removed: true }>(fetcher, "DELETE", `/api/plugins/installed/${encodeURIComponent(id)}`),
     /** Any plugin's session verb, through the generic door. */
     sessionPluginVerb: (sessionId: string, plugin: string, verb: string, input: Record<string, unknown> = {}) =>
       request<unknown>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/plugins/${encodeURIComponent(plugin)}/${encodeURIComponent(verb)}`, input),
