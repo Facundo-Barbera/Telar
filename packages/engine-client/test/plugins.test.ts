@@ -167,11 +167,11 @@ describe("patching", () => {
 
 describe("the capability list", () => {
   test("MOVING THE PLUGIN PREFIXES OUT OF `TELAR_CAPABILITIES` TOOK NOTHING AWAY", () => {
-    for (const capability of ["browser", "sessions", "notebook", "ds", "latex", "display"]) {
+    for (const capability of ["browser", "sessions", "notebook", "ds", "latex", "display"] as const) {
       expect(TELAR_CAPABILITIES).toContain(capability);
     }
     expect(TELAR_CAPABILITIES).not.toContain("spool");
-    expect([...TELAR_CAPABILITIES].sort()).toEqual(
+    expect<string[]>([...TELAR_CAPABILITIES].sort()).toEqual(
       ["browser", "sessions", "notebook", "ds", "latex", "display", "run", "terminal", "prompt", "hello"].sort(),
     );
   });

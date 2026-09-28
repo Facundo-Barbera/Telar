@@ -7,7 +7,7 @@ import { domainClients, type EngineDomainMethods } from "./domains";
 import { EngineClientError, sanitizeTransportCause } from "./errors";
 import type { EngineTransport } from "./transport";
 
-export type FetchLike = typeof fetch;
+export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 type Conditional<T> = { unchanged: true; etag?: string } | { unchanged: false; payload: T; etag?: string };
 type Stream = { url: string; headers: Record<string, string> };
