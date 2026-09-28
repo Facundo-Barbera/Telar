@@ -85,7 +85,6 @@ struct SessionDiff: Decodable {
     var base: String?
 
     var baseUnverified: String?
-    var behind: Int?
     var files: [GitFileChange]
 
     var filesIncomplete: String?
@@ -135,6 +134,5 @@ struct DirectoryEntry: Decodable, Identifiable, Equatable, Hashable {
 struct DirectoryListing: Decodable {
     var path: String
     var name: String
-    var home: String
     var dirs: [DirectoryEntry]
 }

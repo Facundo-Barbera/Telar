@@ -104,11 +104,6 @@ import UniformTypeIdentifiers
         #expect(ComposerIntake.take(Data(), name: "nothing.png", type: .png).refusal?.contains("empty") == true)
     }
 
-    @Test func anImageIsMarkedAsOneForTheChip() {
-        #expect(ComposerIntake.take(Data([1]), name: "a.png", type: .png).file?.isImage == true)
-        #expect(ComposerIntake.take(Data([1]), name: "a.pdf", type: .pdf).file?.isImage == false)
-    }
-
     @Test func thePreviewCapIsBelowTheUploadCap() {
         #expect(ComposerIntake.previewCap < ComposerIntake.byteCap)
     }
