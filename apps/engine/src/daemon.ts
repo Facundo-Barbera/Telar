@@ -55,7 +55,7 @@ import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
 import { BUNDLED_SKILLS } from "./orchestrate-skill";
 import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
-import { createLoginGrantStore } from "./secrets/login-grants";
+import { createLoginGrantStore } from "./domains/browser";
 import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
 import {
   acquireDaemonLock,
@@ -5234,8 +5234,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     // Lifecycle operations use the same execution port as HTTP handlers,
     // directly in process. Tool capability calls retain the authenticated API.
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
-    let browser: import("./browser").BrowserRuntime | undefined;
-    let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
+    let browser: import("./domains/browser").BrowserRuntime | undefined;
+    let browserSocket: import("./domains/browser").BrowserToolSocket | undefined;
     let telarRunSocket: import("./telar-socket").TelarToolSocket | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
@@ -5246,7 +5246,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // The daemon owns the browser, not the driver: it outlives any turn and
       // has to be closed exactly once. `release(sessionId)` on archive is what
       // keeps Chromium instances from accumulating until the pool evicts them.
-      const { BrowserRuntime, BrowserRouter, desktopBrowserFromEnv } = await import("./browser");
+      const { BrowserRuntime, BrowserRouter, desktopBrowserFromEnv } = await import("./domains/browser");
       // Persistent per-session profiles, under the engine's own state root:
       // a login the human helped with on Tuesday still holds on Thursday.
       browser = new BrowserRuntime({ profileRoot: store.paths.browserProfiles });

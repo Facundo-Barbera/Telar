@@ -1,4 +1,3 @@
-/** Provider-neutral guidance, injected only when the session has a browser. */
 export const BROWSER_BRIEFING =
   "Telar supplies this session's integrated browser through the telar-browser MCP server. " +
   "For browser work, use that server's tools so the human and agent share this session's tabs. " +

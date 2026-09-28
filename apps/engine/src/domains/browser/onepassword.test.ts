@@ -1,8 +1,3 @@
-/**
- * The `op` adapter — driven entirely through the injected exec seam. NO TEST
- * HERE EVER SPAWNS A PROCESS: the machine this was written on has no `op`,
- * and that absence is itself a case under test.
- */
 import { expect, test } from "bun:test";
 import {
   createOnePasswordSecrets,
@@ -10,7 +5,7 @@ import {
   registrableDomain,
   registrableDomainOfUrl,
   type OpExec,
-} from "../src/secrets/onepassword";
+} from "./onepassword";
 
 const SENTINEL = "SENTINEL-hunter2-9f8e7d";
 
@@ -49,8 +44,6 @@ test("op missing answers the install sentence, not a stack trace", async () => {
 });
 
 test("a locked vault (non-zero exit) answers about the LOCK — stderr is dropped, not relayed", async () => {
-  // stderr from a credential tool is not journal-safe prose; the adapter's
-  // sentence is. The stderr here contains a sentinel that must not surface.
   const secrets = createOnePasswordSecrets(async () => ({ code: 1, stdout: "", stderr: `account ${SENTINEL} locked` }));
   const listed = await secrets.listLoginCandidates("https://github.com");
   expect(listed.ok).toBe(false);

@@ -1,15 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { z } from "zod";
-import { BROWSER_TOOLS } from "../src/browser";
-import { BrowserToolSocket, type BrowserSocketCapability } from "../src/browser/socket";
-
-/**
- * THE SOCKET IS DRIVEN OVER REAL HTTP, the way a provider subprocess drives it
- * — `sessions-socket.test.ts` sets the pattern. The capability is a fake; what is
- * under test is the transport, the per-lease auth, the gate and the state
- * reporting, which are exactly the parts that used to live in `driver.ts` and
- * now serve BOTH providers.
- */
+import { BROWSER_TOOLS } from "./tools";
+import { type BrowserSocketCapability, BrowserToolSocket } from "./socket";
 
 const sockets: BrowserToolSocket[] = [];
 afterEach(async () => {
@@ -53,8 +45,6 @@ const call = (name: string, args: Record<string, unknown> = {}) => ({
 });
 
 test("tools/list serves the browser toolkit VERBATIM — parity is structural, not maintained", async () => {
-  // Imported from the toolkit, never copied: the socket maps `BROWSER_TOOLS`
-  // itself, so a tool added there lands here without a second registry.
   const socket = makeSocket(fakeCapability({ tools: BROWSER_TOOLS }));
   const lease = await socket.bind({ scopeKey: "session_one" });
   const listed = await rpc(lease.url, lease.token, { jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -71,12 +61,9 @@ test("initialize names the browser server, and the transport answers the spec's 
   expect(initBody.result.serverInfo.name).toBe("telar-browser");
   expect(initBody.result.capabilities).toEqual({ tools: {} });
 
-  // A notification expects no answer — 202, empty.
   const note = await rpc(lease.url, lease.token, { jsonrpc: "2.0", method: "notifications/initialized" });
   expect(note.status).toBe(202);
 
-  // GET is not part of this server (no SSE stream); DELETE is a session
-  // teardown the spec allows a stateless server to answer 200.
   const got = await fetch(lease.url, { headers: { authorization: `Bearer ${lease.token}` } });
   expect(got.status).toBe(405);
   const deleted = await fetch(lease.url, { method: "DELETE", headers: { authorization: `Bearer ${lease.token}` } });
@@ -98,7 +85,6 @@ test("the token is the lock: absent, wrong, and RELEASED tokens are all 401", as
   expect((await rpc(lease.url, "not-the-token", call("browser_snapshot"))).status).toBe(401);
   expect((await rpc(lease.url, lease.token, call("browser_snapshot"))).status).toBe(200);
 
-  // Release IS revocation — the whole reason tokens are per-run.
   lease.release();
   expect((await rpc(lease.url, lease.token, call("browser_snapshot"))).status).toBe(401);
 });
@@ -134,8 +120,6 @@ test("a declined gate answers isError WITHOUT reaching the browser; a throwing g
   const answer = (await (await rpc(declined.url, declined.token, call("browser_navigate", { url: "http://x" }))).json()) as {
     result: { isError?: boolean; content: { text: string }[] };
   };
-  // An error RESULT, never a throw: a thrown handler reads to the model as a
-  // broken tool and it retries; an error result reads as "you may not".
   expect(answer.result.isError).toBe(true);
   expect(answer.result.content[0]?.text).toContain("declined");
   expect(calls).toEqual([]);
@@ -165,8 +149,6 @@ test("the gate hears reads AS reads, and an accepted call proceeds", async () =>
   });
   expect((await rpc(lease.url, lease.token, call("browser_snapshot"))).status).toBe(200);
   expect((await rpc(lease.url, lease.token, call("browser_navigate", { url: "http://x" }))).status).toBe(200);
-  // The classification rides to the gate, which is what lets the worker
-  // declare a read as `file_read` and the mode ladder auto-accept it.
   expect(heard).toEqual([
     { name: "browser_snapshot", readOnly: true },
     { name: "browser_navigate", readOnly: false },
@@ -192,9 +174,6 @@ test("an unchanged tab set reports once; a failed call reports nothing", async (
   );
   const lease = await socket.bind({ scopeKey: "s", onNavigated: (state) => void states.push(state) });
   await rpc(lease.url, lease.token, call("browser_navigate", { url: "http://x" }));
-  // The snapshot re-reads state but the tab set is IDENTICAL, so nothing is
-  // reported — the dedupe is what keeps read-after-every-call cheap. The
-  // failed click moved nothing worth describing either.
   await rpc(lease.url, lease.token, call("browser_snapshot"));
   await rpc(lease.url, lease.token, call("browser_click"));
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -203,8 +182,6 @@ test("an unchanged tab set reports once; a failed call reports nothing", async (
 });
 
 test("a READ-ONLY call whose tabs changed still reports — a session that only reads has pages too", async () => {
-  // Before this, a session whose agent only ever snapshotted journalled no
-  // `browser.state.changed` at all, so its pages never appeared in the panel.
   const states: string[] = [];
   let reads = 0;
   const socket = makeSocket(
@@ -225,8 +202,6 @@ test("a READ-ONLY call whose tabs changed still reports — a session that only 
 });
 
 test("state reads are SEQUENCED per binding — a redirect's reports land in order", async () => {
-  // Two mutating calls in quick succession, the FIRST state read slower than
-  // the second: unsequenced, the intermediate page would be reported last.
   const reported: string[] = [];
   let reads = 0;
   const socket = makeSocket(
@@ -250,8 +225,6 @@ test("state reads are SEQUENCED per binding — a redirect's reports land in ord
 });
 
 test("a browser whose state cannot be read still lets the tool call succeed", async () => {
-  // A browser panel that cannot be described must never fail the navigation
-  // that moved it — the agent asked to browse, not to be observed.
   const socket = makeSocket(
     fakeCapability({
       isReadOnly: () => false,
@@ -284,7 +257,6 @@ test("the listener is LAZY: a socket never bound opens no port", async () => {
   expect(socket.url).toBeUndefined();
   const lease = await socket.bind({ scopeKey: "s" });
   expect(socket.url).toBe(lease.url);
-  // Loopback, always — the token is the second lock, this is the first.
   expect(lease.url.startsWith("http://127.0.0.1:")).toBe(true);
   expect(lease.url.endsWith("/v2/browser/mcp")).toBe(true);
 });
@@ -300,8 +272,6 @@ test("the socket serves ONE path — anything else is 404, even with a valid tok
   });
   expect(other.status).toBe(404);
 });
-
-// ── browser_fill_secret routing ────────────────────────────────────────────
 
 const fillSecretTool = {
   name: "browser_fill_secret",
@@ -330,7 +300,6 @@ test("browser_fill_secret routes to the binding's handler — NEVER through the 
     },
     fillSecret: async (args, callBrowser) => {
       handlerSaw.push(args);
-      // The handler's browser reaches the SAME capability, scope-bound.
       await callBrowser("browser_list_tabs", {});
       return { content: [{ type: "text", text: "Filled username from “GitHub” on https://github.com." }] };
     },
@@ -342,10 +311,7 @@ test("browser_fill_secret routes to the binding's handler — NEVER through the 
   expect(answer.result.isError).toBeUndefined();
   expect(answer.result.content[0]?.text).toContain("Filled username");
   expect(handlerSaw).toHaveLength(1);
-  // The generic yes/no gate never heard about it: the handler opens its own
-  // `secret_access` request, which carries the item pick a boolean cannot.
   expect(gateSaw).toEqual([]);
-  // The capability heard only the handler's own browsing, never the fill tool.
   expect(capabilitySaw).toEqual(["browser_list_tabs"]);
 });
 
@@ -379,9 +345,6 @@ test("a file: URL is fenced at the socket — refused before the gate and before
     },
   });
 
-  // Outside the checkout: an isError RESULT (the model adapts), the gate is
-  // never consulted (no approval card for a call that cannot run), and the
-  // browser never sees it.
   const outside = await rpc(lease.url, lease.token, call("browser_navigate", { url: "file:///etc/hosts" }));
   const outsideBody = (await outside.json()) as { result: { isError?: boolean; content: { text: string }[] } };
   expect(outsideBody.result.isError).toBe(true);
@@ -389,7 +352,6 @@ test("a file: URL is fenced at the socket — refused before the gate and before
   expect(gateAsked).toEqual([]);
   expect(called).toEqual([]);
 
-  // Inside: an ordinary gated navigation.
   const inside = await rpc(lease.url, lease.token, call("browser_navigate", { url: "file:///tmp/telar-checkout/guide.html" }));
   const insideBody = (await inside.json()) as { result: { isError?: boolean } };
   expect(insideBody.result.isError).toBeUndefined();

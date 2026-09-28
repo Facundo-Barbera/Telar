@@ -1,13 +1,8 @@
-/**
- * The desktop-host client and the router that finally consume
- * `TELAR_DESKTOP_BROWSER_CONTROL_{PORT,TOKEN}` — driven against a real
- * loopback HTTP server speaking the control server's own wire shape
- * (`apps/desktop/browser-control-server.js`: GET /state?scopeKey, POST /tool).
- */
 import { afterEach, expect, test } from "bun:test";
 import http from "node:http";
-import { BrowserRouter, DesktopBrowserClient, desktopBrowserFromEnv, type BrowserRuntime } from "../src/browser";
-import { textOf } from "../src/browser/helpers";
+import { DesktopBrowserClient, desktopBrowserFromEnv } from "./desktop";
+import { BrowserRouter, type BrowserRuntime } from "./runtime";
+import { textOf } from "./helpers";
 
 type Handler = (input: { method: string; url: URL; auth: string | undefined; body: Record<string, unknown> }) => {
   status: number;
@@ -63,14 +58,9 @@ test("calls hit POST /tool with the bearer, normalized name and validated args",
     return { status: 200, payload: { content: [{ type: "text", text: "ok from host" }] } };
   });
   const client = new DesktopBrowserClient({ port, token: "tok" });
-  // Telar's read-only alias is the ENGINE's vocabulary; the host speaks
-  // browser_tabs — the client translates, exactly like the headless runtime.
   const listed = await client.call("session_one", "browser_list_tabs", {});
   expect(textOf(listed)).toBe("ok from host");
   expect(seen[0]).toEqual({ scopeKey: "session_one", name: "browser_tabs", args: { action: "list" } });
-  // A resize's mode and preset are the HOST's vocabulary and cross the wire
-  // as themselves. Rewritten to numbers (the headless rule) `{mode: "fit"}`
-  // became a request for a fixed 1280×800, and the tab never returned to fit.
   await client.call("session_one", "browser_resize", { mode: "fit" });
   await client.call("session_one", "browser_resize", { preset: "phone" });
   expect(seen[1]).toEqual({ scopeKey: "session_one", name: "browser_resize", args: { mode: "fit" } });
@@ -120,7 +110,7 @@ test("reachable(): ok host yes, wrong token no, dead host no — and the answer 
   const good = new DesktopBrowserClient({ port, token: "good", probeTtlMs: 60_000 });
   expect(await good.reachable()).toBe(true);
   expect(await good.reachable()).toBe(true);
-  expect(probes).toBe(1); // cached
+  expect(probes).toBe(1);
 
   const bad = new DesktopBrowserClient({ port, token: "bad" });
   expect(await bad.reachable()).toBe(false);
@@ -128,8 +118,6 @@ test("reachable(): ok host yes, wrong token no, dead host no — and the answer 
   const dead = new DesktopBrowserClient({ port: 1, token: "good" });
   expect(await dead.reachable()).toBe(false);
 });
-
-// ── the router ─────────────────────────────────────────────────────────────
 
 function fakeHeadless(log: string[]): BrowserRuntime {
   return {
@@ -194,8 +182,6 @@ test("without a desktop client the router IS the headless runtime", async () => 
 });
 
 test("a profile declared while desktop is offline is restored before opening and after host restart", async () => {
-  // A host that is only reachable AFTER `up` flips true — the initial reads
-  // 503 (unreachable), later 200. `probeTtlMs: 0` so reachability is re-probed.
   const hits: string[] = [];
   let up = false;
   let bound = false;
@@ -215,17 +201,14 @@ test("a profile declared while desktop is offline is restored before opening and
   const desktop = new DesktopBrowserClient({ port, token: "tok", probeTtlMs: 0 });
   const router = new BrowserRouter(fakeHeadless([]), desktop);
 
-  // Unreachable: bindProfile forwards nothing (the scope never gets a /bind).
   await router.bindProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   expect(hits).toEqual([]);
 
-  // The host comes up between declaration and start, with no second declaration.
   up = true;
   const opened = await router.state("s", { start: true, screenshot: false });
   expect(opened.error).toBeNull();
   expect(opened.tabs).toHaveLength(1);
   expect(hits).toEqual(["bind:project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/open"]);
-  // A fresh host has lost its bindings, but the agent's next call still works.
   bound = false;
   hits.length = 0;
   expect(textOf(await router.call("s", "browser_snapshot"))).toBe("ready");
@@ -250,8 +233,6 @@ test("a rejected profile restore prevents both opening and agent calls", async (
   expect(actions).toEqual([]);
 });
 
-// ── starting a browser by hand, on the desktop branch ──────────────────────
-
 function hostWithTabs(initial: { index: number; title: string; url: string; active: boolean; openedBy?: string }[], options: { openFails?: string } = {}) {
   const tabs = [...initial];
   const opens: Record<string, unknown>[] = [];
@@ -273,7 +254,7 @@ test("start on a desktop scope with no tabs opens one AS THE HUMAN", async () =>
   const router = new BrowserRouter(fakeHeadless([]), new DesktopBrowserClient({ port: await port, token: "tok", probeTtlMs: 0 }));
   const before = await router.state("s", { screenshot: false });
   expect(before.tabs).toEqual([]);
-  expect(opens).toEqual([]); // a plain read never starts anything
+  expect(opens).toEqual([]);
 
   const started = await router.state("s", { start: true, screenshot: false });
   expect(started.error).toBeNull();
@@ -310,7 +291,6 @@ test("concurrent starts on one scope open exactly one tab", async () => {
     expect(result.error).toBeNull();
     expect(result.tabs).toHaveLength(1);
   }
-  // And a later start, after the flight has landed, still opens nothing new.
   const later = await router.state("s", { start: true, screenshot: false });
   expect(later.tabs).toHaveLength(1);
   expect(opens).toHaveLength(1);
@@ -332,7 +312,6 @@ test("bind() posts the scope's project profile to /bind and surfaces the host's 
   expect(ok.partition).toBe("persist:telar-project-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   await expect(client.bind("session_one", "session_x")).rejects.toThrow(/project id/);
   expect(binds).toHaveLength(2);
-  // The router forwards to the desktop host when reachable and is a no-op headless.
   const router = new BrowserRouter({ call: async () => ({ content: [] }), isReadOnly: () => true, state: async () => ({ scopeKey: "s", provider: "headless", running: false, tabs: [], screenshot: null, error: null }), release: async () => true, close: async () => undefined } as unknown as BrowserRuntime, client);
   await router.bindProfile("session_two", "none");
   expect(binds.at(-1)).toMatchObject({ scopeKey: "session_two", profileKey: "none" });

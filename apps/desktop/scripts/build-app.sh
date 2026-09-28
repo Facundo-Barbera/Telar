@@ -81,7 +81,7 @@ test -f "$ENGINE_DIST/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs" \
 
 echo "==> materialize @playwright/mcp for the engine's browser"
 # @playwright/mcp is spawned as a CLI by the engine's browser transport
-# (src/browser/transport.ts). Next's output tracing never pulled it into the web
+# (src/domains/browser/transport.ts). Next's output tracing never pulled it into the web
 # bundle and it isn't on a Finder-launched app's PATH, so the packaged engine's
 # TELAR_PLAYWRIGHT_MCP_BIN walk-up/PATH resolution would find nothing. Copy a
 # SELF-CONTAINED, symlink-dereferenced closure (cli.js + its runtime deps

@@ -61,7 +61,7 @@ const fakeIpcMain = {
 mock.module("electron", () => ({ BrowserWindow: FakeBrowserWindow, ipcMain: fakeIpcMain }));
 const { wireLoginOffer } = require("./login-offer-window");
 const { captureEntry } = require("./login-offer");
-const engine = require("../../../engine/src/secrets/login-grants.ts");
+const engine = require("../../../engine/src/domains/browser/login-grants.ts");
 
 const capture = (over = {}) =>
   captureEntry({

@@ -10,7 +10,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
 const { rememberLoginGrant, exactOrigin, LOGIN_GRANTS_FILE, LOGIN_GRANTS_VERSION } = require("./login-grant-writer");
-const engine = require("../../../engine/src/secrets/login-grants.ts");
+const engine = require("../../../engine/src/domains/browser/login-grants.ts");
 
 const tempRoot = () => fs.mkdtempSync(path.join(os.tmpdir(), "telar-login-grants-"));
 
@@ -132,7 +132,7 @@ describe("the shared lock, against the engine's protocol", () => {
     // process while the shell's async writer hammers it from this one. Every
     // grant is distinct, so any lost read-modify-write shows as a missing row.
     const root = tempRoot();
-    const modulePath = path.join(__dirname, "..", "..", "..", "engine", "src", "secrets", "login-grants.ts");
+    const modulePath = path.join(__dirname, "..", "..", "..", "engine", "src", "domains", "browser", "login-grants.ts");
     const script = `
       const { createLoginGrantStore } = require(process.env.MODULE);
       const store = createLoginGrantStore(process.env.ROOT);

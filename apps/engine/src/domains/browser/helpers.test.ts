@@ -1,29 +1,8 @@
-/**
- * The pure half of the engine's browser: name routing, permission
- * classification, tab parsing, tool-input validation, and the scoped pool.
- *
- * Adapted from `apps/web_old/lib/server/browser-runtime.test.ts`, with the
- * accept-only cases turned into cases that also REJECT. A suite that only ever
- * feeds a schema valid input passes just as happily over `z.unknown()`.
- */
 import { describe, expect, test } from "bun:test";
-import {
-  BROWSER_TOOLS,
-  BrowserToolInputError,
-  MUTATING_TOOLS,
-  ScopedRuntimePool,
-  browserErrorText,
-  headlessBrowserToolCall,
-  imageDataUrlOf,
-  isReadOnlyBrowserCall,
-  normalizeBrowserToolCall,
-  fileUrlViolation,
-  headlessCanvasCall,
-  parseBrowserTabs,
-  parseBrowserToolInput,
-  textOf,
-  BrowserToolResult,
-} from "../src/browser";
+import { headlessCanvasCall } from "./canvas";
+import { browserErrorText, fileUrlViolation, headlessBrowserToolCall, imageDataUrlOf, isReadOnlyBrowserCall, MUTATING_TOOLS, normalizeBrowserToolCall, parseBrowserTabs, textOf } from "./helpers";
+import { ScopedRuntimePool } from "./pool";
+import { BROWSER_TOOLS, BrowserToolInputError, BrowserToolResult, parseBrowserToolInput } from "./tools";
 
 describe("browser tool routing", () => {
   test("maps the read-only tab-list alias to Playwright's overloaded tabs tool", () => {
@@ -36,8 +15,6 @@ describe("browser tool routing", () => {
   test("leaves every other call untouched, including its arguments", () => {
     const args = { target: "button-1", element: "Save" };
     expect(normalizeBrowserToolCall("browser_click", args)).toEqual({ name: "browser_click", args });
-    // The alias is exact, not a prefix: a tool that merely starts the same way
-    // must not be rewritten into a tab listing.
     expect(normalizeBrowserToolCall("browser_list_tabs_v2", args)).toEqual({ name: "browser_list_tabs_v2", args });
   });
 
@@ -49,22 +26,16 @@ describe("browser tool routing", () => {
   test("the headless browser gets numbers: a preset is its size, a bare mode the standard size, explicit numbers stay", () => {
     expect(headlessBrowserToolCall("browser_resize", { preset: "phone" })).toEqual({ name: "browser_resize", args: { width: 390, height: 844 } });
     expect(headlessBrowserToolCall("browser_resize", { mode: "fit" })).toEqual({ name: "browser_resize", args: { width: 1280, height: 800 } });
-    // Playwright MCP rejects parameters it does not know: the mode is dropped
-    // rather than sent along with the size.
     expect(headlessBrowserToolCall("browser_resize", { mode: "fixed", width: 900, height: 600 })).toEqual({ name: "browser_resize", args: { width: 900, height: 600 } });
-    // The alias rides along, so the headless path needs only this one call.
     expect(headlessBrowserToolCall("browser_list_tabs", {})).toEqual({ name: "browser_tabs", args: { action: "list" } });
   });
 
   test("the headless browser: grouped presets, one dimension over the standard size, and an orientation turn", () => {
     expect(headlessBrowserToolCall("browser_resize", { preset: "ipad-air" })).toEqual({ name: "browser_resize", args: { width: 820, height: 1180 } });
-    // This runtime keeps no current size, so the missing dimension is the
-    // standard one it started at.
     expect(headlessBrowserToolCall("browser_resize", { width: 600 })).toEqual({ name: "browser_resize", args: { width: 600, height: 800 } });
     expect(headlessBrowserToolCall("browser_resize", { height: 700 })).toEqual({ name: "browser_resize", args: { width: 1280, height: 700 } });
     expect(headlessBrowserToolCall("browser_resize", { preset: "phone", orientation: "landscape" })).toEqual({ name: "browser_resize", args: { width: 844, height: 390 } });
     expect(headlessBrowserToolCall("browser_resize", { orientation: "portrait" })).toEqual({ name: "browser_resize", args: { width: 800, height: 1280 } });
-    // What the schema will refuse stays in, so the refusal names it.
     expect(() => parseBrowserToolInput("browser_resize", headlessBrowserToolCall("browser_resize", { preset: "watch" }).args)).toThrow(/preset/);
     expect(() => parseBrowserToolInput("browser_resize", headlessBrowserToolCall("browser_resize", { orientation: "sideways" }).args)).toThrow(/orientation/);
   });
@@ -95,23 +66,14 @@ describe("browser permission classification", () => {
     }
     expect(isReadOnlyBrowserCall("browser_tabs", { action: "close", index: 0 })).toBe(false);
     expect(isReadOnlyBrowserCall("browser_tabs")).toBe(false);
-    // Default-deny: a tool the engine does not define cannot be described, so
-    // it cannot be auto-run. This is the case the legacy two-list version got
-    // wrong the moment the lists drifted.
     expect(isReadOnlyBrowserCall("browser_evaluate", { fn: "() => fetch('/admin/wipe')" })).toBe(false);
     expect(isReadOnlyBrowserCall("browser_handle_dialog")).toBe(false);
   });
 
   test("the mutating set and the tool schemas are the same nineteen tools", () => {
-    // Fifteen Playwright-backed tools (browser_resize included), the three
-    // canvas tools (drag, paste, copy), plus browser_fill_secret, which the
-    // socket routes above the runtime (secret-fill.ts) but which must still
-    // carry a schema and a mutating classification like everything else.
     const schemaNames = BROWSER_TOOLS.map((tool) => String(tool.name));
     expect(new Set(schemaNames).size).toBe(19);
     for (const name of ["browser_drag", "browser_paste", "browser_copy"]) expect(MUTATING_TOOLS.has(name)).toBe(true);
-    // A tool that can mutate but has no schema is a tool the engine gates and
-    // then cannot describe; a schema with no classification is worse.
     for (const name of MUTATING_TOOLS) expect(schemaNames).toContain(name);
   });
 });
@@ -145,8 +107,6 @@ describe("browser tool input validation", () => {
       url: "http://localhost:3000/x",
     });
     expect(parseBrowserToolInput("browser_navigate_back")).toEqual({});
-    // Defaults are applied HERE so the journal records what the browser
-    // actually received, not what the model happened to type.
     expect(parseBrowserToolInput("browser_take_screenshot", {})).toEqual({ type: "png", scale: "css" });
     expect(parseBrowserToolInput("browser_console_messages", {})).toEqual({ level: "info" });
     expect(parseBrowserToolInput("browser_network_requests", {})).toEqual({ static: false });
@@ -238,9 +198,6 @@ describe("browser tool results", () => {
   });
 
   test("does NOT let the forward-compat arm swallow a malformed known block", () => {
-    // This is the whole reason the unknown arm carries a refinement. Without
-    // it `{ type: "text", text: 42 }` parses as an opaque block and every
-    // reader downstream silently sees no text at all.
     expect(BrowserToolResult.safeParse({ content: [{ type: "text", text: 42 }] }).success).toBe(false);
     expect(BrowserToolResult.safeParse({ content: [{ type: "image" }] }).success).toBe(false);
     expect(BrowserToolResult.safeParse({ content: [{ type: "" }] }).success).toBe(false);
@@ -279,8 +236,6 @@ describe("tab parsing", () => {
   });
 
   test("does not invent tabs out of prose that happens to contain a URL", () => {
-    // The failure this guards is a real one: a loose pattern turns an error
-    // message mentioning a link into a browser tab that does not exist.
     expect(parseBrowserTabs("Navigation failed for http://localhost:3000/ — connection refused")).toEqual([]);
     expect(parseBrowserTabs("See https://example.com for details")).toEqual([]);
     expect(parseBrowserTabs("")).toEqual([]);
@@ -339,8 +294,6 @@ describe("the scoped browser pool", () => {
 
     expect(await pool.release("session:a", "session ended")).toBe(true);
     expect(disposed).toEqual(["a:session ended"]);
-    // Releasing a scope that was never pooled says so, so a caller can tell
-    // "freed a browser" from "there was never one" without peeking first.
     expect(await pool.release("session:a")).toBe(false);
   });
 
@@ -386,8 +339,6 @@ describe("multi-tab additions", () => {
   });
 
   test("the human's tab and the agent's are read as separate facts about separate tabs", () => {
-    // The shape that used to be impossible: the person is reading tab 0 while
-    // the agent works in tab 1.
     const tabs = parseBrowserTabs(
       [
         "- 0: (current) [Issue #12](https://a.example/) {controller=human, opened-by=human}",
@@ -398,7 +349,6 @@ describe("multi-tab additions", () => {
       { index: 0, title: "Issue #12", url: "https://a.example/", active: true },
       { index: 1, title: "Docs", url: "https://b.example/", active: false, agentFocus: true },
     ]);
-    // `yours` is a whole word in the metadata, never a substring of a title.
     expect(parseBrowserTabs("- 0: [Yours truly](https://a.example/) {opened-by=agent}")[0]?.agentFocus).toBeUndefined();
   });
 
@@ -412,34 +362,19 @@ describe("multi-tab additions", () => {
       url: "https://mail.example/",
       active: true,
       agentFocus: true,
-      // `index` is a POSITION — closing an earlier tab renumbers this one — so
-      // anything that must act on the tab it inspected compares this instead.
       tabUid: "tab-7",
       profileId: "bp_00000000000000a1",
-      // Percent-encoded on the wire: a label is a person's free text inside a
-      // comma-separated suffix.
       profileLabel: "Work / Ana",
     });
-    // A host with no named profiles, and no per-tab id, says nothing — and
-    // nothing is invented for it: the credential path treats an unknown
-    // identity as "ask a human", and an unknown tab id as "cannot verify".
     const bare = parseBrowserTabs("- 0: [Mail](https://mail.example/) {opened-by=agent}")[0];
     expect(bare?.profileId).toBeUndefined();
     expect(bare?.tabUid).toBeUndefined();
-    // A label that will not decode costs the label, never the identity.
     const [broken] = parseBrowserTabs("- 0: [Mail](https://mail.example/) {profile=bp_00000000000000a1, profile-label=%E0%A4%A}");
     expect(broken?.profileId).toBe("bp_00000000000000a1");
     expect(broken?.profileLabel).toBeUndefined();
   });
 
   test("every tool accepts tabId — a write may name a tab, and a bad index is still refused", () => {
-    /**
-     * REVERSED DELIBERATELY. Withholding `tabId` from writes was meant to keep
-     * an agent off a human-held tab, but the host enforces that directly (it
-     * defers while their hands are on the tab and refuses a stale view), so all
-     * the missing parameter achieved was that an agent could not work anywhere
-     * except the one tab the human happened to be looking at.
-     */
     const writes: Array<[string, Record<string, unknown>]> = [
       ["browser_click", { target: "e1" }],
       ["browser_type", { target: "e1", text: "hi" }],
@@ -459,7 +394,6 @@ describe("multi-tab additions", () => {
     for (const [name, base] of [...writes, ...reads]) {
       expect(parseBrowserToolInput(name, { ...base, tabId: 1 })).toMatchObject({ tabId: 1 });
       expect(() => parseBrowserToolInput(name, { ...base, tabId: -1 })).toThrow(BrowserToolInputError);
-      // Omitted still means "the tab I am working in", so it must stay optional.
       expect(parseBrowserToolInput(name, base)).not.toHaveProperty("tabId");
     }
   });
@@ -476,11 +410,7 @@ describe("the file: fence (fileUrlViolation)", () => {
   test("a file URL inside the checkout passes; outside is refused with the fence named", () => {
     expect(fileUrlViolation("browser_navigate", { url: `file://${root}/guide.html` }, root)).toBeNull();
     expect(fileUrlViolation("browser_navigate", { url: "file:///etc/hosts" }, root)).toMatch(/only inside this session's checkout/);
-    // Dot segments must not walk out — the URL normalises them, but the check
-    // is on the RESOLVED path, so this is the case that proves it.
     expect(fileUrlViolation("browser_navigate", { url: `file://${root}/../secrets.txt` }, root)).toMatch(/checkout/);
-    // The sibling-prefix classic: /tmp/telar-checkout-evil must not pass a
-    // startsWith over the unterminated root.
     expect(fileUrlViolation("browser_navigate", { url: `file://${root}-evil/x.html` }, root)).toMatch(/checkout/);
   });
 
@@ -491,7 +421,6 @@ describe("the file: fence (fileUrlViolation)", () => {
   test("browser_tabs new is the other door and gets the same fence; other actions do not", () => {
     expect(fileUrlViolation("browser_tabs", { action: "new", url: "file:///etc/hosts" }, root)).toMatch(/checkout/);
     expect(fileUrlViolation("browser_tabs", { action: "new", url: `file://${root}/a.html` }, root)).toBeNull();
-    // `select` carries no navigation; a stray url field must not refuse it.
     expect(fileUrlViolation("browser_tabs", { action: "select", url: "file:///etc/hosts" }, root)).toBeNull();
     expect(fileUrlViolation("browser_click", { target: "e1" }, root)).toBeNull();
   });

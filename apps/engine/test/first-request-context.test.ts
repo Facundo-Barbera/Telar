@@ -23,8 +23,8 @@
  */
 import { expect, test } from "bun:test";
 import { createClaudeDriver } from "../src/driver";
-import { BROWSER_BRIEFING } from "../src/browser/briefing";
-import { BROWSER_TOOLS } from "../src/browser/tools";
+import { BROWSER_BRIEFING } from "../src/domains/browser";
+import { BROWSER_TOOLS } from "../src/domains/browser";
 import { RUN_BRIEFING } from "../src/run/briefing";
 import { toolInputSchema } from "../src/mcp-socket";
 import { TELAR_ORIENTATION, TELAR_SKILL } from "../src/orientation";

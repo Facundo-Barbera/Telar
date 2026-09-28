@@ -3,7 +3,7 @@
 // Every exec here is a fake returning fixture metadata — no `op`, no vault.
 const { describe, expect, test } = require("bun:test");
 const { listLoginCandidates, registrableDomain, OP_NOT_INSTALLED, OP_LOCKED } = require("./vault-metadata");
-const engine = require("../../../engine/src/secrets/onepassword.ts");
+const engine = require("../../../engine/src/domains/browser/onepassword.ts");
 
 describe("registrableDomain mirrors the engine", () => {
   test("agreement across the shapes that matter", () => {

@@ -45,7 +45,7 @@
  * symptom go away is not evidence that the cause was understood.
  */
 import crypto from "node:crypto";
-import { BROWSER_BRIEFING } from "./browser/briefing";
+import { BROWSER_BRIEFING } from "./domains/browser";
 import { RUN_BRIEFING } from "./run/briefing";
 import { pluginBriefings } from "./plugins/bundled";
 import type { ItemDetail, ItemSeed, McpServer, NotificationDetail, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot, UserInputField } from "@telar/engine-client";

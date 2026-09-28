@@ -1,32 +1,8 @@
-/**
- * The 1Password CLI (`op`), narrowed to the two reads the credential-fill path
- * needs: list Login items that match an origin, and read one item's fields.
- *
- * WHAT THIS MODULE MUST NEVER DO is the design. Secret values exist only in
- * the return value of `readItemFields`, which the caller holds in memory for
- * the duration of one fill and never writes anywhere. Nothing here logs,
- * journals, or throws with a value in the message — every failure is a
- * human-readable sentence about the VAULT's state, not its contents.
- *
- * `op` IS OPTIONAL EQUIPMENT. On a machine without it (this one, at the time
- * of writing) every call answers a clean, actionable error instead of
- * spawning ENOENT into a stack trace. Nothing is ever installed on the
- * user's behalf.
- *
- * AUTH IS 1PASSWORD'S PROBLEM, DELIBERATELY. With the desktop app's CLI
- * integration enabled, `op` prompts Touch ID on the user's own screen; with
- * `OP_SERVICE_ACCOUNT_TOKEN` set, it works detached. This module passes
- * through exactly the env that controls that and nothing else.
- */
 import { spawn } from "node:child_process";
 import type { SecretCandidate, SecretFieldKind } from "@telar/engine-client";
 
-/** One wanted value: a kind, plus the 1Password field label when `kind` is
- *  `"field"`. */
 export type SecretFieldWant = { kind: SecretFieldKind; label?: string };
 
-/** Injected so tests never spawn a real process — the same seam shape the
- *  browser transport uses. */
 export type OpExec = (args: readonly string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
 
 type SecretsListResult = { ok: true; candidates: SecretCandidate[] } | { ok: false; error: string };
@@ -43,15 +19,6 @@ export const OP_NOT_INSTALLED =
 const OP_LOCKED =
   "1Password is locked or the CLI integration is disabled. Unlock the 1Password app (or set OP_SERVICE_ACCOUNT_TOKEN for detached use) and try again.";
 
-/**
- * The default runner: `op` from PATH, with an EXPLICIT env.
- *
- * Allowlisted rather than inherited: the worker's environment carries provider
- * API keys and whatever else the operator exported, and a child that reads
- * secrets should receive only what controls its own auth. `HOME` is where `op`
- * finds the desktop-app integration socket; the two `OP_*` variables are its
- * documented auth switches.
- */
 const defaultOpExec: OpExec = (args) =>
   new Promise((resolve, reject) => {
     const env: Record<string, string> = {};
@@ -68,18 +35,6 @@ const defaultOpExec: OpExec = (args) =>
     child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
 
-/**
- * The registrable domain of a hostname — `login.github.com` → `github.com`.
- *
- * A HEURISTIC, STATED AS ONE. The correct answer is the Public Suffix List,
- * which is a dependency this repo does not take for PR1 (nothing may be
- * installed). The heuristic takes the last two labels, except for a short
- * explicit set of two-part public suffixes where it takes three. It can only
- * err by being STRICTER than the PSL for exotic suffixes (grouping less, so a
- * candidate fails to match), never by matching across two unrelated
- * registrable domains under a listed suffix. DECIDED: revisit with the PSL if
- * a real mismatch is reported.
- */
 const TWO_PART_SUFFIXES = new Set([
   "co.uk", "org.uk", "ac.uk", "gov.uk", "co.jp", "or.jp", "ne.jp", "com.au", "net.au", "org.au",
   "co.nz", "com.br", "com.mx", "com.ar", "co.in", "co.kr", "com.sg", "com.hk", "com.tw", "com.cn",
@@ -87,7 +42,7 @@ const TWO_PART_SUFFIXES = new Set([
 
 export function registrableDomain(hostname: string): string | null {
   const host = hostname.trim().toLowerCase().replace(/\.$/, "");
-  if (!host || /^[\d.]+$/.test(host) || host.includes(":")) return null; // IPs and IPv6 never match a vault item
+  if (!host || /^[\d.]+$/.test(host) || host.includes(":")) return null;
   const labels = host.split(".").filter(Boolean);
   if (labels.length < 2) return null;
   const lastTwo = labels.slice(-2).join(".");
@@ -95,8 +50,6 @@ export function registrableDomain(hostname: string): string | null {
   return lastTwo;
 }
 
-/** The registrable domain of a full origin/URL string, or null when it has
- *  none worth binding to (non-http(s), IP literals, single-label hosts). */
 export function registrableDomainOfUrl(value: string): string | null {
   try {
     const url = new URL(value);
@@ -127,9 +80,6 @@ function isEnoent(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as { code?: string }).code === "ENOENT");
 }
 
-/** Map an `op` failure to a sentence about the vault. stderr is DROPPED, not
- *  forwarded: it is 1Password's prose, and prose from a credential tool is not
- *  something to relay into a journal verbatim. */
 function opFailure(): { ok: false; error: string } {
   return { ok: false, error: OP_LOCKED };
 }
@@ -193,8 +143,6 @@ export function createOnePasswordSecrets(exec: OpExec = defaultOpExec): SecretsP
       for (const want of wants) {
         const field = fields.find((candidate) => matchesWant(candidate, want));
         const value = field ? valueOf(field) : null;
-        // The MISSING field is named by kind/label, never by anything read
-        // from the item — an error message is journal-bound text.
         if (value === null) {
           return { ok: false, error: `The chosen 1Password item has no ${want.kind === "field" ? `field labelled “${want.label ?? ""}”` : want.kind}.` };
         }
@@ -222,7 +170,6 @@ function matchesWant(field: OpItemField, want: SecretFieldWant): boolean {
 }
 
 function valueOf(field: OpItemField): string | null {
-  // OTP fields carry the current code in `totp`; everything else in `value`.
   if (typeof field.totp === "string" && field.totp.length > 0) return field.totp;
   return typeof field.value === "string" && field.value.length > 0 ? field.value : null;
 }

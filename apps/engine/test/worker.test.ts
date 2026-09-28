@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { BrowserToolSocket } from "../src/browser/socket";
+import { BrowserToolSocket } from "../src/domains/browser";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { ProviderUnavailableError, type TurnDriver } from "../src/driver";
 import { defaultWorkerConcurrency, EngineWorker } from "../src/worker";
