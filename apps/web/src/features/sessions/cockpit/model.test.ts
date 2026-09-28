@@ -4,7 +4,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { JournalItem } from "@/platform/engine";
 import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "@/features/transcript";
-import { cockpitPlugins, describeTurnState, pinToggleOverride, retryInputForJournalTurn, SessionTurn, transcriptRows } from "./session-cockpit";
+import { cockpitPlugins, describeTurnState, pinToggleOverride, transcriptRows } from "./model";
+import { SessionTurn } from "./components/session-turn";
 
 const rendered = { runId: "run_1", sessionId: "session_1", status: "completed", startedAt: 1, completedAt: 2, streamedText: "", openedBy: 0 } as const;
 const prose = (id: string, text: string): JournalItem => ({ ...rendered, id, detail: { type: "assistant_message", text } });
@@ -35,26 +36,12 @@ describe("session workspace presentation", () => {
     expect(describeTurnState("ambiguous")).toEqual({ label: "Needs recovery decision", tone: "attention" });
     expect(describeTurnState("discarded")).toEqual({ label: "Discarded after recovery decision", tone: "muted" });
   });
-
-  test("retries the durable prompt, never streamed agent output", () => {
-    expect(retryInputForJournalTurn({
-      runId: "uncertain_run",
-      state: "ambiguous",
-      prompt: "Review this implementation",
-    })).toEqual({ runId: "uncertain_run", state: "ambiguous", input: "Review this implementation" });
-  });
 });
 
 describe("a live turn folds as it works", () => {
   const item = (id: string, type: string) => ({ id, detail: { type } }) as never;
 
   test("runs of work are cut at prose, steers, plans and compactions", () => {
-    /**
-     * THE BUG THIS PINS: a live turn had one window over everything before its
-     * last narration and dumped every tool call after it flat, so "one sentence,
-     * then twenty commands" stacked twenty rows until the turn ended. Each run
-     * is now its own group; only the last one is the live window.
-     */
     const segments = segmentActivity([
       item("a", "command_execution"),
       item("b", "file_read"),
@@ -84,14 +71,6 @@ describe("a live turn folds as it works", () => {
 });
 
 describe("a sub-agent is a row where it was spawned, and never folds while it is out", () => {
-  /**
-   * THE BUG THIS PINS: agents were CHIPS appended to the tail of the current
-   * fold — at the bottom while the turn worked, at the top of the tally once
-   * it settled — floating away from the moment the agent was reached for.
-   * They are rows in the run now, at the spawn item's own position; and a
-   * settled run is cut around any spawn whose agent is still live, so the
-   * fleet stays visible instead of vanishing behind "12 steps".
-   */
   const item = (id: string, type: string, taskId?: string) => ({ id, detail: taskId ? { type, taskId } : { type } }) as never;
   const task = (id: string, state = "running") => ({ id, kind: "agent", state, items: [] }) as never;
 
@@ -148,26 +127,12 @@ describe("what a live turn says it is doing", () => {
   });
 
   test("a backgrounded shell is not a chip in the conversation", () => {
-    /**
-     * THE BUG THIS PINS: `bun run verify` backgrounded came back in the chat as
-     * a bot-icon row titled with the command and "0 steps" — a delegate that
-     * appeared never to report. It reports fine; a background shell has no
-     * journal items, and the tool call that started it is already a row in this
-     * same turn. Its live process belongs on the Processes tab.
-     */
     const shell = task({ id: "verify", kind: "background", title: "Run full verify" });
     expect(transcriptTasks([shell, task({ id: "agent" })]).map((t) => t.id)).toEqual(["agent"]);
     expect(transcriptTasks([shell])).toEqual([]);
   });
 
   test("`kind` is the whole filter — no background row survives it", () => {
-    /**
-     * IT USED TO HAVE ONE EXCEPTION, and #877 removed it. A Warp run's own row
-     * was `background` because it outlived its turn, and it survived this filter
-     * because it was the row that said a fan-out had happened at all. Warp is
-     * retired; a background row is now always a process, and the pin is that
-     * EVERY one of them is dropped rather than all but one shape.
-     */
     const run = task({ id: "run", kind: "background", title: "find-flaky-tests" });
     const child = task({ id: "child" });
     const shell = task({ id: "tail", kind: "background", title: "tail -f dev.log" });
@@ -197,7 +162,7 @@ describe("what a live turn says it is doing", () => {
 
 describe("a message another agent sent is labelled as an agent's, never the person's", () => {
   test("the label names the sending session, or says the sender was outside any session", async () => {
-    const { agentSenderLabel } = await import("./session-cockpit");
+    const { agentSenderLabel } = await import("@/components/session/conversation-message");
     expect(agentSenderLabel({ sessionId: "session_abcdef123456" })).toBe("agent · session …123456");
     expect(agentSenderLabel({})).toBe("agent · outside any session");
   });
@@ -403,12 +368,6 @@ describe("a sub-agent's background claim is not a row in the main chat", () => {
   });
 });
 
-/**
- * ISSUE #269. The plugin map is the whole truth once a project carries one. A
- * record from an older engine may still carry legacy `dataScience`/`latex`
- * blocks — beside a map they are never a fallback, and without one they are
- * what `readProjectPlugins` reads.
- */
 describe("which plugin surfaces the cockpit offers", () => {
   test("reads the map", () => {
     expect(

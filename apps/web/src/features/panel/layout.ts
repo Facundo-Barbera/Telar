@@ -9,11 +9,11 @@ export const RIGHT_PANEL_WIDE_DEFAULT_WIDTH = 720;
 
 /** The kinds whose content sets their width rather than the column doing it:
  *  the Editor, and any plugin surface that declares itself `wide` (Data). */
-const WIDE_KINDS: ReadonlySet<string> = new Set(["editor", ...PLUGIN_SURFACES.filter((surface) => surface.wide).map((surface) => surface.id)]);
+const isWide = (kind: string) => kind === "editor" || PLUGIN_SURFACES.some((surface) => surface.wide && surface.id === kind);
 
 /** Only a default, behind a stored width; the widest kind in the strip decides so switching tabs never jumps. */
 export function defaultRightPanelWidth(tabs: readonly { kind: string }[]): number {
-  return tabs.some((tab) => WIDE_KINDS.has(tab.kind)) ? RIGHT_PANEL_WIDE_DEFAULT_WIDTH : RIGHT_PANEL_DEFAULT_WIDTH;
+  return tabs.some((tab) => isWide(tab.kind)) ? RIGHT_PANEL_WIDE_DEFAULT_WIDTH : RIGHT_PANEL_DEFAULT_WIDTH;
 }
 
 /** Bounds both the drag and the CSS `max-width` the panel carries when the window shrinks. */

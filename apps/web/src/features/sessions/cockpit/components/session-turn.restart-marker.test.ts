@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SessionTurn } from "./session-cockpit";
+import { SessionTurn } from "./session-turn";
 
 const PROMPT = "Telar restarted to install an update in the middle of your last turn.";
 

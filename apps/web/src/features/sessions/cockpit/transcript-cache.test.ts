@@ -1,13 +1,3 @@
-/**
- * #497 — THE SIXTEEN TRANSCRIPTS THAT STOP A SWITCH FLASHING WHITE.
- *
- * WHAT IS ACTUALLY AT STAKE HERE IS THE EVICTION RULE, not the storing. A cache
- * that keeps the wrong sixteen is a cache that misses on exactly the switch a
- * person makes most — back to the conversation they were just in — and a miss
- * is the blank frame this exists to remove. So the recency behaviour is what is
- * pinned: reading counts as use, re-remembering counts as use, and the entry
- * that leaves is the one nobody has touched.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Session } from "@telar/engine-client";
@@ -48,11 +38,6 @@ describe("what the cache holds", () => {
   });
 
   test("the same conversation on two Macs is two conversations", () => {
-    /**
-     * Ids are minted per engine, so two paired Macs can hold the same one.
-     * Answering one Mac's id with the other's transcript would paint the wrong
-     * conversation — a worse failure than the flash this removes.
-     */
     rememberTranscript(transcriptKey("local", "session_1"), transcript("local one"));
     rememberTranscript(transcriptKey("host_b", "session_1"), transcript("host_b one"));
     expect(recallTranscript(transcriptKey("local", "session_1"))?.session.id).toBe("local one");
@@ -86,11 +71,6 @@ describe("which sixteen it keeps", () => {
   });
 
   test("re-remembering an unchanged transcript refreshes its place in line", () => {
-    /**
-     * The cockpit re-remembers on every tail — once a second, per open
-     * conversation — precisely so the transcript being READ RIGHT NOW cannot
-     * age out behind fifteen opened once and abandoned.
-     */
     for (let n = 0; n < TRANSCRIPT_CACHE_LIMIT; n += 1) {
       rememberTranscript(transcriptKey("local", `session_${n}`), transcript(`session_${n}`));
     }

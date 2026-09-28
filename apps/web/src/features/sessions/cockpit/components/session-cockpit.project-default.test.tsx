@@ -1,11 +1,3 @@
-/**
- * A NEW CONVERSATION'S COMPOSER STARTS FROM THE PROJECT'S DEFAULT — its model,
- * effort and fast mode — so "this project always runs Opus at medium" is what
- * the canvas shows, and changing one knob keeps the rest.
- *
- * MOUNTED FOR REAL on a fresh canvas, because the seed lands when the project
- * record answers and has to lose to a human pick made at any point after.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";

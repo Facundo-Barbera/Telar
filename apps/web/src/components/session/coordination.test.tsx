@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ActivityGroup } from "@/features/transcript";
-import { SessionTurn } from "../session-cockpit";
+import { SessionTurn } from "@/features/sessions";
 import { AgentMessageBubble } from "./conversation-message";
 import type { JournalTurn } from "@/platform/engine";
 

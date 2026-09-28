@@ -24,7 +24,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";
-import { SessionTurn } from "@/components/session-cockpit";
+import { SessionTurn } from "@/features/sessions";
 import { withoutOpeningNotification } from "./model";
 import type { JournalItem, JournalTurn } from "@/platform/engine";
 

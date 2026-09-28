@@ -1,29 +1,5 @@
 "use client";
 
-/**
- * A COORDINATOR'S REACTIONS WHILE ITS COHORT WORKED, FOLDED.
- *
- * A fan-out used to leave a column of turns between the tasks going out and
- * the cohort's close: wakes, reports, a merge here and there, each a full turn.
- * The close is what the reader came for, so the turns between it and the
- * cohort's subscription fold into one line that says how many there were.
- *
- * THE BOUNDARIES ARE THE ENGINE'S. The close is the turn whose notification has
- * a `cohortId`, and the window opens at `cohortOpenedAt` (the cohort's own
- * `createdAt`). Nothing is read out of prose.
- *
- * WHAT NEVER FOLDS — the fold that was reverted in September hid completed
- * work, so the rule
- * is a list of what a person must see, and anything on it stays a row:
- * - the close itself, and the live turn;
- * - a turn the person wrote in, or one that did not simply complete;
- * - a turn that carries a result, a blocker, a task or a request, as its own
- *   notification or as an arrival hosted inside it;
- * - a turn that sent a result or a blocker, or answered a blocker;
- * - a turn the caller names in `keep`: one with any request, open or decided,
- *   and the newest answer, which a read receipt is about.
- */
-
 import { useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import type { NotificationDetail } from "@telar/engine-client";
@@ -62,13 +38,6 @@ function notificationsIn(turn: FoldTurn): NotificationDetail[] {
   return turn.notification ? [turn.notification, ...hosted] : hosted;
 }
 
-/**
- * THE TRANSCRIPT, CUT INTO RUNS OF ROWS AND FOLDS.
- *
- * Every turn comes back, in order, in exactly one segment. A fold is a run of
- * consecutive foldable turns inside one cohort's window; a kept turn in the
- * middle splits it, so what stays visible stays where it happened.
- */
 export function foldCohortTurns<T extends FoldTurn>(
   turns: readonly T[],
   { activeRunId, keep = new Set() }: { activeRunId?: string; keep?: ReadonlySet<string> } = {},

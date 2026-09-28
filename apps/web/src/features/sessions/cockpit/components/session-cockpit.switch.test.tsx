@@ -1,18 +1,3 @@
-/**
- * #497 — SWITCHING BACK TO A CONVERSATION YOU JUST READ DOES NOT BLANK.
- *
- * MOUNTED FOR REAL, and switched WITHOUT UNMOUNTING, because that is the whole
- * shape of the bug: the App Router reuses this component across
- * `/sessions/:a` → `/sessions/:b`, so between the two it sits holding the
- * previous conversation's rows with `readKey !== syncKey` — and for the length
- * of a round trip the screen shows a transcript that is not the one you asked
- * for, or nothing. A test that remounted would be testing a cold open instead.
- *
- * THE ASSERTION IS ON THE DOM IN THE COMMIT THAT SWITCHES, before any promise
- * is allowed to settle. Anything asserted after an await would also pass with
- * no cache at all, once the read landed — which is exactly the frame this is
- * about.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -39,7 +24,7 @@ mock.module("next/navigation", () => ({
 
 const { SessionCockpit } = await import("./session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
-const { clearTranscriptCache } = await import("@/lib/transcript-cache");
+const { clearTranscriptCache } = await import("../transcript-cache");
 
 const STARTED = 1_700_000_000_000;
 
@@ -128,11 +113,6 @@ afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
 
-/**
- * Let the opening finish. The read is a promise chain behind a queue behind a
- * deferred task, so one `act` is not enough turns of the loop — and a fixed
- * sleep would be a flake waiting for a slow CI Mac.
- */
 async function settle() {
   for (let pass = 0; pass < 6; pass += 1) {
     await act(async () => {
@@ -155,7 +135,7 @@ async function show(sessionId: string) {
   await settle();
 }
 
-/** Render WITHOUT letting anything settle: the commit, and nothing after it. */
+/** Render without letting anything settle: the commit, and nothing after it. */
 function switchTo(sessionId: string) {
   pathname = `/projects/project_1/sessions/${sessionId}`;
   act(() => {
@@ -180,21 +160,12 @@ describe("switching back to a conversation this tab already read", () => {
     expect(host.textContent).toContain("answer from session_b");
     expect(opened).toEqual(["session_a", "session_b"]);
 
-    // BACK, AND NOTHING IS AWAITED. Without the cache this frame holds
-    // `session_b`'s transcript — the previous conversation's rows, under
-    // `session_a`'s address — until a read lands.
     switchTo("session_a");
     expect(host.textContent).toContain("answer from session_a");
     expect(host.textContent).not.toContain("answer from session_b");
   });
 
   test("and the read behind it is a tail, not a second opening", async () => {
-    /**
-     * IDS OF ITS OWN, because `sessionConnection` is a module singleton that
-     * outlives a test the way it outlives a switch — which is the point of it.
-     * Reusing the ids above would make this pass on the first test's warm
-     * connections rather than on its own.
-     */
     host = document.createElement("div");
     document.body.append(host);
     root = createRoot(host);
