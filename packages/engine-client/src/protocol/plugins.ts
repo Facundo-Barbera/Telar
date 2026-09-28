@@ -224,7 +224,6 @@ export const LEGACY_PLUGIN_KEYS = {
   latex: "latex",
   "data-science": "dataScience",
 } as const satisfies Record<string, "latex" | "dataScience">;
-export type LegacyPlugin = keyof typeof LEGACY_PLUGIN_KEYS;
 
 export const BUNDLED_PLUGIN_TOOL_PREFIXES = ["ds", "notebook", "latex", "hello"] as const;
 

@@ -1,12 +1,12 @@
 import { z } from "zod";
+import { McpServer } from "../agent-tools/schema";
+import { ProviderInstance } from "../providers/schema";
 import {
   BrowserProvider,
   BrowserTab,
   Id,
-  McpServer,
   ModelSelection,
   ProviderDriverKind,
-  ProviderInstance,
   ProviderInstanceId,
   ProviderRefs,
   Timestamp,

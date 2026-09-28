@@ -1,9 +1,11 @@
+import { agentToolsClient } from "./agent-tools/client";
 import { appearanceClient } from "./appearance/client";
 import { dictationClient } from "./dictation/client";
 import { notesClient } from "./notes/client";
 import type { EngineTransport } from "./platform/transport";
 import type { InboxPolicy, SidebarLayout } from "./settings/schema";
 import { promptsClient } from "./prompts/client";
+import { providersClient } from "./providers/client";
 import { schedulesClient } from "./schedules/client";
 import { settingsClient } from "./settings/client";
 import { storageClient } from "./storage/client";
@@ -44,13 +46,7 @@ import {
   type WorkspaceConfig,
   type ProjectWorkspaceOverrides,
   type ProjectWorkspaceView,
-  type ModelCatalogue,
-  type ModelOverlay,
-  type CustomProviderModel,
   type SessionDiff,
-  type McpOAuthStatus,
-  type McpServer,
-  type McpServerSpec,
   type TurnAttachment,
   type TaskOutputPage,
   type TurnModelSelection,
@@ -83,11 +79,6 @@ import {
   type ModelSelection,
   type Project,
   type ProviderDriverKind,
-  type ProviderInstance,
-  type ProviderInstanceEnvVar,
-  type AutoCompact,
-  type ProviderProbe,
-  type ProviderUpdateRun,
   type LiveSessionRow,
   type Session,
   type SessionOrigin,
@@ -142,12 +133,15 @@ import {
 export * from "./protocol";
 export * from "./notes/schema";
 export * from "./prompts/schema";
+export * from "./providers/compaction";
+export * from "./providers/schema";
 export * from "./schedules/schema";
 export * from "./settings/schema";
 export * from "./storage/schema";
 export * from "./usage/schema";
 export * from "./worktrees/schema";
 
+export * from "./agent-tools/schema";
 export * from "./appearance/schema";
 export * from "./dictation/schema";
 
@@ -399,10 +393,12 @@ export type { BuildChannel } from "./updates/schema";
 export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
 export interface EngineClient
-  extends Methods<typeof appearanceClient>,
+  extends Methods<typeof agentToolsClient>,
+    Methods<typeof appearanceClient>,
     Methods<typeof dictationClient>,
     Methods<typeof notesClient>,
     Methods<typeof promptsClient>,
+    Methods<typeof providersClient>,
     Methods<typeof schedulesClient>,
     Methods<typeof settingsClient>,
     Methods<typeof storageClient>,
@@ -871,31 +867,6 @@ export class EngineClient implements EngineTransport {
     );
   }
 
-  modelCatalogue(
-    driver: ProviderDriverKind,
-    options: { refresh?: boolean; instanceId?: string } = {},
-  ): Promise<{ catalogue: ModelCatalogue }> {
-    const query = new URLSearchParams({ driver });
-    if (options.refresh) query.set("refresh", "1");
-    if (options.instanceId) query.set("instanceId", options.instanceId);
-    return this.request("GET", `/v2/models?${query.toString()}`);
-  }
-
-  /** What this login's reader did to that provider's model list. An untouched
-   *  overlay is a real answer, not a 404. */
-  modelOverlay(instanceId: string): Promise<{ overlay: ModelOverlay }> {
-    return this.request("GET", `/v2/provider-instances/${encodeURIComponent(instanceId)}/models`);
-  }
-
-  /** Presence is the patch, and a submitted array replaces that list whole — so
-   *  `{ hidden: [] }` clears the hides and omitting `hidden` leaves them. */
-  setModelOverlay(
-    instanceId: string,
-    patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[]; default?: string | null },
-  ): Promise<{ overlay: ModelOverlay }> {
-    return this.request("PATCH", `/v2/provider-instances/${encodeURIComponent(instanceId)}/models`, patch);
-  }
-
   listSessions(projectId: string): Promise<{ sessions: Session[] }> {
     return this.request("GET", `/v2/sessions?projectId=${encodeURIComponent(projectId)}`);
   }
@@ -1315,88 +1286,6 @@ export class EngineClient implements EngineTransport {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/browser/open`, { url });
   }
 
-  listMcpServers(): Promise<{ mcpServers: McpServer[] }> {
-    return this.request("GET", "/v2/mcp-servers");
-  }
-
-  /** This project's servers, plus `effective` — the merge its sessions actually
-   *  run with, computed by the engine so the surface that explains the
-   *  shadowing cannot disagree with the one that performs it. */
-  listProjectMcpServers(projectId: string): Promise<{ mcpServers: McpServer[]; effective: McpServer[] }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/mcp-servers`);
-  }
-
-  saveMcpServer(input: { id: string; projectId?: string; label?: string; enabled?: boolean; spec: McpServerSpec }): Promise<{ mcpServer: McpServer }> {
-    const { projectId, id, ...rest } = input;
-    const path = projectId
-      ? `/v2/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(id)}`
-      : `/v2/mcp-servers/${encodeURIComponent(id)}`;
-    return this.request("PUT", path, { id, ...rest });
-  }
-
-  removeMcpServer(id: string, projectId?: string): Promise<{ removed: boolean }> {
-    const path = projectId
-      ? `/v2/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(id)}`
-      : `/v2/mcp-servers/${encodeURIComponent(id)}`;
-    return this.request("DELETE", path);
-  }
-
-  mcpOAuthStatus(projectId?: string): Promise<{ statuses: McpOAuthStatus[] }> {
-    return this.request("GET", projectId ? `/v2/mcp-oauth?projectId=${encodeURIComponent(projectId)}` : "/v2/mcp-oauth");
-  }
-
-  connectMcpOAuth(input: { serverId: string; projectId?: string; redirectOrigin: string }): Promise<{ authorizationUrl: string }> {
-    return this.request("POST", "/v2/mcp-oauth/connect", input);
-  }
-
-  mcpOAuthCallback(query: string): Promise<{ redirect: string }> {
-    return this.request("GET", `/v2/mcp-oauth/callback?${query}`);
-  }
-
-  /** Forget a stored grant. Idempotent; `removed` says whether one existed. */
-  disconnectMcpOAuth(input: { serverId: string; projectId?: string }): Promise<{ removed: boolean }> {
-    return this.request("POST", "/v2/mcp-oauth/disconnect", input);
-  }
-
-  listProviderInstances(options: { refresh?: boolean } = {}): Promise<{ providerInstances: ProviderInstance[]; probes: ProviderProbe[] }> {
-    return this.request("GET", `/v2/provider-instances${options.refresh ? "?refresh=1" : ""}`);
-  }
-
-  updateProviderCli(instanceId: string): Promise<{
-    result: ProviderUpdateRun;
-    providerInstances: ProviderInstance[];
-    probes: ProviderProbe[];
-  }> {
-    return this.request("POST", `/v2/provider-updates/${encodeURIComponent(instanceId)}`, {});
-  }
-
-  saveProviderInstance(input: {
-    id: string;
-    driver?: ProviderDriverKind;
-    displayName?: string | null;
-    accentColor?: string | null;
-    /** A whole percentage of the model's window; `null` returns this login to
-     *  the cockpit's default. */
-    contextNoticePercent?: number | null;
-    /** When this login's sessions compact; `null` returns it to the provider's
-     *  default. */
-    autoCompact?: AutoCompact | null;
-    configDir?: string | null;
-    binaryPath?: string | null;
-    enabled?: boolean;
-    env?: ProviderInstanceEnvVar[];
-    carryOverInherited?: string[];
-  }): Promise<{ providerInstance: ProviderInstance; stoppedInheriting?: string[] }> {
-    const { id, ...patch } = input;
-    return this.request("PUT", `/v2/provider-instances/${encodeURIComponent(id)}`, patch);
-  }
-
-  /** The built-in slot for a driver refuses: a session on that driver would
-   *  have nothing left to route to. */
-  removeProviderInstance(id: string): Promise<{ removed: boolean }> {
-    return this.request("DELETE", `/v2/provider-instances/${encodeURIComponent(id)}`);
-  }
-
   stopTurn(sessionId: string, runId?: string): Promise<{ turn?: Turn; stopped: boolean }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { runId });
   }
@@ -1615,10 +1504,12 @@ type Methods<T> = { [K in keyof T]: OmitThisParameter<T[K]> };
 
 Object.assign(
   EngineClient.prototype,
+  agentToolsClient,
   appearanceClient,
   dictationClient,
   notesClient,
   promptsClient,
+  providersClient,
   schedulesClient,
   settingsClient,
   storageClient,
