@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
 import path from "node:path";
+import type { Turn } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../../state";
 import type { ExecutionStore } from "../../platform/db/execution-store";
 import { useTempStores } from "../../../test/temp-store";
@@ -255,4 +257,77 @@ describe("stop is stop — there is no pause to resume", () => {
     store.stopSession("session_one");
     expect(store.resumeSession("session_one")).toMatchObject({ released: 0, already: true });
   });
+});
+
+test("a turn that fails while parked on a question retires the question; the session is idle and recoverable", () => {
+  // Reproduced live: the provider CLI was killed while inside AskUserQuestion.
+  // The turn failed, but the request stayed open — sidebar "Waiting on you",
+  // composer in answer mode, continuation unreachable.
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Write a checkpoint then wait" });
+  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  const asked = store.openRequest("session_one", "run_one", token, {
+    requestId: "req_question",
+    kind: "user_input",
+    detail: { kind: "user_input", prompt: "Wait or continue?", fields: [{ key: "choice", label: "Choice", kind: "choice", choices: ["Wait", "Continue"] }] },
+  });
+  expect(asked.state).toBe("open");
+  expect(store.getSession("session_one").activity).toBe("blocked");
+
+  store.failTurn("session_one", "run_one", token, { code: "driver_failed", message: "Claude Code process terminated by signal SIGKILL" });
+
+  const request = store.requests("session_one").find((candidate) => candidate.id === "req_question");
+  expect(request).toMatchObject({ state: "resolved", decision: "cancel", resolvedBy: "cancelled", resolvedAt: 100 });
+  expect(store.getSession("session_one")).toMatchObject({ activity: "idle", lastTurnFailed: true });
+  expect(store.readEvents("session_one").filter((event) => event.type === "request.resolved" && event.requestId === "req_question")).toHaveLength(1);
+  // Nothing left for a human to answer — and answering again is refused.
+  expect(() => store.resolveRequest("session_one", "req_question", { decision: "accept" })).toThrow(/already been resolved/);
+  // The next human turn is accepted: the session is not stuck behind the question.
+  expect(store.submitTurn("session_one", { runId: "run_two", input: "Keep the existing checkpoint." }).turn.state).toBe("queued");
+});
+
+test("releasing checks the turn's state before its hold, and refuses a removed project", () => {
+  /**
+   * `releaseHeldTurn` is vestigial — nothing produces a hold any more — but it
+   * is still reachable by an older client and by a queue.json written before
+   * this change, so its guards still have to be right about a turn that is no
+   * longer queued.
+   */
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_lost", input: "Refactor" });
+  const claim = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_lost", claim.claim!.token);
+  store.submitTurn("session_one", { runId: "run_held", input: "before the crash" });
+  store.closeExecutionStore();
+  const rebooted = new EngineStore(stateRoot, () => 200);
+  rebooted.recover();
+
+  /**
+   * THE STATE GUARD RAN ONLY WHEN THE TURN WAS UNHELD, so a terminal turn that
+   * still carried a stale `held` flag skipped it — and was reported as
+   * "released", which is a lie about a turn that has already ended.
+   */
+  editDocument(rebooted, stateRoot, "queue.json", (queue) => {
+    Object.assign(queue.turns.find((turn: Turn) => turn.runId === "run_held"), { state: "stopped", completedAt: 150 });
+  });
+  rebooted.closeExecutionStore();
+  const withStale = new EngineStore(stateRoot, () => 300);
+  expect(() => withStale.releaseHeldTurn("session_one", "run_held")).toThrow(/only a queued turn can be released/);
+
+  // Unreachable through the API today (a removed project cannot hold a queued turn), but releasing starts work,
+  // so it keeps its own `assertProjectAvailable` gate. The state is written by hand.
+  const { store: away, root: awayRoot } = readyStore();
+  away.submitTurn("session_one", { runId: "run_held", input: "before the crash" });
+  editDocument(away, awayRoot, "queue.json", (queue) => { queue.turns[0].held = { at: 100, reason: "engine_restart" }; });
+  away.closeExecutionStore();
+  const registryFile = path.join(awayRoot, "projects.json");
+  const registry = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+  registry.projects[0].removedAt = 150;
+  fs.writeFileSync(registryFile, JSON.stringify(registry), "utf8");
+
+  const awayBoot = new EngineStore(awayRoot, () => 300);
+  expect(() => awayBoot.releaseHeldTurn("session_one", "run_held")).toThrow(/removed from Telar/);
+  // ...and it is still held afterwards, rather than half-released by a throw.
+  expect(awayBoot.turns("session_one")[0]?.held).toBeDefined();
 });

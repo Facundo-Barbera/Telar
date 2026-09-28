@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../../state";
+import { EngineStateError, EngineStore } from "../../state";
 
 const roots: string[] = [];
 
@@ -106,4 +106,48 @@ test("a settled or snoozed session comes back on its own when a human queues wor
   expect(session.snoozedAt).toBeUndefined();
   // The client is told, rather than having to poll for it.
   expect(store.readEvents("session_one").filter((event) => event.type === "session.updated")).toHaveLength(2);
+});
+
+test("an effort can be set without naming a model, and clearing the model keeps it", () => {
+  // THE DEFECT THIS PINS: `ModelSelection` used to require a model in order to
+  // carry an effort, so a session on the provider default — which is the
+  // default — could not be told to think harder. The composer's reasoning pill
+  // had nothing to write and read as a missing feature.
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  const updated = store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, effort: "max" } });
+  expect(updated.model).toEqual({ instanceId: session.providerInstanceId, effort: "max" });
+
+  // And it survives the turn, which is where it actually has to arrive — beside
+  // the long-window default the claim fills in, since Telar publishes no short
+  // Claude rows and a turn that named no model must not run one.
+  store.submitTurn("session_one", { runId: "run_one", input: "hi" });
+  expect(store.claimNextTurn("worker_one")?.model).toEqual({ instanceId: session.providerInstanceId, effort: "max", model: "claude-opus-5[1m]" });
+});
+
+test("a selection that selects nothing is refused rather than stored", () => {
+  // An empty selection is an ABSENT selection, and the engine should see it as
+  // one rather than writing a record that says nothing.
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  expect(() => store.updateSession("session_one", { model: { instanceId: session.providerInstanceId } as never })).toThrow(
+    EngineStateError,
+  );
+});
+
+test("a model selection can be cleared, which `undefined` could never express", () => {
+  // THE BUG THIS PINS: the cockpit's "Provider default" row sent `model:
+  // undefined`, `JSON.stringify` dropped the key, and the engine saw no patch
+  // at all — so the pill said one thing, the record said another, and a reload
+  // snapped the old model back.
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5", effort: "max" } });
+  expect(store.getSession("session_one").model).toBeDefined();
+
+  expect(store.updateSession("session_one", { model: null }).model).toBeUndefined();
+  // And an absent key still means "leave it alone", which is the other half of
+  // the distinction.
+  store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
+  expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5");
 });
