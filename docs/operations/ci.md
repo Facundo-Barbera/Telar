@@ -10,15 +10,14 @@ There is no `on: paths` filter. A workflow skipped that way never reports, and a
 
 | Check name | What it runs |
 | --- | --- |
-| `Source invariants` | `bun run check:source` (with `COMMENT_RATCHET_BASE=origin/<base>`), then `actionlint` over `.github/workflows/*.yml` |
-| `Typecheck engine-client, engine, and web` | `bun run typecheck` |
-| `Lint apps/web` | `bun run lint` |
+| `Check source` | `bun run check:source` (with `COMMENT_RATCHET_BASE=origin/<base>`), `actionlint` over `.github/workflows/*.yml`, and whether the change touches iOS (`.github/workflows/ios-paths.sh`) |
+| `Typecheck` | `bun run typecheck` |
+| `Lint web` | `bun run lint` |
 | `Test web`, `Test desktop`, `Test engine-client`, `Test workers`, `Test operations` | `bun run test:<suite>` (matrix, `fail-fast: false`) |
 | `Test engine 1/3`, `2/3`, `3/3` | `bun scripts/engine-shard.mjs <shard> 3` |
-| `Test desktop on macOS (the ditto swap helper)` | `bun run test:desktop` with a JUnit report; fails if the macOS-only blocks were skipped or made no assertions |
-| `Test the Electron suite (real Electron, real pages)` | each `test:desktop:<name>` Electron test in `apps/desktop`, each required to exit 0 and print its success marker |
-| `Does anything here reach the iOS build?` | diffs the change against its base and matches paths with `.github/workflows/ios-paths.sh` |
-| `Archive iOS (only when something iOS changed)` | on macOS: an unsigned Release archive, a type-check budget report, and `TelarMobileTests` on a simulator (at least 562 must pass). Otherwise a no-op on Linux |
+| `Test desktop (macOS)` | `bun run test:desktop` with a JUnit report; fails if the macOS-only blocks were skipped or made no assertions |
+| `Test Electron` | each `test:desktop:<name>` Electron test in `apps/desktop`, each required to exit 0 and print its success marker |
+| `Build and test iOS` | when the change touches iOS, on macOS: an unsigned Release archive, a type-check budget report, and `TelarMobileTests` on a simulator (at least 562 must pass). Otherwise a no-op on Linux |
 | `knip` | `bun run knip`: fails on any unused file, export, dependency or config hint |
 | `oxlint` | `bun run lint:ox`: fails on any finding in engine, desktop and engine-client |
 | `Verify passed` | the aggregate: fails unless every job above reports `success` |
@@ -32,7 +31,7 @@ Notes for operating it:
 
 ### Required checks
 
-The workflow is built around one required check, `Verify passed`, so jobs can be added or renamed without touching repository settings. The aggregate covers 15 check runs: `Source invariants`, typecheck, lint, the five `Test <suite>` runs, the three engine shards, the macOS job, the Electron job, `Does anything here reach the iOS build?` and the iOS archive. Counting `Verify passed`, that is 16 runs. `Guards` makes 17 but never blocks.
+The workflow is built around one required check, `Verify passed`, so jobs can be added or renamed without touching repository settings. The aggregate covers 14 check runs: `Check source`, typecheck, lint, the five `Test <suite>` runs, the three engine shards, the macOS job, the Electron job and the iOS job. Counting `Verify passed`, that is 15 runs. `Guards` makes 16 but never blocks.
 
 GitHub doesn't currently enforce any of them. `main` has no branch protection, and its only ruleset blocks deletion and force-push. To check the current state:
 
