@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Schedule } from "@telar/engine-client";
 import { AlarmClockIcon, InfoIcon, Trash2Icon } from "lucide-react";
-import { createEngineApi } from "@/platform/engine/index";
-import { hostFetcher } from "@/lib/hosts/client";
+import { createEngineApi } from "@/platform/engine";
+import { hostFetcher } from "@/platform/engine/host-client";
 import { inZone, lastRunSentence, ruleLabel } from "../schedules";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Button } from "@/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/ui/tooltip";
 
 const BOUNDARY = "Runs only while Telar is open. A run missed while it was closed is skipped, not run late.";
 

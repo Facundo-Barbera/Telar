@@ -6,7 +6,7 @@ ChevronRightIcon
 } from "lucide-react";
 import { type JournalTurn } from "@/platform/engine";
 import { ROW } from "./transcript-fold";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { notificationLabel } from "../model";
 
 export function NotificationRow({ detail, message }: { detail: NonNullable<JournalTurn["notification"]>; message?: string }) {

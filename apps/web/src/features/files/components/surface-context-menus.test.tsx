@@ -5,18 +5,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, useState } from "react";
 import { UNKNOWN_PATH, type GitFileChange, type SessionDiff } from "@telar/engine-client";
-import { installTestDom, mount, flush, click, stubFetch } from "@/lib/testing/dom";
-import { fileReference, REFERENCE_MIME } from "@/lib/drag-reference";
+import { installTestDom, mount, flush, click, stubFetch } from "@/test/dom";
+import { fileReference, REFERENCE_MIME } from "@/features/composer/drag-reference";
 import type { NotebookCell, NotebookRead } from "@/features/plugins/data-science/ds";
-import type { JournalItem, JournalTask } from "@/platform/engine/index";
+import type { JournalItem, JournalTask } from "@/platform/engine";
 import type { DiffTab } from "@/features/git/diff-scope";
-import { messagePlainText, quoteForComposer } from "@/components/ui/message";
+import { messagePlainText, quoteForComposer } from "@/ui/message";
 import { NotebookSurface } from "@/features/plugins/data-science/notebook-surface";
 import { TableSurface } from "./table-surface";
-import { DiffSurface, ReviewFileRow } from "@/features/git/index";
-import { TranscriptItem } from "@/features/transcript/index";
-import { Composer } from "@/features/composer/index";
-import { DesktopBrowserSurface, type DesktopBrowserBridge, type DesktopBrowserPanelState, type DesktopBrowserTab } from "@/features/browser/index";
+import { DiffSurface, ReviewFileRow } from "@/features/git";
+import { TranscriptItem } from "@/features/transcript";
+import { Composer } from "@/features/composer";
+import { DesktopBrowserSurface, type DesktopBrowserBridge, type DesktopBrowserPanelState, type DesktopBrowserTab } from "@/features/browser";
 import { appendToDraft } from "@/features/sessions";
 
 installTestDom();
@@ -57,7 +57,7 @@ describe("every surface menu uses the shared primitive", () => {
   test("imports components/ui/context-menu and defines no ContextMenu of its own", () => {
     expect(sources.length).toBeGreaterThan(5);
     for (const { name, source } of sources) {
-      expect(source, name).toContain('from "@/components/ui/context-menu"');
+      expect(source, name).toContain('from "@/ui/context-menu"');
       expect(source, name).not.toMatch(/function ContextMenu\b/);
     }
   });

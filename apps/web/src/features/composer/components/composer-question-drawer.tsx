@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { CheckIcon, ChevronDownIcon, MessageCircleQuestionIcon, SquareCheckIcon, SquareIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import {
   advance,
   answerFor,
@@ -12,7 +12,7 @@ import {
   selectOption,
   type QuestionDraft,
   type QuestionField,
-} from "@/lib/question-drawer";
+} from "../question-drawer";
 
 // Shows and selects; the composer's send button and Enter submit. A multi question never auto-advances.
 export function ComposerQuestionDrawer({

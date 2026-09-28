@@ -1,8 +1,8 @@
 "use client";
 
-import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
+import { desktopBrowserBridge } from "@/features/browser";
 import { createEngineApi } from "@/platform/engine";
-import { hostFetcher } from "@/lib/hosts/client";
+import { hostFetcher } from "@/platform/engine/host-client";
 
 export type ForgeLink = { kind: "issue" | "pull"; number: number; repository: string };
 

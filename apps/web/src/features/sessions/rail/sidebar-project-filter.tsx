@@ -2,9 +2,9 @@
 
 import { CheckIcon, ChevronDownIcon, FolderGit2Icon } from "lucide-react";
 import { ProjectAvatar, type NewConversationTarget, projectFilterKey } from "@/features/projects";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { CAPTION } from "@/lib/idiom";
-import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
+import { CAPTION } from "./idiom";
+import { cn } from "@/ui/utils";
 
 function groupTargetsByHost(
   targets: readonly NewConversationTarget[],

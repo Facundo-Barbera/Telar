@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BracesIcon, ChartLineIcon, PackageIcon, RotateCwIcon, SquareIcon } from "lucide-react";
 import type { EngineEvent, TurnState } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { latestKernelState, type KernelState } from "./ds";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { KernelPill } from "./kernel-pill";
 import { PlotsSurface } from "./plots-surface";
 import { VariablesSurface } from "./variables-surface";

@@ -2,7 +2,7 @@
 
 import { forwardRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 // Nothing inside the composer's InputGroup may carry `disabled`: its `has-disabled:opacity-50` greys the whole box.
 function controlClass(open: boolean, disabled?: boolean) {

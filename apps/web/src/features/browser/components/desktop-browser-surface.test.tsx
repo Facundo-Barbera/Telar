@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { presentationZoomLabel } from "../model";
 import type { DesktopBrowserBridge, DesktopBrowserPanelState, DesktopBrowserTab } from "../types";
 import { DesktopBrowserSurface } from "./desktop-browser-surface";
-import { claimNativeView, nativeViewOverlayHidden } from "@/lib/native-view-overlay";
+import { claimNativeView, nativeViewOverlayHidden } from "@/platform/desktop/native-view-overlay";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

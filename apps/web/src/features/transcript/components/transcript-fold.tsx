@@ -28,7 +28,7 @@
 
 import { useState, type ReactNode } from "react";
 import { ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 /** One row of the activity lane: muted 12px text on transparent, never a card.
  *  Boxing each call turns a forty-step turn into a stack of containers. */

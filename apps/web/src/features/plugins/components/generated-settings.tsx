@@ -2,8 +2,8 @@
 
 import { useState, type ComponentType } from "react";
 import { FileTextIcon, FlaskConicalIcon, FolderIcon, PackagePlusIcon, PlugIcon, SettingsIcon } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { Input } from "@/ui/input";
+import { Switch } from "@/ui/switch";
 import { describeValue, parseNumberField, type SettingsField } from "../settings-form";
 import { Dropdown, Row } from "@/features/settings";
 

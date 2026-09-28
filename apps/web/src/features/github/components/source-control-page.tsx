@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
 import type { GitHubUnavailable } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { UNAVAILABLE } from "../github-forge";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
 import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();

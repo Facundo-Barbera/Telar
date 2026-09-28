@@ -9,7 +9,7 @@ import { draftProblems } from "../run/presentation";
 import type { DraftProblem } from "../run/presentation";
 import { DEFAULT_RUN_ICON, RUN_ICON_KEYS, RUN_ICON_LABELS, RunGlyph, runIconKey } from "../run/icons";
 import type { RunConfigurationDraft, RunConfigurationView, RunIcon } from "../run/types";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 /** A row as the form holds it: `kept` marks a secret whose stored value the
  *  cockpit has never seen and must not overwrite. */

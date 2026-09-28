@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { item, turn } from "@/lib/testing/journal-fixtures";
+import { item, turn } from "@/test/journal-fixtures";
 import { projectJournal } from "./journal";
 import { isCompacting, isToolItem, itemLabel, toolOutput } from "./journal-items";
 

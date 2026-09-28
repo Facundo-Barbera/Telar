@@ -1,11 +1,11 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
-import { buttonLabelled, click, flush, installTestDom, mount, press } from "@/lib/testing/dom";
-import { liveRow, loadRail, mountRail, project, pushes, stubRail } from "@/lib/testing/rail";
+import { buttonLabelled, click, flush, installTestDom, mount, press } from "@/test/dom";
+import { liveRow, loadRail, mountRail, project, pushes, stubRail } from "@/test/rail";
 import { SidebarProjectFilter } from "./sidebar-project-filter";
-import { SidebarSearchField } from "@/components/sidebar-search-field";
-import { writeDraft } from "@/features/composer/index";
+import { SidebarSearchField } from "@/ui/sidebar-search-field";
+import { writeDraft } from "@/features/composer";
 import { projectFilterKey } from "@/features/projects";
 import { canvasHref } from "../session-list";
 

@@ -5,8 +5,8 @@
 
 import { FileTextIcon, SparklesIcon, XIcon } from "lucide-react";
 import type { ShelfRow } from "@/features/prompts";
-import { fmtAgo } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import { fmtAgo } from "@/ui/format";
+import { cn } from "@/ui/utils";
 
 export function ComposerStashMenu({
   agents,

@@ -162,7 +162,7 @@ describe("what a live turn says it is doing", () => {
 
 describe("a message another agent sent is labelled as an agent's, never the person's", () => {
   test("the label names the sending session, or says the sender was outside any session", async () => {
-    const { agentSenderLabel } = await import("@/components/session/conversation-message");
+    const { agentSenderLabel } = await import("@/features/transcript/components/conversation-message");
     expect(agentSenderLabel({ sessionId: "session_abcdef123456" })).toBe("agent · session …123456");
     expect(agentSenderLabel({})).toBe("agent · outside any session");
   });

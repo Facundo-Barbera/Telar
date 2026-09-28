@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 
 // fileURLToPath, not `.pathname`: this repo is checked out under a path with a
 // space in it, and a URL's pathname keeps that percent-encoded.
-const UI_DIR = fileURLToPath(new URL("../components/ui", import.meta.url));
+const UI_DIR = fileURLToPath(new URL("../ui", import.meta.url));
 const GLOBALS = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
 
 function sources(dir: string): string[] {
@@ -42,7 +42,7 @@ function sources(dir: string): string[] {
  *  purpose — see the header. */
 const STOCK = /\bshadow-(2?xs|sm|md|lg|xl|2xl)\b/;
 
-describe("no stock shadow survives in components/ui", () => {
+describe("no stock shadow survives in src/ui", () => {
   const files = sources(UI_DIR);
 
   test("there are files to check at all", () => {

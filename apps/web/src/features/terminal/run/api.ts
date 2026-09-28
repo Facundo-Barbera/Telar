@@ -2,7 +2,7 @@
 // unreachable or the terminal has already ended.
 
 import { EngineApiError } from "@/platform/engine";
-import { pathnameFetcher } from "@/lib/hosts/client";
+import { pathnameFetcher } from "@/platform/engine/host-client";
 import type {
   RunBytesAnswer,
   RunConfigurationDraft,

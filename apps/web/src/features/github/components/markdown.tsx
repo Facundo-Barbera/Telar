@@ -1,7 +1,7 @@
 "use client";
 
 import type { ComponentProps } from "react";
-import { MessageResponse } from "@/components/ui/message";
+import { MessageResponse } from "@/ui/message";
 
 export const READING_MEASURE = "max-w-[64ch]";
 

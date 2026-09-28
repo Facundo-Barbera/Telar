@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDownIcon, ArrowUpIcon, TableIcon } from "lucide-react";
 import type { TurnState } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/platform/engine/index";
-import type { TableWindow } from "@/features/plugins/index";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
+import type { TableWindow } from "@/features/plugins";
 import { EditorAddressRow } from "./editor-chrome";
 import {
   ContextMenu,
@@ -14,10 +14,10 @@ import {
   ContextMenuRadioItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import { PanelEmpty } from "@/components/ui/panel";
-import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
+} from "@/ui/context-menu";
+import { PanelEmpty } from "@/ui/panel";
+import { Spinner } from "@/ui/spinner";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 const ROW = 22;

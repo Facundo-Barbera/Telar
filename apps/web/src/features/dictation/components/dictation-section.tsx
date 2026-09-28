@@ -5,9 +5,9 @@ import type { DictationProviderId } from "@telar/engine-client";
 import { BookMarkedIcon, KeyRoundIcon, LanguagesIcon, MicIcon, MicOffIcon } from "lucide-react";
 import { DICTATION_AUTOMATIC } from "../automatic";
 import { useDictationSettings } from "../settings";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
+import { Textarea } from "@/ui/textarea";
 import { DictationMicrophoneSection } from "./dictation-microphone-section";
 import { Dropdown, Row, SettingsGroup } from "@/features/settings";
 

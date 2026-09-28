@@ -25,7 +25,7 @@ GlobalRegistrator.register({ url: "http://localhost/" });
 const { GradientStops } = await import("./gradient-stops");
 const { forgetRecentColours } = await import("../../recent-colours");
 const { DEFAULT_GRADIENT_SPECS } = await import("../../gradient-starters");
-const { clearField, typeInto } = await import("@/lib/testing/type-into");
+const { clearField, typeInto } = await import("@/test/type-into");
 type Spec = (typeof DEFAULT_GRADIENT_SPECS)["light"];
 
 /** The app's own colours the chip row always offers, distinct enough from each
@@ -97,7 +97,7 @@ function byLabel<T extends Element = HTMLInputElement>(label: string): T | null 
  * append to the committed value instead of the draft, and the live commits
  * along the way would then be read back as input.
  *
- * ONE CHARACTER AT A TIME, through `typeInto` (lib/testing/type-into.ts) —
+ * ONE CHARACTER AT A TIME, through `typeInto` (test/type-into.ts) —
  * which is the repo's answer to #732 and the reason this file does not roll its
  * own. It also makes the live field honest: "#1e1e2e" really does pass through
  * "#1e1" on the way, so what these tests assert is the value that LANDS rather

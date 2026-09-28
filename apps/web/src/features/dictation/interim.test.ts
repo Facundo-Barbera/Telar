@@ -4,7 +4,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { insertReference } from "@/lib/drag-reference";
+import { insertReference } from "@/features/composer/drag-reference";
 import { replaceTextRange } from "@/features/composer";
 import { createDictationWriter, insertedSpan, type DictationBox } from "./interim";
 

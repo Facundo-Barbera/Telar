@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type RefObject } from "react";
-import { createOverlayFreezer, onNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
+import { createOverlayFreezer, onNativeViewOverlay, type FrozenFrame } from "@/platform/desktop/native-view-overlay";
 
 type OverlayBridge = {
   setVisible(scopeKey: string, visible: boolean): Promise<void>;

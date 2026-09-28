@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, type DragEvent, type RefObject } from "react";
-import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
+import { readReferenceDrag, REFERENCE_MIME } from "../drag-reference";
 import type { ComposerEditorHandle } from "../components/composer-editor";
 
 const accepts = (event: DragEvent) =>

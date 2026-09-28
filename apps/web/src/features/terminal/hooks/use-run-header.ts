@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { mayClose } from "../close";
 import { createRunApi, type RunApi } from "../run/api";
 import { openTerminals, terminalTitle } from "../run/presentation";

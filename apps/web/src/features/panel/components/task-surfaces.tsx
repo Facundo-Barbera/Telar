@@ -5,14 +5,14 @@ import dynamic from "next/dynamic";
 import { BotIcon, ChevronRightIcon, TerminalIcon } from "lucide-react";
 import type { TaskState } from "@telar/engine-client";
 import type { JournalTask } from "@/platform/engine";
-import { startReferenceDrag, taskReference } from "@/lib/drag-reference";
+import { startReferenceDrag, taskReference } from "@/features/composer";
 import { TranscriptItem } from "@/features/transcript";
-import { PanelDivider, PanelEmpty, PanelRow } from "@/components/ui/panel";
+import { PanelDivider, PanelEmpty, PanelRow } from "@/ui/panel";
 import { RelatedConversations, HeldReports } from "@/features/sessions";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { isLiveTask, splitRoster, type TaskFocus } from "../folds";
 
-const TaskLog = dynamic(() => import("@/components/session/task-log").then((mod) => mod.TaskLog));
+const TaskLog = dynamic(() => import("@/features/sessions/components/task-log").then((mod) => mod.TaskLog));
 
 const TASK_STATE: Record<TaskState, string> = {
   pending: "Queued",

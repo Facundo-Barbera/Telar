@@ -2,7 +2,7 @@ import type {
 InboxPolicy,SidebarLayout,Project,LiveSessionRow,Turn,
 TurnSubmissionResult,SessionAssignment
 } from "@telar/engine-client";
-import { pathnameFetcher } from "@/lib/hosts/client";
+import { pathnameFetcher } from "@/platform/engine/host-client";
 import { domainMethods } from "@telar/engine-client";
 import { apiTransport, EngineApiError, type Fetcher } from "./transport";
 import { machineCalls, settingsCalls } from "./machine-calls";

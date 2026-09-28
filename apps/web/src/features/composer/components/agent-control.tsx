@@ -1,7 +1,7 @@
 "use client";
 
 import { effortLabel, ProviderIcon, PROVIDER_LABEL } from "@/features/providers";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
 import { useModelPicker, type ModelPickerProps } from "../hooks/use-model-picker";
 import { ControlTrigger } from "./control-primitives";
 import { ModelPickerList, ModelPickerRail } from "./model-picker-list";

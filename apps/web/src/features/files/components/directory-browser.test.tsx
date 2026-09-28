@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { rememberedDirectoryKey } from "../directory-keys";
 import { EngineApiError } from "@/platform/engine";
 import type { DirectoryListing } from "@telar/engine-client";
-import { buttonLabelled, click, flush, installTestDom, mount } from "@/lib/testing/dom";
+import { buttonLabelled, click, flush, installTestDom, mount } from "@/test/dom";
 import { DirectoryBrowser, type DirectoryLister } from "./directory-browser";
 
 installTestDom();

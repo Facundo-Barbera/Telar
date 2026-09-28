@@ -2,8 +2,8 @@
 
 import { useRef, useState } from "react";
 import { GlobeIcon, PlusIcon } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { useNativeViewOverlay } from "@/lib/native-view-overlay";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/ui/dropdown-menu";
+import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
 import type { BrowserStartState } from "../folds";
 import type { OpenableSurface, PanelTab } from "../model";
 import type { PanelTabParams } from "../tabs";

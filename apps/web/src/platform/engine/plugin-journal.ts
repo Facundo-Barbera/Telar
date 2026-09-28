@@ -1,5 +1,5 @@
 import type { EngineEvent } from "@telar/engine-client";
-import type { JournalItem } from "@/platform/engine/index";
+import type { JournalItem } from "@/platform/engine";
 
 type Renderer<T extends EngineEvent["type"]> = (event: Extract<EngineEvent, { type: T }>) => JournalItem | undefined;
 

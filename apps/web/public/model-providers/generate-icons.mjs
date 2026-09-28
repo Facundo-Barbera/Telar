@@ -1,5 +1,5 @@
 // One-shot generator: embeds the vendored marks into
-// components/session/connection-icon.tsx. Kept beside the SVGs so re-vendoring
+// src/features/providers/components/connection-icon.tsx. Kept beside the SVGs so re-vendoring
 // a logo regenerates the component instead of hand-editing path data.
 //
 // TWO KINDS OF MARK, AND THE DIFFERENCE IS THE POINT (issue #655). `MARKS` is
@@ -37,41 +37,12 @@ const marks = {
 };
 const openCodeMark = read("opencode-app");
 
-const out = `/**
- * CONNECTION AND MODEL-PROVIDER MARKS for the model picker.
- *
- * GENERATED — edit public/model-providers/generate-icons.mjs, not this file.
- *
- * A PROVIDER'S MARK AND AN ACCOUNT'S MARK ARE DIFFERENT THINGS, and this file
- * used to have only the second kind (issue #655). \`MARKS\` below is keyed by
- * models.dev CONNECTION id, and models.dev's \`opencode\` is **OpenCode Zen** —
- * one account type under the OpenCode provider, whose logo is a blocky Z, next
- * to \`opencode-go\`'s blocky G. Handing that Z to the provider generally told
- * somebody their Bedrock-routed model was a Zen model. \`OPENCODE_MARK\` is the
- * OpenCode application's own mark, and it is what a PROVIDER surface draws.
- *
- * The connection SVGs are models.dev provider logos (MIT,
- * github.com/sst/models.dev) — the same database and artwork OpenCode resolves
- * its connections against, vendored so the picker names a route with the mark
- * OpenCode itself shows. \`OPENCODE_MARK\` comes from opencode's own brand
- * assets (MIT, github.com/anomalyco/opencode) because models.dev has no entry
- * for the app. The originals as fetched live in public/model-providers/ beside
- * ATTRIBUTION.md. Every path is fill=currentColor, which is what lets one mark
- * read in both themes. An unknown connection gets a neutral monogram, never a
- * wrong logo.
- *
- * DRAWN AT A WHOLE NUMBER OF PIXELS, AND AT THE ONE ASKED FOR (issue #398).
- * \`size\` used to land only as \`width\`/\`height\` ATTRIBUTES, which any ancestor's
- * \`[&_svg:not([class*='size-'])]:size-4\` — the rule every button and menu row
- * in this app carries — silently overrode, because a stylesheet beats a
- * presentation attribute. A 13px mark in a settings row was therefore drawn at
- * 16 and a 40-unit path landed on half-pixel edges. The size now goes through
- * an inline style, which nothing overrides, and \`shapeRendering\` asks the
- * rasteriser to keep the curve rather than snap it to the device grid.
- */
-import { cn } from "@/lib/utils";
-import { routeOf } from "@/lib/model-connections";
+const out = `import { cn } from "@/ui/utils";
+import { routeOf } from "../model-connections";
 import type { ProviderDriverKind } from "@telar/engine-client";
+
+// Connection marks are models.dev provider logos (MIT, github.com/sst/models.dev); OPENCODE_MARK is from
+// opencode's brand assets (MIT, github.com/anomalyco/opencode). Originals and ATTRIBUTION.md: public/model-providers/.
 
 /** \`dim\` is a second path a two-tone mark is drawn in — kept as its own field
  *  so vendoring one never silently flattens it to a single shape. */
@@ -156,5 +127,5 @@ export function ModelRowIcon({ driver, modelId, size = 14, className }: { driver
   return <ConnectionIcon connection={driver === "claude" ? "anthropic" : "openai"} size={size} className={className} />;
 }
 `;
-fs.writeFileSync(path.join(here, "..", "..", "components", "session", "connection-icon.tsx"), out);
+fs.writeFileSync(path.join(here, "..", "..", "src", "features", "providers", "components", "connection-icon.tsx"), out);
 console.log(`connection-icon.tsx written (${out.length} bytes)`);

@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { claimChords } from "@/features/commands";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import type { RunApi } from "../run/api";
 import { byteDroppedNotice } from "../run/terminal-feed";
 import { TERMINAL_CHORD_CLAIMS } from "../keys";

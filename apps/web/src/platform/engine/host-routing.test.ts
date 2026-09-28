@@ -5,7 +5,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test, beforeEach } from "bun:test";
 import { createEngineApi, refusedBy, EngineApiError } from "./client";
-import { hostFetcher, hostFromPathname, hostName, hostPrefix, rememberHostName, rewriteApiPath, HOST_NAME_HEADER, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFetcher, hostFromPathname, hostName, hostPrefix, rememberHostName, rewriteApiPath, HOST_NAME_HEADER, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { HOST_ID_HEADER } from "@/features/hosts/server";
 import { sessionHref, type SidebarSession } from "@/features/sessions";
 

@@ -23,9 +23,9 @@ mock.module("next/navigation", () => ({
 }));
 
 const { SessionCockpit } = await import("./session-cockpit");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 const { clearTranscriptCache } = await import("../transcript-cache");
-const { installPageApi } = await import("@/lib/page-api");
+const { installPageApi } = await import("@/features/composer/page-api");
 const { activeComposer } = await import("@/features/composer");
 
 installPageApi();
@@ -256,7 +256,7 @@ describe("the solo route", () => {
 
     // Spaced as a paste would be — `dictate` inserts through the editor's own
     // `insertAtCaret` rather than around it, so a second sentence continues
-    // this one instead of running into it (see lib/page-api.ts).
+    // this one instead of running into it (see features/composer/page-api.ts).
     expect(result).toMatchObject({ ok: true, draft: "open the bay doors ", submitted: true });
     const sent = calls.find((call) => call.method === "POST" && call.url.includes("/turns"));
     expect(sent).toBeDefined();

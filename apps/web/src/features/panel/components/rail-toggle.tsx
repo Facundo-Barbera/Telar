@@ -1,7 +1,7 @@
 "use client";
 
 import { PanelRightOpenIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/ui/button";
 
 /** The masthead control that opens the panel. It fades rather than vanishing so its neighbours keep their places. */
 export function RailToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {

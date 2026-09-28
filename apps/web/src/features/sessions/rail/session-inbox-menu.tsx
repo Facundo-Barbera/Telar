@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { MoreHorizontalIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { cn } from "@/ui/utils";
+import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { projectSettingsHref } from "@/features/projects";
 import { canvasHref, sessionKey, type SidebarSession } from "../session-list";
 import {
@@ -18,7 +18,7 @@ import {
   type SessionRowChanged,
 } from "../session-mutations";
 import { sessionLink } from "../session-link";
-import { desktopApp } from "@/lib/desktop-app";
+import { desktopApp } from "@/platform/desktop/desktop-app";
 import { type SettlingActivity } from "../session-settling";
 import {
   buildSessionActionMenuItems,
@@ -27,9 +27,9 @@ import {
   type SessionActionTarget,
 } from "../session-action-menu";
 
-import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Spinner } from "@/components/ui/spinner";
+import { Button } from "@/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/ui/dropdown-menu";
+import { Spinner } from "@/ui/spinner";
 import { dropdownSessionMenuParts, SessionActionContextMenu, SessionActionMenuItems } from "../components/session-action-menu";
 
 function menuTarget(session: SidebarSession, settled?: boolean): SessionActionTarget {

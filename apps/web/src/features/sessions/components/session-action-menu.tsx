@@ -23,7 +23,7 @@ import {
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@/ui/dropdown-menu";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -33,7 +33,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+} from "@/ui/context-menu";
 
 const ICONS: Record<SessionActionIcon, ComponentType<{ className?: string }>> = {
   open: ArrowRightIcon,

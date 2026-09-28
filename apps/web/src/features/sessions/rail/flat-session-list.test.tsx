@@ -13,7 +13,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { FlatSessionList, RailModeSwitch } = await import("./flat-session-list");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 import { flattenSessions } from "./flat-rail";
 import type { SidebarSession } from "../session-list";
 

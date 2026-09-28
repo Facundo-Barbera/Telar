@@ -1,7 +1,7 @@
 import { BotIcon, ClockIcon, TerminalIcon } from "lucide-react";
 import { pluginEnabled, readProjectPlugins, type TurnState } from "@telar/engine-client";
 import type { JournalTask, JournalTurn } from "@/platform/engine";
-import { insertReference } from "@/lib/drag-reference";
+import { insertReference } from "@/features/composer";
 
 const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
   completed: "Completed",

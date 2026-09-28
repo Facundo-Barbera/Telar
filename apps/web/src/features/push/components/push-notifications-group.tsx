@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { BellIcon, SmartphoneIcon } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { fmtAgo } from "@/lib/format";
+import { Badge } from "@/ui/badge";
+import { fmtAgo } from "@/ui/format";
 import type { ActivityReport, NotifyOn } from "@telar/engine-client";
 import { Dropdown, Row, SettingsGroup } from "@/features/settings";
 

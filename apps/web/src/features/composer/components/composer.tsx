@@ -7,7 +7,7 @@ import { turnHasContent, type ProjectAvailability } from "@telar/engine-client";
 import { choiceOf } from "@/features/providers";
 import { useCommandHandlers } from "@/features/commands";
 import { useComposerDictation } from "@/features/dictation";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { compactBlockedReason, isResumeDraft, type Completion } from "../completions";
 import { markComposerActive, type ComposerSubmit } from "../registry";
 import { hasUltrathink, toggleUltrathink } from "../model-options";

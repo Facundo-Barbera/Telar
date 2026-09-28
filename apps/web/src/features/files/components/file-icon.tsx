@@ -20,7 +20,7 @@ import {
   TableIcon,
 } from "lucide-react";
 import { fileKind, type FileGlyph } from "../file-kinds";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const GLYPHS: Record<FileGlyph, typeof FileIcon> = {
   code: FileCodeIcon,

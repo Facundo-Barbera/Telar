@@ -2,8 +2,8 @@
 
 import { useRef, useState, useSyncExternalStore } from "react";
 import { MinusIcon, PipetteIcon, PlusIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { cn } from "@/ui/utils";
 import { normaliseColourText } from "../../colour-field";
 import {
   colourChips,

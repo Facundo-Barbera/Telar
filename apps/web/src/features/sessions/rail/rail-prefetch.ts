@@ -1,7 +1,7 @@
-import { createEngineApi } from "@/platform/engine/index";
-import { sessionConnection } from "@/platform/engine/index";
-import { INITIAL_TURNS } from "@/platform/engine/index";
-import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { createEngineApi } from "@/platform/engine";
+import { sessionConnection } from "@/platform/engine";
+import { INITIAL_TURNS } from "@/platform/engine";
+import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { LOCAL_HOST } from "../snapshot-cache";
 
 export const PREFETCH_CAP = 3;

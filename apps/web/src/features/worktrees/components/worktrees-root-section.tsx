@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { WorktreeMoveResult, WorktreesRoot } from "@telar/engine-client";
 import { FolderGitIcon, MoveRightIcon } from "lucide-react";
-import { chooseDirectory } from "@/lib/choose-directory";
-import { createEngineApi } from "@/platform/engine/index";
+import { chooseDirectory } from "@/platform/desktop/choose-directory";
+import { createEngineApi } from "@/platform/engine";
 import { REMOVABLE_DRIVE_WARNING } from "@/features/storage";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/ui/button";
 import { Row } from "@/features/settings";
 
 const api = createEngineApi();

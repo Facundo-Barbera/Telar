@@ -12,7 +12,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@/ui/dropdown-menu";
 import { modelOptionSections, PROVIDERS } from "../model-options";
 
 type MenuChoice = { key: string; label: string; icon?: ReactNode; hint?: string; selected: boolean; disabled?: boolean; onClick: () => void };

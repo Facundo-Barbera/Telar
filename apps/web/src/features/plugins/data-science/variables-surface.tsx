@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { BracesIcon, RotateCwIcon } from "lucide-react";
 import type { TurnState } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { humanBytes, type KernelState, type VarRow } from "./ds";
-import { PanelEmpty, PanelHeader } from "@/components/ui/panel";
+import { PanelEmpty, PanelHeader } from "@/ui/panel";
 import { KernelPill } from "./kernel-pill";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 

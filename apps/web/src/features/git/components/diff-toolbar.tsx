@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronsDownUpIcon, ChevronsUpDownIcon, FolderTreeIcon, PilcrowIcon, WrapTextIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import type { DiffView } from "../hooks/use-diff-view";
 
 /** How this reader draws patches (persisted per person, not per tab), plus one collapse/expand-all button. */

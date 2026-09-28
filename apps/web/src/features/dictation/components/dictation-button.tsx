@@ -2,11 +2,10 @@
 
 import { MicIcon } from "lucide-react";
 import type { ComposerDictation } from "../hooks/use-composer-dictation";
-import { keyCapText, useKeyCapPlatform } from "@/lib/key-caps";
-import { useKeymap } from "@/features/commands";
+import { keyCapText, useKeyCapPlatform, useKeymap } from "@/features/commands";
 import { DictationCaretPill } from "./dictation-caret-pill";
 import { DictationNotice } from "./dictation-notice";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 export function DictationButton({ dictation, className }: { dictation: ComposerDictation; className?: string }) {
   const { phase, error, toggle, available, unavailable, caret } = dictation;

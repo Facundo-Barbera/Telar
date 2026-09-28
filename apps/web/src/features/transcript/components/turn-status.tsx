@@ -5,8 +5,8 @@ import {
 HourglassIcon,TriangleAlertIcon
 } from "lucide-react";
 import { type RateLimitType, type TurnFailureCode } from "@telar/engine-client";
-import { Shimmer } from "@/components/ui/shimmer";
-import { cn } from "@/lib/utils";
+import { Shimmer } from "@/ui/shimmer";
+import { cn } from "@/ui/utils";
 
 
 export function Marker({ children, attention }: { children: React.ReactNode; attention?: boolean }) {

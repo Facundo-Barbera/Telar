@@ -4,11 +4,11 @@ import { useState } from "react";
 import { GlobeIcon } from "lucide-react";
 import type { BrowserProvider, BrowserSnapshot } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
-import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
-import { Badge } from "@/components/ui/badge";
-import { Spinner } from "@/components/ui/spinner";
-import { PanelEmpty } from "@/components/ui/panel";
-import { cn } from "@/lib/utils";
+import { browserPageReference, startReferenceDrag } from "@/features/composer";
+import { Badge } from "@/ui/badge";
+import { Spinner } from "@/ui/spinner";
+import { PanelEmpty } from "@/ui/panel";
+import { cn } from "@/ui/utils";
 import { usePoll } from "@/ui/hooks/use-poll";
 import { browserTabLabel, type BrowserState } from "../model";
 

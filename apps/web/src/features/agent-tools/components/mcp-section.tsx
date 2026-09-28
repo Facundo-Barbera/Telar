@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { GlobeIcon, PlugIcon, PlusIcon, Settings2Icon, TerminalIcon, XIcon } from "lucide-react";
 import type { McpOAuthStatus, McpServer, McpServerSpec } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/platform/engine/index";
-import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
+import { cn } from "@/ui/utils";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
+import { Switch } from "@/ui/switch";
 import { Row, Segmented, SettingsGroup } from "@/features/settings";
 import { HEALTH_DOT, signInAction, signInSummary, statusFor } from "../mcp-oauth";
 

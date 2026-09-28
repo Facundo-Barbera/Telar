@@ -19,7 +19,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { SessionRow } = await import("./session-row");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 const { toSidebarSession } = await import("../session-list");
 
 const NOW = 1_700_000_000_000;

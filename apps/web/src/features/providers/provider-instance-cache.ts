@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { defaultInstanceIdForDriver, type ProviderDriverKind, type ProviderInstance } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 
 const api = createEngineApi();
 

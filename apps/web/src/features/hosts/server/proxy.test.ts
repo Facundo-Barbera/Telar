@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { forward, upstreamTimeout, upstreamUrl, HOST_ID_HEADER } from "./proxy";
-import { HOST_NAME_HEADER } from "@/lib/hosts/client";
+import { HOST_NAME_HEADER } from "@/platform/engine/host-client";
 import { HOST_HEADER } from "@/features/remote/server/host-token";
 
 const host = { id: "host_b", name: "mini", baseUrl: "http://mini:3000", deviceToken: "tlr_remote" };

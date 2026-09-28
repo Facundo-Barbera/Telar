@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import type { Look } from "../looks";
 import { compositionHalf, MODES, type CompositionMode } from "../composition";
 import { composeState } from "../scene-composer";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 function Half({
   look,

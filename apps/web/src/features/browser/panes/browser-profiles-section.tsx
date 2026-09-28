@@ -18,11 +18,11 @@ import {
   type SitePermissionProfile,
 } from "../desktop-site-permissions";
 import { NewBrowserProfileDialog, PermissionKindIcon } from "../settings";
-import { IdentityIcon } from "@/lib/telar-icons";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Spinner } from "@/components/ui/spinner";
+import { IdentityIcon } from "@/ui/telar-icons";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
+import { Spinner } from "@/ui/spinner";
 import { ProfileColorPicker, ProfileIconPicker } from "./browser-profile-marks";
 import { Row, SettingsGroup } from "@/features/settings";
 

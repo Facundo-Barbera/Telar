@@ -23,7 +23,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { SessionCockpit } = await import("./session-cockpit");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 const { clearTranscriptCache } = await import("../transcript-cache");
 
 const STARTED = 1_700_000_000_000;

@@ -25,7 +25,7 @@ import { SessionCockpit } from "@/features/sessions";
  * not answer.
  *
  * THE PHRASE IS NO LONGER PICKED AT ALL. It used to be one of fourteen, chosen
- * at random per request — see `lib/greetings.ts` for why the rotation went.
+ * at random per request — see `features/composer/greetings.ts` for why the rotation went.
  */
 export const dynamic = "force-dynamic";
 

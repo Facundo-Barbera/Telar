@@ -4,12 +4,12 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SETTINGS_SEARCH_INDEX, searchSettings } from "@/features/settings/index";
+import { SETTINGS_SEARCH_INDEX, searchSettings } from "@/features/settings";
 import { projectSettingsHref } from "../project-settings-link";
 import { enablePatch } from "@/features/plugins/sections";
 import { isTelarIcon, TELAR_ICONS, type ProviderModel } from "@telar/engine-client";
 import type { ModelChoice } from "@/features/providers/models";
-import { modelOptionsOf } from "@/features/composer/index";
+import { modelOptionsOf } from "@/features/composer";
 import type { ScopedProject } from "./projects-page";
 
 const navigation = await import("next/navigation");

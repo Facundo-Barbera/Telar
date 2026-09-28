@@ -3,11 +3,11 @@
 import { useEffect, useState } from "react";
 import type { GitFileChange, GitFilePatch } from "@telar/engine-client";
 import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "../session-review";
-import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
-import { Badge } from "@/components/ui/badge";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { PanelRow } from "@/components/ui/panel";
-import { Spinner } from "@/components/ui/spinner";
+import { fileReference, startReferenceDrag } from "@/features/composer";
+import { Badge } from "@/ui/badge";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/ui/context-menu";
+import { PanelRow } from "@/ui/panel";
+import { Spinner } from "@/ui/spinner";
 import type { DiffView } from "../hooks/use-diff-view";
 import { INCOMPLETE_PATCH, type PatchWitness } from "../model";
 import { PatchBody } from "./patch-body";

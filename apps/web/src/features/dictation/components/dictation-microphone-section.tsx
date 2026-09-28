@@ -4,9 +4,9 @@ import { AudioLinesIcon, MicIcon, TypeIcon } from "lucide-react";
 import { hearing } from "../level";
 import { microphoneOptions, microphoneStatus } from "../devices";
 import { useAudioInputs, useMicrophoneTest, useMicrophoneUnavailable } from "../hooks/use-microphone";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/ui/button";
 import { Dropdown, Row, SettingsGroup } from "@/features/settings";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 export function DictationMicrophoneSection() {
   const unavailable = useMicrophoneUnavailable();

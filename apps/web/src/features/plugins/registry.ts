@@ -1,5 +1,5 @@
 import { FlaskConicalIcon, PuzzleIcon, SigmaIcon, type LucideIcon } from "lucide-react";
-import type { CommandId } from "@/features/commands/index";
+import type { CommandId } from "@/features/commands";
 
 export type PluginSurface = { id: string; label: string; icon: LucideIcon; blurb: string; wide?: boolean };
 

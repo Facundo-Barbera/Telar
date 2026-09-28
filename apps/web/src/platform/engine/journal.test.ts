@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, Turn } from "@telar/engine-client";
-import { envelope, item, turn } from "@/lib/testing/journal-fixtures";
+import { envelope, item, turn } from "@/test/journal-fixtures";
 import { appendJournalEvents, journalCursor, projectJournal, taskRoster } from "./journal";
 import { isActiveTurn, itemLabel, itemText } from "./journal-items";
 import { createJournalProjector } from "./journal-projector";

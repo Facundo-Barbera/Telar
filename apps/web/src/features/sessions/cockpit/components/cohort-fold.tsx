@@ -4,7 +4,7 @@ import { useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import type { NotificationDetail } from "@telar/engine-client";
 import type { JournalItem, JournalTurn } from "@/platform/engine";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { ROW, tallyParts } from "@/features/transcript";
 
 export type FoldTurn = Pick<JournalTurn, "runId" | "origin" | "state" | "acceptedAt" | "notification" | "agentIntent" | "items" | "failure" | "held">;

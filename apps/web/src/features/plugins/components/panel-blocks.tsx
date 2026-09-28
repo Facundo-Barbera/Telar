@@ -1,8 +1,8 @@
 "use client";
 
 import type { PluginPanelBlock } from "@telar/engine-client";
-import { MessageResponse } from "@/components/ui/message";
-import { cn } from "@/lib/utils";
+import { MessageResponse } from "@/ui/message";
+import { cn } from "@/ui/utils";
 
 type Cell = string | number | boolean | null;
 

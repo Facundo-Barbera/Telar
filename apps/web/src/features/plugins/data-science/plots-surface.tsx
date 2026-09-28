@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChartLineIcon, PinIcon, PinOffIcon, RotateCwIcon } from "lucide-react";
 import type { TurnAttachment, TurnState } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { attachmentUrl } from "./ds";
-import { PanelEmpty, PanelHeader } from "@/components/ui/panel";
-import { cn } from "@/lib/utils";
+import { PanelEmpty, PanelHeader } from "@/ui/panel";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 

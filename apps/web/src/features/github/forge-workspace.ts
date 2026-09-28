@@ -1,5 +1,5 @@
 
-import type { PanelTabParams } from "@/features/panel/index";
+import type { PanelTabParams } from "@/features/panel";
 
 export type ForgeOpen = {
   numbers: readonly number[];

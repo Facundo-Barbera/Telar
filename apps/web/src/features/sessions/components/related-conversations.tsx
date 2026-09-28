@@ -4,16 +4,16 @@ import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowUpRightIcon, BellIcon, BellOffIcon, UsersIcon } from "lucide-react";
 import type { SessionAssignment, Subscription } from "@telar/engine-client";
-import { PanelEmpty, PanelRow, PanelSectionLabel, type PanelTone } from "@/components/ui/panel";
+import { PanelEmpty, PanelRow, PanelSectionLabel, type PanelTone } from "@/ui/panel";
 import { usePoll } from "@/ui/hooks/use-poll";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
-import { hostFetcher } from "@/lib/hosts/client";
-import { createFollowingController, lockKey, type FollowingController } from "@/lib/following";
-import { fmtAgo } from "@/lib/format";
+import { hostFetcher } from "@/platform/engine/host-client";
+import { createFollowingController, lockKey, type FollowingController } from "../following";
+import { fmtAgo } from "@/ui/format";
 import { activityBadge } from "../session-activity";
 import { relatedWork, sessionHref, sessionKey, toSidebarSession, type SidebarSession } from "../session-list";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 type Outcome = NonNullable<SessionAssignment["outcome"]>;
 

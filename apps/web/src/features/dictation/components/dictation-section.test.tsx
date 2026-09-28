@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { searchSettings, SETTINGS_SEARCH_INDEX } from "@/features/settings/index";
+import { searchSettings, SETTINGS_SEARCH_INDEX } from "@/features/settings";
 
 describe("search lands on it", () => {
   const first = (query: string) => searchSettings(SETTINGS_SEARCH_INDEX, query)[0];

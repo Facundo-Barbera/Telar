@@ -14,7 +14,7 @@ import {
   rankPaths,
   rankSkills,
 } from "./completions";
-import { directoryReference, fileReference, skillReference } from "@/lib/drag-reference";
+import { directoryReference, fileReference, skillReference } from "./drag-reference";
 
 const FILES = [
   "README.md",

@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { FileIcon, RotateCwIcon } from "lucide-react";
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/platform/engine/index";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { rawFileUrl } from "../file-urls";
 import { EditorAddressRow } from "./editor-chrome";
-import { PanelEmpty } from "@/components/ui/panel";
-import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
+import { PanelEmpty } from "@/ui/panel";
+import { Spinner } from "@/ui/spinner";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 

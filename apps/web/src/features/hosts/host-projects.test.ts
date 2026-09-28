@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Project } from "@telar/engine-client";
 import { projectLabel, projectsForHost, type HostProjects } from "./host-projects";
-import { LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
 
 const project = (id: string, name: string): Project => ({ id, name }) as unknown as Project;
 

@@ -4,10 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChartNoAxesColumnIcon, DownloadIcon, FlameIcon, Loader2Icon, PowerIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
 import { useDesktopUpdate, UpdateToast, RestartUpdateDialog } from "@/features/updates";
-import { formatCpu, useRunawayNotice, type RunawayRenderer } from "@/lib/desktop-metrics";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ProgressRing } from "@/components/ui/progress-ring";
-import { cn } from "@/lib/utils";
+import { formatCpu, useRunawayNotice, type RunawayRenderer } from "@/platform/desktop/desktop-metrics";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/ui/tooltip";
+import { ProgressRing } from "@/ui/progress-ring";
+import { cn } from "@/ui/utils";
 
 const iconButton = (active = false) =>
   cn(

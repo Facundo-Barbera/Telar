@@ -1,6 +1,6 @@
 // The draft is plain text only; a chip is a way of drawing a run of it, never
 // something stored beside it, so what the agent receives is the typed string.
-import type { ReferenceKind, TelarReference } from "@/lib/drag-reference";
+import type { ReferenceKind, TelarReference } from "./drag-reference";
 
 type ComposerTriggerKind = "path" | "command" | "skill";
 

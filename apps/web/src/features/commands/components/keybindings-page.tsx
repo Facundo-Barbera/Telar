@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { KeyboardIcon } from "lucide-react";
 import { COMMANDS, COMMAND_GROUPS, chordForEvent, defaultKeymap, jumpCommands, keymapConflicts, normalizeChord, restoreDefaultKeymap, setChord, setChordCapture, setChords, type Command, type CommandGroup, type CommandId, type Keymap } from "../commands";
 import { useKeymap } from "../use-command-keys";
-import { keyCaps, useKeyCapPlatform, type KeyCapPlatform } from "@/lib/key-caps";
+import { keyCaps, useKeyCapPlatform, type KeyCapPlatform } from "../key-caps";
 import { Row, SettingsGroup, useRestoreDefaults } from "@/features/settings";
 
 export type KeybindingRow = {

@@ -24,7 +24,7 @@ mock.module("next/navigation", () => ({
 
 const { AppSidebarFooterRow } = await import("./app-sidebar-footer");
 const { restartDialogCopy, countWorkingSessions } = await import("@/features/updates/desktop-updates");
-const { ProgressRing } = await import("@/components/ui/progress-ring");
+const { ProgressRing } = await import("@/ui/progress-ring");
 
 const realFetch = globalThis.fetch;
 let root: Root | undefined;

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { attachmentUrl, stripAnsi, type CellOutput } from "./ds";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 export function CellOutputView({ output, sessionId, onOpenImage }: { output: CellOutput; sessionId: string; onOpenImage?: (attachmentId: string) => void }) {
   switch (output.kind) {

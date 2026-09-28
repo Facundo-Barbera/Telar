@@ -3,12 +3,12 @@
 import { Suspense, useRef } from "react";
 import dynamic from "next/dynamic";
 import { ArrowLeftIcon, ArrowRightIcon, ChevronRightIcon, EllipsisIcon, LockIcon, LockOpenIcon, MonitorSmartphoneIcon, MoonIcon, PencilIcon, RotateCwIcon, RotateCwSquareIcon, SquareArrowOutUpRightIcon, XIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Button } from "@/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
 import { siteLabel } from "../desktop-site-permissions";
-import { useNativeViewOverlay } from "@/lib/native-view-overlay";
-import { IdentityIcon } from "@/lib/telar-icons";
-import { cn } from "@/lib/utils";
+import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
+import { IdentityIcon } from "@/ui/telar-icons";
+import { cn } from "@/ui/utils";
 import { browserView, useBrowserActions, useBrowserCapture, useBrowserKeys, useBrowserPermissions, useBrowserSync, useDeviceSize, type BrowserProps, type BrowserUi } from "../hooks/use-browser-session";
 import { useBrowserStore, type BrowserOverlay } from "../hooks/use-browser-store";
 import { useHostSize } from "../hooks/use-browser-viewport";

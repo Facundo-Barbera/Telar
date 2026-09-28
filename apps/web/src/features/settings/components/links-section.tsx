@@ -1,8 +1,8 @@
 "use client";
 
 import { ExternalLinkIcon } from "lucide-react";
-import { useLinkPolicy } from "@/lib/link-policy";
-import { Switch } from "@/components/ui/switch";
+import { useLinkPolicy } from "@/platform/link-policy";
+import { Switch } from "@/ui/switch";
 import { Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 
 export function LinksSection() {

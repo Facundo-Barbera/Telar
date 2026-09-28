@@ -23,7 +23,7 @@ import {
   toSidebarSession,
   type SidebarSession,
 } from "./session-list";
-import { LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
 
 const NOW = 1_800_000_000_000;
 const HOUR = 60 * 60 * 1000;

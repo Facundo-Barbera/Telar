@@ -1,7 +1,7 @@
 "use client";
 
 import { PlusIcon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { RunGlyph } from "../run/icons";
 import { isOpenTerminal, statusDetail, statusLabel, statusTone, type RunTone } from "../run/presentation";
 import { activateShell, addShell, shellLabel, type TerminalShell } from "../workspace";

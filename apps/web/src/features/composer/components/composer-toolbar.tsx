@@ -3,9 +3,9 @@
 import { CornerDownLeftIcon, LayersIcon, SquareIcon } from "lucide-react";
 import type { ProviderDriverKind } from "@telar/engine-client";
 import type { ModelChoice } from "@/features/providers";
-import { InputGroupButton } from "@/components/ui/input-group";
-import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
+import { InputGroupButton } from "@/ui/input-group";
+import { Spinner } from "@/ui/spinner";
+import { cn } from "@/ui/utils";
 import type { ComposerStash } from "../hooks/use-composer-stash";
 import { AccessControl } from "./access-control";
 import { AgentControl } from "./agent-control";

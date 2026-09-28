@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { PlusIcon, RotateCwIcon } from "lucide-react";
 import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderUpdateRun } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/platform/engine/index";
-import { cn } from "@/lib/utils";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
+import { cn } from "@/ui/utils";
 import { displayNameOf, DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, signInCommand, sortInstances, suggestInstanceId } from "../provider-instances";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
 import {
   Dialog,
   DialogClose,
@@ -17,7 +17,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@/ui/dialog";
 import { ProviderIcon } from "./provider-icon";
 import { ProviderInstanceCard, type InstancePatch } from "./provider-instance-card";
 import { announceProviderInstancesChanged } from "../provider-instance-cache";

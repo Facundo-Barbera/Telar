@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import type { Session } from "@telar/engine-client";
 import { activeComposer } from "@/features/composer";
-import { installTestDom, mount, flush, click, stubFetch } from "@/lib/testing/dom";
+import { installTestDom, mount, flush, click, stubFetch } from "@/test/dom";
 import { Composer } from "./composer";
 import { draftAfterStash } from "../hooks/use-composer-stash";
 

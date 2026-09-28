@@ -4,8 +4,8 @@ import { useState } from "react";
 import { GitCommitHorizontalIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import type { SessionDiff } from "@telar/engine-client";
 import type { SessionReview } from "../session-review";
-import { fmtAgo } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import { fmtAgo } from "@/ui/format";
+import { cn } from "@/ui/utils";
 
 /** What git did not answer, above the rows rather than in place of them: the rows that arrived are still real. */
 export function DiffUnknownBand({

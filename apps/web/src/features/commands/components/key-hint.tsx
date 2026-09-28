@@ -2,10 +2,10 @@
 
 import type { ReactNode } from "react";
 import type { CommandId } from "../commands";
-import { keyCaps, useKeyCapPlatform } from "@/lib/key-caps";
+import { keyCaps, useKeyCapPlatform } from "../key-caps";
 import { useModifierHeld } from "../modifier-held";
 import { useKeymap } from "../use-command-keys";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const APPEAR = "animate-in fade-in-0 duration-[80ms] motion-reduce:animate-none";
 

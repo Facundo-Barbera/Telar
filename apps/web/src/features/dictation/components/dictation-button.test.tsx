@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Composer } from "@/features/composer";
 import { resolveWebCommandKeyAction, keymapSnapshot, restoreDefaultKeymap, runCommand, setChord } from "@/features/commands";
-import { installPageApi } from "@/lib/page-api";
+import { installPageApi } from "@/features/composer/page-api";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

@@ -22,7 +22,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { SessionRow } = await import("./session-row");
-const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { SidebarProvider } = await import("@/ui/sidebar");
 import type { SidebarSession } from "../session-list";
 
 const row = (over: Partial<SidebarSession>) =>

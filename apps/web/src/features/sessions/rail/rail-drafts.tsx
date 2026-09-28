@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Project } from "@telar/engine-client";
 import { DraftRow } from "./draft-row";
-import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
+import { SidebarGroup, SidebarGroupContent } from "@/ui/sidebar";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/features/composer";
 import { projectFilterKey } from "@/features/projects";
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import { axesOf, fitViewport, resizeByKey, resizeToEdge, stageOf, VIEWPORT_RAIL, type ResizeDirection, type StageRect, type ViewportMode, type ViewportZoom } from "../viewport";
 
 type Size = { width: number; height: number };

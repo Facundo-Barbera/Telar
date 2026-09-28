@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import type { Project } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { PROJECTS_CHANGED_EVENT } from "@/features/projects";
-import { hostFetcher, hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFetcher, hostFromPathname, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 
 export type HostProjects = { hostId: string; projects: Project[] };
 

@@ -1,10 +1,10 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
-import { click, flush, mount, stubFetch, installTestDom } from "@/lib/testing/dom";
+import { click, flush, mount, stubFetch, installTestDom } from "@/test/dom";
 import { detailLines, deviceLine, NOT_REGISTERED, NOTIFY_ON_LABELS, pausedLine, phoneSummary, PushNotificationsGroup, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
 import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES, type NotifyOn } from "@telar/engine-client";
-import { SETTINGS_SEARCH_INDEX } from "@/features/settings/index";
+import { SETTINGS_SEARCH_INDEX } from "@/features/settings";
 
 installTestDom();
 

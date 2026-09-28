@@ -13,7 +13,7 @@
  * static `import` of `react-dom/client` is hoisted above its own
  * `GlobalRegistrator.register()`, so React was routing controlled inputs down
  * an IE polyfill. `scripts/test-dom.mjs` imports react-dom while the preload's
- * DOM is up and the path works; `lib/testing/type-into.ts` is the helper.
+ * DOM is up and the path works; `test/type-into.ts` is the helper.
  *
  * So the residue #732 recorded is paid off below: a query really is typed, and
  * the rail going away, the scope the query then reads, and the words the empty
@@ -57,7 +57,7 @@ import type { ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/e
 import { searchScope } from "../model-options";
 import { AgentControl } from "./agent-control";
 import { forgetModelCatalogues } from "@/features/providers/model-catalogue-cache";
-import { typeInto } from "@/lib/testing/type-into";
+import { typeInto } from "@/test/type-into";
 
 /** Registered here and released in `afterAll` — Happy DOM throws on a second
  *  `register`, so a file that takes a DOM and never gives it back fails

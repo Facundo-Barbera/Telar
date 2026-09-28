@@ -1,9 +1,9 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
+import { fileReference, startReferenceDrag } from "@/features/composer";
 import { FileKindIcon } from "./file-icon";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 export const EDITOR_HEADER_ROW = "flex h-9 shrink-0 items-center border-b border-border px-2";
 

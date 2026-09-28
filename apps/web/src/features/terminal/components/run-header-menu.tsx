@@ -1,8 +1,8 @@
 "use client";
 
 import { CircleStopIcon, Loader2Icon, PlusIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { cn } from "@/ui/utils";
 import { RunGlyph } from "../run/icons";
 import { openCount, statusDetail, statusLabel, statusTone, terminalTitle, type RunTone } from "../run/presentation";
 import type { RunConfigurationView, RunView } from "../run/types";

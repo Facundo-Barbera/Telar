@@ -2,10 +2,10 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { XIcon } from "lucide-react";
-import { SidebarSearchField } from "@/components/sidebar-search-field";
-import { isEditableTarget } from "@/features/commands/index";
+import { SidebarSearchField } from "@/ui/sidebar-search-field";
+import { isEditableTarget } from "@/features/commands";
 import { searchSettings, type SettingsSearchEntry, type SettingsSearchIndex } from "../search";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const MAX_RESULTS = 12;
 

@@ -3,10 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckIcon, CircleXIcon, XIcon } from "lucide-react";
 import type { DataScienceJob } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
+import { createEngineApi } from "@/platform/engine";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 

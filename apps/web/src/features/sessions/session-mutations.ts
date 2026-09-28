@@ -1,5 +1,5 @@
 import type { LiveSessionRow } from "@telar/engine-client";
-import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { sessionKey, toSidebarSession, type SidebarSession } from "./session-list";
 
 export type SessionRowChange =

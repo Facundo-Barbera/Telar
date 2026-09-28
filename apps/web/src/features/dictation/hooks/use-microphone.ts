@@ -17,7 +17,7 @@ import {
   type AudioInput,
   type MicrophoneChoice,
 } from "../devices";
-import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
+import { hostVisible, subscribeHostVisibility } from "@/platform/desktop/host-visibility";
 import type { DictationBox } from "../interim";
 import { createLevelMeter, type LevelMeter } from "../level";
 import { microphoneRefusal } from "../refusal";

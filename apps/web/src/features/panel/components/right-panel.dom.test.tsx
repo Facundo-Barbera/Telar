@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
-import { installTestDom, mount, flush, stubFetch } from "@/lib/testing/dom";
+import { installTestDom, mount, flush, stubFetch } from "@/test/dom";
 import { RightPanel } from "./right-panel";
 import type { PanelTabItem } from "../model";
 

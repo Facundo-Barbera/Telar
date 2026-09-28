@@ -1,7 +1,7 @@
 import { TranscriptSample } from "./transcript-sample";
 import { notFound } from "next/navigation";
-import { AgentMessageBubble } from "@/components/session/conversation-message";
-import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
+import { AgentMessageBubble } from "@/features/transcript";
+import { Message, MessageContent, MessageResponse } from "@/ui/message";
 export default function Page() {
   if (process.env.NODE_ENV === "production") notFound();
   const text = "## Implementation checkpoint\n\nBoth documents read from `origin/main`.\n\n" + "- **Verified:** isolated modules pass; app integration remains.\n".repeat(40);

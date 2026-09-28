@@ -2,8 +2,8 @@
 
 import type { ReactNode } from "react";
 import { GlobeIcon, PanelsTopLeftIcon } from "lucide-react";
-import { Spinner } from "@/components/ui/spinner";
-import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
+import { Spinner } from "@/ui/spinner";
+import { desktopBrowserBridge } from "@/features/browser";
 import type { PluginPanelSource } from "@/features/plugins";
 import type { BrowserStartState } from "../folds";
 import { browserPanelTab, browserTabLabel, LIVE_BROWSER_TAB, NO_PANELS, NO_PLUGINS, surfacesFor, type BrowserState, type PanelTab } from "../model";

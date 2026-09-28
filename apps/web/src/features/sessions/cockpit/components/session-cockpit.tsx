@@ -4,8 +4,8 @@ import { useNow } from "@/ui/hooks/use-now";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClockIcon, TriangleAlertIcon } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { WorkspaceInspector } from "@/components/session/workspace-inspector";
+import { Alert, AlertDescription, AlertTitle } from "@/ui/alert";
+import { WorkspaceInspector } from "../../components/workspace-inspector";
 import {
   type ClaudeConversation,
   type RequestDecision,
@@ -21,7 +21,7 @@ import { announcePromptShelfChanged, splitImages } from "@/features/prompts";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/platform/engine";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, taskRoster } from "@/platform/engine";
 import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
-import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
+import { installNavigationMarks, markNavigation } from "@/platform/perf-marks";
 import { projectSettingsHref } from "@/features/projects";
 import { actionableRequests } from "../failed-turn-recovery";
 import { canvasHref, sessionHref } from "../../session-list";
@@ -30,21 +30,21 @@ import { sessionLink } from "../../session-link";
 import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity } from "../../session-settling";
 import { useInboxPolicy } from "../../inbox-policy";
 import { useSessionDefaults } from "../../session-defaults";
-import { desktopApp } from "@/lib/desktop-app";
-import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { desktopApp } from "@/platform/desktop/desktop-app";
+import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { usePluginPanels, pluginCommands } from "@/features/plugins";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "../session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./read-receipt";
-import { questionFields } from "@/lib/question-drawer";
-import { normaliseContextNoticePercent } from "@/lib/context-notice";
+import { questionFields } from "@/features/composer";
+import { normaliseContextNoticePercent } from "@/features/composer";
 import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice, useProviderInstance } from "@/features/providers";
 import { processToReveal, stillWorking } from "../background-presence";
 import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./cohort-fold";
 import { groupNotificationTurns, TranscriptWorkspace } from "@/features/transcript";
 import { agentBrowserActivity, browserPanelTab, browserScopeToRelease, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, issuePanelNumber, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, isRestorablePanelTab, panelTabForPath, pullPanelNumber, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "@/features/panel";
-import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
-import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/lib/link-policy";
+import { desktopBrowserBridge } from "@/features/browser";
+import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/platform/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "../session-links";
 import { SessionSchedules } from "@/features/schedules";
 import {
@@ -79,9 +79,9 @@ import {
   type OpenIntent,
 } from "@/features/files";
 import { forgeParams, openForge, readForgeOpen } from "@/features/github";
-import { Button } from "@/components/ui/button";
-import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
-import { useSidebar } from "@/components/ui/sidebar";
+import { Button } from "@/ui/button";
+import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
+import { useSidebar } from "@/ui/sidebar";
 import { useCommandHandlers } from "@/features/commands";
 import { appendToDraft, cockpitPlugins, pinToggleOverride, transcriptRows } from "../model";
 import { SessionMasthead, SessionProblem, SoloTools, usePanelPresence } from "./masthead";

@@ -33,10 +33,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FirstRun } from "@/components/first-run";
+import { FirstRun } from "@/features/projects";
 import { canvasHrefFor, composerProject, noteDestination, readFrontDoorNote, writeFrontDoorNote } from "@/features/composer";
 import { createEngineApi } from "@/platform/engine";
-import { installNavigationMarks, startNavigation } from "@/lib/perf-marks";
+import { installNavigationMarks, startNavigation } from "@/platform/perf-marks";
 
 /** How often to re-ask while the door is standing open with nothing to show.
  *  Only ever runs on a screen that is otherwise completely idle. */

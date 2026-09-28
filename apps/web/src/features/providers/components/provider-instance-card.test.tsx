@@ -186,7 +186,7 @@ describe("the inheritance notice", () => {
  * The note here used to say the input could not be driven at all — React's
  * change plugin never firing under happy-dom. That was #732, the cause was
  * import order in the test preload rather than the DOM, and it is fixed;
- * `lib/testing/type-into.ts` would reach this field today.
+ * `test/type-into.ts` would reach this field today.
  *
  * It is still called directly, for the reason that survives: `compactionEdit`
  * is a pure arithmetic rule over what the CLI can honour, and the cases worth

@@ -4,7 +4,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { searchSettings, SETTINGS_SEARCH_INDEX } from "@/features/settings/index";
+import { searchSettings, SETTINGS_SEARCH_INDEX } from "@/features/settings";
 import { SourceControlPage, readGhState } from "./source-control-page";
 
 GlobalRegistrator.register({ url: "http://localhost/settings" });

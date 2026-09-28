@@ -14,3 +14,4 @@ export {
 export type { CommandPalettePage } from "./components/command-palette";
 export { KeyHint, KeyHintOverlay } from "./components/key-hint";
 export { useCommandHandlers, useCommandKeys, useKeymap } from "./use-command-keys";
+export { keyCapText, useKeyCapPlatform } from "./key-caps";

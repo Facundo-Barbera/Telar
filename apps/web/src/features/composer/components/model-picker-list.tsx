@@ -3,7 +3,7 @@
 import { ChevronRightIcon, SearchIcon, StarIcon } from "lucide-react";
 import type { ProviderDriverKind } from "@telar/engine-client";
 import { type ModelChoice, ProviderIcon, PROVIDER_LABEL } from "@/features/providers";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 import type { ModelPicker } from "../hooks/use-model-picker";
 import { PROVIDERS } from "../model-options";
 import { CompactRow, MenuHeading } from "./control-primitives";

@@ -2,8 +2,8 @@
 
 import { useRef } from "react";
 import { ArrowUpRightIcon, Loader2Icon, MousePointerClickIcon, PencilIcon, SendIcon, SquareIcon, TrashIcon, TypeIcon, Undo2Icon, XIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { cn } from "@/ui/utils";
 import { clearMarks, undoMark, type AnnotationTool, type ElementBox } from "../annotation";
 import { useAnnotation } from "../hooks/use-annotation";
 import { MarkShape, PICK, PICK_SOFT } from "./annotate-marks";

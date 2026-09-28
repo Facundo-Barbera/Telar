@@ -1,6 +1,6 @@
 "use client";
 
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 function Chip({ mark, tone, children }: { mark: string; tone: string; children: React.ReactNode }) {
   return (

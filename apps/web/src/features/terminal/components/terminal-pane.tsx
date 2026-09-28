@@ -1,8 +1,8 @@
 "use client";
 
 import "@xterm/xterm/css/xterm.css";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { cn } from "@/ui/utils";
 import { describeTerminalEnding } from "../bridge";
 import { useShellEmulator } from "../hooks/use-shell-emulator";
 

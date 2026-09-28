@@ -2,17 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TerminalIcon, ServerIcon, GlobeIcon, CircleHelpIcon, CheckIcon, CopyIcon, LockIcon, MonitorIcon, SmartphoneIcon, XIcon } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
 import type { QrMatrix } from "../qr";
 import { describeServeError, type TailscaleServeError } from "../tailscale-serve";
-import { fmtAgo } from "@/lib/format";
-import { desktopApp } from "@/lib/desktop-app";
-import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
-import { cn } from "@/lib/utils";
+import { fmtAgo } from "@/ui/format";
+import { desktopApp } from "@/platform/desktop/desktop-app";
+import { hostVisible, subscribeHostVisibility } from "@/platform/desktop/host-visibility";
+import { cn } from "@/ui/utils";
 import { QrCodeView } from "./qr-code";
-import { CopyCommand } from "@/components/ui/copy-command";
+import { CopyCommand } from "@/ui/copy-command";
 import { PushNotificationsGroup } from "@/features/push";
 import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/features/settings";
 

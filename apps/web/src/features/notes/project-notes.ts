@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ProjectNote } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
-import { noteReference } from "@/lib/drag-reference";
-import { insertRankedSearchResult, normalizeSearchQuery, scoreQueryMatch, type RankedSearchResult } from "@/lib/search-ranking";
+import { noteReference } from "@/features/composer";
+import { insertRankedSearchResult, normalizeSearchQuery, scoreQueryMatch, type RankedSearchResult } from "@/ui/search-ranking";
 
 const api = createEngineApi();
 

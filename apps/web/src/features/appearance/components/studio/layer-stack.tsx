@@ -2,8 +2,8 @@
 
 import { useCallback, useRef, useState } from "react";
 import { ChevronDownIcon, ChevronUpIcon, ImagePlusIcon, LayersIcon, PaintbrushIcon, PencilIcon, Trash2Icon, UploadIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { cn } from "@/ui/utils";
 import { composeGradient, DEFAULT_GRADIENT_SPECS } from "../../gradient-starters";
 import type { CompositionMode } from "../../composition";
 import { ImageBackdropError } from "../../image-backdrop";

@@ -2,11 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { Maximize2Icon, Minimize2Icon, PanelRightCloseIcon, XIcon } from "lucide-react";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/ui/context-menu";
 import { KeyHint } from "@/features/commands";
-import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
-import { useNativeViewOverlay } from "@/lib/native-view-overlay";
-import { cn } from "@/lib/utils";
+import { desktopBrowserBridge } from "@/features/browser";
+import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
+import { cn } from "@/ui/utils";
 import { splitRoster, tabBadge, type TabBadge } from "../folds";
 import { useLivePages } from "../hooks/use-live-pages";
 import { useTabDrag } from "../hooks/use-tab-drag";

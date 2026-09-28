@@ -4,10 +4,10 @@ import { useState } from "react";
 import { PackageIcon } from "lucide-react";
 import type { ProjectPlugins } from "@telar/engine-client";
 import { dataScienceMachineSettings } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine/index";
+import { createEngineApi } from "@/platform/engine";
 import { machineSettingsPatch } from "../sections";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/input";
 import { Row } from "@/features/settings";
 
 const api = createEngineApi();
