@@ -28,7 +28,6 @@ import {
   resolveMcpServers,
   EngineRequest as RequestSchema,
   machineAllows,
-  machineSettings,
   type ProjectPlugins,
   migrateLegacyPluginFields,
   assignmentsOf,
@@ -46,7 +45,6 @@ import {
   type LiveSessionRow,
   type SessionSettledBy,
   type PluginPatch,
-  type LatexConfig,
   Turn as TurnSchema,
   TurnObservation as TurnObservationSchema,
   WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
@@ -138,7 +136,7 @@ import { SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
 import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, type PendingMcpOAuth } from "./domains/agent-tools";
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
-import { dataScienceBlock, latexBlock, PluginToolchains } from "./domains/plugins";
+import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
@@ -154,7 +152,7 @@ import {  } from "zod";
 import { providerProcessEnv } from "./domains/providers";
 import { adoptClaudeConversation, type Adoption, type ClaudeConversation, describeAdoption, describeImport, type ForkCut, listAdoptableConversations } from "./drivers/claude";
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
-import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, listPackages, listTexPackages, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, windowCsv } from "./domains/plugins";
+import { type BootstrapRequest, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, type DsCapability, DsFiles, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type RequirementsSource, type ResolvedLatex, storeDsCapability, storeLatexCapability, type TableWindow, telarVenvDir, type Toolchain, windowCsv } from "./domains/plugins";
 import { ScheduleBook, type ScheduleInput } from "./domains/schedules";
 import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, prepareSessionWorktree, derivedBranchFor, type WorktreePlan, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
@@ -823,6 +821,8 @@ export class EngineStore {
   private readonly subscriptions: SessionSubscriptions;
   private readonly lifecycle: SessionLifecycle;
   private readonly schedules: ScheduleBook;
+  private readonly dataScienceOps: DataScienceOps;
+  private readonly latexOps: LatexOps;
 
   private registerCacheHooks(): void {
     this.kernel.onRollback(() => this.kernel.runProgress.clear());
@@ -1197,7 +1197,7 @@ export class EngineStore {
       packages: () => this.dataSciencePackages(session.projectId!, workspaceRootOf(session)),
       startInstall: (input) => this.dataScienceInstall(session.projectId!, input as Parameters<EngineStore["dataScienceInstall"]>[1], workspaceRootOf(session)),
       waitJob: (jobId, timeoutMs) => this.dsJobs.wait(jobId, timeoutMs),
-      environments: async () => ({ environments: await this.dsEnvironmentRows(session.projectId!, workspaceRootOf(session)) }),
+      environments: async () => ({ environments: await this.dataScienceOps.environmentRows(session.projectId!, workspaceRootOf(session)) }),
       useEnvironment: (target) => this.dataScienceUseEnvironment(sessionId, target),
     });
   }
@@ -1792,6 +1792,7 @@ export class EngineStore {
     this.subscriptions = this.createSubscriptions();
     this.lifecycle = this.createLifecycle();
     this.worktrees = this.worktreeMaintenance();
+    ({ dataScienceOps: this.dataScienceOps, latexOps: this.latexOps } = this.createPluginOps());
     this.schedules = new ScheduleBook(this.kernel, {
       requireSession: (sessionId) => void this.records.require(sessionId),
       submitTurn: (sessionId, input) => this.submitTurn(sessionId, input),
@@ -2372,356 +2373,87 @@ export class EngineStore {
     return this.toolchains.enabledIds(session);
   }
 
-
   dataScienceToolchain(fresh = false): Promise<Toolchain> {
-    return this.toolchains.dataScienceToolchain(fresh);
+    return this.dataScienceOps.toolchain(fresh);
   }
 
-  /**
-   * Every environment a project could run on, each probed, plus the toolchain
-   * and which dependency manifests the checkout carries. A LIST for a person
-   * to choose from — see `ds/environments.ts`. Paths are stored RELATIVE when
-   * inside the checkout, so a worktree session resolves `.venv/bin/python`
-   * against its own tree.
-   */
-  async dataScienceEnvironments(projectId: string, workspace?: string): Promise<{ toolchain: Toolchain; environments: (PythonEnvironment & { path: string })[]; requirements: RequirementsSource[]; declared?: string[]; currentId?: string }> {
-    const project = this.getProject(projectId);
-    const base = workspace ?? project.root;
-    const toolchain = await this.dataScienceToolchain(true);
-    const telarVenv = telarVenvDir(this.paths.root, projectId);
-    // The project's own declared dependencies, asked of every interpreter — so
-    // the page shows "is what this project needs actually here", not Telar's
-    // helper stack presented as the person's problem.
-    const declared = declaredDependencies(base);
-    const found = await discoverEnvironments(base, { toolchain, ...(telarVenvPython(telarVenv) ? { telarVenv } : {}), ...(declared.length ? { dists: declared } : {}) });
-    const environments = found.map((env) => ({ ...env, path: relativisePythonPath(base, env.python) }));
-    const current = dataScienceBlock(project)?.python ? this.currentEnvironment(project, base) : undefined;
-    return { toolchain, environments, requirements: projectRequirements(base), ...(declared.length ? { declared } : {}), ...(current ? { currentId: current.id } : {}) };
+  dataScienceEnvironments(projectId: string, workspace?: string) {
+    return this.dataScienceOps.environments(projectId, workspace);
   }
 
-  /** The environments as `ds_env` lists them: small rows, the one in use flagged. */
-  private async dsEnvironmentRows(projectId: string, workspace: string): Promise<EnvironmentRow[]> {
-    const { environments, currentId } = await this.dataScienceEnvironments(projectId, workspace);
-    return environments.map((env) => ({
-      id: env.id,
-      name: env.name,
-      manager: env.manager,
-      root: env.root,
-      python: env.python,
-      ...(env.preflight.version ? { version: env.preflight.version } : {}),
-      inUse: env.id === currentId,
-    }));
+  dataScienceUseEnvironment(sessionId: string, target: string) {
+    return this.dataScienceOps.useEnvironment(sessionId, target);
   }
 
-  /**
-   * WHAT THE SETTINGS PAGE'S USE BUTTON DOES, FOR THE AGENT: persist the
-   * choice on the project, then restart the session's kernel into it. The
-   * fresh capability resolves the new interpreter; its ensure() disposes a
-   * kernel running elsewhere. `target` matches an environment's id, name,
-   * root or interpreter path from the list.
-   */
-  async dataScienceUseEnvironment(sessionId: string, target: string): Promise<{ environments: EnvironmentRow[]; switched: string }> {
-    const session = this.records.get(sessionId);
-    if (!session.projectId) throw new EngineStateError("invalid_request", "this session has no project");
-    const workspace = workspaceRootOf(session);
-    const { environments } = await this.dataScienceEnvironments(session.projectId, workspace);
-    const match = environments.find((env) => env.id === target || env.name === target || env.root === target || env.python === target || env.path === target);
-    if (!match) throw new EngineStateError("invalid_request", `no environment matches "${target}" — the choices are ${environments.map((env) => `${env.name} (${env.id})`).join(", ") || "none"}`);
-    if (!match.preflight.ok) throw new EngineStateError("invalid_request", `${match.name} is unusable: ${match.preflight.reason}`);
-    this.updateProject(session.projectId, {
-      dataScience: {
-        enabled: true,
-        python: {
-          source: match.manager === "telar" ? "telar" : "chosen",
-          path: match.path,
-          resolvedAt: this.now(),
-          manager: match.manager,
-          root: relativisePythonPath(workspace, match.root),
-        },
-      },
-    });
-    await this.dataScience(sessionId).restart();
-    return {
-      environments: environments.map((env) => ({
-        id: env.id,
-        name: env.name,
-        manager: env.manager,
-        root: env.root,
-        python: env.python,
-        ...(env.preflight.version ? { version: env.preflight.version } : {}),
-        inUse: env.id === match.id,
-      })),
-      switched: match.name,
-    };
+  dataScienceCreateEnvironment(projectId: string, request: CreateEnvironmentRequest): Promise<{ jobId: string }> {
+    return this.dataScienceOps.createEnvironment(projectId, request);
   }
 
-  /**
-   * The environment a project is configured on, as `packages.ts` needs it:
-   * manager, root, interpreter. Older configs stored only the path; the
-   * manager is read off the directory then (`pyvenv.cfg`, `conda-meta/`).
-   */
-  private currentEnvironment(project: Project, workspace = project.root): { id: string; manager: EnvManager; root: string; python: string } | undefined {
-    const config = dataScienceBlock(project)?.python;
-    if (!config) return undefined;
-    const python = resolvePythonPath(workspace, config.path);
-    if (!fs.existsSync(python)) return undefined;
-    const detected = environmentRootOf(python);
-    const root = config.root ? resolvePythonPath(workspace, config.root) : detected?.root ?? path.dirname(python);
-    const manager: EnvManager = config.manager ?? (root.startsWith(telarVenvDir(this.paths.root, project.id)) ? "telar" : detected?.manager ?? "system");
-    return { id: environmentId(root), manager, root, python };
+  dataSciencePackages(projectId: string, workspace?: string) {
+    return this.dataScienceOps.packages(projectId, workspace);
   }
 
-  /**
-   * MAKE AN ENVIRONMENT, as a job. `uv venv` or `conda create` on a Python
-   * version the tool fetches if it must, then the stack if asked. A `.venv`
-   * in the project is gitignored the way Telar's own files are. The job's
-   * result is what to store: path, root, manager, source.
-   */
-  async dataScienceCreateEnvironment(projectId: string, request: CreateEnvironmentRequest): Promise<{ jobId: string }> {
-    const project = this.getProject(projectId);
-    const toolchain = await this.dataScienceToolchain(true);
-    let plan;
-    try {
-      // THE MAC'S DEFAULT PACKAGES, applied where they were promised: to an
-      // environment TELAR CREATES. Never to one that already exists — a
-      // settings field that reached back into somebody's configured venv would
-      // be a text box that spends four minutes and several hundred megabytes.
-      const defaults = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "data-science"));
-      plan = planEnvironment(request, toolchain, {
-        projectRoot: project.root,
-        telarVenv: telarVenvDir(this.paths.root, projectId),
-        ...(defaults.success && defaults.data.packages ? { defaultPackages: defaults.data.packages } : {}),
-      });
-    } catch (error) {
-      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
-    }
-    const { root, python } = plan;
-    return this.dsJobs.start({
-      kind: "create",
-      lock: `${projectId}:env`,
-      steps: plan.steps,
-      onDone: async () => {
-        if (!fs.existsSync(python)) throw new Error("the environment was created but has no python executable");
-        if (request.manager === "venv" && request.location === "project") {
-          try {
-            ensureTelarGitignore(project.root, [{ rule: ".venv/", alreadyCovered: [".venv", "/.venv", "/.venv/", ".venv/"], why: "the Python environment uv created for this project" }]);
-          } catch { /* not a repo, or unwritable — the venv still works */ }
-        }
-        const manager: EnvManager = request.manager === "venv" && request.location === "telar" ? "telar" : request.manager;
-        return { path: relativisePythonPath(project.root, python), root: relativisePythonPath(project.root, root), manager, source: manager === "telar" ? "telar" : "detected" };
-      },
-    });
+  dataScienceInstall(projectId: string, input: { add?: string[]; remove?: string[]; requirements?: RequirementsSource }, workspace?: string): Promise<{ jobId: string }> {
+    return this.dataScienceOps.install(projectId, input, workspace);
   }
 
-  /** The packages in the project's configured environment. `direct` marks the ones the project declares, when it declares any. */
-  async dataSciencePackages(projectId: string, workspace?: string): Promise<{ packages: (PackageInfo & { direct?: boolean })[]; environment: { manager: EnvManager; root: string; python: string; command: InstallCommand } }> {
-    const project = this.getProject(projectId);
-    const root = workspace ?? project.root;
-    const env = this.currentEnvironment(project, workspace);
-    if (!env) throw new EngineStateError("invalid_request", "this project has no Python environment configured");
-    const toolchain = await this.dataScienceToolchain();
-    const declared = new Set(declaredDependencies(root, 500));
-    try {
-      const packages = (await listPackages(env, toolchain)).map((pkg) => (declared.size ? { ...pkg, direct: declared.has(canonicalName(pkg.name)) } : pkg));
-      return { packages, environment: { manager: env.manager, root: env.root, python: env.python, command: installCommandFor(env, toolchain, { root }) } };
-    } catch (error) {
-      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  /**
-   * INSTALL INTO, OR REMOVE FROM, THE PROJECT'S ENVIRONMENT — the one write
-   * this feature makes into an environment Telar did not build, and only
-   * because a person pressed the button or approved the agent asking. The
-   * manager's own tool does the work so a conda env stays solvable.
-   */
-  async dataScienceInstall(projectId: string, input: { add?: string[]; remove?: string[]; requirements?: RequirementsSource }, workspace?: string): Promise<{ jobId: string }> {
-    const project = this.getProject(projectId);
-    const env = this.currentEnvironment(project, workspace);
-    if (!env) throw new EngineStateError("invalid_request", "this project has no Python environment configured");
-    const toolchain = await this.dataScienceToolchain();
-    const context = { root: workspace ?? project.root };
-    try {
-      const steps = [
-        ...(input.remove?.length ? removeSteps(env, input.remove, toolchain, context) : []),
-        ...(input.add?.length ? installSteps(env, input.add, toolchain, context) : []),
-        ...(input.requirements ? [requirementsStep(env, context.root, input.requirements, toolchain)] : []),
-      ];
-      if (!steps.length) throw new Error("nothing to install or remove");
-      return this.dsJobs.start({ kind: "install", lock: `${env.id}:packages`, steps });
-    } catch (error) {
-      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  /**
-   * INSTALL A TOOL: uv, a Python version, Miniforge. Homebrew when present,
-   * the vendor's installer otherwise. When it lands somewhere PATH does not
-   * yet look, that directory is adopted for this process so the next probe
-   * and the next kernel find it without a restart.
-   */
-  async dataScienceBootstrap(request: BootstrapRequest): Promise<{ jobId: string }> {
-    const toolchain = await this.dataScienceToolchain(true);
-    let plan;
-    try {
-      plan = planBootstrap(request, toolchain);
-    } catch (error) {
-      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
-    }
-    const expect = plan.expectBinary;
-    return this.dsJobs.start({
-      kind: `bootstrap:${request.what}`,
-      lock: `bootstrap:${request.what}`,
-      steps: plan.steps,
-      onDone: () => {
-        this.toolchains.forgetDataScienceToolchain();
-        if (!expect) return {};
-        const found = findBinary(expect);
-        if (!found) throw new Error(`${expect} was installed but cannot be found — open a new terminal, check your PATH, then detect again`);
-        adoptBinaryDir(found);
-        return { binary: found };
-      },
-    });
+  dataScienceBootstrap(request: BootstrapRequest): Promise<{ jobId: string }> {
+    return this.dataScienceOps.bootstrap(request);
   }
 
   dataScienceJob(jobId: string, after?: number): JobRead {
-    try {
-      return this.dsJobs.read(jobId, after);
-    } catch (error) {
-      throw new EngineStateError("not_found", error instanceof Error ? error.message : String(error));
-    }
+    return this.dataScienceOps.job(jobId, after);
   }
 
   dataScienceCancelJob(jobId: string): void {
-    this.dsJobs.cancel(jobId);
+    this.dataScienceOps.cancelJob(jobId);
   }
 
-  /** Probe ONE interpreter a person typed or picked — the "add an existing
-   *  environment" door. Accepts a python binary, a venv or a conda env dir. */
-  async dataScienceProbe(projectId: string, target: string): Promise<PythonPreflight & { relativePath?: string; root?: string; manager?: EnvManager }> {
-    const project = this.getProject(projectId);
-    const resolved = resolvePythonPath(project.root, target.trim());
-    const python = telarVenvPython(resolved) ?? resolved;
-    const probe = await preflightPython(python, undefined, undefined, declaredDependencies(project.root));
-    if (!probe.ok) return probe;
-    const env = environmentRootOf(python);
-    return {
-      ...probe,
-      relativePath: relativisePythonPath(project.root, python),
-      root: relativisePythonPath(project.root, env?.root ?? path.dirname(python)),
-      manager: env?.manager ?? "system",
-    };
+  dataScienceProbe(projectId: string, target: string) {
+    return this.dataScienceOps.probe(projectId, target);
   }
 
   latexToolchain(fresh = false): Promise<LatexToolchain> {
-    return this.toolchains.latexToolchain(fresh);
+    return this.latexOps.toolchain(fresh);
   }
 
-  /**
-   * Every TeX distribution the machine carries, plus the checkout's main-file
-   * candidates — `.tex` files carrying `\documentclass`, scanned two directory
-   * levels deep and capped, because a thesis has one main file and a monorepo
-   * has thousands of files that are not it.
-   */
-  async latexDistributions(projectId: string): Promise<{ toolchain: LatexToolchain; mainCandidates: string[]; current?: LatexConfig["toolchain"] }> {
-    const project = this.getProject(projectId);
-    const toolchain = await this.latexToolchain(true);
-    const candidates: string[] = [];
-    const scan = (dir: string, depth: number) => {
-      if (candidates.length >= 50) return;
-      let names: string[];
-      try { names = fs.readdirSync(dir); } catch { return; }
-      for (const name of names) {
-        if (candidates.length >= 50) return;
-        if (name.startsWith(".") || name === "node_modules") continue;
-        const file = path.join(dir, name);
-        let stat: fs.Stats;
-        try { stat = fs.statSync(file); } catch { continue; }
-        if (stat.isDirectory()) {
-          if (depth > 0) scan(file, depth - 1);
-          continue;
-        }
-        if (!/\.tex$/i.test(name) || stat.size > 2 * 1024 * 1024) continue;
-        try {
-          if (fs.readFileSync(file, "utf8").includes("\\documentclass")) candidates.push(path.relative(project.root, file));
-        } catch { /* unreadable is not a candidate */ }
-      }
-    };
-    scan(project.root, 2);
-    return { toolchain, mainCandidates: candidates.sort(), ...(latexBlock(project)?.toolchain ? { current: latexBlock(project)!.toolchain } : {}) };
+  latexDistributions(projectId: string) {
+    return this.latexOps.distributions(projectId);
   }
 
-  /** Install Tectonic or TinyTeX, as a job. Adopts the binary's directory on
-   *  success so the next compile finds it without a restart. */
-  async latexBootstrap(request: LatexBootstrapRequest): Promise<{ jobId: string }> {
-    const toolchain = await this.latexToolchain(true);
-    let plan;
-    try {
-      plan = planLatexBootstrap(request, toolchain);
-    } catch (error) {
-      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
-    }
-    if (request.what === "tectonic" && !toolchain.brew) {
-      try { fs.mkdirSync(path.join(os.homedir(), ".local", "bin"), { recursive: true }); } catch { /* the installer will say so */ }
-    }
-    const expect = plan.expectBinary;
-    return this.latexJobs.start({
-      kind: `bootstrap:${request.what}`,
-      lock: `bootstrap:${request.what}`,
-      steps: plan.steps,
-      onDone: () => {
-        this.toolchains.forgetLatexToolchain();
-        const found = findLatexBinary(expect);
-        if (!found) throw new Error(`${expect} was installed but cannot be found — open a new terminal, check your PATH, then detect again`);
-        adoptBinaryDir(found);
-        return { binary: found };
-      },
-    });
+  latexBootstrap(request: LatexBootstrapRequest): Promise<{ jobId: string }> {
+    return this.latexOps.bootstrap(request);
   }
 
-  /** What the project's distribution has installed — or the honest sentence
-   *  about why there is nothing to list. */
-  async latexPackages(projectId: string): Promise<LatexPackagesAnswer> {
-    const config = latexBlock(this.getProject(projectId));
-    if (!config?.enabled || !config.toolchain) throw new EngineStateError("invalid_request", "this project has no TeX toolchain configured");
-    if (config.toolchain.kind === "tectonic") return { mode: "automatic", note: TECTONIC_PACKAGES_NOTE };
-    const toolchain = await this.latexToolchain();
-    const dist = toolchain.texlive.find((candidate) => candidate.binDir === config.toolchain!.path) ?? toolchain.texlive[0];
-    if (!dist) return { mode: "unavailable", reason: "the configured TeX Live was not found on this machine" };
-    return listTexPackages(dist);
+  latexPackages(projectId: string): Promise<LatexPackagesAnswer> {
+    return this.latexOps.packages(projectId);
   }
 
-  /** tlmgr install/remove, as a job. Tectonic projects are refused here — the
-   *  settings page never shows the form, and the agent's tool says why. */
-  async latexInstall(projectId: string, input: { add?: string[]; remove?: string[] }): Promise<{ jobId: string }> {
-    const config = latexBlock(this.getProject(projectId));
-    if (!config?.enabled || !config.toolchain) throw new EngineStateError("invalid_request", "this project has no TeX toolchain configured");
-    if (config.toolchain.kind === "tectonic") throw new EngineStateError("invalid_request", TECTONIC_PACKAGES_NOTE);
-    const toolchain = await this.latexToolchain();
-    const dist = toolchain.texlive.find((candidate) => candidate.binDir === config.toolchain!.path) ?? toolchain.texlive[0];
-    if (!dist) throw new EngineStateError("invalid_request", "the configured TeX Live was not found on this machine");
-    try {
-      const steps = [
-        ...(input.remove?.length ? texRemoveSteps(dist, input.remove) : []),
-        ...(input.add?.length ? texInstallSteps(dist, input.add) : []),
-      ];
-      if (!steps.length) throw new Error("nothing to install or remove");
-      return this.latexJobs.start({ kind: "tex-packages", lock: `${dist.binDir}:tex-packages`, steps });
-    } catch (error) {
-      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
-    }
+  latexInstall(projectId: string, input: { add?: string[]; remove?: string[] }): Promise<{ jobId: string }> {
+    return this.latexOps.install(projectId, input);
   }
 
   latexJob(jobId: string, after?: number): JobRead {
-    try {
-      return this.latexJobs.read(jobId, after);
-    } catch (error) {
-      throw new EngineStateError("not_found", error instanceof Error ? error.message : String(error));
-    }
+    return this.latexOps.job(jobId, after);
   }
 
   latexCancelJob(jobId: string): void {
-    this.latexJobs.cancel(jobId);
+    this.latexOps.cancelJob(jobId);
+  }
+
+  private createPluginOps(): { dataScienceOps: DataScienceOps; latexOps: LatexOps } {
+    return {
+      dataScienceOps: new DataScienceOps(this.toolchains, this.dsJobs, {
+        root: this.paths.root,
+        now: () => this.now(),
+        getProject: (projectId) => this.getProject(projectId),
+        updateProject: (projectId, patch) => this.updateProject(projectId, patch),
+        getSession: (sessionId) => this.records.get(sessionId),
+        restartKernel: (sessionId) => this.dataScience(sessionId).restart(),
+        machinePlugins: () => this.machinePlugins(),
+      }),
+      latexOps: new LatexOps(this.toolchains, this.latexJobs, (projectId) => this.getProject(projectId)),
+    };
   }
 
   /** Coalesce polling reads and keep results briefly. Bounded so browsing patches
