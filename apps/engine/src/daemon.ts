@@ -15,17 +15,11 @@ import {
   ENGINE_PROTOCOL_VERSION,
   EngineClientError,
   GitHubLineCommentInput,
-  GitHubReactionContent,
-  GitHubSubjectId,
-  parseForgeQuery,
-  PluginInstallInput,
-  registerPluginToolPrefixes,
   ProviderDriverKind,
   type ComputerUseGrant,
   type EngineDiscovery,
   type EngineHealth,
   type WorkerClaim,
-  pluginEnabled,
   machineAllows,
   parseDiffBaseQuery,
   parseFilePatchQuery,
@@ -52,17 +46,17 @@ import {
   type FilePatchOptions,
   type StoppedClaim,
 } from "./state";
-import { bundledPlugins, pluginToolModules, setPluginToolModules } from "./plugins/bundled";
-import { installPluginFolder, isSymlink, PluginInstallError, removePluginFolder } from "./plugins/external/installer";
-import { BUNDLED_RESERVATIONS, externalPluginsDir, loadInstalledPlugins, type LoadedExternalPlugin } from "./plugins/external/manifest";
-import { externalPlugin, externalToolModule, isExternalToolModule } from "./plugins/external/module";
+import { bundledPlugins } from "./plugins/bundled";
+import { isSymlink } from "./plugins/external/installer";
+import { externalPluginsDir, loadInstalledPlugins, type LoadedExternalPlugin } from "./plugins/external/manifest";
+import { externalPlugin } from "./plugins/external/module";
 import { PluginHost } from "./plugins/host";
-import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type PluginScopedRoute } from "./plugins/routes";
+import { PluginInputError } from "./plugins/routes";
 import { setPluginReadTools } from "./drivers/claude";
 import { createRunMount } from "./run/mount";
 import { RunError } from "./run/types";
 import { maybeRetitleSession } from "./domains/providers";
-import { appearanceRoutes, readProjectIconBytes } from "./domains/appearance";
+import { appearanceRoutes } from "./domains/appearance";
 import { warmUsageScanCache } from "./usage";
 import {
   collectNotesWallTools,
@@ -75,7 +69,7 @@ import {
   notesRoutes,
 } from "./domains/notes";
 import { PreparedPromptsError, promptsRoutes } from "./domains/prompts";
-import type { GhRunner } from "./domains/github";
+import { githubRoutes, type GhRunner } from "./domains/github";
 import { createStorageMeter, reapNodeModules, storageRoutes, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, type CheckoutSizesOptions } from "./domains/storage";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { readWorktreesRoot } from "./worktrees-location";
@@ -83,11 +77,12 @@ import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 import { readTaskOutput, resolveTaskOutputFile } from "./drivers/claude";
 import { filesRoutes } from "./domains/files";
+import { projectCheckoutRoutes, projectRoutes } from "./domains/projects";
+import { installedPlugins, pluginRoutes, pluginScopedRoutes } from "./domains/plugins";
 import { settingsRoutes } from "./domains/settings";
 import { dictationRoutes } from "./domains/dictation";
 import { worktreesRoutes } from "./domains/worktrees";
 import { usageRoutes } from "./domains/usage";
-import { createIconPng } from "./domains/projects";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
 import { createHostsStore, hostsRoutes } from "./domains/hosts";
 import { mcpOAuthRoutes, mcpSocketRoute } from "./domains/agent-tools";
@@ -682,7 +677,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    */
   const pluginsDir = options.pluginsDir ?? externalPluginsDir(root);
   const remoteDir = options.remoteDir ?? remoteDirFor(root);
-  const iconPng = createIconPng(path.join(store.paths.root, "icon-png"));
   const remoteStore = createRemoteStore(remoteDir), openStreams = new Set<(() => void) & { end?: () => void }>();
   const push = createPushService({ remoteDir, pairedDevices: () => remoteStore.read().devices, openStreams });
   const domainRoutes = [...filesRoutes(), ...remoteRoutes(remoteStore), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)()), ...aboutRoutes(root), ...push.routes,
@@ -717,96 +711,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
       },
     });
-  /** What is installed now: loaded by id, and refused folders by listed id. Settings changes both. */
-  const installedPlugins = new Map(external.loaded.map((loaded) => [loaded.manifest.id, loaded]));
-  const refusedFolders = new Map(external.refused.map((refused) => [refused.meta.id, refused.dir]));
-  const installedPrefixes = () => [...installedPlugins.values()].flatMap((loaded) => (loaded.manifest.toolPrefix ? [loaded.manifest.toolPrefix] : []));
-  // The walls this process had that are not an installed plugin's — the
-  // bundled ones, or a test's own.
-  const baseToolModules = pluginToolModules().filter((module) => !isExternalToolModule(module));
-  /**
-   * The embedded worker registers tools from this list; the out-of-process
-   * worker loads the same folder itself (worker-main.ts). And installed tool
-   * rows are typed like a bundled plugin's (`parseToolName`).
-   */
-  const syncInstalledTools = () => {
-    registerPluginToolPrefixes(installedPrefixes());
-    setPluginToolModules([...baseToolModules, ...[...installedPlugins.values()].map(externalToolModule)]);
-  };
-  syncInstalledTools();
+  const installed = installedPlugins(external);
   const pluginHost = new PluginHost(
     [...bundledModules, ...external.loaded.map(externalModule)],
     {
       daemonId,
       stateDir: store.paths.root,
-      declaredPrefixes: [...BUNDLED_PLUGIN_TOOL_PREFIXES, ...installedPrefixes()],
+      declaredPrefixes: [...BUNDLED_PLUGIN_TOOL_PREFIXES, ...installed.prefixes()],
       refused: external.refused.map(({ dir, meta, error }) => ({ meta, error, installed: { linked: isSymlink(dir) } })),
       log: (message, detail) => console.warn(`[telar] ${message}${detail ? ` ${JSON.stringify(detail)}` : ""}`),
     },
   );
-  /**
-   * ONE SERVER FOR EVERY PLUGIN'S PROJECT AND MACHINE VERBS — the generic doors
-   * and the old hand-written paths alike, so the two cannot drift apart.
-   *
-   * `legacy` is the ALIAS mode, and it exists to keep a released client's
-   * behaviour byte for byte: no enablement gate (those paths never had one — a
-   * settings page lists environments before anything is on), and a plugin's
-   * unexpected throw is left to the daemon's ordinary handler rather than
-   * relabelled. The generic doors gate and relabel, like the session door.
-   */
-  const servePluginScoped = async (
-    input: {
-      pluginId: string;
-      scope: "project" | "machine";
-      projectId?: string;
-      verb: string;
-      legacy?: boolean;
-    },
-    request: http.IncomingMessage,
-    url: URL,
-    response: http.ServerResponse,
-  ): Promise<boolean> => {
-    const module = pluginHost.ready(input.pluginId);
-    const table: Record<string, PluginScopedRoute<never>> | undefined =
-      input.scope === "project" ? module?.projectRoutes : module?.machineRoutes;
-    const method = request.method as PluginRouteMethod;
-    const matched = matchPluginRoute(table, method, input.verb);
-    if (!matched) {
-      if (input.legacy) return false;
-      if (!module) throw new HttpError(404, "not_found", `no plugin ${input.pluginId}`);
-      throw new HttpError(404, "not_found", `plugin ${input.pluginId} has no ${method} ${input.verb}`);
-    }
-    const { route, params } = matched;
-    const beforeEnable = route.beforeEnable === true;
-    if (!input.legacy) {
-      // THE SAME GATE AND WORDS AS THE SESSION DOOR: off for this Mac refuses
-      // every scope; at project scope, a project that has not turned the
-      // plugin on refuses too, unless the verb is how it chooses to.
-      if (!machineAllows(store.machinePlugins(), input.pluginId)) {
-        throw new EngineStateError("invalid_request", `${input.pluginId} is turned off for this Mac`);
-      }
-      if (input.projectId !== undefined) {
-        const project = store.getProject(input.projectId);
-        if (!beforeEnable && !store.pluginRuns(project, input.pluginId)) {
-          throw new EngineStateError("invalid_request", `${input.pluginId} is not enabled for this project`);
-        }
-      }
-    }
-    const parsedBody = method === "POST" ? await body(request) : {};
-    const routeRequest = { input: parsedBody, query: url.searchParams, params };
-    let answer: unknown;
-    try {
-      answer = await (route.handle as (request: typeof routeRequest, scope: unknown) => unknown)(
-        routeRequest,
-        input.projectId !== undefined ? { projectId: input.projectId } : {},
-      );
-    } catch (error) {
-      if (input.legacy || error instanceof HttpError || error instanceof EngineStateError || error instanceof PluginInputError) throw error;
-      throw new HttpError(400, "plugin_error", `${input.pluginId}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    writeJson(response, route.status ?? 200, answer ?? {});
-    return true;
-  };
   /**
    * RUN CONFIGURATIONS, and the terminals they open. The daemon is what talks
    * to the desktop's terminal host — a process a worker spawned would die with
@@ -1144,647 +1059,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const legacyRoutes = async (request: http.IncomingMessage, response: http.ServerResponse, url: URL): Promise<void> => {
     try {
       authorize("engine", request);
-      if (request.method === "GET" && url.pathname === "/v2/projects") {
-        // `?includeRemoved=1` OPTS IN to the put-away ones. Absent by default,
-        // so every picker and the sidebar drop a removed project without
-        // knowing the concept exists; its own settings page is the one caller
-        // that has to name it in order to offer to restore it.
-        writeJson(response, 200, { projects: store.listProjects({ includeRemoved: url.searchParams.get("includeRemoved") === "1" }) });
-        return;
-      }
-      /**
-       * A DRIVE WAS PLUGGED IN OR PULLED OUT — issue #534.
-       *
-       * ACCELERATION, NOT TRUTH, and the distinction is the whole contract. The
-       * poll in `projectMetadata` is the floor and is what makes the feature
-       * correct; this only moves the moment it notices from "within one pass" to
-       * "now". So a shell that never calls it, a watcher that dies, an event
-       * missed while the Mac was asleep — each costs latency and nothing else,
-       * which is why the desktop side (`main.js`) is allowed to be best-effort.
-       *
-       * NO BODY, AND IT NAMES NO PROJECT. The caller knows a disk moved; it does
-       * not know which registrations that concerns, and asking it to work that
-       * out would put the engine's rule in the shell. Every project is re-probed
-       * — three `stat`s each — and the answer says how many actually moved, which
-       * is what makes the desktop unit test able to assert the call landed.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/projects/reprobe") {
-        writeJson(response, 200, store.reprobeProjects());
-        return;
-      }
-      /**
-       * A project's git state, for the composer's pinned environment.
-       *
-       * Under /v2/projects/:id/ rather than /v2/sessions/:id/ because it
-       * describes the PROJECT — every session on it sees the same branch, and
-       * hanging it off a session would invite a per-session answer the working
-       * tree cannot give.
-       */
-      const projectGit = /^\/v2\/projects\/([^/]+)\/git$/.exec(url.pathname);
-      if (request.method === "GET" && projectGit) {
-        writeJson(response, 200, { git: await store.projectGitAsync(decodeURIComponent(projectGit[1])) });
-        return;
-      }
-      const sessionSetup = /^\/v2\/sessions\/([^/]+)\/setup$/.exec(url.pathname);
-      if (sessionSetup && request.method === "GET") {
-        const sessionId = decodeURIComponent(sessionSetup[1]!);
-        store.getSession(sessionId);
-        const after = Number(url.searchParams.get("after") ?? 0);
-        writeJson(response, 200, {
-          setup: store.setups.status(sessionId) ?? null,
-          ...store.setups.output(sessionId, Number.isFinite(after) && after > 0 ? after : 0),
-        });
-        return;
-      }
-      // `?v=` only busts caches; `?format=png` is for clients that cannot decode SVG.
-      const projectIcon = /^\/v2\/projects\/([^/]+)\/icon$/.exec(url.pathname);
-      if (request.method === "GET" && projectIcon) {
-        const icon = await store.projectIconFileAsync(decodeURIComponent(projectIcon[1]));
-        const served = await readProjectIconBytes(icon);
-        const png = served && url.searchParams.get("format") === "png";
-        const bytes = png ? await iconPng(served) : served?.bytes;
-        if (!served || !bytes) throw new HttpError(404, "not_found", "this project has no icon");
-        response.writeHead(200, {
-          "content-type": png ? "image/png" : served.contentType,
-          "content-length": bytes.byteLength,
-          "cache-control": "public, max-age=31536000, immutable",
-          etag: `"${served.etag}${png ? "-png" : ""}"`,
-        });
-        response.end(bytes);
-        return;
-      }
-      /**
-       * A project's issues and pull requests.
-       *
-       * `?refresh=1` IS THE ONLY WAY PAST THE CACHE, and the surface sends it
-       * only from a button a human pressed. A timer must never be able to hold
-       * a network read open against somebody else's rate limit.
-       */
-      /** The project's own uncommitted work, for a canvas with no session. */
-      const projectDiff = /^\/v2\/projects\/([^/]+)\/diff$/.exec(url.pathname);
-      if (request.method === "GET" && projectDiff) {
-        const projectId = decodeURIComponent(projectDiff[1]);
-        const target = url.searchParams.get("path");
-        if (target) {
-          writeJson(response, 200, {
-            file: await store.projectFilePatchAsync(projectId, target, filePatchOptions(url)),
-          });
-          return;
-        }
-        writeJson(response, 200, { diff: await store.projectDiffAsync(projectId) });
-        return;
-      }
-      /** The project's own file list, for a canvas with no session — same tree,
-       *  one scope wider. */
-      const projectFiles = /^\/v2\/projects\/([^/]+)\/files$/.exec(url.pathname);
-      if ((request.method === "GET" || request.method === "PUT") && projectFiles) {
-        const projectId = decodeURIComponent(projectFiles[1]);
-        const target = url.searchParams.get("path");
-        if (request.method === "PUT") {
-          if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
-          const input = await body(request);
-          writeJson(
-            response,
-            200,
-            store.projectFileWrite(projectId, target, stringValue(input.text, "file text")!, stringValue(input.expectedSha256, "expected hash")!),
-          );
-          return;
-        }
-        if (target) {
-          writeJson(response, 200, { file: await store.projectFileAsync(projectId, target) });
-          return;
-        }
-        writeJson(response, 200, { listing: await store.projectFilesAsync(projectId) });
-        return;
-      }
-      /**
-       * WHAT A PROJECT'S PROVIDER CAN BE ASKED TO DO — the same inventory as
-       * `/v2/sessions/:id/skills`, one scope wider, for a canvas whose session
-       * does not exist yet (#500).
-       *
-       * A FRESH SESSION IS THE WHOLE REASON THIS ROUTE EXISTS. `$` used to draw
-       * nothing on a canvas because the only way to ask was per session, and a
-       * session with no runtime has no answer — so the menu stayed empty until
-       * after the first turn. The project's own checkout is the honest thing to
-       * read there: it is what the session about to be created will copy or run
-       * in, and it is where its `.claude` already is.
-       *
-       * THE DRIVER IS THE CANVAS'S PENDING CHOICE, because it has not been
-       * recorded anywhere yet. Claude when unsaid, matching `/v2/models`.
-       */
-      const projectSkills = /^\/v2\/projects\/([^/]+)\/skills$/.exec(url.pathname);
-      if (request.method === "GET" && projectSkills) {
-        const project = store.getProject(decodeURIComponent(projectSkills[1]!));
-        const asked = url.searchParams.get("driver");
-        const driver = ProviderDriverKind.safeParse(asked ?? "claude");
-        if (!driver.success) throw new HttpError(400, "invalid_request", `unknown provider driver ${JSON.stringify(asked)}`);
-        writeJson(
-          response,
-          200,
-          await readProviderSkillsCached({
-            cacheKey: `project:${project.id}:${driver.data}`,
-            driver: driver.data,
-            checkout: project.root,
-            ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
-            ...(options.providerSkills?.loadProviderCommands ? { loadProviderCommands: options.providerSkills.loadProviderCommands } : {}),
-          }),
-        );
-        return;
-      }
-      /** One project file's BYTES — the media viewers' read. Same fence as the
-       *  text read; the answer is content and a media type instead of JSON. */
-      const projectFileRaw = /^\/v2\/projects\/([^/]+)\/files\/raw$/.exec(url.pathname);
-      if (request.method === "GET" && projectFileRaw) {
-        const target = url.searchParams.get("path");
-        if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
-        const raw = await store.projectFileBytesAsync(decodeURIComponent(projectFileRaw[1]), target);
-        response.writeHead(200, {
-          "content-type": raw.mediaType,
-          "content-length": raw.data.byteLength,
-          // Unlike an attachment, a workspace file changes under its own name.
-          "cache-control": "no-store",
-        });
-        response.end(raw.data);
-        return;
-      }
-      const projectGitHub = /^\/v2\/projects\/([^/]+)\/github$/.exec(url.pathname);
-      if (request.method === "GET" && projectGitHub) {
-        /**
-         * PARSED BY THE CONTRACT, so the builder and the reader of this query string
-         * are the same file. Two hand-written parsers is how the cockpit's own
-         * adapter came to forward `refresh` and silently drop every filter.
-         *
-         * A bad state throws a plain Error from the parser — `gh` would fail on the
-         * flag and report it as GitHub being broken — and it becomes a 400 here,
-         * which is the one thing the parser cannot know how to do.
-         */
-        let filters;
-        try {
-          filters = parseForgeQuery(url.searchParams);
-        } catch (cause) {
-          throw new HttpError(400, "invalid_request", cause instanceof Error ? cause.message : "invalid filter");
-        }
-        writeJson(response, 200, {
-          github: await store.projectGitHub(decodeURIComponent(projectGitHub[1]), {
-            force: filters.refresh,
-            issues: filters.issues,
-            pulls: filters.pulls,
-          }),
-        });
-        return;
-      }
-      /**
-       * One failing check's log.
-       *
-       * `(\d+)` IN THE PATTERN, so a job id either is a number or is not this route.
-       * The id came from a check this engine handed out, and it still goes into a `gh`
-       * argv — which is exactly when "we produced it" stops being a reason to trust it.
-       */
-      const projectCheckLog = /^\/v2\/projects\/([^/]+)\/github\/checks\/(\d+)\/log$/.exec(url.pathname);
-      if (request.method === "GET" && projectCheckLog) {
-        writeJson(response, 200, {
-          log: await store.projectCheckLog(decodeURIComponent(projectCheckLog[1]), projectCheckLog[2]),
-        });
-        return;
-      }
-      /** What there is to filter by. Its own route because it is its own cache — see
-       *  `projectForgeFacets` — and because nothing asks for it until somebody opens
-       *  a filter menu. */
-      const projectFacets = /^\/v2\/projects\/([^/]+)\/github\/facets$/.exec(url.pathname);
-      if (request.method === "GET" && projectFacets) {
-        writeJson(response, 200, {
-          facets: await store.projectForgeFacets(decodeURIComponent(projectFacets[1]), { force: url.searchParams.get("refresh") === "1" }),
-        });
-        return;
-      }
-      /**
-       * Ignore Telar's own files in a project's repository.
-       *
-       * A POST WITH NO BODY, on purpose: the rules are the engine's (see
-       * `gitignore.ts`) and a caller that could name them could append anything to
-       * a file inside somebody's repository. The answer says what was added and
-       * what was already covered, because those look identical and mean opposite
-       * things.
-       */
-      const projectGitignore = /^\/v2\/projects\/([^/]+)\/gitignore$/.exec(url.pathname);
-      if (request.method === "POST" && projectGitignore) {
-        writeJson(response, 200, { gitignore: store.projectGitignore(decodeURIComponent(projectGitignore[1])) });
-        return;
-      }
-      /**
-       * And the way back out. DELETE rather than a flag on the POST, because it
-       * is the inverse of that write rather than a variant of it — the Sources
-       * palette ignores Telar's files without asking and reports it with an
-       * Undo, so the undo is a route rather than a second switch.
-       */
-      if (request.method === "DELETE" && projectGitignore) {
-        writeJson(response, 200, { gitignore: store.undoProjectGitignore(decodeURIComponent(projectGitignore[1])) });
-        return;
-      }
-      /**
-       * ONE issue or ONE pull request, and merging one.
-       *
-       * `(\d+)` IN THE PATTERN rather than a parse afterwards: the number goes
-       * into a `gh` argv, and a route that matched `../../etc` and then tried to
-       * make sense of it is a route that can be argued with. It either is a
-       * number or it is not this route.
-       *
-       * THE FOUR-AND-A-FIFTH KINDS OF NOTHING COME BACK AS 200s, the same as the
-       * list's. "gh is not signed in" and "there is no #999" are answers about the
-       * environment and the repository; a 4xx here would collapse them into the
-       * cockpit's generic error path and lose the sentence that says what to do.
-       */
-      const projectForge = /^\/v2\/projects\/([^/]+)\/github\/(issues|pulls)\/(\d+)$/.exec(url.pathname);
-      if (request.method === "GET" && projectForge) {
-        const projectId = decodeURIComponent(projectForge[1]);
-        const number = Number(projectForge[3]);
-        const force = url.searchParams.get("refresh") === "1";
-        writeJson(
-          response,
-          200,
-          projectForge[2] === "issues" ? await store.projectIssue(projectId, number, { force }) : await store.projectPull(projectId, number, { force }),
-        );
-        return;
-      }
-      /**
-       * One reaction, added or removed — #842. The content and the subject id are
-       * refused HERE when they are not shaped like GitHub's, so nothing but one of
-       * the eight words and an opaque node id ever reaches a `gh` argv.
-       */
-      const projectReaction = /^\/v2\/projects\/([^/]+)\/github\/(issues|pulls)\/(\d+)\/reactions$/.exec(url.pathname);
-      if (request.method === "POST" && projectReaction) {
-        const input = await body(request);
-        const content = GitHubReactionContent.safeParse(input.content);
-        if (!content.success) throw new HttpError(400, "invalid_request", "content must be one of GitHub's eight reactions");
-        const subject = GitHubSubjectId.safeParse(input.subjectId);
-        if (!subject.success) throw new HttpError(400, "invalid_request", "subjectId must be a GitHub node id");
-        if (typeof input.react !== "boolean") throw new HttpError(400, "invalid_request", "react must be true or false");
-        writeJson(
-          response,
-          200,
-          await store.projectGitHubReaction(decodeURIComponent(projectReaction[1]), {
-            kind: projectReaction[2] === "issues" ? "issue" : "pull",
-            number: Number(projectReaction[3]),
-            subjectId: subject.data,
-            content: content.data,
-            react: input.react,
-          }),
-        );
-        return;
-      }
-      /**
-       * Reply to, resolve or unresolve one review thread — #842. The thread id is
-       * matched as a GitHub node id IN THE PATTERN, for the reason the number is.
-       */
-      const projectThread = /^\/v2\/projects\/([^/]+)\/github\/pulls\/(\d+)\/threads\/([A-Za-z0-9_=-]{1,200})\/(replies|resolve)$/.exec(url.pathname);
-      if (request.method === "POST" && projectThread) {
-        const input = await body(request);
-        const projectId = decodeURIComponent(projectThread[1]);
-        const number = Number(projectThread[2]);
-        const threadId = projectThread[3];
-        if (projectThread[4] === "replies") {
-          if (typeof input.body !== "string") throw new HttpError(400, "invalid_request", "body must be a string");
-          writeJson(response, 200, await store.projectThreadReply(projectId, number, { threadId, body: input.body }));
-        } else {
-          if (typeof input.resolved !== "boolean") throw new HttpError(400, "invalid_request", "resolved must be true or false");
-          writeJson(response, 200, await store.projectThreadResolve(projectId, number, { threadId, resolved: input.resolved }));
-        }
-        return;
-      }
-      const projectMerge = /^\/v2\/projects\/([^/]+)\/github\/pulls\/(\d+)\/merge$/.exec(url.pathname);
-      if (request.method === "POST" && projectMerge) {
-        const input = await body(request);
-        const method = stringValue(input.method, "merge method")!;
-        if (method !== "merge" && method !== "squash" && method !== "rebase") {
-          throw new HttpError(400, "invalid_request", "merge method must be merge, squash or rebase");
-        }
-        writeJson(
-          response,
-          200,
-          await store.projectPullMerge(decodeURIComponent(projectMerge[1]), Number(projectMerge[2]), {
-            method,
-            // Required, and named for what it is: the head the person who pressed
-            // the button had reviewed. See `mergePull`.
-            expectedHeadOid: stringValue(input.expectedHeadOid, "expected head commit")!,
-          }),
-        );
-        return;
-      }
-      /**
-       * What a project IS and what it OPTS INTO. `PATCH`, not `PUT`: the body
-       * names only the fields it means to move, and the ROOT is never one of
-       * them — moving a project means registering the new folder. `null` on an
-       * optional field REMOVES the stored answer, which is the difference
-       * between "never asked" and "off" for a plugin, and between "follows this
-       * Mac" and "insists on local" for a workspace mode.
-       *
-       * The store re-validates every one of these against the contract's own
-       * schemas; what the arms here do is refuse the WRONG SHAPE with a 400 and
-       * a sentence naming the field, rather than letting a JSON array reach a
-       * zod error the client reads as "project is invalid".
-       */
-      const projectPatch = /^\/v2\/projects\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && projectPatch) {
-        const input = await body(request);
-        const patch: Parameters<typeof store.updateProject>[1] = {};
-        if ("name" in input) {
-          if (typeof input.name !== "string" || input.name.trim() === "") {
-            throw new HttpError(400, "invalid_request", "name must be a non-empty string");
-          }
-          patch.name = input.name;
-        }
-        if ("iconName" in input) {
-          if (input.iconName !== null && typeof input.iconName !== "string") {
-            throw new HttpError(400, "invalid_request", "iconName must be a string or null");
-          }
-          patch.iconName = input.iconName as string | null;
-        }
-        if ("iconEmoji" in input) {
-          if (input.iconEmoji !== null && typeof input.iconEmoji !== "string") {
-            throw new HttpError(400, "invalid_request", "iconEmoji must be a string or null");
-          }
-          patch.iconEmoji = input.iconEmoji as string | null;
-        }
-        if ("defaultModel" in input) {
-          if (input.defaultModel !== null && (typeof input.defaultModel !== "object" || Array.isArray(input.defaultModel))) {
-            throw new HttpError(400, "invalid_request", "defaultModel must be an object or null");
-          }
-          patch.defaultModel = input.defaultModel as Parameters<typeof store.updateProject>[1]["defaultModel"];
-        }
-        if ("envMode" in input) {
-          if (input.envMode !== null && input.envMode !== "local" && input.envMode !== "worktree") {
-            throw new HttpError(400, "invalid_request", "envMode must be local, worktree or null");
-          }
-          patch.envMode = input.envMode as Parameters<typeof store.updateProject>[1]["envMode"];
-        }
-        /**
-         * DEPRECATED INPUT ALIASES for `plugins["data-science"]` / `plugins.latex`,
-         * accepted one more release so a released cockpit keeps working. The
-         * store writes them into the map; neither key is stored or returned.
-         */
-        if ("dataScience" in input) {
-          if (input.dataScience !== null && (typeof input.dataScience !== "object" || Array.isArray(input.dataScience))) {
-            throw new HttpError(400, "invalid_request", "dataScience must be an object or null");
-          }
-          patch.dataScience = input.dataScience as Parameters<typeof store.updateProject>[1]["dataScience"];
-        }
-        if ("latex" in input) {
-          if (input.latex !== null && (typeof input.latex !== "object" || Array.isArray(input.latex))) {
-            throw new HttpError(400, "invalid_request", "latex must be an object or null");
-          }
-          patch.latex = input.latex as Parameters<typeof store.updateProject>[1]["latex"];
-        }
-        /**
-         * THE GENERIC ARM. `plugins: { "<id>": {…} | null }` — one entry per
-         * plugin, `null` to turn it off, and no new arm per feature again. The
-         * settings blob is validated by the PLUGIN that owns it: the protocol
-         * deliberately does not know what a LaTeX toolchain is.
-         */
-        if ("plugins" in input) {
-          if (!input.plugins || typeof input.plugins !== "object" || Array.isArray(input.plugins)) {
-            throw new HttpError(400, "invalid_request", "plugins must be an object");
-          }
-          const entries = input.plugins as Record<string, unknown>;
-          for (const [id, value] of Object.entries(entries)) {
-            if (value === null) continue;
-            if (typeof value !== "object" || Array.isArray(value)) {
-              throw new HttpError(400, "invalid_request", `plugins.${id} must be an object or null`);
-            }
-            const config = value as { enabled?: unknown; settings?: unknown };
-            if (typeof config.enabled !== "boolean") {
-              throw new HttpError(400, "invalid_request", `plugins.${id}.enabled must be a boolean`);
-            }
-            const module = pluginHost.ready(id);
-            if (module?.settingsSchema && config.settings !== undefined) {
-              const parsed = module.settingsSchema.safeParse(config.settings);
-              if (!parsed.success) {
-                throw new HttpError(400, "invalid_request", `plugins.${id}.settings is not valid for ${id}`);
-              }
-            }
-          }
-          patch.plugins = entries as Parameters<typeof store.updateProject>[1]["plugins"];
-        }
-        const project = store.updateProject(decodeURIComponent(projectPatch[1]), patch);
-        /**
-         * DISABLE MEANS DRAIN. A plugin the write turned OFF stops accepting new
-         * work now, finishes what is running, and gives its resources back once
-         * `busy` reports false. Nothing running is cancelled — that is a
-         * separate, explicit user action.
-         */
-        if (patch.plugins) {
-          const { plugins: after } = readProjectPlugins(project);
-          for (const pluginId of Object.keys(patch.plugins)) {
-            if (pluginEnabled(after, pluginId)) pluginHost.cancelDrain(pluginId, project.id);
-            else void pluginHost.drainProject(pluginId, project.id);
-          }
-        }
-        writeJson(response, 200, { project });
-        return;
-      }
-      /**
-       * REMOVE. A DELETE on the registration, NOT on the project: the checkout,
-       * its worktrees, its sessions' journals and their browser profiles are
-       * all untouched, and the registration RECORD is kept and marked rather
-       * than deleted — so restoring gives back the same id and settings.
-       * `sessions` in the answer is how many session records now belong to a
-       * put-away project; the surface says so rather than the engine tidying
-       * them away.
-       */
-      if (request.method === "DELETE" && projectPatch) {
-        writeJson(response, 200, store.unregisterProject(decodeURIComponent(projectPatch[1])));
-        return;
-      }
-      /** Put a removed project back: same id, same settings, same sessions. */
-      const projectRestore = /^\/v2\/projects\/([^/]+)\/restore$/.exec(url.pathname);
-      if (request.method === "POST" && projectRestore) {
-        writeJson(response, 200, { project: store.restoreProject(decodeURIComponent(projectRestore[1])) });
-        return;
-      }
-      /**
-       * INSTALL AND REMOVE A PLUGIN FOLDER (plugins/external/installer.ts).
-       * Before the machine door below, whose pattern `/v2/plugins/<id>/<verb>`
-       * would otherwise read `installed` as a plugin id — which is why no
-       * plugin may take that id.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/plugins/installed") {
-        const parsed = PluginInstallInput.safeParse(await body(request));
-        if (!parsed.success) throw new HttpError(400, "invalid_request", "path must be a folder and mode copy or link");
-        let loaded: LoadedExternalPlugin;
-        try {
-          loaded = installPluginFolder(pluginsDir, parsed.data.path, parsed.data.mode, {
-            ids: new Set([...BUNDLED_RESERVATIONS.ids, ...installedPlugins.keys()]),
-            prefixes: new Set([...BUNDLED_RESERVATIONS.prefixes, ...installedPrefixes()]),
-          });
-        } catch (error) {
-          if (error instanceof PluginInstallError) throw new HttpError(400, "invalid_request", error.message);
-          throw error;
-        }
-        installedPlugins.set(loaded.manifest.id, loaded);
-        syncInstalledTools();
-        writeJson(response, 200, { plugin: await pluginHost.add(externalModule(loaded)) });
-        return;
-      }
-      const uninstallPath = /^\/v2\/plugins\/installed\/([a-z][a-z0-9-]*)$/.exec(url.pathname);
-      if (request.method === "DELETE" && uninstallPath) {
-        const id = uninstallPath[1]!;
-        const folder = installedPlugins.get(id)?.dir ?? refusedFolders.get(id);
-        if (!folder) throw new HttpError(404, "not_found", `no installed plugin ${id}`);
-        // Stopped first, so its process is gone before its folder is.
-        await pluginHost.remove(id);
-        installedPlugins.delete(id);
-        refusedFolders.delete(id);
-        syncInstalledTools();
-        removePluginFolder(pluginsDir, path.basename(folder));
-        writeJson(response, 200, { removed: true });
-        return;
-      }
-      /**
-       * A PLUGIN'S PROJECT AND MACHINE VERBS — environments, packages,
-       * distributions, toolchains, installers and their jobs. They live in each
-       * plugin's `projectRoutes` / `machineRoutes` table (see
-       * `plugins/routes.ts`) and are served here at
-       *
-       *   /v2/projects/:id/plugins/<plugin>/<verb>   gated on Mac and project
-       *   /v2/plugins/<plugin>/<verb>                gated on Mac
-       */
-      const projectPluginPath = /^\/v2\/projects\/([^/]+)\/plugins\/([a-z][a-z0-9-]*)\/([A-Za-z0-9_.%-]+(?:\/[A-Za-z0-9_.%-]+)*)$/.exec(url.pathname);
-      if (projectPluginPath) {
-        const [, projectId, pluginId, verb] = projectPluginPath as unknown as [string, string, string, string];
-        await servePluginScoped({ pluginId, scope: "project", projectId: decodeURIComponent(projectId), verb }, request, url, response);
-        return;
-      }
-      const machinePluginPath = /^\/v2\/plugins\/([a-z][a-z0-9-]*)\/([A-Za-z0-9_.%-]+(?:\/[A-Za-z0-9_.%-]+)*)$/.exec(url.pathname);
-      if (machinePluginPath) {
-        const [, pluginId, verb] = machinePluginPath as unknown as [string, string, string];
-        await servePluginScoped({ pluginId, scope: "machine", verb }, request, url, response);
-        return;
-      }
-      /**
-       * THE OLD PATHS, NOW ALIASES. `/v2/projects/:id/{data-science,latex}/*`
-       * and `/v2/{data-science,latex}/*` are what the web settings pages and
-       * a released client call; they forward to the same tables ungated and
-       * unrelabelled, so their behaviour is unchanged. A verb neither table
-       * has falls through, exactly as an unmatched path always did.
-       */
-      const legacyProjectPlugin = /^\/v2\/projects\/([^/]+)\/(data-science|latex)\/([^/]+(?:\/[^/]+)*)$/.exec(url.pathname);
-      if (
-        legacyProjectPlugin &&
-        (await servePluginScoped(
-          { pluginId: legacyProjectPlugin[2]!, scope: "project", projectId: decodeURIComponent(legacyProjectPlugin[1]!), verb: legacyProjectPlugin[3]!, legacy: true },
-          request,
-          url,
-          response,
-        ))
-      ) {
-        return;
-      }
-      const legacyMachinePlugin = /^\/v2\/(data-science|latex)\/([^/]+(?:\/[^/]+)*)$/.exec(url.pathname);
-      if (
-        legacyMachinePlugin &&
-        (await servePluginScoped({ pluginId: legacyMachinePlugin[1]!, scope: "machine", verb: legacyMachinePlugin[2]!, legacy: true }, request, url, response))
-      ) {
-        return;
-      }
-      /**
-       * CLONE, THEN REGISTER — and it is one route because the cockpit cannot
-       * name the path in between. It sends a URL and the parent folder somebody
-       * picked; only the engine knows what directory `git clone` created.
-       *
-       * ABOVE `POST /v2/projects` in this chain purely so the literal comparison
-       * below never has to think about a sub-path. No streaming progress: the
-       * answer is the registered project or a sentence saying why not.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/projects/clone") {
-        const input = await body(request);
-        writeJson(response, 201, {
-          project: await store.cloneProject({
-            url: stringValue(input.url, "repository url")!,
-            parent: stringValue(input.parent, "parent folder")!,
-            ...(input.name === undefined ? {} : { name: stringValue(input.name, "project name")! }),
-          }),
-        });
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/projects") {
-        const input = await body(request);
-        writeJson(response, 201, {
-          project: store.registerProject({
-            id: stringValue(input.id, "project id", true),
-            name: stringValue(input.name, "project name")!,
-            root: stringValue(input.root, "project root")!,
-          }),
-        });
-        return;
-      }
-      /**
-       * EVERY LIVE SESSION, ACROSS PROJECTS, plus the project registry beside
-       * it — what `sessions_list` answers with, and the only read in this file
-       * that is not scoped to one project or one session.
-       *
-       * A LITERAL PATH UNDER `/v2/sessions/`, so it must stay ABOVE the
-       * `sessionPath` block at the bottom: that regex matches `live` as
-       * happily as it matches a session id, and hoisting it would turn this
-       * route into "no session by that id".
-       */
-      /**
-       * WHAT THIS MAC ALLOWS, and the machine-level settings behind it.
-       *
-       * SCOPED TO THIS ENGINE. A cockpit looking at a remote Mac reaches that
-       * Mac's daemon, so these reads and writes land on the engine being viewed
-       * and never on the one the browser happens to be running beside.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/plugins") {
-        writeJson(response, 200, { plugins: pluginHost.statuses(), machine: store.machinePlugins() });
-        return;
-      }
-      if (request.method === "PATCH" && url.pathname === "/v2/plugins") {
-        const input = await body(request);
-        if (!input.plugins || typeof input.plugins !== "object" || Array.isArray(input.plugins)) {
-          throw new HttpError(400, "invalid_request", "plugins must be an object");
-        }
-        const entries = input.plugins as Record<string, unknown>;
-        for (const [id, value] of Object.entries(entries)) {
-          if (value === null) continue;
-          if (typeof value !== "object" || Array.isArray(value)) {
-            throw new HttpError(400, "invalid_request", `plugins.${id} must be an object or null`);
-          }
-          const config = value as { enabled?: unknown; settings?: unknown };
-          if (typeof config.enabled !== "boolean") {
-            throw new HttpError(400, "invalid_request", `plugins.${id}.enabled must be a boolean`);
-          }
-          // THE PLUGIN'S OWN SCHEMA VALIDATES ITS OWN SETTINGS, here as on the
-          // project arm. The protocol does not know what a TeX distribution is.
-          //
-          // THE MACHINE SCHEMA WHEN THERE IS ONE. This arm writes Mac-wide
-          // defaults, which are a different shape from a project's — a default
-          // engine belongs here and `mainFile` does not. A plugin that declares
-          // no machine schema keeps the old behaviour and is checked against its
-          // project one.
-          const module = pluginHost.ready(id);
-          const schema = module?.machineSettingsSchema ?? module?.settingsSchema;
-          if (schema && config.settings !== undefined) {
-            const parsed = schema.safeParse(config.settings);
-            if (!parsed.success) {
-              throw new HttpError(400, "invalid_request", `plugins.${id}.settings is not valid for ${id}`);
-            }
-          }
-        }
-        const machine = store.updateMachinePlugins(entries as Parameters<typeof store.updateMachinePlugins>[0]);
-        /**
-         * TURNING A PLUGIN OFF DRAINS IT EVERYWHERE. New work is already refused
-         * by the gate; this lets what is running finish and gives resources back
-         * when it does. Nothing is killed — the same rule as a project switch.
-         */
-        for (const [id, value] of Object.entries(entries)) {
-          const off = value === null || (value as { enabled?: boolean }).enabled === false;
-          for (const project of store.listProjects()) {
-            if (off) void pluginHost.drainProject(id, project.id);
-            else pluginHost.cancelDrain(id, project.id);
-          }
-        }
-        writeJson(response, 200, { machine });
-        return;
-      }
       const session = sessionPath(url.pathname);
       if (session) {
         /**
@@ -2251,6 +1525,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     { method: "GET", path: "/v2/health", auth: "engine", handle: () => ({ status: 200, body: health() }) },
     ...sessionsRoutes(store, { daemonId, openStreams, mcpInfo: () => sessionsSocketConnectCard(`http://127.0.0.1:${(server.address() as AddressInfo | null)?.port ?? 0}/v2/sessions/mcp`, sessionsSecret()) }),
     ...schedulesRoutes(store), ...workerRoutes(execution), ...turnRoutes(store, execution),
+    ...projectRoutes(store, pluginHost), ...projectCheckoutRoutes(store, options.providerSkills), ...githubRoutes(store),
+    ...pluginRoutes(store, pluginHost, { dir: pluginsDir, installed, moduleFor: externalModule }), ...pluginScopedRoutes(store, pluginHost),
     ...sessionReadRoutes(store), ...sessionLifecycleRoutes(store, push.dismiss),
     ...sessionTurnRoutes(store, {
       execution,
