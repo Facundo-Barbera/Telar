@@ -28,7 +28,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";
-import { SessionTurn } from "@/components/session-cockpit";
+import { SessionTurn } from "@/features/sessions";
 import { ActivityGroup } from "./activity";
 import { bareNotificationTurn, groupNotificationTurns } from "../model";
 import { NotificationRow } from "./notification-row";

@@ -1,7 +1,3 @@
-/**
- * The one rule the offline cockpit turns on: which failed read keeps the
- * transcript up under a banner, and which one is still an error card.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { decideStale } from "./stale-state";

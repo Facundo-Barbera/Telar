@@ -1,11 +1,3 @@
-/**
- * A COORDINATOR'S REACTIONS WHILE ITS COHORT WORKED, FOLDED.
- *
- * What these pin: the fold's boundaries come from the engine's cohort fields
- * alone; a person's turn, a blocker, a request, and anything carrying a result
- * are never folded (the fold reverted in September hid completed work); every
- * turn comes back exactly once, in order; and opening the fold draws them all.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -13,7 +5,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { NotificationDetail } from "@telar/engine-client";
 import type { JournalItem, JournalTurn } from "@/platform/engine";
-import { SessionTurn } from "../session-cockpit";
+import { SessionTurn } from "./session-turn";
 import { CohortFold, cohortFoldSummary, foldCohortTurns, type TranscriptSegment } from "./cohort-fold";
 
 const OPENED = 150;

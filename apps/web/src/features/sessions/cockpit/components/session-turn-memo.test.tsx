@@ -1,23 +1,3 @@
-/**
- * #498 — A TURN THAT DID NOT CHANGE DOES NOT RE-RENDER.
- *
- * THE CASE THIS IS ABOUT. The cockpit tails once a second, and every
- * queue-changing event brings a companion snapshot whose rows are fresh objects
- * off `JSON.parse`. The projector rebuilds each turn from those, so the ten
- * mounted turns were handed new-but-identical `JournalTurn` objects — plus a
- * fresh `requests` array and fresh inline callbacks — and React re-rendered all
- * ten. One turn had changed; the whole conversation paid.
- *
- * HOW A RENDER IS COUNTED. `SessionTurn` is memoised on what it DRAWS, and
- * `prompt` is deliberately outside that comparison: a turn's input is written
- * once and never rewritten, and the `runId` key means the comparator only ever
- * sees one turn against a later reading of itself. That makes `prompt` the one
- * prop the body reads and the comparator does not — so a getter on it counts
- * renders of the body exactly, with nothing stubbed and no component replaced.
- *
- * The probe goes on the INCOMING turn, never the mounted one: a bail-out leaves
- * the old object rendering, so a getter on it could not tell the two apart.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -25,7 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { Item, Turn } from "@telar/engine-client";
 import { projectJournal, type JournalTurn } from "@/platform/engine";
-import { SessionTurn } from "./session-cockpit";
+import { SessionTurn } from "./session-turn";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -56,10 +36,6 @@ const said = (text: string, status: Item["status"] = "completed"): Item => ({
   detail: { type: "assistant_message", text },
 });
 
-/**
- * A turn folded from FRESH rows, the way a companion snapshot produces one:
- * every object new, every value the same unless this call changed it.
- */
 function fold(items: Item[] = [said("Looking now.")], state: Turn["state"] = "completed"): JournalTurn {
   return projectJournal(
     [structuredClone({ ...row, state })],
@@ -69,7 +45,7 @@ function fold(items: Item[] = [said("Looking now.")], state: Turn["state"] = "co
 }
 
 /** Counts the body's reads of `prompt` — one render is two of them, so the
- *  assertions below only ever ask whether the count MOVED. */
+ *  assertions below only ever ask whether the count moved. */
 function watched(turn: JournalTurn): { turn: JournalTurn; reads: () => number } {
   let reads = 0;
   const value = turn.prompt;
@@ -93,10 +69,6 @@ afterEach(async () => {
   document.body.innerHTML = "";
 });
 
-/**
- * The cockpit's call site, with everything it rebuilds on every render: a fresh
- * `requests` array and a fresh arrow per gesture.
- */
 const turnElement = (turn: JournalTurn, live = false) => (
   <SessionTurn
     turn={turn}

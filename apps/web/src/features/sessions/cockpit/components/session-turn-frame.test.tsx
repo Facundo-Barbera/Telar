@@ -1,36 +1,13 @@
-/**
- * #498 — A TURN FAR FROM THE VIEWPORT IS SKIPPED, AND KEEPS ITS SIZE.
- *
- * Paging history in mounts turns and never unmounts them, so a reader walking
- * back through a long session ends up with hundreds of turns of layout, style
- * and paint live at once. `content-visibility: auto` is the browser's own
- * answer — but only if the skipped subtree still occupies the right space, or
- * the scrollbar lurches every time one goes out of view.
- *
- * WHAT IS PINNED HERE: the height comes from the REAL render (so the element
- * cannot change size at the moment it starts being skipped), it is taken once
- * rather than re-read off the placeholder, and the LIVE turn — whose height
- * moves with every delta, and which is at the bottom of the window where the
- * property would do nothing — is never given it at all.
- *
- * happy-dom lays nothing out, so `offsetHeight` is stubbed. That is the only
- * stub: the property writes and the once-only rule are the component's own.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { TurnFrame } from "./session-cockpit";
+import { TurnFrame } from "./session-turn";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/**
- * The height every element reports, until a test changes it. Stubbed on the
- * PROTOTYPE because the frame measures a node it created itself, which the test
- * has no handle on until after the measurement has already happened.
- */
 let laidOutHeight = 0;
 const realOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
 Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
@@ -98,7 +75,7 @@ describe("a settled turn's frame", () => {
 
   test("measures once — a later pass never reads the placeholder back", async () => {
     const { frame, render } = await mount(true, 482);
-    // What `offsetHeight` answers for a SKIPPED element is its intrinsic size,
+    // What `offsetHeight` answers for a skipped element is its intrinsic size,
     // not its content's. Re-measuring would lock that in and shrink the turn.
     laidOutHeight = 12;
     await render(true);

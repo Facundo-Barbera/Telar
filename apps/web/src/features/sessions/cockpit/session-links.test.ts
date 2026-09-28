@@ -1,9 +1,3 @@
-/**
- * The link router's pure half: which URLs are "this project's issue or pull
- * request" and which are just pages. The repository comparison is here too,
- * because routing `other-org/repo#12` into a surface that queries THIS
- * project's issue 12 would show the wrong thing with full confidence.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { parseForgeLink, sameRepository } from "./session-links";
@@ -16,7 +10,7 @@ describe("parseForgeLink", () => {
   });
 
   test("anything else is just a page", () => {
-    // A list, a comment anchor's PATH suffix, another forge, a non-URL.
+    // A list, a comment anchor's path suffix, another forge, a non-URL.
     expect(parseForgeLink("https://github.com/o/r/issues")).toBeUndefined();
     expect(parseForgeLink("https://github.com/o/r/issues/12/comments")).toBeUndefined();
     expect(parseForgeLink("https://gitlab.com/o/r/issues/12")).toBeUndefined();

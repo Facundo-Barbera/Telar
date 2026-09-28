@@ -116,7 +116,7 @@ mockNavigation();
  */
 
 const { forgetInboxPolicies, readInboxPolicy } = await import("@/features/sessions/inbox-policy");
-const { SessionCockpit } = await import("@/components/session-cockpit");
+const { SessionCockpit } = await import("@/features/sessions");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
 const { installNavigationMarks, markNavigation, navigationTimings, startNavigation } = await import("./perf-marks");
 

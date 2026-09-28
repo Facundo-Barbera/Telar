@@ -1,7 +1,3 @@
-/**
- * The banner's view always opens the Processes tab; a lone process task also opens
- * its row. A lone sub-agent lives on the Agents tab, so nothing opens for it.
- */
 import { countsAsActivity, isBackgroundWork, type Task } from "@telar/engine-client";
 
 type BannerTask = Pick<Task, "id" | "kind" | "backgrounded" | "state" | "ambient">;

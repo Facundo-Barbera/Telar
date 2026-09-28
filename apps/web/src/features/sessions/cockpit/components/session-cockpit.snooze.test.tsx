@@ -1,34 +1,3 @@
-/**
- * #490 — SNOOZING THE CONVERSATION YOU ARE READING CHANGES IT.
- *
- * The owner's report: *"cuando usas snooze, si estás viendo la conversación que
- * estás mandando a snooze, no cambia hasta que te sales de la conversación."*
- *
- * TWO THINGS WERE MISSING AND BOTH ARE ASSERTED HERE.
- *
- *   1. THE SCREEN HAD NO RENDERING FOR "SNOOZED" AT ALL. `isSettled` returns
- *      false for a live snooze on purpose (it is what keeps a woken session out
- *      of the settled shelf), so the settled banner could not speak for it, and
- *      nothing else on the cockpit read `snoozedUntil` except a menu item behind
- *      a closed dropdown. The first test below fails on `main` for that reason:
- *      the record changes and the screen does not.
- *   2. THE MUTATION AWAITED THE ROUND TRIP while the rail's did not. So the two
- *      surfaces moved at different speeds on the same verb. The PATCH is HELD
- *      OPEN below — the banner has to be on screen while the engine has still
- *      said nothing, which is a state a non-optimistic path cannot reach.
- *
- * WITHOUT A RE-MOUNT, A ROUTE CHANGE OR A CLOCK ADVANCE, and each of those is
- * checked rather than assumed: the same `render` call is never made twice, the
- * pathname never moves, no timer is advanced, and the composer's editor node is
- * held by IDENTITY across the press. A banner that only appeared because React
- * rebuilt the tree would be the bug wearing the fix's clothes — that is exactly
- * what "leave the conversation and come back" already did.
- *
- * ONE SESSION ID PER TEST, namespaced to this file: `sessionConnection` is a
- * module singleton shared across the whole suite, and a second opening of an id
- * tails from the cursor it already holds instead of bootstrapping (the argument
- * is written out at length in session-cockpit.solo.test.tsx).
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -45,8 +14,6 @@ GlobalRegistrator.register({ url: "http://localhost/projects/project_1/sessions/
   unobserve() {}
 };
 
-/** FIXED FOR THE WHOLE FILE, and never moved. Every "the screen changed"
- *  below therefore cannot be a clock tick arriving. */
 const pathname = "/projects/project_1/sessions/session_snooze_1";
 /** How many times the router was asked to go somewhere. A snooze that navigated
  *  would satisfy "the screen changed" for the wrong reason. */
@@ -66,7 +33,7 @@ mock.module("next/navigation", () => ({
 
 const { SessionCockpit } = await import("./session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
-const { clearTranscriptCache } = await import("@/lib/transcript-cache");
+const { clearTranscriptCache } = await import("../transcript-cache");
 const { installPageApi } = await import("@/lib/page-api");
 
 installPageApi();
@@ -106,7 +73,7 @@ const turn = (id: string): Turn =>
     resultText: ANSWER,
   }) as unknown as Turn;
 
-/** Every PATCH the screen sent, and the hand that answers it. A gate rather
+/** Every patch the screen sent, and the hand that answers it. A gate rather
  *  than an immediate `Response` is the whole point: "optimistic" is only
  *  observable while the engine has not answered. */
 type Patch = { body: unknown; answer: (session: Session) => void; refuse: () => void };
@@ -191,8 +158,6 @@ async function settle() {
   }
 }
 
-/** RENDERED ONCE PER TEST. Nothing below calls this a second time, which is what
- *  makes "no re-mount" a fact about the test rather than a hope. */
 async function show(id: string) {
   window.history.replaceState(null, "", pathname);
   await act(async () => {
@@ -251,16 +216,11 @@ describe("snoozing the conversation on screen", () => {
     // a banner already on screen would make every check below vacuous.
     expect(screenText()).not.toContain(SNOOZED);
 
-    // HELD BY IDENTITY. If React rebuilds this subtree, the node the screen ends
-    // with is not this one, and "changed in place" was not what happened.
     const editorBefore = composerEditor();
     expect(editorBefore).not.toBeNull();
 
     await snoozeFromTheTitleMenu();
 
-    // THE ENGINE HAS SAID NOTHING. One PATCH is out and still open, so anything
-    // on screen now is the guess — which is the state the old path could not
-    // produce at all.
     expect(patches).toHaveLength(1);
     expect(patches[0]!.body).toMatchObject({ snoozedUntil: expect.any(Number) });
     expect(screenText()).toContain(SNOOZED);
@@ -308,14 +268,6 @@ describe("snoozing the conversation on screen", () => {
   });
 
   test("the banner's own Wake returns it, and that is optimistic too", async () => {
-    // Opened ALREADY ASLEEP, which is the other way to arrive here: a session
-    // snoozed from the rail and then read.
-    //
-    // MEASURED FROM THE WALL CLOCK, NOT FROM `STARTED`. `isSnoozed` compares
-    // the wake time to the screen's own `now`, and the fixture's epoch is years
-    // in the past — a "three hours from STARTED" snooze is one that ran out
-    // before this test was written. The transcript's stamps can be fixed; a
-    // countdown cannot.
     wire("session_snooze_4", { snoozedUntil: Date.now() + 3 * 60 * 60 * 1000, snoozedAt: Date.now() });
     await show("session_snooze_4");
     expect(screenText()).toContain(SNOOZED);
@@ -331,19 +283,6 @@ describe("snoozing the conversation on screen", () => {
   });
 });
 
-/**
- * THE EXPIRED SNOOZE, which is the case that makes this a VIEW rather than a
- * stored flag. Nothing fires when a snooze runs out — the timestamp is simply in
- * the past — so a banner keyed on "is `snoozedUntil` set" would still be on
- * screen. It is keyed on `isSnoozed`, which is a comparison.
- *
- * HONESTLY LABELLED: THIS ONE PASSES ON `main` TOO, vacuously — a screen that
- * draws no snooze at all draws no stale snooze either. It is a GUARD against a
- * later `snoozedUntil !== undefined`, not a reproduction, and it is only worth
- * anything next to its positive control: `session_snooze_4` above mounts a LIVE
- * snooze and requires the banner. The pair is what makes either direction mean
- * something; the four tests above are the ones that fail on `main`.
- */
 describe("a snooze that has run out", () => {
   test("draws nothing, though the timestamps are still on the record", async () => {
     wire("session_snooze_5", { snoozedUntil: STARTED - 1000, snoozedAt: STARTED - 2000 });

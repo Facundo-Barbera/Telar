@@ -41,8 +41,6 @@ describe("which turn a receipt may name", () => {
   });
 
   test("a steered message after the last answer does not become the candidate", () => {
-    // The exact shape that used to strand a session: the newest ENDED turn is
-    // not the newest ANSWER, and only the answer can be marked read.
     expect(newestResultTurn([turn(4), turn(5, "steered"), turn(6, "discarded")])?.sequence).toBe(4);
   });
 
@@ -67,7 +65,7 @@ describe("the gate", () => {
   test("an answer the engine already has a receipt for is not resent", () => {
     expect(receiptToSend({ candidate: turn(5), readSequence: 5, gate: open })).toBeUndefined();
     expect(receiptToSend({ candidate: turn(5), readSequence: 4, gate: open })?.sequence).toBe(5);
-    // A receipt from another device, for a LATER turn, wins over ours.
+    // A receipt from another device, for a later turn, wins over ours.
     expect(receiptToSend({ candidate: turn(5), readSequence: 9, gate: open })).toBeUndefined();
   });
 
@@ -91,18 +89,9 @@ describe("retrying", () => {
   });
 });
 
-/**
- * THE LIFECYCLE, which is where every real defect in this feature has been.
- *
- * `receiptToSend` above is a decision about one render and cannot express any
- * of these: they are all about a REQUEST OUTLIVING the thing it was about — its
- * session, its host, or a later receipt. Driven with deferred promises and a
- * hand-run clock, because "resolve this one AFTER that one" is the whole point
- * and a real timer cannot say it.
- */
 describe("the courier", () => {
   const A = { sessionId: "session_a", hostId: "local" };
-  /** The SAME session id on a different Mac — a different session entirely. */
+  /** The same session id on a different Mac — a different session entirely. */
   const A_REMOTE = { sessionId: "session_a", hostId: "mini" };
   const B = { sessionId: "session_b", hostId: "local" };
 
@@ -183,7 +172,7 @@ describe("the courier", () => {
       h.tick();
       expect(h.sent).toHaveLength(1);
 
-      // The reader opens another session. B's turn 2 is a LOWER sequence than
+      // The reader opens another session. B's turn 2 is a lower sequence than
       // A's 4 — which is exactly what a shared high-water mark would swallow.
       h.courier.update(open(B, turn(2)));
       h.sent[0]!.resolve({ lastReadTurnSequence: 4, readAt: 9 });
@@ -268,7 +257,7 @@ describe("the courier", () => {
       five.resolve({ lastReadTurnSequence: 6, readAt: 60 });
       await h.settle();
 
-      // Both are handed up — the CALLER folds them monotonically, and the
+      // Both are handed up — the caller folds them monotonically, and the
       // engine's own answer already carries the higher mark either way — but
       // nothing is re-sent for a turn that is behind.
       expect(h.read).toHaveLength(2);
