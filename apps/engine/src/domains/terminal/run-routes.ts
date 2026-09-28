@@ -1,8 +1,8 @@
 import { workspacePath } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
 import { ok, sessionRoute, type Route } from "../../platform/http/route";
-import type { RunMount } from "../../run/mount";
-import { RunError } from "../../run/types";
+import type { RunMount } from "./mount";
+import { RunError } from "./types";
 import type { EngineStore } from "../../state";
 import { holdEventStream, type OpenStream } from "../sessions";
 

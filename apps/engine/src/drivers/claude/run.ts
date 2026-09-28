@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "../../domains/browser";
-import { RUN_BRIEFING } from "../../run/briefing";
+import { RUN_BRIEFING } from "../../domains/terminal";
 import { isBackgroundWork, claudeCompactionEnv, type ItemDetail, type TaskSeed } from "@telar/engine-client";
 import { claudeEffortFor, claudeWindowTokensOf, requireCli } from "../../domains/providers";
 import { pluginBriefings } from "../../domains/plugins";

@@ -25,7 +25,7 @@ import { expect, test } from "bun:test";
 import { createClaudeDriver } from "../src/drivers/claude";
 import { BROWSER_BRIEFING } from "../src/domains/browser";
 import { BROWSER_TOOLS } from "../src/domains/browser";
-import { RUN_BRIEFING } from "../src/run/briefing";
+import { RUN_BRIEFING } from "../src/domains/terminal/briefing";
 import { toolInputSchema } from "../src/domains/agent-tools";
 import { TELAR_ORIENTATION, TELAR_SKILL } from "../src/domains/sessions";
 import { parseFrontMatter } from "../src/domains/providers";

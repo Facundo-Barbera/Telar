@@ -47,7 +47,7 @@
  *
  * THE GROUP, NOT THE CHILD. This spawns `bun run test`, which spawns `bun test`:
  * killing the child would leave the grandchild running, which is #807's orphan
- * exactly. The kill goes through `apps/engine/src/run/platform.ts` — the seam
+ * exactly. The kill goes through `apps/engine/src/domains/terminal/platform.ts` — the seam
  * that already carries POSIX group-kill, Windows `taskkill /T /F`, and a
  * three-valued liveness in which `unanswerable` is never a synonym for `gone` —
  * rather than a second copy of it here.
@@ -57,7 +57,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { processGroupFor } from "../apps/engine/src/run/platform.ts";
+import { processGroupFor } from "../apps/engine/src/domains/terminal/platform.ts";
 
 /**
  * HOW LONG A WHOLE RUN GETS. The engine suite takes about three minutes; the
