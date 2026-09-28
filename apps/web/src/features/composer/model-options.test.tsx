@@ -12,7 +12,8 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
-import { hasUltrathink, modelOptionSections, ReasoningControl, toggleUltrathink, type ModelOptionSection } from "./composer-controls";
+import { hasUltrathink, modelOptionSections, toggleUltrathink, type ModelOptionSection } from "./model-options";
+import { ReasoningControl } from "./components/reasoning-control";
 import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
 import type { ModelChoice } from "@/lib/models";
 

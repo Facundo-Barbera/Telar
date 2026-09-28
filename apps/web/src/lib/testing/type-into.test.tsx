@@ -18,8 +18,8 @@
  * route" exist to say which half broke.
  *
  * THIS FILE IS THE CHEAP WAY TO ASK THAT QUESTION, and that is worth knowing
- * because the expensive way is right next door. `components/
- * composer-controls.model-picker.test.tsx` depends on the same import and does
+ * because the expensive way is right next door. `features/composer/
+ * components/agent-control.test.tsx` depends on the same import and does
  * NOT fail without it — it hangs, a core pegged at 96% with no output, measured
  * once at about eight minutes before it was killed. Observed once and
  * deliberately not chased; the cause is unknown. If you want to know what that
