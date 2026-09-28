@@ -64,6 +64,23 @@ describe("flat rail nesting", () => {
     expect(parentKeyOf(row("c", { assignments: [task("later", NOW - 10), task("first", NOW - 900)] }))).toBe("first");
   });
 
+  test("a child created by one session and later tasked by another hangs only under its creator", () => {
+    const sessions = [
+      row("a"),
+      row("b"),
+      row("child", { startedFrom: { sessionId: "a" }, assignments: [task("a", NOW - 900), task("b", NOW - 10)] }),
+    ];
+    expect(shape(sessions)).toEqual([["a", ["child"]], ["b", []]]);
+  });
+
+  test("a parentless session stays under its first tasker when a second one tasks it", () => {
+    const first = row("child", { assignments: [task("a", NOW - 900)] });
+    const second = row("child", { assignments: [task("a", NOW - 900), task("b", NOW - 10)] });
+    expect(shape([row("a"), row("b"), first])).toEqual([["a", ["child"]], ["b", []]]);
+    expect(shape([row("a"), row("b"), second])).toEqual([["a", ["child"]], ["b", []]]);
+    expect(shape([row("b"), second])).toEqual([["b", []], ["child", []]]);
+  });
+
   test("a grandchild sits under the top-level row too", () => {
     const sessions = [
       row("root"),
