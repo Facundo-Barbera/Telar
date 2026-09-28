@@ -31,28 +31,30 @@ import {
   setCustomAnswer,
   type QuestionDraft,
 } from "@/lib/question-drawer";
-import { ComposerQuestionDrawer } from "./composer-question-drawer";
 import { choiceOf, type ModelChoice } from "@/lib/models";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { Spinner } from "@/components/ui/spinner";
-import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { contextNoticeDue } from "@/lib/context-notice";
-import { contextNoticeDismissal, writeContextNoticeDismissed } from "@/lib/context-notice-dismissal";
-import { ComposerMenu } from "./composer-menu";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { ComposerStashMenu } from "./composer-stash-menu";
 import {
   AccessControl,
   AgentControl,
   BackgroundPresence,
+  ComposerEditor,
+  ComposerMenu,
   ComposerOverflowMenu,
+  ComposerQuestionDrawer,
+  ComposerStashMenu,
   ContextPill,
   ControlDivider,
   ReasoningControl,
   availableCommands,
   buildPathIndex,
   compactBlockedReason,
+  contextNoticeDismissal,
   detectComposerTrigger,
+  encodeImagesForStash,
+  filesFromStash,
   hasUltrathink,
   isResumeDraft,
   markComposerActive,
@@ -64,7 +66,9 @@ import {
   registerComposer,
   toggleUltrathink,
   useComposerCommandChoices,
+  writeContextNoticeDismissed,
   type Completion,
+  type ComposerEditorHandle,
   type ComposerKind,
   type ComposerSubmit,
   type ComposerTrigger,
@@ -74,7 +78,6 @@ import { rankNotes, useProjectNotes } from "@/lib/project-notes";
 import { DictationButton, DictationGlow, useComposerDictation } from "@/features/dictation";
 import { appendPrompt, mergeAttachments, splitImages, type StashedImage } from "@/lib/prompt-stash";
 import type { ShelfRow } from "@/lib/prompt-shelf";
-import { encodeImagesForStash, filesFromStash } from "@/lib/stash-images";
 import { usePromptShelf } from "@/lib/use-prompt-shelf";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
@@ -1899,13 +1902,7 @@ export function Composer({
             </InputGroupAddon>
           ) : (
           <InputGroupAddon align="block-end" className="min-h-10 flex-wrap justify-between gap-1 border-t border-border/40 px-2 pt-1 pb-1.5">
-            {/* Not a trigger any more — the card above is. It keeps its own
-                `min-w-0`, which is the reason it was a box rather than the
-                addon's own flex line. */}
             <div className="flex min-w-0 flex-wrap items-center gap-1">
-              {/* Present but inert: attachments are a contract the engine does
-                  not have yet. Disabled with the reason rather than absent, so
-                  the row's shape is the one it will keep. */}
               <AddContextMenu onPick={addFiles} />
               {/**
                * THE MIC (#544). It inserts through `window.telar.dictate`,

@@ -14,27 +14,7 @@ import {
   type QuestionField,
 } from "@/lib/question-drawer";
 
-/**
- * THE QUESTION DRAWER — glued to the composer's top edge.
- *
- * A question used to render as a card pinned at the top of the turn, which is
- * the one place a person is NOT looking while an agent works: the eye is at
- * the live tail, and the hands are at the composer. So the question meets
- * both: a drawer fused onto the composer (same width, rounded top corners,
- * its bottom edge tucked under the box), one question at a time, with the
- * composer's own editor doubling as the free-text answer — see composer.tsx
- * for that half.
- *
- * The submit gesture is the COMPOSER'S send button and Enter, not a button
- * here: the drawer shows and selects, the composer submits. That is what
- * makes answering feel like typing a message rather than filling in a form.
- *
- * A MULTI QUESTION IS THE SAME DRAWER WITH TWO THINGS TAKEN AWAY: the pick no
- * longer auto-advances (a hop 200ms after the first of several picks would
- * carry the human off the question mid-answer), and the round check becomes a
- * checkbox on the LEADING edge — the one mark a person reads as "several are
- * allowed" before they have picked anything at all.
- */
+// Shows and selects; the composer's send button and Enter submit. A multi question never auto-advances.
 export function ComposerQuestionDrawer({
   fields,
   draft,

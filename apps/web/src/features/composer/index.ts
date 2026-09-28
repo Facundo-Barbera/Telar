@@ -11,7 +11,6 @@ export {
   rankPaths,
   rankSkills,
   type Completion,
-  type CompletionGlyph,
   type PathEntry,
 } from "./completions";
 export { DRAFTS_CHANGED_EVENT, listCanvasDrafts, readDraft, writeDraft, type CanvasDraft } from "./draft";
@@ -35,3 +34,9 @@ export { ControlDivider } from "./components/control-primitives";
 export { ReasoningControl } from "./components/reasoning-control";
 export { useComposerCommandChoices } from "./hooks/use-composer-command-choices";
 export { hasUltrathink, modelOptionsOf, toggleUltrathink } from "./model-options";
+export { ComposerEditor, type ComposerEditorHandle } from "./components/composer-editor";
+export { ComposerMenu } from "./components/composer-menu";
+export { ComposerQuestionDrawer } from "./components/composer-question-drawer";
+export { ComposerStashMenu } from "./components/composer-stash-menu";
+export { contextNoticeDismissal, writeContextNoticeDismissed } from "./context-notice-dismissal";
+export { encodeImagesForStash, filesFromStash } from "./stash-images";

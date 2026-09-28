@@ -1,20 +1,7 @@
-/**
- * Turning a picked image into something a stash can hold, and back again.
- *
- * SPLIT FROM `prompt-stash.ts` ONLY BECAUSE OF THE CANVAS. That file is pure so
- * `bun test` can import all of it; this one reaches for `createImageBitmap` and
- * a `<canvas>`, which a test runner has neither of. The split is the test
- * boundary, not a layering opinion.
- *
- * A SCREENSHOT IS THREE TO SIX MEGABYTES AS A DATA URL, and the whole origin
- * gets about five. Storing what was picked is not an option that exists, so the
- * question is only whether to re-encode or to refuse — and refusing every
- * screenshot makes the feature look broken on the most common thing anyone
- * stashes. So: cap the long edge, step the quality down until it fits, and hand
- * back anything that still does not.
- */
+// Kept apart from prompt-stash.ts because it needs createImageBitmap and a canvas, which tests lack.
+// Images are re-encoded under a size budget; whatever still does not fit is handed back, never dropped.
 
-import type { StashedImage } from "./prompt-stash";
+import type { StashedImage } from "@/lib/prompt-stash";
 
 /** Enough to read a screenshot back and know which one it was, which is all a
  *  restored attachment has to do — the model gets the re-encode either way. */

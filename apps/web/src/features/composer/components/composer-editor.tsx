@@ -1,48 +1,11 @@
 "use client";
 
-/**
- * THE BOX YOU TYPE INTO, WHICH CAN ALSO HOLD CHIPS.
- *
- * This replaces the composer's `<textarea>`, and the reason is the only reason
- * that would justify it: a textarea can hold one typeface and no objects. A
- * message that says "fix the failing check in `apps/engine/src/driver.ts`" is
- * mostly prose with two ADDRESSES in it, and an address wants a glyph and a
- * short name rather than forty characters of path spelled out mid-sentence.
- *
- * ══ THE ONE RULE ══
- * THE DRAFT IS A STRING, AND THE CHIPS ARE A DRAWING OF IT. `serialize()` walks
- * this element and returns exactly the text that will be sent; a chip
- * contributes the reference text it stands for, character for character. There
- * is no side table of "attachments" resolved at send time, so there is no way
- * for the box to show one thing and the agent to receive another. Everything
- * below exists to keep that true while a browser edits the DOM underneath us.
- *
- * ══ WHY IT IS IMPERATIVE, AND NOT REACT ══
- * React owns nothing inside this element — it is rendered with no children and
- * filled by `paint()`. That is not a shortcut, it is the requirement: a
- * `contentEditable` is mutated by the browser on every keystroke, and a React
- * subtree that is edited from underneath reconciles against a DOM it no longer
- * describes. Two consequences worth stating rather than discovering:
- *
- *   - TYPING DOES NOT REPAINT. `onInput` reads the DOM and reports the string;
- *     it does not write the DOM back. That is what keeps the caret where the
- *     user put it and the browser's own undo stack intact.
- *   - A REPAINT IS ALWAYS A GESTURE — accepting a completion, dropping a row,
- *     pasting, or the parent replacing the whole draft. Those are the moments a
- *     chip can appear, and the only moments the caret is placed by us.
- *
- * ══ WHERE THIS DEPARTS FROM t3 code ══
- * The donor builds the same thing on Lexical, with a decorator node per chip
- * and six plugins to teach Lexical's selection model how to step over one. We
- * do not take that dependency: a chip here is an inline `contenteditable=false`
- * span, which Chromium — the only engine this cockpit runs in, being Electron
- * and Chrome — already treats as a single character for arrow keys, selection
- * and backspace. What is left is the offset arithmetic below, which Lexical
- * would have needed anyway to answer "what is the caret's index in the string".
- */
+// The draft is a string and chips are a drawing of it: serialize() returns exactly what will be sent.
+// React owns nothing inside the editable; paint() fills it, and typing never repaints, so the caret and undo survive.
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle, replaceTextRange, segmentDraft } from "@/features/composer";
+import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle } from "../chip";
+import { replaceTextRange, segmentDraft } from "../tokens";
 import { insertReference, type TelarReference } from "@/lib/drag-reference";
 import { chipGlyphFor, glyphElement } from "@/lib/glyph-paths";
 import { cn } from "@/lib/utils";

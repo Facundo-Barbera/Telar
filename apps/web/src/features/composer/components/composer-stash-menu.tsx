@@ -1,37 +1,7 @@
 "use client";
 
-/**
- * THE LIST OF PROMPTS WAITING TO BE SENT — yours, and the ones an agent wrote.
- *
- * The same object as `composer-menu.tsx` in every respect that the eye can see —
- * same panel, same place above the box, same row geometry — because they are the
- * same gesture with different contents, and two lists that open in one slot and
- * do not match read as a bug in whichever one you saw second.
- *
- * ── TWO BANDS, AND THAT IS THE WHOLE POINT (#87) ────────────────────────────
- * A prompt YOU set aside is your own sentence handed back to you. A prompt an
- * AGENT prepared is a PROPOSAL you have not read yet, and pressing it sends it
- * as though you had written it. Those carry different authority, and a single
- * undifferentiated list quietly erases the difference — so the agent's band sits
- * first, under its own heading, with its own glyph and its own tint, and it says
- * whose it is in words rather than only in colour. A person picking the top row
- * by muscle memory should not be able to send something they never read without
- * the list having told them so.
- *
- * THE DISTINCTION IS NOT CARRIED BY COLOUR ALONE — a heading, a glyph and the
- * agent's own one-line reason all say it, which is what keeps it legible in
- * every Look and to anyone who cannot tell the two tints apart.
- *
- * KEYBOARD ONLY, AS FAR AS THIS COMPONENT IS CONCERNED. Arrows, Enter and the
- * delete chord are the composer's, for the reason its sibling gives: they are
- * typed into the composer. `onMouseDown` is prevented on every row so a click
- * never blurs the editor, which would close the menu before the pick landed.
- *
- * THUMBNAILS ARE THE DATA URL ITSELF. Everywhere else in this app an image
- * preview is an object URL that has to be revoked or it holds the whole file;
- * here the string IS the source, already in memory, and there is nothing to
- * release.
- */
+// Agent-written drafts come first under their own heading, glyph and tint: pressing one sends words you have not read.
+// Keys are the composer's; every row prevents mousedown so a click never blurs the editor.
 
 import { FileTextIcon, SparklesIcon, XIcon } from "lucide-react";
 import type { ShelfRow } from "@/lib/prompt-shelf";
