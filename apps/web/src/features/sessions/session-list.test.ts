@@ -6,7 +6,6 @@
  * are currently LOOKING AT cannot disappear out from under you when it drops
  * into one.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   activeSessionFromPathname,

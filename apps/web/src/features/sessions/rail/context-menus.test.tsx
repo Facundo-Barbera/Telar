@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { click, flush, installTestDom, mount, press } from "@/test/dom";

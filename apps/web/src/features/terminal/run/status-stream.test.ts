@@ -6,7 +6,6 @@
  * to be shaped exactly like one the engine sent — the same list, the same
  * ordering — or the pill would drift from what a second window shows.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { applyRunStatusEvent } from "./status-stream";
 import type { RunStatusAnswer, RunStatusEvent, RunView } from "./types";

@@ -25,7 +25,6 @@
  * deliberately not chased; the cause is unknown. If you want to know what that
  * preload line does, run THIS file, not that one.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, useState } from "react";

@@ -12,7 +12,7 @@ test("SQLite commits projections, events and a receipt together; a lost response
   const action = () => store.submitTurn("session_one", { runId: "run_one", input: "hello" });
   const first = store.executeCommand("submit:session_one:run_one", action, "command_one");
   const cursor = store.eventCursor("session_one");
-  const again = store.executeCommand("submit:session_one:run_one", () => { throw new Error("must not repeat"); }, "command_one");
+  const again = store.executeCommand<typeof first>("submit:session_one:run_one", () => { throw new Error("must not repeat"); }, "command_one");
   expect(again).toEqual(first);
   expect(store.eventCursor("session_one")).toBe(cursor);
   expect(store.turns("session_one")).toHaveLength(1);

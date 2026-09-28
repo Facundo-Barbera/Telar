@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { IDENTITY_COLORS, TELAR_ICONS } from "@telar/engine-client";

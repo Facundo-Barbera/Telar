@@ -5,7 +5,6 @@
  * have honoured it: after a second submission, after the subject changed under
  * the same mounted component, out of order.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { createRequestGate } from "@/platform/request-gate";
 

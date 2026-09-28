@@ -5,7 +5,6 @@
  * zod's `toJSONSchema` writes, `.meta()` keys included — covering every kind the
  * generated pane draws and the two it deliberately leaves to a bespoke block.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { PluginStatus } from "@telar/engine-client";
 import { settingsRowId } from "@/features/settings";

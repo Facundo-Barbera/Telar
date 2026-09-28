@@ -9,7 +9,6 @@
  * THE ASSERTION IS ON THE WRITE the engine receives, not on the cards: "In use"
  * on the Inherit card could be drawn over a stored pin.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { desktopMetrics, readProcessMetrics, type ProcessMetricsSummary } from "@/platform/desktop/desktop-metrics";
@@ -32,7 +31,7 @@ test("inside the shell it asks the bridge and never touches the network", async 
   globalThis.fetch = (async () => {
     fetched += 1;
     return new Response("{}");
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   (window as unknown as { telarDesktop?: unknown }).telarDesktop = { metrics: { read: async () => sample } };
   expect(desktopMetrics()).toBeDefined();
   expect(await readProcessMetrics()).toEqual(sample);
@@ -54,11 +53,11 @@ test("a refusal carries the shell's own sentence, not its status code", async ()
     new Response(JSON.stringify({ error: "This cockpit is not running inside the Telar desktop app, so it has no processes to report." }), {
       status: 503,
       headers: { "content-type": "application/json" },
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
   await expect(readProcessMetrics()).rejects.toThrow("not running inside the Telar desktop app");
 });
 
 test("a refusal with no body still throws rather than resolving to nothing", async () => {
-  globalThis.fetch = (async () => new Response("<html>gateway</html>", { status: 502 })) as typeof fetch;
+  globalThis.fetch = (async () => new Response("<html>gateway</html>", { status: 502 })) as unknown as typeof fetch;
   await expect(readProcessMetrics()).rejects.toThrow("did not answer");
 });

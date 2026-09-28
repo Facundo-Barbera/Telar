@@ -15,7 +15,8 @@ WorkspaceListing,
 WorkspaceWriteResult
 } from "@telar/engine-client";
 import type { ExecResult, KernelState, NotebookRead, TableWindow, VarRow } from "@/features/plugins";
-import { request, type Fetcher } from "./transport";
+import type { Fetcher } from "./host-client";
+import { request } from "./transport";
 
 /** The cockpit's own workspace calls: the ones no package domain client covers yet. */
 export function workspaceCalls(fetcher: Fetcher) {

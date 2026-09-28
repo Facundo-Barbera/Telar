@@ -38,6 +38,7 @@ async function ready() {
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });
   await client.updateProject("project_one", {
+    // @ts-expect-error deprecated alias the engine still accepts
     latex: { enabled: true, mainFile: "paper.tex", toolchain: { kind: "texlive", path: "/bin/echo" } },
   });
   await client.createSession({ id: "session_one", projectId: "project_one" });
@@ -117,6 +118,7 @@ test("a globally disabled project keeps its OWN switch answerable", async () => 
   // that decision must be recorded rather than swallowed.
   const { daemon, client, store } = await ready();
   await machine(daemon, { latex: { enabled: false } });
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { latex: null });
   expect(pluginBlock(store.getProject("project_one"), "latex")).toBeUndefined();
 });
@@ -125,6 +127,7 @@ test("the MACHINE'S TeX install is a real fallback, not an inert stored field", 
   // A machine setting that only persisted would be a lie in the settings pane.
   const { daemon, client, store } = await ready();
   // A project with LaTeX on but NO toolchain of its own.
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
   expect(store.resolveLatex(store.getSession("session_one"))).toBeUndefined();
 
@@ -135,6 +138,7 @@ test("the MACHINE'S TeX install is a real fallback, not an inert stored field", 
 test("a project's OWN toolchain still wins — the more specific choice", async () => {
   const { daemon, client, store } = await ready();
   await machine(daemon, { latex: { enabled: true, settings: { toolchain: { kind: "tectonic", path: "/bin/ls" } } } });
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { latex: { enabled: true, toolchain: { kind: "texlive", path: "/bin/echo" } } });
   expect(store.resolveLatex(store.getSession("session_one"))).toMatchObject({ binPath: "/bin/echo" });
 });

@@ -21,11 +21,11 @@ type Call = { url: string; headers: Record<string, string> };
 
 async function engine(deepgram?: (call: Call) => Response): Promise<{ client: EngineClient; calls: Call[] }> {
   const calls: Call[] = [];
-  const dictationFetch: typeof fetch = async (input, init) => {
+  const dictationFetch = (async (input, init) => {
     calls.push({ url: String(input), headers: (init?.headers ?? {}) as Record<string, string> });
     if (deepgram) return deepgram(calls[calls.length - 1]!);
     return Response.json({ access_token: "jwt-from-deepgram", expires_in: 300 });
-  };
+  }) as typeof fetch;
   const daemon = await startEngine({ models: stubModels, engineRoot: root(), dictationFetch });
   daemons.push(daemon);
   return { client: new EngineClient(daemon.discovery), calls };

@@ -17,7 +17,6 @@
  * survives a real `app.getAppMetrics()` is `process-metrics.electron-test.js`'s.
  * This file is only the last hop.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

@@ -12,7 +12,6 @@
  * to the choice branch that swept booleans up with it would silently break a
  * driver nobody was editing.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { EngineRequest, UserInputField } from "@telar/engine-client";

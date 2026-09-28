@@ -1,10 +1,10 @@
-// @ts-expect-error Bun test types are provided by the test runner.
 import { expect, test } from "bun:test";
 import { desktopBrowserBridge } from "./desktop-browser-bridge";
+import type { DesktopBrowserBridge } from "./types";
 
 test("remote host routes cannot use this computer's native browser", () => {
   const original = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const bridge = {};
+  const bridge = {} as DesktopBrowserBridge;
   const location = { pathname: "/projects/project_local/sessions/session_local" };
   Object.defineProperty(globalThis, "window", { configurable: true, value: { location, telarDesktop: { browser: bridge } } });
   try {

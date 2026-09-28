@@ -2,7 +2,6 @@
  * The box is a string written through the same helpers the composer uses; the
  * spacing `insertReference` adds is what a naive span swallows.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { insertReference } from "@/features/composer/drag-reference";
 import { replaceTextRange } from "@/features/composer";

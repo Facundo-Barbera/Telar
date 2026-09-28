@@ -90,6 +90,7 @@ test("a daemon with no embedded worker has no kernels, as before", async () => {
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });
   await client.updateProject("project_one", {
+    // @ts-expect-error deprecated alias the engine still accepts
     dataScience: { enabled: true, python: { source: "chosen", path: "/bin/ls", resolvedAt: Date.now() } },
   });
   await client.createSession({ id: "session_one", projectId: "project_one" });
@@ -107,6 +108,7 @@ test("a daemon with an embedded worker builds the host at startup, through the p
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });
   await client.updateProject("project_one", {
+    // @ts-expect-error deprecated alias the engine still accepts
     dataScience: { enabled: true, python: { source: "chosen", path: "/bin/ls", resolvedAt: Date.now() } },
   });
   await client.createSession({ id: "session_one", projectId: "project_one" });

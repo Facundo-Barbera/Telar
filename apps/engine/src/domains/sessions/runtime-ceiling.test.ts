@@ -222,6 +222,6 @@ test("narrowerRuntimeMode is total, symmetric, and fails towards asking", () => 
   expect(narrowerRuntimeMode("auto", "auto-accept-edits")).toBe("auto-accept-edits");
   // A MODE FROM A NEWER ENGINE IS TREATED AS THE NARROWEST. An engine reading a
   // value it has never heard of must fail towards asking, never towards acting.
-  expect(narrowerRuntimeMode("full-access", "something-newer" as RuntimeMode)).toBe("something-newer");
-  expect(narrowerRuntimeMode("something-newer" as RuntimeMode, "approval-required")).toBe("something-newer");
+  expect(narrowerRuntimeMode("full-access", "something-newer" as RuntimeMode)).toBe("something-newer" as RuntimeMode);
+  expect(narrowerRuntimeMode("something-newer" as RuntimeMode, "approval-required")).toBe("something-newer" as RuntimeMode);
 });

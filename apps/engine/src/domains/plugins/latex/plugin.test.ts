@@ -60,6 +60,7 @@ async function ready(options: { enable?: boolean } = {}) {
     // disk before it will hand out a capability. `/bin/echo` is never executed
     // by any case here — every one stops at the gate or at a status read.
     await client.updateProject("project_one", {
+      // @ts-expect-error deprecated alias the engine still accepts
       latex: { enabled: true, mainFile: "paper.tex", toolchain: { kind: "texlive", path: "/bin/echo" } },
     });
   }

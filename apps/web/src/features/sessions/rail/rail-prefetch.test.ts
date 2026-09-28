@@ -8,7 +8,6 @@
  * instance, because a singleton is what it is: the rail draws `SessionRow` from
  * five places and the cap has to be counted once across all of them.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { beforeEach, describe, expect, test } from "bun:test";
 import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { LOCAL_HOST } from "../snapshot-cache";

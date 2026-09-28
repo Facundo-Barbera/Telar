@@ -60,10 +60,10 @@ test("a report is stored whole and handed to the model as one line naming the fe
   // AND THE NOTICE IS THE NOTIFICATION'S BODY — one string, minted once (#550).
   // The prompt is that string bare: the frame that used to precede it was prose
   // standing in for a role, and the role is now on the channel itself.
-  expect(turn.notification!.body).toBe(turn.agentNotice);
+  expect(turn.notification!.body).toBe(turn.agentNotice!);
   expect(turn.notification!.kind).toBe("peer_message");
   const prompt = framedTurnInput(turn);
-  expect(prompt).toBe(turn.agentNotice);
+  expect(prompt).toBe(turn.agentNotice!);
   // The measurement that matters: the 6 KB never reaches the provider.
   expect(prompt).not.toContain("Every configuration is persisted");
   expect(prompt.length).toBeLessThan(REPORT.length / 4);
@@ -295,7 +295,7 @@ test("the notice is what steers a busy recipient, so timing cannot change the co
   // The BODY still rides `text` — the transcript row expands to it — while the
   // notice is what the driver composes the provider's words from.
   expect(delivery!.text).toBe(REPORT);
-  expect(delivery!.notice).toBe(turn.agentNotice);
+  expect(delivery!.notice).toBe(turn.agentNotice!);
   // THE NOTIFICATION RIDES THE PROMOTION TOO (#550), so the driver can put a
   // mid-turn arrival on the same non-user channel an idle one gets.
   expect(delivery!.notification).toEqual(turn.notification!);

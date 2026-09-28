@@ -45,7 +45,6 @@
  * to replace it with. A characterisation test that does not say it is one is
  * how a bug becomes a requirement.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

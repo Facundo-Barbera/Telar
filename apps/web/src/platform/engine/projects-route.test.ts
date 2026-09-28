@@ -3,7 +3,6 @@
  * value here (turns a feature off, hands back to the Mac's default), so tests
  * assert the stored record. Runs a real daemon on a temp home.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";

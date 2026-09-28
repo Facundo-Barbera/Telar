@@ -5,7 +5,6 @@
  * argument the lane knew how to read, so both halves fell back to the tool's
  * name — twice on one line, where the first line of the cell's code belonged.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UNKNOWN_PATH } from "@telar/engine-client";

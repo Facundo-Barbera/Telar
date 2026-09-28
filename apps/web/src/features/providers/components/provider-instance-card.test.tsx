@@ -18,7 +18,6 @@
  * suites in this folder do it. The one claim the DOM cannot carry — what a
  * TYPED number does — has its own group at the bottom, and says why there.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

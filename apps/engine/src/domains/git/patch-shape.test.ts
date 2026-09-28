@@ -22,7 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sessionFilePatchAsync } from ".";
-import { createAsyncGitRunner, createGitRunner } from "../../platform/git/runner";
+import { createAsyncGitRunner, createGitRunner, type AsyncGitRunner, type GitRunner } from "../../platform/git/runner";
 
 const toAsync = (git: GitRunner): AsyncGitRunner => async (cwd, args, options) => git(cwd, args, options);
 

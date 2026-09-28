@@ -6,7 +6,6 @@
  * strength of the answer. Everything else here is arithmetic; that one is the
  * difference between setting a paragraph aside and losing it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   MAX_ENTRY_CHARS,

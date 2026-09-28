@@ -3,7 +3,6 @@
  * waiting; the tint says selected. Rendered, because the stripe was a class
  * string on the row's wrapper and only the markup shows whether it came back.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

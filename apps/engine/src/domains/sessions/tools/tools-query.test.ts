@@ -39,7 +39,7 @@ describe("the six query tools", () => {
     const hits = found.json!.sessions as Array<{ id: string; why: string }>;
     expect(hits.map((hit) => hit.id)).toContain(session.id);
     expect(hits.find((hit) => hit.id === session.id)!.why).toContain("appearance");
-    expect(["fts5", "like"]).toContain(found.json!.index);
+    expect(["fts5", "like"]).toContain(found.json!.index as string);
 
     const outline = await call(tools, "sessions_outline", { sessionId: session.id });
     const turns = outline.json!.turns as Array<{ runId: string; input: string; answer: string; items: number; answerChars: number }>;

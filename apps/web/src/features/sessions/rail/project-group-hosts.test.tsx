@@ -10,7 +10,6 @@
  * written, so the two hosts here are fixtures. What a paired Mac would add is
  * the round trip, not the rendering.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ProjectGroupSection } from "./project-group";

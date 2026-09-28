@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { worktreeReady } from "../../../../test/worktree-ready";
-import { STALLED_AFTER_MS } from "@telar/engine-client";
+import { STALLED_AFTER_MS, workspacePath } from "@telar/engine-client";
 import { EngineStore } from "../../../state";
 import { sessionDiffAsync } from "../../git";
 import { GIT_TIMEOUT_STATUS, type GitRunner } from "../../../platform/git/runner";
@@ -151,7 +151,7 @@ describe("driving a session", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
     await worktreeReady(store, id);
-    fs.writeFileSync(path.join(store.getSession(id).workspace.path, "new-file.txt"), "written by the session\n");
+    fs.writeFileSync(path.join(workspacePath(store.getSession(id).workspace)!, "new-file.txt"), "written by the session\n");
 
     const diff = await call(tools, "sessions_diff", { sessionId: id });
     expect((diff.json!.files as Array<{ path: string }>).map((file) => file.path)).toContain("new-file.txt");
@@ -169,7 +169,7 @@ describe("driving a session", () => {
         ? { status: 0, stdout: "true\n", stderr: "" }
         : { status: GIT_TIMEOUT_STATUS, stdout: "", stderr: "git did not finish within 30000ms and was killed", timedOut: true };
     const tools = wall(store, undefined, async (sessionId) =>
-      await sessionDiffAsync(async (cwd, args) => killed(cwd, args), { cwd: store.getSession(sessionId).workspace.path, baseRef: "base000" }),
+      await sessionDiffAsync(async (cwd, args) => killed(cwd, args), { cwd: workspacePath(store.getSession(sessionId).workspace)!, baseRef: "base000" }),
     );
 
     const diff = await call(tools, "sessions_diff", { sessionId: id });

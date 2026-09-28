@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { PluginStatus } from "@telar/engine-client";
 import { machinePanePlugins } from "./plugins-page";

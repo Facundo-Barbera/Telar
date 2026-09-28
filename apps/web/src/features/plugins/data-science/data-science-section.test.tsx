@@ -11,7 +11,6 @@
  * switch, and the source could go on calling the right helper while the value
  * it produced never reached the control.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PROJECT_PLUGINS_VERSION, type Project } from "@telar/engine-client";

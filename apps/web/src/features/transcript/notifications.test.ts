@@ -6,7 +6,6 @@
  * was a peer's `result` classified as a wake and titled "Session finished a
  * turn" beside the completion that actually was one.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { notificationHead, notificationVerbs, stripNotificationKind, NOTIFICATION_HEAD_CHARS } from "./notifications";
 

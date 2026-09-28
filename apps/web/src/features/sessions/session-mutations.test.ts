@@ -18,7 +18,6 @@
  * guess must land BEFORE the request goes out, or "optimistic" is only a word
  * for "the same wait with a nicer name".
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { LiveSessionRow } from "@telar/engine-client";
 import type { SidebarSession } from "./session-list";

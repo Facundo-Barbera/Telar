@@ -5,7 +5,6 @@
  * injected so none of them wait in real time, and each one is stated as the
  * failure it prevents rather than as the mechanism it exercises.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { SaveCoordinator, type SaveOutcome } from "./save-coordinator";
 

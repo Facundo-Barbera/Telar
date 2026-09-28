@@ -19,7 +19,6 @@
  * test and they do not need a canvas — the same shape `lib/terminal-session.test.ts`
  * uses, for the same reason.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { byteDroppedNotice, byteFeed } from "./terminal-feed";

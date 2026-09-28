@@ -5,7 +5,6 @@
  * of the rule is that it survives a provider shipping a new family without
  * anybody editing this repository.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { ProviderModel } from "@telar/engine-client";
 import { defaultModelId, modelVersion, splitGenerations } from "./model-generations";

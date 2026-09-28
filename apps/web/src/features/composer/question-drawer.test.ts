@@ -3,7 +3,6 @@
  * that a partial form can never build a wire payload — and that a MULTI field
  * answers in the shape it promised, whatever the human did to fill it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { EngineRequest } from "@telar/engine-client";
 import {

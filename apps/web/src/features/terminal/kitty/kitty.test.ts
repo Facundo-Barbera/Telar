@@ -15,7 +15,6 @@
  * fastfetch's `kitty` logo sends one — `a=T,f=100` with `c`/`r` — and chunked
  * the way kitty's docs chunk it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { deflateSync } from "node:zlib";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";

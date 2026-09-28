@@ -2,7 +2,6 @@
  * WHAT A SCHEDULE ROW SAYS ABOUT ITSELF — issue #543. Moved with the helpers
  * when the Settings pane left for the session's masthead.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { Schedule } from "@telar/engine-client";
 import { inZone, lastRunSentence, ruleLabel } from "./schedules";

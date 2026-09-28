@@ -45,6 +45,7 @@ async function ready() {
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
   await client.createSession({ id: "session_one", projectId: "project_one" });
   return { daemon, client, store: daemon.store };
@@ -97,6 +98,7 @@ test("…and a PROJECT's own choice still wins over the Mac's", async () => {
   const { daemon, client, store } = await ready();
   pretendInstalled(daemon);
   await machine(daemon, { latex: { enabled: true, settings: { toolchain: { kind: "texlive", path: "/bin/echo" } } } });
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { latex: { enabled: true, toolchain: { kind: "tectonic", path: "/bin/ls" } } });
 
   expect(store.resolveLatex(store.getSession("session_one"))).toMatchObject({ kind: "tectonic", binPath: "/bin/ls" });
@@ -164,6 +166,7 @@ test("a project's own engine beats the Mac's default", async () => {
   const { daemon, client, store } = await ready();
   await machine(daemon, { latex: { enabled: true, settings: { engine: "lualatex" } } });
   await client.updateProject("project_one", {
+    // @ts-expect-error deprecated alias the engine still accepts
     latex: { enabled: true, toolchain: { kind: "texlive", path: "/bin/echo", engine: "xelatex" } },
   });
 
@@ -186,6 +189,7 @@ test("AUTO-INSTALL IS OFF UNLESS ASKED FOR, and reaches the resolved compile whe
 
 test("the MAC'S DEFAULT PYTHON runs a project that chose none", async () => {
   const { daemon, client, store } = await ready();
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { dataScience: { enabled: true } });
   expect(store.resolveDataScience(store.getSession("session_one"))).toBeUndefined();
 
@@ -197,11 +201,13 @@ test("a project's own interpreter still wins, and a Mac default that is gone res
   const { daemon, client, store } = await ready();
   await machine(daemon, { "data-science": { enabled: true, settings: { python: "/bin/echo" } } });
   await client.updateProject("project_one", {
+    // @ts-expect-error deprecated alias the engine still accepts
     dataScience: { enabled: true, python: { source: "chosen", path: "/bin/ls", resolvedAt: Date.now() } },
   });
   expect(store.resolveDataScience(store.getSession("session_one"))).toEqual({ pythonPath: "/bin/ls" });
 
   await machine(daemon, { "data-science": { enabled: true, settings: { python: "/nowhere/python3" } } });
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { dataScience: { enabled: true } });
   expect(store.resolveDataScience(store.getSession("session_one"))).toBeUndefined();
 });
@@ -306,6 +312,7 @@ test("THE STORE PASSES THIS MAC'S DEFAULTS INTO ENVIRONMENT CREATION", async () 
    * both worth distrusting.
    */
   const { daemon, client } = await ready();
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { dataScience: { enabled: true } });
   fs.writeFileSync(
     daemon.store.paths.machinePlugins,
@@ -339,6 +346,7 @@ test("a machine default is a DEFAULT, and a project turning the plugin off still
   const { daemon, client, store } = await ready();
   pretendInstalled(daemon);
   await machine(daemon, { latex: { enabled: true, settings: { toolchain: { kind: "managed" } } } });
+  // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { latex: null });
 
   expect(store.resolveLatex(store.getSession("session_one"))).toBeUndefined();

@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { confirmProfileDeletion, describeProfileUse, profileNameProblem, whyUndeletable, type BrowserProfile } from "../desktop-browser-profiles";

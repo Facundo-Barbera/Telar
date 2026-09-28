@@ -7,7 +7,6 @@
  * DEFAULT without ever touching a width the person chose — including a narrow
  * one, which is the case a naive "make it at least 720" would quietly undo.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   defaultRightPanelWidth,

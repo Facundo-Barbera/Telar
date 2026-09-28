@@ -91,10 +91,10 @@ async function claudeTurn(plugins: Record<string, unknown>) {
   const driver = createClaudeDriver(
     async () => ({
       tool: (name: string) => ({ name }),
-      createSdkMcpServer: (input: { tools: { name: string }[] }) => ({ tools: input.tools }),
-      async *query(input: { options: { mcpServers?: Record<string, never>; systemPrompt?: { append?: string } } }) {
+      createSdkMcpServer: (input: { tools: unknown[] }) => ({ tools: input.tools }),
+      async *query(input: { options: { mcpServers?: Record<string, unknown>; systemPrompt?: { append?: string } } }) {
         captured = {
-          ...(input.options.mcpServers ? { servers: input.options.mcpServers } : {}),
+          ...(input.options.mcpServers ? { servers: input.options.mcpServers as typeof captured.servers } : {}),
           ...(input.options.systemPrompt?.append ? { append: input.options.systemPrompt.append } : {}),
         };
         yield { type: "result", subtype: "success" };

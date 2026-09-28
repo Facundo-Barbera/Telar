@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,7 +33,7 @@ function setup() {
 const phone = { id: "phone", name: "Phone", role: "full" };
 async function call(method: Route["method"], pathname: string, body: unknown = {}, devices = [phone]) {
   const { route, params } = matchRoute(pushRoutes({ client: () => ({}) as EngineClient, pairedDevices: () => devices }), method, pathname)!;
-  return route.handle({ body: body as Record<string, unknown>, params, query: new URLSearchParams() });
+  return (await route.handle({ body: body as Record<string, unknown>, params, query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }))!;
 }
 
 const credential = { handle: "h".repeat(43), keyId: "k".repeat(22), sendKey: crypto.randomBytes(32).toString("base64url") };

@@ -147,7 +147,7 @@ describe("maybeRetitleSession", () => {
     let title = overrides.title ?? "fix the thing";
     const store: RetitleStore = {
       getTextGenPolicy: () => overrides.policy ?? { titles: true, renameBranches: true, driver: "claude", model: "haiku" },
-      getSession: () => ({ title, state: "active", workspace: { path: "/tmp" } }),
+      getSession: () => ({ title, state: "active", workspace: { mode: "local", path: "/tmp" } }),
       resolveProviderInstance: () => ({ enabled: true, env: [{ name: "A", value: "b" }] }),
       updateSession: (_id, patch) => {
         calls.updates.push(patch);

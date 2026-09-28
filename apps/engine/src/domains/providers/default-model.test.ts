@@ -51,7 +51,7 @@ const model = (id: string, isDefault = false): ProviderModel => ({
 /** The CLI's own answer, put through the manifest. The bundled one names
  *  Fable 5.1 as default whatever the CLI says, as T3 Code's does. */
 function engineWith(models: ProviderModel[], driver: "claude" | "codex" = "claude", manifest: ModelManifest = BUNDLED_MANIFEST) {
-  const catalogue = async (): Promise<ModelCatalogue> => ({ driver, instanceId: driver, readAt: 100, models });
+  const catalogue = async (): Promise<ModelCatalogue> => ({ driver, instanceId: driver, source: "provider", readAt: 100, models });
   return new EngineStore(root(), () => 100, { models: catalogue, manifest });
 }
 
@@ -174,6 +174,7 @@ async function freshDaemon(probe: () => Promise<ModelCatalogue>, engineRoot = ro
 const claudeList = async (): Promise<ModelCatalogue> => ({
   driver: "claude",
   instanceId: "claude",
+  source: "provider",
   readAt: 100,
   models: [model("claude-opus-5", true), model("claude-sonnet-5")],
 });
@@ -309,7 +310,7 @@ test("a list that READS but publishes no long row terminates the turn — empty"
    * manifest lists its own models beside whatever the CLI does.)
    */
   for (const models of [[] as ProviderModel[]]) {
-    const f = await freshDaemon(async () => ({ driver: "claude", instanceId: "claude", readAt: 100, models }));
+    const f = await freshDaemon(async () => ({ driver: "claude", instanceId: "claude", source: "provider", readAt: 100, models }));
     await f.client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
     await f.client.registerWorker("worker_one");
     await f.client.createSession({ id: "session_one", projectId: "project_one", driver: "claude" });

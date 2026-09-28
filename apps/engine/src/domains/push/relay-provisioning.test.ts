@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,7 +32,7 @@ const phone = { id: "phone", name: "Facundo's iPhone", role: "full" };
 const workerDeps = { client: () => ({}) as EngineClient, fullDevices: () => [phone.id] };
 async function call(method: Route["method"], pathname: string, devices = [phone]) {
   const { route, params } = matchRoute(pushRoutes({ client: () => ({}) as EngineClient, pairedDevices: () => devices }), method, pathname)!;
-  return route.handle({ body: {}, params, query: new URLSearchParams() }) as Promise<{ status: number; body: Record<string, unknown> }>;
+  return route.handle({ body: {}, params, query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }) as Promise<{ status: number; body: Record<string, unknown> }>;
 }
 async function relayStatus<T>(devices = [phone]): Promise<T> {
   return (await call("GET", "/v2/push/relay", devices)).body as T;

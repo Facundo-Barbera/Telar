@@ -16,7 +16,7 @@ import { notesRoutes, notesSocketDoor, ProjectNotesError } from "./domains/notes
 import { createEnginePlugins, externalPluginsDir, PluginInputError, pluginRoutes, pluginScopedRoutes, pluginSessionRoutes } from "./domains/plugins";
 import { PreparedPromptsError, promptsRoutes } from "./domains/prompts";
 import { projectCheckoutRoutes, projectRoutes } from "./domains/projects";
-import { maybeRetitleSession, providersRoutes, sessionProviderRoutes, type CliUpdateRun, type ProviderSkillsOptions, type VersionProbe } from "./domains/providers";
+import { maybeRetitleSession, providersRoutes, readModelCatalogue, sessionProviderRoutes, type CliUpdateRun, type ProviderSkillsOptions, type VersionProbe } from "./domains/providers";
 import { createPushService } from "./domains/push";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
 import { schedulesRoutes } from "./domains/schedules";
@@ -77,7 +77,7 @@ export type EngineDaemonOptions = {
   git?: GitRunner;
   /** Where the `telar` skill is installed. Absent means nowhere: a test must not write into the developer's home. */
   skillRoots?: readonly string[];
-  models?: ConstructorParameters<typeof EngineStore>[2] extends { models?: infer M } ? M : never;
+  models?: typeof readModelCatalogue;
   volumes?: VolumeDeps;
   /** The environment a provider would inherit; tests only. */
   ambientEnv?: Record<string, string | undefined>;

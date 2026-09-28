@@ -14,7 +14,6 @@
  * as slowly and half as clearly. The render tests below check the PRESENTATION:
  * that each fact reaches the row, and that the control on it says the right verb.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Subscription } from "@telar/engine-client";

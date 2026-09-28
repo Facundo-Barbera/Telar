@@ -13,7 +13,6 @@
  * MOUNTED, NOT SERVER-RENDERED: the eyedropper is a capability asked for after
  * mount, and typing is the whole subject.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, useEffect, useState } from "react";

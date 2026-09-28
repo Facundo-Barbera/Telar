@@ -103,15 +103,15 @@ test("an edit reaches the next catalogue with no refresh and no second CLI spawn
   // time. If this ever needs a `force` to show up, the overlay has been baked
   // into the cache and hiding a row now costs a subprocess.
   let spawns = 0;
-  const catalogue = async (driver: "claude" | "codex", now: () => number): Promise<ModelCatalogue> => {
+  const catalogue = async (driver: ModelCatalogue["driver"], now: () => number): Promise<ModelCatalogue> => {
     spawns += 1;
     return {
       driver,
       source: "provider",
       readAt: now(),
       models: [
-        { id: "sonnet", label: "Sonnet", isDefault: true, hidden: false, hiddenByUser: false, efforts: [], fastMode: false, source: "provider" },
-        { id: "opus[1m]", label: "Opus", isDefault: false, hidden: false, hiddenByUser: false, efforts: [], fastMode: false, source: "provider" },
+        { id: "sonnet", label: "Sonnet", isDefault: true, hidden: false, hiddenByUser: false, legacy: false, efforts: [], fastMode: false, source: "provider" },
+        { id: "opus[1m]", label: "Opus", isDefault: false, hidden: false, hiddenByUser: false, legacy: false, efforts: [], fastMode: false, source: "provider" },
       ],
     };
   };
@@ -149,7 +149,7 @@ test("a manifest model pre-empts a hand-typed custom row for the same id, or an 
    * quiet — exactly as it would if the CLI itself had started listing the id —
    * and the reader gets the manifest row's real label and efforts.
    */
-  const catalogue = async (driver: "claude" | "codex", now: () => number): Promise<ModelCatalogue> => ({
+  const catalogue = async (driver: ModelCatalogue["driver"], now: () => number): Promise<ModelCatalogue> => ({
     driver,
     source: "provider",
     readAt: now(),
@@ -185,13 +185,13 @@ test("a chosen default is stored, cleared by null, and refused when it is not a 
 });
 
 test("the chosen default reaches the catalogue and the claim of a session that named no model", async () => {
-  const catalogue = async (driver: "claude" | "codex", now: () => number): Promise<ModelCatalogue> => ({
+  const catalogue = async (driver: ModelCatalogue["driver"], now: () => number): Promise<ModelCatalogue> => ({
     driver,
     source: "provider",
     readAt: now(),
     models: [
-      { id: "fable[1m]", label: "Fable", isDefault: true, hidden: false, hiddenByUser: false, efforts: [], fastMode: false, source: "provider" },
-      { id: "opus[1m]", label: "Opus", isDefault: false, hidden: false, hiddenByUser: false, efforts: [], fastMode: false, source: "provider" },
+      { id: "fable[1m]", label: "Fable", isDefault: true, hidden: false, hiddenByUser: false, legacy: false, efforts: [], fastMode: false, source: "provider" },
+      { id: "opus[1m]", label: "Opus", isDefault: false, hidden: false, hiddenByUser: false, legacy: false, efforts: [], fastMode: false, source: "provider" },
     ],
   });
   const engine = new EngineStore(root(), () => 100, { models: catalogue, manifest: { version: 1 } });

@@ -79,7 +79,7 @@ const RATES: RatesTable = {
 
 const WINDOW = { sinceMs: AT - 86_400_000, untilMs: AT + 86_400_000, resolution: "day" as const, timeZone: "UTC" };
 
-async function read(scan: UsageScanRoots, window = WINDOW, rates: RatesTable = RATES, scanCachePath?: string) {
+async function read(scan: UsageScanRoots, window: Parameters<typeof readUsageReport>[0] = WINDOW, rates: RatesTable = RATES, scanCachePath?: string) {
   return readUsageReport(window, {
     roots: scan,
     ratesCachePath: path.join(tmp(), "rates.json"),

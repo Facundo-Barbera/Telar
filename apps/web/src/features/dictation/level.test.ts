@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { HEARING_DB, METER_FLOOR_DB, METER_STEPS, hearing, meterLevel, quantise, rms } from "./level";
 

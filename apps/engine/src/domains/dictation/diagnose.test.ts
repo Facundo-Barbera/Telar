@@ -17,11 +17,11 @@ type Ask = { url: URL; headers: Record<string, string> };
 
 function deepgram(answer: Response | "throw"): { fetchImpl: typeof fetch; asks: Ask[] } {
   const asks: Ask[] = [];
-  const fetchImpl: typeof fetch = async (input, init) => {
+  const fetchImpl = (async (input, init) => {
     asks.push({ url: new URL(String(input)), headers: (init?.headers ?? {}) as Record<string, string> });
     if (answer === "throw") throw new Error("getaddrinfo ENOTFOUND api.deepgram.com");
     return answer;
-  };
+  }) as typeof fetch;
   return { fetchImpl, asks };
 }
 

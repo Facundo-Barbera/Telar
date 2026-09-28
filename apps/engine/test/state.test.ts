@@ -1197,7 +1197,7 @@ test("stopBackgroundTasks ends lingering background work and queues the real kil
   const queued = store.taskStopsForWorker("worker_one");
   expect(queued.map(({ sessionId, providerTaskId }) => ({ sessionId, providerTaskId }))).toEqual([{ sessionId: "session_one", providerTaskId: "bqo5yo8lm" }]);
   // Acknowledged, it is not delivered again.
-  expect(store.taskStopsForWorker("worker_one", queued.map((stop) => stop.deliveryId))).toEqual([]);
+  expect(store.taskStopsForWorker("worker_one", queued.map((stop) => stop.deliveryId!))).toEqual([]);
 });
 
 test("a vanished worker takes the session's background work with it — a task cannot outlive its process", () => {
@@ -2078,7 +2078,7 @@ describe("stop is stop — there is no pause to resume", () => {
       expect(store.tasks("session_one")[0]?.state).toBe("stopped");
       const queued = store.taskStopsForWorker("worker_one");
       expect(queued.map(({ sessionId, providerTaskId }) => ({ sessionId, providerTaskId }))).toEqual([{ sessionId: "session_one", providerTaskId: "provider_bg" }]);
-      store.taskStopsForWorker("worker_one", queued.map((stop) => stop.deliveryId));
+      store.taskStopsForWorker("worker_one", queued.map((stop) => stop.deliveryId!));
       store.reportSessionTasks("session_one", "worker_one", [
         { kind: "task.progress", task: { id: "task_bg", kind: "background", state: "running", title: "late report" } },
       ]);

@@ -11,7 +11,6 @@
  *     sits with theirs rather than in the agent band;
  *   · the two stores mint ids independently, so the keys must not collide.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { PreparedPrompt } from "@telar/engine-client";
 import type { StashEntry } from "./prompt-stash";

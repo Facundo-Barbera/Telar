@@ -87,6 +87,7 @@ describe("a self-declared read claim is not a grant", () => {
       toolPrefixes: ["latex"],
       // The plugin asks for its whole surface, including the one that compiles.
       readTools: ["latex_status", "latex_compile"],
+      eventKinds: [],
       settings: [],
     });
     expect(granted).toEqual([]);
@@ -106,6 +107,7 @@ describe("a self-declared read claim is not a grant", () => {
           version: "1.0.0",
           toolPrefixes: ["latex"],
           readTools: ["latex_compile"],
+          eventKinds: [],
           settings: [],
         }),
       ),
@@ -124,6 +126,7 @@ describe("a self-declared read claim is not a grant", () => {
       version: "1.0.0",
       toolPrefixes: ["latex"],
       readTools: ["ds_kernel"],
+      eventKinds: [],
       settings: [],
     });
     expect(granted).toEqual([]);

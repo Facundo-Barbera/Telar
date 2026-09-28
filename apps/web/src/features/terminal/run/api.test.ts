@@ -3,7 +3,6 @@
  * is load-bearing — `replace` (a takeover the human must have asked for) and
  * `after` (the output cursor).
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { EngineApiError } from "@/platform/engine";
 import { createRunApi, runPath } from "./api";

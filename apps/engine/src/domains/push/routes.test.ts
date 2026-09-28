@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +25,7 @@ function setup() {
   const routes = pushRoutes({ client: () => ({}) as EngineClient, pairedDevices: () => [{ id: "phone", name: "Phone", role: "full" }] });
   return async (method: Route["method"], pathname: string, body: unknown = {}) => {
     const { route, params } = matchRoute(routes, method, pathname)!;
-    return route.handle({ body: body as Record<string, unknown>, params, query: new URLSearchParams() });
+    return (await route.handle({ body: body as Record<string, unknown>, params, query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }))!;
   };
 }
 const input = { hostId: "11111111-1111-1111-1111-111111111111", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: true, enabled: true, completions: false, previews: false, mutedSessions: [], activities: [] };

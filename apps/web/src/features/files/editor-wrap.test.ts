@@ -1,5 +1,4 @@
 // Wrap is presentation only; nothing here can reach a file's contents.
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { fileKind } from "./file-kinds";
 import { isProseFile, isProsePath, NOWRAP_CLASS, readWrapLines, WRAP_CLASS, writeWrapLines } from "./editor-wrap";

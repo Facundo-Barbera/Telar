@@ -11,7 +11,6 @@
  * RENDERED RATHER THAN SCANNED, for `project-group.rows.test.tsx`'s reason: the
  * question is what a reader sees, and markup is the only place to ask it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

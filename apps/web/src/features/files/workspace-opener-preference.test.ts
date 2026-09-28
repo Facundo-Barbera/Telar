@@ -3,7 +3,6 @@
  * it offers, and what its left half promises — checked without a browser, a
  * desktop shell or a React tree.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   preferredOpenerSnapshot,

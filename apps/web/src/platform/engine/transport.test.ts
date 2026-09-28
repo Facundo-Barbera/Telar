@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { createEngineApi, EngineApiError } from "./client";
 
@@ -7,9 +6,9 @@ describe("the package's domain methods over the cockpit's /api proxy", () => {
     const calls: Array<{ url: string; method?: string }> = [];
     const api = createEngineApi(async (url, init) => {
       calls.push({ url: String(url), ...(init?.method ? { method: init.method } : {}) });
-      return Response.json({ git: { branch: "main" } });
+      return Response.json({ git: { repository: true, branch: "main" } });
     });
-    await expect(api.projectGit("project a")).resolves.toEqual({ git: { branch: "main" } });
+    await expect(api.projectGit("project a")).resolves.toEqual({ git: { repository: true, branch: "main" } });
     await api.commitSessionWork("session_a", "save");
     expect(calls).toEqual([
       { url: "/api/projects/project%20a/git", method: "GET" },

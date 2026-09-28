@@ -1,5 +1,4 @@
 // Needs a DOM; scripts/test-dom.mjs explains why the preload hands the globals back.
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type Composition } from "@telar/engine-client";

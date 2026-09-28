@@ -15,7 +15,6 @@
  * test, and they do not need a canvas. That is also why this runs in the plain
  * suite rather than needing a browser.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { TerminalBridge, TerminalChunk, TerminalEnding } from "./bridge";

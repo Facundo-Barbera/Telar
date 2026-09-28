@@ -2,7 +2,6 @@
  * The editor's one genuinely tricky rule: a secret the cockpit was never sent
  * must survive being edited around, and must never be silently erased.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { RunConfigurationView } from "../run/types";
 import {

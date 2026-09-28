@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test is the test runner
 import { describe, expect, test } from "bun:test";
 import { REVEAL, revealState, revealText, stepReveal, type RevealState } from "@/ui/streaming-reveal";
 

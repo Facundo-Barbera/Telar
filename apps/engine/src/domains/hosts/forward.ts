@@ -84,7 +84,7 @@ function webRequest(request: http.IncomingMessage): Request {
   return new Request(`http://engine${request.url ?? "/"}`, {
     method,
     headers,
-    ...(hasBody ? { body: Readable.toWeb(request) as ReadableStream, duplex: "half" } : {}),
+    ...(hasBody ? { body: Readable.toWeb(request), duplex: "half" } : {}),
   } as RequestInit);
 }
 

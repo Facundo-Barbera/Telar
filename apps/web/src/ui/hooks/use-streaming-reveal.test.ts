@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test is the test runner
 import { afterEach, describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";

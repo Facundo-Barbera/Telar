@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { isGradientValue, isSceneValue } from "./backdrop";
 import { composeGradient, DEFAULT_GRADIENT_SPECS, GRADIENT_STARTERS, type CustomGradientSpec, type GradientStarter } from "./gradient-starters";

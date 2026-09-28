@@ -20,7 +20,6 @@
  * redirect: the guard is a line that runs between `go()` and a `setInterval`, and
  * a static render would exercise neither.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

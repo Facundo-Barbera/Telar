@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";

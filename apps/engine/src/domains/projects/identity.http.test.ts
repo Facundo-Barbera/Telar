@@ -256,7 +256,7 @@ describe("a new conversation starts with the project's model options", () => {
 
   /** A store whose catalogue is WARM, which is what the check reads. */
   async function catalogued(): Promise<EngineStore> {
-    const catalogue = async (): Promise<ModelCatalogue> => ({ driver: "claude", instanceId: "claude", readAt: 100, models: CATALOGUE });
+    const catalogue = async (): Promise<ModelCatalogue> => ({ driver: "claude", instanceId: "claude", source: "provider", readAt: 100, models: CATALOGUE });
     const store = new EngineStore(dir("telar-identity-home-"), () => 100, { models: catalogue, manifest: { version: 1 } });
     await store.modelCatalogue("claude");
     store.registerProject({ id: "project_one", name: "One", root: dir("telar-identity-checkout-") });

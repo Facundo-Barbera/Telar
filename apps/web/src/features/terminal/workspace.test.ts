@@ -7,7 +7,6 @@
  * the shell says otherwise, and that the PTY ids survive both a remount and the
  * upgrade from one-shell-per-outer-tab.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   activateShell,

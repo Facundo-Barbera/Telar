@@ -10,7 +10,6 @@
  * The two `STUDY_GUIDE` equations are the reported case, imported from the dev
  * gallery so the fixture and the test cannot drift apart.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MessageResponse } from "@/ui/message";

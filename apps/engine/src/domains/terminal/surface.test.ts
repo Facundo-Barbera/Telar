@@ -385,7 +385,7 @@ test("every call the worker's capability makes hits a route that exists", async 
   }) as unknown as FetchLike;
   const capability = clientRunCapability(
     new EngineClient(
-      { version: 2, daemonId: "dmn_1", host: "127.0.0.1", port: 1, token: "t".repeat(32), startedAt: new Date().toISOString() },
+      { version: 2, daemonId: "dmn_1", host: "127.0.0.1", port: 1, token: "t".repeat(32), startedAt: Date.now() },
       fetchImpl,
     ),
     "sess_1",
@@ -418,7 +418,7 @@ test("the worker's capability names the terminal and who closed it on the wire",
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   }) as unknown as FetchLike;
   const capability = clientRunCapability(
-    new EngineClient({ version: 2, daemonId: "dmn_1", host: "127.0.0.1", port: 1, token: "t".repeat(32), startedAt: new Date().toISOString() }, fetchImpl),
+    new EngineClient({ version: 2, daemonId: "dmn_1", host: "127.0.0.1", port: 1, token: "t".repeat(32), startedAt: Date.now() }, fetchImpl),
     "sess_1",
   );
   await capability.stop({ runId: "term_1", closedBy: "agent" });

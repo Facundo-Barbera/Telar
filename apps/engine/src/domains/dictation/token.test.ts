@@ -23,7 +23,7 @@ type Call = { url: string; headers: Record<string, string>; body: unknown };
 
 async function engine(deepgram?: (call: Call) => Response): Promise<{ daemon: EngineDaemon; client: EngineClient; calls: Call[] }> {
   const calls: Call[] = [];
-  const dictationFetch: typeof fetch = async (input, init) => {
+  const dictationFetch = (async (input, init) => {
     const call: Call = {
       url: String(input),
       headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)),
@@ -31,7 +31,7 @@ async function engine(deepgram?: (call: Call) => Response): Promise<{ daemon: En
     };
     calls.push(call);
     return deepgram ? deepgram(call) : Response.json({ access_token: "jwt-from-deepgram", expires_in: 300 });
-  };
+  }) as typeof fetch;
   const daemon = await startEngine({ models: stubModels, engineRoot: root(), dictationFetch });
   daemons.push(daemon);
   return { daemon, client: new EngineClient(daemon.discovery), calls };
@@ -177,7 +177,7 @@ test("a key echoed back in an error body is scrubbed before it becomes a sentenc
   const failure = await grantDictationToken({
     key: "dg-secret-key",
     language: "multi",
-    fetchImpl: async () => Response.json({ err_msg: "bad key: dg-secret-key" }, { status: 401 }),
+    fetchImpl: (async () => Response.json({ err_msg: "bad key: dg-secret-key" }, { status: 401 })) as unknown as typeof fetch,
   }).catch((error: unknown) => error);
   expect((failure as Error).message).not.toContain("dg-secret-key");
   expect((failure as Error).message).toContain("[redacted]");
@@ -185,10 +185,10 @@ test("a key echoed back in an error body is scrubbed before it becomes a sentenc
 
 test("the TTL is clamped to what Deepgram documents, at both ends", async () => {
   const asked: number[] = [];
-  const grant: typeof fetch = async (_url, init) => {
+  const grant = (async (_url, init) => {
     asked.push((JSON.parse(String(init?.body)) as { ttl_seconds: number }).ttl_seconds);
     return Response.json({ access_token: "jwt" });
-  };
+  }) as typeof fetch;
   await grantDictationToken({ key: "k", language: "multi", ttlSeconds: 0, fetchImpl: grant });
   await grantDictationToken({ key: "k", language: "multi", ttlSeconds: 99_999, fetchImpl: grant });
   expect(asked).toEqual([1, DEEPGRAM_MAX_TTL_SECONDS]);
@@ -200,7 +200,7 @@ test("without an expires_in, the TTL asked for is what the expiry is derived fro
     language: "multi",
     ttlSeconds: 60,
     now: () => 1_000_000,
-    fetchImpl: async () => Response.json({ access_token: "jwt" }),
+    fetchImpl: (async () => Response.json({ access_token: "jwt" })) as unknown as typeof fetch,
   });
   expect(answer.expiresAt).toBe(1_000_000 + 60_000);
 });
@@ -306,7 +306,7 @@ test("the token answer carries the keyterms, with the person's own terms first",
   await switchedOn(client);
   await client.setDictation({ vocabulary: ["Kubernetes", "Wispr Flow"] });
   const { keyterms } = await client.dictationToken();
-  expect(keyterms.slice(0, 2)).toEqual(["Kubernetes", "Wispr Flow"]);
+  expect(keyterms!.slice(0, 2)).toEqual(["Kubernetes", "Wispr Flow"]);
   expect(keyterms).toContain("Telar");
 });
 
@@ -328,9 +328,9 @@ test("the list stays bounded however many conversations are open", async () => {
     daemon.store.createSession({ id: `session_${index}`, projectId: "project_one", title: `Conversation number ${index}` });
   }
   const { keyterms } = await client.dictationToken();
-  expect(new TextEncoder().encode(keyterms.join("")).length).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_BYTE_BUDGET);
-  expect(keyterms.length).toBeGreaterThan(TELAR_KEYTERMS.length);
-  expect(keyterms.length).toBeLessThan(60);
+  expect(new TextEncoder().encode(keyterms!.join("")).length).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_BYTE_BUDGET);
+  expect(keyterms!.length).toBeGreaterThan(TELAR_KEYTERMS.length);
+  expect(keyterms!.length).toBeLessThan(60);
   expect(keyterms).toContain("Telar");
 });
 

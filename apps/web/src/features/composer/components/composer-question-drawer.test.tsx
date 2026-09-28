@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, jest, test } from "bun:test";
 import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";

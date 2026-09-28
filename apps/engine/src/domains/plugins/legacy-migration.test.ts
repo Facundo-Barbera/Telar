@@ -132,15 +132,18 @@ test("the deprecated PATCH aliases write the map and are never stored or returne
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });
 
+  // @ts-expect-error deprecated alias the engine still accepts
   const { project } = await client.updateProject("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
   expect(project).not.toHaveProperty("latex");
   expect(pluginBlock(project, "latex")).toEqual({ enabled: true, mainFile: "paper.tex" });
 
+  // @ts-expect-error deprecated alias the engine still accepts
   const off = await client.updateProject("project_one", { latex: null });
   expect(pluginBlock(off.project, "latex")).toBeUndefined();
   expect(raw(path.join(engineRoot, "projects.json"), "project_one")).not.toHaveProperty("latex");
 
   // An invalid legacy block is refused in the words it always was.
+  // @ts-expect-error deprecated alias the engine still accepts
   await expect(client.updateProject("project_one", { dataScience: { enabled: "yes" } as never })).rejects.toMatchObject({
     message: "data science configuration is invalid",
   });

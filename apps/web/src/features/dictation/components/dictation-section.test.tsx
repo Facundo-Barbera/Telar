@@ -16,7 +16,6 @@
  * and absent with it, drawn from the names the engine sends rather than from a
  * table copied into this app.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
@@ -93,7 +92,7 @@ describe("what the pane shows before anybody has chosen", () => {
   async function pane(
     dictation: Record<string, unknown>,
   ): Promise<{ host: HTMLElement; settled: (until: () => boolean) => Promise<void>; unmount: () => Promise<void> }> {
-    globalThis.fetch = (async () => Response.json({ dictation })) as typeof fetch;
+    globalThis.fetch = (async () => Response.json({ dictation })) as unknown as typeof fetch;
     const { DictationSection } = await import("./dictation-section");
     const host = document.createElement("div");
     document.body.appendChild(host);

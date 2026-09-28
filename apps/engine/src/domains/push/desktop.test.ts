@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type http from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -143,7 +144,7 @@ describe("the desktop stream", () => {
     const before = g.telarDesktopNotify;
     g.telarDesktopNotify = { seen: {}, baselined: true, offered: { s1: "r1" } };
     try {
-      expect(await route.handle({ body: { type: DESKTOP_APPROVE, sessionId: "s1", requestId: "r1" }, params, query: new URLSearchParams() })).toEqual({ status: 200, body: { ok: true } });
+      expect(await route.handle({ body: { type: DESKTOP_APPROVE, sessionId: "s1", requestId: "r1" }, params, query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse })).toEqual({ status: 200, body: { ok: true } });
       expect(resolved).toEqual([["s1", "r1", { decision: "accept" }]]);
     } finally { g.telarDesktopNotify = before; }
   });
@@ -202,9 +203,9 @@ describe("presence from the shell", () => {
     delete g.telarDesktopPresence;
     const wire = recorder();
     await handleDesktopMessage({ type: DESKTOP_PRESENCE, active: true, viewingPath: "/main", at: 1 }, never, wire, undefined, 5000);
-    expect(g.telarDesktopPresence).toEqual({ active: true, viewingPath: "/main", at: 5000 });
+    expect<Presence | undefined>(g.telarDesktopPresence).toEqual({ active: true, viewingPath: "/main", at: 5000 });
     await handleDesktopMessage({ type: DESKTOP_PRESENCE, active: false, viewingPath: null }, never, wire, undefined, 6000);
-    expect(g.telarDesktopPresence).toEqual({ active: false, viewingPath: null, at: 6000 });
+    expect<Presence | undefined>(g.telarDesktopPresence).toEqual({ active: false, viewingPath: null, at: 6000 });
     expect(wire.sent).toEqual([]);
   });
 

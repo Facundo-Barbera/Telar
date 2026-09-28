@@ -58,6 +58,7 @@ async function ready(python = "/bin/echo") {
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_nb", name: "Notebooks", root: checkout });
   await client.updateProject("project_nb", {
+    // @ts-expect-error deprecated alias the engine still accepts
     dataScience: { enabled: true, python: { source: "detected", path: python, resolvedAt: 1 } },
   });
   await client.createSession({ id: "session_nb", projectId: "project_nb" });

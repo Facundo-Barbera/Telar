@@ -16,7 +16,6 @@
  * set. It seeds from `Date.now()` on its first render, which is what the stub
  * below pins: the turn started a minute before whatever the component reads.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Item, Turn } from "@telar/engine-client";

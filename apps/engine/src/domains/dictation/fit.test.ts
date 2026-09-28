@@ -14,12 +14,12 @@ type Ask = { url: URL; headers: Record<string, string> };
 
 function deepgram(answers: (Response | "throw")[]): { fetchImpl: typeof fetch; asks: Ask[] } {
   const asks: Ask[] = [];
-  const fetchImpl: typeof fetch = async (input, init) => {
+  const fetchImpl = (async (input, init) => {
     asks.push({ url: new URL(String(input)), headers: (init?.headers ?? {}) as Record<string, string> });
     const answer = answers[asks.length - 1] ?? new Response(null, { status: 200 });
     if (answer === "throw") throw new Error("the socket went away");
     return answer;
-  };
+  }) as typeof fetch;
   return { fetchImpl, asks };
 }
 

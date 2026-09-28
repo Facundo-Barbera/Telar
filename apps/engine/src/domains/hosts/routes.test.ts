@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
+import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { Route } from "../../platform/http/route";
@@ -41,7 +42,7 @@ function routes(fetcher: typeof fetch) {
   const table = hostsRoutes(store, fetcher);
   const call = async (method: Route["method"], pathname: string, body: Record<string, unknown> = {}) => {
     const { route, params } = matchRoute(table, method, pathname)!;
-    return route.handle({ body, params, query: new URLSearchParams() });
+    return (await route.handle({ body, params, query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }))!;
   };
   return { call, store };
 }

@@ -12,7 +12,6 @@
  * mousedown whose default moves focus, the focusout that says where focus is
  * going, and the click. A static render has none of them.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

@@ -2,7 +2,7 @@ import type { EngineTransport } from "@telar/engine-client";
 import type {
 EngineErrorCode
 } from "@telar/engine-client";
-import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pinnedHost } from "@/platform/engine/host-client";
+import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pinnedHost, type Fetcher } from "@/platform/engine/host-client";
 
 export type EngineApiErrorCode = EngineErrorCode | "cockpit_unauthorized";
 
@@ -35,7 +35,6 @@ export function refusedBy(error: EngineApiError): string | undefined {
   return error.host.name ?? error.host.id;
 }
 
-export type Fetcher = typeof fetch;
 
 /** What the request reached, as opposed to what it meant to reach: the pin on
  *  the fetcher, corrected by the name the proxy stamped on the way back. */

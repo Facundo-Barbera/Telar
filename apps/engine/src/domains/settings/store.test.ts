@@ -94,7 +94,7 @@ test("the sidebar layout round-trips, dedupes, and refuses a shape that is not a
   // "alphabetical, nobody has moved anything" — and on the engine so the
   // desktop shell, a browser tab and a paired phone draw one arrangement.
   const { store } = readyStore();
-  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" };
+  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" as const };
   expect(store.getSidebarLayout()).toEqual(blank);
 
   expect(store.setSidebarLayout({ projectOrder: ["b", "h1:a", "a"] })).toEqual({ ...blank, projectOrder: ["b", "h1:a", "a"] });
@@ -158,7 +158,7 @@ test("the rail mode defaults to grouped, persists on its own, and refuses anythi
 
 test("a malformed sidebar-layout document costs the arrangement, never the list", () => {
   const { store, root: stateRoot } = readyStore();
-  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" };
+  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" as const };
   fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), '{"version":2,"projectOrder":"b,a"}');
   expect(store.getSidebarLayout()).toEqual(blank);
   fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), "not json at all");

@@ -3,7 +3,6 @@
  * draws a project mark derives the SAME hue and the same initial — the tests
  * pin stability, not particular values.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { projectHue, projectIconUrl, projectInitial } from "./project-avatar";
 

@@ -9,7 +9,6 @@
  * so every row carries the person's own opening words, when they were last in
  * it, which project, and how much of it there is.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ClaudeConversation, ConversationImportDetail } from "@telar/engine-client";

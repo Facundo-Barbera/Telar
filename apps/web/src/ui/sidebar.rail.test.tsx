@@ -14,7 +14,6 @@
  * `after:bg-*` among the dozen conditional strings `cn` folds together, would
  * both pass a scan of the JSX and still put the line back on screen.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Sidebar, SidebarProvider, SidebarRail } from "@/ui/sidebar";

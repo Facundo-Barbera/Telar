@@ -1,5 +1,4 @@
 // `multi` shows as AUTO, matching the picker's "Automatic".
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { DICTATION_AUTOMATIC } from "./automatic";
 import { DICTATION_AUTOMATIC_BADGE, languageBadge } from "./language-label";

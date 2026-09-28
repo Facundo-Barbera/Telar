@@ -9,7 +9,6 @@
  * gesture — where a drop lands, which band it is confined to — is arithmetic,
  * and `features/sessions/session-groups.test.ts` pins it as arithmetic.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

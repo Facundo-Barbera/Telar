@@ -10,7 +10,6 @@
  * reason: what this is about is which of several competing statuses actually
  * reaches the markup, and a precedence chain can only be read off the output.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

@@ -1,4 +1,3 @@
-// @ts-expect-error Bun test types are provided by the test runner.
 import { expect, spyOn, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { installNavigationMarks, isMeasuredHref, markNavigation, navigationTimings, startNavigation } from "@/platform/perf-marks";

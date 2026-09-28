@@ -2,7 +2,6 @@
  * No DOM here: `parseCssColor`'s last resort asks a canvas, so these cover
  * only the branches that answer before it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { normaliseColourText } from "./colour-field";
 

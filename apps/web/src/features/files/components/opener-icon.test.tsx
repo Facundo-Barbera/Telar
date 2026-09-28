@@ -13,7 +13,6 @@
  * is wrong in the markup — a container's `[&_svg]:size-4` silently rescaling a
  * 14px mark to 16 is the original bug in this issue.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 

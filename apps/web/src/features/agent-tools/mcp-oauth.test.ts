@@ -5,7 +5,6 @@
  * Providers pane's is: it is the sentence somebody reads when a tool is not
  * working, and every wrong version sends them to fix the wrong thing.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { McpOAuthStatus } from "@telar/engine-client";
 import { HEALTH_DOT, signInAction, signInSummary, statusFor } from "./mcp-oauth";

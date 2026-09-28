@@ -126,7 +126,7 @@ describe("a person's message is stamped as one, and nothing else is", () => {
     expect(
       (await seenFor([
         { text: "a peer reports in", sender: { sessionId: "session_peer" } },
-        { text: "a session you follow finished", wakeReason: "completed" },
+        { text: "a session you follow finished", wakeReason: { kind: "turn_completed", sessionId: "session_followed" } },
       ]))[1]?.origin,
     ).toBeUndefined();
     // A MIXED BATCH IS THE PERSON'S. Someone typed, mid-turn; that is the same
@@ -257,7 +257,7 @@ test("an AGENT report and an engine WAKE do NOT interrupt — a notice is not a 
   }) as never);
   const steer = new SteerMailbox();
   steer.push({ text: "a peer reports in", sender: { sessionId: "session_peer" } });
-  steer.push({ text: "a session you follow finished", wakeReason: "completed" });
+  steer.push({ text: "a session you follow finished", wakeReason: { kind: "turn_completed", sessionId: "session_followed" } });
   const { result } = run(driver, { steer });
   await result;
   expect(interrupts).toEqual([]);

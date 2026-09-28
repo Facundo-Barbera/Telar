@@ -6,7 +6,6 @@
  * already showing. Three em dashes are not a detail view; they are a hover that
  * costs a glance and repays nothing.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SidebarSession } from "../session-list";

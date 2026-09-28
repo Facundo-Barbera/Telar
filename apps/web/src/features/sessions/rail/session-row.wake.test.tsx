@@ -14,7 +14,6 @@
  * `apps/engine/test/snooze-wake.test.ts`. Between the two there is no step where
  * a person typed the timestamp.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LiveSessionRow } from "@telar/engine-client";

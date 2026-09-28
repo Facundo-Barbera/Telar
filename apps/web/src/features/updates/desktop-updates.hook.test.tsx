@@ -2,7 +2,6 @@
  * `useDesktopUpdate()` driven against a scripted bridge; the pure folds are in
  * `desktop-updates.test.ts`. The restart deadline is a parameter so tests can pass 20 ms.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
@@ -251,7 +250,7 @@ describe("the press that applies an update", () => {
     });
     expect(probe.update.action).toBe("apply");
     expect(probe.update.failure).toContain("has not restarted");
-    expect(probe.update.label).toBe(probe.update.failure);
+    expect<string | undefined>(probe.update.label).toBe(probe.update.failure);
     await probe.press();
     await probe.confirm();
     expect(calls.filter((call) => call === "install")).toHaveLength(2);

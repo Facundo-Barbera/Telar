@@ -7,7 +7,6 @@
  * busy. And closing the whole Terminal tab ends every terminal in it — runs
  * included, through the engine — behind ONE question.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { TerminalActivity, TerminalBridge } from "./bridge";
 import { closeTerminalTab, decideClose, endTerminal, mayClose } from "./close";

@@ -1,4 +1,3 @@
-// @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import { markComposerActive, registerComposer, type ComposerEntry } from "@/features/composer";
 import { activeDictation, registerDictation, toggleActiveDictation } from "./registry";

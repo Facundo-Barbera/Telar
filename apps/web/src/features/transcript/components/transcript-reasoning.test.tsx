@@ -5,7 +5,6 @@
  * estimate. The row used to render nothing for empty text, so a six-minute
  * thought was a blank transcript under a "no output" clock.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ActivityGroup } from "./activity";

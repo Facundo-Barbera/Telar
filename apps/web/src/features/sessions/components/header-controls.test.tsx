@@ -17,7 +17,6 @@
  * `renderToStaticMarkup`, like run-header-control.test.tsx: this is about the
  * classes the first paint carries, and no effects need to run for that.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { OpenWorkspaceButton } from "@/features/files/components/open-workspace-button";

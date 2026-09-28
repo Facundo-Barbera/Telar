@@ -19,7 +19,6 @@
  * composes with the rungs through the same `--tw-shadow` variable, and call
  * sites that reset a shadow keep it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 

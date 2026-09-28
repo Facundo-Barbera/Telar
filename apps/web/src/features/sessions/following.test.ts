@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { Subscription } from "@telar/engine-client";
 import { applyReads, applyUnfollow, claim, createFollowingController, emptyFollowing, generationOf, lockKey, release } from "./following";

@@ -64,7 +64,7 @@ test("enabling on a git checkout gitignores the aux dir", () => {
 
 test("the session door refuses until the project opted in AND the binary exists", () => {
   const { store } = readyStore();
-  const session = store.createSession({ projectId: "project_one", environmentId: "local", envMode: "local" });
+  const session = store.createSession({ projectId: "project_one", envMode: "local" });
   expect(() => store.latex(session.id)).toThrow("LaTeX is not enabled");
   // Enabled but pointing at a binary that is not on disk: still nothing.
   store.updateProject("project_one", { latex: { enabled: true, toolchain: { kind: "tectonic", path: "/nope/tectonic" } } });

@@ -18,7 +18,6 @@
  * both walls, and it exists so that "the tints look faint, raise the floor"
  * fails loudly with the other wall's number attached.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";

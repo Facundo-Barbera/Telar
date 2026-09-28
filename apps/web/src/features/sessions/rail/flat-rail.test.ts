@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { SessionAssignment } from "@telar/engine-client";
 import { flatRailRows, flattenSessions, parentKeyOf, summarizeChildren } from "./flat-rail";

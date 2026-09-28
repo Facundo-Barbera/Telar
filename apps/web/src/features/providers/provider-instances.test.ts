@@ -5,7 +5,6 @@
  * reads when an account is not working, and every wrong version of it sends
  * them to fix the wrong thing.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { ProviderInstance, ProviderProbe } from "@telar/engine-client";
 import {

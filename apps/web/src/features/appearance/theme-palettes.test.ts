@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { cssColorToHex, FOREGROUND_SURFACES, TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
 import { BUILT_IN_LOOKS } from "./built-in-looks";

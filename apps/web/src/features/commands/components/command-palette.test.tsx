@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, expect, test } from "bun:test";
 import { act, createRef, useImperativeHandle, useState, type Ref } from "react";
 import { bindCommands, COMMANDS, type CommandId } from "../commands";
@@ -147,7 +146,7 @@ test("⌘1 means nothing here, and an IME's Enter commits a candidate rather tha
 
 test("the highlight is announced, each section is a named group, and the field has focus", async () => {
   await openPalette();
-  expect(document.querySelector('[role="listbox"]')?.id).toBe(field().getAttribute("aria-controls"));
+  expect<string | null | undefined>(document.querySelector('[role="listbox"]')?.id).toBe(field().getAttribute("aria-controls"));
   expect(field().getAttribute("aria-activedescendant")).toBe("command-palette-0");
   const groups = [...document.querySelectorAll('[role="group"]')].map((node) => node.getAttribute("aria-label"));
   expect(groups).toEqual(["Actions", "Quick settings", "Projects", "Recent conversations"]);

@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { APPEARANCE_INIT_SCRIPT, cssFontFamilies, parseAppearance, DEFAULT_APPEARANCE, DEPTHS } from "./appearance";
 
@@ -109,6 +108,6 @@ describe("APPEARANCE_INIT_SCRIPT and data-depth", () => {
   // The script decides "is this the default?" by comparing against element
   // zero of the list it is handed, so the order of DEPTHS is load-bearing.
   test("the default is first in DEPTHS, which is what the script relies on", () => {
-    expect(DEPTHS[0]).toBe(DEFAULT_APPEARANCE.depth);
+    expect<string>(DEPTHS[0]).toBe(DEFAULT_APPEARANCE.depth);
   });
 });

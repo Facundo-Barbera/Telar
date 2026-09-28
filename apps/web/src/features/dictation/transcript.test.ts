@@ -1,5 +1,4 @@
 /** A finalised silence is an empty final, the signal to take an unconfirmed guess back out. */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { parseFrame, readFrame } from "./transcript";
 

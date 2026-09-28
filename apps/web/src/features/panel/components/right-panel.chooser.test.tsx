@@ -21,7 +21,6 @@
  * whether they have layout effects at their first import — and the preload
  * (scripts/test-dom.mjs) settles that before any test file loads.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

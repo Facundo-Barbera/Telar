@@ -132,7 +132,7 @@ test("a token with no read:project is asked ONCE, then left alone", async () => 
   expect(seen.filter(isBoardCall)).toHaveLength(2);
 
   // A different filter is a fresh read, and it must not ask again.
-  const second = await store.projectGitHub("project_one", { pullState: "all" });
+  const second = await store.projectGitHub("project_one", { pulls: { state: "all", labels: [] } });
   expect(seen.filter(isBoardCall)).toHaveLength(2);
   // But the reason survives: not re-asking must not unlearn the answer, or the panel can't explain the missing boards.
   expect(second.projectsUnavailable).toBe("scope");

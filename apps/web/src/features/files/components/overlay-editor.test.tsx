@@ -15,7 +15,6 @@
  * and the textarea holds the same newlines, so a coloured layer with a different
  * number of line boxes is a caret pointing at the wrong line.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { carryTokens, highlight } from "../highlight";

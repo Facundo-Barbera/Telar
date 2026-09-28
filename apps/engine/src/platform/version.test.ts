@@ -5,7 +5,7 @@ import { TELAR_ENGINE_VERSION } from "./version";
 
 describe("engine version", () => {
   test("matches the package it ships as", () => {
-    const manifest = JSON.parse(fs.readFileSync(path.join(import.meta.dir, "..", "..", "package.json"), "utf8")) as { version?: string };
+    const manifest = JSON.parse(fs.readFileSync(path.join(import.meta.dir, "..", "..", "package.json"), "utf8")) as { version: string };
     expect(TELAR_ENGINE_VERSION).toBe(manifest.version);
   });
 });

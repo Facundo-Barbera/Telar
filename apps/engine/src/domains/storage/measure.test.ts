@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { StorageCategory } from "@telar/engine-client";
 import { measureStorage } from "./measure";
 
 let root: string;
@@ -38,7 +39,7 @@ describe("what Telar is keeping", () => {
 
     expect(report.total).toBe(report.entries.reduce((sum, entry) => sum + entry.bytes, 0));
     expect(report.entries.map((entry) => entry.category).sort()).toEqual(
-      ["journal", "other", "python", "sessions", "settings", "usage", "worktrees"].sort(),
+      (["journal", "other", "python", "sessions", "settings", "usage", "worktrees"] satisfies StorageCategory[]).sort(),
     );
     expect(report.partial).toBe(false);
     expect(bytesOf(report, "other")).toBeGreaterThan(0);

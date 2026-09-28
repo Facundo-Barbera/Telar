@@ -8,7 +8,6 @@
  * is a visible defect: a chip that looks pressable and is not, or one that opens
  * something adjacent to what you pressed.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { panelTabFor } from "./prompt-text";
 import { checkReference, directoryReference, fileReference, issueReference, pageReference, pullReference, taskReference } from "@/features/composer/drag-reference";

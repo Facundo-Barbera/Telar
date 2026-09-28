@@ -39,7 +39,8 @@ ProjectWorkspaceView
 import { forgeQuery } from "@telar/engine-client";
 import type { DirectoryListing } from "@telar/engine-client";
 import type { PublicHost } from "@telar/engine-client";
-import { request, type Fetcher } from "./transport";
+import type { Fetcher } from "./host-client";
+import { request } from "./transport";
 
 /** The cockpit's own machine calls: the ones no package domain client covers yet. */
 export function machineCalls(fetcher: Fetcher) {

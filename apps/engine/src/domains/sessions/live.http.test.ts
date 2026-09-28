@@ -234,9 +234,9 @@ test("a blocker, a pin and a draft all survive the filter — the rows it must n
   // clock. The clock's own case is the 267-session test above.
   store.setInboxPolicy({ autoSettleAfterHours: 1 });
 
-  const make = (suffix: string): string => {
+  const make = (suffix: string, draft = false): string => {
     const id = `session_${suffix.padEnd(30, "0")}`;
-    store.createSession({ id, projectId: "project_one", title: suffix });
+    store.createSession({ id, projectId: "project_one", title: suffix, draft });
     return id;
   };
 
@@ -248,12 +248,11 @@ test("a blocker, a pin and a draft all survive the filter — the rows it must n
   // ever opened — an unsent conversation has done nothing to measure — so
   // without the carve-out this row would vanish off the rail a window after
   // the composer opened it. See `isShelved`.
-  const draft = make("draft");
-  store.updateSession(draft, { draft: {} });
+  const draft = make("draft", true);
   // A SETTLED PIN STILL TAKES A DRAFT: the carve-out is against the clock, not
   // against a person's decision.
-  const settledDraft = make("draftsettled");
-  store.updateSession(settledDraft, { draft: {}, settledOverride: "settled" });
+  const settledDraft = make("draftsettled", true);
+  store.updateSession(settledDraft, { settledOverride: "settled" });
 
   const rows = new Set(store.liveSessionRows().sessions.map((session) => session.id));
   expect(rows.has(pinnedActive)).toBe(true);

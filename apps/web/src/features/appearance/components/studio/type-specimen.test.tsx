@@ -14,7 +14,6 @@
  * the markup it constrains, so widening the column or raising the maximum size
  * moves this test with it rather than leaving a stale number behind.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MAX_MONO_FONT_SIZE } from "../../appearance";

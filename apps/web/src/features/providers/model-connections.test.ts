@@ -4,7 +4,6 @@
  * connections, ids that must never be rewritten, and models.dev's own
  * connection names.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { connectionLabel, familySearchText, routeOf, routedModelLabel } from "./model-connections";
 import { groupFamilies } from "./model-families";

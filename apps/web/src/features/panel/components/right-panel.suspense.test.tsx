@@ -35,7 +35,6 @@
  * the suite shares one process and its neighbours are written for a world with
  * no `window` in it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { readFileSync } from "node:fs";
@@ -212,7 +211,7 @@ describe("the panel opens a surface without giving the route anything to do", ()
   });
 
   test("a first open commits the panel's aside straight away and keeps that node while the chunk lands", async () => {
-    globalThis.fetch = (async () => Response.json({})) as typeof fetch;
+    globalThis.fetch = (async () => Response.json({})) as unknown as typeof fetch;
     const { host, settleUntil, unmount } = mount(
       <RightPanel
         sessionId="session_a"

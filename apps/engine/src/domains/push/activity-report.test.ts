@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -56,7 +57,7 @@ describe("to the phone", () => {
     const routes = pushRoutes({ client: () => ({}) as EngineClient, pairedDevices: () => [{ id: "phone", name: "Phone", role: "full" }] });
     const { route, params } = matchRoute(routes, "PUT", "/v2/push/devices/phone")!;
     const { deviceId: _, revision: __, updatedAt: ___, seen: ____, activitySent: _____, ...registration } = record({ pushToStartToken: undefined });
-    const answer = await route.handle({ body: registration, params, query: new URLSearchParams() });
+    const answer = await route.handle({ body: registration, params, query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse });
     expect(answer).toEqual({ status: 200, body: { configured: false, activity: { card: false, blocker: "no-start-token" } } });
   });
 });

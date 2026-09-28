@@ -23,7 +23,7 @@ export function rewriteApiPath(pathname: string, hostId: string): string {
   return `/api/hosts/${encodeURIComponent(hostId)}${pathname.slice("/api".length)}`;
 }
 
-type Fetcher = typeof fetch;
+export type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export const HOST_NAME_HEADER = "telar-host";
 

@@ -20,7 +20,6 @@
  * and `performance.now` all read one manual clock that `advance` moves, so the
  * library's frames and timeouts run in order with no real time passing.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, useCallback, useLayoutEffect, useState } from "react";

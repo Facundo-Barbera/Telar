@@ -1,4 +1,3 @@
-// @ts-expect-error Bun test types are provided by the test runner.
 import { describe, expect, test } from "bun:test";
 import {
   ADDRESS_CONTROLS,

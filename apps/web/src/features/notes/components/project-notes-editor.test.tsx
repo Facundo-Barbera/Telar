@@ -9,7 +9,6 @@
  *     as one for the life of the note, and the editor is the only surface that
  *     can say so before the user rewrites it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ProjectNote } from "@telar/engine-client";

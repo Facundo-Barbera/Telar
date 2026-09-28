@@ -8,7 +8,6 @@
  * carry no information at all, so the glyphs are compared as rendered markup
  * rather than as identity.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { RunIcon } from "@telar/engine-client";
@@ -21,7 +20,7 @@ describe("the closed set", () => {
   test("the picker offers exactly the keys the protocol accepts", () => {
     // A key added to the wire and not here would be storable and undrawable.
     expect([...RUN_ICON_KEYS].sort()).toEqual([...RunIcon.options].sort());
-    expect(RUN_ICON_KEYS[0]).toBe(DEFAULT_RUN_ICON);
+    expect<string>(RUN_ICON_KEYS[0]).toBe(DEFAULT_RUN_ICON);
   });
 
   test("every key names a button and draws a distinct glyph", () => {

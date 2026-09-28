@@ -111,7 +111,7 @@ describe("gitOverview", () => {
     expect(overview.repository).toBe(true);
     expect(overview.branch).toBe("main");
     expect(overview.dirtyFiles).toBe(2);
-    expect(overview.worktrees[0].isMainCheckout).toBe(true);
+    expect(overview.worktrees![0].isMainCheckout).toBe(true);
   });
 
   test("leaves ahead/behind ABSENT when the branch has no upstream", async () => {

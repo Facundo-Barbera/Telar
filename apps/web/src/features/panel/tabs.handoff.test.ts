@@ -2,7 +2,6 @@
  * `new:<projectId>` is one canvas key shared by every new conversation in a
  * project; the hand-off must copy it onto the session and then clear it.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   canvasPanelKey,
