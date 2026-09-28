@@ -1,4 +1,4 @@
-export { machineOffReason, PluginSettings } from "./components/plugin-settings";
+export { ProjectPluginList } from "./components/project-plugins";
 export { projectPaneFor } from "./components/settings-panes";
 export { PluginSurface } from "./components/surfaces";
 export { attachmentUrl, type ExecResult, type KernelState, type NotebookRead, type TableWindow, type VarRow } from "./data-science/ds";
@@ -13,5 +13,4 @@ export {
   pluginSurfaces,
   viewerAvailable,
 } from "./registry";
-export { enablePatch, projectPluginSections } from "./sections";
 export { pluginSettingsSearchEntries } from "./settings-form";

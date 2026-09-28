@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { BlocksIcon, CircleAlertIcon, FolderPlusIcon } from "lucide-react";
 import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
 import { machineAllows } from "@telar/engine-client";
@@ -10,20 +10,18 @@ import { Button } from "@/ui/button";
 import { chooseDirectory } from "@/platform/desktop/choose-directory";
 import { Switch } from "@/ui/switch";
 import { machineBlocksFor } from "./settings-panes";
-import { GeneratedSettingsRows } from "./generated-settings";
+import { GeneratedSettingsRows, pluginIcon } from "./generated-settings";
+import { NothingToConfigure, PluginBrowser, type PluginListItem } from "./plugin-browser";
 import { generatedGroupTitle, settingsFields } from "../settings-form";
 import { machineSettingsPatch } from "../sections";
 import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 
-export function machinePanePlugins(plugins: readonly PluginStatus[], machine: ProjectPlugins | undefined): PluginStatus[] {
-  return plugins.filter(
-    (status) =>
-      status.state !== "failed" &&
-      machineAllows(machine, status.meta.id) &&
-      status.meta.settings.some((section) => section.scope === "machine"),
-  );
+const hasMachineSettings = (status: PluginStatus) => status.meta.settings.some((section) => section.scope === "machine");
+
+export function machinePaneShown(status: PluginStatus, machine: ProjectPlugins | undefined): boolean {
+  return status.state !== "failed" && machineAllows(machine, status.meta.id) && hasMachineSettings(status);
 }
 
 function MachinePluginSettings({
@@ -141,58 +139,112 @@ export function PluginsPage() {
     );
   }
 
+  const items = plugins.map((status): PluginListItem => {
+    const allowed = machineAllows(machine, status.meta.id);
+    const failed = status.state === "failed";
+    const hint = failed ? (status.error ?? "This plugin did not start.") : status.meta.blurb;
+    const control = (label: string) => (
+      <Switch
+        checked={allowed && !failed}
+        disabled={busy === status.meta.id || failed}
+        onCheckedChange={(next: boolean) => void toggle(status.meta.id, next)}
+        title="Each project keeps its own setting, and running work finishes before anything is released."
+        aria-label={label}
+      />
+    );
+    return {
+      id: status.meta.id,
+      name: status.meta.name,
+      icon: pluginIcon(status.meta.icon),
+      hint,
+      control: control(`${status.meta.name} enabled on this Mac`),
+      page: (
+        <MachinePluginPage
+          status={status}
+          hint={hint}
+          control={control(`${status.meta.name} on this Mac`)}
+          {...(status.installed
+            ? {
+                remove: (
+                  <Button size="sm" variant="ghost" disabled={busy !== undefined} onClick={() => void remove(status)}>
+                    Remove
+                  </Button>
+                ),
+              }
+            : {})}
+          {...(machinePaneShown(status, machine)
+            ? { settings: <MachinePluginSettings status={status} machine={machine} onMachine={setMachine} /> }
+            : {})}
+        />
+      ),
+    };
+  });
+
+  return (
+    <PluginBrowser
+      title="Plugins"
+      description="Turning one off here makes it unavailable in every project on this Mac."
+      items={items}
+      empty={<Row icon={BlocksIcon} label="No plugins registered" control={<Badge variant="outline">None</Badge>} />}
+      footer={<AddPluginRow notice={notice} disabled={busy !== undefined} onAdd={(mode) => void add(mode)} />}
+    />
+  );
+}
+
+function AddPluginRow({ notice, disabled, onAdd }: { notice?: string; disabled: boolean; onAdd: (mode: "copy" | "link") => void }) {
+  return (
+    <Row
+      icon={FolderPlusIcon}
+      label="Add plugin from folder"
+      hint={notice ?? "Copy it in, or link it to keep editing it where it is."}
+      control={
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" disabled={disabled} onClick={() => onAdd("copy")}>
+            Copy…
+          </Button>
+          <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onAdd("link")}>
+            Link…
+          </Button>
+        </div>
+      }
+    />
+  );
+}
+
+function MachinePluginPage({
+  status,
+  hint,
+  control,
+  remove,
+  settings,
+}: {
+  status: PluginStatus;
+  hint: ReactNode;
+  control: ReactNode;
+  remove?: ReactNode;
+  settings?: ReactNode;
+}) {
   return (
     <>
-      <SettingsGroup title="Plugins" description="Turning one off here makes it unavailable in every project on this Mac.">
-        {plugins.length === 0 && <Row icon={BlocksIcon} label="No plugins registered" control={<Badge variant="outline">None</Badge>} />}
-        {plugins.map((status) => {
-          const allowed = machineAllows(machine, status.meta.id);
-          const failed = status.state === "failed";
-          return (
-            <Row
-              key={status.meta.id}
-              icon={BlocksIcon}
-              label={status.meta.name}
-              hint={failed ? (status.error ?? "This plugin did not start.") : status.meta.blurb}
-              control={
-                <div className="flex items-center gap-2">
-                  {status.installed && (
-                    <Button size="sm" variant="ghost" disabled={busy !== undefined} onClick={() => void remove(status)}>
-                      Remove
-                    </Button>
-                  )}
-                  <Switch
-                    checked={allowed && !failed}
-                    disabled={busy === status.meta.id || failed}
-                    onCheckedChange={(next: boolean) => void toggle(status.meta.id, next)}
-                    title="Each project keeps its own setting, and running work finishes before anything is released."
-                    aria-label={`${status.meta.name} enabled on this Mac`}
-                  />
-                </div>
-              }
-            />
-          );
-        })}
+      <SettingsGroup title={status.meta.name} description={hint}>
         <Row
-          icon={FolderPlusIcon}
-          label="Add plugin from folder"
-          hint={notice ?? "Copy it in, or link it to keep editing it where it is."}
+          icon={pluginIcon(status.meta.icon)}
+          label={`${status.meta.name} on this Mac`}
+          hint="Turning it off makes it unavailable in every project on this Mac."
           control={
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" disabled={busy !== undefined} onClick={() => void add("copy")}>
-                Copy…
-              </Button>
-              <Button size="sm" variant="ghost" disabled={busy !== undefined} onClick={() => void add("link")}>
-                Link…
-              </Button>
+              {remove}
+              {control}
             </div>
           }
         />
+        {!settings && (
+          <NothingToConfigure
+            hint={hasMachineSettings(status) ? "Its Mac-wide defaults show once it is on." : "This plugin has no Mac-wide settings."}
+          />
+        )}
       </SettingsGroup>
-
-      {machinePanePlugins(plugins, machine).map((status) => (
-        <MachinePluginSettings key={status.meta.id} status={status} machine={machine} onMachine={setMachine} />
-      ))}
+      {settings}
     </>
   );
 }

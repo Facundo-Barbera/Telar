@@ -9,6 +9,7 @@ import { pluginEnabled, pluginSettings, readProjectPlugins } from "@telar/engine
 import { Badge } from "@/ui/badge";
 import { Switch } from "@/ui/switch";
 import { GeneratedSettingsRows } from "./generated-settings";
+import { NothingToConfigure } from "./plugin-browser";
 import { settingsFields } from "../settings-form";
 import { Row, SettingsGroup } from "@/features/settings";
 
@@ -91,6 +92,8 @@ export function PluginSettings({
           }}
         />
       )}
+
+      {enabled && !machineOff && !failed && fields.length === 0 && <NothingToConfigure hint="This plugin has no settings for a project." />}
 
       {failed && (
         <Row

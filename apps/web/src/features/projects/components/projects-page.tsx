@@ -1,9 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  BlocksIcon,
-  CircleAlertIcon,
   FolderGitIcon,
   FolderKanbanIcon,
   GaugeIcon,
@@ -12,13 +10,13 @@ import {
   SparklesIcon,
 } from "lucide-react";
 import type { EnvMode, PluginStatus, Project, ProjectPlugins, ProviderDriverKind, ProviderInstance, ProviderModel } from "@telar/engine-client";
-import { defaultInstanceIdForDriver, machineAllows, pluginEnabled, readProjectPlugins } from "@telar/engine-client";
+import { defaultInstanceIdForDriver } from "@telar/engine-client";
 import type { PublicHost } from "@telar/engine-client";
 import { choiceNamesAnything, choiceOf, sessionModelSelection, type ModelChoice, useModelCatalogue } from "@/features/providers";
 import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/platform/engine/host-client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
-import { enablePatch, projectPluginSections, projectPaneFor, machineOffReason, PluginSettings } from "@/features/plugins";
+import { ProjectPluginList } from "@/features/plugins";
 import { useSessionDefaults } from "@/features/sessions";
 import { Badge } from "@/ui/badge";
 import { Input } from "@/ui/input";
@@ -27,7 +25,7 @@ import { ProjectIconPicker } from "./project-icon-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/ui/select";
 import { McpSection } from "@/features/agent-tools";
 import { RemoveProjectSection } from "./remove-project-section";
-import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "@/features/settings";
+import { Dropdown, Row, Segmented, SettingsGroup } from "@/features/settings";
 import { ProjectWorkspaceSection } from "./workspace-config-section";
 
 const api = createEngineApi();
@@ -266,108 +264,6 @@ export function ProjectConversationRows({
   );
 }
 
-export function ProjectPluginRows({
-  project,
-  plugins,
-  machine,
-  onChange,
-}: {
-  project?: ScopedProject;
-  plugins?: PluginStatus[];
-  machine?: ProjectPlugins;
-  onChange?: (project: Project) => void;
-}) {
-  const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<string>();
-  const entries = useMemo(() => projectPluginSections(plugins), [plugins]);
-  const remote = Boolean(project?.hostId);
-
-  const toggle = async (pluginId: string, next: boolean) => {
-    if (!project) return;
-    setBusy(pluginId);
-    setError(undefined);
-    try {
-      const answer = await api.updateProject(project.id, enablePatch(pluginId, next));
-      onChange?.(answer.project);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(undefined);
-    }
-  };
-
-  const shown = entries.length > 0 ? entries : undefined;
-
-  return (
-    <SettingsGroup title="Plugins" description="Which of this Mac's plugins this project has opted into.">
-      {!shown && <Row icon={BlocksIcon} label="No plugins registered" control={<Badge variant="outline">None</Badge>} />}
-      {shown?.map((entry) => {
-        const failed = entry.state === "failed";
-        const reason = !project
-          ? `Select a project to turn ${entry.label} on for it.`
-          : remote
-            ? `Registered on ${project?.hostName ?? "another Mac"}. Change it in that Mac's own settings.`
-            : failed
-              ? (entry.error ?? "This plugin did not start, so turning it on would do nothing.")
-              : !machineAllows(machine, entry.pluginId)
-                ? machineOffReason(entry.label)
-                : undefined;
-        return (
-          <ToggleRow
-            key={entry.key}
-            label={entry.label}
-            icon={BlocksIcon}
-            hint={entry.blurb ?? "Sessions in this project get its tools; turning it off lets running work finish."}
-            checked={project ? pluginEnabled(readProjectPlugins(project).plugins, entry.pluginId) : false}
-            onCheckedChange={(next) => void toggle(entry.pluginId, next)}
-            {...(busy === entry.pluginId ? { status: <Badge variant="outline">Saving</Badge> } : {})}
-            {...(reason ? { unavailable: { reason } } : {})}
-          />
-        );
-      })}
-      {error && <Row icon={CircleAlertIcon} label="Could not save" hint={error} control={<Badge variant="outline">Error</Badge>} />}
-    </SettingsGroup>
-  );
-}
-
-export function ProjectPluginPanes({
-  project,
-  plugins,
-  machine,
-  onChange,
-}: {
-  project: Project;
-  plugins?: PluginStatus[];
-  machine?: ProjectPlugins;
-  onChange: (project: Project) => void;
-}) {
-  const entries = useMemo(() => projectPluginSections(plugins), [plugins]);
-  const enabled = readProjectPlugins(project).plugins;
-
-  return (
-    <>
-      {entries.map((entry) => {
-        if (!machineAllows(machine, entry.pluginId)) {
-          return <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} machineOff />;
-        }
-        const Pane = pluginEnabled(enabled, entry.pluginId) ? projectPaneFor(entry.pluginId) : undefined;
-        const machineSettings = machine?.entries[entry.pluginId]?.settings;
-        return Pane ? (
-          <Pane key={entry.key} project={project} onChange={onChange} />
-        ) : (
-          <PluginSettings
-            key={entry.key}
-            entry={entry}
-            project={project}
-            onChange={onChange}
-            {...(machineSettings ? { machineSettings } : {})}
-          />
-        );
-      })}
-    </>
-  );
-}
-
 function ProjectScopePicker({
   hosts,
   hostId,
@@ -552,27 +448,20 @@ export function ProjectsPage() {
         {...(instances ? { instances } : {})}
         writer={writer}
       />
-      {(!project || project.hostId) && (
-        <ProjectPluginRows
-          {...(project ? { project } : {})}
-          {...(plugins ? { plugins } : {})}
-          {...(machine ? { machine } : {})}
-          onChange={replaceProject}
-        />
-      )}
 
       {project && !project.hostId && (
         <>
           <McpSection scope={{ projectId: project.id, projectName: project.name }} />
           <ProjectWorkspaceSection key={project.id} projectId={project.id} />
-          <ProjectPluginPanes
-            project={project}
-            {...(plugins ? { plugins } : {})}
-            {...(machine ? { machine } : {})}
-            onChange={replaceProject}
-          />
         </>
       )}
+
+      <ProjectPluginList
+        {...(project ? { project } : {})}
+        {...(plugins ? { plugins } : {})}
+        {...(machine ? { machine } : {})}
+        onChange={replaceProject}
+      />
 
       {project && !project.hostId && <RemoveProjectSection key={project.id} project={project} onChange={replaceProject} />}
     </>

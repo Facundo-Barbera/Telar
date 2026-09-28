@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ComponentType } from "react";
-import { FileTextIcon, FlaskConicalIcon, FolderIcon, PackagePlusIcon, PlugIcon, SettingsIcon } from "lucide-react";
+import { BlocksIcon, FileTextIcon, FlaskConicalIcon, FolderIcon, PackagePlusIcon, PlugIcon, SettingsIcon } from "lucide-react";
 import { Input } from "@/ui/input";
 import { Switch } from "@/ui/switch";
 import { describeValue, parseNumberField, type SettingsField } from "../settings-form";
@@ -17,6 +17,11 @@ const ICONS: Readonly<Record<string, ComponentType<{ className?: string }>>> = {
   "file-text": FileTextIcon,
   plug: PlugIcon,
 };
+
+export function pluginIcon(name: string | undefined): ComponentType<{ className?: string }> {
+  const key = name?.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+  return (key && Object.hasOwn(ICONS, key) ? ICONS[key] : undefined) ?? BlocksIcon;
+}
 
 export type GeneratedSettingsProps = {
   fields: readonly SettingsField[];
