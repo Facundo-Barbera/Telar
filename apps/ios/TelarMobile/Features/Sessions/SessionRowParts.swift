@@ -6,15 +6,16 @@ struct SessionFamilyToggle: View {
     let toggle: () -> Void
 
     var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 3) {
-                if family.needsYou > 0 { Circle().fill(Theme.statusRed).frame(width: 6, height: 6) }
-                Text("\(family.children.count)").monospacedDigit()
-                Image(systemName: "chevron.right").font(.system(Theme.captionTiny))
-                    .rotationEffect(.degrees(open ? 90 : 0))
-            }
-            .font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7))
-            .padding(.horizontal, 4).frame(minHeight: 24).contentShape(Rectangle())
+        Button {
+            withAnimation(.snappy(duration: 0.2)) { toggle() }
+        } label: {
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold)).foregroundStyle(Theme.textMuted)
+                .rotationEffect(.degrees(open ? 90 : 0))
+                .overlay(alignment: .topTrailing) {
+                    if family.needsYou > 0 { Circle().fill(Theme.statusRed).frame(width: 6, height: 6).offset(x: 4, y: -3) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .accessibilityLabel(label)

@@ -232,7 +232,7 @@ struct SessionSidebar: View {
     private func attentionBand(_ attention: [NestedRow]) -> some View {
         if !attention.isEmpty {
             Section {
-                ForEach(attention) { item in sessionRow(item.row, family: item.family, nested: item.nested) }
+                ForEach(attention) { item in sessionRow(item.row, family: item.family, nested: item.nested, outlined: attention.contains { $0.family != nil }) }
             } header: {
                 HStack(spacing: 6) {
                     Circle().fill(Theme.statusRed).frame(width: 6, height: 6)
@@ -251,7 +251,10 @@ struct SessionSidebar: View {
     private func pinnedBand(_ drawn: [NestedRow]) -> some View {
         if !drawn.isEmpty {
             Section {
-                ForEach(drawn) { item in sessionRow(item.row, family: item.family, nested: item.nested).moveDisabled(item.nested) }
+                ForEach(drawn) { item in
+                    sessionRow(item.row, family: item.family, nested: item.nested, outlined: drawn.contains { $0.family != nil })
+                        .moveDisabled(item.nested)
+                }
                     .onMove { offsets, destination in
                         Task { await reorder(drawn.map(\.row), offsets: offsets, to: destination, key: .pinned) }
                     }
@@ -265,7 +268,8 @@ struct SessionSidebar: View {
             Section {
                 if !collapsed.contains(group.id) {
                     ForEach(drawn) { item in
-                        sessionRow(item.row, variant: .slim, placesAbove: group.places.count, family: item.family, nested: item.nested)
+                        sessionRow(item.row, variant: .slim, placesAbove: group.places.count, family: item.family, nested: item.nested,
+                                   outlined: drawn.contains { $0.family != nil })
                             .moveDisabled(item.nested)
                     }
                     .onMove { offsets, destination in
@@ -405,19 +409,20 @@ struct SessionSidebar: View {
 
     private func sessionRow(
         _ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true, placesAbove: Int = 0,
-        family: SessionFamily? = nil, nested: Bool = false
+        family: SessionFamily? = nil, nested: Bool = false, outlined: Bool = false
     ) -> some View {
         let host = HostLabel.row(
             name: settings.host(row.hostId)?.name, hostCount: settings.hosts.count, placesAbove: placesAbove
         )
         return NavigationLink(value: row.id) {
-            Group {
+            HStack(spacing: 4) {
+                if outlined && !nested { familyToggle(family).frame(width: 18) }
                 switch variant {
-                case .card: cardBody(row, showsProject: showsProject, host: host, family: family)
-                case .slim: slimBody(row, host: host, family: family)
+                case .card: cardBody(row, showsProject: showsProject, host: host)
+                case .slim: slimBody(row, host: host)
                 }
             }
-            .padding(.leading, nested ? 14 : 0)
+            .padding(.leading, nested ? 32 : 0)
             .opacity(inbox.staleHosts.contains(row.hostId) ? 0.6 : 1)
 
             .overlay(alignment: .leading) {
@@ -507,7 +512,7 @@ struct SessionSidebar: View {
         }
     }
 
-    @ViewBuilder private func cardBody(_ row: HostedSession, showsProject: Bool, host: String?, family: SessionFamily?) -> some View {
+    @ViewBuilder private func cardBody(_ row: HostedSession, showsProject: Bool, host: String?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 if row.session.settledOverride == "active" {
@@ -533,7 +538,6 @@ struct SessionSidebar: View {
                 if row.session.workspace.branch == nil {
                     ProviderIconView(driver: row.session.driver, size: titleProviderMark).opacity(0.5)
                 }
-                familyToggle(family)
             }
 
             if let branch = row.session.workspace.branch {
@@ -549,7 +553,7 @@ struct SessionSidebar: View {
         .padding(.vertical, 4)
     }
 
-    @ViewBuilder private func slimBody(_ row: HostedSession, host: String?, family: SessionFamily?) -> some View {
+    @ViewBuilder private func slimBody(_ row: HostedSession, host: String?) -> some View {
         HStack(spacing: 6) {
             if row.session.settledOverride == "active" {
                 Image(systemName: "pin.fill").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted.opacity(0.7))
@@ -577,7 +581,6 @@ struct SessionSidebar: View {
             } else {
                 SessionStatusSlot(session: row.session)
             }
-            familyToggle(family)
         }
     }
 
