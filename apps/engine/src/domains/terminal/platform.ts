@@ -23,7 +23,13 @@ export function posixProcessGroup(kill: RunKill): RunProcessGroup {
   return {
     detached: true,
     stop(pid, force, signal) {
-      kill(-pid, force ? "SIGKILL" : (signal ?? "SIGTERM"));
+      try {
+        kill(-pid, force ? "SIGKILL" : (signal ?? "SIGTERM"));
+      } catch (error) {
+        // macOS answers EPERM for a group whose members have all died but are not reaped yet:
+        // there is nothing left to signal. Our own spawned group cannot belong to another user.
+        if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      }
     },
     emptied: (pid) => liveness(pid) === "gone",
     liveness,
