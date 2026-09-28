@@ -30,19 +30,10 @@ import {
   type UsageLimitSource,
   resolveMcpServers,
   EngineRequest as RequestSchema,
-  DataScienceConfig as DataScienceConfigSchema,
-  type DataScienceConfig,
-  LatexConfig as LatexConfigSchema,
-  applyPluginPatch,
   machineAllows,
   machineSettings,
-  pluginEffectivelyEnabled,
-  PROJECT_PLUGINS_VERSION,
-  ProjectPlugins as ProjectPluginsSchema,
   type ProjectPlugins,
   migrateLegacyPluginFields,
-  pluginBlock,
-  readProjectPlugins,
   assignmentsOf,
   // THE CLIENTS' OWN SETTLING RULE, imported rather than re-implemented: the
   // live list drops the rows a rail would shelve (#457), so an engine that
@@ -162,8 +153,9 @@ import { AppearanceStore } from "./domains/appearance";
 import { McpOAuthStore, McpServers, type PendingMcpOAuth } from "./domains/agent-tools";
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { ProjectProbes, ProjectRegistry, type ProjectPatch } from "./domains/projects";
+import { dataScienceBlock, latexBlock, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { awaitsRateLimitSweep, createSessionModules, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
+import { awaitsRateLimitSweep, createSessionModules, workspaceRootOf, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
 import { boundedOutline, cohortNotification, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, inlineExcerpt, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
@@ -178,7 +170,7 @@ import { providerProcessEnv } from "./domains/providers";
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import { describeImport, type ClaudeConversation, type ForkCut } from "./drivers/claude";
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
-import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, LatexMachineSettings as LatexMachineSettingsSchema, type LatexPackagesAnswer, type LatexToolchain, latexToolchainStatus, listPackages, listTexPackages, ManagedTectonic, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, removeTelarVenv, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, toolchainStatus, windowCsv } from "./domains/plugins";
+import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, listPackages, listTexPackages, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, removeTelarVenv, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, windowCsv } from "./domains/plugins";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultWorktreeGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, derivedBranchFor, type WorktreePlan, type WorktreeQueue, buildInventory, type InventoryProject, type InventorySession, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, moveCheckouts, type Checkout, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
@@ -741,11 +733,6 @@ function assertText(value: unknown): asserts value is string {
  */
 const REF_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
-function workspaceRootOf(session: Pick<Session, "workspace">): string {
-  const root = workspacePath(session.workspace);
-  if (root === undefined) throw new EngineStateError("invalid_request", "this session has no working directory");
-  return root;
-}
 
 /**
  * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
@@ -811,22 +798,6 @@ const liveRow = (session: Session): LiveSessionRow => ({
 
 
 
-/**
- * A PROJECT'S DATA SCIENCE / LATEX ENTRY, in the flat `{enabled, ...settings}`
- * shape their resolvers read. Read from the plugin map only — the legacy
- * `Project.dataScience` / `Project.latex` keys are folded into it when the
- * registry opens and never read here. `undefined` means off. Settings that no
- * longer parse are dropped rather than half-trusted; the switch survives.
- */
-function typedPluginBlock<T>(project: Project, id: string, schema: { safeParse(value: unknown): { success: boolean; data?: T } }): T | undefined {
-  const block = pluginBlock(project, id);
-  if (!block) return undefined;
-  const parsed = schema.safeParse(block);
-  return parsed.success ? parsed.data : schema.safeParse({ enabled: block.enabled === true }).data;
-}
-const dataScienceBlock = (project: Project): DataScienceConfig | undefined =>
-  typedPluginBlock(project, "data-science", DataScienceConfigSchema);
-const latexBlock = (project: Project): LatexConfig | undefined => typedPluginBlock(project, "latex", LatexConfigSchema);
 
 
 /**
@@ -1039,6 +1010,7 @@ export class EngineStore {
   private readonly usageSources: UsageLimitSources;
   private readonly projectProbes: ProjectProbes;
   private readonly projectRegistry: ProjectRegistry;
+  private readonly toolchains: PluginToolchains;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1406,38 +1378,8 @@ export class EngineStore {
     });
   }
 
-  /**
-   * Which interpreter a session runs on, or nothing. THE WORKTREE RULE LIVES
-   * HERE AND NOWHERE ELSE: a relative path resolves against the session's own
-   * tree, and a worktree missing it gets nothing — never the project root's.
-   */
   resolveDataScience(session: Session): { pythonPath: string } | undefined {
-    if (!session.projectId) return undefined;
-    let project: Project;
-    try { project = this.getProject(session.projectId); } catch { return undefined; }
-    const config = dataScienceBlock(project);
-    if (!config?.enabled) return undefined;
-    // The machine ceiling, same rule as LaTeX's: off here means unavailable
-    // everywhere, and every project keeps what it chose.
-    if (!machineAllows(this.machinePlugins(), "data-science")) return undefined;
-    /**
-     * THE MAC'S DEFAULT INTERPRETER IS A REAL FALLBACK, exactly as its TeX
-     * install is — a project that has not chosen one runs on it rather than
-     * having no kernel at all.
-     *
-     * THE MACHINE DEFAULT IS NEVER RESOLVED AGAINST THE WORKTREE. A project's
-     * own `python.path` may be relative so a worktree session runs ITS `.venv`;
-     * a Mac-wide default is absolute by schema, because "the same interpreter
-     * wherever you are" is the only thing it could honestly mean. Passing it
-     * through `resolvePythonPath` anyway is harmless for an absolute path and
-     * keeps one code path.
-     */
-    const machineDefault = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "data-science"));
-    const chosen = config.python?.path ?? (machineDefault.success ? machineDefault.data.python : undefined);
-    if (!chosen) return undefined;
-    const pythonPath = resolvePythonPath(workspaceRootOf(session), chosen);
-    if (!fs.existsSync(pythonPath)) return undefined;
-    return { pythonPath };
+    return this.toolchains.resolveDataScience(session);
   }
 
   /** Compile and tlmgr jobs — a SIBLING runner, not `dsJobs`, so a thesis
@@ -1482,91 +1424,18 @@ export class EngineStore {
     });
   }
 
-  /**
-   * Which TeX toolchain a session compiles with, or nothing. The binary is a
-   * MACHINE-level fact (absolute path, checked on disk); `mainFile` is the
-   * per-tree fact and follows the worktree rule — it resolves against the
-   * session's own tree when the capability compiles, never the project root's.
-   */
   resolveLatex(session: Session): ResolvedLatex | undefined {
-    if (!session.projectId) return undefined;
-    let project: Project;
-    try { project = this.getProject(session.projectId); } catch { return undefined; }
-    const config = latexBlock(project);
-    if (!config?.enabled) return undefined;
-    // THE MACHINE CEILING. Turning LaTeX off for this Mac makes it unavailable
-    // everywhere without touching what any project chose.
-    if (!machineAllows(this.machinePlugins(), "latex")) return undefined;
-    /**
-     * ── THE FALLBACK CHAIN, MOST SPECIFIC FIRST ──────────────────────────────
-     *
-     *   1. the project's own distribution — a per-checkout choice is the most
-     *      specific thing anyone said, and it always wins;
-     *   2. this Mac's default, from the Plugins pane;
-     *   3. TELAR'S OWN TECTONIC, when it has been fetched.
-     *
-     * STEP 3 IS THE POINT OF THE MANAGED INSTALL. Before it, a project moved to
-     * a Mac with no TeX on it did not compile and had no way to, short of the
-     * person installing MacTeX; now the same checkout compiles anywhere Telar
-     * has downloaded its Tectonic. It is LAST because it is the weakest signal:
-     * nobody chose it, it is what is left when nobody has.
-     *
-     * Each step still has to EXIST on disk. A machine default naming a TeX Live
-     * that was deleted falls through to the managed copy rather than resolving
-     * onto a path that is not there — which is the difference between "your
-     * document compiled" and "latexmk: command not found".
-     */
-    const machine = LatexMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "latex"));
-    const machineDefaults = machine.success ? machine.data : {};
-    for (const choice of [config.toolchain, machineDefaults.toolchain]) {
-      if (!choice) continue;
-      // `managed` names an INTENT, not a place — resolve it to today's binary.
-      const binPath = choice.kind === "managed" ? this.managed().found()?.path : choice.path;
-      if (!binPath || !fs.existsSync(binPath)) continue;
-      const engine = choice.engine ?? machineDefaults.engine;
-      return {
-        kind: choice.kind === "managed" ? "tectonic" : (choice.kind as ResolvedLatex["kind"]),
-        binPath,
-        ...(engine ? { engine: engine as ResolvedLatex["engine"] } : {}),
-        ...(config.mainFile ? { mainFile: config.mainFile } : {}),
-        ...(machineDefaults.autoInstallPackages ? { autoInstallPackages: true } : {}),
-      };
-    }
-    const managed = this.managed().found();
-    if (!managed) return undefined;
-    return {
-      kind: "tectonic",
-      binPath: managed.path,
-      ...(config.mainFile ? { mainFile: config.mainFile } : {}),
-    };
+    return this.toolchains.resolveLatex(session);
   }
 
-  /**
-   * TELAR'S OWN TECTONIC, for this engine root. One instance, because the
-   * single-flight install and the last error are state two HTTP requests have
-   * to share — see `latex/managed.ts`.
-   */
-  private managedTectonicInstall?: ManagedTectonic;
 
-  private managed(): ManagedTectonic {
-    this.managedTectonicInstall ??= new ManagedTectonic({ root: this.paths.root });
-    return this.managedTectonicInstall;
-  }
 
-  /** What `GET /v2/latex/managed` answers, and what the toolchain carries. */
   managedTectonic(): ManagedTectonicStatus {
-    return this.managed().status();
+    return this.toolchains.managedStatus();
   }
 
-  /**
-   * Fetch it, or answer immediately when it is already here. Idempotent and
-   * serialised in the installer; the toolchain cache is dropped afterwards so
-   * the next probe reports the binary rather than a five-second-old absence.
-   */
-  async installManagedTectonic(): Promise<ManagedTectonicStatus> {
-    const status = await this.managed().install();
-    this.latexToolchainCache = undefined;
-    return status;
+  installManagedTectonic(): Promise<ManagedTectonicStatus> {
+    return this.toolchains.installManaged();
   }
 
   /** The kernel host reporting a state change; journaled so the panel's pill follows it. */
@@ -2275,7 +2144,7 @@ export class EngineStore {
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
     ({
       settings: this.settings, appearance: this.appearance, mcpOAuth: this.mcpOAuth, mcpServers: this.mcpServers, usageSources: this.usageSources,
-      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers,
+      projectProbes: this.projectProbes, projectRegistry: this.projectRegistry, catalogues: this.catalogues, providers: this.providers, toolchains: this.toolchains,
     } = this.leafStores(options));
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
@@ -2323,7 +2192,8 @@ export class EngineStore {
       manifest: options.manifest ?? BUNDLED_MANIFEST,
     });
     const providers = new ProviderRegistry(this.kernel, this.ambientEnv);
-    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers };
+    const toolchains = new PluginToolchains(this.kernel, { getProject: (id) => projectRegistry.get(id) });
+    return { settings, appearance, mcpOAuth, mcpServers, usageSources, projectProbes, projectRegistry, catalogues, providers, toolchains };
   }
 
   /** How many projects the legacy-field fold changed on this open (0 on most). */
@@ -2840,42 +2710,16 @@ export class EngineStore {
   }
 
   /**
-   * REFUSE TO START NEW WORK ON A PUT-AWAY PROJECT.
-   *
-   * Reading stays open — history, diffs, files and the session's own record all
-   * still answer, which is what keeps a removed project's past coherent instead
-   * of blank. This guards the three places where new work BEGINS: a new
-   * session, a new turn (which is also how a peer's wake arrives, so a
-   * subscription firing later cannot quietly resume a provider on a project
-   * the person put away), and a settings change (frozen, so what comes back on
-   * restore is what was put away).
+   * Refuses new work (a session, a turn or wake, a settings change) on a removed project or an unplugged
+   * drive. Reads stay open, so a removed project's history still answers.
    */
   private assertProjectAvailable(projectId: string): void {
     const project = this.getProject(projectId);
     if (project.removedAt !== undefined) {
       throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
     }
-    /**
-     * AND THE DISK HAS TO BE THERE — issue #534.
-     *
-     * The same three places, and the same argument: reading stays open, starting
-     * work does not. What differs is WHY it is refused and therefore what the
-     * sentence has to say. A removed project needs a decision (restore it); an
-     * unplugged drive needs a cable, and telling somebody to re-register would
-     * be actively harmful — re-registering a different path mints a new project
-     * id and strands the sessions they are trying to get back to.
-     *
-     * PROBED FRESH RATHER THAN READ OFF THE LAST LISTING. This is the moment a
-     * provider would be spawned in the folder, and a ten-second-old answer about
-     * a cable is exactly old enough to be wrong.
-     *
-     * `unmounted` ONLY, AND `missing` DELIBERATELY NOT. A deleted folder already
-     * has a good answer and it is a BETTER-PLACED one: the turn is accepted, the
-     * worker's `assertProjectRoot` refuses to spawn, and the sentence naming the
-     * folder lands in the conversation the person is looking at rather than as a
-     * dialog on a button. Nothing about an external drive changes that, and
-     * moving the refusal earlier would only make it harder to read.
-     */
+    // Probed fresh, and `unmounted` only: a missing folder is refused by the worker, in the conversation,
+    // and an unplugged drive needs a cable rather than a re-registration that would mint a new project id.
     if (this.projectAvailability(project) === "unmounted") {
       throw new EngineStateError("conflict", `The drive holding ${project.name} is not connected. Plug it back in and this will work again.`);
     }
@@ -2946,66 +2790,29 @@ export class EngineStore {
     return detached;
   }
 
-  /**
-   * WHAT THIS MACHINE ALLOWS. Absent file means everything is allowed — a Mac
-   * that predates this must not have its working plugins silently switched off.
-   */
   machinePlugins(): ProjectPlugins {
-    const parsed = ProjectPluginsSchema.safeParse(this.readDocument(this.paths.machinePlugins));
-    return parsed.success ? parsed.data : { version: PROJECT_PLUGINS_VERSION, entries: {} };
+    return this.toolchains.machine();
   }
 
-  /**
-   * Turn a plugin on or off for this Mac, or change its machine settings.
-   *
-   * PROJECT CONFIGURATION IS NEVER TOUCHED. Disabling globally is a ceiling: a
-   * project that had the plugin on still has it on, and re-enabling here
-   * restores exactly what each project had rather than a blank slate.
-   */
   updateMachinePlugins(patch: PluginPatch): ProjectPlugins {
-    const next = applyPluginPatch(this.machinePlugins(), patch);
-    this.writeDocument(this.paths.machinePlugins, next);
-    return structuredClone(next);
+    return this.toolchains.updateMachine(patch);
   }
 
-  /** Does this plugin actually run for this project: machine AND project. */
   pluginRuns(project: Project, id: string): boolean {
-    return pluginEffectivelyEnabled(this.machinePlugins(), readProjectPlugins(project).plugins, id);
+    return this.toolchains.runs(project, id);
   }
 
   attachPluginRelease(release: (sessionId: string, reason: string) => void): void {
     this.pluginRelease = release;
   }
 
-  /** WHICH PLUGINS A SESSION'S PROJECT HAS TURNED ON, as ids, under the Mac's ceiling. */
   enabledPluginIds(session: Session): string[] {
-    if (!session.projectId) return [];
-    let project: Project;
-    try { project = this.getProject(session.projectId); } catch { return []; }
-    const { plugins } = readProjectPlugins(project);
-    const machine = this.machinePlugins();
-    return Object.entries(plugins.entries)
-      // THE MACHINE CEILING APPLIES TO THE CLAIM TOO. A worker builds walls from
-      // this list, so a globally disabled plugin must not reach a turn — the
-      // frontend hiding it would not be enforcement.
-      .filter(([id, config]) => config.enabled && machineAllows(machine, id))
-      .map(([id]) => id)
-      .sort();
+    return this.toolchains.enabledIds(session);
   }
 
-  /**
-   * THE TOOLCHAIN, MEASURED. uv, conda and Homebrew where they are, and the
-   * Pythons uv can see or fetch. Cached for a few seconds because the page
-   * asks for it beside every environment list and each answer is four spawns.
-   */
-  private toolchainCache?: { until: number; value: Promise<Toolchain> };
 
   dataScienceToolchain(fresh = false): Promise<Toolchain> {
-    if (!fresh && this.toolchainCache && this.now() < this.toolchainCache.until) return this.toolchainCache.value;
-    const value = toolchainStatus();
-    this.toolchainCache = { until: this.now() + 5_000, value };
-    void value.catch(() => { this.toolchainCache = undefined; });
-    return value;
+    return this.toolchains.dataScienceToolchain(fresh);
   }
 
   /**
@@ -3205,7 +3012,7 @@ export class EngineStore {
       lock: `bootstrap:${request.what}`,
       steps: plan.steps,
       onDone: () => {
-        this.toolchainCache = undefined;
+        this.toolchains.forgetDataScienceToolchain();
         if (!expect) return {};
         const found = findBinary(expect);
         if (!found) throw new Error(`${expect} was installed but cannot be found — open a new terminal, check your PATH, then detect again`);
@@ -3244,38 +3051,10 @@ export class EngineStore {
     };
   }
 
-  /**
-   * THE TEX TOOLCHAIN, MEASURED — Tectonic and every TeX Live root. Cached
-   * like the Python one and for the same reason: the settings page asks
-   * beside every list, and each answer is a fistful of `--version` spawns.
-   */
-  private latexToolchainCache?: { until: number; value: Promise<LatexToolchain> };
 
-  /**
-   * THE MANAGED COPY IS ADDED HERE, NOT DISCOVERED IN THE PROBE.
-   * `latexToolchainStatus` looks at PATH and the places installers use; Telar's
-   * own Tectonic lives under the engine's state root, which that function has no
-   * business knowing about.
-   *
-   * IT IS OUTSIDE THE CACHE, deliberately, and the cached branch goes through
-   * this too. The probe is cached for five seconds because each answer is a
-   * fistful of `--version` spawns; the managed status is one `stat`. Letting it
-   * ride the cache would leave a pane showing "not installed" for five seconds
-   * beside a binary that had just finished downloading — which is exactly the
-   * window a person is looking at the pane.
-   */
-  private withManagedTectonic(probe: Promise<LatexToolchain>): Promise<LatexToolchain> {
-    return probe.then((toolchain) => ({ ...toolchain, managed: this.managedTectonic() }));
-  }
 
   latexToolchain(fresh = false): Promise<LatexToolchain> {
-    if (!fresh && this.latexToolchainCache && this.now() < this.latexToolchainCache.until) {
-      return this.withManagedTectonic(this.latexToolchainCache.value);
-    }
-    const value = latexToolchainStatus();
-    this.latexToolchainCache = { until: this.now() + 5_000, value };
-    void value.catch(() => { this.latexToolchainCache = undefined; });
-    return this.withManagedTectonic(value);
+    return this.toolchains.latexToolchain(fresh);
   }
 
   /**
@@ -3331,7 +3110,7 @@ export class EngineStore {
       lock: `bootstrap:${request.what}`,
       steps: plan.steps,
       onDone: () => {
-        this.latexToolchainCache = undefined;
+        this.toolchains.forgetLatexToolchain();
         const found = findLatexBinary(expect);
         if (!found) throw new Error(`${expect} was installed but cannot be found — open a new terminal, check your PATH, then detect again`);
         adoptBinaryDir(found);

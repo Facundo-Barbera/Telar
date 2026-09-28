@@ -1,5 +1,5 @@
 import path from "node:path";
-import { Session } from "@telar/engine-client";
+import { Session, workspacePath } from "@telar/engine-client";
 import { assertId, EngineStateError } from "../../platform/kernel";
 import type { EngineStatePaths } from "../../state-paths";
 
@@ -56,4 +56,11 @@ export function releaseDelegationSettle(session: Session): void {
   const released = session.unsettledAssignments ?? [];
   if (released.includes(stamp.runId)) return;
   session.unsettledAssignments = [...released, stamp.runId].slice(-MAX_UNSETTLED_ASSIGNMENTS);
+}
+
+/** The session's working directory, or a refusal for one that has none. */
+export function workspaceRootOf(session: Pick<Session, "workspace">): string {
+  const root = workspacePath(session.workspace);
+  if (root === undefined) throw new EngineStateError("invalid_request", "this session has no working directory");
+  return root;
 }

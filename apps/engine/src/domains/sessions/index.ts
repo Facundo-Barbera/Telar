@@ -1,4 +1,4 @@
-export { parseSession, releaseDelegationSettle, sessionDir, sessionMetadataFile, storedSession } from "./metadata";
+export { parseSession, releaseDelegationSettle, sessionDir, sessionMetadataFile, storedSession, workspaceRootOf } from "./metadata";
 export { latestProviderSessionId, SessionRecords } from "./records";
 export { OpenPrefixes, SessionItems } from "./items";
 export { SessionRequests } from "./requests";
