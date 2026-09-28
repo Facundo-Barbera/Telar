@@ -59,7 +59,7 @@ import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snap
 import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";
 import { processToReveal, stillWorking } from "@/lib/background-presence";
-import { Composer, MAX_ATTACHMENTS } from "./composer";
+import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./session/cohort-fold";
 // `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
 // and the import only runs one way (cockpit → transcript). A wake that landed

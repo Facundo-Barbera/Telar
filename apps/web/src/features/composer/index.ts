@@ -1,18 +1,5 @@
 export { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle } from "./chip";
-export {
-  ORCHESTRATE_SKILL,
-  availableCommands,
-  buildPathIndex,
-  compactBlockedReason,
-  isCompactDraft,
-  isResumeDraft,
-  providerCommandCompletions,
-  rankCommands,
-  rankPaths,
-  rankSkills,
-  type Completion,
-  type PathEntry,
-} from "./completions";
+export { isCompactDraft } from "./completions";
 export { DRAFTS_CHANGED_EVENT, listCanvasDrafts, readDraft, writeDraft, type CanvasDraft } from "./draft";
 export { canvasHrefFor, composerProject, noteDestination, readFrontDoorNote, rememberedProjectName, writeFrontDoorNote } from "./project";
 export {
@@ -22,21 +9,11 @@ export {
   registerComposer,
   type ComposerEntry,
   type ComposerKind,
-  type ComposerSubmit,
   type ComposerWrite,
 } from "./registry";
-export { chipIsDirectory, chipPath, detectComposerTrigger, replaceTextRange, segmentDraft, type ComposerTrigger } from "./tokens";
-export { AccessControl } from "./components/access-control";
+export { chipIsDirectory, chipPath, replaceTextRange, segmentDraft } from "./tokens";
 export { AgentControl } from "./components/agent-control";
-export { ComposerOverflowMenu } from "./components/composer-overflow-menu";
-export { BackgroundPresence, ContextPill } from "./components/context-pill";
-export { ControlDivider } from "./components/control-primitives";
+export { Composer } from "./components/composer";
 export { ReasoningControl } from "./components/reasoning-control";
-export { useComposerCommandChoices } from "./hooks/use-composer-command-choices";
-export { hasUltrathink, modelOptionsOf, toggleUltrathink } from "./model-options";
-export { ComposerEditor, type ComposerEditorHandle } from "./components/composer-editor";
-export { ComposerMenu } from "./components/composer-menu";
-export { ComposerQuestionDrawer } from "./components/composer-question-drawer";
-export { ComposerStashMenu } from "./components/composer-stash-menu";
-export { contextNoticeDismissal, writeContextNoticeDismissed } from "./context-notice-dismissal";
-export { encodeImagesForStash, filesFromStash } from "./stash-images";
+export { MAX_ATTACHMENTS } from "./hooks/use-composer-stash";
+export { modelOptionsOf } from "./model-options";
