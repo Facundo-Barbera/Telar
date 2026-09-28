@@ -6,13 +6,17 @@ import { flush, mount } from "./dom";
 
 export const pushes: string[] = [];
 const router = { push: (to: string) => pushes.push(to), replace: () => {}, refresh: () => {}, back: () => {}, forward: () => {}, prefetch: () => {} };
-mock.module("next/navigation", () => ({
-  ...navigation,
-  usePathname: () => "/",
-  useRouter: () => router,
-  useSearchParams: () => new URLSearchParams(),
-  redirect: navigation.redirect,
-}));
+// Module mocks are process-wide and last-wins, and this file is imported once per
+// process, so every mount re-installs the router another file may have replaced.
+const installNavigation = () =>
+  mock.module("next/navigation", () => ({
+    ...navigation,
+    usePathname: () => "/",
+    useRouter: () => router,
+    useSearchParams: () => new URLSearchParams(),
+    redirect: navigation.redirect,
+  }));
+installNavigation();
 
 let served: RailRequest[] = [];
 
@@ -73,6 +77,7 @@ export const loadRail = () => import("@/components/app-sidebar?rail" as string) 
 
 /** Mounts the whole rail and waits for its first pass (and the layout read) to land. */
 export async function mountRail() {
+  installNavigation();
   window.localStorage.clear();
   pushes.length = 0;
   const { AppSidebarBody } = await loadRail();
