@@ -22,7 +22,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { EDITOR_HEADER_ROW } from "./editor-chrome";
 import { EditorSurface } from "./editor-surface";
 import { FilesSurface } from "./files-surface";
-import { FileViewSurface } from "./file-view-surface";
+import { FileViewSurface } from "@/features/files";
 import { NotebookSurface } from "./notebook-surface";
 import { PdfSurface } from "./pdf-surface";
 import { TableSurface } from "./table-surface";

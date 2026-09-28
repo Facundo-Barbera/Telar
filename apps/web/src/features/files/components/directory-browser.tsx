@@ -1,31 +1,5 @@
 "use client";
 
-/**
- * BROWSING FOR A FOLDER WITHOUT LEAVING THE PALETTE.
- *
- * IT REPLACES A NATIVE DIALOG, and that is the whole argument. Add project used
- * to call Electron's `dialog.showOpenDialog` (lib/choose-directory.ts): a sheet
- * that covers the palette you were half-way through, with none of its keyboard,
- * and — from a browser tab or a paired Mac — a window that opens on a machine
- * nobody is looking at. T3 Code browses in the palette instead, and every part
- * of that is reachable by the keyboard alone.
- *
- * THE LISTING IS THE ENGINE'S (`/api/fs` → `/v2/fs`), so on a remote
- * screen this lists the PAIRED MAC's disk: `createEngineApi()`'s default fetcher
- * follows the address bar, and `/hosts/:id/…` routes the read over there. That
- * is the thing a native dialog could never do, and the reason the last
- * directory is remembered per host rather than once.
- *
- * THE KEYBOARD IS IN `lib/directory-browser.ts`, pure. This file is the fetch,
- * the rows and the two decisions that need a browser: what localStorage
- * remembered, and whether the desktop shell is there to open Finder.
- *
- * WHEN THE ENGINE IS UNREACHABLE IT SAYS SO AND OFFERS THE OLD DOOR. A browser
- * whose listing never arrives is a dead end, and `chooseDirectory` still works
- * in the desktop shell without the engine — so the fallback is offered by name
- * rather than left as an empty list.
- */
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftIcon, CornerDownLeftIcon, EyeIcon, EyeOffIcon, FolderIcon, GitBranchIcon, Loader2Icon } from "lucide-react";
 import type { DirectoryEntry, DirectoryListing } from "@telar/engine-client";
@@ -35,7 +9,7 @@ import {
   directoryKey,
   rememberedDirectoryKey,
   type DirectoryBrowserState,
-} from "@/lib/directory-browser";
+} from "../directory-keys";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { workspaceOpener } from "@/lib/workspace-open";
@@ -43,20 +17,11 @@ import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
 
-/**
- * The one read this component makes, injectable so the tests need no server.
- *
- * IT MUST BE STABLE across renders — it is a dependency of the effect that
- * fetches, so a fresh closure on every render is a fetch on every render. The
- * default below is module-level for exactly that reason.
- */
+/** Must be stable across renders: it is a dependency of the fetching effect. */
 export type DirectoryLister = (input: { path?: string; hidden?: boolean; nearest?: boolean }) => Promise<DirectoryListing>;
 
 const engineLister: DirectoryLister = (input) => api.fsDirs(input);
 
-/** What localStorage last held for this host, if anything readable. Private
- *  browsing and a disabled store both throw on access, and neither is a
- *  reason to fail to draw a browser. */
 function remembered(hostId: string | undefined): string | undefined {
   try {
     return window.localStorage.getItem(rememberedDirectoryKey(hostId)) ?? undefined;
@@ -69,8 +34,7 @@ function remember(hostId: string | undefined, path: string): void {
   try {
     window.localStorage.setItem(rememberedDirectoryKey(hostId), path);
   } catch {
-    // Nothing to do and nothing to say: the browser still works, it just opens
-    // at home next time.
+    return;
   }
 }
 
@@ -85,37 +49,22 @@ export function DirectoryBrowser({
   startAt,
   list = engineLister,
 }: {
-  /** "Add" for a local folder, "Clone here" for a clone parent — the button
-   *  says what pressing it does, not what kind of thing is selected. */
   actionLabel: string;
   onSubmit: (path: string) => void;
   onBack: () => void;
-  /** Offer the native picker instead. Shown only when the engine could not be
-   *  reached, which is the one case this browser cannot recover from. */
+  /** Offered only when the engine could not be reached. */
   onFallback?: () => void;
-  /** The caller is registering or cloning; the button says so and stops taking
-   *  presses. */
   busy?: boolean;
-  /** The caller's own sentence — a clone that failed, a root the engine
-   *  refused. Shown under the list, beside this component's own. */
   notice?: string;
   hostId?: string;
-  /** A path somebody pasted — absolute, or `~`-relative for the listing to
-   *  expand. Opened instead of the remembered folder, and if it is a file or
-   *  gone, its nearest existing folder is opened with a sentence saying so. */
+  /** A pasted path; if it is a file or gone, its nearest existing folder opens instead. */
   startAt?: string;
   list?: DirectoryLister;
 }) {
-  /** The directory to list; `undefined` asks the engine for home. Starts at
-   *  the pasted path, else whatever this host was last browsing. */
   const [target, setTarget] = useState<string | undefined>(() =>
     startAt ?? (typeof window === "undefined" ? undefined : remembered(hostId)),
   );
-  /** Still on the pasted path, so the listing may walk up from it. Browsing
-   *  anywhere else asks for exactly the folder named. */
   const [nearest, setNearest] = useState(Boolean(startAt));
-  /** Why the browser is not where the pasted path said — kept past the
-   *  fallback listing that follows it, and cleared once the reader moves. */
   const [aside, setAside] = useState<string>();
   const [hidden, setHidden] = useState(false);
   const [listing, setListing] = useState<DirectoryListing>();
@@ -124,18 +73,11 @@ export function DirectoryBrowser({
   const [error, setError] = useState<string>();
   const [unreachable, setUnreachable] = useState(false);
   const [loading, setLoading] = useState(true);
-  /** A remembered directory that has since been deleted must not be a dead
-   *  browser, so its first failure falls back to home — once. */
+  // A remembered directory that has gone falls back to home, once.
   const fellBack = useRef(false);
   const rows = useRef<HTMLDivElement>(null);
 
-  /**
-   * THE FETCH SETS NO STATE SYNCHRONOUSLY, which is this app's lint rule and a
-   * real one: a `setLoading(true)` in this body would cascade a second render
-   * on every listing. The spinner is turned on by whatever CHANGED the target
-   * (`open`, `showHidden`, and the initial state), which is also where the
-   * reader's gesture actually was.
-   */
+  // No synchronous setState here; whatever changes the target turns the spinner on.
   useEffect(() => {
     let live = true;
     void list({ ...(target ? { path: target } : {}), ...(hidden ? { hidden: true } : {}), ...(nearest && target ? { nearest: true } : {}) })
@@ -156,8 +98,6 @@ export function DirectoryBrowser({
         const code = cause instanceof EngineApiError ? cause.code : undefined;
         if (target && !fellBack.current && (code === "not_found" || code === "invalid_request")) {
           fellBack.current = true;
-          // A remembered folder that has gone is nobody's business; a PASTED
-          // one being refused is an answer the reader is waiting for.
           if (nearest && cause instanceof EngineApiError) setAside(`${cause.message} Showing home instead.`);
           setNearest(false);
           setLoading(true);
@@ -188,8 +128,6 @@ export function DirectoryBrowser({
     [field, listing, entries, at, hidden],
   );
 
-  /** Scrolling the highlight into view is the only thing the arrows cannot do
-   *  themselves — a list of thirty folders is taller than the panel. */
   useEffect(() => {
     if (at < 0) return;
     rows.current?.querySelector(`[data-row="${at}"]`)?.scrollIntoView({ block: "nearest" });
@@ -214,13 +152,9 @@ export function DirectoryBrowser({
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    // An IME's own Enter commits a candidate; it is not a choice — the same
-    // guard the palette's field carries.
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     const action = directoryKey(state, { key: event.key, meta: event.metaKey, ctrl: event.ctrlKey });
     if (action.type === "none") {
-      // Tab and Backspace only reach the input when this said nothing, so an
-      // unhandled Tab still leaves the field the way it always did.
       if (event.key === "Tab" && !event.shiftKey) event.preventDefault();
       return;
     }
@@ -232,21 +166,14 @@ export function DirectoryBrowser({
     else if (action.type === "submit") submit();
   };
 
-  /** Finder is on THIS Mac, so a remote host's path is refused by name rather
-   *  than revealed — two machines with the same layout would otherwise open
-   *  the WRONG folder. The same rule `workspace-open.ts` states. */
+  // Finder is on this Mac; revealing a remote host's path could open the wrong folder.
   const bridge = typeof window === "undefined" ? undefined : workspaceOpener();
   const here = !hostId || hostId === LOCAL_HOST_ID;
   const canReveal = Boolean(bridge?.reveal) && here && Boolean(listing);
 
   return (
-    /* `display: contents` — the keys are caught for the WHOLE page, not just
-       the field, because clicking a row moves focus to that row's button and
-       ⌘Enter has to keep working from there. The wrapper takes no space, so
-       the dialog's own layout is unchanged. */
+    /* Keys are caught for the whole page so ⌘Enter still works after a row takes focus. */
     <div className="contents" onKeyDown={onKeyDown}>
-      {/* THE SAME HEADER THE PALETTE'S OTHER PAGES WEAR — back arrow, then the
-          field — so arriving here does not feel like a different dialog. */}
       <div className="flex items-center gap-2 border-b px-3 py-2.5">
         <button
           type="button"
@@ -274,8 +201,6 @@ export function DirectoryBrowser({
           autoComplete="off"
           className="min-w-0 flex-1 bg-transparent font-mono text-sm outline-none placeholder:text-muted-foreground"
         />
-        {/* `hidden` is "dotfolders are SHOWN" — the engine's own word for the
-            query — so the button offers the other state. */}
         <button
           type="button"
           aria-label={hidden ? "Hide dotfolders" : "Show dotfolders"}
@@ -288,15 +213,7 @@ export function DirectoryBrowser({
         </button>
       </div>
 
-      {/* WHERE BROWSING MAY START — issue #630.
-
-          Listing a mounted drive has always been allowed and has never been
-          REACHABLE: the browser opens at home, and home's parent is null by
-          design, so the only way to a volume was to know its path and type it.
-          To somebody with an external disk that is indistinguishable from
-          "Telar cannot see my drive". These are the roots `listDirectories`
-          already sanctions, made visible; nothing new is permitted. Shown only
-          when there is somewhere to go besides home. */}
+      {/* Mounted volumes the engine already allows, made reachable; shown only when there is more than home. */}
       {(listing?.roots?.length ?? 0) > 1 && (
         <div className="flex flex-wrap items-center gap-1 border-b px-3 py-2">
           {listing?.roots.map((root) => (
@@ -364,8 +281,6 @@ export function DirectoryBrowser({
         </div>
       )}
 
-      {/* THE LEGEND IS THE FEATURE, as on the palette's other pages: ⌘Enter is
-          not a key anybody guesses, and it is the one that finishes the job. */}
       <div className="flex items-center gap-3 border-t px-3 py-2 text-2xs text-muted-foreground">
         <span>
           <kbd className="font-sans">↑↓</kbd> Navigate
@@ -377,8 +292,6 @@ export function DirectoryBrowser({
           <kbd className="font-sans">Backspace</kbd> Up
         </span>
         <span className="flex-1" />
-        {/* A SECONDARY LINK, never a button beside the primary one: opening
-            Finder is the rare case, and it does not choose anything. */}
         {canReveal && listing && bridge?.reveal && (
           <button
             type="button"
@@ -406,8 +319,6 @@ export function DirectoryBrowser({
   );
 }
 
-/** One folder: a glyph, its name, and a branch mark when it is a checkout —
- *  which is what makes three repositories findable in a list of thirty. */
 function DirectoryRow({
   row,
   on,

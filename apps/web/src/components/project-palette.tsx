@@ -57,7 +57,7 @@ import {
   Undo2Icon,
   XIcon,
 } from "lucide-react";
-import { DirectoryBrowser } from "@/components/directory-browser";
+import { DirectoryBrowser } from "@/features/files";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { chooseDirectory } from "@/lib/choose-directory";

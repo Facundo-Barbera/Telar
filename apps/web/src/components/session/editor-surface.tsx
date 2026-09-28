@@ -49,7 +49,7 @@ import { useWorkspaceFileMenu, workspaceFilePath } from "@/lib/workspace-open";
 import { EDITOR_HEADER_ROW } from "@/components/session/editor-chrome";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { FilesSurface } from "@/components/session/files-surface";
-import { FileViewSurface } from "@/components/session/file-view-surface";
+import { FileViewSurface } from "@/features/files";
 import { NotebookSurface } from "@/components/session/notebook-surface";
 import { PdfSurface } from "@/components/session/pdf-surface";
 import { TableSurface } from "@/components/session/table-surface";

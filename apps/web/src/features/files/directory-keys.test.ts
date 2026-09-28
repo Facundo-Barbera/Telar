@@ -10,7 +10,7 @@ import {
   foldHome,
   rememberedDirectoryKey,
   type DirectoryBrowserState,
-} from "./directory-browser";
+} from "./directory-keys";
 import type { DirectoryEntry } from "@telar/engine-client";
 
 const HOME = "/Users/someone";
