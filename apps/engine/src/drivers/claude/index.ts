@@ -1,13 +1,4 @@
-export {
-  canonicalEnvPatch,
-  canonicalJson,
-  canonicalServers,
-  changedFields,
-  fieldDigest,
-  fieldDigests,
-  resolveChildEnv,
-} from "./identity";
-export { ClaudeRuntimeStore, UNATTENDED_BACKGROUND_WORK_MS } from "./runtime";
+export { resolveChildEnv } from "./identity";
 export {
   claudeProjectSlug,
   claudeProjectsRoot,
@@ -24,3 +15,4 @@ export { itemDetailForToolCall, requestKindForTool, setPluginReadTools, titleFor
 export { claudeNotificationContent } from "./sdk";
 export { RateLimitedError } from "./limits";
 export { readTaskOutput, resolveTaskOutputFile } from "./task-output";
+export { createClaudeDriver } from "./run";

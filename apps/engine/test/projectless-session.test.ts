@@ -34,7 +34,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStore, EngineStateError } from "../src/state";
 import { assertProjectRoot } from "../src/worker";
-import { createClaudeDriver } from "../src/driver";
+import { createClaudeDriver } from "../src/drivers/claude";
 import { createCodexDriver } from "../src/drivers/codex";
 import type { DriverRun } from "../src/drivers";
 

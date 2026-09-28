@@ -26,7 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { createClaudeDriver } from "../src/driver";
+import { createClaudeDriver } from "../src/drivers/claude";
 import type { DriverRun, TurnDriver } from "../src/drivers";
 import { bundledPluginToolModules, setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";

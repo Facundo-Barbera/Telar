@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { TurnObservation } from "@telar/engine-client";
 import { unifiedDiff } from "../src/domains/git/diff";
-import { createClaudeDriver as createRealClaudeDriver } from "../src/driver";
+import { createClaudeDriver as createRealClaudeDriver } from "../src/drivers/claude";
 import { RateLimitedError } from "../src/drivers/claude";
 import { ProviderUnavailableError } from "../src/drivers";
 import { SteerMailbox } from "../src/domains/turns";

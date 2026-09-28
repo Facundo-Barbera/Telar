@@ -22,7 +22,7 @@
  * Run `bun test test/first-request-context.test.ts` to print the table.
  */
 import { expect, test } from "bun:test";
-import { createClaudeDriver } from "../src/driver";
+import { createClaudeDriver } from "../src/drivers/claude";
 import { BROWSER_BRIEFING } from "../src/domains/browser";
 import { BROWSER_TOOLS } from "../src/domains/browser";
 import { RUN_BRIEFING } from "../src/run/briefing";
