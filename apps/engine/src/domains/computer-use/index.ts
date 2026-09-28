@@ -1,1 +1,2 @@
-export { claimHasComputerUse, createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, withComputerUse, type ComputerUseGate, type ResolvedComputerUse } from "./gate";
+export { claimHasComputerUse, createComputerUseGate, withComputerUse, type ComputerUseGate, type ResolvedComputerUse } from "./gate";
+export { computerUseRoutes } from "./routes";
