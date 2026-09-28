@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
-const { resolveTelarHome } = require("../../scripts/dev-lifecycle.mjs");
+const { resolveTelarHome } = require("../../../../scripts/dev-lifecycle.mjs");
 
 const desktopDir = path.join(__dirname, "..", "..");
 const repoDir = path.resolve(desktopDir, "../..");
