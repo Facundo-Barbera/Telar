@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Exec } from "../src/ds/python-env";
-import { adoptBinaryDir, compareVersions, findBinary, listPythons, scanPathPythons, toolchainStatus } from "../src/ds/toolchain";
+import type { Exec } from "./python-env";
+import { adoptBinaryDir, compareVersions, findBinary, listPythons, scanPathPythons, toolchainStatus } from "./toolchain";
 
 const roots: string[] = [];
 const root = (): string => {

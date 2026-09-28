@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LATEX_AUX_DIR, logFileFor, planCompile, type ResolvedLatex } from "../src/latex/compile";
+import { LATEX_AUX_DIR, logFileFor, planCompile, type ResolvedLatex } from "./compile";
 
 const roots: string[] = [];
 const workspace = (): string => {

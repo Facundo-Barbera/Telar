@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { assertTexPackageNames, missingTexPackages, parseTlmgrList, texInstallSteps, texRemoveSteps } from "../src/latex/packages";
-import { parseLatexLog } from "../src/latex/log-parser";
-import type { TexliveDistribution } from "../src/latex/toolchain";
+import { assertTexPackageNames, missingTexPackages, parseTlmgrList, texInstallSteps, texRemoveSteps } from "./packages";
+import { parseLatexLog } from "./log-parser";
+import type { TexliveDistribution } from "./toolchain";
 
 const dist: TexliveDistribution = {
   binDir: "/opt/tex/bin",

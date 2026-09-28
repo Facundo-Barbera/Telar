@@ -15,7 +15,7 @@
  *
  * The managed Tectonic is represented here by a real file in the place the
  * installer publishes to — `resolveLatex` asks the filesystem, so a stub would
- * be testing the stub. Nothing downloads: `latex-managed.test.ts` owns the
+ * be testing the stub. Nothing downloads: `src/latex/managed.test.ts` owns the
  * installer itself, with a fetch that never leaves the process.
  */
 import { afterEach, expect, test } from "bun:test";

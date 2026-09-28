@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { clearCellOutputs, emptyNotebook, findCell, fromNbOutputs, moveCell, parseNotebook, parseNotebookText, serializeNotebook, toNbOutputs } from "../src/ds/notebook-file";
-import { diffSnapshots } from "../src/ds/store-capability";
-import { namesIn } from "../src/ds/state-files";
-import { parseDelimited, windowCsv } from "../src/ds/table";
+import { clearCellOutputs, emptyNotebook, findCell, fromNbOutputs, moveCell, parseNotebook, parseNotebookText, serializeNotebook, toNbOutputs } from "./notebook-file";
+import { diffSnapshots } from "./store-capability";
+import { namesIn } from "./state-files";
+import { parseDelimited, windowCsv } from "./table";
 
 const FIXTURE = {
   cells: [

@@ -7,7 +7,7 @@
  * clock's settle waits `SETTLED_TERMINAL_GRACE_MS` first, and live background
  * work (#965) keeps the clock from settling at all.
  *
- * BOTH REAL HALVES OF THE WIRE ARE IN THE LOOP, as in `run-terminal-channel`:
+ * BOTH REAL HALVES OF THE WIRE ARE IN THE LOOP, as in `terminal-client.test.ts`:
  * the desktop's `run-terminal-server.js` over loopback, and a host behind it
  * that is a fake only in that it starts no process.
  */
@@ -15,19 +15,19 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { terminalLauncher } from "../src/run/launcher";
-import { RunManager, type StartRunInput } from "../src/run/manager";
-import { RunTerminalClient } from "../src/run/terminal-client";
-import type { RunView } from "../src/run/types";
-import { EngineStore, SETTLED_TERMINAL_GRACE_MS } from "../src/state";
+import { terminalLauncher } from "./launcher";
+import { RunManager, type StartRunInput } from "./manager";
+import { RunTerminalClient } from "./terminal-client";
+import type { RunView } from "./types";
+import { EngineStore, SETTLED_TERMINAL_GRACE_MS } from "../state";
+import { desktopTerminalServer } from "../../test/desktop-terminal";
 
-const desktopServer = path.join(import.meta.dir, "..", "..", "desktop", "src", "terminal", "run-terminal-server.js");
 type StartServer = (options: {
   port: number;
   token: string;
   getTerminalHost: () => unknown;
 }) => Promise<{ port: number; onData: (id: string, data: string) => void; onExit: (id: string, ending: unknown) => void; close: () => Promise<unknown> }>;
-const { startRunTerminalServer } = (await import(desktopServer)) as { startRunTerminalServer: StartServer };
+const { startRunTerminalServer } = (await import(desktopTerminalServer)) as { startRunTerminalServer: StartServer };
 
 const HOUR = 60 * 60 * 1000;
 

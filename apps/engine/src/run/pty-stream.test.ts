@@ -22,7 +22,7 @@ import {
   pendingSecretPrefix,
   redactPtyText,
   safeCutBack,
-} from "../src/run/pty-stream";
+} from "./pty-stream";
 
 /** Longest first, the order `secretValues` guarantees and this module needs. */
 const order = (values: string[]): string[] => [...values].sort((a, b) => b.length - a.length);

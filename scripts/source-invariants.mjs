@@ -1623,7 +1623,7 @@ const CHECKS = [
    * wall-clock bound "so a wait can outlast a loaded runner without outlasting
    * the ceiling". The pairing is right. Nothing was checking it.
    *
-   * `run-manager.test.ts` had a 15 s helper and capped three of its own tests
+   * `src/run/manager.test.ts` had a 15 s helper and capped three of its own tests
    * at 10 s. When the predicate did not come true, bun killed the test at its
    * ceiling while the wait was still running — so the assertion resolved into
    * a dead test and surfaced as "Unhandled error between tests", with the run

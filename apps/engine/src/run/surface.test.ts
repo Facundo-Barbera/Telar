@@ -9,13 +9,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, type FetchLike } from "@telar/engine-client";
-import { clientRunCapability } from "../src/run/client-capability";
-import { RunManager, type RunManagerOptions } from "../src/run/manager";
-import { matchRunRoute } from "../src/run/routes";
-import { RunStore } from "../src/run/store";
-import { storeRunCapability, type RunSessionContext } from "../src/run/store-capability";
-import { RUN_READ_ONLY_TOOLS, runTools } from "../src/run/tools";
-import type { RunCapability } from "../src/run/capability";
+import { clientRunCapability } from "./client-capability";
+import { RunManager, type RunManagerOptions } from "./manager";
+import { matchRunRoute } from "./routes";
+import { RunStore } from "./store";
+import { storeRunCapability, type RunSessionContext } from "./store-capability";
+import { RUN_READ_ONLY_TOOLS, runTools } from "./tools";
+import type { RunCapability } from "./capability";
 
 const tempDirs: string[] = [];
 const temp = (label: string) => {

@@ -14,10 +14,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { KernelHost } from "../src/ds/kernel-host";
-import { telarVenvDir, telarVenvPython } from "../src/ds/telar-venv";
-import { parseNotebook } from "../src/ds/notebook-file";
+import { EngineStore } from "../state";
+import { KernelHost } from "./kernel-host";
+import { telarVenvDir, telarVenvPython } from "./telar-venv";
+import { parseNotebook } from "./notebook-file";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld

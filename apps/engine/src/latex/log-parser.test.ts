@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { firstErrorSentence, parseLatexLog } from "../src/latex/log-parser";
+import { firstErrorSentence, parseLatexLog } from "./log-parser";
 
 test("file-line-error lines become errors with exact file and line", () => {
   const log = [

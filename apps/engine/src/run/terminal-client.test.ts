@@ -24,11 +24,12 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { terminalLauncher } from "../src/run/launcher";
-import { RunManager, type StartRunInput } from "../src/run/manager";
-import { RunTerminalClient } from "../src/run/terminal-client";
-import { PTY_MASK } from "../src/run/pty-stream";
-import type { RunConfiguration } from "../src/run/types";
+import { terminalLauncher } from "./launcher";
+import { RunManager, type StartRunInput } from "./manager";
+import { RunTerminalClient } from "./terminal-client";
+import { PTY_MASK } from "./pty-stream";
+import type { RunConfiguration } from "./types";
+import { desktopTerminalServer } from "../../test/desktop-terminal";
 
 /**
  * Loaded through a computed specifier ON PURPOSE. `tsc -p apps/engine` compiles
@@ -36,7 +37,6 @@ import type { RunConfiguration } from "../src/run/types";
  * a sibling workspace to resolve a literal one; a computed path is `any` to the
  * compiler and the real module to bun, which is what this test needs.
  */
-const desktopServer = path.join(import.meta.dir, "..", "..", "desktop", "src", "terminal", "run-terminal-server.js");
 type StartServer = (options: {
   port: number;
   token: string;
@@ -44,7 +44,7 @@ type StartServer = (options: {
   onMirror?: (id: string, data: string, cursor?: number) => void;
   heartbeatMs?: number;
 }) => Promise<{ port: number; onData: (id: string, data: string) => void; onExit: (id: string, ending: unknown) => void; close: () => Promise<unknown> }>;
-const { startRunTerminalServer } = (await import(desktopServer)) as { startRunTerminalServer: StartServer };
+const { startRunTerminalServer } = (await import(desktopTerminalServer)) as { startRunTerminalServer: StartServer };
 
 // ── a terminal host that is a fake only in that it starts no process ─────────
 

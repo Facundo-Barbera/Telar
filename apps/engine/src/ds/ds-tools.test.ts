@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { assertTelarToolNames } from "@telar/engine-client";
-import type { DsCapability } from "../src/ds/capability";
-import { dsTools } from "../src/ds/ds-tools";
-import { notebookTools } from "../src/ds/notebook-tools";
-import type { ToolFactory } from "../src/domains/agent-tools";
+import type { DsCapability } from "./capability";
+import { dsTools } from "./ds-tools";
+import { notebookTools } from "./notebook-tools";
+import type { ToolFactory } from "../domains/agent-tools";
 
 type Registered = { name: string; description: string; shape: Record<string, unknown>; run: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }> };
 

@@ -2,10 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { preflightPython, projectEnvSignals, relativisePythonPath, resolvePythonPath, type Exec } from "../src/ds/python-env";
-import { telarVenvDir } from "../src/ds/telar-venv";
-import { discoverEnvironments, environmentRootOf, isCondaEnv, isVenv } from "../src/ds/environments";
-import type { Toolchain } from "../src/ds/toolchain";
+import { preflightPython, projectEnvSignals, relativisePythonPath, resolvePythonPath, type Exec } from "./python-env";
+import { telarVenvDir } from "./telar-venv";
+import { discoverEnvironments, environmentRootOf, isCondaEnv, isVenv } from "./environments";
+import type { Toolchain } from "./toolchain";
 
 const roots: string[] = [];
 const root = (): string => {
