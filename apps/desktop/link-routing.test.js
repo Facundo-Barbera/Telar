@@ -1,7 +1,3 @@
-// Settings → Links, as the main process sees it. The routing is pure and
-// tested directly; its wiring in main.js and preload.js (which need an
-// Electron process to require) is held to source contracts, as in
-// external-links.test.js.
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
@@ -67,7 +63,10 @@ describe("desktop link-routing wiring", () => {
       .split("\n")
       .filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*"))
       .join("\n");
-  const mainCode = codeOf("main.js");
+  const mainCode = require("./main-source").mainSource()
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*"))
+    .join("\n");
   const preloadCode = codeOf("preload.js");
 
   test("the main process learns the setting from the page, top frame only", () => {

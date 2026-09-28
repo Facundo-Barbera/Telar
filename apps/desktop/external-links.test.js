@@ -90,7 +90,7 @@ describe("createExternalLinkPolicy", () => {
 });
 
 describe("desktop external-link wiring", () => {
-  const mainSource = readFileSync(path.join(__dirname, "main.js"), "utf8");
+  const mainSource = require("./main-source").mainSource();
   const managerSource = ["browser-manager.js", ...require("node:fs").readdirSync(path.join(__dirname, "browser")).map((f) => path.join("browser", f))].map((f) => readFileSync(path.join(__dirname, f), "utf8")).join("\n");
 
   const codeOf = (source) =>
@@ -187,7 +187,7 @@ describe("externalOpenTarget", () => {
 });
 
 describe("the open-external IPC handler", () => {
-  const main = readFileSync(path.join(__dirname, "main.js"), "utf8");
+  const main = require("./main-source").mainSource();
 
   test("it decides with externalOpenTarget rather than a test of its own", () => {
     expect(main).toContain('ipcMain.handle("telar:browser:open-external"');

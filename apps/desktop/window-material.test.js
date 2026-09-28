@@ -144,7 +144,7 @@ describe("backdropWindowOptions", () => {
   });
 });
 
-const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+const main = require("./main-source").mainSource();
 
 const creation = main.slice(main.indexOf("function createWindow(url) {"), main.indexOf("browserManagers.add(manager);"));
 
@@ -219,6 +219,6 @@ describe("the toggle only retints", () => {
 describe("what the rebuild path left behind", () => {
   test("lastWindowUrl stays, because two live callers still need it", () => {
     expect(main).toContain("if (lastWindowUrl) void seatHostCookie(lastWindowUrl);");
-    expect(main).toContain("windowTargetUrl(asking.webContents.getURL() || lastWindowUrl, input?.path)");
+    expect(main).toContain("windowTargetUrl(asking.webContents.getURL() || main.lastWindowUrl, input?.path)");
   });
 });

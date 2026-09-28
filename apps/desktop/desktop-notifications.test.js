@@ -1,7 +1,6 @@
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const path = require("node:path");
-const { mainSource } = require("./main-source");
 const {
   DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS,
   ACTIVE_IDLE_SECONDS, PRESENCE_BEAT_MS, presenceMessage, createPresenceReporter,
@@ -57,14 +56,14 @@ describe("the channel's contract", () => {
   });
 
   test("main.js forks the server with the flag and listens on that child only", () => {
-    const main = mainSource();
+    const main = require("./main-source").mainSource();
     expect(main).toContain("[DESKTOP_NOTIFICATIONS_ENV]: \"1\"");
     expect(main).toContain("onMessage: (message) => desktopNotifier.handleServerMessage(message),");
     expect(main).toContain("serverChild.on(\"message\", onMessage);");
   });
 
   test("main.js reports presence to that same child, and stops when it exits", () => {
-    const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+    const main = require("./main-source").mainSource();
     expect(main).toContain("powerMonitor.getSystemIdleState(ACTIVE_IDLE_SECONDS)");
     for (const edge of ["\"lock-screen\"", "\"unlock-screen\"", "\"browser-window-focus\"", "\"did-navigate-in-page\""]) expect(main).toContain(edge);
     expect(main).toContain("watchPresence();");
