@@ -12,3 +12,4 @@ export {
   writeTheme,
 } from "./home";
 export { confirmProjectIcon, findProjectIconAsync, readProjectIconBytes, type ProjectIcon } from "./project-icon";
+export { AppearanceStore } from "./store";

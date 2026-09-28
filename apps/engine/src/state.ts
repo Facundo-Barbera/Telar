@@ -20,33 +20,12 @@ import {
   countsAsActivity,
   isBackgroundWork,
   isUnstatedEnding,
-  AgentOrientation as AgentOrientationSchema,
-  DEFAULT_AGENT_ORIENTATION,
-  DEFAULT_INBOX_POLICY,
-  DEFAULT_RETENTION_POLICY,
-  RetentionPolicy as RetentionPolicySchema,
   type RetentionPolicy,
   type RetentionBucket,
   type JournalRetirement,
-  RETENTION_BUCKET_DAYS,
-  MIN_RETENTION_DAYS,
-  MAX_RETENTION_DAYS,
-  DEFAULT_SESSION_DEFAULTS,
-  DEFAULT_SIDEBAR_LAYOUT,
-  DEFAULT_TEXT_GEN_POLICY,
-  InboxPolicy as InboxPolicySchema,
-  MAX_SIDEBAR_PROJECT_ORDER,
-  MAX_SIDEBAR_SESSION_ORDER,
-  SessionDefaults as SessionDefaultsSchema,
-  SidebarLayout as SidebarLayoutSchema,
-  SidebarMode,
   workspaceBaseRef,
   workspacePath,
-  TextGenPolicy as TextGenPolicySchema,
-  MAX_AUTO_SETTLE_HOURS,
-  MAX_SETTLED_TERMINAL_LIMIT,
   STALLED_AFTER_MS,
-  MIN_AUTO_SETTLE_HOURS,
   McpServer as McpServerSchema,
   McpServerSpec as McpServerSpecSchema,
   ModelSelection,
@@ -192,14 +171,17 @@ import {
   type DictationProviderId,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
-import { assertId, assertStateVersion, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
+import { assertId, assertStateVersion, EngineStateError, Kernel, SECRET_KEY_SEPARATOR, STATE_VERSION, type JournalEntry } from "./platform/kernel";
+import { RUNTIME_MODES, SettingsStore } from "./domains/settings";
+import { AppearanceStore } from "./domains/appearance";
+import { McpOAuthStore, type PendingMcpOAuth } from "./domains/agent-tools";
 import { awaitsRateLimitSweep, createSessionModules, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
 import { boundedOutline, cohortNotification, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, inlineExcerpt, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./domains/appearance";
 import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./domains/files";
-import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
+import { type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
 import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER, defaultGhRunner, mergePull, openPullRequest, reactOn, readCheckLog, readForgeFacets, readGitHub, readIssue, readPull, readPullFiles, readPullForBranch, replyToThread, resolveThread, type GhRunner } from "./domains/github";
@@ -488,9 +470,6 @@ function endedByShutdown(turn: Turn): boolean {
 const FOLDING_INTENTS: ReadonlySet<NonNullable<Turn["agentIntent"]>> = new Set(["report", "result", "blocker"]);
 const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
 
-/** The contract's own list, as a set, so an unknown mode is refused at the edge
- *  rather than written to disk and failing later inside `autoResolution`. */
-const RUNTIME_MODES = new Set<RuntimeMode>(["approval-required", "auto-accept-edits", "auto", "full-access"]);
 
 /**
  * Drop explicitly-undefined keys so a spread PATCHES rather than erases.
@@ -791,27 +770,7 @@ function canonicalPath(input: string): string {
   return canonical;
 }
 
-/**
- * The published appearance blob's only limit — see `setAppearance`.
- *
- * 8 MiB, AND THE WALLPAPER IS WHY. The first cut capped this at 64 KB
- * explicitly to forbid an inlined image, on the reasoning that two theme halves
- * and a handful of scalars fit in 4 KB. That reasoning was right about the
- * SIZE and wrong about the CONTENT: what the cockpit publishes now is a whole
- * `Look`, and a Look legitimately carries its backdrop's pixels — the picker
- * compresses to at most 3.5 MB, and a composed scene stacks up to six smaller
- * layers plus their un-faded originals. A cap that refused those would publish
- * a look with a hole in it, which is precisely the divergence the shared format
- * exists to end. 8 MiB is comfortably above what the cockpit's own compression
- * ladders can produce and still far below anything worth streaming.
- */
-const MAX_APPEARANCE_BYTES = 8 * 1024 * 1024;
 
-/** A JSON object and not an array — the shape a blob-shaped payload must have
- *  for additive readers to be able to key into it at all. */
-function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Stricter than `assertId` by one character: an instance id must START with a
@@ -933,29 +892,8 @@ function optionalNumberPatch<K extends string>(
   return { [key]: normalise(raw) } as Partial<Record<K, number>>;
 }
 
-/** A space separates the two halves because neither an instance id nor an
- *  environment variable name may contain one — so the key cannot be ambiguous. */
-const SECRET_KEY_SEPARATOR = " ";
 
-/**
- * How long a half-finished sign-in stays on disk.
- *
- * Long enough to read a consent screen and pick an account; short enough that a
- * PKCE verifier is not sitting in a file for an afternoon because somebody shut
- * the tab. The authorization code's own single-use rule is the real backstop —
- * this only bounds the window in which one could be used at all.
- */
-const PENDING_MCP_OAUTH_TTL_MS = 10 * 60_000;
 
-/** One sign-in mid-flight. `ctx` carries the state, the PKCE verifier, the
- *  resolved authorization server and the exact redirect URI it was started
- *  with — the callback needs all four and can be given none of them. */
-export type PendingMcpOAuth = {
-  serverId: string;
-  projectId?: string;
-  ctx: ConnectContext;
-  createdAt: number;
-};
 
 function secretKey(instanceId: string, name: string): string {
   return instanceId + SECRET_KEY_SEPARATOR + name;
@@ -1015,9 +953,6 @@ type ProjectRegistry = { version: typeof STATE_VERSION; projects: Project[] };
 
 const emptyRegistry = (): ProjectRegistry => ({ version: STATE_VERSION, projects: [] });
 
-/** "Nobody has arranged anything" — what an unreadable layout document costs.
- *  Spelled once so the three arrangements cannot fall back to different things. */
-const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" });
 
 /**
  * THE SESSION'S DIRECTORY, OR A REFUSAL — every store call that needs a real
@@ -1114,14 +1049,6 @@ const liveRow = (session: Session): LiveSessionRow => ({
 
 
 
-/** Copied out, never handed out: the caller gets the arrangement, not a
- *  reference into the document this store will write to next. */
-const cloneSidebarLayout = (layout: SidebarLayout): SidebarLayout => ({
-  projectOrder: [...layout.projectOrder],
-  sessionOrder: Object.fromEntries(Object.entries(layout.sessionOrder).map(([key, ids]) => [key, [...ids]])),
-  pinnedOrder: [...layout.pinnedOrder],
-  mode: layout.mode,
-});
 
 
 /**
@@ -1357,6 +1284,9 @@ const prefetchableRef = (ref: string | undefined): string | undefined =>
 
 export class EngineStore {
   private readonly kernel: Kernel<EngineNotifier>;
+  private readonly settings: SettingsStore;
+  private readonly appearance: AppearanceStore;
+  private readonly mcpOAuth: McpOAuthStore;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
   private readonly prefixes: OpenPrefixes;
@@ -2157,83 +2087,17 @@ export class EngineStore {
     return true;
   }
 
-  /**
-   * The inbox's standing rule, or the default when nothing has set one.
-   *
-   * NEVER THROWS ON A BAD DOCUMENT. Every other registry here refuses to parse
-   * garbage, because a malformed MCP server is a server that must not run. A
-   * malformed settling window is a preference, and the worst thing it can do is
-   * band a list wrongly — so a file somebody hand-edited into nonsense costs the
-   * preference, never the sidebar it configures.
-   *
-   * THE try/catch IS AROUND `readJson`, NOT JUST THE SCHEMA, and a test caught
-   * that too: `readJson` swallows a missing file and rethrows a parse error, so
-   * "the shape is wrong" was handled and "it is not JSON at all" was not.
-   */
   getInboxPolicy(): InboxPolicy {
-    try {
-      const stored = this.readDocument(this.paths.inbox);
-      const parsed = InboxPolicySchema.safeParse(stored);
-      if (parsed.success) return parsed.data;
-      /**
-       * THE DAYS-SHAPED DOCUMENT STILL MEANS WHAT IT SAID. The window moved
-       * to hour granularity; a file written before that carries
-       * `autoSettleAfterDays`, and dropping it to the default would silently
-       * change which sessions somebody's sidebar shows. Converted on read,
-       * rewritten in the new shape on the next save.
-       */
-      const days = (stored as { autoSettleAfterDays?: unknown } | undefined)?.autoSettleAfterDays;
-      if (days === null) return { ...DEFAULT_INBOX_POLICY, autoSettleAfterHours: null };
-      if (typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 90) {
-        return { ...DEFAULT_INBOX_POLICY, autoSettleAfterHours: days * 24 };
-      }
-      return { ...DEFAULT_INBOX_POLICY };
-    } catch {
-      return { ...DEFAULT_INBOX_POLICY };
-    }
+    return this.settings.inbox();
   }
 
-  /**
-   * `autoSettleAfterDays: null` is the clock OFF, and is a value rather than an
-   * omission — so the patch is by presence, like every other one here.
-   *
-   * TAKES `unknown` AND VALIDATES HERE, as `saveMcpServer` does with its spec:
-   * the bound belongs next to the schema that states it, not spelled a second
-   * time in the route that happens to be the way in today.
-   */
   setInboxPolicy(patch: { autoSettleAfterHours?: unknown; settleDelegatedAfterHours?: unknown; settledTerminalLimit?: unknown }): InboxPolicy {
-    const next: InboxPolicy = { ...this.getInboxPolicy() };
-    /** The same bound twice, stated once: both windows are hours in 1..90 days. */
-    const window = (value: unknown, what: string): number | null => {
-      if (value === null) return null;
-      const parsed = InboxPolicySchema.shape.autoSettleAfterHours.safeParse(value);
-      if (!parsed.success) {
-        throw new EngineStateError(
-          "invalid_request",
-          `${what} must be a whole number of hours between ${MIN_AUTO_SETTLE_HOURS} and ${MAX_AUTO_SETTLE_HOURS}, or null`,
-        );
-      }
-      return parsed.data;
-    };
-    if (patch.autoSettleAfterHours !== undefined) {
-      next.autoSettleAfterHours = window(patch.autoSettleAfterHours, "auto-settle window");
-    }
-    if (patch.settleDelegatedAfterHours !== undefined) {
-      next.settleDelegatedAfterHours = window(patch.settleDelegatedAfterHours, "delegation grace");
-    }
-    if (patch.settledTerminalLimit !== undefined) {
-      const parsed = InboxPolicySchema.shape.settledTerminalLimit.safeParse(patch.settledTerminalLimit);
-      if (!parsed.success) {
-        throw new EngineStateError("invalid_request", `settled terminal limit must be a whole number between 0 and ${MAX_SETTLED_TERMINAL_LIMIT}`);
-      }
-      next.settledTerminalLimit = parsed.data;
-    }
-    this.writeDocument(this.paths.inbox, { version: STATE_VERSION, ...next });
-    // A lower limit applies now rather than at the next sweep (#883).
+    const next = this.settings.setInbox(patch);
+    // A lower limit applies now rather than at the next sweep.
     if (patch.settledTerminalLimit !== undefined && this.terminals) {
       void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
     }
-    return { ...next };
+    return next;
   }
 
   /**
@@ -2297,185 +2161,36 @@ export class EngineStore {
     return { root: destination, files, bytes };
   }
 
-  /**
-   * HOW LONG THE RAW TURN JOURNAL IS KEPT — issues #542, #646.
-   *
-   * Same never-throws rule as `getInboxPolicy`, and here it is the difference
-   * between a preference and a deletion: a document somebody hand-edited into
-   * nonsense must fall back to the shipped default, and the shipped default is
-   * `never`. There is no reading of a broken file that starts removing history.
-   */
   getRetentionPolicy(): RetentionPolicy {
-    try {
-      const parsed = RetentionPolicySchema.safeParse(this.readDocument(this.paths.retention));
-      return parsed.success ? parsed.data : { ...DEFAULT_RETENTION_POLICY };
-    } catch {
-      return { ...DEFAULT_RETENTION_POLICY };
-    }
+    return this.settings.retention();
   }
 
-  /**
-   * TAKES `unknown` AND VALIDATES HERE, like `setInboxPolicy`: the bound belongs
-   * next to the schema that states it, not spelled again in whatever route
-   * happens to be the way in today.
-   *
-   * A WINDOW WITHOUT A DESTINATION IS REFUSED, rather than accepted and then
-   * quietly never swept. Export before delete is the approved design; a setting
-   * that looked enabled and did nothing would be the worst version of it.
-   */
   setRetentionPolicy(patch: { idleAfterDays?: unknown; exportTo?: unknown }): RetentionPolicy {
-    const next: RetentionPolicy = { ...this.getRetentionPolicy() };
-    if (patch.idleAfterDays !== undefined) {
-      if (patch.idleAfterDays === null) next.idleAfterDays = null;
-      else {
-        const parsed = RetentionPolicySchema.shape.idleAfterDays.safeParse(patch.idleAfterDays);
-        if (!parsed.success)
-          throw new EngineStateError(
-            "invalid_request",
-            `a retention window must be a whole number of days between ${MIN_RETENTION_DAYS} and ${MAX_RETENTION_DAYS}, or null`,
-          );
-        next.idleAfterDays = parsed.data;
-      }
-    }
-    if (patch.exportTo !== undefined) {
-      if (patch.exportTo === null) next.exportTo = null;
-      else {
-        if (typeof patch.exportTo !== "string" || !patch.exportTo.trim() || !path.isAbsolute(patch.exportTo.trim()))
-          throw new EngineStateError("invalid_request", "an export destination must be an absolute path");
-        next.exportTo = patch.exportTo.trim();
-      }
-    }
-    if (next.idleAfterDays !== null && !next.exportTo)
-      throw new EngineStateError("invalid_request", "choose where the journal is exported before setting a retention window");
-    this.writeDocument(this.paths.retention, { version: STATE_VERSION, ...next });
-    return { ...next };
+    return this.settings.setRetention(patch);
   }
 
-  /**
-   * WHAT EACH WINDOW WOULD TAKE, ON THIS STORE — issue #542, step 1.
-   *
-   * THE NUMBERS ARE THE PERSON'S OWN, which is the entire point: a fixed
-   * default window is what destroys the store whose oldest session is a week
-   * old, and "1 session, 340 events, 2.1 MiB" in front of them is the defence
-   * no cleverer default provides.
-   *
-   * `bytes` IS AN EXPLICIT ASK. Counts are index ranges; the byte sum reads the
-   * rows. Never put either on a timer (#629).
-   */
   retentionPreview(options: { bytes?: boolean } = {}): RetentionBucket[] {
-    const store = this.kernel.executionStore;
-    const now = this.now();
-    return RETENTION_BUCKET_DAYS.map((days) => ({
-      days,
-      ...store.retentionPreview({ idleBefore: now - days * 24 * 60 * 60 * 1000, now }, options),
-    }));
+    return this.settings.retentionPreview(options);
   }
 
-  /**
-   * RUN THE SWEEP THE POLICY ASKS FOR — the timer's call and the button's.
-   *
-   * NOTHING HAPPENS WITHOUT BOTH HALVES. No window, or no export destination,
-   * and this returns zeroes without reading a session: on a fresh install that
-   * is one document read that finds nothing, which is the cost of shipping this
-   * to somebody who will never use it.
-   *
-   * IT RETURNS COUNTS AND WRITES NO LOG LINE. See `retireSession` — a retired
-   * session and a skipped one are indistinguishable in a log and distinct in
-   * these three numbers.
-   */
   sweepRetention(): JournalRetirement {
-    const store = this.kernel.executionStore;
-    const policy = this.getRetentionPolicy();
-    if (policy.idleAfterDays === null || !policy.exportTo) return { retired: 0, skipped: 0, events: 0 };
-    const now = this.now();
-    return store.retireJournal(
-      { idleBefore: now - policy.idleAfterDays * 24 * 60 * 60 * 1000, now },
-      { exportTo: policy.exportTo },
-    );
+    return this.settings.sweepRetention();
   }
 
-  /**
-   * Whether Telar may tell an agent where it is — see `AgentOrientation`.
-   *
-   * Same never-throws rule as `getInboxPolicy`, and here it decides what every
-   * turn on the machine is told: a file somebody hand-edited into nonsense must
-   * cost the preference and fall back to the shipped default, never the turn.
-   * The default is BOTH ON, because the orientation exists to fix a bug rather
-   * than to add a feature somebody opts into.
-   */
   getAgentOrientation(): AgentOrientation {
-    try {
-      const parsed = AgentOrientationSchema.safeParse(this.readDocument(this.paths.orientation));
-      return parsed.success ? parsed.data : { ...DEFAULT_AGENT_ORIENTATION };
-    } catch {
-      return { ...DEFAULT_AGENT_ORIENTATION };
-    }
+    return this.settings.orientation();
   }
 
-  /** By presence, like every other patch here: turning the skill off must not
-   *  re-decide the preamble. Takes `unknown` and validates against the schema
-   *  for the reason `setInboxPolicy` states — the rule lives next to the shape,
-   *  not spelled a second time in whichever route is the way in today. */
   setAgentOrientation(patch: { preamble?: unknown; skill?: unknown }): AgentOrientation {
-    const next: AgentOrientation = { ...this.getAgentOrientation() };
-    for (const key of ["preamble", "skill"] as const) {
-      const value = patch[key];
-      if (value === undefined) continue;
-      if (typeof value !== "boolean") {
-        throw new EngineStateError("invalid_request", `${key} must be true or false`);
-      }
-      next[key] = value;
-    }
-    this.writeDocument(this.paths.orientation, { version: STATE_VERSION, ...next });
-    return { ...next };
+    return this.settings.setOrientation(patch);
   }
 
-  /**
-   * What a new session is built with when the caller didn't say.
-   *
-   * Same never-throws rule as `getInboxPolicy`, and here it matters more than
-   * anywhere: this document is read on the create path, so a file somebody
-   * hand-edited into nonsense must cost the preference and not the session.
-   */
   getSessionDefaults(): SessionDefaults {
-    try {
-      const parsed = SessionDefaultsSchema.safeParse(this.readDocument(this.paths.sessionDefaults));
-      return parsed.success ? parsed.data : { ...DEFAULT_SESSION_DEFAULTS };
-    } catch {
-      return { ...DEFAULT_SESSION_DEFAULTS };
-    }
+    return this.settings.sessionDefaults();
   }
 
-  /** Takes `unknown` and validates here, like the two policies above: the set
-   *  of legal modes belongs next to the schema, not spelled again in a route. */
   setSessionDefaults(patch: { envMode?: unknown; resumeAfterRestart?: unknown; runtimeMode?: unknown; resumeAfterRateLimit?: unknown }): SessionDefaults {
-    const next: SessionDefaults = { ...this.getSessionDefaults() };
-    if (patch.envMode !== undefined) {
-      const parsed = SessionDefaultsSchema.shape.envMode.safeParse(patch.envMode);
-      if (!parsed.success) {
-        throw new EngineStateError("invalid_request", "default workspace must be local or worktree");
-      }
-      next.envMode = parsed.data;
-    }
-    if (patch.resumeAfterRestart !== undefined) {
-      if (typeof patch.resumeAfterRestart !== "boolean") {
-        throw new EngineStateError("invalid_request", "resumeAfterRestart must be true or false");
-      }
-      next.resumeAfterRestart = patch.resumeAfterRestart;
-    }
-    if (patch.runtimeMode !== undefined) {
-      if (patch.runtimeMode === null) delete next.runtimeMode;
-      else if (RUNTIME_MODES.has(patch.runtimeMode as RuntimeMode)) next.runtimeMode = patch.runtimeMode as RuntimeMode;
-      else throw new EngineStateError("invalid_request", "unknown runtime mode");
-    }
-    if (patch.resumeAfterRateLimit !== undefined) {
-      if (typeof patch.resumeAfterRateLimit !== "boolean") {
-        throw new EngineStateError("invalid_request", "resumeAfterRateLimit must be true or false");
-      }
-      next.resumeAfterRateLimit = patch.resumeAfterRateLimit;
-    }
-    this.writeDocument(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
-    return { ...next };
+    return this.settings.setSessionDefaults(patch);
   }
 
   /* ---------------------------------------------------------------- *
@@ -2637,379 +2352,67 @@ export class EngineStore {
     return readDictationKey(this.dictationDir);
   }
 
-  /**
-   * Where each project group sits in the rail — see `SidebarLayout`.
-   *
-   * Same never-throws rule as `getInboxPolicy`: a malformed arrangement costs
-   * the arrangement, never the list it arranges. The default is the empty
-   * order, which the rail reads as "alphabetical, nobody has moved anything".
-   */
   getSidebarLayout(): SidebarLayout {
-    try {
-      const parsed = SidebarLayoutSchema.safeParse(this.readDocument(this.paths.sidebarLayout));
-      return parsed.success ? parsed.data : blankSidebarLayout();
-    } catch {
-      return blankSidebarLayout();
-    }
+    return this.settings.sidebarLayout();
   }
 
-  /**
-   * Takes `unknown` and validates here, like the policies above. A key listed
-   * twice is kept once, at its first position — the rail reads the first
-   * mention anyway, and a document that said two things would be one that
-   * meant neither. The same rule applies inside every `sessionOrder` list.
-   *
-   * EACH FIELD IS ITS OWN PATCH. A drop in the pinned band writes `pinnedOrder`
-   * and nothing else; a drop inside a group writes `sessionOrder` and nothing
-   * else. Absent means "unchanged", never "empty" — otherwise one rail's write
-   * would erase an arrangement another rail had just made.
-   */
   setSidebarLayout(patch: { projectOrder?: unknown; sessionOrder?: unknown; pinnedOrder?: unknown; mode?: unknown }): SidebarLayout {
-    const next: SidebarLayout = { ...this.getSidebarLayout() };
-    if (patch.projectOrder !== undefined) {
-      const parsed = SidebarLayoutSchema.shape.projectOrder.safeParse(patch.projectOrder);
-      if (!parsed.success) {
-        throw new EngineStateError(
-          "invalid_request",
-          `projectOrder must be a list of up to ${MAX_SIDEBAR_PROJECT_ORDER} non-empty project group keys`,
-        );
-      }
-      next.projectOrder = [...new Set(parsed.data)];
-    }
-    if (patch.sessionOrder !== undefined) {
-      const parsed = SidebarLayoutSchema.shape.sessionOrder.safeParse(patch.sessionOrder);
-      if (!parsed.success) {
-        throw new EngineStateError(
-          "invalid_request",
-          `sessionOrder must map a project group key to a list of up to ${MAX_SIDEBAR_SESSION_ORDER} non-empty session keys`,
-        );
-      }
-      next.sessionOrder = Object.fromEntries(Object.entries(parsed.data).map(([key, ids]) => [key, [...new Set(ids)]]));
-    }
-    if (patch.pinnedOrder !== undefined) {
-      const parsed = SidebarLayoutSchema.shape.pinnedOrder.safeParse(patch.pinnedOrder);
-      if (!parsed.success) {
-        throw new EngineStateError(
-          "invalid_request",
-          `pinnedOrder must be a list of up to ${MAX_SIDEBAR_SESSION_ORDER} non-empty session keys`,
-        );
-      }
-      next.pinnedOrder = [...new Set(parsed.data)];
-    }
-    if (patch.mode !== undefined) {
-      const parsed = SidebarMode.safeParse(patch.mode);
-      if (!parsed.success) throw new EngineStateError("invalid_request", 'mode must be "grouped" or "flat"');
-      next.mode = parsed.data;
-    }
-    this.writeDocument(this.paths.sidebarLayout, { version: STATE_VERSION, ...next });
-    return cloneSidebarLayout(next);
+    return this.settings.setSidebarLayout(patch);
   }
 
-  /** Same never-throws rule as `getInboxPolicy`, same reason: a malformed
-   *  preference costs the preference, never the turn it decorates. */
   getTextGenPolicy(): TextGenPolicy {
-    try {
-      const parsed = TextGenPolicySchema.safeParse(this.readDocument(this.paths.textGen));
-      return parsed.success ? parsed.data : { ...DEFAULT_TEXT_GEN_POLICY };
-    } catch {
-      return { ...DEFAULT_TEXT_GEN_POLICY };
-    }
+    return this.settings.textGen();
   }
 
   setTextGenPolicy(patch: { titles?: unknown; renameBranches?: unknown; driver?: unknown; model?: unknown }): TextGenPolicy {
-    const next: TextGenPolicy = { ...this.getTextGenPolicy() };
-    if (patch.titles !== undefined) {
-      if (typeof patch.titles !== "boolean") throw new EngineStateError("invalid_request", "titles must be a boolean");
-      next.titles = patch.titles;
-    }
-    if (patch.renameBranches !== undefined) {
-      if (typeof patch.renameBranches !== "boolean") throw new EngineStateError("invalid_request", "renameBranches must be a boolean");
-      next.renameBranches = patch.renameBranches;
-    }
-    if (patch.driver !== undefined) {
-      if (patch.driver !== "claude" && patch.driver !== "codex") {
-        throw new EngineStateError("invalid_request", "text generation driver must be claude or codex");
-      }
-      /**
-       * A DRIVER CHANGE DROPS THE MODEL rather than carrying it: model ids are
-       * meaningless across harnesses, and `haiku` handed to Codex would fail
-       * every generation until somebody worked out why. The new driver starts
-       * on its own default; the settings page offers its catalogue from there.
-       */
-      if (patch.driver !== next.driver) delete next.model;
-      next.driver = patch.driver;
-    }
-    if (patch.model !== undefined) {
-      if (patch.model === null) {
-        delete next.model;
-      } else {
-        const parsed = TextGenPolicySchema.shape.model.safeParse(patch.model);
-        if (!parsed.success || parsed.data === undefined) {
-          throw new EngineStateError("invalid_request", "text generation model must be a short model id, or null for the driver's default");
-        }
-        next.model = parsed.data;
-      }
-    }
-    this.writeDocument(this.paths.textGen, { version: STATE_VERSION, ...next });
-    return { ...next };
+    return this.settings.setTextGen(patch);
   }
 
-  // ── Appearance ────────────────────────────────────────────────────────────
-  //
-  // AN OPAQUE BLOB, AND THE OPACITY IS THE DESIGN. The cockpit's look — accent,
-  // typefaces, text size, translucency, backdrop, the two halves of the active
-  // theme pair — lives in ONE browser's localStorage, because that is where a
-  // person configures it. A paired client (the iOS app) has no way to read that
-  // storage, so the browser republishes its RESOLVED look here and the engine
-  // becomes the one place every device can ask "what does the host look like?".
-  //
-  // THE ENGINE DOES NOT UNDERSTAND IT and must not learn to. Every token the
-  // cockpit adds — a new font slot, a new theme key — would otherwise need a
-  // schema change here, an engine release, and a version handshake before it
-  // could reach a phone. Storing it as JSON the engine never inspects makes the
-  // whole vocabulary additive: new keys ride through untouched, and readers are
-  // expected to ignore what they do not recognise (the repo's additive rule).
-  // The only thing enforced is that it IS a JSON object and that it is small.
 
-  /**
-   * WHEN IT LANDED, STORED BESIDE IT — because a mailbox with no timestamp
-   * cannot be cached. The blob is now megabytes rather than kilobytes (a Look
-   * carries its wallpaper), and a phone that polls it on every foreground would
-   * re-download the whole thing to discover nothing changed. `updatedAt` is
-   * what the HTTP edge cuts an ETag from, so the second ask is a 304.
-   *
-   * THE ENGINE'S CLOCK, NOT THE PUBLISHER'S. The blob carries the publisher's
-   * own `updatedAtHint`, and it is advisory: two browsers with disagreeing
-   * clocks would make a hint-derived ETag go backwards. The stamp that matters
-   * is when THIS engine accepted the write.
-   */
   getAppearance(): { updatedAt: number; blob: Record<string, unknown> } | null {
-    try {
-      const stored = this.readDocument(this.paths.appearance) as { appearance?: unknown; updatedAt?: unknown } | undefined;
-      const blob = stored?.appearance;
-      if (!isPlainJsonObject(blob)) return null;
-      // A file written before the stamp existed reads as epoch 0 rather than
-      // as absent: it is a real published look, and a stable ETag is better
-      // than none. The next publish gives it a real time.
-      return { updatedAt: typeof stored?.updatedAt === "number" && Number.isFinite(stored.updatedAt) ? stored.updatedAt : 0, blob };
-    } catch {
-      return null;
-    }
+    return this.appearance.get();
   }
 
-  /**
-   * Replaces the blob wholesale — this is a snapshot of a browser's resolved
-   * state, not a patch, and merging two publishers' halves would produce a look
-   * neither of them wears.
-   *
-   * THE CAP IS THE ONLY POLICY, and it is enforced HERE as well as at the
-   * socket: an in-process caller must not be able to walk past a check that
-   * only ever ran on an HTTP request.
-   */
   setAppearance(blob: unknown): { updatedAt: number; blob: Record<string, unknown> } {
-    if (!isPlainJsonObject(blob)) {
-      throw new EngineStateError("invalid_request", "appearance must be a JSON object");
-    }
-    let serialized: string;
-    try {
-      serialized = JSON.stringify(blob);
-    } catch {
-      throw new EngineStateError("invalid_request", "appearance must be JSON-serializable");
-    }
-    if (Buffer.byteLength(serialized, "utf8") > MAX_APPEARANCE_BYTES) {
-      throw new EngineStateError("invalid_request", `appearance must be under ${MAX_APPEARANCE_BYTES} bytes when serialized`);
-    }
-    const updatedAt = Date.now();
-    this.writeDocument(this.paths.appearance, { version: STATE_VERSION, updatedAt, appearance: blob });
-    return { updatedAt, blob };
+    return this.appearance.set(blob);
   }
 
-  /**
-   * Forget the published look. IDEMPOTENT — clearing an empty mailbox is not an
-   * error, because "there is nothing published" is the state the caller asked
-   * for and it is already true. Removing the FILE rather than writing an empty
-   * blob keeps `getAppearance`'s null the one meaning of "nobody has published".
-   */
   clearAppearance(): void {
-    try {
-      fs.rmSync(this.paths.appearance, { force: true });
-    } catch {
-      // A file we cannot delete is a look that stays published — worth no
-      // failure on a route whose whole subject is decoration.
-    }
+    this.appearance.clear();
   }
 
-  // ── MCP OAuth ─────────────────────────────────────────────────────────────
-  //
-  // TELAR OWNS THIS FLOW, unlike every provider login. The rule elsewhere is
-  // that Telar adopts logins and never creates them, because `claude` and
-  // `codex` already have their own sign-in and their own credential store. A
-  // third-party MCP server has neither: nothing else on this machine will hold
-  // that grant, so if the engine does not run the flow, the server is simply
-  // unusable. That is why the ONE credential this repo mints lives here.
-  //
-  // KEYED BY THE SAME PAIR THE SERVER IS — `(projectId, serverId)` — so a
-  // project's `linear` and the machine's `linear` hold different grants, which
-  // is the whole point of the shadowing they already have.
 
-  /** A space cannot appear in either half: both are `Id`s. */
-  private mcpOAuthKey(serverId: string, projectId?: string): string {
-    return (projectId ?? "") + SECRET_KEY_SEPARATOR + serverId;
-  }
 
-  private readMcpOAuthRecords(): Record<string, McpOAuthRecord> {
-    const stored = this.readDocument(this.paths.mcpOAuth) as { records?: unknown } | undefined;
-    const records = stored?.records;
-    if (!records || typeof records !== "object") return {};
-    return records as Record<string, McpOAuthRecord>;
-  }
 
-  private writeMcpOAuthRecords(records: Record<string, McpOAuthRecord>): void {
-    this.writeDocument(this.paths.mcpOAuth, { version: STATE_VERSION, records });
-  }
 
-  /**
-   * The stored grant for one server, TOKENS AND ALL.
-   *
-   * NOT REACHABLE FROM A ROUTE. The daemon calls `mcpOAuthStatus` when a page
-   * asks; this one exists for the claim and for the refresh, which are the two
-   * places a token is actually needed.
-   */
   getMcpOAuthRecord(serverId: string, projectId?: string): McpOAuthRecord | undefined {
-    const record = this.readMcpOAuthRecords()[this.mcpOAuthKey(serverId, projectId)];
-    return record ? structuredClone(record) : undefined;
+    return this.mcpOAuth.get(serverId, projectId);
   }
 
   putMcpOAuthRecord(record: McpOAuthRecord): void {
-    const records = this.readMcpOAuthRecords();
-    records[this.mcpOAuthKey(record.serverId, record.projectId)] = { ...record, updatedAt: this.now() };
-    this.writeMcpOAuthRecords(records);
+    this.mcpOAuth.put(record);
   }
 
   deleteMcpOAuthRecord(serverId: string, projectId?: string): boolean {
-    const records = this.readMcpOAuthRecords();
-    const key = this.mcpOAuthKey(serverId, projectId);
-    if (!(key in records)) return false;
-    delete records[key];
-    this.writeMcpOAuthRecords(records);
-    return true;
+    return this.mcpOAuth.delete(serverId, projectId);
   }
 
-  /**
-   * The client-identity store the ladder needs, and only that.
-   *
-   * A DCR REGISTRATION IS AUTHORIZATION-SERVER SCOPED, not server scoped: three
-   * MCP servers behind one issuer should share one registered client. Minting a
-   * second is how somebody ends up with a list of identical stray OAuth apps in
-   * their account — and some servers reject a freshly-minted client id outright,
-   * which reads as a broken Connect button rather than as what it is.
-   */
   mcpOAuthClientStore(): OAuthClientStore {
-    return {
-      findProvenDcrClient: (issuer, serverId, projectId) => {
-        const records = this.readMcpOAuthRecords();
-        const proven = (record: McpOAuthRecord | undefined): boolean =>
-          record?.client?.strategy === "dcr" && Boolean(record.client.id) && Boolean(record.tokens?.accessToken);
-        const own = records[this.mcpOAuthKey(serverId, projectId)];
-        if (proven(own)) return structuredClone(own!.client);
-        for (const record of Object.values(records)) {
-          if (record.as?.issuer === issuer && proven(record)) return structuredClone(record.client);
-        }
-        return undefined;
-      },
-      findPendingDcrClient: (serverId, projectId) => {
-        const record = this.readMcpOAuthRecords()[this.mcpOAuthKey(serverId, projectId)];
-        return record?.client?.strategy === "dcr" && record.client.id ? structuredClone(record.client) : undefined;
-      },
-      rememberClient: ({ serverId, projectId, resource, as, client }) => {
-        // Keeps any tokens already there: this runs BEFORE the exchange, and a
-        // reconnect of a working server must not blank its own grant on the way.
-        const existing = this.getMcpOAuthRecord(serverId, projectId);
-        this.putMcpOAuthRecord({
-          serverId,
-          ...(projectId === undefined ? {} : { projectId }),
-          resource,
-          as,
-          client,
-          tokens: existing?.tokens ?? { accessToken: "" },
-          updatedAt: this.now(),
-        });
-      },
-    };
+    return this.mcpOAuth.clientStore();
   }
 
-  /**
-   * Stash an in-flight sign-in, keyed by its own OAuth `state`.
-   *
-   * SWEEPS ON THE WAY IN, so an abandoned flow — the user closed the tab at the
-   * consent screen — cannot accumulate. Ten minutes is the window: long enough
-   * to read a consent screen, short enough that a verifier is not sitting on
-   * disk for an afternoon.
-   */
   putPendingMcpOAuth(flow: PendingMcpOAuth): void {
-    const flows = this.prunePendingMcpOAuth(this.readPendingMcpOAuth());
-    flows[flow.ctx.state] = flow;
-    this.writeDocument(this.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
+    this.mcpOAuth.putPending(flow);
   }
 
-  /**
-   * Take a flow by state — SINGLE USE, so a replayed callback finds nothing.
-   *
-   * The read-modify-write is not atomic across processes, so two simultaneous
-   * callbacks for one state could both observe it. That is acceptable and not
-   * papered over: the authorization code is itself single-use at the token
-   * endpoint, which is the real backstop, and the second exchange fails there.
-   */
   takePendingMcpOAuth(state: string): PendingMcpOAuth | undefined {
-    if (!state) return undefined;
-    const flows = this.prunePendingMcpOAuth(this.readPendingMcpOAuth());
-    const flow = flows[state];
-    delete flows[state];
-    this.writeDocument(this.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
-    return flow;
+    return this.mcpOAuth.takePending(state);
   }
 
-  private readPendingMcpOAuth(): Record<string, PendingMcpOAuth> {
-    const stored = this.readDocument(this.paths.mcpOAuthPending) as { flows?: unknown } | undefined;
-    const flows = stored?.flows;
-    if (!flows || typeof flows !== "object") return {};
-    return flows as Record<string, PendingMcpOAuth>;
-  }
 
-  private prunePendingMcpOAuth(flows: Record<string, PendingMcpOAuth>): Record<string, PendingMcpOAuth> {
-    const cutoff = this.now() - PENDING_MCP_OAUTH_TTL_MS;
-    for (const [state, flow] of Object.entries(flows)) {
-      if (!flow || typeof flow.createdAt !== "number" || flow.createdAt <= cutoff) delete flows[state];
-    }
-    return flows;
-  }
 
-  /**
-   * The grant a server should run with, refreshed if it is about to expire.
-   *
-   * BEST-EFFORT BY CONSTRUCTION. A refresh that fails — revoked, offline, the
-   * server rotated its client — returns the token we have rather than throwing:
-   * a stale token 401s at the server, which is a legible failure inside one
-   * tool call, whereas throwing here would fail the whole turn over a tool the
-   * user may not even have asked for.
-   */
   async resolveMcpOAuthToken(serverId: string, projectId: string | undefined, fetchImpl?: typeof fetch): Promise<string | undefined> {
-    const record = this.getMcpOAuthRecord(serverId, projectId);
-    if (!record?.tokens.accessToken) return undefined;
-    if (!needsRefresh(record, 120, this.now()) || !record.tokens.refreshToken) return record.tokens.accessToken;
-    try {
-      const tokens = await refreshAccessToken({
-        as: record.as,
-        client: record.client,
-        refreshToken: record.tokens.refreshToken,
-        resource: record.resource,
-        ...(fetchImpl ? { fetchImpl } : {}),
-      });
-      this.putMcpOAuthRecord({ ...record, tokens });
-      return tokens.accessToken;
-    } catch {
-      return record.tokens.accessToken;
-    }
+    return this.mcpOAuth.resolveToken(serverId, projectId, fetchImpl);
   }
 
   /**
@@ -3729,6 +3132,9 @@ export class EngineStore {
       onRetentionSweep: () => { this.sweepRetention(); },
     });
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
+    this.settings = new SettingsStore(this.kernel);
+    this.appearance = new AppearanceStore(this.kernel);
+    this.mcpOAuth = new McpOAuthStore(this.kernel);
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
       activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes,
