@@ -23,7 +23,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
-const theme = readFileSync(new URL("../../ios/TelarMobile/Views/Theme.swift", import.meta.url), "utf8");
+const theme = readFileSync(new URL("../../ios/TelarMobile/UI/Theme.swift", import.meta.url), "utf8");
 
 /** The declarations of the first `.dark` block — the dark palette. */
 const dark = (() => {

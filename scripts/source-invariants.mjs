@@ -187,51 +187,51 @@ function bunTestScripts(scripts) {
  * question nobody asked. If you are re-deriving the queue, subtract them.
  */
 const SWEPT_FILES = [
-  ["apps/ios/TelarMobile/Views/TranscriptViews.swift", ""],
-  ["apps/ios/TelarMobile/Views/SessionView.swift", ""],
-  ["apps/ios/TelarMobile/Views/Panel/NotebookSurface.swift", ""],
-  ["apps/ios/TelarMobile/Views/Panel/CellOutputView.swift", ""],
-  ["apps/ios/TelarMobile/Views/DiffView.swift", ""],
-  ["apps/ios/TelarMobile/Views/Panel/FilesSurface.swift", ""],
-  ["apps/ios/TelarMobile/Views/SessionSidebar.swift", ""],
-  ["apps/ios/TelarMobile/Views/RowStyles.swift", ""],
-  ["apps/ios/TelarMobile/Views/RequestViews.swift", ""],
-  ["apps/ios/TelarMobile/Views/Panel/LatexSurface.swift", ""],
-  ["apps/ios/TelarMobile/Views/Panel/DataSurface.swift", ""],
-  ["apps/ios/TelarMobile/Views/NewSessionView.swift", ""],
-  ["apps/ios/TelarMobile/Views/AddProjectView.swift", ""],
-  ["apps/ios/TelarMobile/Views/BranchPickerSheet.swift", ""],
-  ["apps/ios/TelarMobile/Views/SettingsKit.swift", ""],
-  ["apps/ios/TelarMobile/Views/DevicesView.swift", ""],
-  ["apps/ios/TelarMobile/Views/UsageView.swift", ""],
-  ["apps/ios/TelarMobile/Views/Panel/TextFileView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Transcript/TranscriptViews.swift", ""],
+  ["apps/ios/TelarMobile/Features/Sessions/SessionView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Plugins/NotebookSurface.swift", ""],
+  ["apps/ios/TelarMobile/Features/Plugins/CellOutputView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Git/DiffView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Files/FilesSurface.swift", ""],
+  ["apps/ios/TelarMobile/Features/Sessions/SessionSidebar.swift", ""],
+  ["apps/ios/TelarMobile/UI/RowStyles.swift", ""],
+  ["apps/ios/TelarMobile/Features/Turns/RequestViews.swift", ""],
+  ["apps/ios/TelarMobile/Features/Plugins/LatexSurface.swift", ""],
+  ["apps/ios/TelarMobile/Features/Plugins/DataSurface.swift", ""],
+  ["apps/ios/TelarMobile/Features/Sessions/NewSessionView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Projects/AddProjectView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Worktrees/BranchPickerSheet.swift", ""],
+  ["apps/ios/TelarMobile/UI/SettingsKit.swift", ""],
+  ["apps/ios/TelarMobile/Features/Remote/DevicesView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Usage/UsageView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Files/TextFileView.swift", ""],
   [
-    "apps/ios/TelarMobile/Views/WelcomeView.swift",
+    "apps/ios/TelarMobile/Features/Hosts/WelcomeView.swift",
     "holds one `.system(size: wordmark)` that this check does NOT count, and should not: `wordmark` is a @ScaledMetric(relativeTo: .largeTitle) seeded with 40. 40 has no rung (the ramp stops at 34) and mapping it down would shrink the brand. #674 gave TelarMark the same treatment so the logo and the word keep their ratio",
   ],
-  ["apps/ios/TelarMobile/Views/Panel/TableSurface.swift", ""],
+  ["apps/ios/TelarMobile/Features/Plugins/TableSurface.swift", ""],
   [
-    "apps/ios/TelarMobile/Views/ProjectAvatar.swift",
+    "apps/ios/TelarMobile/Features/Projects/ProjectAvatar.swift",
     "holds four `.system(size:)` calls this check does NOT count: each is a fraction of the caller's `size`, so the glyph is proportional to its own square by construction. They were never waiting on #674 and are finished as they stand — this entry is the only record of that, since no digit regex will re-find them",
   ],
-  ["apps/ios/TelarMobile/Views/Panel/PanelView.swift", ""],
-  ["apps/ios/TelarMobile/Views/Panel/FileBody.swift", ""],
-  ["apps/ios/TelarMobile/Views/StashMenu.swift", ""],
-  ["apps/ios/TelarMobile/Views/Panel/AgentsSurface.swift", ""],
-  ["apps/ios/TelarMobile/Views/AttachmentChip.swift", ""],
+  ["apps/ios/TelarMobile/Features/Panel/PanelView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Files/FileBody.swift", ""],
+  ["apps/ios/TelarMobile/Features/Prompts/StashMenu.swift", ""],
+  ["apps/ios/TelarMobile/Features/Sessions/AgentsSurface.swift", ""],
+  ["apps/ios/TelarMobile/Features/Composer/AttachmentChip.swift", ""],
   [
-    "apps/ios/TelarMobile/Views/ModelPill.swift",
+    "apps/ios/TelarMobile/Features/Providers/ModelPill.swift",
     "holds one `.system(size: size * 0.65)` this check does NOT count, proportional to its own square like ProjectAvatar's. The pill's capsule takes a @ScaledMetric of its own (#674) so the badge grows with the label beside it",
   ],
-  ["apps/ios/TelarMobile/Views/Panel/HtmlOutputView.swift", ""],
-  ["apps/ios/TelarMobile/Views/DictationSettingsView.swift", ""],
-  ["apps/ios/TelarMobile/Views/DictationCaretPill.swift", ""],
-  ["apps/ios/TelarMobile/Views/MarkdownText.swift", ""],
+  ["apps/ios/TelarMobile/Features/Plugins/HtmlOutputView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Dictation/DictationSettingsView.swift", ""],
+  ["apps/ios/TelarMobile/Features/Dictation/DictationCaretPill.swift", ""],
+  ["apps/ios/TelarMobile/UI/MarkdownText.swift", ""],
   // Not a view: a `Font` stored on the highlighter's theme, which is why it
   // is the one swept file outside `Views/`. A count scoped to `Views/` misses
   // it — the sweep's last site was very nearly its least visible.
-  ["apps/ios/TelarMobile/Stores/CodeHighlighter.swift", ""],
-  ["apps/ios/TelarMobile/Views/ScaledFrame.swift", ""],
+  ["apps/ios/TelarMobile/UI/CodeHighlighter.swift", ""],
+  ["apps/ios/TelarMobile/UI/ScaledFrame.swift", ""],
 ];
 
 /**
@@ -1356,7 +1356,7 @@ const CHECKS = [
           `${path}: ${hits.length} absolute font size${hits.length === 1 ? "" : "s"} (${spellings}). ` +
             "Use a Dynamic Type style (Theme.captionTiny/caption/footnote/subhead), or — if the number has to survive, " +
             "as it does for a glyph locked in a fixed frame — a named @ScaledMetric seeded with it, which keeps the " +
-            "size and still scales; see apps/ios/TelarMobile/Views/ScaledFrame.swift. In UIKit the scaling paths are " +
+            "size and still scales; see apps/ios/TelarMobile/UI/ScaledFrame.swift. In UIKit the scaling paths are " +
             "UIFont.preferredFont(forTextStyle:) and UIFontMetrics — if this IS a UIFontMetrics call split across " +
             `lines, put it on one line and the guard will read it correctly.${note ? ` (note on this file: ${note})` : ""}`,
         );
@@ -1385,7 +1385,7 @@ const CHECKS = [
     protects:
       "the transcript's render order (#675): TranscriptViews draws a boundary before the work under it",
     async run() {
-      const path = "apps/ios/TelarMobile/Views/TranscriptViews.swift";
+      const path = "apps/ios/TelarMobile/Features/Transcript/TranscriptViews.swift";
       let source;
       try {
         source = await read(path);
