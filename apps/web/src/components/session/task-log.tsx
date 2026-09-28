@@ -18,7 +18,7 @@ import type { TaskOutputPage } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { hostFetcher } from "@/lib/hosts/client";
-import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/lib/terminal-theme";
+import { cssColorReader, cssVariableReader, loadTerminalFonts, terminalFont, terminalTheme } from "@/features/terminal";
 import { cn } from "@/lib/utils";
 
 /** How often a running task's log is asked for. */

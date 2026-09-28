@@ -26,9 +26,9 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { RunPane } from "./run-pane";
-import type { RunApi } from "@/lib/run/api";
-import type { RunBytesAnswer } from "@/lib/run/types";
-import type { TerminalChunk } from "@/lib/terminal-bridge";
+import type { RunApi } from "../run/api";
+import type { RunBytesAnswer } from "../run/types";
+import type { TerminalChunk } from "../bridge";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

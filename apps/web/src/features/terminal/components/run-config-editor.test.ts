@@ -4,7 +4,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { RunConfigurationView } from "@/lib/run/types";
+import type { RunConfigurationView } from "../run/types";
 import {
   configurationPatch,
   draftFromConfiguration,

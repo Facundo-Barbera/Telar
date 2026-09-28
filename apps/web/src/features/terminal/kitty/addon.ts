@@ -33,7 +33,7 @@
  */
 import type { IDisposable, ITerminalAddon, Terminal } from "@xterm/xterm";
 import type { ImageAddon } from "@xterm/addon-image";
-import type { KittyFileAnswer } from "@/lib/terminal-bridge";
+import type { KittyFileAnswer } from "../bridge";
 import { KITTY_GRAPHICS_OSC } from "./apc";
 import { charKey, decodeBase64, isPng, numberKey, parseKittyCommand, type KittyCommand } from "./command";
 

@@ -74,7 +74,7 @@ import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/li
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { SessionSchedules } from "./session/session-schedules";
-import { RunHeaderControl } from "./run/run-header-control";
+import { RunHeaderControl } from "@/features/terminal";
 import { OpenWorkspaceButton } from "./session/open-workspace-button";
 import { PromptText } from "./session/prompt-text";
 import { agentSenderLabel, AgentMessageBubble, ConversationMessage } from "./session/conversation-message";
@@ -98,11 +98,7 @@ import {
   type PanelTabParams,
   type PanelTabState,
 } from "@/features/panel";
-import { closeTerminalTab } from "@/lib/terminal-close";
-import { createRunApi } from "@/lib/run/api";
-import { foldTerminalParams } from "@/lib/terminal-workspace";
-import { freshTerminals, revealTerminal } from "@/lib/terminal-reveal";
-import type { RunView } from "@/lib/run/types";
+import { closeTerminalTab, createRunApi, foldTerminalParams, freshTerminals, revealTerminal, type RunView } from "@/features/terminal";
 import {
   editorFileForPath,
   emptyEditor,

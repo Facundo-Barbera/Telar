@@ -27,7 +27,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { RightPanel } from "./right-panel";
 import type { PanelTabItem } from "../model";
-import type { TerminalOpenRequest } from "@/lib/terminal-bridge";
+import type { TerminalOpenRequest } from "@/features/terminal";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

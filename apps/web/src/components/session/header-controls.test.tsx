@@ -23,8 +23,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { OpenWorkspaceButton } from "./open-workspace-button";
 import { WorkspaceInspector } from "./workspace-inspector";
 import { RailToggle } from "@/features/panel";
-import { RunHeaderControl } from "@/components/run/run-header-control";
-import type { RunApi } from "@/lib/run/api";
+import { RunHeaderControl } from "@/features/terminal";
+import type { RunApi } from "@/features/terminal";
 
 /** The signature of the shared bordered control: `outline` is the only variant
  *  in button.tsx that paints a border token AND a background, and the only one

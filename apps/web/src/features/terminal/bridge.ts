@@ -157,17 +157,6 @@ export function terminalBridge(): TerminalBridge | undefined {
 }
 
 /**
- * The params key a terminal tab carries its PTY's id in.
- *
- * RE-EXPORTED, NOT DECLARED HERE ANY MORE. It moved to `terminal-workspace.ts`
- * when a Terminal grew a strip of shells, because the tab's reaper
- * (`lib/terminal-close.ts`) reads the whole list from that module and the
- * dependency has to point one way.
- * Every existing importer keeps the name it had.
- */
-export { TERMINAL_ID_PARAM } from "@/lib/terminal-workspace";
-
-/**
  * WHETHER A `failed` ENDING IS THE HOST REFUSING AN UNENTERABLE CWD (#851),
  * rather than some other reason `pty.fork` itself threw (a missing shell
  * binary, a rejected env, ...).

@@ -18,10 +18,11 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { createReadGuard, RunHeaderControl, type ReadGuard } from "./run-header-control";
-import { createRunApi, runPath } from "@/lib/run/api";
-import type { RunApi } from "@/lib/run/api";
-import type { RunConfigurationView, RunStatusAnswer } from "@/lib/run/types";
+import { createReadGuard, type ReadGuard } from "../hooks/use-run-header";
+import { RunHeaderControl } from "./run-header-control";
+import { createRunApi, runPath } from "../run/api";
+import type { RunApi } from "../run/api";
+import type { RunConfigurationView, RunStatusAnswer } from "../run/types";
 
 const config = (id: string) => ({ id, name: id }) as unknown as RunConfigurationView;
 

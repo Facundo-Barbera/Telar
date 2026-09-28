@@ -18,7 +18,7 @@ import {
   type PanelTabState,
 } from "./tabs";
 import { browserPanelTab, browserTabId, browserTabLabel, describePanelTab, describePanelTabInstance, isPanelTab, LIVE_BROWSER_TAB, panelTabSuffix, type PanelTab } from "./model";
-import { foldTerminalParams, readWorkspace, terminalIds, TERMINAL_ID_PARAM } from "@/lib/terminal-workspace";
+import { foldTerminalParams, readWorkspace, terminalIds, TERMINAL_ID_PARAM } from "@/features/terminal";
 
 /** The strip as kinds, which is what every assertion below is actually about —
  *  ids are an implementation detail except where a test says otherwise. */

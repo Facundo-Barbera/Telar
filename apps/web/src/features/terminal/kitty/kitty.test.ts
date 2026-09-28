@@ -19,8 +19,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { deflateSync } from "node:zlib";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import type { KittyFileAnswer, TerminalBridge, TerminalChunk } from "@/lib/terminal-bridge";
-import { attachTerminal } from "@/lib/terminal-session";
+import type { KittyFileAnswer, TerminalBridge, TerminalChunk } from "../bridge";
+import { attachTerminal } from "../session";
 import { kittyApcRewriter, KITTY_GRAPHICS_OSC } from "./apc";
 import type { KittyGraphicsAddon as KittyAddonType, KittyImageBackend } from "./addon";
 

@@ -10,7 +10,7 @@ import {
   terminalFont,
   terminalTheme,
   type CssVarReader,
-} from "@/lib/terminal-theme";
+} from "./theme";
 
 // Only `cssColorReader` needs one — everything above it is pure, which is the
 // point of the injected reader. Registered at module scope and handed back in

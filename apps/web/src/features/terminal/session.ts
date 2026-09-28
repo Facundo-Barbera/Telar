@@ -14,9 +14,9 @@
  * The surface keeps what genuinely needs a document: the element, the addons,
  * the size, and the lifecycle.
  */
-import { ptyBytesForKey, type TerminalKeyEvent } from "@/lib/terminal-keys";
-import { kittyApcRewriter } from "@/lib/terminal-kitty/apc";
-import type { TerminalBridge, TerminalEnding } from "@/lib/terminal-bridge";
+import { ptyBytesForKey, type TerminalKeyEvent } from "./keys";
+import { kittyApcRewriter } from "./kitty/apc";
+import type { TerminalBridge, TerminalEnding } from "./bridge";
 
 /** As much of xterm's `Terminal` as the wiring touches. Structural so a test
  *  can use the real one — the point is that it IS the real one — without this

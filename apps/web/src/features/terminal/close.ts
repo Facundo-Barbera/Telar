@@ -18,8 +18,8 @@
  * terminals count, what the sentence says, what an unanswerable question
  * means — is tested as a function, without a host or a dialog.
  */
-import { terminalBridge, type TerminalActivity, type TerminalBridge } from "@/lib/terminal-bridge";
-import { readWorkspace, shellLabel } from "@/lib/terminal-workspace";
+import { terminalBridge, type TerminalActivity, type TerminalBridge } from "./bridge";
+import { readWorkspace, shellLabel } from "./workspace";
 
 /** One terminal a close would end. */
 export type CloseTarget = {

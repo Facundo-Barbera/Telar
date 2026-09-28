@@ -6,7 +6,7 @@
  * pass through untranslated — `conflict` is what the panel branches on.
  */
 import { engineClient, engineErrorResponse, requestObject } from "@/lib/engine/engine-server";
-import { RunRouteRefusal, serveRunRequest, type RunEngineVerbs } from "@/lib/run/route-map";
+import { RunRouteRefusal, serveRunRequest, type RunEngineVerbs } from "@/features/terminal";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
