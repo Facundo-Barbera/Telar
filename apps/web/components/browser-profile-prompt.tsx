@@ -25,7 +25,6 @@
  */
 
 import { useState } from "react";
-import { createRoot } from "react-dom/client";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -156,53 +155,4 @@ export function NewBrowserProfileDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-/**
- * Ask for a name, create the profile, hand it back. Resolves null if the person
- * closed the prompt without creating one, and rejects nothing — a failed create
- * is reported inside the dialog, where the field that caused it still is.
- *
- * Mounts in a root of its own so any event handler can call it; the container is
- * removed once the close animation has run.
- */
-export function promptForNewBrowserProfile(options: NewProfileOptions = {}): Promise<BrowserProfile | null> {
-  if (typeof document === "undefined") return Promise.resolve(null);
-  const bridge = desktopBrowserProfiles();
-  return new Promise((resolve) => {
-    void (async () => {
-      // Only to refuse a duplicate name. A bridge that will not answer is not a
-      // reason to refuse the prompt — the create call reports its own failure.
-      const existing = await bridge?.profiles().then((answer) => answer.profiles).catch(() => []);
-      const container = document.createElement("div");
-      document.body.append(container);
-      const root = createRoot(container);
-      let created: BrowserProfile | null = null;
-      const dismiss = () => {
-        root.render(
-          <NewBrowserProfileDialog open={false} onOpenChange={() => {}} existing={existing ?? []} />,
-        );
-        // Unmounting inside the dialog's own close handler would tear the tree
-        // down mid-commit; this also lets the exit animation finish.
-        window.setTimeout(() => {
-          root.unmount();
-          container.remove();
-          resolve(created);
-        }, 200);
-      };
-      root.render(
-        <NewBrowserProfileDialog
-          open
-          existing={existing ?? []}
-          {...options}
-          onCreated={(profile) => {
-            created = profile;
-          }}
-          onOpenChange={(next) => {
-            if (!next) dismiss();
-          }}
-        />,
-      );
-    })();
-  });
 }

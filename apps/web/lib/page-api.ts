@@ -75,7 +75,7 @@ const NO_COMPOSER = "No message box is on screen to type into.";
  * report the draft that was committed. Focus and caret are left after the text,
  * so a second call continues the sentence.
  */
-export function dictate(text: string, opts?: { submit?: boolean }): DictateResult {
+function dictate(text: string, opts?: { submit?: boolean }): DictateResult {
   if (text.length === 0) return { ok: false, reason: "There was no text to insert." };
   const composer = activeComposer();
   if (!composer) return { ok: false, reason: NO_COMPOSER };
@@ -95,14 +95,14 @@ export function dictate(text: string, opts?: { submit?: boolean }): DictateResul
 }
 
 /** The send on its own — a spoken "send it". */
-export function submit(): SubmitResult {
+function submit(): SubmitResult {
   const composer = activeComposer();
   if (!composer) return { ok: false, reason: NO_COMPOSER };
   return composer.submit();
 }
 
 /** What `dictate` would write into, so a client can decide before it speaks. */
-export function composer(): ComposerReport | null {
+function composer(): ComposerReport | null {
   const found = activeComposer();
   if (!found) return null;
   return { id: found.id, kind: found.kind, draft: found.draft(), focused: found.focused() };

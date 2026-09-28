@@ -59,7 +59,6 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
   /* Same indirection as --color-sidebar below, for the same reason (a custom
      property cannot reference its own themed value), serving the legibility
@@ -77,9 +76,6 @@
      prefers it when it exists: no cycle, and the mix reads the live
      `--sidebar` — whatever theme set it. */
   --color-sidebar: var(--sidebar-wash, var(--sidebar));
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
   --color-ring: var(--ring);
@@ -104,7 +100,6 @@
   /* The modal scrim, so `bg-overlay` exists in place of a hardcoded black. */
   --color-overlay: var(--overlay);
   --color-info: var(--info);
-  --color-verify: var(--verify);
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-accent-foreground: var(--accent-foreground);
@@ -208,14 +203,13 @@
      on card and popover — three of the six ramps were already short of 4.5.
      Lowering the canvas costs another ~0.20 on the canvas case (now 4.09–4.77);
      card and popover are unchanged, because --card and --popover did not move.
-     The ramps themselves are deliberately left alone here: they are five
+     The ramps themselves are deliberately left alone here: they are four
      semantic colours used far beyond this one backing, and re-tuning them is
      its own change with its own evidence. If you need a deeper fill than /15,
      it is a solid and it takes `text-background`, not `text-X`.
 
      Do not add a sixth ramp. New state colours go on this vocabulary. */
   --info: oklch(0.51 0.09 215);
-  --verify: oklch(0.545 0.2 293);
   --success: oklch(0.495 0.108 162);
   --warning: oklch(0.515 0.11 72);
   --destructive: oklch(0.50 0.19 25.5);
@@ -356,16 +350,10 @@
   --shadow-ink: 26%;
   --shadow-ring-ink: 11%;
 
-  /* The anchor plus four even 72-degree steps, all at one lightness so no
-     series reads as "more" than another. Deliberately NOT the status tokens: a
-     chart of session states should reach for --success and --warning and mean
-     it. Chroma is whatever sRGB allows at L 0.56, which is why hue 192 only
-     gets 0.095 — cyan runs out of gamut first. */
+  /* Two series hues at one lightness, so neither reads as "more". Not the
+     status tokens: a chart of session states uses --success and --warning. */
   --chart-1: oklch(0.56 0.16 264);
   --chart-2: oklch(0.56 0.15 336);
-  --chart-3: oklch(0.56 0.15 48);
-  --chart-4: oklch(0.56 0.13 120);
-  --chart-5: oklch(0.56 0.095 192);
 
   /* THE ONE AUTHORED RADIUS; every step in the @theme block above derives
      from it.
@@ -423,7 +411,6 @@
   --sidebar: oklch(0.955 0.002 286);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: var(--primary-foreground);
   --sidebar-accent: oklch(0.938 0.003 286);
   --sidebar-accent-foreground: var(--accent-foreground);
   --sidebar-border: var(--border);
@@ -465,12 +452,11 @@
   --accent: oklch(0.305 0 0);
   --accent-foreground: oklch(0.97 0 0);
 
-  /* Same five meanings, same five hues, lifted for a dark surface. Each still
+  /* Same four meanings, same four hues, lifted for a dark surface. Each still
      clears 4.5:1 as text on every rung including --accent, and a solid fill
      still takes `text-background` — the polarity of that pairing flips between
      themes but the class does not, which is the point. */
   --info: oklch(0.74 0.125 215);
-  --verify: oklch(0.7 0.17 293);
   --success: oklch(0.73 0.15 162);
   --warning: oklch(0.78 0.15 72);
   --destructive: oklch(0.7 0.19 25.5);
@@ -524,16 +510,12 @@
 
   --chart-1: oklch(0.74 0.13 264);
   --chart-2: oklch(0.74 0.15 336);
-  --chart-3: oklch(0.74 0.15 48);
-  --chart-4: oklch(0.74 0.15 120);
-  --chart-5: oklch(0.74 0.11 192);
 
   /* The rail lifts off the canvas here because there is no usable room below
      0.145, and stops short of --card so a card inside the rail still reads. */
   --sidebar: oklch(0.175 0 0);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: var(--primary-foreground);
   --sidebar-accent: oklch(0.265 0 0);
   --sidebar-accent-foreground: var(--accent-foreground);
   --sidebar-border: var(--border);

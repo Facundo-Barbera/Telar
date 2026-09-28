@@ -579,7 +579,7 @@ const SCOPE_INFO: Record<SettingsScope, string> = {
 };
 
 /** A small, quiet label naming a scope, with what it means behind its ⓘ. */
-export function ScopeBadge({ scope }: { scope: SettingsScope }) {
+function ScopeBadge({ scope }: { scope: SettingsScope }) {
   return (
     <InfoTip info={SCOPE_INFO[scope]} label={`Scope: ${SCOPE_LABEL[scope]}`} attribute="data-scope-info">
       <span data-scope={scope} className="text-2xs font-medium tracking-wide text-muted-foreground uppercase">

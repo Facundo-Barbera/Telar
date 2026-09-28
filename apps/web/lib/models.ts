@@ -17,32 +17,14 @@ import { defaultInstanceIdForDriver, type ModelSelection, type ProviderDriverKin
 
 /** Effort levels, where the provider has the concept. Absent means the model
  *  chooses — which is not the same as any level named here. */
-export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-export type Effort = (typeof EFFORTS)[number];
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
-export const EFFORT_LABEL: Record<Effort, string> = {
+const EFFORT_LABEL: Record<Effort, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
   xhigh: "Extra high",
   max: "Max",
-};
-
-/**
- * NO LONGER SHOWN IN THE REASONING MENU, and kept anyway.
- *
- * The menu went to one line per level because seven two-line rows turned a short
- * list into a half-screen panel — the reference cockpit lists these as bare
- * labels for the same reason. These sentences are still the right words for a
- * surface that has room to explain (a settings page, a tooltip), and rewriting
- * them from memory later would be worse than leaving them here.
- */
-export const EFFORT_HELP: Record<Effort, string> = {
-  low: "Minimal thinking, fastest answers.",
-  medium: "Moderate thinking.",
-  high: "Deep reasoning. What most models default to.",
-  xhigh: "Deeper than high, on the models that have it.",
-  max: "As much deliberation as the model allows.",
 };
 
 /**

@@ -108,7 +108,7 @@ export function desktopMetrics(): MetricsBridge | undefined {
  *  runaway and kills it (`apps/desktop/service-worker-watchdog.js`). The number
  *  is repeated rather than imported because the cockpit cannot import from the
  *  shell — if it moves there, it moves here, and the test says so. */
-export const RUNAWAY_CPU_PERCENT = 80;
+const RUNAWAY_CPU_PERCENT = 80;
 
 /** Read once, from whichever door this build has. */
 export async function readProcessMetrics(): Promise<ProcessMetricsSummary> {
@@ -133,25 +133,6 @@ export function formatCpu(percent: number): string {
   if (!Number.isFinite(percent) || percent <= 0) return "0%";
   if (percent < 1) return "<1%";
   return `${Math.round(percent)}%`;
-}
-
-export function formatMemory(kb: number): string {
-  if (!Number.isFinite(kb) || kb <= 0) return "—";
-  const mb = kb / 1024;
-  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
-}
-
-/** The window the CPU figures were averaged over, said plainly. */
-export function formatWindow(windowMs: number): string {
-  if (!Number.isFinite(windowMs) || windowMs <= 0) return "no reading yet";
-  const seconds = windowMs / 1000;
-  return seconds < 1 ? "averaged over under a second" : `averaged over ${Math.round(seconds)}s`;
-}
-
-/** What a process is, for the busiest list: a utility's own name where Electron
- *  gave one, the type otherwise. */
-export function describeProcess(row: ProcessMetricRow): string {
-  return row.name || row.serviceName || row.label;
 }
 
 /**

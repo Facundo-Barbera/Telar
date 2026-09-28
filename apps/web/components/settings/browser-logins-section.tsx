@@ -34,13 +34,13 @@ const api = createEngineApi();
 
 /** "username + password", "password + one-time code" — the words the card
  *  used, not the enum. */
-export function describeGrantFields(fields: RememberedLogin["fields"]): string {
+function describeGrantFields(fields: RememberedLogin["fields"]): string {
   return fields
     .map((field) => (field.kind === "otp" ? "one-time code" : field.kind === "field" ? `“${field.label ?? ""}”` : field.kind))
     .join(" + ");
 }
 
-export function describeLastUsed(grant: RememberedLogin, now = Date.now()): string {
+function describeLastUsed(grant: RememberedLogin, now = Date.now()): string {
   if (!grant.lastUsedAt) return "never used yet";
   const days = Math.floor((now - grant.lastUsedAt) / 86_400_000);
   if (days <= 0) return "used today";

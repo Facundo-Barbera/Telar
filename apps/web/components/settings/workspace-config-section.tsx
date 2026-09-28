@@ -70,7 +70,7 @@ function numberedLines(text: string): { line: string; at: number }[] {
     .filter((entry) => entry.line.length > 0);
 }
 
-export function formatEnv(env: Record<string, string> | undefined): string {
+function formatEnv(env: Record<string, string> | undefined): string {
   return Object.entries(env ?? {})
     .map(([key, value]) => `${key}=${value}`)
     .join("\n");
@@ -86,7 +86,7 @@ export function parseEnv(text: string): Parsed<Record<string, string> | undefine
   return { ok: true, value: Object.keys(env).length > 0 ? env : undefined };
 }
 
-export function formatPorts(ports: WorkspacePorts | undefined): string {
+function formatPorts(ports: WorkspacePorts | undefined): string {
   return ports?.names.join(", ") ?? "";
 }
 
@@ -97,17 +97,17 @@ export function parsePorts(text: string, previous?: WorkspacePorts): Parsed<Work
   return { ok: true, value: { names, ...(previous?.base !== undefined ? { base: previous.base } : {}) } };
 }
 
-export function formatSeed(seed: WorkspaceSeed | undefined): string {
+function formatSeed(seed: WorkspaceSeed | undefined): string {
   return seed?.paths.join("\n") ?? "";
 }
 
-export function parseSeed(text: string): Parsed<WorkspaceSeed | undefined> {
+function parseSeed(text: string): Parsed<WorkspaceSeed | undefined> {
   const paths = numberedLines(text).map((entry) => entry.line);
   return { ok: true, value: paths.length > 0 ? { paths } : undefined };
 }
 
 /** `path => regen command`, the command optional. */
-export const ARTIFACT_SEPARATOR = "=>";
+const ARTIFACT_SEPARATOR = "=>";
 
 export function formatArtifacts(artifacts: WorkspaceArtifact[] | undefined): string {
   return (artifacts ?? [])
@@ -127,7 +127,7 @@ export function parseArtifacts(text: string): Parsed<WorkspaceArtifact[] | undef
   return { ok: true, value: artifacts.length > 0 ? artifacts : undefined };
 }
 
-export function formatSetup(setup: WorkspaceSetup | undefined): string {
+function formatSetup(setup: WorkspaceSetup | undefined): string {
   if (!setup) return "";
   return [
     setup.command,

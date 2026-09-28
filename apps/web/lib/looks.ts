@@ -50,7 +50,7 @@ export { parseThemeHalf, type Look, type LookBackdrop } from "@telar/engine-clie
 /* ------------------------------------------------------------- the keys */
 
 /** Where the saved Looks live. */
-export const LOOKS_KEY = "telar-looks";
+const LOOKS_KEY = "telar-looks";
 
 /**
  * appearance.ts keeps its storage key private — it is an implementation detail
@@ -195,7 +195,7 @@ export function lookAppearance(look: Look): LookAppearance {
 
 /** The named failure a wear can meet, so the string lives beside its reason
  *  rather than in the component. */
-export const LOOK_QUOTA_MESSAGE = "This look's layer images would not fit in storage; everything else was applied.";
+const LOOK_QUOTA_MESSAGE = "This look's layer images would not fit in storage; everything else was applied.";
 
 /**
  * THE OTHER THING A WEAR CAN COST, and the only one the wearer must hear about

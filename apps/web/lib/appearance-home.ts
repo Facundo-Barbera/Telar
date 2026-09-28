@@ -144,9 +144,3 @@ export function mergeById<T extends { id: string }>(mine: readonly T[], home: re
   const seen = new Set(mine.map((entry) => entry.id));
   return [...merged, ...home.filter((entry) => !seen.has(entry.id))];
 }
-
-/** Where a stored picture is served from. The name is a content hash, so this
- *  URL is stable for the life of the bytes and cached as immutable. */
-export function homeImageUrl(name: string): string {
-  return `/api/appearance/home/images/${encodeURIComponent(name)}`;
-}

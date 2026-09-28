@@ -247,7 +247,7 @@ export type DesktopExtensionStatus = {
 };
 
 /** One short sentence of the extension's real health for the toolbar. */
-export function describeExtensionHealth(extension: DesktopExtensionStatus): { tone: "ok" | "warn" | "error"; text: string } {
+function describeExtensionHealth(extension: DesktopExtensionStatus): { tone: "ok" | "warn" | "error"; text: string } {
   if (extension.phase === "failed") return { tone: "error", text: extension.error ?? "failed" };
   // Map the pre-ready phases to words a person can read — never the raw enum
   // ("idle"/"installing"/"loading" would surface verbatim otherwise).
@@ -863,7 +863,7 @@ const menuRow =
  * them. "System" is not a third colour: it is the override taken off, so the
  * page reads whatever it would have read with nobody emulating anything.
  */
-export const APPEARANCES: ReadonlyArray<{ key: "light" | "dark" | "system"; label: string }> = [
+const APPEARANCES: ReadonlyArray<{ key: "light" | "dark" | "system"; label: string }> = [
   { key: "light", label: "Light" },
   { key: "dark", label: "Dark" },
   { key: "system", label: "System" },
@@ -883,7 +883,7 @@ export function zoomLabel(factor: number | undefined): string {
 }
 
 /** The address a human sees: the page's URL, or empty on the blank tab. */
-export function addressValue(url: string | undefined): string {
+function addressValue(url: string | undefined): string {
   return !url || url === "about:blank" ? "" : url;
 }
 
@@ -894,7 +894,7 @@ export function addressValue(url: string | undefined): string {
  * the shell applies (site-permissions.js), said here so the lock icon is absent
  * rather than showing an empty list.
  */
-export function originOfUrl(url: string | undefined): string | undefined {
+function originOfUrl(url: string | undefined): string | undefined {
   if (!url || url === "about:blank") return undefined;
   try {
     const parsed = new URL(url);

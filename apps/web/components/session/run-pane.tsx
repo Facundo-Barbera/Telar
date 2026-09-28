@@ -61,7 +61,7 @@ const SCROLLBACK = 3000;
  * because a terminal that answers a keystroke a second later does not feel like
  * a terminal; slow once nothing can change.
  */
-export function bytePollInterval(live: boolean): number {
+function bytePollInterval(live: boolean): number {
   return live ? 500 : 4000;
 }
 

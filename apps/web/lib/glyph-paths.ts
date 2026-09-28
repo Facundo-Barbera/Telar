@@ -21,7 +21,7 @@ import { fileKind, type FileGlyph } from "./file-kinds";
 
 /** Everything inside the `<svg>`, for a 24×24 viewBox drawn with lucide's
  *  stroke conventions. */
-export const FILE_GLYPH_MARKUP: Record<FileGlyph, string> = {
+const FILE_GLYPH_MARKUP: Record<FileGlyph, string> = {
   code: '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 12.5 8 15l2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/>',
   braces:
     '<path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>',
@@ -57,7 +57,7 @@ export const FILE_GLYPH_MARKUP: Record<FileGlyph, string> = {
 /** The kinds a chip can be that are NOT a file: the panel rows you can drag. */
 export type ChipGlyph = "directory" | "issue" | "pull" | "page" | "task" | "check" | "note" | "skill";
 
-export const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
+const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
   directory: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   issue: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
   pull: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/>',
@@ -85,7 +85,7 @@ export const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
  * out twice to survive a scheme change. These are still GitHub's colours for
  * GitHub's objects — the same families, on the app's own spine.
  */
-export const CHIP_GLYPH_TINT: Record<ChipGlyph, string> = {
+const CHIP_GLYPH_TINT: Record<ChipGlyph, string> = {
   directory: "text-muted-foreground",
   issue: "text-tint-green",
   pull: "text-tint-purple",

@@ -80,7 +80,7 @@ export function flattenSessions(list: Pick<SessionListResult, "pinned" | "sessio
 }
 
 /** A child that is waiting on the person, or on an answer, is never folded away. */
-export function childNeedsYou(session: Pick<SidebarSession, "activity">): boolean {
+function childNeedsYou(session: Pick<SidebarSession, "activity">): boolean {
   return session.activity === "blocked" || session.activity === "waiting";
 }
 

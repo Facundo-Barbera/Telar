@@ -41,7 +41,7 @@ export function normalizeSearchQuery(input: string, options?: { trimLeadingPatte
  * matches `a/b/c.ts`: how late the run starts, how scattered it is, and how
  * much of the candidate is left over.
  */
-export function scoreSubsequenceMatch(value: string, query: string): number | null {
+function scoreSubsequenceMatch(value: string, query: string): number | null {
   if (!query) return 0;
 
   let queryIndex = 0;
@@ -123,7 +123,7 @@ export function scoreQueryMatch(input: {
   return null;
 }
 
-export function compareRankedSearchResults<T>(left: RankedSearchResult<T>, right: RankedSearchResult<T>): number {
+function compareRankedSearchResults<T>(left: RankedSearchResult<T>, right: RankedSearchResult<T>): number {
   const scoreDelta = left.score - right.score;
   if (scoreDelta !== 0) return scoreDelta;
   return left.tieBreaker.localeCompare(right.tieBreaker);

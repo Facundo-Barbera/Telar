@@ -51,11 +51,6 @@ export function formatBytes(bytes: number): string {
  * and are what a human can act on. `fmtTokens` is the unit everywhere.
  */
 
-/** First 8 chars of an id — enough to recognize, short enough to sit inline. */
-export function shortId(id: string): string {
-  return id.slice(0, 8);
-}
-
 /** Compact token-count formatter: 1_234 -> "1.2k", 1_234_567 -> "1.2M". */
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

@@ -36,7 +36,7 @@ export type OpenTab = NonNullable<Parameters<typeof PromptText>[0]["onOpen"]>;
  * bytes live beside the session on the engine's disk, and no route serves
  * them back to a browser.
  */
-export function MessageAttachments({ attachments }: { attachments?: readonly TurnAttachment[] }) {
+function MessageAttachments({ attachments }: { attachments?: readonly TurnAttachment[] }) {
   if (!attachments?.length) return null;
   return (
     <ul className="mt-2 flex flex-wrap gap-1.5">

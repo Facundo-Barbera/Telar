@@ -34,7 +34,7 @@ export function readHosts(): HostsFile {
   return parsed;
 }
 
-export function writeHosts(file: HostsFile): void {
+function writeHosts(file: HostsFile): void {
   const target = hostsPath();
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   const tmp = `${target}.tmp-${process.pid}`;

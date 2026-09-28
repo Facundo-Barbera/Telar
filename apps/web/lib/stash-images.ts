@@ -18,10 +18,10 @@ import type { StashedImage } from "./prompt-stash";
 
 /** Enough to read a screenshot back and know which one it was, which is all a
  *  restored attachment has to do — the model gets the re-encode either way. */
-export const IMAGE_LONG_EDGE = 1600;
+const IMAGE_LONG_EDGE = 1600;
 /** BYTES ON THE BLOB, measured before base64 expands it by a third, so the
  *  ladder below can stop without encoding a data URL to find out. */
-export const MAX_IMAGE_BYTES = 450_000;
+const MAX_IMAGE_BYTES = 450_000;
 
 const QUALITY = [0.82, 0.7, 0.6, 0.5, 0.4];
 

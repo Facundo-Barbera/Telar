@@ -234,7 +234,7 @@ export function dedupeAcrossHosts<T extends Pick<SidebarSession, "id" | "hostId"
 }
 
 /** Blocked is the engine's own "waiting on you" — the only attention state the rail can honestly claim. */
-export function needsAttention(session: SidebarSession): boolean {
+function needsAttention(session: SidebarSession): boolean {
   return session.activity === "blocked";
 }
 

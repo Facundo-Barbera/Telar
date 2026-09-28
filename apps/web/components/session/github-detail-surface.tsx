@@ -468,7 +468,7 @@ export function EntryCard({ entry, onReact }: { entry: ForgeEntry; onReact?: Rea
  * NO ROW AT ALL WHEN NOBODY REACTED, rather than an empty strip — the ordinary case
  * for most comments, and a strip of nothing on every card is noise.
  */
-export function ReactionRow({
+function ReactionRow({
   reactions,
   onReact,
 }: {
@@ -712,7 +712,7 @@ const HUNK_LINE: Record<"add" | "del" | "ctx", string> = {
 };
 const HUNK_MARK: Record<"add" | "del" | "ctx", string> = { add: "+", del: "−", ctx: " " };
 
-export function ReviewThreadCard({ thread: given, onReact, actions }: { thread: GitHubReviewThread; onReact?: ReactHandler; actions?: ThreadActions }) {
+function ReviewThreadCard({ thread: given, onReact, actions }: { thread: GitHubReviewThread; onReact?: ReactHandler; actions?: ThreadActions }) {
   // Local, like a reaction row's: a write redraws at once and GitHub's answer (or
   // the rollback) lands later; a fresh read of the pull request wins when it comes.
   const [thread, setThread] = useState(given);

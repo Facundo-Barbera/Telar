@@ -10,11 +10,8 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
  * through that table at all — Next resolves the more specific segment first,
  * which is exactly the split we want.
  *
- * THE SAME PIPE AS `/api/sessions/stream`: `upstream.body` is handed to the
- * `Response` untouched, so nothing here buffers, parses or re-frames a frame.
- * The three headers, the missing timeout and the forwarded abort signal are all
- * that route's reasons restated — read them there; a hop that dropped one would
- * produce a feed that works locally and stalls behind a reverse proxy.
+ * `upstream.body` is handed to the `Response` untouched so nothing buffers a
+ * frame; the SSE headers and the missing timeout keep a proxy from stalling it.
  *
  * NO `after`. A run's status is not a journal a cursor can page: the frame IS
  * the state, whole, so a reader that missed one is corrected by the next.

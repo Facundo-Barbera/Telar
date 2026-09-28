@@ -129,7 +129,7 @@ function backgroundBreakdown(counts: { tasks: number; agents: number }): string 
  * A wake time short enough for the row's one slot: the clock today, the
  * weekday within the week, the date after that.
  */
-export function fmtWake(at: number, now: number): string {
+function fmtWake(at: number, now: number): string {
   const when = new Date(at);
   const clock = when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   if (new Date(now).toDateString() === when.toDateString()) return clock;

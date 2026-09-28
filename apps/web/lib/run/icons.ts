@@ -89,7 +89,7 @@ export const RUN_ICON_LABELS: Record<RunIcon, string> = {
  * and not to this list would otherwise render as `undefined` and crash the
  * masthead rather than draw the default.
  */
-export function runIconComponent(icon: string | undefined): IconComponent {
+function runIconComponent(icon: string | undefined): IconComponent {
   return RUN_ICONS[icon as RunIcon] ?? RUN_ICONS[DEFAULT_RUN_ICON];
 }
 

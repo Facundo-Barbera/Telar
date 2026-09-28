@@ -42,7 +42,7 @@ export type Rgb = { r: number; g: number; b: number };
  *  themeFromPalette maps it onto Telar's much narrower tint range. */
 export type PaletteColor = { hue: number; chroma: number; weight: number };
 
-export const HUE_BUCKETS = 12;
+const HUE_BUCKETS = 12;
 
 /** Below this saturation a pixel's hue is a rounding artefact. */
 const MIN_SATURATION = 0.15;
@@ -280,7 +280,7 @@ export function themeFromPixels(pixels: Uint8ClampedArray | readonly Rgb[]): Omi
  * band was tuned against it and against the extractor's own floor; swapping it
  * for oklch chroma would move the strength of every theme ever derived.
  */
-export function oklchHue(r: number, g: number, b: number): number {
+function oklchHue(r: number, g: number, b: number): number {
   const linear = (channel: number) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
   const [R, G, B] = [r, g, b].map((channel) => linear(channel / 255)) as [number, number, number];
   const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
@@ -341,34 +341,4 @@ export function halfFor(state: { base: string; overrides: Partial<ThemeHalf> }, 
     if (typeof override === "string" && override.length > 0) derived[token] = override;
   }
   return derived;
-}
-
-/**
- * THE PIXELS OF A DATA URL, downsampled — moved here from the backdrop tool so
- * the designer's picture attachments and the backdrop's "Take colours" read an
- * image exactly the same way. Two samplers would be two answers to "what
- * colours are in this?", and the pane has spent this rebuild deleting second
- * opinions.
- *
- * Downsampling is not an optimisation: averaging a 12-megapixel photo at full
- * size costs seconds and answers the same question a 96px edge does.
- */
-/** The longest edge sampled — the value the backdrop tool has used all along. */
-const SAMPLE_EDGE = 64;
-
-export async function samplePixels(dataUrl: string): Promise<Uint8ClampedArray> {
-  const image = new Image();
-  image.src = dataUrl;
-  await image.decode();
-  const longest = Math.max(image.naturalWidth || 1, image.naturalHeight || 1);
-  const scale = Math.min(1, SAMPLE_EDGE / longest);
-  const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
-  const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) throw new Error("no 2d context");
-  context.drawImage(image, 0, 0, width, height);
-  return context.getImageData(0, 0, width, height).data;
 }

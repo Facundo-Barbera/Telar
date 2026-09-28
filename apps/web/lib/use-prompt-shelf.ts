@@ -29,7 +29,7 @@ const api = createEngineApi();
 
 /** Same-window propagation. Carries no payload on purpose — every listener
  *  re-reads the engine's own answer. */
-export const PROMPT_SHELF_CHANGED_EVENT = "telar:prompt-shelf";
+const PROMPT_SHELF_CHANGED_EVENT = "telar:prompt-shelf";
 
 export function announcePromptShelfChanged(): void {
   if (typeof window === "undefined") return;

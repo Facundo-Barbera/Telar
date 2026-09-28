@@ -45,7 +45,7 @@ export const ROW =
  * failed row is then on screen saying so itself — this is the fold's summary of
  * what it is covering up, not a second error report.
  */
-export function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
+function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
   if (hidden || count === 0) return null;
   return (
     <>
