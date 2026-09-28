@@ -181,7 +181,7 @@ function textOf(node: Node, index: number, siblings: number): string {
 }
 
 /** The draft, exactly as it will be sent. */
-export function serialize(root: HTMLElement): string {
+function serialize(root: HTMLElement): string {
   const children = [...root.childNodes];
   return children.map((child, at) => textOf(child, at, children.length)).join("");
 }
@@ -343,7 +343,7 @@ function measuredCaretRect(root: HTMLElement): DOMRect | undefined {
  * is the empty last line after a Shift+Enter or a dictated line break, and the
  * bottom is exactly where it is.
  */
-export function revealCaret(root: HTMLElement): void {
+function revealCaret(root: HTMLElement): void {
   if (root.scrollHeight <= root.clientHeight) return;
   const caret = measuredCaretRect(root);
   if (!caret) {

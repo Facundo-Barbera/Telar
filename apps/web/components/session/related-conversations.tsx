@@ -54,7 +54,7 @@ type Outcome = NonNullable<SessionAssignment["outcome"]>;
 
 /** How a conversation is related to the one being read. The order is the order
  *  the rows are drawn in, and it is the order the tree sorted in too. */
-export type RelationKind = "assigned" | "finished" | "started" | "followed";
+type RelationKind = "assigned" | "finished" | "started" | "followed";
 
 export type Delegate = {
   session: SidebarSession;

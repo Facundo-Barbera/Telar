@@ -609,12 +609,6 @@ const AGENT_STATE: Record<JournalTask["state"], string> = {
   stopped: "stopped",
 };
 
-/** A spawn's own row. `task` is the live row the spawn opened, looked up by
- *  the handle's `taskId`; absent while the task event has not arrived yet. */
-export function isAgentItem(item: JournalItem): boolean {
-  return item.detail.type === "task";
-}
-
 /**
  * A compaction is a SEAM in the conversation, not a tool call: the provider
  * squeezed its own memory, and this row is why the agent may suddenly know
@@ -1351,7 +1345,7 @@ export function ActivityGroup({
  * A FAILED SUB-AGENT COUNTS, because its row is the only trace of it here; the
  * work it failed at is inside the agent, not in this run.
  */
-export function itemFailed(item: JournalItem, tasks: readonly JournalTask[]): boolean {
+function itemFailed(item: JournalItem, tasks: readonly JournalTask[]): boolean {
   return (
     failed(item) ||
     (item.detail.type === "task" && tasks.find((task) => task.id === (item.detail as { taskId: string }).taskId)?.state === "failed")

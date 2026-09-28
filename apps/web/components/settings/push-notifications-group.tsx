@@ -144,13 +144,13 @@ const REACHED_WITHIN_MS = 60 * 60 * 1000;
 
 /** Stopped until the phone registers again, or no longer paired: sent nothing,
  *  and the worker drops it. Never counted in the summary. */
-export function isStale(device: Device): boolean {
+function isStale(device: Device): boolean {
   return device.parked || !device.paired;
 }
 
 /** Alerts are not getting through: sends are failing with no recent delivery,
  *  or the test notification sent after pairing was refused and nothing has landed since. */
-export function isFailing(device: Device, now = Date.now()): boolean {
+function isFailing(device: Device, now = Date.now()): boolean {
   if (device.transport === "none") return false;
   const reached = device.lastDeliveryAt !== undefined && now - device.lastDeliveryAt * 1000 < REACHED_WITHIN_MS;
   if (device.consecutiveFailures > 0 && !reached) return true;

@@ -291,7 +291,7 @@ function StripRule() {
  * uncommitted count, so the refs arrive as a prop rather than as a second
  * request on the same endpoint at the same interval.
  */
-export function WhereThisLands({
+function WhereThisLands({
   projectId,
   projectName,
   git,

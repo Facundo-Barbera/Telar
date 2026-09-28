@@ -41,7 +41,7 @@ import { cn } from "@/lib/utils";
 
 /** The projects under each Mac, this one first — `targets`' own order, which
  *  the rail builds local-first and then in book order. */
-export function groupTargetsByHost(
+function groupTargetsByHost(
   targets: readonly NewConversationTarget[],
 ): { id: string; name: string; targets: NewConversationTarget[] }[] {
   const hosts: { id: string; name: string; targets: NewConversationTarget[] }[] = [];

@@ -21,7 +21,7 @@ import { useSessionDefaults } from "@/lib/session-defaults";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
-export const RESUME_AFTER_RESTART_LABEL = "Continue sessions after restarting";
+const RESUME_AFTER_RESTART_LABEL = "Continue sessions after restarting";
 
 export function RestartUpdateDialog({ restart }: { restart: RestartConfirmation }) {
   const { defaults, loading, save } = useSessionDefaults();

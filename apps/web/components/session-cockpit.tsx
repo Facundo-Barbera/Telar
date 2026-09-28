@@ -778,10 +778,7 @@ function wakeUpLabel(task: JournalTask | undefined): { verb: string; Icon: typeo
   }
 }
 
-// A peer agent's message and the person's own now live in one place, beside
-// each other, so neither can drift from how the other is drawn. Re-exported
-// because this module was their home and callers still import them from here.
-export { agentSenderLabel, AgentMessageBubble };
+export { agentSenderLabel };
 
 function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);

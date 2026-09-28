@@ -216,8 +216,6 @@ function ChoiceRow({
   );
 }
 
-export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS };
-
 /**
  * THE CATALOGUE HOOKS NOW LIVE IN `lib/model-catalogue-cache.ts`.
  *

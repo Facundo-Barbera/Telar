@@ -399,16 +399,16 @@ const PULL_PREFIX = "pull:";
 /** A NOTEBOOK IS A FILE TAB WITH A DIFFERENT SURFACE — cells and a kernel
  *  instead of a textarea. Same for a table. The prefix carries the choice so
  *  the tab restores to the right surface without re-deciding from the path. */
-export function notebookPanelTab(path: string): PanelTab {
+function notebookPanelTab(path: string): PanelTab {
   return `${NOTEBOOK_PREFIX}${path}`;
 }
-export function notebookPanelPath(tab: PanelTab): string | undefined {
+function notebookPanelPath(tab: PanelTab): string | undefined {
   return tab.startsWith(NOTEBOOK_PREFIX) ? tab.slice(NOTEBOOK_PREFIX.length) : undefined;
 }
-export function tablePanelTab(path: string): PanelTab {
+function tablePanelTab(path: string): PanelTab {
   return `${TABLE_PREFIX}${path}`;
 }
-export function tablePanelPath(tab: PanelTab): string | undefined {
+function tablePanelPath(tab: PanelTab): string | undefined {
   return tab.startsWith(TABLE_PREFIX) ? tab.slice(TABLE_PREFIX.length) : undefined;
 }
 export function pdfPanelTab(path: string): PanelTab {
@@ -443,7 +443,7 @@ export function browserPanelTab(tabId: string): PanelTab {
  * the screenshot/remote clients (no native strip) keep one panel tab per page.
  * The id is fixed so it does not churn as the native active page changes.
  */
-export const LIVE_BROWSER_PAGE_ID = "__integrated__";
+const LIVE_BROWSER_PAGE_ID = "__integrated__";
 export const LIVE_BROWSER_TAB: PanelTab = `${BROWSER_PREFIX}${LIVE_BROWSER_PAGE_ID}`;
 
 /**
@@ -462,7 +462,7 @@ export const LIVE_BROWSER_TAB: PanelTab = `${BROWSER_PREFIX}${LIVE_BROWSER_PAGE_
  * it. `nextPanelTabId` gives the first instance of a kind the kind as its id,
  * so "the first one" is exactly `id === LIVE_BROWSER_TAB`.
  */
-export function browserScopeKey(sessionId: string, instanceId: string): string {
+function browserScopeKey(sessionId: string, instanceId: string): string {
   return instanceId === LIVE_BROWSER_TAB ? sessionId : `${sessionId}#${instanceId}`;
 }
 
@@ -487,7 +487,7 @@ export function filePanelTab(path: string): PanelTab {
 
 /** The workspace-relative path behind a panel tab, or undefined for anything
  *  else. A path may contain a colon, so this splits on the FIRST one only. */
-export function filePanelPath(tab: PanelTab): string | undefined {
+function filePanelPath(tab: PanelTab): string | undefined {
   return tab.startsWith(FILE_PREFIX) ? tab.slice(FILE_PREFIX.length) : undefined;
 }
 
@@ -1338,7 +1338,7 @@ function ProcessesSurface({
   );
 }
 
-export function PanelSurface({
+function PanelSurface({
   tab,
   writes,
   diffTurnList,
@@ -1856,7 +1856,7 @@ type RightPanelDrag = {
  * rather than through React state: a controlled width would re-render the whole
  * panel, and its surfaces, on every pointer move.
  */
-export function RightPanelResizeHandle({
+function RightPanelResizeHandle({
   panelRef,
   storageKey = RIGHT_PANEL_WIDTH_STORAGE_KEY,
 }: {
