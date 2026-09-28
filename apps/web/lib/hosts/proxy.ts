@@ -3,33 +3,10 @@ import { HOST_NAME_HEADER } from "./client";
 import { HOST_HEADER } from "@/lib/remote/host-token";
 
 /**
- * ONE REQUEST, FORWARDED TO ANOTHER MAC'S COCKPIT — the hop behind
- * `/api/hosts/:id/*`.
- *
- * Method, query, body and the content headers go through untouched; the only
- * thing added is that Mac's bearer. Nothing is parsed on the way: an
- * attachment upload is a raw file body, a diff is JSON, a project icon is a
- * PNG, and the proxy is correct for all of them precisely because it does not
- * know which it is carrying. The answer comes back the same way — status,
- * body, content type — so every existing error path on the client keeps
- * working: a 404 from over there is a 404 here.
- *
- * WHAT IS STRIPPED. The caller's own credentials (`authorization`, `cookie`,
- * and the desktop shell's host header) name a device — or the launcher — of
- * THIS cockpit and would be nonsense, or a leak, over there; `host` and the
- * hop-by-hop headers belong to the connection, not the request. The remote's
- * `set-cookie` is dropped on the way back for the mirror reason: the remote
- * pairs a device, this cockpit does not become one.
- *
- * WHAT IS ADDED, and it is the only thing: `telar-host` / `telar-host-id`,
- * naming the Mac this answer came from (#204). A 404 carried back faithfully is
- * indistinguishable from one this Mac minted — "session does not exist" with
- * nothing saying whose session store was asked — so the identity of the
- * ANSWERING machine rides with the answer. Set from the book AFTER the upstream
- * headers are copied, so a remote that sends a header of this name cannot name
- * itself anything here.
- *
- * Pure over `fetch`, so the route is a one-liner and the rules are a test.
+ * Forwards one request to another Mac's cockpit (`/api/hosts/:id/*`) unparsed,
+ * adding that Mac's bearer. This cockpit's credentials and hop-by-hop headers are
+ * stripped, as is the remote's `set-cookie`. `telar-host`/`telar-host-id` are set
+ * last so the answer names the Mac it came from and a remote can't spoof them.
  */
 
 const REQUEST_HEADERS_DROPPED = new Set([HOST_HEADER, "authorization", "cookie", "host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"]);
@@ -38,32 +15,14 @@ const RESPONSE_HEADERS_DROPPED = new Set(["set-cookie", "connection", "content-l
 const UPSTREAM_TIMEOUT_MS = 60_000;
 
 /**
- * A HUNG MAC MUST NOT COST THE RAIL A MINUTE.
- *
- * A Mac that REFUSES answers instantly and renders as "away"; one that hangs —
- * asleep behind a NAT that swallows packets, a Tailscale route that has gone —
- * accepts the connection and says nothing, and every one of its reads then sat
- * here for the full minute. The rail makes four of those per pass, per host, so
- * a single such Mac held four Next server connections for a minute at a time,
- * forever, and its rows stayed un-dimmed for that whole minute because the pass
- * that would have noticed was inside them.
- *
- * SO THE BOUND IS THE READ'S OWN, not one number for the hop. These four are
- * the rail's polling pass: small JSON, asked every three to ten seconds, and
- * nothing a reader is watching is worth ten seconds of silence — an answer that
- * late is already being asked for again. Everything else keeps the minute,
- * because the same hop also carries an attachment upload, a project icon and a
- * diff of a large tree, and those are slow for honest reasons.
- *
- * A LIST, NOT A RULE, and deliberately: "bound every GET" would be the shorter
- * code and would time out the reads that legitimately take longer. Adding a
- * route here is a decision that the rail waits on it.
+ * Only the rail's polling reads get a short bound, so a hung Mac doesn't hold
+ * connections for a minute; everything else (uploads, icons, large diffs) keeps
+ * the minute. Adding a route here means the rail waits on it.
  */
 const LIST_READ_TIMEOUT_MS = 10_000;
 const LIST_READS = new Set(["sessions/live", "health", "inbox", "projects"]);
 
-/** A run's feed is idle for as long as nothing is launched, so a finite
- *  upstream timeout would sever a healthy connection on a schedule. */
+/** A run's feed idles until something launches; a finite timeout would sever it. */
 function isRunStream(path: readonly string[]): boolean {
   return path.length === 4 && path[0] === "sessions" && path[2] === "run" && path[3] === "stream";
 }
@@ -79,8 +38,6 @@ export function upstreamUrl(host: Pick<Host, "baseUrl">, path: string[], search:
   return `${host.baseUrl}/api/${path.map(encodeURIComponent).join("/")}${search}`;
 }
 
-/** The two headers that say whose answer this is. Written last, over anything
- *  the other end sent under the same names. */
 export const HOST_ID_HEADER = "telar-host-id";
 function stamp(headers: Headers, host: Pick<Host, "id" | "name">): Headers {
   headers.set(HOST_NAME_HEADER, host.name);
@@ -111,17 +68,11 @@ export async function forward(
       headers,
       ...(hasBody ? { body: request.body, duplex: "half" } : {}),
       redirect: "manual",
-      // An unbounded route arms no timer at all — see `upstreamTimeout`. The
-      // caller's own disconnect is what ends a stream, and that signal rides
-      // the request already.
+      // Unbounded routes arm no timer; the caller's disconnect ends a stream.
       ...(Number.isFinite(timeout) ? { signal: AbortSignal.timeout(timeout) } : {}),
     } as RequestInit);
   } catch {
-    // The one answer this hop mints itself: the same code the local adapter
-    // uses when its engine is down, so a remote that is away renders as
-    // "unavailable" everywhere the local one would. It names the Mac, because
-    // "that Mac" is the one thing the reader of a rail holding three of them
-    // cannot work out for themselves.
+    // Same code the local adapter uses when its engine is down, naming the Mac.
     return Response.json(
       { error: { code: "engine_unavailable", message: `${host.name} did not answer.` } },
       { status: 503, headers: stamp(new Headers({ "cache-control": "no-store", "content-type": "application/json" }), host) },

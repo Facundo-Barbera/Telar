@@ -11,13 +11,9 @@ import {
   type GradientStarter,
 } from "./gradient-starters";
 
-/** The composer/parser round trip itself lives in the protocol package, where
- *  the spec does — this file is about the TABLE: that every starter is a
- *  gradient this build can paint, show and hand to the editor. */
+/** The composer/parser round trip is tested in the protocol package; this covers the starter table. */
 describe("GRADIENT_STARTERS", () => {
-  // The store's gate is SILENT: a value that fails isGradientValue is dropped
-  // rather than rejected, so a typo in a starter would ship as "clicking this
-  // one does nothing". This is the test that makes it loud.
+  // The store drops a value that fails isGradientValue silently, so a typo would ship unnoticed.
   test.each(GRADIENT_STARTERS.map((starter) => [starter.id, starter] as const))("%s composes to a value the store accepts", (_id: string, starter: GradientStarter) => {
     expect(isGradientValue(composeGradient(starter.light))).toBe(true);
     expect(isGradientValue(composeGradient(starter.dark))).toBe(true);
@@ -32,9 +28,7 @@ describe("GRADIENT_STARTERS", () => {
     }
   });
 
-  /** A CHIP HAS TO FILL AN EDITOR, which is the whole point of a starter now:
-   *  its stops have to be inside the range the stop strip can draw, and its
-   *  colours have to be hex or the colour input cannot show them. */
+  /** Stops must be inside the range the stop strip draws, and colours must be hex for the colour input. */
   test("every starter is something the editor can open and take apart", () => {
     for (const starter of GRADIENT_STARTERS) {
       for (const spec of [starter.light, starter.dark]) {
@@ -45,16 +39,13 @@ describe("GRADIENT_STARTERS", () => {
           expect(stop.position).toBeGreaterThanOrEqual(0);
           expect(stop.position).toBeLessThanOrEqual(100);
         }
-        // Round-trippable, which is what makes "start from Dusk, then change
-        // one stop" work rather than silently resetting the others.
+        // Round-trippable, so editing one stop does not reset the others.
         expect(parseGradientCss(composeGradient(spec))).toEqual(spec);
       }
     }
   });
 
-  /** The two halves are what makes a starter worth having two of: a wash tuned
-   *  for daylight is not the one that reads at night, and the migration of an
-   *  older preset layer leans on the difference. */
+  /** Light and dark halves differ, and migrating older preset layers relies on that. */
   test("light and dark are genuinely different", () => {
     for (const starter of GRADIENT_STARTERS) {
       expect(composeGradient(starter.light)).not.toBe(composeGradient(starter.dark));

@@ -2,14 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { consultLabel, foldHarnessRows, harnessCandidatePath, harnessConsult, harnessInternalPath } from "./harness-paths";
 
-/**
- * #354 — the harness reading its own manual is not the project's history.
- *
- * The dogfood pass caught it as four rows of `/private/tmp/claude-502/…` in the
- * middle of a data-science turn. What makes the rule safe rather than merely
- * quiet is its second condition: the fixture project in that same pass lived at
- * `/tmp/exoplanets`, so "under /tmp" is not evidence of anything.
- */
+/** A fixture project can live at `/tmp/exoplanets`, so "under /tmp" alone is not evidence. */
 const CLAUDE_SKILL = "/private/tmp/claude-502/bundled-skills/2.1.267/31072555b6351e965abe2d4388310e5b/dataviz/SKILL.md";
 const WORKSPACE = "/Users/facundo/work/telar";
 
@@ -19,8 +12,7 @@ describe("what counts as a harness-internal path", () => {
   });
 
   test("the same directory under either of its two macOS names answers the same", () => {
-    // `/tmp` is a symlink to `/private/tmp`; which name a row carries depends
-    // on which API the CLI happened to use.
+    // `/tmp` is a symlink to `/private/tmp`; rows carry either name.
     expect(harnessInternalPath("/tmp/claude-502/bundled-skills/2.1.267/abc123def456abc1/dataviz/scripts/plot.mjs", WORKSPACE)).toEqual({
       harness: "claude",
       skill: "dataviz",
@@ -36,14 +28,11 @@ describe("what counts as a harness-internal path", () => {
   });
 
   test("a project that lives in /tmp is still the project", () => {
-    // The dogfood fixture was `/tmp/exoplanets`. A rule that folded on the temp
-    // directory alone would have hidden the whole turn.
     expect(harnessInternalPath("/private/tmp/exoplanets/data/planets.csv", "/tmp/exoplanets")).toBeUndefined();
     expect(harnessInternalPath("/tmp/exoplanets/notebook.py")).toBeUndefined();
   });
 
   test("the workspace wins even when it sits inside a harness root", () => {
-    // Both conditions, and this is the case that needs the second one.
     const inside = "/tmp/claude-502/project/src/main.ts";
     expect(harnessInternalPath(inside)).toEqual({ harness: "claude" });
     expect(harnessInternalPath(inside, "/tmp/claude-502/project")).toBeUndefined();
@@ -90,7 +79,6 @@ describe("the path a row is about", () => {
   });
 
   test("without one, the first absolute temp path in the command does", () => {
-    // The exact shape from the issue.
     expect(harnessCandidatePath(ran("a", "cd /private/tmp/claude-502/bundled-skills/2.1.267/31072555b6351e965abe2d4388310e5b/dataviz && node scripts/plot.mjs"))).toBe(
       "/private/tmp/claude-502/bundled-skills/2.1.267/31072555b6351e965abe2d4388310e5b/dataviz",
     );

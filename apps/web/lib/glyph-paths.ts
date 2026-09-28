@@ -1,26 +1,13 @@
 /**
- * THE SAME GLYPHS AS `session/file-icon.tsx`, AS MARKUP RATHER THAN COMPONENTS.
- *
- * WHY A SECOND COPY EXISTS, since a second copy of anything needs defending:
- * the composer's editor is a `contentEditable` whose children are built with
- * `document.createElement`, not by React. React cannot own that subtree — the
- * browser mutates it on every keystroke, and a React tree that is edited from
- * underneath reconciles against a DOM it no longer describes. So the chips
- * inside it are imperative, and an imperative chip cannot mount `<FileIcon/>`.
- *
- * The path data is lucide's own (ISC), lifted verbatim from the icon modules
- * this app already depends on, so a chip and the tree row it came from draw the
- * same shape. `glyph-paths.test.ts` asserts this table covers every `FileGlyph`
- * the kind table can name — the drift that would actually hurt is a MISSING
- * glyph, which renders an empty box, and that is the one a test can catch.
+ * The `session/file-icon.tsx` glyphs as markup: the composer's `contentEditable` chips are built
+ * imperatively, so they cannot mount React icons. Path data is lucide's (ISC), copied verbatim.
  */
 
 import { chipIsDirectory, chipPath } from "./composer-tokens";
 import type { TelarReference } from "./drag-reference";
 import { fileKind, type FileGlyph } from "./file-kinds";
 
-/** Everything inside the `<svg>`, for a 24×24 viewBox drawn with lucide's
- *  stroke conventions. */
+/** Everything inside a 24×24 `<svg>` drawn with lucide's stroke conventions. */
 const FILE_GLYPH_MARKUP: Record<FileGlyph, string> = {
   code: '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 12.5 8 15l2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/>',
   braces:
@@ -54,7 +41,7 @@ const FILE_GLYPH_MARKUP: Record<FileGlyph, string> = {
   plain: '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/>',
 };
 
-/** The kinds a chip can be that are NOT a file: the panel rows you can drag. */
+/** Chip kinds that are not a file. */
 export type ChipGlyph = "directory" | "issue" | "pull" | "page" | "task" | "check" | "note" | "skill";
 
 const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
@@ -64,55 +51,26 @@ const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
   page: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   task: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
   check: '<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
-  // lucide `notebook-pen` — a page with a hand on it, which is what a project
-  // note is: something a person wrote down, not a file the repository holds.
+  // lucide `notebook-pen`.
   note: '<path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.4 3.6a2.1 2.1 0 0 1 0 3L15 13l-4 1 1-4 6.4-6.4a2.1 2.1 0 0 1 3 0Z"/>',
-  // lucide `wand-sparkles` — the provider being asked to do a thing it already
-  // knows how to do. Deliberately NOT `sparkles`, which the slash menu already
-  // spends on a model row.
+  // lucide `wand-sparkles`; not `sparkles`, which the slash menu uses for model rows.
   skill:
     '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>',
 };
 
-/**
- * COLOUR IS IDENTITY HERE TOO, same rule `file-kinds.ts` sets out: a pull
- * request is not "success" and an issue is not "info". These are the colours
- * GitHub itself uses for the same objects, so a chip is recognisable before it
- * is read, and they must not be confused with the app's state vocabulary.
- *
- * ON THE `--tint-*` TOKENS, for the reason file-kinds.ts gives: a raw Tailwind
- * ramp is a fixed sRGB pair that cannot follow a theme, and had to spell itself
- * out twice to survive a scheme change. These are still GitHub's colours for
- * GitHub's objects — the same families, on the app's own spine.
- */
+/** GitHub's colours for GitHub's objects, on the `--tint-*` tokens so they follow the theme. */
 const CHIP_GLYPH_TINT: Record<ChipGlyph, string> = {
   directory: "text-muted-foreground",
   issue: "text-tint-green",
   pull: "text-tint-purple",
   page: "text-tint-blue",
   task: "text-tint-yellow",
-  // A check is dragged in when it went red. Rose is the honest colour for the
-  // only case this chip is ever created in.
   check: "text-tint-red",
-  // The one chip that is not a GitHub object and should not borrow a GitHub
-  // colour. Muted: a note is the user's own handwriting, and nothing about it
-  // is a state to be alarmed or reassured by.
   note: "text-muted-foreground",
-  // A capability of the harness rather than a thing in the repository — the
-  // same family the model and effort rows wear, so the provider's own
-  // vocabulary reads as one group wherever it appears.
   skill: "text-tint-purple",
 };
 
-/**
- * WHICH GLYPH A CHIP DRAWS, for every kind of reference there is.
- *
- * A FILE IS THE ONLY KIND THAT ASKS A SECOND QUESTION — what kind of file —
- * because that is the only kind whose chips are otherwise indistinguishable
- * from each other. An issue is an issue; a `.ts` and a `.png` are not "a file"
- * twice. `ReferenceKind` and `ChipGlyph` deliberately do NOT line up for that
- * reason, and this is where the two are reconciled, once.
- */
+/** Only a file asks a second question (what kind of file), which is why `ReferenceKind` and `ChipGlyph` differ. */
 export function chipGlyphFor(reference: TelarReference): { markup: string; tint: string } {
   if (reference.kind === "file") {
     if (chipIsDirectory(reference)) return { markup: CHIP_GLYPH_MARKUP.directory, tint: CHIP_GLYPH_TINT.directory };
@@ -122,8 +80,7 @@ export function chipGlyphFor(reference: TelarReference): { markup: string; tint:
   return { markup: CHIP_GLYPH_MARKUP[reference.kind], tint: CHIP_GLYPH_TINT[reference.kind] };
 }
 
-/** One `<svg>`, built the way lucide builds one. Returned as an element rather
- *  than as a string so the caller never has to think about escaping. */
+/** Built the way lucide builds one. */
 export function glyphElement(markup: string, className: string): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -134,8 +91,7 @@ export function glyphElement(markup: string, className: string): SVGSVGElement {
   svg.setAttribute("stroke-linejoin", "round");
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("class", className);
-  // The markup is this module's own constants — never user text — which is what
-  // makes an innerHTML assignment here a data lookup rather than an injection.
+  // The markup is this module's own constants, never user text.
   svg.innerHTML = markup;
   return svg;
 }

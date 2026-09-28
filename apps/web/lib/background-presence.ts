@@ -1,11 +1,6 @@
 /**
- * WHAT THE "N TASKS STILL WORKING" BANNER'S VIEW OPENS.
- *
- * It always lands on the Processes tab. When exactly one task is still working
- * and it is a process, its row opens too, so its live log is the first thing
- * on screen; with several, picking one for the reader would be a guess, so
- * none opens. A lone backgrounded sub-agent is counted by the banner but lives
- * on the Agents tab, so there is no Processes row to open for it.
+ * The banner's view always opens the Processes tab; a lone process task also opens
+ * its row. A lone sub-agent lives on the Agents tab, so nothing opens for it.
  */
 import { countsAsActivity, isBackgroundWork, type Task } from "@telar/engine-client";
 

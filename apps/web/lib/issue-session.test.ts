@@ -1,18 +1,5 @@
-/**
- * ISSUE → SESSION, AS A DECISION — issue #695.
- *
- * The gesture is one press, and everything interesting about it happens before
- * anything is drawn: whether a worktree can be cut at all, what it is cut from,
- * and what the first message says. Those are decided here, so they are tested
- * here — a refusal proved through a rendered string is a refusal proved twice as
- * slowly and half as clearly. What the row does with the answer is pinned in
- * `components/session/github-surface.session.test.tsx`.
- *
- * THE SENTENCES ARE PART OF THE CONTRACT, not incidental strings. #695's whole
- * constraint is that this refuses WITH THE REASON, so each arm asserts the
- * sentence a person reads. A reworded refusal should make somebody re-read the
- * wording; a refusal that quietly becomes a silence should fail.
- */
+// Refusal sentences are part of the contract; rendering is pinned in
+// `components/session/github-surface.session.test.tsx`.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitOverview } from "@telar/engine-client";
@@ -34,21 +21,14 @@ describe("when a worktree can be cut", () => {
     const start = issueSessionStart({ issue, projectId: "project_1", git: git({ defaultBase: "origin/main" }) });
 
     expect(start).toMatchObject({ ok: true, baseRef: "origin/main" });
-    /**
-     * `?base=` IS THE WHOLE MECHANISM. The cockpit seeds the base from it AND
-     * flips the mode to `worktree`, which is what "armed" means here — so this
-     * one query is both halves of the promise the control makes, and a href
-     * without it would open a canvas that creates a session in the shared
-     * checkout instead.
-     */
+    // `?base=` both seeds the base and arms worktree mode.
     expect(start.ok && start.href).toBe("/projects/project_1/sessions/new?base=origin%2Fmain");
   });
 
   test("the first message is the row's own reference, so a press and a drag produce the same session", () => {
     const start = issueSessionStart({ issue, projectId: "project_1", git: git() });
 
-    // Number, title and URL: the number alone is unreadable in a transcript six
-    // weeks later, and the transcript is the part that has to survive.
+    // Number alone is unreadable in a transcript weeks later.
     expect(start.ok && start.text).toBe('#695 "Issue → session: a row action" (https://github.com/o/r/issues/695)');
   });
 
@@ -86,9 +66,7 @@ describe("when it cannot", () => {
   });
 
   test("the disk is asked about before git, so a repository in somebody's bag is never called 'not a repository'", () => {
-    // What an unplugged drive's git read looks like: no repository, no branch,
-    // nothing dirty — every field the same as an unversioned folder's. Deciding
-    // on `repository` first would send the reader after the wrong problem.
+    // An unplugged drive's git read looks like an unversioned folder; don't blame `repository` first.
     const start = issueSessionStart({
       issue,
       projectId: "project_1",

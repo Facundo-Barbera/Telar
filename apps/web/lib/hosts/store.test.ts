@@ -28,8 +28,7 @@ afterEach(() => {
 describe("the hosts book on disk", () => {
   test("lives beside the pairing store, private, and starts empty", () => {
     const home = freshHome();
-    // realpath'd like the pairing store's own home: on macOS the tmpdir is
-    // a symlink into /private, and the store canonicalizes it.
+    // On macOS the tmpdir is a symlink into /private, and the store canonicalizes it.
     expect(hostsPath()).toBe(path.join(fs.realpathSync.native(home), "remote", "hosts.json"));
     expect(readHosts()).toEqual({ version: 1, hosts: [] });
     const host = addHost({ baseUrl: "http://mini:3000", deviceToken: "tlr_a", name: "Mini", daemonId: "d1" });
@@ -37,8 +36,7 @@ describe("the hosts book on disk", () => {
     expect(findHost(host.id)).toMatchObject({ name: "Mini", baseUrl: "http://mini:3000", deviceToken: "tlr_a", daemonId: "d1" });
   });
 
-  // The browser gets everything but the token: the token is what the proxy
-  // is for, and a renderer that held it would be a renderer that could leak it.
+  // The browser gets everything but the token.
   test("the public shape carries no token", () => {
     freshHome();
     const host = addHost({ baseUrl: "http://mini:3000", deviceToken: "tlr_a" });

@@ -1,55 +1,28 @@
 /**
- * IMAGE BACKDROPS — getting a photo small enough to LIVE IN localStorage.
- *
- * An image LAYER of the composition paints from a data URL held in the
- * composition's own image map. That is what makes the size question sharp: the
- * image is not a file reference, it is a STRING sitting in a 5MB-ish origin-wide
- * budget that the compiled stylesheet, the shelf of Looks, the session list and
- * every other preference also draw on — and a composition may hold six of them
- * per state. A 12MP phone photo is 8MB before base64 adds a third on top. So
- * nothing gets stored as picked: everything goes through the ladder below, and
- * lib/scene-composer.ts takes it one rung further for a layer.
- *
- * THE LADDER, not a single guess: quality 0.82 at 2048px is right for almost
- * every photo, but "almost" is the problem — a noisy image at that setting can
- * still land at 6MB, and a one-shot encode would just fail. So compression
- * RETRIES: quality steps down first (cheap, invisible on a blurred backdrop),
- * and only when quality bottoms out does the long edge shrink. Giving up is a
- * named error, never a silent no-op, because the picker has a line to show.
- *
- * THE DOM PARTS ARE DELIBERATELY THIN. Canvas cannot be unit-tested here, so
- * everything that DECIDES anything — how far to scale, what the next attempt
- * is, how big a data URL actually is — is a pure exported function with tests,
- * and the canvas code is left with nothing but drawing.
+ * Compresses a picked photo into a data URL small enough for localStorage, stepping quality
+ * down first and then the long edge. The decisions are pure functions; the canvas code only draws.
  */
 
-
-/** The long edge a backdrop is worth storing at. A backdrop is seen behind
- *  frosted glass, usually blurred; past this it is bytes nobody looks at. */
+/** Seen behind frosted glass, usually blurred. */
 export const MAX_BACKDROP_EDGE = 2048;
 
-/** The byte budget for one stored image. Well under the ~5MB localStorage
- *  gives an origin, because the themes, sessions and prefs live there too. */
+/** Well under localStorage's ~5MB per origin, which other preferences share. */
 export const MAX_BACKDROP_IMAGE_BYTES = 3.5 * 1024 * 1024;
 
 export type CompressionStep = { edge: number; quality: number };
 
-/** What almost every image is stored at — the ladder starts here and only
- *  descends when a real encode came back too big. */
+/** The ladder starts here and descends only when an encode is too big. */
 export const FIRST_STEP: CompressionStep = { edge: MAX_BACKDROP_EDGE, quality: 0.82 };
 
 const MIN_QUALITY = 0.5;
 const QUALITY_DROP = 0.12;
-/** After a shrink, quality resets high-ish: fewer pixels means the same bytes
- *  buy more quality, and re-descending from the floor would waste the shrink. */
+/** Fewer pixels buy more quality per byte, so quality resets after a shrink. */
 const RESET_QUALITY = 0.72;
 const EDGE_SHRINK = 0.75;
-/** Below this the image is no longer a backdrop, it is a thumbnail — better to
- *  fail loudly than to paint a smear behind the whole app. */
+/** Below this it would be a thumbnail, so fail instead. */
 const MIN_EDGE = 512;
 
-/** Quality first (invisible), size second (visible), then give up. Guaranteed
- *  to terminate: every branch strictly decreases quality or edge. */
+/** Quality first, then size, then give up. Terminates: every branch decreases quality or edge. */
 export function stepDown(step: CompressionStep): CompressionStep | undefined {
   const lower = Math.round((step.quality - QUALITY_DROP) * 100) / 100;
   if (lower >= MIN_QUALITY) return { edge: step.edge, quality: lower };
@@ -58,11 +31,7 @@ export function stepDown(step: CompressionStep): CompressionStep | undefined {
   return { edge, quality: RESET_QUALITY };
 }
 
-/**
- * Longest edge capped at `edge`, aspect preserved, NEVER upscaled — a small
- * image stored bigger than it was born is pure waste, and the CSS `cover` fit
- * stretches it to the window either way.
- */
+/** Longest edge capped at `edge`, aspect preserved, never upscaled. */
 export function fitWithin(width: number, height: number, edge: number): { width: number; height: number } {
   const w = Number.isFinite(width) ? Math.max(1, Math.round(width)) : 1;
   const h = Number.isFinite(height) ? Math.max(1, Math.round(height)) : 1;
@@ -72,13 +41,7 @@ export function fitWithin(width: number, height: number, edge: number): { width:
   return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
 }
 
-/**
- * The DECODED size of a data URL — what the ladder is actually judging. Base64
- * carries 3 bytes per 4 characters, minus the "=" padding; a non-base64 data
- * URL (rare, but `toDataURL` is not the only caller) is measured as its
- * payload length. Deliberately an estimate: it is compared against a budget
- * that is itself a safety margin, so being a few bytes out changes nothing.
- */
+/** Approximate decoded size of a data URL; non-base64 payloads count their length. */
 export function dataUrlBytes(dataUrl: string): number {
   const comma = dataUrl.indexOf(",");
   if (comma < 0) return dataUrl.length;
@@ -90,8 +53,7 @@ export function dataUrlBytes(dataUrl: string): number {
 
 export type ImageBackdropErrorCode = "not-an-image" | "decode-failed" | "too-large";
 
-/** Named so the picker can say WHICH thing went wrong in one line rather than
- *  showing a generic failure for three very different situations. */
+/** Named so the picker can say which thing went wrong. */
 export class ImageBackdropError extends Error {
   readonly code: ImageBackdropErrorCode;
 
@@ -102,11 +64,10 @@ export class ImageBackdropError extends Error {
   }
 }
 
-/** A file the browser will not even try to decode — caught before any work. */
+/** A file the browser will not even try to decode. */
 export function isImageFile(file: { type?: string; name?: string }): boolean {
   if (typeof file.type === "string" && file.type.startsWith("image/")) return true;
-  // Drag-and-drop from some sources arrives with an empty type; fall back to
-  // the extension rather than refusing a perfectly good PNG.
+  // Some drag-and-drop sources give an empty type, so fall back to the extension.
   return typeof file.name === "string" && /\.(png|jpe?g|gif|webp|avif|bmp)$/i.test(file.name);
 }
 
@@ -133,11 +94,7 @@ async function decode(file: File): Promise<Drawable> {
   }
 }
 
-/**
- * Decode → downscale → encode, descending the ladder until the result fits.
- * JPEG unconditionally: a backdrop is a photographic wash with no transparency
- * to preserve, and PNG on a photo is several times the bytes for nothing.
- */
+/** Decode, downscale and encode as JPEG, descending the ladder until it fits. */
 export async function compressImageFile(file: File): Promise<string> {
   if (!isImageFile(file)) throw new ImageBackdropError("not-an-image", "That file is not an image.");
   const source = await decode(file);

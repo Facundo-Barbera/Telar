@@ -1,32 +1,10 @@
 /**
- * WHAT A FILE IS, FROM ITS NAME.
- *
- * One table, three readers: the Files tree draws its glyph and tint, the file
- * viewer asks which language to highlight, and a binary row explains itself as
- * "PNG image" rather than as "bytes".
- *
- * MODELLED ON t3 code's file browser, which resolves a coloured per-extension
- * icon and falls back to a generic one. Two of its decisions are worth copying
- * exactly:
- *
- *   - EXACT FILENAMES BEAT EXTENSIONS. `package.json` is not "a JSON file" to
- *     anybody who works in a repository, and neither is `tsconfig.json`,
- *     `Dockerfile` or `CLAUDE.md`. The name lookup runs first.
- *   - COLOUR IS IDENTITY, NOT STATE. A `.ts` file is not "info" and a `.rs` file
- *     is not "danger", so these tints deliberately do NOT come from the app's
- *     five-colour state vocabulary (globals.css) — they are the language's own
- *     colour, the way an editor shows it, and they must never be read as a
- *     status. That is the one place in this cockpit where a raw palette colour is
- *     the honest choice rather than a shortcut.
- *
- * THE GLYPH IS NAMED, NOT IMPORTED. This module stays free of React so it can be
- * tested as data; `components/session/file-icon.tsx` owns the drawing. The names
- * are a closed union, so a typo is a build error rather than a missing icon.
+ * What a file is, from its name: glyph, tint, highlight language and viewer.
+ * Exact filenames beat extensions. Tints are the language's identity colour and must
+ * never be read as status. Free of React; `components/session/file-icon.tsx` draws the glyphs.
  */
 
-/** The glyphs this table may ask for. Kept small on purpose: a tree of 40
- *  different shapes is noise, so the SHAPE says "roughly what kind of thing"
- *  and the TINT says which language. */
+/** The shape says roughly what kind of thing; the tint says which language. */
 export type FileGlyph =
   | "code"
   | "braces"
@@ -48,21 +26,7 @@ export type FileGlyph =
   | "table"
   | "plain";
 
-/**
- * The tints, one token each.
- *
- * THESE USED TO BE RAW TAILWIND PAIRS — `text-sky-600 dark:text-sky-400` — and
- * a raw ramp is a fixed sRGB value, so it could not follow a theme: every file
- * icon in the panel stayed the same eight stock colours whether the canvas was
- * Telar's grey, Ember's warm sand or something a reader built. It also had to
- * restate itself in two halves, because a 400 that reads on the dark canvas is
- * washed out on the light one.
- *
- * `--tint-*` (globals.css) is that pair as one token: it flips with the scheme
- * on its own, so a call site names the FAMILY and nothing else, and a theme can
- * move it. Identity, never state — see the note beside the tokens for the law
- * these live under, which is the one file-kinds already set out.
- */
+/** `--tint-*` tokens (globals.css) flip with the scheme and follow the theme. Identity, never state. */
 const TINTS = {
   blue: "text-tint-blue",
   yellow: "text-tint-yellow",
@@ -72,39 +36,23 @@ const TINTS = {
   red: "text-tint-red",
   cyan: "text-tint-cyan",
   pink: "text-tint-pink",
-  /** The default. A token rather than a palette colour, because "no particular
-   *  language" is exactly what the panel's muted foreground already means. */
+  /** No particular language. */
   plain: "text-muted-foreground",
 } as const;
 
 export type FileKind = {
-  /** What to call it in a sentence — "PNG image", "TypeScript". */
   label: string;
   glyph: FileGlyph;
   tint: string;
-  /**
-   * The shiki language id, when there is one. Absent means "do not highlight":
-   * either the format has no grammar worth loading, or it is not text at all.
-   */
+  /** The shiki language id; absent means do not highlight. */
   lang?: string;
-  /** Bytes rather than text. The viewer says so instead of trying to read it. */
   binary?: boolean;
   /**
-   * A surface other than the text editor. `notebook` opens an .ipynb as cells
-   * in the session's kernel; `table` opens a CSV or Parquet as a grid — both
-   * only on a project that opted into data science. `pdf` opens the browser's
-   * own paged viewer and is NOT gated: a PDF is a document, not an analysis,
-   * and other features (compiled LaTeX output, a downloaded paper) route
-   * through this same kind. Absent means the plain file view.
+   * `notebook` and `table` open only on projects with data science enabled; `pdf` is not gated.
+   * Absent means the plain file view.
    */
   viewer?: "notebook" | "table" | "pdf";
-  /**
-   * Bytes the file view can RENDER rather than merely name. `binary` alone
-   * means "no text to show"; this says which media element shows the content
-   * instead — an <img>, the browser's own PDF viewer in an <iframe>, an
-   * <audio> or <video> control. The bytes come from the raw file route, which
-   * exists precisely because the text route withholds them.
-   */
+  /** Which media element renders the bytes, served by the raw file route. */
   media?: "image" | "pdf" | "audio" | "video";
 };
 
@@ -126,10 +74,7 @@ const KIND = (
   ...(media ? { media } : {}),
 });
 
-/**
- * EXACT NAMES FIRST, lowercased. The ones a repository actually has, not an
- * inventory: each of these is a file somebody looks for by name.
- */
+/** Exact names first, lowercased. */
 const BY_NAME: Record<string, FileKind> = {
   "package.json": KIND("npm manifest", "package", "red", "json"),
   "package-lock.json": KIND("npm lockfile", "lock", "red", "json"),
@@ -151,8 +96,7 @@ const BY_NAME: Record<string, FileKind> = {
   ".gitmodules": KIND("git submodules", "git", "orange", "ini"),
   ".env": KIND("environment file", "lock", "yellow", "ini"),
   ".env.example": KIND("environment template", "config", "yellow", "ini"),
-  // The three files an agent reads first in this repository. Named because a
-  // reader scanning a tree for instructions is scanning for these.
+  // The files an agent reads first in a repository.
   "readme.md": KIND("README", "doc", "blue", "markdown"),
   "claude.md": KIND("Claude instructions", "doc", "orange", "markdown"),
   "agents.md": KIND("agent instructions", "doc", "green", "markdown"),
@@ -160,10 +104,7 @@ const BY_NAME: Record<string, FileKind> = {
   "license.md": KIND("licence", "doc", "plain", "markdown"),
 };
 
-/**
- * THEN EXTENSIONS. Ordered by family so a reader can see the grouping, and each
- * one names a shiki grammar where highlighting it is worth a chunk download.
- */
+/** Then extensions, grouped by family. */
 const BY_EXTENSION: Record<string, FileKind> = {
   // TypeScript and JavaScript.
   ts: KIND("TypeScript", "code", "blue", "typescript"),
@@ -251,8 +192,7 @@ const BY_EXTENSION: Record<string, FileKind> = {
   hcl: KIND("HCL", "config", "purple", "hcl"),
   patch: KIND("patch", "git", "green", "diff"),
   diff: KIND("diff", "git", "green", "diff"),
-  // Bytes. `lang` absent AND `binary` set — but most of these carry `media`,
-  // so the viewer renders the content instead of apologising for it.
+  // Bytes: most carry `media`, so the viewer renders them.
   png: KIND("PNG image", "image", "purple", undefined, true, undefined, "image"),
   jpg: KIND("JPEG image", "image", "purple", undefined, true, undefined, "image"),
   jpeg: KIND("JPEG image", "image", "purple", undefined, true, undefined, "image"),
@@ -280,17 +220,10 @@ const BY_EXTENSION: Record<string, FileKind> = {
   dylib: KIND("shared library", "binary", "plain", undefined, true),
 };
 
-/** Nothing recognised. A file is still a file, and the tree says so rather than
- *  guessing at a language it might be. */
+/** Nothing recognised. */
 const UNKNOWN: FileKind = KIND("file", "plain", "plain");
 
-/**
- * The extension, lowercased, or "".
- *
- * A LEADING DOT IS NOT AN EXTENSION: `.gitignore` is a whole name, and treating
- * `gitignore` as its type is how a dotfile ends up labelled as a language. Only
- * a dot with something before it counts.
- */
+/** The extension, lowercased, or "". A leading dot (`.gitignore`) is not an extension. */
 export function fileExtension(path: string): string {
   const name = path.split("/").at(-1) ?? path;
   const dot = name.lastIndexOf(".");

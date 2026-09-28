@@ -1,24 +1,9 @@
 "use client";
 
 /**
- * WHERE A LINK IN A CONVERSATION OPENS — the system browser, or this session's.
- *
- * Off, a click behaves the way the web behaves: a new tab in whatever browser
- * the machine defaults to. On, the cockpit keeps the reading in the cockpit:
- * an issue or pull request the session mentions opens as its own right-panel
- * tab, and any other link opens as a tab in the session's integrated browser —
- * the same tabs the agent's `browser_*` tools drive, so what you opened is
- * what it can act on.
- *
- * LOCAL STORAGE, NOT ENGINE STATE, and deliberately so: `session-defaults.ts`
- * lives on the engine because the ENGINE reads that document on the create
- * path. Nothing engine-side ever reads this — it decides what a click in THIS
- * window does, and the desktop shell (which has a native browser to open into)
- * and a phone (which does not) are right to answer differently.
- *
- * Same-window CustomEvent for cross-component sync, the `useSessionDefaults`
- * pattern: the settings row flips it, the transcript reads it, neither polls.
- * The desktop shell's main process gets a MIRROR of it — see `claimLinks`.
+ * Where conversation links open: the system browser, or (when on) a right-panel tab or the
+ * session's integrated browser. Per-window localStorage, since nothing engine-side reads it;
+ * the desktop shell's main process gets a mirror (see `claimLinks`).
  */
 
 import { useCallback, useSyncExternalStore } from "react";
@@ -36,8 +21,7 @@ export function openLinksInSessionBrowser(): boolean {
   }
 }
 
-// `storage` is the flip made in ANOTHER window, which the same-window event
-// never reaches.
+// `storage` carries a flip made in another window, which the same-window event never reaches.
 function subscribe(onChange: () => void): () => void {
   window.addEventListener(CHANGED, onChange);
   window.addEventListener("storage", onChange);
@@ -48,8 +32,7 @@ function subscribe(onChange: () => void): () => void {
 }
 
 export function useLinkPolicy(): { openInSessionBrowser: boolean; setOpenInSessionBrowser: (next: boolean) => void } {
-  // The server snapshot is "off", so the first client render agrees with the
-  // server's and the stored answer lands straight after hydration.
+  // The server snapshot is "off" so the first client render matches the server's.
   const openInSessionBrowser = useSyncExternalStore(subscribe, openLinksInSessionBrowser, () => false);
 
   const setOpenInSessionBrowser = useCallback((next: boolean) => {
@@ -66,19 +49,9 @@ export function useLinkPolicy(): { openInSessionBrowser: boolean; setOpenInSessi
 }
 
 /**
- * WHO OPENS THIS WINDOW'S LINKS — the cockpit, while it is mounted.
- *
- * Catching clicks in the page is not enough on the desktop: a link the page
- * never sees as a click (Streamdown's confirmed link, a `target=_blank` in the
- * right panel or in tool output) becomes a popup, and popups are decided in
- * the shell's main process, which cannot read this window's localStorage. So
- * the setting is MIRRORED there (`apps/desktop/link-routing.js`): while a
- * cockpit has claimed its links and the setting is on, the shell hands each
- * such popup back here instead of to the system browser, and it is routed like
- * any caught click.
- *
- * One router at a time: the last cockpit to claim wins, and releasing only
- * clears the claim it made.
+ * Popups (`target=_blank`, Streamdown's confirmed links) are decided in the shell's main
+ * process, so the setting is mirrored there (`apps/desktop/link-routing.js`). The last cockpit
+ * to claim wins; releasing clears only its own claim.
  */
 type LinkRouter = (href: string) => void;
 type ShellLinks = {
@@ -110,8 +83,7 @@ function syncShell(): void {
     unsubscribeShell();
     unsubscribeShell = undefined;
   }
-  // A shell that refuses (an older one, or a window it does not recognise)
-  // leaves links on the system browser, which is where they went anyway.
+  // A shell that refuses leaves links on the system browser.
   void links.setRouting(on).catch(() => undefined);
 }
 
@@ -131,11 +103,7 @@ export function claimLinks(route: LinkRouter): () => void {
   };
 }
 
-/**
- * The fallback when neither the panel nor the session's browser can take a
- * link. Through the shell when there is one: `window.open` there is a popup,
- * and a claimed window's popups come straight back to the router.
- */
+/** Fallback when neither the panel nor the session's browser can take a link; via the shell when present. */
 export function openInSystemBrowser(href: string): void {
   const openExternal = shell().openExternal;
   if (openExternal) void openExternal(href).catch(() => undefined);

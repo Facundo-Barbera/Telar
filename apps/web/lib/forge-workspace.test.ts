@@ -1,16 +1,3 @@
-/**
- * THE OPEN SET BEHIND THE ISSUES AND PULL-REQUEST SUB-STRIPS — issue #693.
- *
- * What is worth testing here is not that a chip appears; it is the two
- * properties the move was allowed to land on. FIRST, that nothing is lost:
- * a layout saved before this change, with `issue:675` as a top-level tab, comes
- * back as Issues showing #675 — because a migration that silently closed the
- * issues somebody left open would be the exact harm moving them inside the list
- * was meant to prevent. SECOND, that the state is a value: the sub-strip lives
- * in a tab instance's `params`, which is what persists it and what keeps two
- * windows on one session independent, so it has to survive a round trip through
- * flat strings intact and refuse anything that comes back malformed.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
@@ -27,8 +14,7 @@ import {
 
 describe("opening and closing details", () => {
   test("an open is deliberate: it appends and shows, and never mints a second chip", () => {
-    // No preview slot, unlike the Editor's strip — see `openForge`. Clicking a
-    // row you already have open focuses that chip rather than adding one.
+    // No preview slot, unlike the Editor's strip; see `openForge`.
     let open = openForge(openForge(emptyForge(), 675), 666);
     expect(open).toEqual({ numbers: [675, 666], at: 666 });
     open = openForge(open, 675);
@@ -42,15 +28,12 @@ describe("opening and closing details", () => {
     expect(closeForge({ numbers: [1, 2, 3], at: 3 }, 3)).toEqual({ numbers: [1, 2], at: 2 });
     // Closing a chip you are NOT reading must not move what you are reading.
     expect(closeForge(open, 3)).toEqual({ numbers: [1, 2], at: 2 });
-    // Nothing left is the LIST, which is always something to draw — this surface
-    // can never be empty the way an Editor with no file open can.
     expect(closeForge({ numbers: [7], at: 7 }, 7)).toEqual({ numbers: [] });
   });
 
   test("the list is a state, not the absence of one", () => {
     const open = { numbers: [4, 5], at: 5 };
     expect(showForgeList(open)).toEqual({ numbers: [4, 5] });
-    // And every chip stays open, so going back costs nothing.
     expect(activateForge(showForgeList(open), 4)).toEqual({ numbers: [4, 5], at: 4 });
     // A stale click on a chip that has gone selects nothing.
     expect(activateForge(open, 9)).toEqual(open);
@@ -73,19 +56,14 @@ describe("the round trip through a tab's params", () => {
   });
 
   test("a surface nobody drilled into writes NO keys", () => {
-    // So a tab that was never opened into persists exactly as plainly as it did
-    // before this existed — see the note on flat strings in the module.
     expect(forgeParams(emptyForge())).toEqual({});
     expect(readForgeOpen({})).toEqual({ numbers: [] });
   });
 
   test("what comes back out of storage is validated, not trusted", () => {
-    // Everything here is reachable: a previous build, a hand edit, a half-written
-    // value. A number the surface cannot ask gh about must not survive as one it
-    // will try — the same strictness `issue:12abc` got as a tab id.
+    // Stored values may come from an old build or a hand edit.
     expect(readForgeOpen({ open: "675,12abc,0,-4,1.5, 666 ,675" })).toEqual({ numbers: [675, 666] });
-    // An `at` naming a number that is not open falls back to the LIST rather
-    // than to a detail that would spin forever.
+    // An `at` that is not open falls back to the list.
     expect(readForgeOpen({ open: "675", at: "999" })).toEqual({ numbers: [675] });
     expect(forgeParams({ numbers: [675], at: 999 })).toEqual({ open: "675" });
   });

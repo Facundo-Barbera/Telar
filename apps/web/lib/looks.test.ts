@@ -30,17 +30,10 @@ const AURORA = gradientStarterById("aurora")!;
 const DATA_URL = "data:image/webp;base64,AAAA";
 const SCENE_VALUE = `url("data:image/webp\\00003Bbase64,AAAA"), ${GRADIENT}`;
 
-/** The cockpit's own wrapper, restated — the module-level one moved out with
- *  the backdrop store it used to feed, and these tests still exercise the
- *  shared parser with THIS build's preset table. */
+/** This build's wrapper around the shared parser, with its own preset table. */
 const parseLookBackdrop = (value: unknown) => parseLookBackdropValue(value, SCENE_PRESETS);
 
-/**
- * A DOM FOR THIS FILE, because capture and wear are the two halves of a real
- * STORE now. The suite's preload deliberately hands the globals back (see
- * scripts/test-dom.mjs — most of these modules are written for a world with no
- * `window` and test that branch), so a file that wants one registers it.
- */
+/** Capture and wear use real storage; the suite preload removes the DOM (scripts/test-dom.mjs). */
 beforeAll(() => {
   GlobalRegistrator.register({ url: "http://localhost/" });
 });
@@ -89,8 +82,7 @@ describe("parseThemeHalf", () => {
     expect(Object.keys(half).sort()).toEqual([...THEME_TOKENS].sort());
   });
 
-  // These values are joined into a compiled stylesheet; a `}` in one would
-  // close the block and turn everything after it into new rules.
+  // Joined into a compiled stylesheet: a `}` would close the block.
   test("refuses a value that could escape the declaration block", () => {
     const half = parseThemeHalf({ background: "red } html { display: none", card: "blue; color: red", popover: "<script>" }, "light");
     expect(half.background).toBe(TELAR_LIGHT.background);
@@ -105,11 +97,7 @@ describe("parseThemeHalf", () => {
   });
 });
 
-/**
- * THE PRE-COMPOSITION BACKDROP STILL PARSES, because a Look file written before
- * #471 still carries one and `compositionFromV1` reads it forward. Nothing in
- * this build WRITES one.
- */
+/** Pre-composition backdrops still parse so older Look files read forward. */
 describe("parseLookBackdrop", () => {
   test("anything unrecognised is no backdrop", () => {
     expect(parseLookBackdrop(undefined)).toEqual({ kind: "none" });
@@ -125,8 +113,7 @@ describe("parseLookBackdrop", () => {
     });
   });
 
-  // The whole point of embedding the CSS is that the Look is self-contained;
-  // an id with nothing behind it would set data-backdrop over a bare canvas.
+  // An id with no CSS behind it would set data-backdrop over a bare canvas.
   test("a preset without usable resolved layers degrades to none", () => {
     expect(parseLookBackdrop({ kind: "gradient", id: "aurora" })).toEqual({ kind: "none" });
     expect(parseLookBackdrop({ kind: "gradient", id: "aurora", resolved: { light: "url(https://evil/x.png)" } })).toEqual({ kind: "none" });
@@ -166,7 +153,7 @@ describe("parseLookBackdrop", () => {
     expect(parsed.resolved.size).toBe("60% auto, cover");
   });
 
-  // isSceneValue only allows data: URLs; a remote one would make the page fetch.
+  // Only data: URLs are allowed; a remote one would make the page fetch.
   test("a scene whose layers reference a remote url degrades to none", () => {
     expect(parseLookBackdrop({ kind: "scene", scene: { baseId: "aurora", layers: [] }, images: {}, resolved: { light: 'url("https://evil/x.png")' } })).toEqual({
       kind: "none",
@@ -192,9 +179,7 @@ describe("parseLook", () => {
     expect(parsed?.depth).toBe(DEFAULT_APPEARANCE.depth);
   });
 
-  // A Look written before the elevation ladder existed has no `depth` at all,
-  // and it has to open wearing the ladder the app already had rather than
-  // being refused or coming back flat.
+  // Looks without `depth` open wearing the ladder the app already had.
   test("a Look from before the ladder wears soft", () => {
     expect(parseLook({ id: "a", label: "L" })?.depth).toBe("soft");
   });
@@ -213,7 +198,7 @@ describe("parseLook", () => {
     expect(high?.translucencyLevel).toBe(100);
   });
 
-  // The desktop toggle is a machine preference, not taste — see lib/looks.ts.
+  // The desktop toggle is a machine preference, not taste; see lib/looks.ts.
   test("never carries the desktop translucency toggle", () => {
     const parsed = parseLook({ id: "a", label: "L", translucent: true, frost: "clear" });
     expect(parsed && "translucent" in parsed).toBe(false);
@@ -224,12 +209,6 @@ describe("parseLook", () => {
     expect(parseLook({ id: "a", label: "L", version: 99 })?.version).toBe(2);
   });
 
-  /**
-   * THE MIGRATION, FROM THE COCKPIT'S SIDE. The shape-by-shape cases live with
-   * the parser in engine-client; what this pins is that a file from the old
-   * model still arrives WEARABLE through this build's own wrapper, with its
-   * palette intact and its backdrop as layers.
-   */
   test("a look from before the composition arrives as one, losslessly", () => {
     const old = parseLook({
       id: "old",
@@ -238,11 +217,10 @@ describe("parseLook", () => {
       backdrop: { kind: "gradient", id: "aurora", resolved: { light: GRADIENT, dark: GRADIENT } },
     });
     expect(old?.composition.light.base).toBe("#fefefe");
-    // Every token pinned: the base only starts deciding once one is cleared.
+    // Every token pinned; the base only decides once one is cleared.
     expect(old?.composition.light.overrides.background).toBe("#fefefe");
     expect(Object.keys(old?.composition.dark.overrides ?? {}).sort()).toEqual([...THEME_TOKENS].sort());
-    // A preset id expands into the STARTER it named, per state — a preset had
-    // two halves, and giving dark the light one would retint somebody's night.
+    // A preset expands into its starter per state; the halves differ.
     expect(old?.composition.light.layers).toEqual([{ type: "gradient", spec: AURORA.light, opacity: 100 }]);
     expect(old?.composition.dark.layers).toEqual([{ type: "gradient", spec: AURORA.dark, opacity: 100 }]);
   });
@@ -284,7 +262,6 @@ describe("the shareable file", () => {
     expect(restored).toEqual({ ...original, id: "look-fresh" });
   });
 
-  // Importing the same file twice should give two cards, not overwrite one.
   test("the imported look takes the fresh id, never the file's", () => {
     expect(parseLookFile(serializeLook(look()), "look-other")?.id).toBe("look-other");
   });
@@ -347,15 +324,11 @@ describe("wearing", () => {
       fontSize: 15,
       fontMonoSize: 12,
       translucencyLevel: 70,
-      // Depth IS taste — it means the same thing in a browser tab as in a
-      // desktop window — so unlike `translucent` it rides along.
+      // Depth is taste, unlike `translucent`, so it rides along.
       depth: "deep",
     });
   });
 
-  /** WEARING INSTALLS NOTHING ANYWHERE. It used to mint a custom theme in a
-   *  library; there is no library, so the look's composition simply becomes the
-   *  live one and the only side effect is the window changing colour. */
   test("a look's composition becomes the live one, images and all", () => {
     const worn = look({
       composition: composition({ light: { base: "#123456", layers: [{ type: "gradient", spec: AURORA.light, opacity: 100 }], overrides: {} } }),
@@ -380,16 +353,7 @@ describe("wearing", () => {
     expect((patches[0] as { accent: string }).accent).toBe("moss");
   });
 
-  /**
-   * THE REPAIR IS SILENT; ONLY ITS FAILURE IS NEWS (#705).
-   *
-   * A card the semantic tints can survive — or one the ink repair can answer —
-   * costs nothing to wear and says nothing, because moving `--success` changes
-   * a colour nobody chose. A card sitting on the ink's own LIGHTNESS is
-   * different: the fill has nowhere to go, `compileComposition` deliberately
-   * changes nothing, and a tone stays hard to read. That is the one case the
-   * wearer has to hear about.
-   */
+  /** Tint repair is silent; only a card on the ink's own lightness (stranded tones) is reported. */
   test("wearing a look whose card strands the tints says so, and only then", () => {
     const rescuable = look({ id: "dark-card", composition: composition({ light: { base: "#ffffff", layers: [], overrides: { card: "#111111" } } }) });
     expect(applyLook(rescuable, () => {}), "a card the ink repair can answer is not news").toBeUndefined();
@@ -397,7 +361,6 @@ describe("wearing", () => {
     const stranded = look({ id: "mid-green", composition: composition({ light: { base: "#ffffff", layers: [], overrides: { card: "oklch(0.50 0.10 162)" } } }) });
     const notice = applyLook(stranded, () => {});
     expect(notice).toBe(lookTintMessage(["success", "warning", "destructive"]));
-    // It names the tones rather than gesturing at "some colours".
     for (const tone of ["success", "warning", "destructive"]) expect(notice).toContain(tone);
   });
 

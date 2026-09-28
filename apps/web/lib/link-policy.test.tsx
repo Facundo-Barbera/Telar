@@ -1,20 +1,3 @@
-/**
- * SETTINGS → LINKS, END TO END ON THE PAGE'S SIDE.
- *
- * The setting never worked for two reasons, and each has a test here:
- *
- *   1. Transcript links were Streamdown's `<button>`s behind its own dialog,
- *      with no `href` for the cockpit's click handler — so with the setting on
- *      a link must render as a real anchor, and with it off keep the gate.
- *   2. Every link the page did not catch became a popup, decided in the
- *      desktop shell's main process, which never saw the setting — so the page
- *      must mirror it there (`claimLinks` → `telarDesktop.links`) and route
- *      what the shell hands back. The shell's half is
- *      `apps/desktop/link-routing.test.js`.
- *
- * The shell bridge is a fixture: it records what the page told it and lets the
- * test play the main process handing a link back.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -62,7 +45,6 @@ function installShell(): Shell {
   return shell;
 }
 
-/** Flip the setting the way the Settings row does. */
 function Toggle({ to, onReady }: { to: boolean; onReady: (flip: () => void) => void }) {
   const { setOpenInSessionBrowser } = useLinkPolicy();
   onReady(() => setOpenInSessionBrowser(to));

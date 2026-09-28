@@ -1,10 +1,3 @@
-/**
- * THE KERNEL PILL TELLS THE TRUTH WHILE SOMETHING IS RUNNING (#356).
- *
- * It read IDLE through a 35-second `ds_scratch` because the Data tab asked
- * once, on mount, and then believed the answer. The kernel announces every
- * transition on the journal; this is the fold that reads them.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { latestKernelState } from "./ds";

@@ -1,8 +1,4 @@
-/**
- * The wrap preference and what it applies to. The invariant worth pinning is
- * that this is PRESENTATION: the two class constants differ only in how text
- * is drawn, and nothing here can reach a file's contents.
- */
+// Wrap is presentation only; nothing here can reach a file's contents.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { fileKind } from "./file-kinds";
@@ -31,8 +27,6 @@ describe("which files the toggle is offered for", () => {
   });
 
   test("classification comes from the existing file-kind table, not a second list", () => {
-    // If `md` ever stops being a `doc`, this test moves with it rather than
-    // silently disagreeing with the icon beside the filename.
     expect(isProseFile(fileKind("notes.md"))).toBe(true);
     expect(fileKind("notes.md").glyph).toBe("doc");
     expect(fileKind("notes.txt").glyph).toBe("text");
@@ -77,12 +71,8 @@ describe("the stored preference", () => {
 
 describe("the two layers are drawn the same way", () => {
   test("wrapping differs only in how text is laid out — never in what it says", () => {
-    // Both constants are whitespace/overflow rules. Nothing here inserts a
-    // newline, and the saver writes the draft either way.
     expect(NOWRAP_CLASS).toBe("whitespace-pre");
     expect(WRAP_CLASS).toContain("whitespace-pre-wrap");
-    // A single unbroken token must not reintroduce the overflow the toggle
-    // exists to remove.
     expect(WRAP_CLASS).toContain("break-words");
     for (const rule of [WRAP_CLASS, NOWRAP_CLASS]) {
       expect(rule).not.toContain("\\n");

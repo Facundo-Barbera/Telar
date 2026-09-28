@@ -1,12 +1,4 @@
-/**
- * What an unsent message survives.
- *
- * Every case here is a paragraph someone typed and did not send. The module's
- * whole reason to exist is that losing one is unacceptable, so the tests are
- * mostly about the ways a slot can be WRONG — a legacy shape, a truncated
- * write, a key from another build — and the answer in every case being "no
- * draft" or "the draft", never a throw.
- */
+/** A bad slot must read as "no draft" or as the draft, never as a throw. */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { listCanvasDrafts, readDraft, writeDraft, type DraftStorage } from "./composer-draft";
@@ -27,9 +19,7 @@ function storage(initial: Record<string, string> = {}) {
 
 describe("which slot a composer writes to", () => {
   test("a session keys by session; a canvas keys by project", () => {
-    // The canvas key is the one that matters: it is what lets a conversation
-    // you started but never sent be found again, by both the composer and the
-    // rail, before any session exists to hang it on.
+    // The canvas key lets an unsent new conversation be found before any session exists.
     const store = storage();
     writeDraft("session_7", "project_a", "in a session", store);
     writeDraft(undefined, "project_a", "on the canvas", store);
@@ -73,9 +63,7 @@ describe("emptying", () => {
 
 describe("reading a slot another build wrote", () => {
   test("a bare string is still someone's paragraph", () => {
-    // The slot used to hold plain text. Drafts in that shape exist in real
-    // browsers; dropping them on a format change would break this module's one
-    // promise on the commit that claims to take drafts seriously.
+    // The legacy slot shape was plain text, and such drafts still exist in real browsers.
     const store = storage({ "telar:draft:new:project_a": "written by the old build" });
     expect(readDraft(undefined, "project_a", store)).toBe("written by the old build");
     expect(listCanvasDrafts(store)).toEqual([
@@ -97,9 +85,7 @@ describe("reading a slot another build wrote", () => {
   });
 
   test("only a leading brace means JSON; everything else is someone's words", () => {
-    // `null` and `[1,2]` are valid JSON and are still, in this slot, a legacy
-    // draft that happens to read that way. Guessing otherwise would eat text
-    // to satisfy a parser nobody asked for.
+    // `null` and `[1,2]` are valid JSON but are still a legacy text draft.
     expect(readDraft(undefined, "project_a", storage({ "telar:draft:new:project_a": "null" }))).toBe("null");
     expect(readDraft(undefined, "project_a", storage({ "telar:draft:new:project_a": "[1,2]" }))).toBe("[1,2]");
   });
@@ -144,8 +130,6 @@ describe("listing the rail's draft rows", () => {
   });
 
   test("sending a first message takes its draft row away", () => {
-    // The end of the round trip this whole feature is judged on: what you sent
-    // must stop being something you are still writing.
     const store = storage();
     writeDraft(undefined, "project_a", "the first message", store);
     expect(listCanvasDrafts(store)).toHaveLength(1);

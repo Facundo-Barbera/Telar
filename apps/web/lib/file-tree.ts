@@ -1,43 +1,13 @@
 /**
- * A FLAT LIST OF PATHS, TURNED INTO SOMETHING WORTH LOOKING AT.
- *
- * The engine answers with paths (`WorkspaceListing`) because that is the
- * smallest true thing and because search wants a list, not a graph. Every
- * decision about how those paths GROUP, SORT, COLLAPSE and FILTER is a
- * presentation decision, so all of it is here — pure, and testable without a
- * repository or a browser.
- *
- * THREE OF THOSE DECISIONS ARE BORROWED, deliberately, from t3 code's file
- * browser, because they are what makes a monorepo tree usable rather than merely
- * correct:
- *
- *   - SINGLE-CHILD CHAINS COLLAPSE. `packages/core/src/loom/steps/` is six clicks
- *     and six rows to reach one directory that has anything in it. Merged into
- *     one row it is one click, and no information is lost — the full path is
- *     right there in the label.
- *   - ONE LEVEL IS OPEN. Enough to see the shape of the repository, few enough
- *     rows that the panel is not a wall of text before you have asked anything.
- *   - SEARCH HIDES NON-MATCHES rather than highlighting them. In a thousand-file
- *     tree, highlighting is asking somebody to scroll for a colour.
- *
- * WHAT IS NOT BORROWED: t3 code's tree is a third-party widget rendering into a
- * shadow root, and the panel has to inject CSS variables through `unsafeCSS` to
- * make it match the app it lives in. Ours renders with the same primitives as
- * every other row in this panel, so it matches by construction.
+ * Presentation of the engine's flat path list: grouping, sorting, collapsing and filtering.
+ * Single-child directory chains collapse into one row, and search hides non-matches.
  */
 
 export type FileTreeNode =
   | { kind: "file"; path: string; name: string }
   | { kind: "directory"; path: string; name: string; children: FileTreeNode[] };
 
-/**
- * Directories before files, then natural order.
- *
- * `numeric` so `step-2` sorts before `step-10`, and `sensitivity: "base"` so a
- * capitalised name does not sort into its own block at the top — `README.md`
- * belongs next to `package.json`, not above every lowercase file in the
- * directory, which is what a plain codepoint sort does.
- */
+/** Directories before files, then natural, case-insensitive order (`step-2` before `step-10`). */
 function compareNodes(left: FileTreeNode, right: FileTreeNode): number {
   if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
   return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
@@ -49,14 +19,7 @@ function emptyBuilding(): Building {
   return { dirs: new Map(), files: [] };
 }
 
-/**
- * Merge a directory that contains exactly one directory and nothing else.
- *
- * Recursive, and the LABEL is what grows — `core/src/loom` — while the `path`
- * stays the real path of the directory the row actually represents. Expanding it
- * reveals the contents of the deepest one, which is the only thing anybody
- * wanted from those five clicks.
- */
+/** Merge single-directory chains: the label grows (`core/src/loom`) while `path` is the deepest directory. */
 function collapse(node: FileTreeNode): FileTreeNode {
   if (node.kind === "file") return node;
   const children = node.children.map(collapse);
@@ -77,12 +40,7 @@ function toNodes(building: Building, prefix: string): FileTreeNode[] {
   return nodes.sort(compareNodes);
 }
 
-/**
- * Build the tree. Returns the ROOT'S CHILDREN, not a root node: the root is the
- * workspace itself, it is already named in the panel's header, and a row saying
- * `/Users/you/Projects/thing` above everything would be one click of overhead on
- * every visit.
- */
+/** Returns the root's children, not a root node. */
 export function buildFileTree(paths: readonly string[]): FileTreeNode[] {
   const root = emptyBuilding();
   for (const path of paths) {
@@ -103,25 +61,10 @@ export function buildFileTree(paths: readonly string[]): FileTreeNode[] {
   return toNodes(root, "").map(collapse);
 }
 
-/**
- * How many matches a search will draw.
- *
- * Typing one letter matches most of a repository, and building a thousand-node
- * tree on every keystroke to render a scroller nobody will reach the bottom of is
- * work for nothing. The cap is reported so the surface can say what it dropped —
- * a search that silently stops at 400 reads as "there are only 400".
- */
+/** Cap on matches drawn per search; the surface reports what it dropped. */
 export const MAX_SEARCH_MATCHES = 400;
 
-/**
- * The paths a query keeps.
- *
- * MATCHED ON THE WHOLE PATH, not the filename, which is what makes `engine`
- * bring back everything under `apps/engine` and `panel` bring back
- * `components/right-panel.tsx`. Case-insensitive, plain substring: a person
- * typing into a file search is remembering a fragment, not writing a pattern, and
- * a regex here would turn a typed `(` into an error state.
- */
+/** Case-insensitive substring match on the whole path, not just the filename. */
 export function matchFiles(
   paths: readonly string[],
   query: string,
@@ -141,15 +84,7 @@ export function matchFiles(
 
 export type FileTreeRow = { node: FileTreeNode; depth: number };
 
-/**
- * The tree as a flat list of visible rows.
- *
- * FLAT BECAUSE THE KEYBOARD IS FLAT. Up and down move between adjacent VISIBLE
- * rows regardless of nesting, which is what every tree in every file manager
- * does, and expressing that against a nested render is a walk on every keypress.
- * It also means the row count is knowable, which is how the surface can say
- * "showing 400 of 1,127".
- */
+/** The visible rows in order, so keyboard navigation and row counts work on a flat list. */
 export function flattenTree(nodes: readonly FileTreeNode[], expanded: ReadonlySet<string>, depth = 0): FileTreeRow[] {
   const rows: FileTreeRow[] = [];
   for (const node of nodes) {
@@ -159,9 +94,7 @@ export function flattenTree(nodes: readonly FileTreeNode[], expanded: ReadonlySe
   return rows;
 }
 
-/** Every directory in the tree — what "expand everything" means while a search
- *  is running, since a filtered tree is small and hiding its matches behind
- *  chevrons would defeat the search. */
+/** Every directory in the tree, for expanding everything while a search runs. */
 export function directoryPaths(nodes: readonly FileTreeNode[]): string[] {
   const paths: string[] = [];
   for (const node of nodes) {
@@ -172,14 +105,7 @@ export function directoryPaths(nodes: readonly FileTreeNode[]): string[] {
   return paths;
 }
 
-/**
- * Every directory that contains a changed file, at any depth.
- *
- * So a collapsed `apps/` can carry the mark that something inside it is dirty —
- * which is the whole reason to tint a tree in a tool where an agent is the one
- * doing the writing. Derived from the changed paths rather than by walking the
- * tree, because the changed set is the small one.
- */
+/** Every directory containing a changed path, so a collapsed folder can show it is dirty. */
 export function ancestorsOf(paths: Iterable<string>): Set<string> {
   const dirs = new Set<string>();
   for (const path of paths) {

@@ -1,12 +1,5 @@
-/**
- * The Editor's file strip.
- *
- * What matters here is what CANNOT happen: a file somebody pinned, or has
- * unsaved work in, must never be replaced by the next click in the tree — while
- * browsing nine files to find one must not leave nine tabs behind. Those two
- * pull against each other, and the preview slot is the whole answer, so most of
- * these tests are about its edges.
- */
+// A pinned or edited file is never replaced by the next tree click; browsing
+// never leaves a tab per file. The preview slot reconciles the two.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
@@ -29,8 +22,6 @@ const paths = (state: EditorState) => state.files.map((file) => `${file.path}${f
 
 describe("the preview slot", () => {
   test("a single click borrows one slot, and the next single click takes it back", () => {
-    // Clicking through a directory is LOOKING. Nine clicks must not cost nine
-    // tabs — that is what made a tab per file unusable in the first place.
     let state = openInEditor(emptyEditor(), code("a.ts"));
     state = openInEditor(state, code("b.ts"));
     state = openInEditor(state, code("c.ts"));
@@ -43,13 +34,11 @@ describe("the preview slot", () => {
     state = openInEditor(state, code("b.ts"));
     expect(paths(state)).toEqual(["a.ts!", "b.ts"]);
     state = openInEditor(state, code("c.ts"));
-    // Only the preview moved.
     expect(paths(state)).toEqual(["a.ts!", "c.ts"]);
   });
 
   test("the preview is replaced IN PLACE, so the strip does not reshuffle", () => {
-    // Appending-and-removing would slide every tab to the right of the preview
-    // one position left, under the pointer, mid-click.
+    // Replaced in place so tabs don't slide under the pointer.
     let state = openInEditor(emptyEditor(), code("pinned-left.ts"), "pin");
     state = openInEditor(state, code("preview.ts"));
     state = openInEditor(state, code("pinned-right.ts"), "pin");
@@ -64,21 +53,17 @@ describe("the preview slot", () => {
   });
 
   test("a preview click never un-pins what it lands on", () => {
-    // The dangerous direction: a pin is a promise that the file stays.
     const state = openInEditor(openInEditor(emptyEditor(), code("a.ts"), "pin"), code("a.ts"));
     expect(paths(state)).toEqual(["a.ts!"]);
   });
 
   test("a deliberate open promotes the preview rather than opening a second tab", () => {
-    // Double-clicking the file you just single-clicked is exactly how a person
-    // says "keep this one".
     const state = openInEditor(openInEditor(emptyEditor(), code("a.ts")), code("a.ts"), "pin");
     expect(paths(state)).toEqual(["a.ts!"]);
   });
 
   test("the first keystroke pins — which is what makes replacement safe", () => {
-    // Every replacement above is only defensible because the preview slot can
-    // never hold edited work: the editor pins on the first change.
+    // Replacement is safe only because the editor pins on the first change.
     let state = openInEditor(emptyEditor(), code("a.ts"));
     state = pinEditorFile(state, "a.ts");
     state = openInEditor(state, code("b.ts"));
@@ -92,8 +77,6 @@ describe("the preview slot", () => {
   });
 
   test("a notebook is never a preview", () => {
-    // It is a thing you work IN — cells with drafts and a kernel — and its
-    // unsaved state is not something the first keystroke here can see.
     let state = openInEditor(emptyEditor(), { path: "a.ipynb", view: "notebook" });
     state = openInEditor(state, code("b.ts"));
     expect(paths(state)).toEqual(["a.ipynb!", "b.ts"]);
@@ -128,11 +111,7 @@ describe("closing", () => {
   });
 });
 
-/**
- * The strip's own "Close others" / "Close to the right" — which say which
- * files a sweep is about and close nothing themselves, so the refused-save
- * confirm keeps working on every file in the sweep. See the note above them.
- */
+/** The verbs only name paths, so the refused-save confirm still runs per file. */
 describe("which files a close verb sweeps", () => {
   const strip = () => {
     let state: EditorState = { files: [], explorerOpen: true };
@@ -151,8 +130,6 @@ describe("which files a close verb sweeps", () => {
   });
 
   test("a menu left open on a file that has since closed sweeps nothing at all", () => {
-    // Otherwise a stale "Close others" would empty the strip around a tab
-    // that is no longer in it — every file lost to name one that is gone.
     expect(otherEditorPaths(strip(), "gone.ts")).toEqual([]);
     expect(editorPathsAfter(strip(), "gone.ts")).toEqual([]);
   });
@@ -173,21 +150,17 @@ describe("which files a close verb sweeps", () => {
 
 describe("editorFileForPath", () => {
   test("the data-science pair is gated, the PDF viewer is not", () => {
-    // The same rules the panel applied when a file was a top-level tab.
     expect(editorFileForPath("analysis.ipynb", []).view).toBe("code");
     expect(editorFileForPath("analysis.ipynb", ["data-science"]).view).toBe("notebook");
     expect(editorFileForPath("data.csv", ["data-science"]).view).toBe("table");
     expect(editorFileForPath("docs/paper.pdf", []).view).toBe("pdf");
-    // Markdown is the text editor's own job — it renders it.
     expect(editorFileForPath("README.md", []).view).toBe("code");
     expect(editorFileForPath("src/weird:name.ts", [])).toEqual({ path: "src/weird:name.ts", view: "code" });
   });
 });
 
 describe("what survives a reload", () => {
-  /** A localStorage the size of this test. The module reads `window` lazily on
-   *  every call, so standing one up here is enough — and it is the only way to
-   *  test a restore that has to survive a build that changed its own vocabulary. */
+  /** The module reads `window` lazily, so a per-test storage is enough. */
   function withStorage<T>(run: () => T): T {
     const store = new Map<string, string>();
     const previous = (globalThis as { window?: unknown }).window;
@@ -234,7 +207,6 @@ describe("what survives a reload", () => {
       );
       const restored = readEditor("s");
       expect(restored.files.map((file) => file.path)).toEqual(["a.ts"]);
-      // And a tree somebody collapsed stays collapsed.
       expect(restored.explorerOpen).toBe(false);
     });
   });

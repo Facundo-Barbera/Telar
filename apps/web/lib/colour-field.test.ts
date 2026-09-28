@@ -1,10 +1,6 @@
 /**
- * WHAT A COLOUR FIELD ACCEPTS — the three shapes the owner named, and the
- * refusal that keeps a typo from becoming a colour (#471).
- *
- * NO DOM HERE ON PURPOSE. `parseCssColor`'s last resort asks a canvas, which
- * only exists in a browser; everything this file asserts is one of the branches
- * that answers before that, which is also every shape the composer stores.
+ * No DOM here: `parseCssColor`'s last resort asks a canvas, so these cover
+ * only the branches that answer before it.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
@@ -42,9 +38,7 @@ describe("normaliseColourText", () => {
     expect(normaliseColourText("rgb(255 0 0)")).toBe("#ff0000");
   });
 
-  /** THE POINT OF RETURNING UNDEFINED. `cssColorToHex` answers `#808080` for
-   *  all of these, which is right for a stored value and wrong for a typed one:
-   *  it would turn a typo into a real grey stop nobody chose. */
+  /** `cssColorToHex` answers `#808080` for these; a typed value must be undefined instead. */
   test("nonsense is nothing, not grey", () => {
     for (const text of ["", "   ", "bananas", "#12", "#1234567", "oklch(", "oklch(bananas)", "#gggggg"]) {
       expect(normaliseColourText(text)).toBeUndefined();

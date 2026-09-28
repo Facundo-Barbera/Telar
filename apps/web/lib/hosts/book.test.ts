@@ -27,7 +27,6 @@ describe("defaultHostName", () => {
 });
 
 describe("parsePairingUrl", () => {
-  // The link the Remote access card mints today: the eight-digit code.
   test("the cockpit's own pairing link — code in the fragment, /pair stripped", () => {
     expect(parsePairingUrl(" http://192.168.1.9:3000/pair#token=48129037 ")).toEqual({
       baseUrl: "http://192.168.1.9:3000",
@@ -42,7 +41,7 @@ describe("parsePairingUrl", () => {
     });
   });
 
-  // A token in the query would reach a server log; the same refusal iOS makes.
+  // A token in the query would reach a server log.
   test("a token in the query string is refused", () => {
     expect(parsePairingUrl("http://mini:3000/pair?token=tlr_abc")).toBeUndefined();
   });
@@ -84,8 +83,7 @@ describe("recordDaemonId", () => {
     expect(hosts[0]).toMatchObject({ id: "new", daemonId: "d9" });
   });
 
-  // Same Mac added twice under two addresses: the OLDER row owns everything
-  // keyed on its id, the newer address is the one that works right now.
+  // The older row owns everything keyed on its id; the newer address works now.
   test("merges a twin into the older record and keeps the newer address", () => {
     const { hosts, merged } = recordDaemonId(two(), "new", "d1");
     expect(merged).toBe(true);

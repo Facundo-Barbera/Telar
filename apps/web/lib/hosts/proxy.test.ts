@@ -30,8 +30,7 @@ describe("upstreamTimeout", () => {
   });
 
   test("a write is never a list read, whatever it is addressed to", () => {
-    // `PATCH /inbox` shares its path with the rail's read of the same document;
-    // bounding a write on the reader's patience would be the wrong trade.
+    // `PATCH /inbox` shares its path with the rail's read.
     expect(upstreamTimeout({ method: "PATCH" }, ["inbox"])).toBe(60_000);
     expect(upstreamTimeout({ method: "POST" }, ["projects"])).toBe(60_000);
     expect(upstreamTimeout({ method: "get" }, ["health"])).toBe(10_000);
@@ -58,8 +57,7 @@ describe("forward", () => {
     const headers = new Headers(seen!.headers);
     expect(headers.get("authorization")).toBe("Bearer tlr_remote");
     expect(headers.get("cookie")).toBeNull();
-    // The desktop shell puts its launcher secret on every request to THIS
-    // cockpit; forwarding it would hand this machine's credential to another.
+    // The shell's launcher secret for this cockpit must not reach another machine.
     expect(headers.get(HOST_HEADER)).toBeNull();
     expect(headers.get("x-telar-attachment-name")).toBe("a.png");
     // The remote pairs a device; this cockpit does not become one.
@@ -99,17 +97,10 @@ describe("forward", () => {
     }));
     expect(response.status).toBe(503);
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe("engine_unavailable");
-    // …and it NAMES the Mac, in the body and in the header, because "that Mac"
-    // is unanswerable on a cockpit paired with three (#204).
     expect(response.headers.get(HOST_NAME_HEADER)).toBe("mini");
   });
 });
 
-/**
- * WHOSE ANSWER THIS IS (#204). A 404 carried back faithfully is otherwise
- * indistinguishable from one this Mac minted, and a session id means nothing
- * without the engine that minted it.
- */
 describe("the answer says which Mac gave it", () => {
   test("every forwarded answer carries the host's name and id", async () => {
     const request = new Request("http://cockpit.local/api/hosts/h/sessions/session_shared");
@@ -122,8 +113,6 @@ describe("the answer says which Mac gave it", () => {
   });
 
   test("a remote cannot name itself — the book's word wins over the wire's", async () => {
-    // Otherwise the other end could put any name on an error this cockpit then
-    // shows as fact.
     const request = new Request("http://cockpit.local/api/hosts/h/projects");
     const response = await forward(request, host, ["projects"], fake(() =>
       Response.json({ projects: [] }, { headers: { [HOST_NAME_HEADER]: "your own Mac", [HOST_ID_HEADER]: "local" } }),

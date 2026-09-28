@@ -1,16 +1,6 @@
 /**
- * WHAT GITHUB'S WORDS MEAN, decided once.
- *
- * The engine passes GitHub's own vocabulary through unmapped — `MERGEABLE`,
- * `BLOCKED`, `CHANGES_REQUESTED`, `TIMED_OUT` — on the stated grounds that
- * mapping it is a display decision and three clients should not each invent one.
- * This module is that decision, made in one place: which words are red, which
- * checks count as failing, and whether the merge button is allowed to be pressed.
- *
- * PURE AND FRAMEWORK-FREE, so every rule below is testable without a component.
- * The rules are the interesting part — `mergeReadiness` in particular is the
- * difference between a button that refuses and a button that tells you why it
- * would.
+ * Display decisions for GitHub's vocabulary, which the engine passes through
+ * unmapped: which words are red, which checks fail, whether merge may be pressed.
  */
 import type {
   GitHubCheck,
@@ -33,51 +23,21 @@ import type {
 } from "@telar/engine-client";
 
 /**
- * HOW BIG AN AVATAR THIS COCKPIT ASKS GITHUB FOR — one number, for every face on
- * every surface, and the sameness is the point.
- *
- * ONE SIZE SO THE CACHE WORKS. `github.com/<login>.png` takes a `?size=`, and the
- * URL including that parameter is the browser's cache key. This repository's threads
- * are the case #790 was filed on — nearly every comment is an agent under one
- * account — so a thread of forty comments is FORTY REFERENCES TO ONE URL and
- * therefore one fetch. Asking 24px for a row and 32px for a card would turn that
- * into two, and a third the moment somebody adds a third placement.
- *
- * 48 RATHER THAN THE 12–16 IT IS DRAWN AT, because these are Retina surfaces and a
- * 16px `<img>` given a 16px source is visibly soft at 2× and worse at 3×. The
- * difference is a few KB once.
+ * One avatar size everywhere: the `?size=` URL is the browser's cache key, so a
+ * thread full of one account's comments is one fetch. 48 stays sharp at 3×.
  */
 export const AVATAR_PIXELS = 48;
 
-/** The engine sends the face without a size — the size is the renderer's
- *  business — so every consumer goes through here and asks for the same one. */
 export function avatarSrc(url: string): string {
   return `${url}?size=${AVATAR_PIXELS}`;
 }
 
-/**
- * THE LETTER BEHIND A FACE THAT DOES NOT LOAD.
- *
- * An avatar is absent for a bot, and a derived URL can 404 for a deleted account
- * or simply not arrive on a machine that cannot reach the CDN. A monogram is the
- * device every chat surface uses for exactly that, and it is better than the
- * alternatives in both directions: a broken-image glyph says the renderer is
- * broken, and an empty circle says nothing at all. `?` when there is not even a
- * login, which is what `gh` sends for a comment by a deleted account.
- */
+/** `?` when there is no login, as `gh` sends for a deleted account. */
 export function authorMonogram(login?: string): string {
   const first = login?.trim().replace(/^app\//, "").charAt(0);
   return first ? first.toUpperCase() : "?";
 }
 
-/**
- * Why there is nothing to show, and what to do about it.
- *
- * FIVE SENTENCES RATHER THAN ONE. Four of them are the list surface's, and the
- * fifth only a detail read can produce. They need five different responses from a
- * reader, and the last of them — "there is no #999" — is the only one that is not
- * about the machine.
- */
 export const UNAVAILABLE: Record<GitHubDetailUnavailable, { title: string; detail: string }> = {
   not_installed: {
     title: "The gh CLI is not installed",
@@ -91,11 +51,7 @@ export const UNAVAILABLE: Record<GitHubDetailUnavailable, { title: string; detai
     title: "Not a repository",
     detail: "There is no git repository here — or one with no remotes at all — so there is nothing for gh to read.",
   },
-  /** SPLIT OUT OF `no_repository` (#670). The two were one sentence, and for a
-   *  GitLab or Gitea checkout that sentence was false: the repository exists,
-   *  it is simply not on a host gh serves. Everything that is not
-   *  GitHub-specific — committing, pushing — still works, and saying "not a
-   *  repository" sent people looking for a problem that was not there. */
+  /** The repository exists but isn't on a host gh serves (GitLab, Gitea). */
   not_github: {
     title: "Not on GitHub",
     detail: "This repository's remote is not a GitHub host, so gh has nothing to show. Committing and pushing are unaffected.",
@@ -111,13 +67,6 @@ export const UNAVAILABLE: Record<GitHubDetailUnavailable, { title: string; detai
   failed: { title: "gh could not answer", detail: "" },
 };
 
-/**
- * What a merge refusal means, and what to do next.
- *
- * SEVEN SENTENCES, because each has a different next move and only two of them
- * are "wait". Written to be read by the person who just pressed the button, so
- * each one names the actor: somebody rebases, review happens, you re-read.
- */
 export const MERGE_REFUSAL: Record<GitHubMergeRefusal, string> = {
   not_open: "There is nothing to merge — this pull request is already closed or merged.",
   conflicted: "The branches do not combine on their own. Somebody has to rebase or merge the base branch in first.",
@@ -128,20 +77,7 @@ export const MERGE_REFUSAL: Record<GitHubMergeRefusal, string> = {
   failed: "GitHub refused, and not for a reason this cockpit recognises.",
 };
 
-/**
- * What a push refusal means — issue #670.
- *
- * TEN SENTENCES, and only two of them are about something being wrong. Five are
- * decided before anything runs, and three of THOSE are ordinary states a
- * perfectly healthy project is in: a local session, a repository with no remote,
- * a branch already published. Written so the sentence itself says which kind it
- * is, because the same red banner for all ten is how a reader learns to stop
- * reading it.
- *
- * NOTHING HERE SUGGESTS A FORCE PUSH, for `rejected` least of all. The remedy
- * for a diverged branch is a pull, and a cockpit that named the other option
- * would be offering something this engine deliberately cannot do.
- */
+/** Never suggests a force push; the remedy for a diverged branch is a pull. */
 export const PUSH_REFUSAL: Record<GitPushRefusal, string> = {
   not_repository: "This session's checkout is not a git repository, so there is nothing to push.",
   local_checkout: "This session works in the project's own checkout, which it shares with your editor. There is no session branch to publish.",
@@ -155,13 +91,6 @@ export const PUSH_REFUSAL: Record<GitPushRefusal, string> = {
   failed: "Git refused, and not for a reason this cockpit recognises.",
 };
 
-/**
- * What a pull-request refusal means — issue #670.
- *
- * `not_pushed` IS THE ONE WITH A REMEDY ON THE SAME SURFACE, and the sentence
- * names it: the other arm is three centimetres away. `exists` is not a failure
- * at all — the thing you asked for is already there and the surface links it.
- */
 export const PULL_CREATE_REFUSAL: Record<GitHubPullCreateRefusal, string> = {
   not_pushed: "This branch is not on the remote yet. Push it first, and this becomes available.",
   exists: "A pull request for this branch is already open.",
@@ -171,34 +100,24 @@ export const PULL_CREATE_REFUSAL: Record<GitHubPullCreateRefusal, string> = {
   failed: "GitHub refused, and not for a reason this cockpit recognises.",
 };
 
-/** The five states a check can be in, from a reader's point of view. GitHub has
- *  nine words for them and only these five change what you do. */
+/** GitHub's nine check words reduced to the five that change what you do. */
 export type CheckSummary = {
   total: number;
   passed: number;
   failed: number;
-  /** Queued or in progress. Not "not failed" — the difference matters. */
   running: number;
   skipped: number;
-  /** Neutral or cancelled: finished, not green, and not blocking. */
+  /** Neutral or cancelled: finished, not green, not blocking. */
   neutral: number;
 };
 
-/**
- * `SKIPPED` IS NOT A PASS and `CANCELLED` IS NOT A FAILURE.
- *
- * A repository whose entire matrix skipped would otherwise report "12 passed",
- * which is the wrong answer to "did CI run". A cancelled run is a run somebody
- * stopped — it is neither a verdict nor a problem to fix, and counting it red
- * would put a failure badge on a pull request with nothing wrong with it.
- */
+/** `SKIPPED` is not a pass and `CANCELLED` is not a failure. */
 const FAILING = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"]);
 
 export function checkSummary(checks: readonly GitHubCheck[]): CheckSummary {
   const summary: CheckSummary = { total: checks.length, passed: 0, failed: 0, running: 0, skipped: 0, neutral: 0 };
   for (const check of checks) {
-    // An unfinished check has no conclusion, and its status is the only thing
-    // that says so — a missing conclusion must never read as "not failed".
+    // A missing conclusion must never read as "not failed".
     if (check.status.toUpperCase() !== "COMPLETED" || !check.conclusion) {
       summary.running += 1;
       continue;
@@ -212,9 +131,7 @@ export function checkSummary(checks: readonly GitHubCheck[]): CheckSummary {
   return summary;
 }
 
-/** The one line a checks row shows. Empty when there are no checks, because "no
- *  checks ran" is a different fact from "everything passed" and the surface says
- *  that in its own words. */
+/** Empty with no checks: "no checks ran" differs from "everything passed". */
 export function checkHeadline(summary: CheckSummary): string {
   if (summary.total === 0) return "";
   const parts: string[] = [];
@@ -227,30 +144,13 @@ export function checkHeadline(summary: CheckSummary): string {
 }
 
 /**
- * Whether the merge button may be pressed, and what it says either way.
- *
- * THE POINT IS TO REFUSE HERE, WITH A REASON, RATHER THAN AT GITHUB. Every state
- * below is one the engine or GitHub would also refuse; deciding it in front of
- * the reader turns a round trip and a red banner into a sentence under a disabled
- * button. The two states that are NOT refusals are the interesting ones:
- *
- *   - `UNKNOWN` means GitHub has not finished computing mergeability, which it
- *     does lazily on first ask. Refusing here would block the first merge of every
- *     quiet pull request. Pressing the button is what makes GitHub compute it.
- *   - `UNSTABLE` means checks are failing that nothing requires. GitHub allows
- *     that merge, so this does too — with the failure named, because a person
- *     merging over a red check should have to see it.
- *
- * EVERY OPEN PULL REQUEST GETS A NOTE, including the one nothing is wrong with.
- * The clean case used to return no sentence at all, which left the merge button
- * standing alone with nothing beside it saying what it would do or whether GitHub
- * would take it — a control that only explains itself when it is refusing.
+ * Refuses in front of the reader with a reason, rather than at GitHub. `UNKNOWN`
+ * is allowed (GitHub computes mergeability lazily; pressing triggers it), and
+ * `UNSTABLE` is allowed with a caution. Every open PR gets a note.
  */
 export type MergeReadiness = {
   canMerge: boolean;
-  /** What to say under the button. Absent when there is nothing to add. */
   note?: string;
-  /** True when the merge is allowed but something is worth reading first. */
   caution?: boolean;
 };
 
@@ -261,9 +161,7 @@ export function mergeReadiness(pull: Pick<GitHubPullDetail, "state" | "isDraft" 
     return { canMerge: false, note: `It conflicts with ${pull.baseRefName ?? "its base branch"} — somebody has to rebase.` };
   }
   switch (pull.mergeStateStatus.toUpperCase()) {
-    // GitHub says draft in TWO fields — `isDraft` above and this one — and either
-    // saying it is enough. Reading only the first would offer a merge GitHub
-    // refuses if they ever disagreed.
+    // GitHub reports draft in two fields; either is enough.
     case "DRAFT":
       return { canMerge: false, note: "This is still a draft. Mark it ready for review on GitHub first." };
     case "DIRTY":
@@ -281,33 +179,18 @@ export function mergeReadiness(pull: Pick<GitHubPullDetail, "state" | "isDraft" 
       return { canMerge: true, caution: true, note: "GitHub has not finished working out whether this merges. Pressing merge is what asks it." };
     case "HAS_HOOKS":
       return { canMerge: true, caution: true, note: "The repository runs a pre-receive hook on merge, which may still refuse." };
-    // `CLEAN`, and any word this cockpit has not met. Both already enable the
-    // button, so both say the same thing: GitHub named nothing in the way. It is
-    // a report of what GitHub answered, not a promise about what it will do.
+    // `CLEAN` and unknown words: a report of GitHub's answer, not a promise.
     default:
       return { canMerge: true, note: `GitHub has nothing holding this back from ${pull.baseRefName ?? "its base branch"}.` };
   }
 }
 
-/**
- * WHAT STATUS A ROW IS IN, as one word and one glyph.
- *
- * SIX STATES, NOT TWO. A list that can show closed rows is a list where "open or
- * not" is the least interesting thing about a row: a merged pull request, one
- * somebody closed without merging, an issue completed and an issue abandoned are
- * four different outcomes, and GitHub gives each its own icon precisely because
- * the difference is what a reader is looking for.
- *
- * The names are this cockpit's; the DISTINCTIONS are GitHub's.
- */
 export type ForgeStatus = "open" | "draft" | "merged" | "closed" | "completed" | "abandoned";
 
 export function issueStatus(issue: { state: string; stateReason?: string }): ForgeStatus {
   if (issue.state.toUpperCase() !== "CLOSED") return "open";
   const reason = issue.stateReason?.toUpperCase();
   if (reason === "COMPLETED") return "completed";
-  // `NOT_PLANNED` and `DUPLICATE` both mean "this is not getting done", which is a
-  // different answer from "done" and the reason green is wrong for it.
   if (reason === "NOT_PLANNED" || reason === "DUPLICATE") return "abandoned";
   return "closed";
 }
@@ -316,35 +199,19 @@ export function pullStatus(pull: { state: string; isDraft: boolean; mergedAt?: n
   const state = pull.state.toUpperCase();
   if (state === "MERGED" || pull.mergedAt) return "merged";
   if (state === "CLOSED") return "closed";
-  // Draft is checked AFTER merged and closed: a draft that was closed is closed,
-  // and calling it a draft would suggest it is still waiting for somebody.
+  // After merged and closed: a closed draft is closed.
   return pull.isDraft ? "draft" : "open";
 }
 
 /**
- * WHETHER THERE IS A MERGE CONTROL BEHIND THIS ROW — issue #703.
- *
- * NOT "WILL IT MERGE". That needs `mergeable` and `mergeStateStatus`, and a LIST
- * row has neither: `gh pr list --json` is asked for thirteen fields
- * (apps/engine/src/github.ts, `PULL_FIELDS`) and those two are not among them —
- * they arrive only with the per-pull read. So this answers the one thing a row
- * can answer honestly, which is also the thing the finding was about: that this
- * cockpit merges pull requests AT ALL. `mergeReadiness` answers the other half,
- * in the detail, where the data to answer it exists.
- *
- * THE ONE MERGE-RELEVANT FIELD A ROW DOES CARRY IS `isDraft`, and it is load
- * bearing: `mergeReadiness` refuses a draft outright, so a row that pointed at
- * one would be pointing at a control that is disabled the moment you arrive.
- * Merged and closed rows are excluded for a stronger version of the same reason —
- * `MergeFooter` renders nothing whatsoever for them. `pullStatus` already folds
- * all three into one word, so "open" IS the condition, and the two cannot drift.
+ * Whether a row has a merge control at all, not whether it will merge: list rows
+ * lack `mergeable`/`mergeStateStatus`. "open" excludes drafts (refused by
+ * `mergeReadiness`) and merged/closed (`MergeFooter` renders nothing).
  */
 export function offersMerge(pull: { state: string; isDraft: boolean; mergedAt?: number }): boolean {
   return pullStatus(pull) === "open";
 }
 
-/** The word under a row. Short enough for a 320px column, and never a repeat of
- *  what the glyph beside it already said in colour. */
 export const STATUS_LABEL: Record<ForgeStatus, string> = {
   open: "open",
   draft: "draft",
@@ -354,15 +221,7 @@ export const STATUS_LABEL: Record<ForgeStatus, string> = {
   abandoned: "closed · not planned",
 };
 
-/**
- * Which of the five colours a status wears.
- *
- * `merged` AND `completed` ARE THE SAME GREEN because they are the same fact —
- * this finished. `abandoned` and `closed` are grey: they finished too, and not by
- * being done. Nothing here is red, deliberately: a closed issue is not an error,
- * and spending the destructive colour on an ordinary outcome would leave nothing
- * for a failing check to say.
- */
+/** Nothing is red: a closed issue is not an error. */
 export const STATUS_TONE: Record<ForgeStatus, "active" | "done" | "none" | "info"> = {
   open: "active",
   draft: "none",
@@ -373,87 +232,47 @@ export const STATUS_TONE: Record<ForgeStatus, "active" | "done" | "none" | "info
 };
 
 /**
- * WHAT A FILTER IS NARROWING BY, as removable chips.
- *
- * A HIDDEN FILTER THAT RETURNS NOTHING LOOKS LIKE AN EMPTY REPOSITORY. That is the
- * failure this exists to prevent: choose a milestone, come back tomorrow, see zero
- * rows and conclude the project has no issues. Every narrowing beyond the state has
- * to be visible without opening the menu that set it, and removable where it sits.
- *
- * THE STATE IS NOT ONE OF THESE. It is always set to something, it is always shown
- * on the trigger, and there is no "no state" to clear it to — a chip for it would be
- * a chip that cannot be removed.
+ * Every narrowing beyond state is a removable chip, so a filtered-empty list
+ * doesn't read as an empty repository. State always has a value, so no chip.
  */
 export type ForgeFilterChip = { key: string; label: string; clear: "milestone" | "assignee" | "author" | "label"; value?: string };
 
 export function filterChips(filter: { milestone?: string; assignee?: string; author?: string; labels: readonly string[] }): ForgeFilterChip[] {
   const chips: ForgeFilterChip[] = [];
   if (filter.milestone) chips.push({ key: `m:${filter.milestone}`, label: filter.milestone, clear: "milestone" });
-  // `@me` is `gh`'s own token and reads as jargon on a chip; the surface passes the
-  // viewer's login in so this can say who that is.
+  // `@me` is gh jargon; the surface passes in the viewer's login.
   if (filter.assignee) chips.push({ key: `a:${filter.assignee}`, label: `@${filter.assignee}`, clear: "assignee" });
   if (filter.author) chips.push({ key: `w:${filter.author}`, label: `by ${filter.author}`, clear: "author" });
   for (const label of filter.labels) chips.push({ key: `l:${label}`, label, clear: "label", value: label });
   return chips;
 }
 
-/** Whether anything beyond the state is narrowing the list — what the trigger shows
- *  a count for, so a collapsed menu still admits it is filtering. */
 export function activeFilterCount(filter: { milestone?: string; assignee?: string; author?: string; labels: readonly string[] }): number {
   return filterChips(filter).length;
 }
 
-/**
- * ONE CONVERSATION, IN ORDER.
- *
- * The detail view used to draw three separate lists — the body, then every review,
- * then every comment — which is not how any of it happened. On a pull request where
- * a review answers a comment, the answer appeared in a different section, above the
- * thing it answered. A reader had to reconstruct the order themselves, from
- * timestamps, in a 320px column.
- *
- * So it is one timeline: the body, then comments and reviews interleaved by when
- * they were written. That is also what makes a CARD per entry worth having — with
- * three sections the boundaries were section headings; with one list the boundary
- * has to be the entry itself.
- */
+/** Body first, then comments and reviews interleaved by time. */
 export type ForgeEntryKind = "body" | "comment" | "review";
 
 export type ForgeEntry = {
-  /** Stable within one thread, for React and for nothing else. */
+  /** Stable within one thread; for React keys only. */
   id: string;
   kind: ForgeEntryKind;
   at: number;
   author?: string;
-  /** The author's face, when the engine had a URL for it. Absent is ordinary —
-   *  a bot has none — and the card draws a monogram. */
+  /** Absent for bots; the card draws a monogram. */
   avatar?: string;
-  /** GitHub's `OWNER` / `MEMBER` / `CONTRIBUTOR`, when it is worth a badge. */
   association?: string;
-  /** A review's verdict. Absent on a body and on a comment. */
   state?: string;
   body: string;
   minimized?: boolean;
   minimizedReason?: string;
   url?: string;
-  /**
-   * WHICH TELAR SESSION THIS COMMENT CLAIMS TO COME FROM — issue #791.
-   *
-   * The one thing this panel can show that github.com structurally cannot: every
-   * agent comment in this repository arrives under one account, and the
-   * conversation behind it is otherwise unreachable from the comment.
-   *
-   * A CLAIM, NOT A PROOF — see `GitHubComment.attribution`. It is drawn as a
-   * link to a conversation, never as a badge of authorship, because the
-   * difference is the whole of what the marker can honestly say.
-   */
+  /** The Telar session this comment claims to come from; a claim, drawn as a link, never as authorship. */
   sessionId?: string;
-  /** The node id a reaction on this entry is written against. Absent means the
-   *  reactions can be shown and not changed. */
+  /** Absent means reactions are read-only. */
   subjectId?: string;
-  /** What GitHub is holding against this entry (#842). Absent when the engine did
-   *  not get to ask — a review has none this read can reach — and the card then
-   *  draws no reaction row at all rather than an empty one. */
+  /** Absent when the engine couldn't ask; the card then draws no reaction row. */
   reactions?: readonly GitHubReaction[];
 };
 
@@ -464,7 +283,6 @@ export function buildForgeTimeline(input: {
   createdAt: number;
   comments: readonly GitHubComment[];
   reviews?: readonly GitHubReview[];
-  /** The issue's or pull request's own reactions, which belong on the body card. */
   reactions?: readonly GitHubReaction[];
   subjectId?: string;
 }): ForgeEntry[] {
@@ -485,16 +303,8 @@ export function buildForgeTimeline(input: {
   }));
 
   for (const [at, review] of (input.reviews ?? []).entries()) {
-    /**
-     * AN EMPTY `COMMENTED` REVIEW IS NOT AN EVENT.
-     *
-     * GitHub creates one every time somebody leaves inline comments on the diff:
-     * the review row exists to hold them and its own body is blank. Rendering those
-     * puts "someone commented" cards with nothing in them through the middle of the
-     * conversation. An empty APPROVED is kept, because who approved and when is the
-     * whole content of an approval. The inline comments such a shell holds are
-     * drawn by the review threads block, anchored to their lines (#842).
-     */
+    // GitHub creates an empty COMMENTED review to hold inline comments; skip it.
+    // An empty APPROVED is kept.
     if (!review.body.trim() && review.state.toUpperCase() === "COMMENTED") continue;
     entries.push({
       id: `review-${at}-${review.submittedAt}`,
@@ -508,12 +318,7 @@ export function buildForgeTimeline(input: {
   }
 
   entries.sort((left, right) => left.at - right.at);
-  /**
-   * THE BODY IS ALWAYS FIRST, not sorted with the rest. It is the thing that opened
-   * the thread by definition, and a repository where a bot comments in the same
-   * second the issue is filed would otherwise be able to sort a reply above the
-   * thing it replies to.
-   */
+  // The body is always first, even if a bot replied in the same second.
   return [
     {
       id: "body",
@@ -529,14 +334,7 @@ export function buildForgeTimeline(input: {
   ];
 }
 
-/**
- * GITHUB'S EIGHT REACTIONS, in GitHub's own order, as the glyph each one is.
- *
- * DECIDED HERE, ONCE — the engine passes `THUMBS_UP` through unmapped on the
- * grounds that which emoji stands for `HOORAY` is a display decision. The order is
- * GitHub's, so a pill row reads the same left to right as it does on the website
- * and the picker offers them in the order a GitHub user already knows.
- */
+/** GitHub's order, so pills read as on the website. */
 export const REACTIONS = [
   { content: "THUMBS_UP", glyph: "👍", label: "thumbs up" },
   { content: "THUMBS_DOWN", glyph: "👎", label: "thumbs down" },
@@ -550,12 +348,7 @@ export const REACTIONS = [
 
 export type ReactionContent = GitHubReactionContent;
 
-/**
- * The pills a card draws: the reactions somebody used, in GitHub's order, each with
- * its glyph. A content this cockpit does not know is dropped rather than drawn as a
- * bare word — GitHub has not added one since 2016, and a pill reading `SMILE` would
- * be a bug report rather than a reaction.
- */
+/** Unknown contents are dropped rather than drawn as a bare word. */
 export function reactionPills(reactions: readonly GitHubReaction[]): (GitHubReaction & { glyph: string; label: string })[] {
   return REACTIONS.flatMap(({ content, glyph, label }) => {
     const held = reactions.find((reaction) => reaction.content === content);
@@ -563,8 +356,7 @@ export function reactionPills(reactions: readonly GitHubReaction[]): (GitHubReac
   });
 }
 
-/** GitHub's review vocabulary, in words a row has space for. An unfamiliar state
- *  is shown as GitHub sent it rather than dropped. */
+/** Unfamiliar states are shown as GitHub sent them. */
 export function reviewLabel(state: string): string {
   const labels: Record<string, string> = {
     APPROVED: "approved",
@@ -576,18 +368,10 @@ export function reviewLabel(state: string): string {
   return labels[state.toUpperCase()] ?? state.toLowerCase().replaceAll("_", " ");
 }
 
-/**
- * What the pills say BEFORE GitHub has answered — one reaction added or removed.
- *
- * A GUESS, and written as one: the count moves by exactly the viewer, and a group
- * the viewer leaves empty disappears, so the row looks the way GitHub will draw it
- * in the ordinary case. The mutation's own answer then replaces the guess with
- * GitHub's count, which is the only one that knows who else reacted meanwhile.
- */
+/** Optimistic guess, replaced by GitHub's count when the mutation answers. */
 export function toggleReaction(reactions: readonly GitHubReaction[], content: GitHubReactionContent, react: boolean): GitHubReaction[] {
   const held = reactions.find((reaction) => reaction.content === content);
-  // Asking for what is already true changes nothing — a double click must not
-  // count the viewer twice.
+  // A double click must not count the viewer twice.
   if (react === Boolean(held?.viewerHasReacted)) return [...reactions];
   if (!held) return [...reactions, { content, count: 1, viewerHasReacted: true }];
   const count = held.count + (react ? 1 : -1);
@@ -596,7 +380,6 @@ export function toggleReaction(reactions: readonly GitHubReaction[], content: Gi
     : reactions.map((reaction) => (reaction === held ? { content, count, viewerHasReacted: react } : reaction));
 }
 
-/** What a refused reaction says, in one sentence a person can act on. */
 export const REACTION_REFUSAL: Record<GitHubReactionRefusal, string> = {
   scope: "Your GitHub sign-in can read here but not react. Run `gh auth refresh -s repo` in a terminal, then try again.",
   not_permitted: "GitHub will not take a reaction here — it may be locked or archived.",
@@ -604,14 +387,7 @@ export const REACTION_REFUSAL: Record<GitHubReactionRefusal, string> = {
   failed: "GitHub did not take that reaction.",
 };
 
-/**
- * ONE REACTION, OPTIMISTICALLY — the whole write, without a component.
- *
- * The guess is drawn at once, GitHub is asked, and then EITHER its count replaces
- * the guess OR the row goes back to exactly what it was before the click and the
- * sentence saying why is returned. Pure apart from the two callbacks, so the
- * rollback — the part that matters when it goes wrong — is testable without a DOM.
- */
+/** Draws the guess, asks GitHub, then applies its count or rolls back and returns the reason. */
 export async function applyReaction(input: {
   current: readonly GitHubReaction[];
   content: GitHubReactionContent;
@@ -635,16 +411,7 @@ export async function applyReaction(input: {
   return REACTION_REFUSAL[result.refusal];
 }
 
-// ── review threads (#842) ────────────────────────────────────────────────────
-
-/**
- * WHERE A REVIEW THREAD SITS, in the words a reader uses: a file and a line range.
- *
- * AN OUTDATED THREAD IS PUT WHERE IT WAS WRITTEN. GitHub drops `line` once a push
- * changed those lines, and a thread with no place at all is unreadable — so it
- * falls back to `originalLine` and says it is outdated, which is what github.com
- * does. A thread on a whole file has no line and says so.
- */
+/** Outdated threads fall back to `originalLine`, as github.com does; whole-file threads have no line. */
 export type ThreadAnchor = { path: string; from?: number; to?: number; side: "base" | "head"; outdated: boolean; label: string };
 
 export function threadAnchor(thread: GitHubReviewThread): ThreadAnchor {
@@ -658,17 +425,9 @@ export function threadAnchor(thread: GitHubReviewThread): ThreadAnchor {
   return { path: thread.path, from: from ?? to, to, side, outdated, label: side === "base" ? `${span} (base)` : span };
 }
 
-/** One line of a hunk, classified the way a diff is drawn. */
 export type HunkLine = { kind: "add" | "del" | "ctx"; text: string };
 
-/**
- * THE LINES A THREAD IS ABOUT, and a little above them.
- *
- * GitHub's `diffHunk` runs from the hunk header DOWN TO the commented line, so the
- * commented lines are its tail. A whole hunk in a 320px card buries the comment
- * under forty lines of context; the tail is the part the reviewer pointed at. The
- * span a multi-line thread covers is always kept, plus `context` lines above it.
- */
+/** The tail of `diffHunk` (which ends at the commented line): the span plus `context` lines above. */
 export function hunkTail(diffHunk: string, span = 1, context = 3): HunkLine[] {
   const lines = diffHunk.split(/\r?\n/).filter((line, index) => !(index === 0 && line.startsWith("@@")));
   while (lines.length > 0 && lines.at(-1) === "") lines.pop();
@@ -680,12 +439,7 @@ export function hunkTail(diffHunk: string, span = 1, context = 3): HunkLine[] {
   });
 }
 
-/**
- * THE THREADS, BY FILE, IN FILE ORDER — the order the Diff surface lists them in,
- * so a reader moving between the two finds the same file in the same place. Inside
- * a file, top to bottom by line; a whole-file thread first, because it is about
- * everything below it.
- */
+/** Files in Diff-surface order; within a file, whole-file threads first, then by line. */
 export function threadsByFile(threads: readonly GitHubReviewThread[]): { path: string; threads: GitHubReviewThread[] }[] {
   const files = new Map<string, GitHubReviewThread[]>();
   for (const thread of threads) files.set(thread.path, [...(files.get(thread.path) ?? []), thread]);
@@ -697,9 +451,6 @@ export function threadsByFile(threads: readonly GitHubReviewThread[]): { path: s
     }));
 }
 
-// ── acting on a review thread (#842) ─────────────────────────────────────────
-
-/** What a refused reply or resolve says. */
 export const THREAD_REFUSAL: Record<GitHubThreadRefusal, string> = {
   scope: "Your GitHub sign-in can read here but not write. Run `gh auth refresh -s repo` in a terminal, then try again.",
   not_permitted: "GitHub will not take that here — the conversation may be locked, or this account cannot.",
@@ -708,11 +459,7 @@ export const THREAD_REFUSAL: Record<GitHubThreadRefusal, string> = {
   failed: "GitHub did not take that.",
 };
 
-/**
- * RESOLVE OR UNRESOLVE, OPTIMISTICALLY. The thread folds (or unfolds) at once;
- * GitHub's answer then sets the state and who may flip it back, or the thread
- * goes back to exactly what it was and the sentence is returned.
- */
+/** Optimistic; rolls back and returns the reason on refusal. */
 export async function applyThreadResolve(input: {
   current: GitHubReviewThread;
   resolved: boolean;
@@ -738,7 +485,6 @@ export async function applyThreadResolve(input: {
     viewerCanResolve: result.viewerCanResolve,
     viewerCanUnresolve: result.viewerCanUnresolve,
   };
-  // An unresolved thread has nobody who resolved it; the old name must not linger.
   if (result.resolvedBy) next.resolvedBy = result.resolvedBy;
   else delete next.resolvedBy;
   input.draw(next);
@@ -746,10 +492,8 @@ export async function applyThreadResolve(input: {
 }
 
 /**
- * REPLY, OPTIMISTICALLY. The reply appears at once as a pending comment (no url
- * yet, so nothing can link or react to it); GitHub's stored comment then takes its
- * place, or it is removed and the sentence returned — and the caller keeps the
- * draft, because a reply lost to a missing scope must not have to be typed again.
+ * Optimistic reply shown as pending (no url yet) until GitHub's comment replaces
+ * it. On refusal it is removed and the caller keeps the draft.
  */
 export const PENDING_REPLY_URL = "pending:";
 

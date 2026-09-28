@@ -1,31 +1,9 @@
 /**
- * DRAGGING A THING FROM THE PANEL INTO THE MESSAGE YOU ARE WRITING.
- *
- * The panel is full of things you want to talk about — an issue, a pull
- * request, a file the session changed, a page the browser has open, a sub-agent
- * that failed. Referring to one of them meant reading it, remembering it, and
- * typing it back in, which is a copying job a human should never be doing next
- * to a machine that already has the string.
- *
- * WHAT A DROP INSERTS IS TEXT, AND THAT IS THE WHOLE DESIGN.
- *
- * The tempting version resolves the reference behind the scenes: drop an issue,
- * and the engine quietly fetches its body and prepends it to the prompt. That
- * makes the transcript a lie — `turn.input` says one thing and the model was
- * sent another — and it is the exact divergence this codebase refuses
- * everywhere else. What you see in the box is what the agent gets. The
- * reference is written to be ACTIONABLE on its own: a number, a title, and a
- * URL is enough for an agent that has `gh` and a shell, and a path is more
- * useful to one with a Read tool than any copy of the file could be.
- *
- * TWO PAYLOADS ON EVERY DRAG. The custom type carries structure for our own
- * drop target; `text/plain` carries the same rendered string so the gesture
- * still does something sensible when it lands in another application, or in a
- * plain textarea, or in a text editor on the other screen.
+ * Dragging panel items into the composer. A drop inserts plain text so what the box shows
+ * is exactly what the agent gets; every drag also carries `text/plain` for other drop targets.
  */
 
-/** Our own type, so a drop from somewhere else cannot masquerade as one of
- *  these. Vendor-prefixed and suffixed per RFC 6839. */
+/** Vendor-prefixed and suffixed per RFC 6839, so outside drops cannot masquerade as ours. */
 export const REFERENCE_MIME = "application/x-telar-reference+json";
 
 export type ReferenceKind = "issue" | "pull" | "file" | "page" | "task" | "check" | "note" | "skill";
@@ -38,27 +16,7 @@ export type TelarReference = {
   text: string;
 };
 
-/**
- * How each kind reads once it is in the message.
- *
- * A FILE IS JUST ITS PATH, in backticks. Not a URL, not a line range, not a
- * copy of its contents: the agent is working in this checkout and a path is the
- * thing its Read tool takes. Backticks because they are what stops a model
- * treating `apps/web/src/auth.ts` as prose.
- *
- * AN ISSUE CARRIES ITS TITLE AS WELL AS ITS NUMBER, because `#82` alone is
- * unreadable in a transcript six weeks later — and the transcript is the part
- * that has to survive.
- */
-
-/**
- * A TITLE'S DOUBLE QUOTES BECOME SINGLE ONES, at write time, because the read
- * side (`composer-tokens.ts`) finds a reference by the quotes AROUND its title.
- * An issue literally titled `…marked "In use"…` used to fall out of the pattern
- * the moment it was dropped — no chip in the composer, no chip in the
- * transcript — which is a regression a real issue title triggers, not an edge
- * case. The meaning survives; only the quote glyph changes.
- */
+/** Double quotes become single ones: `composer-tokens.ts` finds a reference by the quotes around its title. */
 function safeTitle(title: string): string {
   return title.replaceAll('"', "'");
 }
@@ -84,19 +42,8 @@ export function fileReference(path: string): TelarReference {
 }
 
 /**
- * A RANGE OF LINES IN A FILE — what selecting lines in a diff inserts (#855).
- *
- * `path:10-20`, or `path:10` for one line, because that is the spelling every
- * editor, stack trace and grep result already uses, and an agent's Read tool
- * takes the path and an offset straight out of it.
- *
- * THE LINE NUMBERS ARE A SIDE'S, and a diff has two. A range on the added side
- * is the file as it is now, which is what the path names — for a renamed file,
- * the NEW path, since the old one is no longer on disk. A range on the removed
- * side counts lines of the file BEFORE the change, and says so: the same
- * numbers read against today's file would point at the wrong code. A range
- * that starts on one side and ends on the other has no single numbering, so it
- * names both ends in words rather than pretending the two counts are one.
+ * `path:10-20` for a range on one side of a diff. A range on the removed side counts lines
+ * before the change and says so; a range spanning both sides names both ends in words.
  */
 export type LineSide = "before" | "after";
 
@@ -124,11 +71,7 @@ export function lineRangeReference(
   };
 }
 
-/**
- * A DIRECTORY KEEPS ITS TRAILING SLASH, and that one character is the point: an
- * agent handed `` `apps/engine` `` has to guess whether to Read it or Glob it,
- * and handed `` `apps/engine/` `` it does not. Same reason `ls` prints one.
- */
+/** Keeps the trailing slash so an agent knows to Glob rather than Read it. */
 export function directoryReference(path: string): TelarReference {
   const trimmed = path.replace(/\/+$/, "");
   return { kind: "file", label: `${trimmed.split("/").at(-1) || trimmed}/`, text: `\`${trimmed}/\`` };
@@ -138,14 +81,7 @@ export function pageReference(page: { title?: string; url: string }): TelarRefer
   return { kind: "page", label: page.title?.trim() || page.url, text: page.url };
 }
 
-/**
- * A PAGE THAT IS OPEN IN THE SESSION'S OWN BROWSER, which is worth more words
- * than a bare URL. The agent holds `browser_*` tools over exactly these tabs,
- * and "the X page open in the session's browser" is the sentence that tells it
- * to reach for them — read the live DOM, pull the component, act on the page —
- * instead of fetching the URL cold. A page with no title yet drags as the
- * plain URL, which is still actionable.
- */
+/** Names the session's browser so the agent reaches for its `browser_*` tools; untitled pages drag as the URL. */
 export function browserPageReference(page: { title?: string; url: string }): TelarReference {
   const title = page.title?.trim();
   if (!title) return pageReference(page);
@@ -157,21 +93,8 @@ export function browserPageReference(page: { title?: string; url: string }): Tel
 }
 
 /**
- * A CHECK, AND THE ERROR IT PRODUCED.
- *
- * THE ONE REFERENCE THAT CARRIES CONTENT, and the exception is earned. Every other
- * reference here is an address because the agent can fetch the thing itself: a path
- * for its Read tool, an issue number for its `gh`. A GitHub Actions log is neither —
- * it needs an authenticated API call the agent cannot make, so a URL alone turns
- * "fix this failure" into "go and find out what the failure was, which you cannot".
- *
- * WHICH IS WHY IT IS ONLY INCLUDED ONCE IT IS ON SCREEN. The log arrives when a
- * reader opens the failing check, so what the drag carries is what they were looking
- * at — the surface's standing promise that what lands in the box is what the agent
- * gets. A check nobody expanded drags as its name, its status and its URL.
- *
- * FENCED, and labelled `log`. Without a fence a stack trace's backticks and hashes
- * are read as markdown, and the model spends its attention on formatting.
+ * Carries the log because the agent cannot fetch Actions logs itself; only a log already
+ * on screen is included. Fenced as `log` so backticks and hashes are not read as markdown.
  */
 export function checkReference(check: {
   name: string;
@@ -195,13 +118,7 @@ export function checkReference(check: {
   };
 }
 
-/**
- * EVERY FAILING CHECK AT ONCE, which is the gesture people actually want.
- *
- * "CI is red, fix it" is one sentence and one drag, not five. The logs of the ones
- * that have been opened are included and the rest contribute their names — so this
- * gets better the more of them you looked at, and is never worse than a list.
- */
+/** Logs of opened checks are included; the rest contribute their names. */
 export function failingChecksReference(
   checks: readonly { name: string; workflow?: string; status: string; conclusion?: string; url?: string; log?: readonly string[]; logTruncated?: boolean }[],
 ): TelarReference {
@@ -214,29 +131,8 @@ export function failingChecksReference(
 }
 
 /**
- * A PROJECT NOTE, AND ITS BODY.
- *
- * THE SECOND REFERENCE THAT CARRIES CONTENT, and it is earned the same way a
- * check's log is. Every address-shaped reference above works because the agent
- * can fetch the thing itself — a path for its Read tool, an issue number for its
- * `gh`. A note is neither: it lives in the engine's notebook, and a reference
- * that inserted only a title would be a link the model cannot follow. So the
- * body rides along, and "summarise the deploy note" is one drag rather than a
- * tool call the agent has to guess it should make.
- *
- * INSERTED HERE RATHER THAN EXPANDED AT SUBMIT, which was the tempting version:
- * a `@note:<id>` token the engine swapped for the body when the turn was sent.
- * That is exactly the divergence this module's header refuses — `turn.input`
- * would say one thing and the model would be given another — and the note is
- * small enough that there is nothing to buy with the lie.
- *
- * THE ID RIDES IN THE HEAD LINE because an agent holding `notes_write` can then
- * edit the note it was shown, which is the obvious next request ("add the
- * staging URL to that note") and is otherwise unanswerable.
- *
- * A VARIABLE-LENGTH FENCE, one backtick longer than the longest run inside the
- * body — the rule markdown itself uses. A note about fenced code is an ordinary
- * note, and a fixed ``` would let its own fence close the block early.
+ * Carries the body because the agent cannot fetch notebook notes itself; the id lets it
+ * edit the note with `notes_write`. The fence is one backtick longer than the longest run in the body.
  */
 export function noteReference(note: { id: string; title: string; body: string }): TelarReference {
   const head = `the "${safeTitle(note.title)}" project note (${note.id})`;
@@ -248,17 +144,8 @@ export function noteReference(note: { id: string; title: string; body: string })
 }
 
 /**
- * A SKILL THE PROVIDER HAS — what `$` inserts.
- *
- * PROSE, NOT `/name`. A slash command is only a command at the start of a
- * message, and `$` fires at the start of any WORD — so a chip reading
- * `/commit-messages` in the middle of a sentence would look like an invocation
- * and be inert text. `the "commit-messages" skill` is what the model acts on,
- * and it is the same shape `taskReference` and `checkReference` already use for
- * the things that have no address to fetch.
- *
- * THE NAME IS THE PROVIDER'S OWN, namespace included (`vercel:deploy`), because
- * that is the only spelling the harness resolves.
+ * What `$` inserts: prose, not `/name`, since a slash command mid-sentence is inert.
+ * The name keeps its provider namespace (`vercel:deploy`), the only spelling the harness resolves.
  */
 export function skillReference(skill: { name: string }): TelarReference {
   return { kind: "skill", label: skill.name, text: `the "${safeTitle(skill.name)}" skill` };
@@ -266,28 +153,18 @@ export function skillReference(skill: { name: string }): TelarReference {
 
 export function taskReference(task: { id: string; title?: string; state: string }): TelarReference {
   const name = task.title?.trim() || task.id;
-  // A sub-agent has no address a tool can fetch, so the reference names it the
-  // way the transcript does and says how it ended — which is the part you are
-  // almost always asking about.
+  // A sub-agent has no fetchable address, so name it and say how it ended.
   return { kind: "task", label: name, text: `the "${name}" sub-agent (${task.state})` };
 }
 
-/** Put a reference on a drag. Both payloads, always — see the header. */
+/** Always sets both payloads. */
 export function startReferenceDrag(transfer: DataTransfer, reference: TelarReference): void {
   transfer.setData(REFERENCE_MIME, JSON.stringify(reference));
   transfer.setData("text/plain", reference.text);
   transfer.effectAllowed = "copy";
 }
 
-/**
- * Read a reference back, or nothing.
- *
- * A DROP FROM OUTSIDE IS NOT AN ERROR — a link dragged from a browser, a
- * selection from an editor — so this returns undefined and the caller falls
- * back to the plain text the other application supplied. Malformed JSON in our
- * own type is treated the same way rather than thrown: a failed drop should
- * cost the gesture, not the message being written.
- */
+/** Undefined for drops from outside or malformed JSON, so the caller falls back to the plain text. */
 export function readReferenceDrag(transfer: DataTransfer): TelarReference | undefined {
   const raw = transfer.getData(REFERENCE_MIME);
   if (!raw) return undefined;
@@ -302,13 +179,8 @@ export function readReferenceDrag(transfer: DataTransfer): TelarReference | unde
 }
 
 /**
- * Splice text into a draft at the caret, spaced like a human would type it.
- *
- * THE SPACING IS THE ENTIRE POINT OF THIS FUNCTION EXISTING. Dropping onto the
- * end of "fix " must not produce "fix  #82", and dropping into the middle of a
- * sentence must not weld the reference to the word before it. Returns the new
- * caret position too, so the box can put the cursor after what it just
- * inserted rather than back at the start.
+ * Splice text into a draft at the caret, spaced like a human would type it, and return
+ * the caret position after the insertion.
  */
 export function insertReference(draft: string, text: string, caret: number): { draft: string; caret: number } {
   const at = Math.max(0, Math.min(caret, draft.length));

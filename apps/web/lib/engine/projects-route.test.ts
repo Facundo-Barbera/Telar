@@ -1,18 +1,7 @@
 /**
- * WHAT THE PROJECT PATCH ROUTE IS FOR: forwarding, and nothing else. The engine
- * validates every block and owns every refusal, so the only bug this adapter can
- * have is DROPPING a field — which is exactly the bug it had. The generic
- * `plugins` arm never travelled, so a plugin with no legacy field of its own
- * could be switched on from the project's own page (which calls the engine
- * client directly) and silently not from here.
- *
- * `null` IS THE OTHER HALF. It is a value on this route rather than an absence:
- * `dataScience: null` turns a feature off and `envMode: null` hands a project
- * back to this Mac's standing answer. A truthiness check would drop both and
- * leave the pane unable to undo the choice it had just made — so these tests
- * assert the record afterwards rather than the request.
- *
- * A real daemon on a temp home, like `routes.test.ts` beside it.
+ * The route only forwards; its one possible bug is dropping a field. `null` is a
+ * value here (turns a feature off, hands back to the Mac's default), so tests
+ * assert the stored record. Runs a real daemon on a temp home.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
@@ -69,7 +58,6 @@ describe("PATCH /api/projects/:projectId", () => {
     expect(response.status).toBe(200);
     expect((await response.json()).project).toMatchObject({ name: "Telar", envMode: "worktree" });
 
-    // The ENGINE's record, not the route's echo.
     const stored = (await client.listProjects()).projects.find((project) => project.id === "project_one");
     expect(stored).toMatchObject({
       name: "Telar",
@@ -92,9 +80,6 @@ describe("PATCH /api/projects/:projectId", () => {
   });
 
   test("the picked glyph travels too, and Auto-detect clears it (#364)", async () => {
-    // The hole this loop exists to catch: a field the picker writes and this
-    // route drops on the floor works on the engine and silently does nothing
-    // through the cockpit.
     const client = await ready();
     expect((await patch({ iconName: "flask-conical" })).status).toBe(200);
     const stored = (await client.listProjects()).projects.find((project) => project.id === "project_one");
@@ -115,7 +100,6 @@ describe("PATCH /api/projects/:projectId", () => {
   });
 
   test("the legacy arms still travel beside the new ones, and land in the map", async () => {
-    // Released clients still send them; the engine writes them into the map.
     const client = await ready();
     const latex = async () => (await client.listProjects()).projects.find((project) => project.id === "project_one")?.plugins?.entries?.latex;
     await patch({ latex: { enabled: true, mainFile: "paper.tex" } });

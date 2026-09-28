@@ -1,16 +1,4 @@
-/**
- * ONE VISIBILITY PREDICATE FOR THE SHELL AND THE BROWSER — issue #834.
- *
- * Inside the desktop shell `document.visibilityState` is pinned to "visible",
- * so every case here that runs under a scripted bridge leaves the document
- * saying "visible" throughout: a predicate that still read the document would
- * pass none of them. The fallback cases remove the bridge and drive the real
- * Page Visibility API instead, so the browser build is not quietly ungated.
- *
- * And the falsification #834 asks for, against the Usage page's real poll: the
- * request count drops while hidden AND does not drop while visible — the
- * second half is what proves the live path still runs.
- */
+/** The shell pins `document.visibilityState` to "visible", so shell cases hold it there throughout. */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -31,8 +19,6 @@ const host = window as unknown as { telarDesktop?: Bridge };
 const unsubscribes: Array<() => void> = [];
 
 afterEach(() => {
-  // The last unsubscribe drops the store's bridge subscription, so the next
-  // test starts from nothing.
   for (const off of unsubscribes.splice(0)) off();
   delete host.telarDesktop;
   setDocumentHidden(false);
@@ -155,7 +141,6 @@ describe("the Usage page's poll", () => {
         return { readAt: 0, windowMs: 0, totals: { cpuPercent: 0, memoryKb: 0, processes: 0 }, types: [], busiest: [] };
       },
     };
-    // The interval is driven by hand: no real timer, and each tick is one we chose.
     const realSetInterval = window.setInterval;
     const realClearInterval = window.clearInterval;
     let tick: () => void = () => undefined;
@@ -186,7 +171,6 @@ describe("the Usage page's poll", () => {
       await ticks(3);
       expect(reads).toBe(hidden);
 
-      // Back in front of somebody: one read now, then the poll resumes.
       await act(async () => shell.push(true));
       expect(reads).toBe(hidden + 1);
       await ticks(2);

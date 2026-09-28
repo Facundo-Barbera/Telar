@@ -1,15 +1,4 @@
-/**
- * The command registry, pinned end to end: the shared table (imported from
- * `apps/desktop/command-keys.js` — the same physical file `main.js` requires, so
- * this exercises the real cross-app import rather than a copy of it), the chord
- * arithmetic the settings pane records with, the conflict rule, and the handler
- * bus that lets a component say what a command means.
- *
- * WHAT THIS WOULD HAVE CAUGHT: a default table that ships two commands on one
- * chord — which is the failure a registry of twenty-seven bindings has and a
- * table of twelve did not, and the one nobody would notice until the second
- * command silently stopped working.
- */
+/** The registry's table is `apps/desktop/command-keys.js`, the same file `main.js` requires. */
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
@@ -81,45 +70,33 @@ const EXPECTED_IDS: CommandId[] = [
 
 describe("the registry is the one source of truth", () => {
   test("is the exact closed set of ids the app declares, in order", () => {
-    // THE CLOSED-LIST GUARD: the one place TypeScript's `CommandId` union is
-    // checked against the plain-JS table it describes. Add a command to
-    // command-keys.js without updating both, and this fails.
+    // Checks the `CommandId` union against the plain-JS table it describes.
     expect(COMMANDS.map((command) => command.id)).toEqual(EXPECTED_IDS);
   });
 
   test("every default chord uses CommandOrControl, never a hardcoded Cmd or Ctrl", () => {
-    // The same table has to work unmodified on a Windows or Linux build. "" is
-    // the other legal answer: a command that SHIPS UNBOUND, which is most of
-    // what the palette added — a row you find by typing its name does not need
-    // one of the letters a person has left.
+    // The table must work unmodified off macOS; "" means the command ships unbound.
     for (const command of COMMANDS) {
       expect(command.defaultChord === "" || command.defaultChord.startsWith("CommandOrControl+")).toBe(true);
     }
   });
 
   test("the commands that ship unbound are unbound, not half-bound", () => {
-    // An unbound row is "" all the way through — the keymap, the overrides and
-    // the conflict check all read it as the deliberate no-chord rather than as
-    // a value that failed to parse.
     const keymap = defaultKeymap();
     for (const id of ["new-conversation-in", "add-project", "appearance", "open-usage"] as CommandId[]) {
       expect(keymap[id]).toBe("");
     }
-    // And nothing a person has not touched is stored.
     expect(keymapOverrides(keymap)).toEqual({});
   });
 
   test("the palette's two panel chords are the shifted ones, because ⌘P is pinning", () => {
-    // #408 took ⌘P for `pin-session`, and "go to file" is the shifted key in
-    // every editor that has both.
     const keymap = defaultKeymap();
     expect(keymap["go-to-file"]).toBe("CommandOrControl+Shift+P");
     expect(keymap["search-project-contents"]).toBe("CommandOrControl+Shift+F");
   });
 
   test("⌘K names the palette it opens, and keeps the id anybody's override is stored under", () => {
-    // The label moved because the key did; the id did not, because renaming it
-    // would throw away every rebinding of ⌘K that exists on disk.
+    // The id stays so existing ⌘K overrides on disk still apply.
     expect(COMMANDS.find((command) => command.id === "search-sessions")).toMatchObject({
       label: "Command Palette",
       defaultChord: "CommandOrControl+K",
@@ -131,26 +108,16 @@ describe("the registry is the one source of truth", () => {
   });
 
   test("NO TWO COMMANDS SHIP ON THE SAME CHORD", () => {
-    // The whole point of the conflict machinery is that a person CAN create a
-    // collision; shipping one is a different thing entirely — a command that
-    // never fires out of the box, and nothing to tell anybody why.
     expect(keymapConflicts(defaultKeymap())).toEqual({});
   });
 
   test("⌘O reveals the session's folder, and it reaches the File menu", () => {
-    // #384: the Open menu's last row from the keyboard. It has to be in the
-    // registry for Settings › Keybindings to draw a row for it at all, and to
-    // carry `menu: "file"` for the shell to build an accelerator.
     const reveal = COMMANDS.find((command) => command.id === "reveal-in-finder");
     expect(reveal).toMatchObject({ label: "Reveal in Finder", defaultChord: "CommandOrControl+O", menu: "file" });
     expect(defaultKeymap()["reveal-in-finder"]).toBe("CommandOrControl+O");
   });
 
   test("⌘P pins the conversation you are reading, and says what unpinning is called", () => {
-    // #408. The chord has to be in the registry for Settings › Keybindings to
-    // draw a row at all, and `altLabel` is what lets a surface that KNOWS the
-    // session's state name the other half of the toggle without inventing a
-    // second command id for it.
     const pin = COMMANDS.find((command) => command.id === "pin-session");
     expect(pin).toMatchObject({
       label: "Pin Conversation",
@@ -160,38 +127,27 @@ describe("the registry is the one source of truth", () => {
       menu: "file",
     });
     expect(defaultKeymap()["pin-session"]).toBe("CommandOrControl+P");
-    // And it is nobody else's chord — the guard above proves the table as a
-    // whole, this names the collision #408 was warned about (#402's go-to-file).
     expect(keymapConflicts(defaultKeymap())["pin-session"]).toBeUndefined();
   });
 
   test("⌘D dictates, and it is a command rather than a menu row", () => {
-    // #588. It has to be in the registry for Settings › Keybindings to draw a
-    // rebindable row at all; it must NOT carry a menu, because dictation is off
-    // on every Mac until somebody chooses a provider and a permanently inert
-    // menu row is worse than none.
+    // No menu: dictation is off until a provider is chosen, and an inert menu row is worse.
     const dictate = COMMANDS.find((command) => command.id === "toggle-dictation");
     expect(dictate).toMatchObject({ label: "Dictate", group: "Conversation", icon: "mic", defaultChord: "CommandOrControl+D" });
     expect(dictate?.menu).toBeUndefined();
     expect(defaultKeymap()["toggle-dictation"]).toBe("CommandOrControl+D");
-    // AND IT IS NOBODY ELSE'S CHORD. The table-wide guard above proves the set;
-    // this names the near miss the owner checked before choosing it — ⇧⌘D is
-    // Open Diff, and the two are different chords.
+    // ⇧⌘D is Open Diff, a different chord.
     expect(keymapConflicts(defaultKeymap())["toggle-dictation"]).toBeUndefined();
     expect(defaultKeymap()["open-diff"]).toBe("CommandOrControl+Shift+D");
   });
 
   test("⌘D still fires with the caret in the message box, which is where it is pressed from", () => {
-    // The focus rule only suppresses chords with no command/control modifier,
-    // and this one has one — but the composer holds focus essentially always,
-    // so a dictation chord that the focus rule ate would never fire at all.
+    // The composer holds focus almost always, so the focus rule must not eat this chord.
     const pressed = { metaKey: true, key: "d", code: "KeyD", target: { isContentEditable: true } };
     expect(resolveWebCommandKeyAction(defaultKeymap(), pressed)).toBe("toggle-dictation");
   });
 
   test("only a toggle carries an alternate label", () => {
-    // A second name for a command that cannot undo itself would be a name
-    // nothing could ever correctly show.
     expect(COMMANDS.filter((command) => command.altLabel).map((command) => command.id)).toEqual(["pin-session"]);
   });
 
@@ -203,8 +159,6 @@ describe("the registry is the one source of truth", () => {
 
 describe("a chord in canonical form", () => {
   test("modifiers sort, aliases collapse, and one key survives", () => {
-    // Two spellings of one chord must compare equal or the conflict check is a
-    // conflict check in name only.
     expect(normalizeChord("Shift+CommandOrControl+D")).toBe("CommandOrControl+Shift+D");
     expect(normalizeChord("cmd+alt+f")).toBe("CommandOrControl+Alt+F");
     expect(normalizeChord("Ctrl+Enter")).toBe("CommandOrControl+Return");
@@ -212,8 +166,7 @@ describe("a chord in canonical form", () => {
   });
 
   test("a chord of nothing but modifiers is not a chord", () => {
-    // "" is the deliberate UNBIND, and the recorder leans on it: ⌘ held down on
-    // its own must leave the row waiting rather than storing half a chord.
+    // "" is the deliberate unbind; ⌘ held alone must not store half a chord.
     expect(normalizeChord("CommandOrControl")).toBe("");
     expect(normalizeChord("")).toBe("");
     expect(normalizeChord("   ")).toBe("");
@@ -222,8 +175,7 @@ describe("a chord in canonical form", () => {
 
 describe("recording a keydown", () => {
   test("the physical key wins, which is the only way Shift is recordable", () => {
-    // On a Mac ⇧1 arrives as key "!" and ⇧, as "<". A keymap full of those would
-    // neither read back as ⇧1 nor match the next press of it.
+    // On a Mac ⇧1 arrives as key "!" and ⇧, as "<".
     expect(chordForEvent({ key: "!", code: "Digit1", metaKey: true, shiftKey: true })).toBe("CommandOrControl+Shift+1");
     expect(chordForEvent({ key: "<", code: "Comma", metaKey: true, shiftKey: true })).toBe("CommandOrControl+Shift+,");
     expect(chordForEvent({ key: "d", code: "KeyD", metaKey: true })).toBe("CommandOrControl+D");
@@ -243,8 +195,6 @@ describe("the keymap", () => {
   });
 
   test("overrides stay sparse, so a default this app improves still reaches you", () => {
-    // Storing the whole resolved map would freeze today's answers into every
-    // install that ever opened the pane.
     const keymap = { ...defaultKeymap(), "toggle-rail": "CommandOrControl+Alt+B" } as Keymap;
     expect(keymapOverrides(keymap)).toEqual({ "toggle-rail": "CommandOrControl+Alt+B" });
     expect(keymapOverrides(defaultKeymap())).toEqual({});
@@ -277,15 +227,12 @@ describe("conflicts", () => {
   });
 
   test("unbound commands do not collide with each other", () => {
-    // Nine cleared rows reported as a nine-way conflict would be the pane crying
-    // wolf about the one state a person reaches by deliberately clearing them.
     const keymap = { ...defaultKeymap(), "open-diff": "", "open-editor": "", "open-data": "" } as Keymap;
     expect(keymapConflicts(keymap)).toEqual({});
   });
 
   test("a conflicted map still resolves deterministically, in registry order", () => {
     const keymap = { ...defaultKeymap(), "open-editor": "CommandOrControl+Shift+D" } as Keymap;
-    // "open-diff" is declared first, so it wins — every time, not by object order.
     expect(resolveWebCommandKeyAction(keymap, { key: "D", code: "KeyD", metaKey: true, shiftKey: true })).toBe("open-diff");
   });
 });
@@ -310,16 +257,12 @@ describe("matching a keydown against the live map", () => {
   });
 
   test("a chord fires from inside a text field, which is the whole point of a chord", () => {
-    // The composer holds focus nearly all the time here. A rule that suppressed
-    // chords would leave the registry with no state in which it could ever fire.
     const composer = { tagName: "TEXTAREA" };
     expect(resolveWebCommandKeyAction(keymap, { key: "n", code: "KeyN", metaKey: true, target: composer })).toBe("new-conversation");
   });
 
   test("a bare key over an editable surface is suppressed", () => {
-    // Nothing in the shipped registry is bare, so this suppresses nothing yet.
-    // It is here for the first one a person binds: a naked "n" over a field must
-    // keep typing an "n".
+    // Nothing shipped is bare; this is for the first bare key a person binds.
     const bare = mergeKeymap({ "new-conversation": "N" });
     expect(resolveWebCommandKeyAction(bare, { key: "n", code: "KeyN", target: { tagName: "TEXTAREA" } })).toBeNull();
     expect(resolveWebCommandKeyAction(bare, { key: "n", code: "KeyN", target: { tagName: "DIV" } })).toBe("new-conversation");
@@ -334,17 +277,13 @@ describe("what a command means here", () => {
     expect(commandDestination("new-tab", [])).toEqual({ kind: "open-tab", href: "/" });
     expect(commandDestination("new-window", [])).toEqual({ kind: "open-window", href: "/" });
     expect(commandDestination("settings", [])).toEqual({ kind: "navigate", href: "/settings" });
-    // The panes the palette names. Pure navigation: no surface has to be
-    // mounted for "take me to Appearance" to mean something.
     expect(commandDestination("appearance", [])).toEqual({ kind: "navigate", href: "/settings?section=appearance" });
     expect(commandDestination("open-plugins", [])).toEqual({ kind: "navigate", href: "/settings?section=plugins" });
     expect(commandDestination("check-for-updates", [])).toEqual({ kind: "navigate", href: "/settings?section=updates" });
     expect(commandDestination("open-usage", [])).toEqual({ kind: "navigate", href: "/usage" });
-    // The project one is the RAIL's to answer — it is the only thing that knows
-    // which project you are in — so the table says nothing about it.
+    // The rail answers project-settings; it alone knows the current project.
     expect(commandDestination("project-settings", [])).toEqual({ kind: "noop" });
-    // The panel and the composer are components' own state; a destination table
-    // could not name them, so they answer `noop` and bind themselves instead.
+    // Panel and composer commands are bound by their components.
     expect(commandDestination("panel-fullscreen", [])).toEqual({ kind: "noop" });
     expect(commandDestination("send", [])).toEqual({ kind: "noop" });
   });
@@ -358,10 +297,7 @@ describe("what a command means here", () => {
 
 describe("recording suppresses everything else", () => {
   test("the flag is off unless a row says otherwise, and toggles both ways", () => {
-    // The dispatcher reads this before matching anything: press ⇧⌘D over an
-    // armed row and "Open Diff" must NOT fire, or the pane cannot record the
-    // chords a person most wants to change. (The shell's half — dropping the
-    // menu's accelerators — is pinned in apps/desktop.)
+    // The dispatcher checks this first, so an armed row can record chords like ⇧⌘D.
     expect(isCapturingChord()).toBe(false);
     setChordCapture(true);
     expect(isCapturingChord()).toBe(true);
@@ -371,8 +307,7 @@ describe("recording suppresses everything else", () => {
 });
 
 describe("a surface claiming chords (#656)", () => {
-  // The registry is module state, like the handler bus below — a leaked claim
-  // would leave the next test's ⌘1 suppressed.
+  // Claims are module state; a leaked claim would suppress the next test's ⌘1.
   test("nothing is claimed until something claims it", () => {
     expect(claimedChords()).toEqual([]);
     expect(claimedCommandIds(defaultKeymap())).toEqual([]);
@@ -386,9 +321,7 @@ describe("a surface claiming chords (#656)", () => {
   });
 
   test("nested claims are a union, and the inner one releases without taking the outer's chords", () => {
-    // The command palette embeds the project palette's pages in its own dialog,
-    // so two claims are live at once and walking back out of the sub-page must
-    // not hand ⌘1 back while the rows that draw it are still on screen.
+    // The command palette embeds the project palette's pages, so two claims can be live.
     const outer = claimChords(["CommandOrControl+1"]);
     const inner = claimChords(["CommandOrControl+1", "CommandOrControl+2"]);
     expect(claimedCommandIds(defaultKeymap())).toEqual(["jump-1", "jump-2"]);
@@ -399,8 +332,7 @@ describe("a surface claiming chords (#656)", () => {
   });
 
   test("releasing twice is not an error", () => {
-    // StrictMode runs an effect's cleanup twice, and a double release that
-    // popped somebody else's claim would suppress a chord nobody holds.
+    // StrictMode runs cleanup twice; a double release must not pop another claim.
     const other = claimChords(["CommandOrControl+1"]);
     const release = claimChords(["CommandOrControl+2"]);
     release();
@@ -411,8 +343,6 @@ describe("a surface claiming chords (#656)", () => {
   });
 
   test("two surfaces claiming the same chord are two claims", () => {
-    // Identity is what releases, so the first one closing must not unsuppress a
-    // chord the second is still drawing on its rows.
     const first = claimChords(["CommandOrControl+1"]);
     const second = claimChords(["CommandOrControl+1"]);
     first();
@@ -430,15 +360,11 @@ describe("a surface claiming chords (#656)", () => {
 
 describe("the handler binding point", () => {
   beforeEach(() => {
-    // The bus is module state, so a test that leaked a binding would decide the
-    // next one's answer. Every case below releases what it took; this is the
-    // guard that says so out loud rather than hoping.
+    // The bus is module state; this guards against a test leaking a binding.
     for (const command of COMMANDS) expect(commandHandler(command.id)).toBeUndefined();
   });
 
   test("a command nobody has bound does nothing, and says so", () => {
-    // Not an error, deliberately: ⌘⌥F means nothing on the projects list, and a
-    // key that beeped on every route but one would be worse than one that waits.
     expect(runCommand("panel-fullscreen")).toBe(false);
   });
 
@@ -453,8 +379,6 @@ describe("the handler binding point", () => {
   });
 
   test("the newest binder wins, and unbinding it restores whoever was underneath", () => {
-    // Two Editors, or a cockpit and the panel inside it, may both claim a
-    // command; the one on top gets it and the stack survives its unmount.
     const ran: string[] = [];
     const outer = bindCommands({ send: () => ran.push("outer") });
     const inner = bindCommands({ send: () => ran.push("inner") });

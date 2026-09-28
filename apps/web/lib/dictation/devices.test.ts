@@ -1,13 +1,4 @@
-/**
- * THE MICROPHONE PICKER'S FOUR AWKWARD STATES (#643).
- *
- * None of them needs a microphone, and each of them is a way the naive version
- * lies to the reader: a list of blanks before the first grant, a stored hash
- * where a name should be, a choice silently forgotten when a headset is
- * unplugged, and an `exact` constraint that fails the press instead of falling
- * back. The store is a `Map` standing in for `localStorage`, so the persistence
- * rules are checked without a DOM.
- */
+/** The store is a `Map` standing in for `localStorage`, so persistence rules are checked without a DOM. */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
@@ -45,23 +36,19 @@ describe("what the browser hands over, turned into a list worth showing", () => 
       device("audiooutput", "out1", "MacBook Pro Speakers"),
       device("videoinput", "cam1", "FaceTime HD Camera"),
     ]);
-    // The alias and the device it points at would otherwise be two rows meaning
-    // one thing, above a "System default" option that is a third.
+    // Otherwise the alias and its device would be two rows meaning one thing.
     expect(inputs).toEqual([{ deviceId: "abc123", label: "MacBook Pro Microphone" }]);
   });
 
   test("an unnamed input is dropped rather than rendered as a blank row", () => {
-    // THE PRE-GRANT STATE. `enumerateDevices` reports one entry per input with
-    // an empty label — the count leaks, the names do not — and three identical
-    // blank rows is a control nobody can use.
+    // Before the first grant `enumerateDevices` reports inputs with empty labels.
     const devices = [device("audioinput", "a", ""), device("audioinput", "b", "")];
     expect(audioInputs(devices)).toEqual([]);
     expect(labelsWithheld(devices)).toBe(true);
   });
 
   test("and 'withheld' is not the same as 'no microphones'", () => {
-    // Nothing at all is not a permission problem, and saying it was would send
-    // somebody to a browser dialog that will not help.
+    // Nothing at all is not a permission problem.
     expect(labelsWithheld([])).toBe(false);
     expect(labelsWithheld([device("audioinput", "a", "Named")])).toBe(false);
   });
@@ -69,8 +56,7 @@ describe("what the browser hands over, turned into a list worth showing", () => 
 
 describe("the constraint degrades rather than failing", () => {
   test("a choice rides as `ideal`, never `exact`", () => {
-    // `exact` is an OverconstrainedError when the headset is in a bag: the press
-    // fails outright. `ideal` records on whatever is actually there.
+    // `exact` throws OverconstrainedError when the device is absent; `ideal` falls back.
     expect(audioConstraints({ deviceId: "abc123", label: "AirPods Pro" })).toEqual({ deviceId: { ideal: "abc123" } });
   });
 
@@ -94,19 +80,14 @@ describe("a choice survives the device going away", () => {
     const options = microphoneOptions(gone, inputs);
     expect(options[0]).toEqual({ value: "", label: "System default" });
     expect(options.at(-1)).toEqual({ value: "airpods", label: "AirPods Pro (not connected)" });
-    // AND THE VALUE IS IN THE LIST, which is #318's bug: a `Dropdown` whose
-    // value matches no option renders the raw string — a 64-character hash where
-    // a device name belongs.
+    // A `Dropdown` whose value matches no option renders the raw id hash.
     expect(options.some((option) => option.value === gone.deviceId)).toBe(true);
   });
 
   test("an empty list is not evidence of anything, so nothing is claimed", () => {
-    // Before the first grant the browser names nothing at all. Calling the
-    // chosen device disconnected there would mark every fresh page load as a
-    // fault.
+    // Before the first grant the browser names nothing, so disconnection cannot be claimed.
     expect(microphoneStatus(gone, [])).toBeUndefined();
-    // The option is still appended — the trigger has to have something to draw —
-    // just without the claim.
+    // The option is still appended so the trigger has something to draw.
     expect(microphoneOptions(gone, []).at(-1)).toEqual({ value: "airpods", label: "AirPods Pro" });
   });
 
@@ -141,8 +122,7 @@ describe("what is stored, and what is refused", () => {
   });
 
   test("a missing label reads as empty rather than as undefined, so the pane can still name it", () => {
-    // The row falls back to "Chosen microphone" on an empty label; `undefined`
-    // there would be `undefined` printed into a sentence.
+    // The row falls back to "Chosen microphone" on an empty label.
     expect(readMicrophone(store({ "telar:dictation-microphone:v1": '{"deviceId":"abc"}' }))).toEqual({ deviceId: "abc", label: "" });
     expect(microphoneOptions({ deviceId: "abc", label: "" }, [{ deviceId: "x", label: "X" }]).at(-1)).toEqual({
       value: "abc",
@@ -156,20 +136,7 @@ describe("what is stored, and what is refused", () => {
   });
 });
 
-/**
- * THE SNAPSHOT, AND THE RENDER THAT SAID THE WRONG THING (#643).
- *
- * The picker first loaded the stored choice in an effect, deferred a tick. That
- * tick is a real defect and not merely a slower path: the microphone section
- * mounts only once the engine has answered with a provider, so its deferred read
- * lands two renders after the pane's — and in between, the row states "System
- * default" over a choice somebody made. CI rendered exactly that intermediate
- * state and failed on it.
- *
- * `localStorage` is synchronous, so the fix is to read it synchronously. The only
- * thing that makes `useSyncExternalStore` safe over a parser is a stable
- * identity, which is what these pin.
- */
+/** `useSyncExternalStore` needs a stable snapshot identity over the parser. */
 describe("read synchronously, and the same object until the text changes", () => {
   test("two reads of one stored value are the SAME object, or React would loop forever", () => {
     const held = store({ "telar:dictation-microphone:v1": '{"deviceId":"airpods","label":"AirPods Pro"}' });
@@ -188,8 +155,7 @@ describe("read synchronously, and the same object until the text changes", () =>
   });
 
   test("a value written by another window is picked up, not served from the cache", () => {
-    // The `storage` event carries no value this module trusts — the snapshot
-    // re-reads the text every call and only the PARSE is cached.
+    // The snapshot re-reads the text every call; only the parse is cached.
     const held = store();
     microphoneSnapshot(held);
     held.read().set("telar:dictation-microphone:v1", '{"deviceId":"usb","label":"Scarlett Solo"}');
@@ -197,8 +163,7 @@ describe("read synchronously, and the same object until the text changes", () =>
   });
 
   test("a storage that throws answers the system default rather than taking the pane down", () => {
-    // Safari in a private window with a cross-origin frame on the page. A
-    // preference is not worth a blank settings pane.
+    // Safari in a private window with a cross-origin frame on the page.
     const hostile = {
       getItem: () => {
         throw new Error("The operation is insecure.");

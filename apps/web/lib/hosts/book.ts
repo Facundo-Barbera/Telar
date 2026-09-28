@@ -1,35 +1,20 @@
 /**
- * OTHER MACS — the rules, pure.
- *
- * The desktop cockpit talks to one engine: its own, on this machine. A person
- * who also runs Telar on a Mac mini has to reach it from a browser tab, and
- * its conversations never sit beside the local ones. The iOS app already
- * solved this (`apps/ios/TelarMobile/Stores/Host.swift`); this is that model,
- * ported: a host is a paired cockpit at an address, with a local identity
- * minted when it is added — because the engine's `daemonId` is behind the
- * pairing gate and is minted fresh every daemon start, so it can dedupe but
- * never identify.
- *
- * PURE ON PURPOSE, like `HostBook` is: no filesystem, no fetch, so every
- * dedupe/merge/rename rule is a unit test. The store (./store.ts) reads and
- * writes; the routes call.
+ * Pure rules for other paired Macs, ported from iOS's `Host.swift`. A host gets a
+ * local id at pairing: the engine's `daemonId` is minted fresh every daemon
+ * start, so it can dedupe but never identify.
  */
 
-/** The address the LOCAL engine answers under in every route that takes a
- *  host — it is the absence of a proxy hop, not a row in the book. */
+/** The local engine: no proxy hop, not a row in the book. */
 export const LOCAL_HOST_ID = "local";
 
 export interface Host {
   id: string;
   /** Label; defaults to the engine's own hostname or the URL's host. */
   name: string;
-  /** Origin of the REMOTE COCKPIT (its Next server), e.g. `http://mini.tail:3000`.
-   *  Never a path: every request appends `/api/…` to it. */
+  /** Origin of the remote cockpit, e.g. `http://mini.tail:3000`; never a path. */
   baseUrl: string;
-  /** The device token that cockpit minted for this desktop at pairing. */
   deviceToken: string;
-  /** Learned from `/api/health` when reachable; only ever used to dedupe
-   *  "same Mac, new address". */
+  /** Only used to dedupe "same Mac, new address". */
   daemonId?: string;
   addedAt: number;
 }
@@ -39,11 +24,7 @@ export interface HostsFile {
   hosts: Host[];
 }
 
-/**
- * Same Mac, spelled differently: lowercased scheme+host, explicit default
- * port, no trailing slash, no path. Two rows for `http://mini:3000/` and
- * `HTTP://MINI:3000` would be one Mac paired twice.
- */
+/** Lowercased scheme+host, explicit port, no trailing slash or path. */
 export function normalizeBaseUrl(raw: string): string | undefined {
   let url: URL;
   try {
@@ -57,9 +38,7 @@ export function normalizeBaseUrl(raw: string): string | undefined {
   return `${url.protocol}//${url.hostname.toLowerCase()}:${port}`;
 }
 
-/** The label when the human has not named it: host, plus the port when it is
- *  not the scheme default — two cockpits on one machine must not both read
- *  "mini". */
+/** Includes a non-default port, so two cockpits on one machine get distinct names. */
 export function defaultHostName(baseUrl: string): string {
   try {
     const url = new URL(baseUrl);
@@ -70,19 +49,14 @@ export function defaultHostName(baseUrl: string): string {
   }
 }
 
-/** Eight digits (the current cockpit's pairing code) or a `tlr_` token (an
- *  older one's) — the same test iOS's `Pairing.looksLikePairingSecret` makes,
- *  so a link either app accepts, both do. */
+/** Eight-digit code or an older `tlr_` token; mirrors iOS's `looksLikePairingSecret`. */
 export function looksLikePairingSecret(token: string): boolean {
   return /^tlr_[A-Za-z0-9_-]+$/.test(token) || /^\d{8}$/.test(token);
 }
 
 /**
- * The pairing URL the other cockpit shows in Settings → Remote access:
- * `http://host:port/pair#token=…`. The token is the eight-digit pairing code
- * (an older cockpit's `tlr_…` token rides the same way). It rides in the
- * FRAGMENT so it never reaches a server log; a token in the query is refused
- * for that reason (the same rule iOS's `parsePairingURL` applies).
+ * Parses `http://host:port/pair#token=…`. The token must be in the fragment so it
+ * never reaches a server log; a query token is refused, as on iOS.
  */
 export function parsePairingUrl(text: string): { baseUrl: string; token: string } | undefined {
   let url: URL;
@@ -103,11 +77,7 @@ export function parsePairingUrl(text: string): { baseUrl: string; token: string 
 
 export type Upsert = { kind: "added"; host: Host } | { kind: "replaced"; host: Host };
 
-/**
- * Pairing ADDS: dedupe by normalized URL — a re-pair of a known address keeps
- * the host's id (and everything keyed on it) and takes the new token; it
- * never duplicates and never evicts another host.
- */
+/** Dedupes by normalised URL: a re-pair keeps the id and takes the new token. */
 export function upsertHost(
   hosts: readonly Host[],
   input: { baseUrl: string; deviceToken: string; name?: string; daemonId?: string },
@@ -140,11 +110,7 @@ export function upsertHost(
   return { hosts: [...hosts, host], result: { kind: "added", host } };
 }
 
-/**
- * Learned identity: if another record already carries this daemonId, the
- * same Mac was added under two addresses — merge into the OLDER record (its
- * id owns everything keyed on it) and keep the newer address and token.
- */
+/** Two records with one daemonId merge into the older (its id owns keyed data), keeping the newer address and token. */
 export function recordDaemonId(hosts: readonly Host[], id: string, daemonId: string): { hosts: Host[]; merged: boolean } {
   const index = hosts.findIndex((host) => host.id === id);
   if (index < 0) return { hosts: hosts.slice(), merged: false };

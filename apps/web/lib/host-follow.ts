@@ -1,34 +1,8 @@
 "use client";
 
 /**
- * FOLLOWING THE HOST'S LOOK — the read side of appearance-publisher.tsx.
- *
- * WHY A REMOTE WINDOW FOLLOWS AT ALL. A browser reached over the tailnet is
- * the same app with its own localStorage, so it opens with the default
- * palette while the machine it is driving wears something deliberate. The
- * host publishes its resolved look to the engine (`/api/appearance`); until
- * now the only thing that read it was a Settings card that had to be opened
- * and applied by hand. A remote window now WEARS it, and keeps wearing it as
- * the host changes.
- *
- * UNTIL YOU CUSTOMISE. The moment this window's person changes anything on the
- * Appearance pane — wears a look, picks a theme, moves the scheme — the window
- * DETACHES and keeps its own taste from then on. Somebody else's look is a
- * default, not a command; the Settings row offers "follow again" for when that
- * is wanted. Detached is the sticky state, spelled explicitly, because a store
- * that only remembered "following" could not tell a fresh window (follow) from
- * one that had chosen (leave alone).
- *
- * THE HOST NEVER FOLLOWS. A host window following its own publication would be
- * a loop with a two-second delay, and the packaged desktop shell browsing
- * another Mac's sessions is still a host — nothing here is ever forced onto
- * another desktop app. lib/host-window.ts is the one gate, shared with the
- * publisher, so the two can never disagree about which window is which.
- *
- * THE STAMP is the engine's `updatedAt` for the last publication this window
- * applied. Comparing stamps rather than content keeps the poll cheap and keeps
- * an unchanged publication from re-applying on every tick — an apply writes
- * four stores and rebuilds the theme stylesheet, which is not free.
+ * A remote window wears the host's published look until its person customises anything, then
+ * detaches. The host never follows (lib/host-window.ts is the gate). Stamps, not content, decide.
  */
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
@@ -78,21 +52,14 @@ function writeFollowMode(mode: FollowMode): void {
 }
 
 /**
- * Called by every USER-DRIVEN appearance write — Apply, Wear, a theme picked
- * from the library, the scheme control, the translucency toggles. Not by the
- * follower's own writes, which would detach the window from itself.
- *
- * A no-op on the host, so the host's Settings pane never accumulates a
- * "detached" it has no way to see or clear.
- */
+ /** Call from every user-driven appearance write, never the follower's own. */
 export function detachFromHost(): void {
   if (readFollowMode() === "detached") return;
   writeFollowMode("detached");
 }
 
 function followHostAgain(): void {
-  // Forget the stamp too: "follow again" must wear the current publication
-  // even when it is the same one this window applied before detaching.
+  // Forget the stamp so "follow again" re-wears the current publication.
   writeAppliedStamp(null);
   writeFollowMode("follow");
 }
@@ -117,21 +84,8 @@ export function writeAppliedStamp(stamp: number | null): void {
 }
 
 /**
- * WHAT THE LAST AUTOMATIC WEAR COST, KEPT RATHER THAN DROPPED (#705).
- *
- * `applyLook` returns a sentence when part of a Look could not be worn, and
- * every place a person presses Apply shows it. The FOLLOWER had no person in
- * the loop and threw the sentence away — which made a host's publication the
- * one path where a Look somebody else made can leave this window's tints
- * unreadable with nothing anywhere saying so.
- *
- * SO IT IS PARKED, NOT SHOUTED. A remote window is not looking at a toast when
- * the ten-second poll lands, and interrupting whatever it IS doing to report a
- * colour would be worse than the silence it replaces. The sentence goes where
- * somebody would go to ask "why does this window look like this" — the
- * Appearance pane, beside the follow row that explains where the look came
- * from — and it is cleared the moment a wear has nothing to report, so it can
- * never outlive the Look it is about.
+ * What the last automatic wear could not apply, parked for the Appearance pane rather than
+ * toasted. Cleared when a wear reports nothing.
  */
 export function readFollowNotice(): string | undefined {
   try {
@@ -156,32 +110,17 @@ export function useFollowNotice(): string | undefined {
   return useSyncExternalStore(subscribe, readFollowNotice, () => undefined);
 }
 
-/**
- * WEAR A PUBLICATION, AND KEEP WHAT IT COST.
- *
- * The wear itself is `applyLook`, exactly as a press of Apply would do it — the
- * follower's whole contract is that a remote window ends up wearing what
- * opening the host's card and pressing Apply would have produced. What is HERE
- * rather than in the component is the one line the component used to get wrong:
- * the message `applyLook` returns is parked instead of dropped, and an
- * `undefined` clears whatever the last wear left, so the notice can never
- * outlive the Look it is about.
- */
+/** `applyLook` exactly as Apply would, parking its message; `undefined` clears the last one. */
 export function wearPublication(look: Look, setAppearance: (patch: LookAppearance) => void): void {
   writeFollowNotice(applyLook(look, setAppearance));
 }
 
-/**
- * THE DECISION, PURE. Whether a fetched publication should be worn by this
- * window right now. Kept free of React and of the window so the rules are a
- * unit test rather than a manual one on a second machine.
- */
+/** Whether a fetched publication should be worn now. Pure, so it is unit-testable. */
 export function decideFollow(input: {
   mode: FollowMode;
   isHost: boolean;
   applied: number | null;
-  /** The engine's answer: `updatedAt` is null when nothing is published, and
-   *  `appearance` is null when what was published did not parse. */
+  /** `updatedAt` is null when nothing is published; `appearance` is null when it did not parse. */
   answer: { updatedAt: number | null; appearance: unknown | null };
 }): "apply" | "skip" {
   if (input.isHost) return "skip";

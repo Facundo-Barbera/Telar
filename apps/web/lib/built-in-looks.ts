@@ -1,26 +1,6 @@
 /**
- * THE BUILT-IN LOOKS — the default settings for the composer.
- *
- * "Themes should not exist, there should be default settings for the composer,
- * and the composer can work for different things." So this file replaces two
- * that used to sit either side of a distinction the model no longer has: a
- * library of built-in THEMES (a palette, pickable on its own) and a shelf of
- * STARTER LOOKS (one of those themes plus a gradient and an accent). A palette
- * with nothing over it is simply a composition with no layers, so there is one
- * list now and every entry is the same kind of thing.
- *
- * FIVE FLAT AND FIVE SCENIC, and the flat five are the old built-in themes read
- * forward: a base colour per state instead of sixteen stored tokens, deriving
- * the same hue and the same tint strength through `halfFromBase`. The bases are
- * chosen so that derivation lands on the hue the old table named — they are
- * ordinary swatches, so the colour you see in the composer's base control is the
- * colour the app takes.
- *
- * THEY ARE NOT STORED. Built here from the same gradient starters the composer
- * offers as chips, so they cost no quota, cannot be deleted into a state where
- * the gallery is bare, and stay in step with the starters they name. Wearing
- * one copies its composition into the live store; SAVING mints a card of your
- * own, which is the moment a default stops being a default.
+ * Default compositions built from the gradient starters. Not stored, so they cost no quota
+ * and cannot be deleted; saving one mints a card of your own.
  */
 
 import {
@@ -38,11 +18,6 @@ import { gradientStarterById } from "./gradient-starters";
 
 export const BUILT_IN_PREFIX = "built-in-";
 
-/**
- * One default: a base per state, optionally one gradient over both, and the
- * accent that agrees with them. Nothing else varies — a default is a starting
- * point, not a demonstration of every control.
- */
 type Recipe = {
   id: string;
   label: string;
@@ -50,18 +25,12 @@ type Recipe = {
   note: string;
   light: string;
   dark: string;
-  /** A gradient STARTER's id, resolved to its two specs at build time. The
-   *  built-ins name one rather than carrying stops of their own so that the
-   *  chip a reader picks and the gradient a default wears stay the same thing. */
+  /** A gradient starter's id, resolved to its two specs at build time. */
   starter?: string;
   accent: Accent;
 };
 
-/**
- * THE FLAT FIVE FIRST, IDENTITY AT THE HEAD. A gallery that opened on a
- * wallpaper would teach that a look is a wallpaper; the first row is Telar
- * itself, which is what the app looks like with nothing chosen at all.
- */
+/** Flat looks first, with Telar itself at the head. */
 const RECIPES: readonly Recipe[] = [
   { id: "telar", label: "Telar", note: "The app's own colours", light: DEFAULT_BASE_LIGHT, dark: DEFAULT_BASE_DARK, accent: "indigo" },
   { id: "ember", label: "Ember", note: "Warm, flat", light: "#c88337", dark: "#b67649", accent: "amber" },
@@ -75,20 +44,15 @@ const RECIPES: readonly Recipe[] = [
   { id: "emberglow", label: "Emberglow", note: "Ember, under a burning sky", light: "#c88337", dark: "#b67649", starter: "ember", accent: "amber" },
 ];
 
-/** What a recipe's note says, so the gallery does not have to rebuild it. */
 export const BUILT_IN_NOTES: Readonly<Record<string, string>> = Object.fromEntries(
   RECIPES.map((recipe) => [`${BUILT_IN_PREFIX}${recipe.id}`, recipe.note]),
 );
 
 function build(recipe: Recipe): Look | undefined {
-  // A recipe naming a starter this build dropped is skipped rather than shipped
-  // with a layer that composes to nothing.
+  // A recipe naming a starter this build dropped is skipped.
   const starter = recipe.starter === undefined ? undefined : gradientStarterById(recipe.starter);
   if (recipe.starter !== undefined && !starter) return undefined;
-  // THE TWO STATES CARRY DIFFERENT STOPS NOW (#471). A gradient layer used to
-  // name a preset and the compiler took the half the state needed; a layer
-  // carries its own stops, so the difference the starter expresses has to be
-  // written into each state's stack here rather than resolved at paint time.
+  // Each state carries its own stops, so the starter's per-mode spec is written in here.
   const state = (base: string, mode: "light" | "dark"): CompositionState => ({
     base,
     layers: starter ? [{ type: "gradient", spec: starter[mode], opacity: SCENE_LIMITS.opacity.max } satisfies SceneLayer] : [],
@@ -113,9 +77,6 @@ function build(recipe: Recipe): Look | undefined {
   };
 }
 
-/** Built once at module load — every input is a frozen table, so there is
- *  nothing to recompute and nothing that could differ between server and
- *  client. */
 export const BUILT_IN_LOOKS: readonly Look[] = RECIPES.map(build).filter((look): look is Look => look !== undefined);
 
 export function isBuiltInLook(look: Look): boolean {

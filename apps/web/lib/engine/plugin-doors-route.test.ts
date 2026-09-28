@@ -1,11 +1,4 @@
-/**
- * THE GENERIC PLUGIN PROXIES FORWARD, and the engine answers. What these routes
- * can get wrong is the path (plugin and verb in the right places), the method,
- * and the error mapping — so each case asserts what the ENGINE said, carried
- * through with the status its neighbours would give it.
- *
- * A real daemon on a temp home, like `projects-route.test.ts` beside it.
- */
+/** Generic plugin proxies against a real daemon on a temp home, like `projects-route.test.ts`. */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -65,8 +58,7 @@ describe("generic plugin proxies", () => {
   });
 
   test("the project door carries the project, and the engine's gate answers", async () => {
-    // LaTeX is not on for this project and `packages` is not a before-enable
-    // read, so the refusal proves the id reached the engine's project gate.
+    // `packages` is not a before-enable read, so the refusal proves the id reached the project gate.
     await ready();
     const response = await projectGet(new Request("http://telar.local/api/projects/project_one/plugins/latex/packages"), {
       params: Promise.resolve({ projectId: "project_one", plugin: "latex", verb: ["packages"] }),

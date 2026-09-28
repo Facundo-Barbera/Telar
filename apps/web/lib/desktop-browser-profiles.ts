@@ -1,16 +1,4 @@
-/**
- * BROWSER PROFILES, as the cockpit sees them — a named Chromium identity
- * (cookies, storage, extension state) that one or many projects browse in.
- *
- * A LOCAL STRUCTURAL TYPE AND AN ACCESSOR, like `desktop-updates.ts` and for the
- * same reason: the shell owns the registry (apps/desktop/browser-profiles.js),
- * there is no engine route behind any of this, and in a browser tab the bridge is
- * never there at all.
- *
- * THE SENTENCES ARE PURE AND EXPORTED. What a row says about a profile — who uses
- * it, why it cannot be deleted — is the part a reader acts on, so it is testable
- * without mounting a shell.
- */
+/** Browser profiles as the cockpit sees them; the shell owns the registry (apps/desktop/browser-profiles.js). */
 import type { IdentityColor, TelarIcon } from "@telar/engine-client";
 
 /** One identity. `projects` and `isDefault` are computed by the shell per read. */
@@ -19,25 +7,16 @@ export type BrowserProfile = {
   label: string;
   partition: string;
   createdAt: number;
-  /** The account this profile is MEANT to be signed into. Intent, not proof —
-   *  nothing anywhere verifies a login against it. */
+  /** The account this profile is meant to be signed into; nothing verifies it. */
   account?: string;
   /**
-   * THE MARKS A PERSON PUT ON IT — a glyph from the app's own closed set and one
-   * of eight identity hues. Both optional: an unmarked profile is an ordinary
-   * profile, drawn with the neutral ring, and nothing here invents one.
-   *
-   * These are what let the browser panel show a profile in the width of one
-   * glyph. They are typed loosely (`string`) because they arrive from the shell's
-   * JSON: a build that knew a fortieth icon this one does not still parses, and
-   * `telarIconGlyph` falls back rather than throwing.
+   * Typed as `string` because they arrive from the shell's JSON: an unknown icon
+   * still parses, and `telarIconGlyph` falls back rather than throwing.
    */
   icon?: TelarIcon | string;
   color?: IdentityColor | string;
   isDefault?: boolean;
-  /** Project keys explicitly assigned to this profile. A project browsing here
-   *  only because it is the default is deliberately NOT listed: it has no
-   *  assignment, and changing the default moves it. */
+  /** Explicit assignments only; projects using it as the default are not listed. */
   projects?: string[];
 };
 
@@ -53,12 +32,10 @@ export type BrowserProfilesBridge = {
     profiles: BrowserProfile[];
     active: BrowserProfile;
   }>;
-  /** A PATCH: an absent key leaves what is stored alone, and `null` takes a mark
-   *  off — so setting a colour never has to resend the icon to keep it. */
+  /** A patch: an absent key leaves the stored value alone, and `null` removes a mark. */
   updateProfile: (input: { profileId: string; label?: string; account?: string; icon?: string | null; color?: string | null }) => Promise<{ profiles: BrowserProfile[] }>;
   setDefaultProfile: (profileId: string) => Promise<{ profiles: BrowserProfile[] }>;
-  /** Optional: an older shell has no delete, and the pane hides the control
-   *  rather than offering a button that throws. */
+  /** Absent on an older shell, where the pane hides the control. */
   deleteProfile?: (profileId: string) => Promise<{ profiles: BrowserProfile[] }>;
 };
 
@@ -67,13 +44,7 @@ export function desktopBrowserProfiles(): BrowserProfilesBridge | undefined {
   return (window as unknown as { telarDesktop?: { browser?: BrowserProfilesBridge } }).telarDesktop?.browser;
 }
 
-/**
- * The sentence under a profile's name: who browses here.
- *
- * THE DEFAULT'S SENTENCE IS ABOUT PROJECTS THAT DID NOT CHOOSE, which is the one
- * thing a reader cannot see from the list — an unassigned project leaves no mark
- * on any row, so without saying it the default looks unused.
- */
+/** The sentence under a profile's name: who browses here. */
 export function describeProfileUse(profile: BrowserProfile): string {
   const assigned = profile.projects?.length ?? 0;
   const shared = assigned === 1 ? "1 project is assigned to it" : `${assigned} projects are assigned to it`;
@@ -84,28 +55,13 @@ export function describeProfileUse(profile: BrowserProfile): string {
   return `${shared[0].toUpperCase()}${shared.slice(1)}.`;
 }
 
-/**
- * Why delete is unavailable, or undefined when it is. The one rule the registry
- * still enforces, said before the click rather than after it.
- *
- * A PROFILE IN USE IS NOT A REASON ANY MORE (#476). It used to be — "point that
- * project at another profile first" — which asked the reader to do by hand,
- * project by project, exactly what deleting now does for them. What is left is
- * the default, and it is left because there is nowhere for its projects to fall
- * back TO.
- */
+/** Why delete is unavailable, or undefined when it is. */
 export function whyUndeletable(profile: BrowserProfile): string | undefined {
   if (profile.isDefault) return "The default profile cannot be deleted. Make another profile the default first.";
   return undefined;
 }
 
-/**
- * What the confirm asks, and it names the consequence the row cannot show: how
- * many projects move, and where they move to. Deleting is cheap by design —
- * the cookies stay on disk — but "3 projects will use Default instead" is the
- * part a person cannot take back with a re-creation, so it is the part that is
- * said out loud.
- */
+/** The confirm text, naming how many projects move and where they move to. */
 export function confirmProfileDeletion(profile: BrowserProfile, profiles: BrowserProfile[]): string {
   const assigned = profile.projects?.length ?? 0;
   const fallback = profiles.find((candidate) => candidate.isDefault)?.label;
@@ -115,14 +71,7 @@ export function confirmProfileDeletion(profile: BrowserProfile, profiles: Browse
   return `Delete "${profile.label}"?${moved} Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.`;
 }
 
-/**
- * THE NAME IS REQUIRED AND IT IS THE PERSON'S. Nothing generates one: the old
- * registry minted labels like "Project 6f6f07" and they told a reader nothing,
- * so the form refuses to submit an empty field rather than filling it in.
- *
- * A duplicate is refused too — two rows reading "Work" in a list whose whole job
- * is telling identities apart is a list that has stopped working.
- */
+/** A non-empty, case-insensitively unique name, or the problem with it. */
 export function profileNameProblem(label: string, existing: BrowserProfile[], ignoreId?: string): string | undefined {
   const name = label.trim().replace(/\s+/g, " ");
   if (!name) return "Give the profile a name.";

@@ -1,24 +1,5 @@
-/**
- * COPY BUTTONS ON AN ORIGIN THE BROWSER DOES NOT CALL SECURE.
- *
- * `navigator.clipboard` exists only in a secure context — HTTPS, or a loopback
- * host. The cockpit is served over plain HTTP the moment it is bound to a
- * tailnet address so another machine can reach it, and there every copy
- * button in the app went quiet: ours (components/settings/copy-command.tsx)
- * and the ones we do not own (Streamdown's code-block
- * and link-dialog copies), which check for `navigator.clipboard.writeText` and
- * report "Clipboard API not available" to nobody.
- *
- * `document.execCommand("copy")` carries no such restriction — it only needs
- * to run inside a user gesture, which a copy button is. So rather than teach
- * every call site a second path, the missing API is FILLED IN ONCE, before any
- * button can be clicked: a `writeText` that stages the text in an off-screen
- * textarea, selects it, and copies. Call sites — including third-party ones —
- * keep calling the standard API and it works.
- *
- * Nothing is replaced when the real API is there: this is a shim for its
- * absence, not a wrapper around its presence.
- */
+// `navigator.clipboard` exists only in a secure context, so over plain HTTP (e.g. a
+// tailnet address) it is filled in with an execCommand("copy") shim that works in a gesture.
 
 function copyViaSelection(text: string): boolean {
   const stage = document.createElement("textarea");

@@ -29,8 +29,7 @@ describe("the index the at-sign menu ranks", () => {
   const index = buildPathIndex(FILES);
 
   test("a directory exists exactly when something inside it does", () => {
-    // The engine sends files only. Any other definition would need a second
-    // source of truth for what a folder is.
+    // The engine sends files only.
     const directories = index.filter((entry) => entry.directory).map((entry) => entry.path);
     expect(directories).toContain("apps/");
     expect(directories).toContain("apps/engine/src/");
@@ -66,8 +65,6 @@ describe("ranking paths", () => {
   });
 
   test("an accepted path inserts EXACTLY what dragging the same row would", () => {
-    // The property that keeps a transcript from looking like two people wrote
-    // it: one wire form per kind, produced in one place.
     const file = rankPaths(index, "drag-reference")[0];
     expect(file?.action).toEqual({ type: "insert", text: fileReference("apps/web/lib/drag-reference.ts").text });
     const folder = rankPaths(index, "ultra").find((completion) => completion.glyph === "directory");
@@ -91,7 +88,6 @@ describe("what the slash menu offers", () => {
   });
 
   test("the create-time choices are offered only before the session exists", () => {
-    // A worktree is cut at creation, so a later press would be a lie.
     const running = availableCommands({ busy: false, fresh: false }).map((command) => command.id);
     expect(running).not.toContain("env:worktree");
     expect(running).not.toContain("driver:codex");
@@ -101,8 +97,6 @@ describe("what the slash menu offers", () => {
   });
 
   test("the mode already in effect is still listed, and says so", () => {
-    // A menu whose contents depend on the current setting cannot be learned:
-    // the row you used last time is the one that has gone missing.
     const commands = availableCommands({ busy: false, fresh: false, runtimeMode: "full-access" });
     const current = commands.find((command) => command.id === "access:full-access");
     expect(current?.detail).toContain("(current)");
@@ -127,8 +121,6 @@ describe("/compact, the wheel's button reached from the keyboard", () => {
 
   test("it is offered on a Claude session that exists, and nowhere else", () => {
     expect(availableCommands(claude).map((command) => command.id)).toContain("compact");
-    // Codex has no out-of-turn compaction door, and a canvas has no
-    // conversation to squeeze — both are absence, not a disabled row.
     expect(availableCommands({ ...claude, driver: "codex" }).map((command) => command.id)).not.toContain("compact");
     expect(availableCommands({ ...claude, fresh: true }).map((command) => command.id)).not.toContain("compact");
     expect(availableCommands({ busy: false, fresh: false }).map((command) => command.id)).not.toContain("compact");
@@ -147,8 +139,6 @@ describe("/compact, the wheel's button reached from the keyboard", () => {
     expect(running).toMatchObject({ disabled: true, detail: "A turn is running." });
     const already = availableCommands({ ...claude, compacting: true }).find((command) => command.id === "compact");
     expect(already).toMatchObject({ disabled: true, detail: "Already compacting." });
-    // Compacting wins the description when both are true: it is the more
-    // specific answer to "why can I not press this".
     expect(compactBlockedReason({ busy: true, compacting: true })).toBe("Already compacting.");
     expect(compactBlockedReason({ busy: false })).toBeUndefined();
   });
@@ -162,7 +152,6 @@ describe("/compact, the wheel's button reached from the keyboard", () => {
   test("the draft that IS the gesture is exactly `/compact`, trimmed", () => {
     expect(isCompactDraft("/compact")).toBe(true);
     expect(isCompactDraft("  /compact\n")).toBe(true);
-    // An argument this composer cannot pass on leaves it an ordinary message.
     expect(isCompactDraft("/compact the API work")).toBe(false);
     expect(isCompactDraft("please run /compact")).toBe(false);
   });
@@ -189,8 +178,6 @@ describe("/resume, the empty composer's own link reached from the keyboard", () 
 
   test("it is offered only where the link itself would show", () => {
     expect(availableCommands(freshResumable).map((command) => command.id)).toContain("resume");
-    // Once a session exists, or there is nowhere to send the pick, the row is
-    // absent — resuming into an existing session would mean something else.
     expect(availableCommands({ ...freshResumable, fresh: false }).map((command) => command.id)).not.toContain("resume");
     expect(availableCommands({ ...freshResumable, canResume: false }).map((command) => command.id)).not.toContain("resume");
     expect(availableCommands({ busy: false, fresh: true }).map((command) => command.id)).not.toContain("resume");
@@ -221,21 +208,16 @@ describe("ranking commands", () => {
   });
 
   test("initials reach a hyphenated command, which a prefix cannot", () => {
-    // `fa` is not a prefix of `full-access` and is not a substring of it — the
-    // two letters are the two words. This is what the fuzzy tier is for.
     expect(rankCommands(commands, "fa")[0]?.label).toBe("/full-access");
   });
 
   test("the fuzzy tier is loose, and that is a trade rather than a bug", () => {
-    // `ae` is a subsequence of `auto-edits` AND of `claude`, and the scorer
-    // prefers the tighter span — so initials REACH a command without being a
-    // reliable way to select one. Left as the donor has it: an initials tier
-    // would fix a nine-row list that can be read at a glance.
+    // `ae` is also a subsequence of `claude`, so initials reach a command but don't reliably select it.
     expect(rankCommands(commands, "ae").map((command) => command.label)).toContain("/auto-edits");
   });
 
   test("a genuine prefix still beats a fuzzy hit on a shorter name", () => {
-    // The tier bases are what guarantee this: fuzzy starts at 100, prefix at 2.
+    // Fuzzy tier starts at 100, prefix at 2.
     expect(rankCommands(commands, "auto")[0]?.label).toBe("/auto");
   });
 
@@ -265,8 +247,6 @@ describe("the skills the dollar menu offers", () => {
   ];
 
   test("picking one inserts EXACTLY what the chip is read back from", () => {
-    // The same property the path rows have: one wire form per kind, produced in
-    // one place, so the text sent and the chip drawn cannot disagree.
     expect(rankSkills(SKILLS, "commit")[0]).toMatchObject({
       label: "commit-messages",
       action: { type: "insert", text: skillReference({ name: "commit-messages" }).text },
@@ -279,15 +259,12 @@ describe("the skills the dollar menu offers", () => {
 
   test("a prefix wins, and a namespace is a boundary initials can reach", () => {
     expect(rankSkills(SKILLS, "rel")[0]?.label).toBe("release-notes");
-    // `vd` is neither a prefix of nor a substring of `vercel:deploy` — the two
-    // letters are the two words, which is what the boundary marker is for.
     expect(rankSkills(SKILLS, "vd")[0]?.label).toBe("vercel:deploy");
     expect(rankSkills(SKILLS, "deploy")[0]?.label).toBe("vercel:deploy");
   });
 
   test("the description is searchable but cannot outrank a name", () => {
     expect(rankSkills(SKILLS, "conventional")[0]?.label).toBe("commit-messages");
-    // `release` is a prefix of one name and appears in another's description.
     expect(rankSkills(SKILLS, "release")[0]?.label).toBe("release-notes");
   });
 
@@ -301,7 +278,6 @@ describe("the skills the dollar menu offers", () => {
   });
 
   test("a row with no description says where it came from rather than nothing", () => {
-    // An empty muted column reads as a broken row rather than a terse one.
     expect(rankSkills([{ name: "bare", description: "", source: "plugin" }], "")[0]?.detail).toBe("Plugin");
   });
 });
@@ -322,8 +298,6 @@ describe("the provider's own slash commands", () => {
 
   test("every provider row carries the group, so the menu can head them as one section", () => {
     expect(providerCommandCompletions(COMMANDS).every((row) => row.group === PROVIDER_COMMAND_GROUP)).toBe(true);
-    // Telar's own verbs carry none: they are the menu's subject and already
-    // have its title.
     expect(availableCommands({ busy: true, fresh: false }).some((row) => row.group !== undefined)).toBe(false);
   });
 

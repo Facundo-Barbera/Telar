@@ -1,22 +1,7 @@
 /**
- * The rail's FLAT mode: one list, no project groups, spawned conversations
- * nested under the conversation that started them.
- *
- * Pure, and it takes `deriveSessionList`'s output like `groupSessions` does,
- * so search, paging, the project filter and the two shelves are the grouped
- * rail's exactly. What changes is the arrangement of the live page: pinned
- * first in their arranged order, then everything else newest activity first
- * (the list is asked for `order: "activity"`), with each child drawn once,
- * under its parent.
- *
- * WHO IS A CHILD. `startedFrom` when the engine stamped it, else the earliest
- * task assignment — the session that handed this one its first piece of work.
- * Same host only: both ids are bare, and only mean something inside one engine.
- *
- * A CHILD WITH NOTHING TO SIT UNDER IS AN ORDINARY ROW. A parent that settled,
- * was snoozed, deleted, or is on a later page is not drawn in the live list,
- * and a child hidden inside something not drawn would be a row nobody can find.
- * A pinned row is always top-level: the person put it there.
+ * Flat rail: one list, pinned first, then newest activity, with spawned sessions
+ * nested under their parent (`startedFrom`, else the earliest assignment; same
+ * host only). A child whose parent isn't drawn, or a pinned row, stays top-level.
  */
 import { useCallback, useEffect, useState } from "react";
 import { foldedAfter, orderSessions } from "./session-groups";
@@ -25,11 +10,9 @@ import { sessionKey, type SessionListResult, type SidebarSession } from "./sessi
 export type FlatEntry = {
   session: SidebarSession;
   pinned: boolean;
-  /** Everything nested under this row, newest activity first. */
   children: SidebarSession[];
 };
 
-/** The key of the session that spawned this one, or undefined. */
 export function parentKeyOf(session: Pick<SidebarSession, "id" | "hostId" | "startedFrom" | "assignments">): string | undefined {
   const first = [...(session.assignments ?? [])].sort((left, right) => left.receivedAt - right.receivedAt)[0];
   const parentId = session.startedFrom?.sessionId ?? first?.fromSessionId;
@@ -49,9 +32,7 @@ export function flattenSessions(list: Pick<SessionListResult, "pinned" | "sessio
     rows.push(session);
   }
 
-  // Up the chain to the first drawn ancestor with no drawn parent of its own,
-  // so a grandchild sits under the top-level row too. A loop means no row in
-  // it is anybody's child: each stays where it is.
+  // Walk to the first drawn ancestor; in a loop every row stays where it is.
   const rootOf = (session: SidebarSession): SidebarSession => {
     const start = sessionKey(session);
     const seen = new Set([start]);
@@ -79,7 +60,6 @@ export function flattenSessions(list: Pick<SessionListResult, "pinned" | "sessio
   return [...entries.values()];
 }
 
-/** A child that is waiting on the person, or on an answer, is never folded away. */
 function childNeedsYou(session: Pick<SidebarSession, "activity">): boolean {
   return session.activity === "blocked" || session.activity === "waiting";
 }
@@ -91,8 +71,7 @@ export type ChildSummary = {
   /** "3 sessions · 1 working · 1 needs you" */
   label: string;
   needsYou: number;
-  /** The children still drawn while the parent is collapsed: those that need
-   *  the person, and the one being read. */
+  /** Children still drawn while collapsed: those that need the person, and the one being read. */
   surfaced: SidebarSession[];
 };
 
@@ -109,7 +88,7 @@ export function summarizeChildren(children: readonly SidebarSession[], activeSes
   };
 }
 
-/** The rows the flat rail draws, top to bottom — what ⌘1..⌘9 count. */
+/** Rows top to bottom; what ⌘1..⌘9 count. */
 export function flatRailRows(entries: readonly FlatEntry[], expanded: ReadonlySet<string>, activeSessionId?: string): SidebarSession[] {
   const rows: SidebarSession[] = [];
   for (const entry of entries) {
@@ -122,11 +101,7 @@ export function flatRailRows(entries: readonly FlatEntry[], expanded: ReadonlySe
 
 const EXPANDED_KEY = "telar:sidebar-expanded-parents";
 
-/**
- * Which parents are OPEN, per client — collapsed is the default, so the set
- * holds the exceptions. localStorage for the reason the project folds use it:
- * which rows you have open is about this window, not the work.
- */
+/** Expanded parents, per window; collapsed is the default. */
 export function useExpandedParents(): { expanded: Set<string>; toggle: (key: string) => void } {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   useEffect(() => {

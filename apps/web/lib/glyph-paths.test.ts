@@ -14,8 +14,7 @@ import {
   type ReferenceKind,
 } from "./drag-reference";
 
-/** One of every kind `drag-reference.ts` can produce. The point of the list is
- *  that it is exhaustive — a ninth kind added there fails the count below. */
+/** Exhaustive: a new kind in `drag-reference.ts` fails the count below. */
 const EVERY_KIND: Record<ReferenceKind, ReturnType<typeof fileReference>> = {
   file: fileReference("apps/engine/src/driver.ts"),
   issue: issueReference({ number: 1, title: "t", url: "https://example.test/i/1" }),
@@ -29,8 +28,6 @@ const EVERY_KIND: Record<ReferenceKind, ReturnType<typeof fileReference>> = {
 
 describe("a chip can draw every reference there is", () => {
   test("every kind resolves to markup and a colour", () => {
-    // An unresolved glyph renders an empty box in the middle of a sentence,
-    // which is the failure this exists to catch.
     for (const [kind, reference] of Object.entries(EVERY_KIND)) {
       const glyph = chipGlyphFor(reference);
       expect(glyph.markup.length, `${kind} has markup`).toBeGreaterThan(0);
