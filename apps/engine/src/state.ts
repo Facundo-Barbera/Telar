@@ -26,12 +26,7 @@ import {
   workspaceBaseRef,
   workspacePath,
   STALLED_AFTER_MS,
-  McpServer as McpServerSchema,
-  McpServerSpec as McpServerSpecSchema,
   ModelSelection,
-  ProviderInstance as ProviderInstanceSchema,
-  ProviderInstanceEnvVar as ProviderInstanceEnvVarSchema,
-  UsageLimitSource as UsageLimitSourceSchema,
   type UsageLimitSource,
   resolveMcpServers,
   EngineRequest as RequestSchema,
@@ -124,7 +119,6 @@ import {
   type ProviderDriverKind,
   // The runtime enum too, not just the type: `readProviderInstances` asks it
   // whether a row on disk names a driver this build still has.
-  ProviderDriverKind as ProviderDriverKindSchema,
   type Task,
   type TaskSeed,
   type Project,
@@ -162,19 +156,18 @@ import {
   type WorktreeReclaimResult,
   seedSessionTitle,
   turnHasContent,
-  AUTO_COMPACT_MAX_TOKENS,
-  AutoCompact as AutoCompactSchema,
-  type AutoCompact,
   CLAUDE_COMPACTION_ENV_NAMES,
   migrateClaudeCompaction,
   type DictationLanguage,
   type DictationProviderId,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
-import { assertId, assertStateVersion, EngineStateError, Kernel, SECRET_KEY_SEPARATOR, STATE_VERSION, type JournalEntry } from "./platform/kernel";
+import { assertId, assertStateVersion, EngineStateError, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
 import { RUNTIME_MODES, SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
-import { McpOAuthStore, type PendingMcpOAuth } from "./domains/agent-tools";
+import { McpOAuthStore, McpServers, type PendingMcpOAuth } from "./domains/agent-tools";
+import { assertInstanceId, ProviderRegistry, type ProviderInstanceInput } from "./domains/providers";
+import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { awaitsRateLimitSweep, createSessionModules, delegationSettle, type DeliveryTurn, emptyQueue, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, parseSession, releaseDelegationSettle, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionTasks, storedSession, TELAR_ORIENTATION } from "./domains/sessions";
 import { boundedOutline, cohortNotification, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, inlineExcerpt, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
@@ -186,7 +179,7 @@ import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelar
 import { porcelainPaths } from "./platform/git/parse";
 import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER, defaultGhRunner, mergePull, openPullRequest, reactOn, readCheckLog, readForgeFacets, readGitHub, readIssue, readPull, readPullFiles, readPullForBranch, replyToThread, resolveThread, type GhRunner } from "./domains/github";
 import { z } from "zod";
-import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerProcessEnv, stoppedInheriting } from "./domains/providers";
+import { providerProcessEnv } from "./domains/providers";
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import { describeImport, type ClaudeConversation, type ForkCut } from "./drivers/claude";
 import { applyModelManifest, applyModelOverlay, BUNDLED_MANIFEST, chosenDefault, legacyLongSpelling, longDefaultOf, type ModelManifest, readModelCatalogue, refuseCliSpawnUnderTest, resolveCliAsync } from "./domains/providers";
@@ -772,41 +765,9 @@ function canonicalPath(input: string): string {
 
 
 
-/**
- * Stricter than `assertId` by one character: an instance id must START with a
- * letter. It is a URL path segment, a settings anchor and — for the built-in
- * slots — the driver kind itself, and an id like `-force` is one careless
- * interpolation away from being read as a flag.
- */
-function assertInstanceId(value: unknown): asserts value is string {
-  if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value)) {
-    throw new EngineStateError(
-      "invalid_request",
-      "provider instance id must start with a letter and contain only letters, numbers, underscores, or hyphens",
-    );
-  }
-}
 
-/** A person configures one or two hubs; the cap is here so a scripted client
- *  cannot turn one usage read into a hundred outbound requests. */
-const MAX_USAGE_LIMIT_SOURCES = 16;
 
-/** The shape a route may see: no key, and a flag saying one is held. A free
- *  function so the one place that builds it is the one place that can forget. */
-function redactUsageLimitSource(source: UsageLimitSource, secrets: Record<string, string>): UsageLimitSource {
-  return { ...source, managementKey: "", ...(secrets[source.id] ? { keyRedacted: true } : {}) };
-}
 
-/** The same shape as an instance id, and for the same reason: it rides in a
- *  URL path and is the permanent key a stored key is filed under. */
-function assertUsageLimitSourceId(value: unknown): asserts value is string {
-  if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value)) {
-    throw new EngineStateError(
-      "invalid_request",
-      "usage limit source id must start with a letter and contain only letters, numbers, underscores, or hyphens",
-    );
-  }
-}
 
 /**
  * A list of model ids off the wire, deduped, first occurrence winning.
@@ -853,70 +814,12 @@ function readCustomModels(value: unknown): CustomProviderModel[] {
   return out;
 }
 
-/**
- * The three-state patch, as one expression.
- *
- * `null` clears, `undefined` keeps, anything else is normalised and set. Written
- * once because doing it inline three times is where a form's "clear the accent
- * colour" quietly becomes "keep it".
- */
-function optionalPatch<K extends string>(
-  key: K,
-  submitted: string | null | undefined,
-  existing: string | undefined,
-  normalise: (value: string) => string,
-): Partial<Record<K, string>> {
-  if (submitted === null) return {};
-  const raw = submitted === undefined ? existing : submitted;
-  if (raw === undefined || raw.trim() === "") return {};
-  return { [key]: normalise(raw) } as Partial<Record<K, string>>;
-}
-
-/**
- * The same three-state rule for a NUMBER.
- *
- * Separate from `optionalPatch` rather than generic over it because of the one
- * line that does not carry over: an empty string is a third way of saying
- * "clear this", and a number has no such shape. Folding the two together would
- * mean a `trim` guard that only one caller can reach.
- */
-function optionalNumberPatch<K extends string>(
-  key: K,
-  submitted: number | null | undefined,
-  existing: number | undefined,
-  normalise: (value: number) => number,
-): Partial<Record<K, number>> {
-  if (submitted === null) return {};
-  const raw = submitted === undefined ? existing : submitted;
-  if (raw === undefined) return {};
-  return { [key]: normalise(raw) } as Partial<Record<K, number>>;
-}
 
 
 
 
-function secretKey(instanceId: string, name: string): string {
-  return instanceId + SECRET_KEY_SEPARATOR + name;
-}
 
-/**
- * The built-in slot for a driver.
- *
- * NO `configDir`, AND FOR CLAUDE THAT IS THE WHOLE POINT: setting
- * `CLAUDE_CONFIG_DIR` — even to `~/.claude` — hashes to a different, empty
- * Keychain entry and 401s. The base login is the one that must leave the
- * variable unset, which is also why this slot cannot be deleted.
- */
-function seedProviderInstance(driver: ProviderDriverKind, at: number): ProviderInstance {
-  return {
-    id: defaultInstanceIdForDriver(driver),
-    driver,
-    enabled: driver !== "opencode",
-    env: [],
-    createdAt: at,
-    updatedAt: at,
-  };
-}
+
 
 /**
  * The engine-cut branch a title implies: `telar/<title-slug>-<id6>`, or
@@ -1287,6 +1190,9 @@ export class EngineStore {
   private readonly settings: SettingsStore;
   private readonly appearance: AppearanceStore;
   private readonly mcpOAuth: McpOAuthStore;
+  private readonly mcpServers: McpServers;
+  private readonly providers: ProviderRegistry;
+  private readonly usageSources: UsageLimitSources;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
   private readonly prefixes: OpenPrefixes;
@@ -2017,74 +1923,16 @@ export class EngineStore {
     return this.browserState(sessionId, { start: true });
   }
 
-  /**
-   * The user's own MCP servers.
-   *
-   * TWO SCOPES, IN ONE FILE, keyed by the PAIR `(projectId, id)`. A server with
-   * no `projectId` is global; one with a `projectId` belongs to that repository
-   * and shadows a global server of the same id when the two meet — see
-   * `McpServer.projectId` in the contract for why that shadowing is a feature
-   * rather than a collision.
-   *
-   * ONE FILE RATHER THAN ONE PER PROJECT because scope is a PROPERTY of a
-   * server, not a location: the claim needs both halves on every turn, and a
-   * per-project file would make the common read two reads and leave orphans
-   * behind whenever a project was unregistered.
-   *
-   * `scope` FILTERS: absent returns everything, `null` returns only the global
-   * ones, and a project id returns only that project's. The merge a session
-   * actually runs with is `resolveMcpServers`, which is shared with the client
-   * so the engine and the page explaining it cannot disagree.
-   */
   listMcpServers(scope?: { projectId: string | null }): McpServer[] {
-    const stored = this.readDocument(this.paths.mcpServers) as { mcpServers?: unknown } | undefined;
-    const parsed = McpServerSchema.array().safeParse(stored?.mcpServers ?? []);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid MCP server registry");
-    const all = structuredClone(parsed.data);
-    if (scope === undefined) return all;
-    if (scope.projectId === null) return all.filter((server) => server.projectId === undefined);
-    return all.filter((server) => server.projectId === scope.projectId);
+    return this.mcpServers.list(scope);
   }
 
-  /** Create or replace one server, in one scope. Keyed by `(projectId, id)`
-   *  because the id IS the name the provider addresses its tools by —
-   *  `mcp__<id>__<tool>` — and two scopes may legitimately spell it the same. */
   saveMcpServer(input: { id: string; projectId?: string; label?: string; enabled?: boolean; spec: unknown }): McpServer {
-    assertId(input.id, "mcp server id");
-    if (input.projectId !== undefined) this.getProject(input.projectId);
-    const spec = McpServerSpecSchema.safeParse(input.spec);
-    if (!spec.success) throw new EngineStateError("invalid_request", "MCP server configuration is invalid");
-    const servers = this.listMcpServers();
-    const at = this.now();
-    const sameSlot = (server: McpServer) => server.id === input.id && server.projectId === input.projectId;
-    const existing = servers.find(sameSlot);
-    const server: McpServer = {
-      id: input.id,
-      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
-      label: (input.label ?? existing?.label ?? input.id).trim().slice(0, 120) || input.id,
-      enabled: input.enabled ?? existing?.enabled ?? true,
-      spec: spec.data,
-      createdAt: existing?.createdAt ?? at,
-      updatedAt: at,
-    };
-    const next = existing ? servers.map((entry) => (sameSlot(entry) ? server : entry)) : [...servers, server];
-    this.writeDocument(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
-    return structuredClone(server);
+    return this.mcpServers.save(input);
   }
 
   removeMcpServer(id: string, projectId?: string): boolean {
-    assertId(id, "mcp server id");
-    const servers = this.listMcpServers();
-    // Scoped, so removing a project's `linear` cannot take the global one with
-    // it — which is exactly what an id-only match would have done.
-    const next = servers.filter((server) => !(server.id === id && server.projectId === projectId));
-    if (next.length === servers.length) return false;
-    this.writeDocument(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
-    // A server that is gone has no grant to keep. Left behind, the record would
-    // silently re-attach to whatever the next server of that id turned out to
-    // be — a token minted for one audience, sent to another.
-    this.deleteMcpOAuthRecord(id, projectId);
-    return true;
+    return this.mcpServers.remove(id, projectId);
   }
 
   getInboxPolicy(): InboxPolicy {
@@ -2416,21 +2264,8 @@ export class EngineStore {
   }
 
   /**
-   * Attach the managed bearer to every claimed server that has one.
-   *
-   * SEPARATE FROM `claimNextTurn`, AND ASYNC, FOR ONE REASON: refreshing a
-   * token is a network call, and `claimNextTurn` runs under the daemon's single
-   * state lock. A refresh to a slow authorization server inside that lock would
-   * stall every other session's claim behind it. So the claim stays synchronous
-   * and this runs after it, on the way out.
-   *
-   * KEYED ON A STORED GRANT, NEVER ON THE `oauth` BLOCK. The block is overrides;
-   * having signed in is what makes a server authenticated, which is also why a
-   * server the user never connected is returned untouched.
-   *
-   * A HAND-WRITTEN `Authorization` HEADER WINS. Someone who typed one meant it,
-   * and silently replacing it with a Telar-managed token would be the harder
-   * failure to diagnose of the two.
+   * Attaches the managed bearer to each claimed server with a stored grant, after the claim so a slow
+   * token refresh never runs under the state lock. A hand-written `Authorization` header wins.
    */
   async authorizeClaimedMcpServers(claim: WorkerClaim, fetchImpl?: typeof fetch): Promise<WorkerClaim> {
     if (!claim.mcpServers?.length) return claim;
@@ -2462,551 +2297,46 @@ export class EngineStore {
   // with; whether that folder actually holds a login is a question `probe()`
   // answers from the filesystem, never by reading a credential.
 
-  /**
-   * Every configured instance, WITH SENSITIVE VALUES WITHHELD.
-   *
-   * This is the read a settings page gets. `resolveProviderInstance` is the one
-   * that returns real secrets, and it is not reachable from a route.
-   */
   listProviderInstances(): ProviderInstance[] {
-    return this.readProviderInstances().map((instance) => ({
-      ...instance,
-      env: instance.env.map((variable) =>
-        variable.sensitive ? { ...variable, value: "", valueRedacted: true } : variable,
-      ),
-    }));
+    return this.providers.list();
   }
 
-  /**
-   * Create or replace one instance.
-   *
-   * `null` CLEARS A FIELD AND ABSENT LEAVES IT ALONE, the same three-state rule
-   * `updateSession` uses — a settings form that could not distinguish "no accent
-   * colour" from "did not touch the accent colour" would erase one edit with
-   * the next.
-   *
-   * IT ALSO REPORTS WHAT THE SAVE COST, which is #594. The first variable on an
-   * instance makes it CONFIGURED, and a configured instance stops inheriting the
-   * fourteen variables its driver owns — correctly, but until now in silence,
-   * and since #593 that first variable can be written by a control about
-   * compaction. `stoppedInheriting` comes back with the answer so the change
-   * cannot be invisible; `carryOverInherited` is how a caller keeps them.
-   */
-  saveProviderInstance(input: {
-    id: string;
-    driver?: unknown;
-    displayName?: string | null;
-    accentColor?: string | null;
-    /** A whole percentage of the model's window, or `null` to fall back to the
-     *  cockpit's default. Never a token count — see the contract's field. */
-    contextNoticePercent?: number | null;
-    /** When this login's sessions compact; `null` returns it to the provider's
-     *  own default. */
-    autoCompact?: unknown;
-    enabled?: boolean;
-    configDir?: string | null;
-    binaryPath?: string | null;
-    env?: unknown;
-    /**
-     * NAMES OF INHERITED VARIABLES TO KEEP, as explicit declarations of this
-     * login's own.
-     *
-     * THE VALUES ARE NEVER IN THE REQUEST and never leave this process: the
-     * engine reads them from its OWN environment. A route that carried the value
-     * would put `ANTHROPIC_AUTH_TOKEN` on the wire in both directions to achieve
-     * nothing the engine could not do on its own.
-     */
-    carryOverInherited?: unknown;
-  }): { instance: ProviderInstance; stoppedInheriting: string[] } {
-    assertInstanceId(input.id);
-    const instances = this.readProviderInstances();
-    const existing = instances.find((instance) => instance.id === input.id);
-    const driver = input.driver === undefined ? existing?.driver : input.driver;
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
-      throw new EngineStateError("invalid_request", "provider instance driver must be claude, codex, opencode or telar");
-    }
-    /**
-     * THE DRIVER IS FIXED FOR AN INSTANCE'S LIFETIME. Sessions, their resume
-     * cursors and their whole transcripts belong to one harness; re-pointing
-     * the id they route by at the other one would resume a Claude conversation
-     * inside Codex.
-     */
-    if (existing && existing.driver !== driver) {
-      throw new EngineStateError("conflict", "a provider instance cannot change driver");
-    }
-    const at = this.now();
-    const secrets = this.readProviderSecrets();
-    const env = this.applyEnvEdits(input.id, this.withCarriedInheritance(input, driver, existing), existing?.env ?? [], secrets);
-    const instance: ProviderInstance = {
-      id: input.id,
-      driver,
-      enabled: input.enabled ?? existing?.enabled ?? true,
-      env: env.stored,
-      createdAt: existing?.createdAt ?? at,
-      updatedAt: at,
-      ...optionalPatch("displayName", input.displayName, existing?.displayName, (value) => value.trim().slice(0, 120)),
-      ...optionalPatch("accentColor", input.accentColor, existing?.accentColor, (value) => {
-        const colour = value.trim();
-        if (!/^#[0-9a-fA-F]{6}$/.test(colour)) throw new EngineStateError("invalid_request", "accent colour must be #rrggbb");
-        return colour;
-      }),
-      /**
-       * REFUSES RATHER THAN CLAMPS, the same rule the compaction threshold
-       * follows: a share this cannot express is one the person has to see
-       * refused, because silently moving their number is worse than a 400.
-       */
-      ...optionalNumberPatch("contextNoticePercent", input.contextNoticePercent, existing?.contextNoticePercent, (value) => {
-        if (!Number.isSafeInteger(value) || value < 1 || value > 100) {
-          throw new EngineStateError("invalid_request", "context notice must be a whole percentage from 1 to 100");
-        }
-        return value;
-      }),
-      ...this.autoCompactPatch(input.autoCompact, existing?.autoCompact),
-      ...optionalPatch("configDir", input.configDir, existing?.configDir, (value) => {
-        const dir = value.trim();
-        if (!dir.startsWith("/") && !dir.startsWith("~")) {
-          throw new EngineStateError("invalid_request", "config directory must be an absolute or ~-relative path");
-        }
-        return dir;
-      }),
-      /**
-       * A PATH OR A NAME, AND NOTHING IN BETWEEN. `cli-resolution.ts` reads a
-       * separator as "this exact file" and its absence as "look this name up",
-       * so the only shapes refused here are the ones that would be neither: a
-       * relative path like `bin/claude`, which would resolve against whatever
-       * the worker's cwd happened to be — a different binary per session.
-       */
-      ...optionalPatch("binaryPath", input.binaryPath, existing?.binaryPath, (value) => {
-        const binary = value.trim();
-        const looksLikePath = binary.includes("/") || binary.includes("\\");
-        if (looksLikePath && !binary.startsWith("/") && !binary.startsWith("~")) {
-          throw new EngineStateError("invalid_request", "binary path must be an absolute path, a ~-relative path, or a bare command name");
-        }
-        return binary;
-      }),
-    };
-    const parsed = ProviderInstanceSchema.safeParse(instance);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "provider instance configuration is invalid");
-    const next = existing
-      ? instances.map((entry) => (entry.id === instance.id ? parsed.data : entry))
-      : [...instances, parsed.data];
-    this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
-    this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets: env.secrets });
-    return {
-      instance: structuredClone(this.listProviderInstances().find((entry) => entry.id === instance.id)!),
-      // Computed against the instance as SAVED, so a carry-over in the same
-      // breath reports nothing lost — which is the truth, and the difference
-      // between an advisory and an alarm that fires after you have acted on it.
-      stoppedInheriting: stoppedInheriting({ before: existing, after: parsed.data, ambient: this.ambientEnv }),
-    };
+  saveProviderInstance(input: ProviderInstanceInput): { instance: ProviderInstance; stoppedInheriting: string[] } {
+    return this.providers.save(input);
   }
 
-  /**
-   * The submitted environment with any carried-over inheritance appended.
-   *
-   * REFUSES RATHER THAN GUESSES, on every arm. A name this driver does not own
-   * would be a declaration that protects nothing from a scrub that never
-   * touches it; a name the engine is not actually carrying would be written as
-   * an EMPTY value, which is a variable the CLI reads rather than the absence
-   * the caller asked to preserve; and a name the save already declares is a
-   * caller that has lost track of its own request. The owner's rule for #594 is
-   * that a loud refusal beats a quiet guess, and this is where that is spent.
-   *
-   * ABSENT CARRY-OVER RETURNS `input.env` UNTOUCHED, `undefined` included, so
-   * the "absent leaves it alone" rule survives this function existing.
-   */
-  private withCarriedInheritance(
-    input: { id: string; env?: unknown; carryOverInherited?: unknown },
-    driver: ProviderDriverKind,
-    existing: ProviderInstance | undefined,
-  ): unknown {
-    if (input.carryOverInherited === undefined) return input.env;
-    if (!Array.isArray(input.carryOverInherited) || input.carryOverInherited.some((name) => typeof name !== "string")) {
-      throw new EngineStateError("invalid_request", "carryOverInherited must be an array of variable names");
-    }
-    const names = input.carryOverInherited as string[];
-    // The list this save would otherwise store: the submitted one when there is
-    // one, and what the instance already holds when the caller only asked to
-    // carry variables over.
-    const base = (input.env === undefined ? (existing?.env ?? []) : input.env) as ProviderInstanceEnvVar[];
-    if (!Array.isArray(base)) throw new EngineStateError("invalid_request", "provider instance environment is invalid");
-    const declared = new Set(base.map((variable) => variable?.name));
-    const inherited = new Set(inheritedOwnedEnv(driver, this.ambientEnv));
-    const carried: ProviderInstanceEnvVar[] = [];
-    for (const name of names) {
-      if (!providerOwnsEnv(driver, name)) {
-        throw new EngineStateError("invalid_request", `${name} is not a variable a ${driver} login owns`);
-      }
-      if (!inherited.has(name)) {
-        throw new EngineStateError("invalid_request", `Telar is not inheriting ${name}, so there is nothing to carry over`);
-      }
-      if (declared.has(name)) throw new EngineStateError("invalid_request", `${name} is already declared by this login`);
-      declared.add(name);
-      carried.push({
-        name,
-        value: this.ambientEnv[name] ?? "",
-        // A credential goes to the 0600 store and never comes back on a read;
-        // a routing fact stays readable by the person who set it.
-        sensitive: providerEnvIsCredential(name),
-      });
-    }
-    return [...base, ...carried];
-  }
 
-  /**
-   * Remove a custom instance.
-   *
-   * THE BUILT-IN SLOT IS NOT DELETABLE — there would be nothing left for a
-   * session on that driver to route to, and "reset it" is what the caller
-   * actually wants. Sessions still naming a deleted instance are not rewritten:
-   * `resolveProviderInstance` falls back to the driver's default, which is the
-   * same path a session created before this registry existed takes.
-   */
   removeProviderInstance(id: string): boolean {
-    assertInstanceId(id);
-    if (
-      id === defaultInstanceIdForDriver("claude") ||
-      id === defaultInstanceIdForDriver("codex") ||
-      id === defaultInstanceIdForDriver("opencode")
-    ) {
-      throw new EngineStateError("conflict", "the built-in provider instance cannot be removed");
-    }
-    const instances = this.readProviderInstances();
-    const next = instances.filter((instance) => instance.id !== id);
-    if (next.length === instances.length) return false;
-    const secrets = this.readProviderSecrets();
-    for (const key of Object.keys(secrets)) {
-      if (key.slice(0, key.indexOf(SECRET_KEY_SEPARATOR)) === id) delete secrets[key];
-    }
-    this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
-    this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets });
-    return true;
+    return this.providers.remove(id);
   }
 
-  /**
-   * The instance a session actually runs as, WITH ITS SECRETS RESOLVED.
-   *
-   * Falls back to the driver's built-in slot for any id the registry does not
-   * know — a session created before the registry existed (`claude:default`), or
-   * one whose custom instance was deleted. Falling back rather than failing is
-   * t3 code's rule too: an instance that vanished is a settings change, not a
-   * reason a conversation stops being resumable.
-   */
   resolveProviderInstance(instanceId: string, driver: ProviderDriverKind): ProviderInstance {
-    const instances = this.readProviderInstances();
-    const found =
-      instances.find((instance) => instance.id === instanceId) ??
-      instances.find((instance) => instance.id === defaultInstanceIdForDriver(driver));
-    if (!found) return seedProviderInstance(driver, this.now());
-    const secrets = this.readProviderSecrets();
-    return {
-      ...found,
-      env: found.env.map((variable) =>
-        variable.sensitive ? { ...variable, value: secrets[secretKey(found.id, variable.name)] ?? "" } : variable,
-      ),
-    };
+    return this.providers.resolve(instanceId, driver);
   }
 
-  /** The one place a caller's instance id is checked to exist. Creating a
-   *  session against an id nobody configured is a client bug worth a 400;
-   *  RESUMING one whose instance was deleted is not, which is why
-   *  `resolveProviderInstance` falls back instead of throwing. */
-  private requireProviderInstance(id: string): ProviderInstance {
-    assertInstanceId(id);
-    const found = this.readProviderInstances().find((instance) => instance.id === id);
-    if (!found) throw new EngineStateError("not_found", "provider instance does not exist");
-    return found;
-  }
 
-  /** The same clear / keep / set rule, for the compaction setting. A limit
-   *  outside what the schema allows is refused rather than moved. */
-  private autoCompactPatch(submitted: unknown, existing: AutoCompact | undefined): { autoCompact?: AutoCompact } {
-    if (submitted === null) return {};
-    if (submitted === undefined) return existing ? { autoCompact: existing } : {};
-    const parsed = AutoCompactSchema.safeParse(submitted);
-    if (!parsed.success) {
-      throw new EngineStateError("invalid_request", `auto-compaction limits must be whole token counts from 1 to ${AUTO_COMPACT_MAX_TOKENS}`);
-    }
-    return { autoCompact: parsed.data };
-  }
 
-  /** On disk, seeded on first read so a fresh install has the two built-in
-   *  slots rather than an empty page that offers nothing to configure. */
-  private readProviderInstances(): ProviderInstance[] {
-    const stored = this.readDocument(this.paths.providerInstances) as { providerInstances?: unknown } | undefined;
-    if (stored === undefined) {
-      const at = this.now();
-      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at)];
-      this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: seeded });
-      return seeded;
-    }
-    /**
-     * A RETIRED DRIVER IS A MIGRATION, NOT A CORRUPT FILE.
-     *
-     * `telar` was a driver kind for one day (#526, reverted by #531) and anyone
-     * who ran that build has a row naming it. Strict-parsing the array as a
-     * whole turned that one stale row into a throw from THE read behind every
-     * provider lookup — so the settings page 400'd, and, because
-     * `resolveProviderInstance` sits on the session claim, so did starting a
-     * session. A registry that outlives a driver is an ordinary consequence of
-     * shipping, and it must cost the user nothing but the row.
-     *
-     * THE ROW GOES; THE SECRET IS LEFT EXACTLY WHERE IT IS. This is the opposite
-     * of `removeProviderInstance`, which takes both: this read runs from
-     * anywhere — a worker, a test, any route — and a lazy read that deleted
-     * credentials is not one a person would expect. (The built-in Agent that
-     * used to carry the #526 key across and then drop it is gone, #908.)
-     *
-     * THE PRUNE IS NARROW ON PURPOSE. Only an unknown `driver` is forgiven here;
-     * every other malformed row still throws below, because that is corruption
-     * rather than a word we retired, and silently dropping a login somebody
-     * configured would be the worse failure.
-     */
-    const rows = Array.isArray(stored.providerInstances) ? stored.providerInstances : [];
-    const kept = rows.filter(
-      (row) =>
-        !(
-          typeof row === "object" &&
-          row !== null &&
-          !ProviderDriverKindSchema.safeParse((row as { driver?: unknown }).driver).success
-        ),
-    );
-    if (kept.length !== rows.length) {
-      this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: kept });
-      stored.providerInstances = kept;
-    }
-    const parsed = ProviderInstanceSchema.array().safeParse(stored.providerInstances ?? []);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid provider instance registry");
-    /**
-     * BACKFILL, NOT A MIGRATION. A registry written before a driver existed has
-     * no slot for it, and a session that routes to one would fall through to
-     * `seedProviderInstance` on every claim rather than to a row a person can
-     * switch off. One pass, written back once, for each slot that is missing.
-     */
-    const missing = (["opencode"] as const).filter((driver) => !parsed.data.some((instance) => instance.id === driver));
-    if (missing.length > 0) {
-      for (const driver of missing) parsed.data.push(seedProviderInstance(driver, this.now()));
-      this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: parsed.data });
-    }
-    return parsed.data;
-  }
 
-  private readProviderSecrets(): Record<string, string> {
-    const stored = this.readDocument(this.paths.providerSecrets) as { secrets?: unknown } | undefined;
-    const secrets = stored?.secrets;
-    if (secrets === undefined || secrets === null) return {};
-    if (typeof secrets !== "object") throw new EngineStateError("invalid_request", "invalid provider secret store");
-    const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(secrets as Record<string, unknown>)) {
-      if (typeof value === "string") out[key] = value;
-    }
-    return out;
-  }
 
-  /**
-   * Fold a submitted env list into what is stored, moving secrets aside.
-   *
-   * THE REDACTED ROUND TRIP IS THE POINT. A client reads a sensitive variable
-   * as `{ value: "", valueRedacted: true }` and hands that same shape back on
-   * save; the stored secret must survive. Only a non-empty value replaces one,
-   * and clearing a secret is done by dropping the variable — not by saving it
-   * blank, which is indistinguishable from "I did not retype my key".
-   */
-  private applyEnvEdits(
-    instanceId: string,
-    submitted: unknown,
-    previous: ProviderInstanceEnvVar[],
-    secrets: Record<string, string>,
-  ): { stored: ProviderInstanceEnvVar[]; secrets: Record<string, string> } {
-    if (submitted === undefined) return { stored: previous, secrets };
-    const parsed = ProviderInstanceEnvVarSchema.array().max(64).safeParse(submitted);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "provider instance environment is invalid");
-    const next = { ...secrets };
-    const stored: ProviderInstanceEnvVar[] = [];
-    const seen = new Set<string>();
-    for (const variable of parsed.data) {
-      if (seen.has(variable.name)) throw new EngineStateError("invalid_request", `duplicate environment variable ${variable.name}`);
-      seen.add(variable.name);
-      const key = secretKey(instanceId, variable.name);
-      if (!variable.sensitive) {
-        delete next[key];
-        stored.push({ name: variable.name, value: variable.value, sensitive: false });
-        continue;
-      }
-      if (variable.value !== "") next[key] = variable.value;
-      else if (!(key in next)) next[key] = "";
-      stored.push({ name: variable.name, value: "", sensitive: true });
-    }
-    for (const variable of previous) {
-      if (!seen.has(variable.name)) delete next[secretKey(instanceId, variable.name)];
-    }
-    return { stored, secrets: next };
-  }
 
-  // ── usage limit sources ───────────────────────────────────────────────────
-  //
-  // THE HUBS QUOTA IS READ FROM. A CLIProxyAPI hub pools several subscription
-  // logins and routes turns across them, so the windows that gate that work sit
-  // on accounts this Mac never signs in as — the usage page's transcript scan
-  // cannot see them and never will.
-  //
-  // CONFIGURATION ONLY LIVES HERE. What the hub currently reports is live state
-  // that `usage-limits.ts` fetches and `daemon.ts` caches; persisting a quota
-  // figure would mean serving one that is stale by exactly as long as the
-  // engine was down.
 
-  /**
-   * Every configured hub, WITH MANAGEMENT KEYS WITHHELD.
-   *
-   * This is the read a settings page gets, and it is the only one reachable
-   * from a route. `resolveUsageLimitSources` is the one that returns real keys.
-   */
   listUsageLimitSources(): UsageLimitSource[] {
-    // Secrets read ONCE for the whole list rather than per row: this is a
-    // settings-page read, and a file open per configured hub to decide a
-    // boolean is a cost that grows with the thing it describes.
-    const secrets = this.readUsageLimitSecrets();
-    return this.readUsageLimitSources().map((source) => redactUsageLimitSource(source, secrets));
+    return this.usageSources.list();
   }
 
-  /**
-   * Create or replace one hub.
-   *
-   * THE REDACTED ROUND TRIP IS THE POINT, the same rule `applyEnvEdits` follows:
-   * a client reads `{ managementKey: "", keyRedacted: true }` and hands that
-   * back on the next save, so only a NON-EMPTY key replaces a stored one.
-   * Clearing a key is done by removing the hub — saving it blank is
-   * indistinguishable from "I did not retype it".
-   */
-  saveUsageLimitSource(input: {
-    id: string;
-    kind?: unknown;
-    label?: string | null;
-    url?: unknown;
-    managementKey?: unknown;
-    enabled?: boolean;
-  }): UsageLimitSource {
-    assertUsageLimitSourceId(input.id);
-    const sources = this.readUsageLimitSources();
-    const existing = sources.find((source) => source.id === input.id);
-    const at = this.now();
-    const url = input.url === undefined ? existing?.url : input.url;
-    if (typeof url !== "string" || url.trim().length === 0) {
-      throw new EngineStateError("invalid_request", "a usage limit source needs a hub URL");
-    }
-    let origin: URL;
-    try {
-      origin = new URL(url.trim());
-    } catch {
-      throw new EngineStateError("invalid_request", "the hub URL is not a valid URL");
-    }
-    if (origin.protocol !== "http:" && origin.protocol !== "https:") {
-      throw new EngineStateError("invalid_request", "the hub URL must be http or https");
-    }
-    const kind = input.kind === undefined ? (existing?.kind ?? "cliproxy") : input.kind;
-    if (kind !== "cliproxy") throw new EngineStateError("invalid_request", "usage limit source kind must be cliproxy");
-    const secrets = this.readUsageLimitSecrets();
-    if (input.managementKey !== undefined) {
-      if (typeof input.managementKey !== "string") {
-        throw new EngineStateError("invalid_request", "the management key must be a string");
-      }
-      // Non-empty replaces; empty leaves whatever is stored, which is what makes
-      // saving a redacted row safe. NEVER logged, here or anywhere.
-      if (input.managementKey !== "") secrets[input.id] = input.managementKey;
-      else if (!(input.id in secrets)) secrets[input.id] = "";
-    } else if (!(input.id in secrets)) {
-      secrets[input.id] = "";
-    }
-    const label = input.label === undefined ? existing?.label : input.label === null ? undefined : input.label.trim() || undefined;
-    const source = {
-      id: input.id,
-      kind,
-      ...(label ? { label } : {}),
-      url: origin.toString(),
-      // The stored record carries no key: redaction is the shape, not a step.
-      managementKey: "",
-      enabled: typeof input.enabled === "boolean" ? input.enabled : (existing?.enabled ?? true),
-      createdAt: existing?.createdAt ?? at,
-      updatedAt: at,
-    };
-    const parsed = UsageLimitSourceSchema.safeParse(source);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "usage limit source configuration is invalid");
-    const next = existing
-      ? sources.map((entry) => (entry.id === source.id ? parsed.data : entry))
-      : [...sources, parsed.data];
-    if (next.length > MAX_USAGE_LIMIT_SOURCES) {
-      throw new EngineStateError("invalid_request", `at most ${MAX_USAGE_LIMIT_SOURCES} usage limit sources can be configured`);
-    }
-    this.writeDocument(this.paths.usageLimitSources, { version: STATE_VERSION, usageLimitSources: next });
-    this.writeDocument(this.paths.usageLimitSecrets, { version: STATE_VERSION, secrets });
-    return redactUsageLimitSource(parsed.data, secrets);
+  saveUsageLimitSource(input: UsageLimitSourceInput): UsageLimitSource {
+    return this.usageSources.save(input);
   }
 
-  /** Forget a hub and its key together. Returns false for an id nobody
-   *  configured, so a double-press is not an error. */
   removeUsageLimitSource(id: string): boolean {
-    assertUsageLimitSourceId(id);
-    const sources = this.readUsageLimitSources();
-    const next = sources.filter((source) => source.id !== id);
-    if (next.length === sources.length) return false;
-    const secrets = this.readUsageLimitSecrets();
-    delete secrets[id];
-    this.writeDocument(this.paths.usageLimitSources, { version: STATE_VERSION, usageLimitSources: next });
-    this.writeDocument(this.paths.usageLimitSecrets, { version: STATE_VERSION, secrets });
-    return true;
+    return this.usageSources.remove(id);
   }
 
-  /**
-   * The ENABLED hubs with their keys resolved — what actually reads a hub.
-   *
-   * NOT REACHABLE FROM A ROUTE, the same rule `resolveProviderInstance` lives
-   * by. A disabled hub is dropped here rather than filtered by each caller:
-   * "enabled" means "may be contacted", and one caller forgetting that would
-   * be a request to a service the user switched off.
-   */
-  resolveUsageLimitSources(): { id: string; kind: "cliproxy"; label?: string; url: string; managementKey: string }[] {
-    const secrets = this.readUsageLimitSecrets();
-    return this.readUsageLimitSources()
-      .filter((source) => source.enabled)
-      .map((source) => ({
-        id: source.id,
-        kind: source.kind,
-        ...(source.label ? { label: source.label } : {}),
-        url: source.url,
-        managementKey: secrets[source.id] ?? "",
-      }));
+  resolveUsageLimitSources(): ResolvedUsageLimitSource[] {
+    return this.usageSources.resolve();
   }
 
-  /**
-   * NEVER THROWS ON A BAD DOCUMENT, the rule `getInboxPolicy` set and for the
-   * same reason sharpened: a malformed hub list is a preference, and the worst
-   * it can cost is a section of the usage page. Refusing would take the whole
-   * engine's settings read down with it.
-   */
-  private readUsageLimitSources(): UsageLimitSource[] {
-    try {
-      const stored = this.readDocument(this.paths.usageLimitSources) as { usageLimitSources?: unknown } | undefined;
-      const parsed = UsageLimitSourceSchema.array().safeParse(stored?.usageLimitSources ?? []);
-      return parsed.success ? parsed.data : [];
-    } catch {
-      return [];
-    }
-  }
 
-  private readUsageLimitSecrets(): Record<string, string> {
-    try {
-      const stored = this.readDocument(this.paths.usageLimitSecrets) as { secrets?: unknown } | undefined;
-      const secrets = stored?.secrets;
-      if (typeof secrets !== "object" || secrets === null) return {};
-      const out: Record<string, string> = {};
-      for (const [key, value] of Object.entries(secrets as Record<string, unknown>)) {
-        if (typeof value === "string") out[key] = value;
-      }
-      return out;
-    } catch {
-      return {};
-    }
-  }
 
   constructor(
     root: string,
@@ -3135,6 +2465,9 @@ export class EngineStore {
     this.settings = new SettingsStore(this.kernel);
     this.appearance = new AppearanceStore(this.kernel);
     this.mcpOAuth = new McpOAuthStore(this.kernel);
+    this.mcpServers = new McpServers(this.kernel, { requireProject: (id) => void this.getProject(id), forgetGrant: (id, projectId) => this.mcpOAuth.delete(id, projectId) });
+    this.usageSources = new UsageLimitSources(this.kernel);
+    this.providers = new ProviderRegistry(this.kernel, this.ambientEnv);
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
       activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes,
@@ -6198,7 +5531,7 @@ export class EngineStore {
       if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
         throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
       }
-      const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
+      const chosen = input.providerInstanceId === undefined ? undefined : this.providers.require(input.providerInstanceId);
       const driver = chosen?.driver ?? input.driver ?? "claude";
       if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
         throw new EngineStateError("invalid_request", "unknown provider driver");

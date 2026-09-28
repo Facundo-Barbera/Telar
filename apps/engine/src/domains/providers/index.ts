@@ -22,11 +22,7 @@ export {
 export { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 export {
   createProviderProber,
-  inheritedOwnedEnv,
-  providerEnvIsCredential,
-  providerOwnsEnv,
   providerProcessEnv,
-  stoppedInheriting,
   type VersionProbe,
 } from "./instances";
 export {
@@ -47,3 +43,4 @@ export {
   textGenDisabledByEnv,
   type RetitleStore,
 } from "./textgen";
+export { assertInstanceId, ProviderRegistry, type ProviderInstanceInput } from "./registry";
