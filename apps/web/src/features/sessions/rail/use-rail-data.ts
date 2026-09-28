@@ -96,67 +96,79 @@ export function useRailData() {
   const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
   const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
   const loadAllRunning = useRef(false);
+  const loadAllAgain = useRef(false);
   const cache = useRef<HostCache>({ tags: new Map(), revisions: new Map(), pages: new Map() });
   const wantsSettled = useRef(false);
 
   const loadHost = useCallback((host: { id: string; name: string } | undefined) => readHostPage(cache.current, wantsSettled.current, host), []);
 
+  const loadOnce = useCallback(async () => {
+    const cache = typeof window === "undefined" ? {} : readSidebarCache();
+    const book = await api.hosts().then((answer) => answer.hosts).catch(() => [] as PublicHost[]);
+    setHosts(book);
+    const [local, ...remotes] = await Promise.allSettled([loadHost(undefined), ...book.map((host) => loadHost({ id: host.id, name: host.name }))]);
+    if (local.status !== "fulfilled") {
+      setUnavailable(true);
+      const remembered = staleRows(cache, LOCAL_HOST);
+      if (remembered.length > 0) {
+        setSessions(remembered);
+        setRenderedAt(Date.now());
+      }
+      return;
+    }
+    setUnavailable(false);
+    setProjects(local.value.projects);
+    observeSidebarLayout(local.value.layout);
+    const away = new Set<string>();
+    const reads: { daemonId?: string; sessions: SidebarSession[]; settledCount?: number }[] = [local.value];
+    const remoteProjects: RemoteProject[] = [];
+    const windows = new Map<string, number | null>();
+    if (local.value.policy) windows.set(LOCAL_HOST, local.value.policy.autoSettleAfterHours);
+    let next = rememberRows(cache, LOCAL_HOST, local.value.sessions);
+    remotes.forEach((page, index) => {
+      const host = book[index]!;
+      if (page.status === "fulfilled") {
+        next = rememberRows(next, host.id, page.value.sessions);
+        reads.push(page.value);
+        if (page.value.policy) windows.set(host.id, page.value.policy.autoSettleAfterHours);
+        if (!page.value.daemonId || page.value.daemonId !== local.value.daemonId) {
+          remoteProjects.push(...page.value.projects.map((project) => ({ ...project, hostId: host.id, hostName: host.name })));
+        }
+      } else {
+        away.add(host.id);
+      }
+    });
+    writeSidebarCache(next);
+    setRemoteProjects(remoteProjects);
+    setHostWindows(windows);
+    const remembered = new Map<string, SidebarSession[]>();
+    for (const id of away) {
+      const rows = staleRows(cache, id);
+      if (rows.length > 0) remembered.set(id, rows);
+    }
+    setStaleByHost(remembered);
+    setUnreachable(away);
+    setShelvedOnEngines(reads.reduce((total, read) => total + (read.settledCount ?? 0), 0));
+    setSessions(dedupeAcrossHosts(reads));
+    setRenderedAt(Date.now());
+  }, [loadHost]);
+
+  // A reload asked for mid-read (a project just added) runs once more rather than being dropped.
   const loadAll = useCallback(async () => {
-    if (loadAllRunning.current) return;
+    if (loadAllRunning.current) {
+      loadAllAgain.current = true;
+      return;
+    }
     loadAllRunning.current = true;
     try {
-      const cache = typeof window === "undefined" ? {} : readSidebarCache();
-      const book = await api.hosts().then((answer) => answer.hosts).catch(() => [] as PublicHost[]);
-      setHosts(book);
-      const [local, ...remotes] = await Promise.allSettled([loadHost(undefined), ...book.map((host) => loadHost({ id: host.id, name: host.name }))]);
-      if (local.status !== "fulfilled") {
-        setUnavailable(true);
-        const remembered = staleRows(cache, LOCAL_HOST);
-        if (remembered.length > 0) {
-          setSessions(remembered);
-          setRenderedAt(Date.now());
-        }
-        return;
-      }
-      setUnavailable(false);
-      setProjects(local.value.projects);
-      observeSidebarLayout(local.value.layout);
-      const away = new Set<string>();
-      const reads: { daemonId?: string; sessions: SidebarSession[]; settledCount?: number }[] = [local.value];
-      const remoteProjects: RemoteProject[] = [];
-      const windows = new Map<string, number | null>();
-      if (local.value.policy) windows.set(LOCAL_HOST, local.value.policy.autoSettleAfterHours);
-      let next = rememberRows(cache, LOCAL_HOST, local.value.sessions);
-      remotes.forEach((page, index) => {
-        const host = book[index]!;
-        if (page.status === "fulfilled") {
-          next = rememberRows(next, host.id, page.value.sessions);
-          reads.push(page.value);
-          if (page.value.policy) windows.set(host.id, page.value.policy.autoSettleAfterHours);
-          if (!page.value.daemonId || page.value.daemonId !== local.value.daemonId) {
-            remoteProjects.push(...page.value.projects.map((project) => ({ ...project, hostId: host.id, hostName: host.name })));
-          }
-        } else {
-          away.add(host.id);
-        }
-      });
-      writeSidebarCache(next);
-      setRemoteProjects(remoteProjects);
-      setHostWindows(windows);
-      const remembered = new Map<string, SidebarSession[]>();
-      for (const id of away) {
-        const rows = staleRows(cache, id);
-        if (rows.length > 0) remembered.set(id, rows);
-      }
-      setStaleByHost(remembered);
-      setUnreachable(away);
-      setShelvedOnEngines(reads.reduce((total, read) => total + (read.settledCount ?? 0), 0));
-      setSessions(dedupeAcrossHosts(reads));
-      setRenderedAt(Date.now());
+      do {
+        loadAllAgain.current = false;
+        await loadOnce();
+      } while (loadAllAgain.current);
     } finally {
       loadAllRunning.current = false;
     }
-  }, [loadHost]);
+  }, [loadOnce]);
 
   const onRowChanged = useCallback((change: SessionRowChange) => {
     setSessions((rows) => applyRowChange(rows, change));
