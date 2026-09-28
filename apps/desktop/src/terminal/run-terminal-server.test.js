@@ -313,11 +313,11 @@ test("a mirrored frame is handed on with its id and its cursor, and touches no t
   const response = await fetch(`${url}/mirror`, {
     method: "POST",
     headers: auth,
-    body: JSON.stringify({ id: "term_9", data: "[32mup[0m", cursor: 12 }),
+    body: JSON.stringify({ id: "term_9", data: "\x1b[32mup\x1b[0m", cursor: 12 }),
   });
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({ mirrored: true });
-  expect(mirrored).toEqual([{ id: "term_9", data: "[32mup[0m", cursor: 12 }]);
+  expect(mirrored).toEqual([{ id: "term_9", data: "\x1b[32mup\x1b[0m", cursor: 12 }]);
 
   expect(host.wrote).toHaveLength(0);
   expect(host.killed).toHaveLength(0);

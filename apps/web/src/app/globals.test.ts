@@ -110,21 +110,10 @@ describe("the design token palette", () => {
    * and the choice is stored, published and worn as the DEFAULT face.
    */
   describe("every selectable typeface is wired end to end", () => {
-    const layout = fs.readFileSync(path.join(here, "layout.tsx"), "utf8");
     /** The two ids that deliberately have no `[data-font-*]` block: `geist` is
      *  the default (the base tokens ARE it) and `custom` is written inline on
      *  <html> from the reader's own typed family. */
     const WITHOUT_A_BLOCK = new Set(["geist", "custom"]);
-
-    test("every font variable the stylesheet reads is loaded in layout.tsx", () => {
-      const read = new Set([...css.matchAll(/var\(\s*(--font-[a-z0-9-]+)/g)].map((match) => match[1]!));
-      // `--font-sans` / `--font-mono` are Tailwind's own theme keys, defined in
-      // the @theme block rather than loaded — everything else is next/font's.
-      const loaded = [...read].filter((name) => name !== "--font-sans" && name !== "--font-mono");
-      expect(loaded.length).toBeGreaterThan(8);
-      expect(loaded.filter((name) => !layout.includes(`variable: "${name}"`))).toEqual([]);
-    });
-
     test("every face in the catalogue has a rule in both slots", () => {
       const offered = [...css.matchAll(/\[data-font-sans="([a-z0-9-]+)"\]/g)].map((match) => match[1]!);
       expect(offered.length).toBeGreaterThan(8);

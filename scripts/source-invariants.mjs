@@ -5,8 +5,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
 import { engineTestFiles, shardOf } from "./engine-shard.mjs";
-import { commentRatchet } from "./comment-ratchet.mjs";
-import { sizeRatchet } from "./size-ratchet.mjs";
+import { SOURCE_CHECKS } from "./source-checks/index.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFile(join(ROOT, path), "utf8");
@@ -2223,16 +2222,7 @@ const CHECKS = [
       return failures;
     },
   },
-  {
-    name: "comment-ratchet",
-    protects: "no change raises a workspace's comment-line count over its merge base, and no change adds a comment over 6 lines",
-    run: () => commentRatchet(ROOT),
-  },
-  {
-    name: "size-ratchet",
-    protects: "no new file over 800 lines, no oversized file growing past its merge base, and no new or grown function over 150 lines",
-    run: () => sizeRatchet(ROOT),
-  },
+  ...SOURCE_CHECKS,
 ];
 
 let failed = 0;

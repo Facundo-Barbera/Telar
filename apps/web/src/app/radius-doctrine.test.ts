@@ -23,9 +23,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
 const theme = readFileSync(new URL("../../../ios/TelarMobile/UI/Theme.swift", import.meta.url), "utf8");
@@ -51,24 +49,6 @@ function rung(name: string): number {
   return BASE * Number(multiplier![1]);
 }
 
-// fileURLToPath, not `.pathname`: this repo is checked out under a path with a
-// space in it, and a URL's pathname keeps that percent-encoded.
-const ROOTS = ["app", "components", "features", "lib"].map((dir) => fileURLToPath(new URL(`../${dir}`, import.meta.url)));
-
-function sources(dir: string): string[] {
-  return readdirSync(dir).flatMap((entry) => {
-    const path = join(dir, entry);
-    if (statSync(path).isDirectory()) return sources(path);
-    return /\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry) ? [path] : [];
-  });
-}
-
-/** How many times the app reaches for a radius utility, tests excluded. */
-function uses(utility: string): number {
-  const pattern = new RegExp(`(?<![\\w-])${utility}(?![\\w-])`, "g");
-  return ROOTS.flatMap(sources).reduce((total, file) => total + (readFileSync(file, "utf8").match(pattern) ?? []).length, 0);
-}
-
 describe("the base, and the rungs the doctrine names", () => {
   test("--radius is 10px", () => {
     expect(BASE).toBeCloseTo(10, 5);
@@ -90,16 +70,6 @@ describe("the base, and the rungs the doctrine names", () => {
     expect(rung("2xl")).toBeCloseTo(18, 5);
   });
 });
-
-describe("the doctrine says what ships", () => {
-  test("the card rung it names is the one the components reach for", () => {
-    // Not an exact count — that would fail on every unrelated card added. The
-    // assertion is the RANKING, which is what made the old comment wrong: the
-    // radius most cards are drawn at is the one the doctrine has to name.
-    expect(uses("rounded-xl")).toBeGreaterThan(uses("rounded-2xl"));
-  });
-});
-
 describe("the two platforms agree about a card", () => {
   test("iOS carries the same 14", () => {
     expect(theme).toContain("static let radiusCard: CGFloat = 14");

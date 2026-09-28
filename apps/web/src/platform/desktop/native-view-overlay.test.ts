@@ -1,21 +1,6 @@
-// Every menu over the native browser view must take the view down while open,
-// or on desktop it renders behind the page. The scan is a heuristic: each menu
-// root must be controlled by state the file hands `useNativeViewOverlay`.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { claimNativeView, createOverlayFreezer, nativeViewOverlayHidden, onNativeViewOverlay, type FrozenFrame } from "@/platform/desktop/native-view-overlay";
-
-const here = fileURLToPath(new URL(".", import.meta.url));
-const listed = (dir: string) => (fs.readdirSync(path.join(here, "..", "..", dir), { recursive: true }) as string[]).map((file) => `${dir}/${file}`);
-// The panel's and the browser's files, however they are split, plus anything else that claims the view.
-const SCANNED = [...listed("components"), ...listed("features/browser")].filter((file) => {
-  if (!file.endsWith(".tsx") || file.includes(".test.")) return false;
-  if (/(^|\/)right-panel[^/]*(\/|\.tsx$)/.test(file) || (file.startsWith("features/browser/") && !file.startsWith("features/browser/panes/"))) return true;
-  return fs.readFileSync(path.join(here, "..", "..", file), "utf8").includes("useNativeViewOverlay(");
-});
 
 describe("the native view is claimed while a menu is open", () => {
   test("the last release is what shows the page again", () => {
@@ -157,89 +142,5 @@ describe("the page stays put behind a menu", () => {
     shell.error = null;
     await swap(false);
     expect(shell.log.at(-1)).toBe("cleared");
-  });
-});
-
-/** The opening tag that starts at `start`, whose `>` may sit inside a JSX
- *  expression (`onOpenChange={(open) => …}`), so braces are counted. */
-function openingTag(source: string, start: number): string {
-  let depth = 0;
-  for (let i = start; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === "{") depth += 1;
-    else if (ch === "}") depth -= 1;
-    else if (ch === ">" && depth === 0) return source.slice(start, i + 1);
-  }
-  return source.slice(start);
-}
-
-/** The text inside the braces or parens beginning at `open`. */
-function balanced(source: string, open: number, pair: "{}" | "()"): string {
-  let depth = 0;
-  for (let i = open; i < source.length; i += 1) {
-    if (source[i] === pair[0]) depth += 1;
-    else if (source[i] === pair[1]) {
-      depth -= 1;
-      if (depth === 0) return source.slice(open + 1, i);
-    }
-  }
-  return "";
-}
-
-function identifiers(expression: string): string[] {
-  return expression.match(/[A-Za-z_$][\w$]*/g) ?? [];
-}
-
-/** Menu roots (`<Popover`, `<DropdownMenu` — not their parts) with the
- *  expression driving each one's `open` prop, or null when uncontrolled. */
-function menuRoots(source: string): { name: string; open: string | null; line: number }[] {
-  const found: { name: string; open: string | null; line: number }[] = [];
-  for (const match of source.matchAll(/<(Popover|DropdownMenu|ContextMenu)(?![A-Za-z])/g)) {
-    const tag = openingTag(source, match.index);
-    const at = tag.search(/(?:^|\s)open=\{/);
-    found.push({
-      name: match[1],
-      open: at === -1 ? null : balanced(tag, tag.indexOf("{", at), "{}"),
-      line: source.slice(0, match.index).split("\n").length,
-    });
-  }
-  return found;
-}
-
-/** Every identifier this file hands to the overlay hook. */
-function guardedNames(source: string): Set<string> {
-  const names = new Set<string>();
-  for (const match of source.matchAll(/useNativeViewOverlay\(/g)) {
-    const open = source.indexOf("(", match.index);
-    for (const name of identifiers(balanced(source, open, "()"))) names.add(name);
-  }
-  return names;
-}
-
-/** The menus in `source` that no `useNativeViewOverlay` call covers. */
-function unguardedMenus(source: string): string[] {
-  const guarded = guardedNames(source);
-  return menuRoots(source)
-    .filter((menu) => menu.open === null || !identifiers(menu.open).some((name) => guarded.has(name)))
-    .map((menu) => `${menu.name}:${menu.line}`);
-}
-
-describe("every menu over the native view is wrapped by the hook", () => {
-  test("the scan catches an unguarded menu, and an uncontrolled one", () => {
-    const guarded = `useNativeViewOverlay(openOverlay !== null);\n<Popover open={openOverlay === "profile"} onOpenChange={(open) => (open ? x() : y())}>`;
-    expect(unguardedMenus(guarded)).toEqual([]);
-    // Controlled, but by state the hook never sees.
-    expect(unguardedMenus(`useNativeViewOverlay(chooserOpen);\n<DropdownMenu open={otherOpen}>`)).toEqual(["DropdownMenu:2"]);
-    // Uncontrolled: nothing to hand over, so nothing hides the view.
-    expect(unguardedMenus(`useNativeViewOverlay(chooserOpen);\n<DropdownMenu>`)).toEqual(["DropdownMenu:2"]);
-    // A part of a menu is not a root — these must not be mistaken for one.
-    expect(unguardedMenus(`<PopoverTrigger /><DropdownMenuItem />`)).toEqual([]);
-  });
-
-  test("the panel's own files ship no menu the hook does not cover", () => {
-    const sources = SCANNED.map((file) => [file, fs.readFileSync(path.join(here, "..", "..", file), "utf8")] as const);
-    // A scan that silently passes because it found nothing is the failure mode to avoid.
-    expect(sources.map(([, source]) => menuRoots(source).length).reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
-    for (const [file, source] of sources) expect([file, ...unguardedMenus(source)]).toEqual([file]);
   });
 });
