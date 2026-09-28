@@ -1,15 +1,3 @@
-// Telar desktop shell (viable tier). Boots the standalone Next server as a
-// child process and points a BrowserWindow at it. No tray, and no custom
-// menu beyond the one issue #16 needs for command-key accelerators —
-// deliberately small.
-//
-// Modes:
-//   (default)              single-instance app window
-//   TELAR_DESKTOP_URL=...   skip the server, point the window at an existing
-//                           server (dev convenience); overrides everything
-//   --smoke                 boot the server, curl /, print SMOKE_OK / error,
-//                           exit 0/1, and NEVER create a window
-
 const path = require("node:path");
 const http = require("node:http");
 const net = require("node:net");
@@ -57,20 +45,6 @@ const { discoverOpeners, openWith, openersWithIcons, bundleIcon } = require("./w
 
 const SMOKE = process.argv.includes("--smoke");
 
-/**
- * A DEV-PACKAGED BUILD IS A SEPARATE APP, NOT A FLAVOUR OF THE INSTALLED ONE.
- *
- * `scripts/package-desktop.sh --dev` bakes `telarDev: true` into the packaged
- * package.json (electron-builder's extraMetadata) beside a distinct productName
- * and appId. Reading it HERE, before anything else, is what keeps that build
- * from colliding with the installed Telar when launched from inside it: a shell
- * an agent session opens carries the live app's TELAR_HOME and
- * TELAR_DESKTOP_URL, and honouring either would point the dev build at the
- * live store — or at the live server, so the window would show the installed
- * app's cockpit wearing the dev build's name. So in this mode both are IGNORED
- * (not merely defaulted), the home is always appData/<productName>, and the
- * updater is off outright. Nothing else about the build changes.
- */
 const DEV_BUILD = (() => {
   try {
     return require("./package.json").telarDev === true;
@@ -79,14 +53,9 @@ const DEV_BUILD = (() => {
   }
 })();
 const OVERRIDE_URL = DEV_BUILD ? undefined : process.env.TELAR_DESKTOP_URL;
-// Dropped in a dev build for the same reason: an inherited E2E directory would
-// move the dedicated home — and the lock — somewhere else. Smoke is unaffected.
+
 const E2E_USER_DATA = DEV_BUILD ? undefined : process.env.TELAR_DESKTOP_E2E_USER_DATA?.trim();
 
-// Keep automated Electron runs in their own application identity. Electron's
-// single-instance lock is scoped through userData, so this lets the E2E shell
-// coexist with a developer's real Telar window without weakening the normal
-// one-instance contract.
 if (E2E_USER_DATA) {
   app.setPath("userData", E2E_USER_DATA);
 } else if (SMOKE) {
@@ -95,56 +64,15 @@ if (E2E_USER_DATA) {
     fs.mkdtempSync(path.join(os.tmpdir(), "telar-electron-smoke-")),
   );
 } else if (DEV_BUILD) {
-  // Explicit rather than trusting productName alone: the directory is the
-  // single-instance lock's scope AND (below) TELAR_HOME, so it must be the dev
-  // build's own whatever the bundle happens to be called.
   app.setPath("userData", path.join(app.getPath("appData"), "Telar Dev"));
 } else if (!app.isPackaged) {
-  /**
-   * A DEV SHELL AND AN INSTALLED TELAR MUST BOTH BE ABLE TO RUN.
-   *
-   * The rule above was already written for the E2E shell and is the same rule:
-   * the lock is scoped through userData. The dev shell simply never got it, and
-   * once `productName` made both resolve `app.getName()` to "Telar", they
-   * shared a directory and therefore a lock. Whichever started first won, and
-   * the loser called `app.quit()` — no window, no output, no crash report. It
-   * looked exactly like a broken build, and cost an afternoon proving it was
-   * not one.
-   *
-   * The engine store is NOT affected: `scripts/dev.mjs` always exports
-   * TELAR_HOME (~/.telar-dogfood by default) and `telarHome()` prefers it, so
-   * dogfood sessions stay where they are. What moves is this shell's own
-   * Chromium state and its two small JSON files — a one-time reset of dev
-   * localStorage, which is the price of the two coexisting.
-   *
-   * THE NAME MOVES TOO, but expect less of it than it sounds: on macOS the
-   * process and menu-bar name come from the BUNDLE, so a dev shell still shows
-   * as "Electron" — measured, not assumed. What this changes is
-   * `app.getName()` and the places derived from it, which is enough to keep the
-   * userData default consistent with the explicit path set below.
-   */
   app.setName("Telar (dev)");
   app.setPath("userData", path.join(app.getPath("appData"), "Telar (dev)"));
 }
 
 let serverChild = null;
 let engineChild = null;
-/**
- * THE BROWSER HOST BELONGS TO A WINDOW, NOT TO THE APP.
- *
- * One global was true while the app had one window. "Open in a new window"
- * (telar:app:open-window) makes it false: a second `createWindow` builds a
- * second manager with its own native views, and every panel request — bounds,
- * visibility, a new tab — would have landed on whichever window was created
- * LAST, moving one window's pages around inside another.
- *
- * The set is the lookup: a request arriving from a window's own renderer is
- * answered by that window's manager (`requireBrowserManager(event)`), and the
- * agent-facing control server — which has no sender, only a scope — walks the
- * same set for the window that session's browser lives in (`managerForScope`,
- * issue #311). The variable stays as the fallback for both, and follows focus,
- * so "the app's browser" means the window the human is actually in.
- */
+
 let browserManager = null;
 const browserManagers = new Set();
 let browserSuggestions;
@@ -153,23 +81,17 @@ function requireBrowserSuggestions() {
 }
 let browserControl = null;
 let browserControlConfig = null;
-/** The engine's door to this process's PTYs (#198 W4). See run-terminal-server.js. */
+
 let runTerminalChannel = null;
 let runTerminalConfig = null;
 
 const REMOTE_DEBUGGING_PORT = process.env.TELAR_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
 if (REMOTE_DEBUGGING_PORT && /^\d+$/.test(REMOTE_DEBUGGING_PORT)) {
   app.commandLine.appendSwitch("remote-debugging-port", REMOTE_DEBUGGING_PORT);
-  // Bound to loopback by Chromium; allow the local Playwright/CDP test client
-  // to attach regardless of the ephemeral websocket origin it chooses.
+
   app.commandLine.appendSwitch("remote-allow-origins", "*");
 }
 
-// --- (a) Login-shell env -----------------------------------------------------
-// Finder-launched apps inherit a bare PATH; Telar shells out to git/gh/claude/
-// bun, so we capture the interactive login shell's environment once and merge
-// it in. PATH is unioned (login-shell entries first) so those binaries resolve;
-// other vars fill in only where Electron didn't already set them.
 function captureLoginShellEnv() {
   try {
     const shell = process.env.SHELL || "/bin/zsh";
@@ -201,7 +123,6 @@ function captureLoginShellEnv() {
   }
 }
 
-// --- (b) Free port -----------------------------------------------------------
 function findFreePort() {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -214,7 +135,6 @@ function findFreePort() {
   });
 }
 
-// Probe whether a specific port is free by binding a throwaway server to it.
 function isPortFree(port) {
   return new Promise((resolve) => {
     const srv = net.createServer();
@@ -226,21 +146,6 @@ function isPortFree(port) {
   });
 }
 
-// --- Stable port (localStorage origin stability) ----------------------------
-// The window loads http://127.0.0.1:<port>/, and everything the renderer keeps
-// in localStorage (sidebar pins, wheel order, dock state, ui prefs, theme) is
-// scoped to that origin. Picking a fresh port every launch silently resets all
-// of it, so we persist the chosen port in userData and reuse it as long as it's
-// still free; only fall back to a new one (and persist that) on first run, a
-// busy port, or a corrupt/unreadable file. Smoke mode never reads or writes
-// this — it's isolated by design.
-
-/**
- * A small JSON file in userData, read through `validate` and written whole.
- * Missing / corrupt / unreadable (or a `validate` that throws) reads as a copy
- * of `defaults` — first run, never a crash. A failed write is logged, never
- * thrown.
- */
 function jsonPrefs(file, defaults, validate, label) {
   const fs = require("node:fs");
   const filePath = () => path.join(app.getPath("userData"), file);
@@ -282,12 +187,6 @@ async function getStablePort() {
   return fresh;
 }
 
-// --- Build stamp -------------------------------------------------------------
-// build-desktop.sh writes build-info.json into the standalone tree, which
-// electron-builder copies to <Resources>/standalone/build-info.json. When it is
-// present (a packaged, stamped build) the window title becomes "Telar <sha>" so
-// you can always tell which build you're running. Absent (dev-repo mode) = plain
-// "Telar".
 function readBuildInfo() {
   const fs = require("node:fs");
   const candidates = app.isPackaged
@@ -297,7 +196,6 @@ function readBuildInfo() {
     try {
       if (fs.existsSync(c)) return JSON.parse(fs.readFileSync(c, "utf8"));
     } catch {
-      /* malformed / unreadable — fall through to the plain title */
     }
   }
   return null;
@@ -306,8 +204,7 @@ function readBuildInfo() {
 function windowTitle() {
   if (!app.isPackaged) return "Telar Dev";
   const info = readBuildInfo();
-  // A dev-packaged build says so in the title, and says when its sources were
-  // dirty: two of them on one machine are otherwise told apart by nothing.
+
   const name = DEV_BUILD ? "Telar Dev" : "Telar";
   if (!info || !info.shortSha) return name;
   return `${name} ${info.shortSha}${DEV_BUILD && info.dirty ? "+dirty" : ""}`;
@@ -315,9 +212,7 @@ function windowTitle() {
 
 function developmentIconPath() {
   if (app.isPackaged) return undefined;
-  // The AMBER loom, not the blue one: a dev shell wearing the production
-  // icon is indistinguishable in the dock from the installed app — the same
-  // rule as iOS's AppIconDev.
+
   for (const name of ["icon-dev.png", "icon.png"]) {
     const icon = path.join(__dirname, "build", name);
     if (fs.existsSync(icon)) return icon;
@@ -331,38 +226,18 @@ function applyDevelopmentAppIcon() {
   return icon;
 }
 
-// --- Bundled @playwright/mcp CLI --------------------------------------------
-// build-app.sh materializes a self-contained, symlink-dereferenced @playwright/
-// mcp closure (cli.js + playwright/playwright-core) beside the engine bundle,
-// which electron-builder copies to <Resources>/engine/playwright-mcp. The ENGINE
-// is what spawns it (src/browser/transport.ts), so it ships with the engine.
 function bundledPlaywrightMcpCli() {
   return app.isPackaged
     ? path.join(process.resourcesPath, "engine", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js")
     : path.join(__dirname, "..", "engine", "dist", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js");
 }
 
-// --- Bundled Agent SDK ------------------------------------------------------
-// The engine bundle keeps `@anthropic-ai/claude-agent-sdk` EXTERNAL and resolves
-// it from disk beside itself, so a missing copy is a Claude session that cannot
-// start. --smoke proves it is there.
-//
-// WHAT IS DELIBERATELY NOT HERE ANY MORE: a check for the SDK's ~272MB native
-// CLI binary. This app used to ship it and fail --smoke without it. It does not
-// ship it now — the engine resolves the USER's Claude Code and refuses the turn
-// with an actionable message when there is none (apps/engine/src/cli-resolution.ts).
-// Whether a given machine has Claude Code installed is not a property of the
-// bundle, and asserting it here would fail every release build on a CI runner
-// that has no reason to have one.
 function bundledAgentSdkEntry() {
   return app.isPackaged
     ? path.join(process.resourcesPath, "engine", "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs")
     : path.join(__dirname, "..", "engine", "dist", "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs");
 }
 
-// --- Resolve the engine bundle ----------------------------------------------
-// Dev-repo layout:  apps/engine/dist/engine.mjs
-// Packaged layout:  <Resources>/engine/engine.mjs   (extraResources)
 function resolveEngineJs() {
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, "engine", "engine.mjs")]
@@ -375,9 +250,6 @@ function resolveEngineJs() {
   );
 }
 
-// --- Resolve the standalone server.js ---------------------------------------
-// Dev-repo layout:  apps/web/.next-desktop/standalone/apps/web/server.js
-// Packaged layout:  <Resources>/standalone/apps/web/server.js  (extraResources)
 function resolveServerJs() {
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, "standalone", "apps", "web", "server.js")]
@@ -392,35 +264,8 @@ function resolveServerJs() {
   );
 }
 
-// --- Where this install keeps its state -------------------------------------
-/**
- * TELAR_HOME FOR A PACKAGED APP, decided once and shared by both children.
- *
- * `app.getPath("userData")` — ~/Library/Application Support/Telar on macOS — is
- * chosen over `~/.telar` because that dotdir belongs to the LEGACY product and
- * has a completely different layout inside it. The engine refuses to open it at
- * all (apps/engine/src/state.ts), which is the guard that stops a canon build
- * from writing `sessions/` on top of somebody's old install. The engine takes an
- * `engine/` subtree inside this directory rather than the directory itself,
- * because Electron already owns files here (Cache/, Local Storage/,
- * update-prefs.json, server-port.json).
- *
- * AN EXPLICIT TELAR_HOME STILL WINS — it is how the dev stack points a packaged
- * build at a dogfood store, and overruling it would make that untestable.
- *
- * SMOKE ALWAYS GETS A THROWAWAY. A smoke boot is a REAL engine, and its boot
- * reconciliation marks any in-flight turn it does not own as failed — so
- * verifying a build against the user's own store would kill their live sessions.
- */
 let smokeHome = null;
-/**
- * AND SINCE #630 THE PERSON MAY HAVE CHOSEN SOMEWHERE ELSE. `openStoreGate`
- * settles that once, before either child is spawned, and parks the answer here
- * — so every later caller of `telarHome()` gets the same root the engine was
- * started with rather than re-deriving one that could have changed underneath
- * it. Before the gate has run this falls through to exactly the old behaviour,
- * which is what keeps the smoke path and an explicit TELAR_HOME unchanged.
- */
+
 let resolvedStoreHome = null;
 function telarHome() {
   if (SMOKE) {
@@ -428,40 +273,17 @@ function telarHome() {
     return smokeHome;
   }
   if (resolvedStoreHome) return resolvedStoreHome;
-  // A dev-packaged build never follows an inherited TELAR_HOME — see DEV_BUILD.
+
   if (DEV_BUILD) return app.getPath("userData");
   return process.env.TELAR_HOME?.trim() || app.getPath("userData");
 }
 
-/**
- * SETTLE ON A STORE BEFORE ANYTHING OPENS ONE — issue #630.
- *
- * The engine's only available answer to "my state root is not reachable" is to
- * fail to start, and a daemon that dies during boot takes the app with it
- * (`startEngineChild`'s exit handler). So the question is asked HERE, by the
- * process that owns a screen, and the engine is spawned only once there is an
- * answer. The loop, and the guarantee that no path through it initialises over
- * an absent store, are in `store-gate.js`.
- *
- * AN EXPLICIT `TELAR_HOME` SKIPS THE GATE ENTIRELY. It is a developer pointing
- * this build at a dogfood store for one run, not a choice somebody recorded in
- * Settings, and making it consult (or worse, write) the marker would have the
- * dev stack quietly adopt whatever it was last pointed at.
- *
- * Returns the root, or `null` when the person chose to quit rather than
- * continue without their store.
- */
 let storeGate = null;
 async function openStoreGate() {
   const explicit = DEV_BUILD ? "" : process.env.TELAR_HOME?.trim();
   if (explicit) return explicit;
   storeGate = createStoreGateWindow();
-  /**
-   * WATCHING WHILE WE WAIT. `volume-watch.js` needs no engine and no window —
-   * it is a pure module taking an `onChanged` — so the same mechanism that
-   * makes a remounted project appear in the rail is what ends this wait
-   * without anyone clicking. `resume` covers the drive pulled during sleep.
-   */
+
   const watcher = watchVolumes({ onChanged: () => storeGate.volumesChanged(), powerMonitor });
   try {
     const settled = await awaitStore(
@@ -476,14 +298,6 @@ async function openStoreGate() {
   }
 }
 
-/**
- * WHERE THIS DRIVE IS MOUNTED NOW, by its own identifier rather than its name.
- *
- * The shell's own copy of `apps/engine/src/volumes.ts`'s search, for the same
- * reason `volume-watch.js` keeps its own mount-root list: the gate runs before
- * the engine exists, so it cannot ask the engine. macOS only, and absent rather
- * than invented elsewhere — every path through the gate copes without a uuid.
- */
 function findVolumeMount(uuid) {
   if (process.platform !== "darwin") return undefined;
   for (const root of ["/Volumes"]) {
@@ -500,28 +314,17 @@ function findVolumeMount(uuid) {
         const plist = execFileSync("diskutil", ["info", "-plist", mount], {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
-          // Bounded for the same reason the engine's is: `diskutil` talks to
-          // diskarbitrationd, and a wedged daemon must not hold the launch.
+
           timeout: 5_000,
         });
         if (/<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim() === uuid) return mount;
       } catch {
-        // Not a mount, not readable, or no uuid: not the drive we want.
       }
     }
   }
   return undefined;
 }
 
-/**
- * In packaged Electron there is no separate node binary — run an Electron binary
- * as node via ELECTRON_RUN_AS_NODE. On macOS the MAIN binary still registers
- * with LaunchServices as a Foreground app even under RUN_AS_NODE, putting a
- * second, dead "Telar" in the Dock per child. The Helper binary is LSUIElement
- * in its Info.plist — same runtime, no Dock entry — so prefer it when packaged.
- * The helper is named after the PRODUCT ("Telar Dev Helper" in a --dev
- * package), so resolution derives from app.getName() — see helper-exec.js.
- */
 function nodeExecPath() {
   if (app.isPackaged && process.platform === "darwin") {
     const frameworks = path.join(path.dirname(process.execPath), "..", "Frameworks");
@@ -531,66 +334,14 @@ function nodeExecPath() {
   return process.execPath;
 }
 
-/** What both children need to reach the tools this app does not bundle. */
-/**
- * WHERE THE COCKPIT'S SOCKET LISTENS — the fix for a pairing link that pointed
- * at an address nothing was bound to.
- *
- * This was `"127.0.0.1"`, hardcoded. The Remote access panel meanwhile builds
- * its QR from the machine's tailnet address, because that is the whole point
- * of remote access — so the code was correct, the token was valid, and the
- * browser could not open a TCP connection to it. Pairing appeared broken on
- * every build at once, which is exactly what one shared constant does.
- *
- * TWO MODES, NOT A BOOLEAN, and the second one is opt-in from Settings →
- * Remote access. `local-only` is unchanged behaviour. `network-accessible`
- * binds every interface, which is what makes a tailnet URL resolve.
- *
- * THE STORE REFUSES TO WIDEN WITHOUT PAIRING ON (apps/web/lib/remote/store.ts),
- * and this reader re-checks rather than trusting the file: an edited
- * remote.json must not be able to publish an unauthenticated cockpit onto a
- * café's wifi. Two checks for one rule, because the cost of the file winning
- * is the whole machine.
- */
-/**
- * THE SHELL DOES NOT PAIR WITH ITSELF.
- *
- * Pairing answers "may this OTHER device reach my cockpit". This process
- * launched the server and owns the state directory; it already has everything
- * pairing would grant. Treating it as a guest failed in the two ways that hurt
- * most — the host's own window asking to be paired, and any change of origin
- * (a bind address, a tailnet URL) silently unpairing the app on the very
- * machine running it.
- *
- * So it carries a per-launch secret: minted here, handed to the web child in
- * its environment, and set as a cookie on this window's session before the
- * page loads. Nothing is persisted and nothing is written into remote.json, so
- * quitting ends it and the next launch mints another.
- */
-// MINTED HERE ONLY WHEN NOBODY ELSE DID. In dev the web child is spawned by
-// scripts/dev.mjs, not by this file, so the launcher mints the secret and
-// hands it to both halves; minting a second one here would have the shell
-// present a cookie the server had never heard of.
 const HOST_TOKEN = process.env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
 
-/**
- * AND THE SAME SECRET ON EVERY REQUEST, AS A HEADER — the carrier that has
- * neither of the cookie's failure modes (host-header.js explains both). Only
- * `session.defaultSession`, which is this window's; the integrated browser's
- * tabs live in their own partitions and must never carry it.
- */
 function seatHostHeader(url) {
   if (!attachHostHeader(session.defaultSession, { appUrl: url, token: HOST_TOKEN })) {
     console.error(`[telar-desktop] could not attach the host header for ${url}; the window falls back to its cookie.`);
   }
 }
 
-/**
- * Set BEFORE the first load, on the session that will make the request — an
- * Electron cookie is per-origin, so this is scoped to the URL the shell is
- * about to open and travels nowhere else. KEPT AS A BELT beside the header:
- * this is what a request made before the listener is attached carries.
- */
 async function seatHostCookie(url) {
   try {
     const { protocol, host } = new URL(url);
@@ -602,49 +353,20 @@ async function seatHostCookie(url) {
       sameSite: "lax",
     });
   } catch {
-    // A cookie we cannot seat means the window pairs the old way rather than
-    // failing to open — degraded, not broken.
   }
 }
 
-/**
- * A CRASHED CHILD IS THE FIRST OF THE TWO WAYS THE HOST STOPPED PROVING ITSELF.
- *
- * Chromium's network service holds every session cookie in its own memory; when
- * that utility process is restarted the jar comes back with the persistent
- * cookies reloaded from disk and the session ones simply gone. The shell had no
- * handler at all, so the event that emptied the jar left no trace and the
- * window's sudden "pair this device" looked spontaneous.
- *
- * BOTH HALVES OF THE ANSWER ARE HERE: the line that names it, and the re-seat
- * that repairs it. The header (host-header.js) is what makes the repair
- * unnecessary in the first place — the listener lives in this process and
- * cannot be dropped by a child restarting — but the cookie is still the belt,
- * and a belt that is never re-fastened is not one.
- */
 function wireShellDiagnostics() {
   app.on("child-process-gone", (_event, details) => {
     logShell(
       "warn",
       `child-process-gone type=${details.type} reason=${details.reason} exitCode=${details.exitCode} service=${details.serviceName ?? ""}`,
     );
-    // Whatever died, re-seating costs one IPC and is only meaningful for the
-    // network service — which is precisely the one whose name we cannot rely on
-    // matching across Electron versions.
+
     if (lastWindowUrl) void seatHostCookie(lastWindowUrl);
   });
 }
 
-/**
- * AND THE SYMPTOM, FROM THE WINDOW'S SIDE. A 401 on a main-frame request, or a
- * redirect to the pairing page, IS the bug as the user meets it — so the next
- * occurrence writes a line instead of needing a story.
- *
- * THE ORIGIN ONLY, never the path or the query: this log is read by whoever is
- * debugging, and a cockpit URL carries session and project ids. The origin is
- * also the entire diagnostic — it says whether the window had wandered onto the
- * other spelling of its own server.
- */
 function watchForUnpairing(webContents) {
   const originOf = (value) => {
     try {
@@ -670,42 +392,12 @@ function watchForUnpairing(webContents) {
   });
 }
 
-/**
- * WHERE THE SOCKET LISTENS — and the version discipline is the point (#627).
- *
- * This used to be a bare `JSON.parse` here, which meant a file whose version
- * this build does not know bound every interface while the cockpit's own gate
- * reset the same file to `requireAuth: false` and admitted everyone. The rule
- * and its test now live in `remote-file.js`; the shell never widens on a file
- * it cannot read.
- */
 function serverBindHost(home) {
   return remoteFile.serverBindHost(home);
 }
 
-/**
- * TAILSCALE SERVE, WHEN SETTINGS ASKED FOR IT. Same gate as the bind host —
- * pairing must be on — re-checked here so a hand-edited file cannot publish
- * an open cockpit onto the tailnet. Runs BEFORE the web child spawns, because
- * the child's env has to carry the ts.net URL for the Remote access panel to
- * list it. Returns the HTTPS base URL, or null when nothing was published;
- * the reason is logged as a label only (stderr may hold auth keys).
- */
 let tailscaleServeUrl = null;
-/**
- * AND WHY IT DID NOT PUBLISH, WHERE SOMEBODY WILL SEE IT (#627).
- *
- * Both failures below used to end at `console.error` — which is nowhere, for a
- * person who turned on a setting, restarted as instructed, and got no ts.net
- * URL. They experience the most common cause (HTTPS certificates off for the
- * tailnet, a checkbox in someone else's admin console) as "remote access is
- * broken", with nothing to act on.
- *
- * The classification already exists: `tailscale.js` returns a LABEL and never
- * raw stderr, because stderr can carry `tskey-…` auth keys. So the label rides
- * to the web child in its environment, beside `TELAR_TAILSCALE_URL` and for the
- * same reason — the Remote access pane is what has to say it.
- */
+
 const TAILSCALE_SERVE_ERROR_ENV = "TELAR_TAILSCALE_SERVE_ERROR";
 let tailscaleServeError = null;
 async function publishTailscaleServe(home, port) {
@@ -713,9 +405,6 @@ async function publishTailscaleServe(home, port) {
   if (!remoteFile.tailscaleServeRequested(home)) return null;
   const domain = await tailscale.certDomain();
   if (!domain) {
-    // `certDomain` cannot say WHICH of the three it was — it asks `status
-    // --json` and finds no CertDomains — so the label is the honest union of
-    // them, and the pane names all three.
     tailscaleServeError = "no-cert-domain";
     console.error("[telar-desktop] tailscale serve requested but tailscale is missing, not running, or has HTTPS certificates disabled; skipped.");
     return null;
@@ -731,12 +420,6 @@ async function publishTailscaleServe(home, port) {
   return tailscaleServeUrl;
 }
 
-/**
- * THE COMPUTER-USE HELPER THIS APP CARRIES (Contents/Helpers, see
- * computer-use-helper.json) — or null in a dev checkout and in a local package
- * built without it, where the engine keeps using an external cua install. Named
- * only when it is really there: once named, the engine never falls back.
- */
 function computerUseHelperPath() {
   if (!app.isPackaged) return null;
   const { appName } = require("./computer-use-helper.json");
@@ -757,11 +440,7 @@ function childEnv(home) {
           TELAR_DESKTOP_BROWSER_CONTROL_TOKEN: browserControlConfig.token,
         }
       : {}),
-    // HOW THE ENGINE REACHES THIS PROCESS'S PTYs (#198 W4). A run is a terminal
-    // session, and the terminal lives here; the engine is a forked sibling with
-    // no `ipcRenderer`, so it gets a wire. Its own port and token, NOT the
-    // browser's: a leaked browser token buys driving a tab, and must never also
-    // buy starting a process.
+
     ...(runTerminalConfig
       ? {
           TELAR_DESKTOP_RUN_TERMINAL_PORT: String(runTerminalConfig.port),
@@ -771,63 +450,22 @@ function childEnv(home) {
   };
 }
 
-// --- (c0) Boot the engine daemon as a child ---------------------------------
-/**
- * THE ENGINE'S "A TELAR IS ALREADY RUNNING" EXIT — issue #894.
- *
- * THE NUMBER IS DECLARED TWICE ON PURPOSE, AND A TEST HOLDS THE PAIR TOGETHER.
- * `ENGINE_EXIT_LOCK_HELD` lives in apps/engine/src/state.ts; this file is plain
- * CommonJS loaded by Electron before anything of that app exists, so it cannot
- * import it and keeps its own copy. `engine-exit.test.js` reads both files and
- * fails if they disagree — the same arrangement as the `x-telar-host` header,
- * which is a contract between two languages for the same reason.
- *
- * WHY THERE HAS TO BE A CODE AT ALL: the engine is forked with
- * `stdio: "inherit"`, so in a packaged app everything it prints goes to a
- * stdout nobody reads. An exit code is the only thing that survives, and
- * "another daemon holds the lock" and "the engine died" want opposite
- * responses from this process.
- */
 const ENGINE_EXIT_LOCK_HELD = 3;
 
-/**
- * Whether anything has been put on screen yet — see the engine `exit` handler.
- *
- * An engine that dies BEFORE the first paint is indistinguishable from an app
- * that refuses to open, which is exactly what #894 was reported as. After the
- * first paint the window itself is the explanation, and the existing blanket
- * quit stands.
- */
 let mainWindowShown = false;
 
-/**
- * Whether a person has already been told why this launch is not happening.
- *
- * THE TWO PATHS RACE, AND BOTH ARE CORRECT ON THEIR OWN. An engine that exits
- * fires the `exit` handler AND, thirty seconds later, rejects the
- * `waitForEngine` the boot is awaiting — so without this the same failure would
- * put two dialogs in front of somebody who is already only being told once.
- * First one to arrive is the one with the specific reason.
- */
 let startupFailureReported = false;
 
-/** Say it once, on screen, and only while there is no window to say it in. */
 function reportStartupFailure(title, detail) {
   if (mainWindowShown || startupFailureReported) return;
   startupFailureReported = true;
   dialog.showErrorBox(title, detail);
 }
 
-/** The daemon lock as the engine writes it — `{ pid, token, hostname }`, and
- *  the only place this process can read the owner's pid from. Composed here
- *  the way `engineDiscoveryFile` composes its sibling (AD-5). */
 function engineLockFile(home) {
   return path.join(home, "engine", "engine.lock");
 }
 
-/** Who holds the store, for a person who now has to decide whether the Telar
- *  already running is one they want. `null` when the lock is gone or torn —
- *  the dialog says less rather than guessing. */
 function engineLockOwnerPid(home) {
   try {
     const pid = JSON.parse(fs.readFileSync(engineLockFile(home), "utf8"))?.pid;
@@ -837,38 +475,19 @@ function engineLockOwnerPid(home) {
   }
 }
 
-/**
- * THE APP HAS A BACK END NOW, and this is it.
- *
- * The cockpit is only an authenticated engine client: every route handler it
- * serves proxies to this daemon, discovered through a document the daemon writes
- * under TELAR_HOME. Shipping the web tier alone produces an app where every page
- * loads and every action answers `engine_unavailable`.
- *
- * ONE PROCESS, DAEMON AND WORKER. `TELAR_EMBEDDED_WORKER` defaults on, so this
- * child both accepts turns and executes them. The out-of-process worker still
- * exists for the deployment that wants provider crashes kept out of the control
- * plane; a desktop app is not that deployment.
- */
 function startEngineChild(home) {
   const engineJs = resolveEngineJs();
   engineChild = fork(engineJs, [], {
     cwd: path.dirname(engineJs),
     execPath: nodeExecPath(),
-    // Same lifetime tie as the Next server: the preload self-exits when our IPC
-    // channel closes, so a SIGKILL or native crash of this process cannot orphan
-    // a daemon holding a LISTEN socket and the store's lock.
+
     execArgv: ["--require", path.join(__dirname, "server-preload.js")],
     env: {
       ...childEnv(home),
-      // What `ps` calls this child — see server-preload.js and #835.
+
       TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-engine-dev" : "telar-engine",
       NODE_ENV: "production",
-      // @playwright/mcp is neither traced into the bundle nor on a
-      // Finder-launched app's PATH, so the engine's walk-up resolver would find
-      // nothing. Point it at the bundled cli.js unless the user already named
-      // one — their choice wins. Dev-repo runs are left alone: the walk-up
-      // resolves the repo's own install there.
+
       ...(app.isPackaged && !process.env.TELAR_PLAYWRIGHT_MCP_BIN
         ? { TELAR_PLAYWRIGHT_MCP_BIN: bundledPlaywrightMcpCli() }
         : {}),
@@ -877,27 +496,10 @@ function startEngineChild(home) {
   });
   engineChild.on("exit", (code, signal) => {
     engineChild = null;
-    // The cockpit without the engine is a window full of errors. Quit rather
-    // than leave one standing.
+
     if (SMOKE || app.isQuitting) return;
     logShell("error", `engine exited (code=${code} signal=${signal})`);
-    /**
-     * A LIVE LOCK IS AN ORDINARY CONDITION, AND IT GETS A SENTENCE — #894.
-     *
-     * The owner launched the nightly while a previous Telar was still up; the
-     * engine refused the lock, exited, and this handler quit the app with the
-     * only explanation on a stdout a packaged app sends nowhere. From the
-     * outside that is an app that does not open.
-     *
-     * NO ATTACHING TO THE FOREIGN DAEMON. That is a real option and a larger
-     * change — two shells over one store raises questions about which one owns
-     * the windows, the browser profiles and the PTYs — so what ships here is
-     * the sentence, which is what was actually missing.
-     *
-     * ONLY BEFORE THE FIRST PAINT. Once a window is up the engine exiting is a
-     * different event with a window to report it in, and a modal over a live
-     * cockpit would be the wrong shape.
-     */
+
     if (code === ENGINE_EXIT_LOCK_HELD && !mainWindowShown && !startupFailureReported) {
       startupFailureReported = true;
       const pid = engineLockOwnerPid(home);
@@ -913,10 +515,7 @@ function startEngineChild(home) {
       app.quit();
       return;
     }
-    // Every other exit is an engine that DIED, and the blanket quit is right
-    // for it — but a person who never saw a window is owed the reason.
-    // `showErrorBox` rather than the message box above: this is a failure, and
-    // it is the one dialog Electron will show before `ready` resolves.
+
     reportStartupFailure(
       "Telar's engine stopped",
       `The engine exited (code=${code} signal=${signal}) before Telar could open.\n\n` +
@@ -927,32 +526,10 @@ function startEngineChild(home) {
   return engineChild;
 }
 
-/**
- * Wait until the engine is actually answering, not merely spawned.
- *
- * TWO STEPS, because there are two ways to be not-ready and they need different
- * waits: the discovery document does not exist yet (the daemon is still
- * starting), and it exists but names a port nothing is listening on yet. Reading
- * the token and asking `/v2/health` covers both, and proves the SAME thing the
- * cockpit will need a moment later — a stale document from a previous run is
- * caught here rather than as a mystifying 503 on the first page load.
- */
-/**
- * The engine's discovery document. The subdirectory `engineRootFromEnv`
- * composes in apps/engine/src/state.ts, and the same one the cockpit reads.
- * Three places know this name; a test in this app pins that they agree — and
- * THIS is the shell's only spelling of it (AD-5: one composition per file).
- */
 function engineDiscoveryFile(home) {
   return path.join(home, "engine", "engine.json");
 }
 
-/**
- * `requireWorker` waits for `/v2/health` to report a REGISTERED worker, not
- * just a 200: a daemon whose embedded worker never came up answers every
- * health check and refuses every turn. Smoke asks for it; the normal boot
- * does not block the window on it (the supervisor re-registers on its own).
- */
 function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150, requireWorker = false } = {}) {
   const discoveryFile = engineDiscoveryFile(home);
   const deadline = Date.now() + timeoutMs;
@@ -962,7 +539,6 @@ function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150, requireWork
       try {
         discovery = JSON.parse(fs.readFileSync(discoveryFile, "utf8"));
       } catch {
-        /* not written yet, or half-written — retry */
       }
       if (discovery?.port && discovery?.token) {
         const request = http.request(
@@ -990,7 +566,6 @@ function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150, requireWork
               try {
                 health = JSON.parse(raw);
               } catch {
-                /* half-written body — retry */
               }
               if (health?.worker?.registered === true) return resolve({ ...discovery, workerId: health.worker.workerId });
               retry();
@@ -1016,45 +591,31 @@ function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150, requireWork
   });
 }
 
-// --- (c) Boot the standalone server as a child ------------------------------
 function startServer(port, home) {
   const serverJs = resolveServerJs();
   serverChild = fork(serverJs, [], {
     cwd: path.dirname(serverJs),
     execPath: nodeExecPath(),
-    // Tie the child's lifetime to ours: the preload self-exits when our IPC
-    // channel closes, so a SIGKILL / native crash of this main process (which
-    // runs none of the cleanup handlers below) can't orphan the Next server.
+
     execArgv: ["--require", path.join(__dirname, "server-preload.js")],
     env: {
       ...childEnv(home),
-      // NOT `next-server (vX)`. That is what Next names itself, and it is the
-      // name of every dev server on the machine too — so an agent's routine
-      // `pkill -f next-server` used to close Telar (#835). The preload keeps
-      // this one against Next's own assignment.
+
       TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-ui-dev" : "telar-ui",
       PORT: String(port),
       HOSTNAME: serverBindHost(home),
-      // The ts.net endpoint the Remote access panel lists — present only when
-      // `publishTailscaleServe` ran first and succeeded.
+
       ...(tailscaleServeUrl ? { TELAR_TAILSCALE_URL: tailscaleServeUrl } : {}),
-      // And why it did NOT, when serve was asked for and did not stand. A
-      // classification label only — never stderr, which can carry auth keys.
+
       ...(tailscaleServeError ? { [TAILSCALE_SERVE_ERROR_ENV]: tailscaleServeError } : {}),
-      // What the gate compares this shell's cookie against (lib/remote/host-token.ts).
+
       TELAR_HOST_TOKEN: HOST_TOKEN,
-      // And what the Remote access panel calls the host row. The shell holds a
-      // secret rather than a device record, so this name is the only way the
-      // app hosting the server appears in the list of what is connected.
+
       TELAR_HOST_CLIENT: app.getName(),
       NODE_ENV: "production",
-      // THE LAUNCHER MARKER. The cockpit's server-side engine discovery refuses
-      // to resolve a state root unless it is set (apps/web/lib/engine/
-      // engine-server.ts), which is what keeps a stray `next start` from
-      // pointing at somebody's store. The shell IS a launcher, so it says so.
+
       TELAR_COCKPIT: "1",
-      // The server may send this shell its notices over the IPC channel below —
-      // see desktop-notifications.js. Without it the server never uses the pipe.
+
       [DESKTOP_NOTIFICATIONS_ENV]: "1",
     },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
@@ -1064,8 +625,7 @@ function startServer(port, home) {
   serverChild.on("exit", (code, signal) => {
     serverChild = null;
     presenceReporter.stop();
-    // If the server dies unexpectedly while the app is up, don't leave a
-    // half-dead window — quit so nothing is orphaned.
+
     if (!SMOKE && !app.isQuitting) {
       console.error(`[telar-desktop] server exited (code=${code} signal=${signal})`);
       app.quit();
@@ -1074,12 +634,6 @@ function startServer(port, home) {
   return serverChild;
 }
 
-/**
- * THE MAC'S OWN NOTIFICATIONS (desktop-notifications.js). The server decides
- * which transitions deserve one and says so over the fork channel; this side
- * shows the banner, skips the session already on screen, and answers Approve
- * by handing the SAME request id back to the server, which resolves it.
- */
 const sendToServer = (message) => {
   if (serverChild?.connected) serverChild.send(message);
 };
@@ -1090,13 +644,6 @@ function cockpitFocus() {
 }
 const desktopNotifier = createDesktopNotifier({ Notification, send: sendToServer, context: cockpitFocus, open: openNotificationPath });
 
-/**
- * WHETHER THE PERSON IS AT THIS MAC, for the server's "Notify on" decision
- * (`notifyRoute`, apps/web/lib/mobile/desktop.ts). Sent on the edges this
- * process sees — lock, unlock, focus, an in-app navigation — and on a beat,
- * because going idle has no event. `lock-screen` is kept as well as the idle
- * state's own "locked": either one alone has been known to lag the other.
- */
 let screenLocked = false;
 const presenceReporter = createPresenceReporter({
   sample: () => ({ idleState: powerMonitor.getSystemIdleState(ACTIVE_IDLE_SECONDS), locked: screenLocked, ...cockpitFocus() }),
@@ -1115,12 +662,6 @@ function watchPresence() {
   presenceReporter.start();
 }
 
-/**
- * Show a route in the cockpit window the person was last in. A live window is
- * told to navigate in place (`telar:notifications:open`, lib/use-command-keys.ts)
- * rather than reloaded, so its panels and drafts survive; with none open, a
- * fresh window is built on the route.
- */
 function openNotificationPath(route) {
   const win = [browserManager, ...browserManagers].map((manager) => manager?.window).find((w) => w && !w.isDestroyed());
   if (!win) {
@@ -1134,7 +675,6 @@ function openNotificationPath(route) {
   win.webContents.send("telar:notifications:open", route);
 }
 
-// --- (d) Poll the port until it answers 200 ---------------------------------
 function waitForServer(port, { timeoutMs = 30_000, intervalMs = 250 } = {}) {
   const url = `http://127.0.0.1:${port}/`;
   const deadline = Date.now() + timeoutMs;
@@ -1162,42 +702,22 @@ function waitForServer(port, { timeoutMs = 30_000, intervalMs = 250 } = {}) {
   });
 }
 
-// --- External links (issue #35) ----------------------------------------------
-// Anything that is not Telar's own UI leaves for the user's default browser.
-// Authentication is the reason: an OAuth flow in an in-app window has no
-// password manager, no session the user is already signed into and no address
-// bar, and MCP servers make that a flow users repeat rather than survive once.
-//
-// APPLIED TO THE APP WINDOW'S webContents AND NOTHING ELSE — deliberately not
-// through app.on("web-contents-created"), which would also catch the browser
-// manager's WebContentsView tabs. Those are the integrated browser: agents
-// drive them and they must keep rendering in-app.
 function openInSystemBrowser(url) {
-  // A refused hand-off to the OS must not become an unhandled rejection in the
-  // main process — there is nothing to retry, and the log is the only place
-  // this can be reported from.
   shell.openExternal(url).catch((err) => {
     console.error("[telar-desktop] failed to open externally:", url, err?.message || err);
   });
 }
 
-// The Links setting, as far as this process can see it — see link-routing.js.
 const linkRouting = createLinkRouting();
 
 function actOnLinkDecision(decision, webContents) {
   if (decision.openExternal) linkRouting.handOff(webContents, decision.openExternal, openInSystemBrowser);
-  // The dedupe below deliberately drops the second arrival of one click, but a
-  // dropped hand-off and a broken link look identical from the outside, so say
-  // which one happened.
+
   else if (decision.duplicateOf) {
     console.log("[telar-desktop] suppressed duplicate external open:", decision.duplicateOf);
   }
 }
 
-// createPolicy, not a policy: each webContents gets its own instance, because
-// the dedupe inside it is a per-surface burst window closing over one click's
-// window.open -> location.href fallback. Shared, a second window's first
-// hand-off would be swallowed by a first window's recent one.
 function applyExternalLinkPolicy(webContents, createPolicy) {
   const policy = createPolicy();
   webContents.setWindowOpenHandler(({ url }) => {
@@ -1205,50 +725,24 @@ function applyExternalLinkPolicy(webContents, createPolicy) {
     actOnLinkDecision(decision, webContents);
     return decision.action === "allow" ? { action: "allow" } : { action: "deny" };
   });
-  // setWindowOpenHandler never sees a same-window navigation, and that is the
-  // path a blocked popup takes: window.open returns null when denied, and the
-  // usual fallback (Telar's own MCP OAuth connect included) assigns
-  // location.href instead.
+
   webContents.on("will-navigate", (event, url) => {
     const decision = policy.decide(url);
     if (decision.action === "allow") return;
     event.preventDefault();
     actOnLinkDecision(decision, webContents);
   });
-  // A window the app was allowed to open is still the app, so it gets the same
-  // policy; otherwise every link inside it is one un-policed hop.
+
   webContents.on("did-create-window", (childWindow) => {
     applyExternalLinkPolicy(childWindow.webContents, createPolicy);
   });
 }
 
-// --- (e) Window --------------------------------------------------------------
-
-/**
- * TELAR OWNS THE TOP OF ITS OWN WINDOW, on macOS only.
- *
- * `hiddenInset` removes the titlebar and keeps the traffic lights, which is the
- * only combination that lets the app's own header BE the titlebar — the rail's
- * wordmark and collapse trigger move up into the row the system was spending on
- * an empty grey strip and a title nobody reads. The renderer marks its headers
- * as drag regions (`app-drag`, in globals.css) so the window still moves, zooms
- * on double-click and snaps exactly as before.
- *
- * The offsets and the platform rule live in ./window-chrome.js, next to the
- * header height they are derived from.
- */
 function createWindow(url) {
   const title = windowTitle();
   const icon = developmentIconPath();
   lastWindowUrl = url;
-  // EVERY WINDOW IS BORN TRANSLUCENT-CAPABLE (#243). The preference picks the
-  // TINT — a vibrancy material or a solid colour — and nothing else about the
-  // window, which is what lets the Settings toggle retint a live window instead
-  // of tearing it down and losing the page's scroll position. The two values
-  // that move, and the price of always being non-opaque, are in
-  // ./window-material.js; `nativeTheme.shouldUseDarkColors` is the resolved
-  // scheme — the cockpit pushes its own into `themeSource` through
-  // `telar:appearance:setTheme`, so this is Telar's half, not the OS's.
+
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -1262,133 +756,77 @@ function createWindow(url) {
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(__dirname, "preload.js"),
-      // The cockpit's right panel embeds PDFs in an <iframe>; Chromium's PDF
-      // viewer counts as a plugin, and without this the frame stays blank.
+
       plugins: true,
-      // The renderer half of the anti-flicker pair (see Main): a throttled
-      // renderer hands the compositor nothing to show at refocus. UNCONDITIONAL
-      // like the transparency it pairs with — a window that can be turned to
-      // glass without a rebuild is non-opaque the whole time, so the throttle
-      // would be waiting to bite the first time somebody flipped the toggle.
+
       backgroundThrottling: false,
     },
   });
-  // Which is also why the page cannot see itself hidden — this process tells
-  // it instead (window-visibility.js, #834).
+
   watchWindowVisibility(win);
-  // NAMED BROWSER PROFILES (browser-profiles.js): the registry is read once
-  // from userData; a bad file is a startup error, not a silent fallback to the
-  // shared jar.
+
   const profiles = readProfileRegistry(app.getPath("userData"));
   const manager = new DesktopBrowserManager(win, {
     onControlChanged: reportBrowserControl,
-    // A login entry FINISHED in some tab (metadata only — the capture is an
-    // address, an identity and a moment). The offer flow decides whether to
-    // ask "may agents use this login here?" — login-offer-window.js.
+
     onLoginEntryFinished: (capture) => requireLoginOffer().entryFinished(capture),
-    // Recent sites are PER PROFILE, not per project: two projects sharing an
-    // identity share its history, which is what sharing an identity means.
+
     onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.activeProfile(scopeKey)?.id, url),
     profiles,
-    // A project whose pre-profile cookie jar was adopted keeps its recent
-    // sites: the entries move to the new key, nothing on disk is touched.
+
     onProfileMigrated: (from, to) => requireBrowserSuggestions().adopt(from, to),
-    // Each session's open pages, order and active tab survive a reload and a
-    // restart (browser-tab-store.js): a new manager reads what the last one
-    // wrote in destroy(). The smoke run keeps its temp userData so nothing
-    // leaks between runs.
+
     tabStore: createTabStore(app.getPath("userData")),
-    // WHAT EACH SITE MAY DO, PER PROFILE (#422). Beside the profile registry
-    // and the tab inventory, keyed by the partition the answer was given in —
-    // two projects sharing an identity share its answers, which is what sharing
-    // an identity means.
+
     sitePermissions: createSitePermissionStore(app.getPath("userData")),
-    // ONE EXTENSION HOST PER PARTITION, created when a partition first gets a
-    // tab. chrome.tabs of one project's 1Password sees that project only.
+
     createExtensionHost: (partition) => startExtensionHost(win, manager, partition),
-    // ⌘1..⌘9 BELONG TO A FOCUSED PAGE (#660) — the menu stands down for exactly
-    // as long as one holds them, and the manager answers the key itself.
+
     onChordScope: (chords) => setBrowserChordScope(manager, chords),
   });
   browserManagers.add(manager);
   browserManager = manager;
-  // "The app's browser" is the window the human is in — see `browserManagers`.
+
   win.on("focus", () => {
     browserManager = manager;
   });
-  // The window's own URL is what "the app's own UI" means — it is the same
-  // origin in dev-repo, packaged and TELAR_DESKTOP_URL modes, so nothing here
-  // has to guess a port or a hostname. An unusable one throws, and createWindow
-  // runs inside whenReady's try/catch, which logs and quits.
+
   applyExternalLinkPolicy(win.webContents, () => createExternalLinkPolicy({ appUrl: url }));
-  // A native WebContentsView outlives a renderer reload and React never gets a
-  // cleanup pass in that path. Hide it before the document is replaced; the
-  // remounted Browser surface will publish fresh bounds and make it visible.
+
   win.webContents.on("did-start-loading", () => {
     manager.hideVisibleScope();
-    // The same for the Links claim: the reloaded cockpit claims again on mount.
+
     linkRouting.set(win.webContents, false);
-    /**
-     * THE RENDERER THAT HELD THEM IS GOING AWAY, SO ITS CLAIMS DIE WITH IT
-     * (#656). Both of these are a mirror of renderer state, and a renderer
-     * cannot release what it is no longer running: reload the cockpit while a
-     * palette is up, or while a keybindings row is armed, and without this the
-     * menu keeps its accelerators stripped forever — the rail's ⌘1..⌘9 dead
-     * with no way back but a restart. A suppression that leaks is worse than
-     * the bug it fixed, which is the whole reason this line is here and not a
-     * comment about how it cannot happen.
-     *
-     * SAFE TO DO UNCONDITIONALLY: the reloaded cockpit re-claims on mount for
-     * anything that is still up, and claims nothing when nothing is.
-     */
+
     if (!chordScopes.empty || chordCapture) {
       chordScopes.setRenderer([]);
       chordCapture = false;
       buildApplicationMenu();
     }
   });
-  // The route shown here is half of "Notify on"'s viewing rule; in-app routes
-  // are pushState, so `did-navigate` never fires for them.
+
   win.webContents.on("did-navigate-in-page", () => presenceReporter.report());
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
-    // Re-announce every live partition's host to the reloaded renderer.
+
     for (const [partition, host] of manager.extensionHosts) win.webContents.send("telar:browser:extension", { partition, ...host.status() });
   });
   win.on("closed", () => {
     manager.destroy();
     browserManagers.delete(manager);
-    // `destroy` already releases through `hibernateTab`; this is the belt to its
-    // braces, because a claim that outlives its window leaves the OTHER window's
-    // rail shortcuts dead and nothing left alive to release them (#660).
+
     if (chordScopes.forget(manager)) buildApplicationMenu();
-    // Another window's host, not null, while one is still open: closing the
-    // second window must not leave the first without a fallback manager.
+
     if (browserManager === manager) browserManager = browserManagers.values().next().value ?? null;
   });
-  // Keep the build stamp in the title bar — don't let the loaded page's <title>
-  // overwrite it (that's how you answer "which build am I running?").
+
   win.on("page-title-updated", (e) => {
     e.preventDefault();
     win.setTitle(title);
   });
-  // Issue #259's symptom, recorded from the window's own side.
+
   watchForUnpairing(win.webContents);
-  /**
-   * A DEAD LOAD RETRIES INSTEAD OF STRANDING ON THE ERROR PAGE.
-   *
-   * In dev the cockpit is a Next server that restarts whenever a file it
-   * watches changes, and a reload landing in that window fails outright. The
-   * shell had no `did-fail-load` handler, so the app sat on Chromium's "This
-   * page couldn't load" until someone restarted it by hand — while the server
-   * it was waiting for came back a second later.
-   *
-   * ONLY THE MAIN FRAME AND ONLY OUR OWN URL. A subframe failing is the page's
-   * business, and reloading the window for it would fight the page. `-3` is
-   * ERR_ABORTED, which is what a navigation cancelled ON PURPOSE reports —
-   * including one the external-link policy just declined — so retrying it would
-   * undo that decision in a loop.
-   */
+
   let retryTimer = null;
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, failedUrl, isMainFrame) => {
     if (!isMainFrame || errorCode === -3 || win.isDestroyed()) return;
@@ -1402,11 +840,7 @@ function createWindow(url) {
 
   win.once("ready-to-show", () => win.show());
   win.setTitle(title);
-  // SEATED BEFORE THE FIRST REQUEST, not after: the gate reads these on the
-  // opening navigation, so loading first would send the shell's own window in
-  // as an unpaired stranger. The header is attached synchronously — there is no
-  // await to lose the race on — and `finally` because a cookie we could not set
-  // is a window that pairs the old way, not a window that never opens.
+
   seatHostHeader(url);
   seatHostCookie(url).finally(() => {
     if (!win.isDestroyed()) win.loadURL(url);
@@ -1414,15 +848,6 @@ function createWindow(url) {
   return win;
 }
 
-/**
- * THE 1PASSWORD EXTENSION, ONE HOST PER PARTITION (per project profile). The
- * manager calls this the first time a partition gets a tab; the host loads
- * lazily and the tab-wake path waits for it before the first navigation.
- * Enabled in Dev and personal nightly builds; TELAR_EXTENSIONS=0 disables it
- * for troubleshooting, and =1 opts other builds in. Failures land in `status()` and the
- * panel shows them — never a silent blank. Returns null when extensions are
- * off, so the manager simply proceeds without one.
- */
 function startExtensionHost(win, manager, partition) {
   const wanted = extensionsEnabled({ dev: DEV_BUILD, packaged: app.isPackaged, version: app.getVersion(), override: process.env.TELAR_EXTENSIONS });
   if (!wanted || SMOKE) return null;
@@ -1430,16 +855,13 @@ function startExtensionHost(win, manager, partition) {
   const host = new ExtensionHost(ses, {
     window: win,
     tabs: {
-      // chrome.tabs.create from THIS partition's extension: a human tab in a
-      // scope of this partition. The extension's own pages open in a
-      // human-only window (openExtensionPage), never as an integrated tab.
       createTab: async (details) => {
         const url = details.url || "about:blank";
         if (/^chrome-extension:/.test(url)) {
           const page = host.openExtensionPage(url, win);
           return [page.webContents, page];
         }
-        // A visible scope on THIS partition, else any scope on it.
+
         const onPartition = (scope) => { try { return manager.partitionOf(scope) === partition; } catch { return false; } };
         const scope = (manager.visibleScopeKey && onPartition(manager.visibleScopeKey))
           ? manager.visibleScopeKey
@@ -1460,8 +882,7 @@ function startExtensionHost(win, manager, partition) {
     },
   });
   host.onHealthChange = (status) => { if (!win.isDestroyed()) win.webContents.send("telar:browser:extension", { partition, ...status }); };
-  // Track extension chrome independently of credential entry on web pages.
-  // Opening or closing 1Password does not pause the browser.
+
   host.onHoldOpen = (id, reason) => manager.addUiHold(id, reason);
   host.onHoldClose = (id) => manager.removeUiHold(id);
   host.startOnce().then((status) => {
@@ -1471,8 +892,6 @@ function startExtensionHost(win, manager, partition) {
   return host;
 }
 
-/** The manager of the window this request came from, or null when the sender is
- *  not a window's own top-level renderer (a native tab view, a popup). */
 function managerForEvent(event) {
   const sender = event?.sender;
   if (!sender) return null;
@@ -1482,79 +901,22 @@ function managerForEvent(event) {
   return null;
 }
 
-/**
- * THE SENDER'S OWN WINDOW FIRST. Every handler that has an `event` passes it,
- * so a panel in window A can never act on window B's views. The fallback is for
- * the callers that genuinely have no window — see `browserManagers`.
- */
 function requireBrowserManager(event) {
   const manager = managerForEvent(event) || browserManager;
   if (!manager) throw new Error("The Telar desktop browser host is not ready.");
   return manager;
 }
 
-/**
- * THE LOGIN OFFER (AUTH-001, #195), wired once for the app's lifetime — a
- * translucency rebuild replaces the manager, not this (its ipcMain handlers
- * may only register once). Grants land in the ENGINE's state root, the same
- * file the daemon lists (`/v2/browser/logins`) and the worker's
- * `browser_fill_secret` matches — see login-grant-writer.js for why the write
- * happens here and not over the daemon's agent-readable HTTP surface.
- */
 let loginOffer = null;
 function requireLoginOffer() {
-  // The engine's state root. The shell is a declared co-tenant of this
-  // subtree — see `engine` in packages/core/test/invariants.test.ts
-  // (AD-5 / INV-3) for why, and why the write cannot go over the daemon's
-  // agent-readable HTTP surface.
   loginOffer ??= wireLoginOffer({ stateRoot: path.join(telarHome(), "engine") });
   return loginOffer;
 }
 
-// --- Application menu (issue #16 — command keys) -----------------------------
-// The ONE place accelerators are wired to Electron's native menu. Every
-// binding (id, label, accelerator) comes from ./command-keys.js — the single
-// source of truth apps/web/lib/command-keys.ts also reads, by relative
-// import, since this process runs under real Node with no TypeScript (see
-// the long comment there). This file never repeats a key combination; it
-// only turns the shared table into a Menu template and forwards clicks to
-// the renderer as a bare action id, over the same telar:* contextBridge
-// pattern every other IPC channel here uses. The renderer (lib/use-command-
-// keys.ts) owns the focus rule and what each action actually does — this
-// process has no DOM, so it could not apply either even if it wanted to.
-/** True only while Settings → Keybindings has a row armed — see the menu
- *  builder below, and `setChordCapture` in apps/web/lib/commands.ts. */
 let chordCapture = false;
 
-/**
- * THE CHORDS A SURFACE ON SCREEN HAS CLAIMED (#656) — pushed by the cockpit
- * whenever a palette, modal or picker goes up or comes down, and empty the rest
- * of the time.
- *
- * WHY THE MENU IS WHERE THIS HAS TO BE FIXED. macOS matches a menu's key
- * equivalent before the keydown reaches the page, so the New Conversation
- * palette's ⌘1..⌘9 — which it draws on its own rows — were consumed by File →
- * Jump to and never delivered. The palette's handler was not losing a race; it
- * was never running. Stripping the accelerator for the interval of the claim is
- * the only thing that hands the key to the renderer at all.
- *
- * NOT `enabled: false`, unlike `chordCapture` above. A modal being up is no
- * reason the menu should stop being clickable with the mouse — it is the KEY
- * that is spoken for, not the command. Only the accelerator goes.
- *
- * AND SINCE #660 THERE ARE TWO OWNERS, both of which can be live. The cockpit
- * renderer's stack is one; a focused browser page is the other, and only this
- * process can know about that one — the keydown never reaches the renderer, and
- * the native focus is in another process entirely. They UNION rather than
- * overwrite, because a page's claim erasing a palette's would leave the palette
- * with the dead ⌘1..⌘9 this whole mechanism exists to prevent. The union and
- * the reasoning live in chord-scope.js, which is unit-tested; this file is the
- * Electron entry point and cannot be.
- */
 const chordScopes = new ChordScopes();
 
-/** A manager's pages took or released the keys. Rebuilds only on a real change,
- *  since this fires on every focus move between tabs of the same browser. */
 function setBrowserChordScope(manager, chords) {
   if (chordScopes.setOwner(manager, chords)) buildApplicationMenu();
 }
@@ -1564,38 +926,11 @@ function sendCommandKey(browserWindow, id) {
   win?.webContents.send("telar:command-keys:invoke", id);
 }
 
-/**
- * THE MENU IS BUILT FROM THE KEYMAP, not from the registry's defaults (#367).
- *
- * This is the blocker the old settings copy named: a person could not rebind
- * anything because the accelerators here were frozen into the table. They are
- * now read out of `keymap` — the merged map, defaults plus whatever the cockpit
- * has stored — and this function is called again on every change, which is all
- * "rebuild the accelerators" ever needed to mean. Electron replaces the whole
- * application menu on `setApplicationMenu`, so there is nothing to diff.
- *
- * A COMMAND WITH NO CHORD KEEPS ITS ROW. Clearing a binding is a deliberate
- * answer ("give me ⌘K back for the browser"), and it should cost the key, not
- * the command: the menu item stays, reachable with the mouse, wearing no
- * accelerator. Electron rejects `accelerator: ""`, hence the conditional spread.
- */
 function buildApplicationMenu(keymap = readKeymap()) {
-  // Which commands a surface on screen has taken the key for (#656). Computed
-  // from the LIVE keymap by the shared table, so this and the renderer's own
-  // dispatcher stand down for exactly the same set — and so moving the nine
-  // jumps to ⌥1..⌥9 hands ⌘1 back to the palette instead of leaving it
-  // suppressed against a chord nobody uses.
   const claimed = new Set(claimedCommandIds(keymap, chordScopes.all()));
   const toMenuItem = (command) => ({
     label: command.label,
-    // STRIPPED WHILE A SETTINGS ROW IS RECORDING. macOS matches a menu's key
-    // equivalent before the keydown reaches the page, so ⇧⌘D over an armed row
-    // would open the Diff and never be recorded — which would fail the pane on
-    // exactly the chords a person most wants to change. Disabled too, belt and
-    // braces; both are put back the moment recording ends.
-    //
-    // AND STRIPPED WHILE A SURFACE CLAIMS THE CHORD, for the same mechanical
-    // reason and with the opposite answer about `enabled`: see `chordScope`.
+
     ...(command.accelerator && !chordCapture && !claimed.has(command.id) ? { accelerator: command.accelerator } : {}),
     enabled: !chordCapture,
     click: (_menuItem, browserWindow) => sendCommandKey(browserWindow, command.id),
@@ -1603,30 +938,21 @@ function buildApplicationMenu(keymap = readKeymap()) {
   const fileCommands = menuCommands(keymap, "file");
   const panelCommands = menuCommands(keymap, "panel");
   const viewCommands = menuCommands(keymap, "view");
-  // jump-1..jump-9 nest under their own submenu so the top-level File menu
-  // reads as a handful of commands, not a dozen and a half — cosmetic only,
-  // `id`/`accelerator` for every one of them still comes from the same map.
+
   const jumpBindings = fileCommands.filter((command) => command.jump);
   const otherBindings = fileCommands.filter((command) => !command.jump);
   const isMac = process.platform === "darwin";
   const template = [
-    // role: "appMenu" (macOS's app-name menu: About/Hide/Quit) and the
-    // role-based Edit/View/Window menus below are what keep native behavior
-    // — Quit, Cmd+C/V/X/Z, fullscreen, Minimize — working at all: replacing
-    // the whole application menu without them, rather than adding to it,
-    // would otherwise silently drop those OS-level accelerators.
+
     ...(isMac ? [{ role: "appMenu" }] : []),
     {
       label: "File",
       submenu: [
         ...otherBindings.map(toMenuItem),
         { type: "separator" },
-        // "Jump to" rather than "Jump to Conversation" (#569): the numbers
-        // count the rail's own entries, and the first of them is the Agent on
-        // a Mac that has one — see the jump block in command-keys.js.
+
         { label: "Jump to", submenu: jumpBindings.map(toMenuItem) },
-        // The Dev self-update entry (DEV-005) — only a --dev package carries
-        // it. The shipping app keeps electron-updater; this is the local twin.
+
         ...(DEV_BUILD
           ? [
               { type: "separator" },
@@ -1636,17 +962,7 @@ function buildApplicationMenu(keymap = readKeymap()) {
       ],
     },
     { role: "editMenu" },
-    /**
-     * VIEW IS SPELLED OUT rather than `{ role: "viewMenu" }`, because #423 puts
-     * a row of ours in it and a role menu takes no additions. Every item Electron
-     * would have built is still here, in its order, so nothing native is lost.
-     *
-     * THE ROLE'S OWN DEVTOOLS ROW MOVES OFF ⌥⌘I. That accelerator belongs to the
-     * BROWSER PANEL's tab now — it is the chord every browser uses, and the
-     * reason anybody reaches for it in this app is a page in the panel, not the
-     * cockpit's own React tree. Inspecting the cockpit is still one row away,
-     * relabelled so the two are not a guess, and on ⌥⇧⌘I.
-     */
+
     {
       label: "View",
       submenu: [
@@ -1663,9 +979,7 @@ function buildApplicationMenu(keymap = readKeymap()) {
         { role: "togglefullscreen" },
       ],
     },
-    // The right panel's own surfaces. A menu of its own rather than more rows
-    // under File: these are all "what am I looking at beside the conversation",
-    // and a File menu that also opened a LaTeX tab would be a File menu in name.
+
     ...(panelCommands.length > 0 ? [{ label: "Panel", submenu: panelCommands.map(toMenuItem) }] : []),
     { role: "windowMenu" },
   ];
@@ -1674,7 +988,7 @@ function buildApplicationMenu(keymap = readKeymap()) {
 
 ipcMain.handle("telar:browser:suggestions", async (event, scopeKey) => {
   const manager = requireBrowserManager(event);
-  manager.partitionOf(scopeKey); // Validate the binding before reading a project's history.
+  manager.partitionOf(scopeKey);
   const ownPort = Number(new URL(manager.window.webContents.getURL()).port);
   return requireBrowserSuggestions().list(manager.activeProfile(scopeKey)?.id, [
     ownPort,
@@ -1688,16 +1002,12 @@ ipcMain.handle("telar:browser:remove-suggestion", (event, input) => {
   requireBrowserSuggestions().remove(manager.activeProfile(input.scopeKey)?.id, input.url);
 });
 ipcMain.handle("telar:browser:state", (event, scopeKey) => requireBrowserManager(event).state(scopeKey));
-// The password manager's toolbar button. Opening its popup pauses nothing.
-// Status is PER SCOPE now: each project's session has its own partition and
-// its own 1Password host. Creating the host on the first status poll lets the
-// extension preload while the human looks, before any tab navigates.
+
 ipcMain.handle("telar:browser:extension-status", (event, scopeKey) => {
   const manager = requireBrowserManager(event);
   const host = manager.hostForScope(scopeKey);
   if (!host) return { phase: "unavailable", error: "Extensions are not enabled, or this session has no project profile yet." };
-  // Carry the partition so the renderer can keep only this scope's status and
-  // ignore another project's host pushes.
+
   let partition; try { partition = manager.partitionOf(scopeKey); } catch { partition = undefined; }
   return { ...(partition ? { partition } : {}), ...host.status() };
 });
@@ -1713,18 +1023,7 @@ ipcMain.handle("telar:browser:extension-popup", async (event, input) => {
 ipcMain.handle("telar:browser:bind-profile", (event, input) =>
   requireBrowserManager(event).declareProfile(input?.scopeKey, input?.profileKey),
 );
-/**
- * NAMED PROFILES, MANAGED FROM SETTINGS → INTEGRATIONS AND FROM THE BROWSER
- * PANEL. Create and rename identities, name the account one is MEANT to be
- * signed into (intent — nothing here verifies a login), choose the global
- * default, assign this session's project, switch which identity this session's
- * next tab opens in, and forget one nothing points at.
- *
- * DELETING FORGETS A RECORD, NEVER A COOKIE JAR. The registry refuses a profile
- * that is the default or that any project is assigned to, and the partition
- * directory is left on disk either way — so the worst a mistaken delete costs is
- * making the profile again, and no live identity is ever stranded mid-session.
- */
+
 ipcMain.handle("telar:browser:profiles", (event, scopeKey) => {
   const manager = requireBrowserManager(event);
   return {
@@ -1736,22 +1035,19 @@ ipcMain.handle("telar:browser:profiles", (event, scopeKey) => {
 ipcMain.handle("telar:browser:create-profile", (event, input) => {
   const manager = requireBrowserManager(event);
   const profile = manager.profiles.create({ label: input?.label, account: input?.account, icon: input?.icon, color: input?.color });
-  // Creating from a session's panel is nearly always "and use it here".
+
   if (input?.scopeKey) manager.setScopeProfile(input.scopeKey, profile.id);
   if (input?.scopeKey && input?.assignProject) {
     const projectKey = manager.profileOf(input.scopeKey);
     if (projectKey) manager.profiles.assign(projectKey, profile.id);
   }
-  // A profile made in Settings has to appear in every open panel's picker, and
-  // one made from a panel has to appear in the others'.
+
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), active: profile };
 });
 ipcMain.handle("telar:browser:update-profile", (event, input) => {
   const manager = requireBrowserManager(event);
-  // Only the keys the caller actually sent — `update` patches, so forwarding an
-  // absent field as undefined would be indistinguishable from "leave it", while
-  // forwarding it as null would clear a mark nobody touched.
+
   const profile = manager.profiles.update(input?.profileId, {
     ...(input?.label !== undefined ? { label: input.label } : {}),
     ...(input?.account !== undefined ? { account: input.account } : {}),
@@ -1763,8 +1059,7 @@ ipcMain.handle("telar:browser:update-profile", (event, input) => {
 });
 ipcMain.handle("telar:browser:delete-profile", (event, input) => {
   const manager = requireBrowserManager(event);
-  // Sessions and tabs in the profile move to where the ladder now sends them
-  // (`deleteProfile`); only the default itself is refused, by the registry.
+
   const removed = manager.deleteProfile(input?.profileId);
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), removed };
@@ -1786,17 +1081,7 @@ ipcMain.handle("telar:browser:assign-project-profile", (event, input) => {
 ipcMain.handle("telar:browser:set-scope-profile", (event, input) =>
   requireBrowserManager(event).setScopeProfile(input?.scopeKey, input?.profileId),
 );
-/**
- * SITE PERMISSIONS (#422) — the answer to a prompt, the prompts still open, and
- * the memory of every answer already given.
- *
- * THE ANSWER IS THE COCKPIT'S ALONE, and it is guarded like "open in system
- * browser" above and for the same reason: the question is drawn over the address
- * bar in Telar's own window, so an answer arriving from a page's preload, a
- * subframe, or anything an agent can reach would be a site granting itself a
- * camera. The prompt times out to Block by itself (site-permissions.js), so a
- * refused sender costs nothing but the wait.
- */
+
 function requireCockpitSender(event, what) {
   const manager = requireBrowserManager(event);
   const cockpit = manager.window;
@@ -1811,20 +1096,17 @@ ipcMain.handle("telar:browser:permission-answer", (event, input) =>
     ...(input?.sourceId ? { sourceId: input.sourceId } : {}),
   }),
 );
-/** What is still being asked — how a panel that remounted (a renderer reload,
- *  a session switch) finds a page still waiting on its prompt. */
+
 ipcMain.handle("telar:browser:permission-prompts", (event, scopeKey) => ({
   prompts: requireBrowserManager(event).pendingPermissionPrompts(scopeKey || undefined),
 }));
-/** The lock popover: what this session's profile remembers about one origin,
- *  or about every origin it has an answer for. */
+
 ipcMain.handle("telar:browser:site-permissions", (event, input) => {
   const manager = requireBrowserManager(event);
   if (!input?.scopeKey) return manager.listSitePermissions();
   return manager.scopeSitePermissions(input.scopeKey, input?.origin || undefined);
 });
-/** Take one back — one kind, or an origin's whole row (the popover's Reset and
- *  Settings ▸ Browser ▸ Site permissions). */
+
 ipcMain.handle("telar:browser:forget-site-permission", (event, input) =>
   requireCockpitSender(event, "change a site permission").forgetSitePermission({
     ...(input?.partition ? { partition: input.partition } : {}),
@@ -1836,19 +1118,7 @@ ipcMain.handle("telar:browser:forget-site-permission", (event, input) =>
 ipcMain.handle("telar:browser:action", (event, input) =>
   requireBrowserManager(event).action(input?.scopeKey, input?.action),
 );
-/**
- * "OPEN IN SYSTEM BROWSER", from the integrated browser's tab menu.
- *
- * A USER GESTURE, AND ONLY THE COCKPIT'S. The guard is the login-offer
- * handler's, for the same reason: a browser tab's preload, a subframe, or
- * anything an agent can reach must not be able to make the shell launch the
- * default browser. An agent that wants a page open has `browser_navigate` and
- * a tab to put it in.
- *
- * http AND https ONLY — `externalOpenTarget` is the same allowlist the clicked
- * link policy applies, and it answers with the PARSED href so the OS receives
- * exactly what was validated.
- */
+
 ipcMain.handle("telar:browser:open-external", (event, input) => {
   const manager = requireBrowserManager(event);
   const cockpit = manager.window;
@@ -1860,14 +1130,7 @@ ipcMain.handle("telar:browser:open-external", (event, input) => {
   openInSystemBrowser(target);
   return { ok: true };
 });
-/**
- * "CLEAR COOKIES" / "CLEAR CACHE", from the browser's options menu (#473).
- *
- * THE COCKPIT'S OWN TOP FRAME ONLY, the same guard "open in system browser"
- * wears and for a stronger reason: this signs a whole profile out. A browser
- * tab's preload, a subframe, or anything an agent can reach must not be able
- * to wipe the identity the human is browsing as.
- */
+
 ipcMain.handle("telar:browser:clear-data", (event, input) => {
   const manager = requireBrowserManager(event);
   const cockpit = manager.window;
@@ -1876,15 +1139,7 @@ ipcMain.handle("telar:browser:clear-data", (event, input) => {
   }
   return manager.clearBrowsingData(input?.scopeKey, input?.kind);
 });
-/**
- * THE CAMERA BUTTON AND THE ANNOTATE OVERLAY'S FROZEN FRAME (#474).
- *
- * THE COCKPIT'S OWN TOP FRAME ONLY, the guard "clear data" and "open in system
- * browser" wear. A screenshot is a copy of whatever the person is signed into:
- * a browser tab's preload, a subframe, or anything an agent can reach must not
- * be able to take one. An agent that wants a picture of a page has
- * `browser_take_screenshot` and its own tab to point it at.
- */
+
 ipcMain.handle("telar:browser:capture", (event, input) => {
   const manager = requireBrowserManager(event);
   const cockpit = manager.window;
@@ -1899,26 +1154,17 @@ ipcMain.handle("telar:browser:capture", (event, input) => {
 ipcMain.handle("telar:browser:tool", (event, input) =>
   requireBrowserManager(event).callTool(input?.scopeKey, input?.name, input?.args || {}),
 );
-/**
- * BOUNDS ARE SENT, NOT INVOKED. The renderer publishes a rect from the panel
- * drag's own animation frame; making it await this round trip cost the native
- * view a frame per pointer move, which is exactly the lag a person sees as the
- * page trailing the panel edge. Same sender guard as before — a send is no
- * less guarded than an invoke — but nothing is returned, so a failure here is
- * swallowed rather than rejecting a promise nobody holds: bounds are
- * self-healing (the next publish re-sends the latest rect).
- */
+
 ipcMain.on("telar:browser:set-bounds", (event, input) => {
   try {
     requireBrowserManager(event).setBounds(input?.scopeKey, input?.bounds);
   } catch {
-    /* an unready host, or a scope this sender does not own */
   }
 });
 ipcMain.handle("telar:browser:set-visible", (event, input) =>
   requireBrowserManager(event).setVisible(input?.scopeKey, input?.visible),
 );
-/** The frozen frame a menu opens over (#475) — capture, then hide. */
+
 ipcMain.handle("telar:browser:freeze-view", (event, input) =>
   requireBrowserManager(event).freezeView(input?.scopeKey),
 );
@@ -1930,14 +1176,7 @@ ipcMain.handle("telar:browser:release-scope", (event, input) =>
 ipcMain.handle("telar:browser:adopt-scope", (event, input) =>
   requireBrowserManager(event).adoptScope(input?.fromScopeKey, input?.toScopeKey),
 );
-/**
- * THE EXPLICIT FALLBACK (AUTH-001): "remember the login on this page", asked
- * from the cockpit — for the person who dismissed the automatic offer, or
- * whose sign-in Telar never saw. ONLY the cockpit window's own top frame may
- * ask: a browser tab's preload, a subframe, or anything an agent can reach
- * gets a refusal. And asking only OPENS the question in the trusted offer
- * window — nothing here (and no API anywhere) can answer it.
- */
+
 ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
   const manager = requireBrowserManager(event);
   const cockpit = manager.window;
@@ -1949,53 +1188,33 @@ ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
   return requireLoginOffer().explicitOffer(capture);
 });
 
-// A tab preload saw a value land in a login field — the login offer's only
-// trigger. All we hold is the sender.
 ipcMain.on("telar:browser:login-entry", (event, detail) => {
   try {
-    // EVERY WINDOW'S HOST IS ASKED, because the sender is a native TAB — it is
-    // not any window's own renderer, so there is nothing to resolve it by. The
-    // method looks the webContents up in its own tabs and no-ops on a stranger,
-    // so asking the wrong one costs a lookup and never a false report.
     for (const manager of browserManagers) manager.noteLoginEntryFromWebContents(event.sender, detail || {});
   } catch {
-    // A report from a view mid-teardown must not crash the shell.
   }
 });
 ipcMain.on("telar:browser:human-input", (event) => {
   try {
     for (const manager of browserManagers) manager.noteHumanInputFromWebContents(event.sender);
   } catch {
-    // A report from a view mid-teardown must not crash the shell.
   }
 });
 
-/**
- * FORWARD CONTROL CHANGES INTO THE ENGINE JOURNAL. The shell is the only
- * process that can see a human's click land in the native view; the engine is
- * where the transcript lives. Best-effort by design — a change the engine
- * missed (it was restarting) costs a journal row, not correctness: the
- * manager's own state is what gates agent calls.
- */
 let engineDiscovery = null;
 let discoveryReadAt = 0;
-/** In dev mode (TELAR_DESKTOP_URL) the shell never booted the engine itself, so
- *  discovery is read off disk lazily — the same file `waitForEngine` proves. */
+
 function currentEngineDiscovery() {
   if (!engineDiscovery && Date.now() - discoveryReadAt > 5_000) {
     discoveryReadAt = Date.now();
     try {
       engineDiscovery = JSON.parse(fs.readFileSync(engineDiscoveryFile(telarHome()), "utf8"));
     } catch {
-      /* no engine on this machine right now */
     }
   }
   return engineDiscovery;
 }
 
-/** One best-effort POST at the local engine. Nothing awaits it and no failure is
- *  reported: every caller here is a hint the engine would have worked out for
- *  itself on its next pass. */
 function postToEngine(routePath, body) {
   const discovery = currentEngineDiscovery();
   if (!discovery?.port || !discovery?.token) return;
@@ -2025,51 +1244,14 @@ function reportBrowserControl(change) {
   });
 }
 
-/**
- * A DISK MOVED — issue #534.
- *
- * The shell is the only process watching `/Volumes`; the engine is where the
- * registry lives and where availability is decided. This carries nothing but
- * "something changed, look now": which projects that concerns is the engine's
- * question, and answering it here would put its rule in the shell.
- *
- * Best-effort like every other hint above. The engine re-probes on its own poll
- * regardless, so an engine that was restarting when a drive was plugged in
- * notices a pass later rather than not at all. See `volume-watch.js`.
- */
 function reportVolumesChanged() {
   postToEngine("/v2/projects/reprobe");
 }
 
-// --- The terminal surface (#198, W1) -----------------------------------------
-//
-// A REAL PTY LIVES IN THIS PROCESS. Why here and not in the engine, and why a
-// terminal owns its process, are both in terminal-host.js — read that first;
-// this file only carries the wire.
-//
-// THE WIRE IS IPC, NOT A LOOPBACK PORT. browser-control-server.js is the right
-// template for a request/response lifecycle channel the ENGINE calls (which is
-// what W4 adds), and the wrong one for interactive bytes: a keystroke is not a
-// request, and a second HTTP surface is a second thing to authenticate. These
-// bytes go straight to the renderer that owns the terminal, over the channel
-// preload.js already exposes.
-//
-// THE COCKPIT'S OWN TOP FRAME ONLY, and this is the strictest guard in the
-// file rather than a copy of one. Every other handler wearing it risks a
-// profile or a permission; this one is arbitrary code execution as the user.
-// A browser tab's preload, a subframe, or anything an agent can reach must
-// never be able to open a shell.
 let terminalHost = null;
-/**
- * The two scopes a terminal can belong to. Required at load rather than beside
- * the host: `terminal-host.js` pulls in only `node:path` at module level — the
- * native module is lazy behind its own getter — so naming the vocabulary costs
- * nothing, and spelling `"renderer"` by hand in two files is how two files stop
- * agreeing about it.
- */
+
 const { TerminalOwner } = require("./terminal-host");
-/** Which renderer is reading each terminal. A terminal outlives a reload, so
- *  this is looked up per delivery rather than held on the record. */
+
 const terminalReaders = new Map();
 
 function deliverToTerminalReader(id, channel, payload) {
@@ -2078,59 +1260,25 @@ function deliverToTerminalReader(id, channel, payload) {
   reader.send(channel, payload);
 }
 
-/**
- * ONE HOST, TWO AUDIENCES (#198 W4). A terminal the human opened is read by the
- * renderer that owns it; a terminal the ENGINE started for a run is read by the
- * engine over `run-terminal-server.js`. Both get every FATE, because neither
- * knows which terminals belong to the other and a fate delivered to the wrong
- * one is a fate nobody acts on. The renderer lookup already drops frames for a
- * terminal it has no reader for, and the engine's client drops frames for an id
- * it is not tracking, so the fan-out costs nothing but a map lookup.
- *
- * THE BYTES ARE NOT FANNED THE SAME WAY, AND #890 IS WHERE THAT SPLIT LANDED.
- * A run is now drawn in the cockpit's Terminal strip, so a renderer DOES read a
- * run's terminal — but never these frames. These are raw node-pty bytes, and a
- * run's are redacted by `pty-stream.ts` in the engine, one call site, which is
- * what keeps a project's secrets off the screen (#819). So raw run output goes
- * to the engine alone, and the engine hands its redactor's OUTPUT back over
- * `POST /mirror`, which is what reaches the renderer. One redactor, engine-side;
- * the chip draws byte-for-byte what the journal holds.
- */
 function requireTerminalHost() {
   if (terminalHost) return terminalHost;
   const { TerminalHost } = require("./terminal-host");
   terminalHost = new TerminalHost({
     version: app.getVersion(),
     onData: (id, data) => {
-      // A RUN'S RAW BYTES STOP HERE. See above: the renderer gets the engine's
-      // mirror of them instead, and asking the host WHOSE terminal this is —
-      // rather than whether somebody happens to have registered as its reader —
-      // is what makes that a property of the terminal rather than of timing.
       if (terminalHost?.ownerOf(id) !== TerminalOwner.ENGINE) deliverToTerminalReader(id, "telar:terminal:data", { id, data });
       runTerminalChannel?.onData(id, data);
     },
     onExit: (id, ending) => {
       deliverToTerminalReader(id, "telar:terminal:exit", ending);
       terminalReaders.delete(id);
-      // AFTER the renderer, and unconditionally: this is the frame that decides
-      // whether a project's deployment slot is freed or held.
+
       runTerminalChannel?.onExit(id, ending);
     },
   });
   return terminalHost;
 }
 
-/**
- * AND EVERY ONE OF THESE IS THE RENDERER'S SCOPE, BY NAME (#198).
- *
- * `requireCockpitSender` answers "is this the cockpit's top frame". It does
- * not answer "is this terminal yours", and until the ownership guard in
- * terminal-host.js there was nothing that did: `list` handed the cockpit every
- * id in the process — the engine's run terminals included — and `write` took
- * any of them. Passing the scope here is the other half of that guard, and it
- * is spelled out at each call rather than defaulted so that a handler added
- * later has to say which side it is on.
- */
 const RENDERER = TerminalOwner.RENDERER;
 
 ipcMain.handle("telar:terminal:open", (event, input) => {
@@ -2142,13 +1290,10 @@ ipcMain.handle("telar:terminal:open", (event, input) => {
     cwd: input?.cwd,
     cols: input?.cols,
     rows: input?.rows,
-    // The SHELL's environment, not the renderer's idea of one. A renderer that
-    // could name arbitrary variables could set DYLD_INSERT_LIBRARIES.
+
     env: process.env,
     owner: RENDERER,
-    // The session whose panel this shell lives in, so settling that session
-    // can close it. The ORIGIN is not the renderer's to say: every terminal
-    // it opens is one a person asked for, and the host enforces that.
+
     sessionId: input?.sessionId,
     title: input?.title,
   });
@@ -2167,67 +1312,29 @@ ipcMain.handle("telar:terminal:kill", (event, input) => {
   requireCockpitSender(event, "stop a terminal");
   return { ok: requireTerminalHost().kill(input?.id, input?.signal || "SIGTERM", RENDERER) };
 });
-/**
- * CLOSE = KILL. SIGTERM to every process group in the terminal, SIGKILL a
- * second later to whatever did not go; answered once that is over. `kill`
- * above stays for a caller that wants to send one particular signal. Whether
- * to ASK before closing is the renderer's call, made with `active` below.
- */
+
 ipcMain.handle("telar:terminal:close", async (event, input) => {
   requireCockpitSender(event, "close a terminal");
   return { ok: await requireTerminalHost().close(String(input?.id ?? ""), RENDERER) };
 });
-/**
- * IS ANYTHING RUNNING IN THESE TERMINALS — asked once, before a close.
- *
- * The renderer's own terminals, and ALSO a run's when it names the id: a
- * run's chip lives in the same strip and needs the same question answered
- * before its close. That grants no verb and no id the renderer did not
- * already hold — it names the id, and gets facts about it (the same facts
- * `adopt` already confirms exist). With no ids, only its own are answered.
- */
+
 ipcMain.handle("telar:terminal:active", async (event, input) => {
   requireCockpitSender(event, "ask whether a terminal is busy");
   const host = requireTerminalHost();
   const ids = Array.isArray(input?.ids) ? input.ids.map(String) : undefined;
   return { terminals: await host.activeProcesses(ids ? { ids } : { owner: RENDERER }) };
 });
-/**
- * A KITTY IMAGE SENT AS A PATH (`t=f`, #884) — fastfetch's `kitty-direct` logo.
- * Every guard and the reason it is no new privilege are in kitty-image-file.js.
- * The bytes go back to the renderer that drew the request and nowhere else.
- */
+
 ipcMain.handle("telar:terminal:read-image-file", (event, input) => {
   requireCockpitSender(event, "read a terminal image file");
   return readKittyImageFile(input?.path);
 });
-/** What is live right now — how a remounted panel finds the terminals its
- *  previous render left running. Facts only; no handles cross this, and no ids
- *  belonging to a run: a run's terminal is reached through the engine. */
+
 ipcMain.handle("telar:terminal:list", (event) => {
   requireCockpitSender(event, "list terminals");
   return { terminals: requireTerminalHost().list(RENDERER) };
 });
 
-/**
- * READ A TERMINAL THIS RENDERER DID NOT OPEN — and ONLY a run's (#890).
- *
- * A run is drawn as a chip in the cockpit's Terminal strip now, beside the
- * shells a person opened, so the renderer has to be able to register as the
- * reader of an id the ENGINE minted. That is the whole of what this grants:
- * being sent frames. It confers no verb — `write`, `resize` and `kill` still
- * refuse an engine id to a renderer caller, and a run is typed into and stopped
- * through the engine's own routes, where the singleton and the journal are.
- *
- * GATED ON THE HOST'S OWN LIST, not on a shape or a prefix. An id this process
- * does not hold under `engine` is refused, so this cannot be turned into a way
- * to steal another renderer's shell by guessing an id — a person's terminals
- * are not on that list at all.
- *
- * AND THE FRAMES IT WILL RECEIVE ARE THE REDACTED ONES. `requireTerminalHost`
- * above sends a run's raw bytes only to the engine; what arrives here is what
- * came back over `POST /mirror`, after `pty-stream.ts`.
- */
 ipcMain.handle("telar:terminal:adopt", (event, input) => {
   requireCockpitSender(event, "read a run's terminal");
   const id = String(input?.id ?? "");
@@ -2238,9 +1345,6 @@ ipcMain.handle("telar:terminal:adopt", (event, input) => {
   return { ok: true };
 });
 
-/** Stop being that terminal's reader. Closing a run's chip does NOT stop the
- *  run — the engine owns it — so the one thing the close has to do is put the
- *  frames down, and only the sender currently holding the id may do it. */
 ipcMain.handle("telar:terminal:abandon", (event, input) => {
   requireCockpitSender(event, "stop reading a run's terminal");
   const id = String(input?.id ?? "");
@@ -2248,46 +1352,6 @@ ipcMain.handle("telar:terminal:abandon", (event, input) => {
   return { ok: true };
 });
 
-// --- Native folder picker -----------------------------------------------------
-//
-// The one thing a browser sandbox genuinely cannot do: hand back an absolute
-// path. Registering a project needs one, and typing `/Users/you/code/thing` by
-// hand is how you find out about typos after the engine has already refused.
-//
-// PARENTED TO THE WINDOW THAT ASKED, which is what makes this a sheet attached to
-// the app on macOS rather than a free-floating dialog that can end up behind it.
-// `dialog` handles every platform, so nothing here is macOS-specific — unlike the
-// osascript fallback the web adapter keeps for people running the cockpit in a
-// plain browser.
-//
-// CANCELLING IS AN ANSWER, not an error: `{ cancelled: true }`, so the caller does
-// not have to tell "the user changed their mind" apart from "the dialog broke".
-/**
- * Open a session's workspace folder — in a named app, in the system default,
- * or revealed in Finder.
- *
- * Absolute paths and real things on disk only: a relative path would resolve
- * against this process's cwd. The app must be one `discoverOpeners` actually
- * found, so a renderer cannot name an arbitrary binary. Nothing is ever
- * interpolated into a command line — see workspace-openers.js.
- *
- * AND ONE FILE, WHEN THE CALLER SAYS SO. `input.kind` is `"directory"` unless
- * it is exactly `"file"`, so the header's Open button — which sends no kind —
- * is refused a non-directory exactly as before. A file is allowed because the
- * file tree's own menu reveals and opens one, and both shell calls already
- * take either: `showItemInFolder` selects a file in its folder, and `openWith`
- * hands any target to the app. The absolute-path and stat guards are the same
- * two guards; only what `stat` is allowed to BE widens.
- */
-/**
- * The installed openers, each wearing its REAL icon (#398) — `{ openers,
- * revealIconDataUrl? }`.
- *
- * The reader is `bundleIcon`: the bundle's own `.icns` through `sips`, NOT
- * `app.getFileIcon`, which on macOS answers a generic application glyph for
- * every `.app` (see workspace-openers.js). Injected so the cache and the
- * answer's shape stay unit tested without a shell.
- */
 ipcMain.handle("telar:workspace:openers", () => openersWithIcons({ getFileIcon: (target) => bundleIcon(target) }));
 
 ipcMain.handle("telar:workspace:open", async (_event, input) => {
@@ -2306,13 +1370,11 @@ ipcMain.handle("telar:workspace:open", async (_event, input) => {
     return { ok: true };
   }
   if (typeof input?.openerId === "string" && input.openerId) {
-    // Matched against what is installed rather than trusted: the renderer
-    // names an id, never a path.
     const opener = discoverOpeners().find((candidate) => candidate.id === input.openerId);
     if (!opener) return { ok: false, error: "That app is not installed on this machine." };
     return openWith({ target, appPath: opener.path });
   }
-  // openPath answers with an error STRING, never a throw; empty means success.
+
   const failure = await shell.openPath(target);
   return failure ? { ok: false, error: failure } : { ok: true };
 });
@@ -2321,9 +1383,7 @@ ipcMain.handle("telar:dialog:choose-directory", async (event, input) => {
   const parent = BrowserWindow.fromWebContents(event.sender);
   const options = {
     title: input?.title || "Choose a project folder",
-    // `createDirectory` lets somebody make the folder while they are in there;
-    // `treatPackageAsDirectory` matters on macOS, where a repository that happens
-    // to be named `something.app` is otherwise unselectable.
+
     properties: ["openDirectory", "createDirectory", "treatPackageAsDirectory"],
     ...(input?.buttonLabel ? { buttonLabel: input.buttonLabel } : {}),
   };
@@ -2332,21 +1392,6 @@ ipcMain.handle("telar:dialog:choose-directory", async (event, input) => {
   return result.canceled || !directory ? { cancelled: true } : { path: directory };
 });
 
-// --- Where the store lives (#630) --------------------------------------------
-/**
- * THE SETTINGS SURFACE FOR MOVING THE STORE.
- *
- * IT IS THE SHELL'S AND NOT THE ENGINE'S, for the same reason update
- * preferences are: this is a property of THIS INSTALLATION on THIS MACHINE,
- * decided before the engine exists and read at launch. An engine route would be
- * asking the thing being moved where it should be.
- *
- * AND IT REPORTS `restartRequired` RATHER THAN PRETENDING. The root is read
- * once and handed to both children (`childEnv`), and the daemon holds
- * `engine.lock` and its sqlite handles for its whole life — so a move takes
- * effect at the next launch, and saying otherwise would be the "setting that
- * looks like it applied" failure `PATCH /api/remote` already avoids.
- */
 function storeStatus() {
   const userData = app.getPath("userData");
   const { marker } = readMarker(userData);
@@ -2357,8 +1402,7 @@ function storeStatus() {
     defaultPath: app.getPath("userData"),
     storeId: active?.storeId,
     volume: active?.volume,
-    // An explicit TELAR_HOME is a developer pointing this run somewhere; the
-    // controls say so rather than offering to move a store they do not own.
+
     pinnedByEnvironment: Boolean(!DEV_BUILD && process.env.TELAR_HOME?.trim()),
     retired: retired
       ? {
@@ -2386,8 +1430,6 @@ ipcMain.handle("telar:store:move", async (event, input) => {
   const { marker } = readMarker(userData);
   if (!marker?.active) return { ok: false, message: "Telar has not settled on a store yet." };
 
-  // Recorded BEFORE the copy, cleared after: an intent, never consulted when
-  // deciding where to open, so a move that dies halfway cannot strand anyone.
   setPending(userData, { path: target });
   const outcome = await migrateStore({
     source,
@@ -2401,12 +1443,6 @@ ipcMain.handle("telar:store:move", async (event, input) => {
     return outcome;
   }
 
-  /**
-   * AND ONLY NOW DOES ANYTHING POINT AT THE NEW STORE. This single write is the
-   * switch — before it Telar opens the old store, after it the new one, and
-   * there is no state in between. The old store is retired, not deleted;
-   * removing it is a separate act, gated on the new one having been opened.
-   */
   adoptStore(userData, {
     path: target,
     storeId: outcome.storeId,
@@ -2435,11 +1471,6 @@ ipcMain.handle("telar:store:keep-old", () => {
   return { ok: true };
 });
 
-/**
- * The drive a chosen path is on, recorded at adoption so a remount under a
- * different name is recognisable later. Absent for a path on this machine's own
- * disk, and absent rather than invented where `diskutil` has nothing to say.
- */
 function volumeIdentityFor(target) {
   if (process.platform !== "darwin") return undefined;
   const prefix = "/Volumes/";
@@ -2461,12 +1492,6 @@ function volumeIdentityFor(target) {
   }
 }
 
-// --- Auto-update (electron-updater) ------------------------------------------
-// electron-updater has no way to bake a custom request header into the
-// generated app-update.yml itself, so the shared secret that the R2 update
-// proxy requires travels as extraMetadata (set via
-// -c.extraMetadata.updateProxyKey at build time, in scripts/build-desktop.sh)
-// and gets read back out of the packaged package.json here, at runtime.
 function updateProxyKey() {
   try {
     return require("./package.json").updateProxyKey || null;
@@ -2475,23 +1500,9 @@ function updateProxyKey() {
   }
 }
 
-// --- Update preferences (userData, same idiom as the persisted port) ---------
-//
-// TWO THINGS THE USER OWNS, and neither was expressible before: WHICH stream of
-// builds this install follows, and WHETHER a downloaded update installs itself
-// on quit. Both were hardcoded — the channel came from whatever the build was
-// published as, and installing always waited for an explicit click.
-//
-// Stored beside server-port.json rather than in telar.yaml or ~/.telar: this is
-// a property of THIS INSTALLATION on THIS MACHINE, not of a project and not of
-// the engine. A second checkout must not inherit it, and syncing it would be
-// wrong.
 const UPDATE_CHANNELS = ["beta", "nightly"];
 const DEFAULT_UPDATE_PREFS = { channel: "beta", installOnQuit: false };
 
-// Validated, not trusted: this file is user-editable and a bad channel name
-// would point electron-updater at a feed that does not exist, which surfaces as
-// a permanent, mystifying update error rather than a default.
 const validUpdatePrefs = (raw) => ({
   channel: UPDATE_CHANNELS.includes(raw.channel) ? raw.channel : DEFAULT_UPDATE_PREFS.channel,
   installOnQuit: raw.installOnQuit === true,
@@ -2501,72 +1512,31 @@ const updatePrefs = jsonPrefs("update-prefs.json", DEFAULT_UPDATE_PREFS, validUp
 const readUpdatePrefs = updatePrefs.read;
 const writeUpdatePrefs = updatePrefs.write;
 
-// The userData directory this app used before `productName` was set in
-// package.json. `build.productName` already named the BUNDLE "Telar", but
-// `app.getName()` falls back to package.json `name` — so the data directory was
-// "telar-desktop" while the app in /Applications was Telar.app.
 const LEGACY_USER_DATA_NAME = "telar-desktop";
 
-/**
- * ADOPT THE PREVIOUS INSTALL'S UPDATE PREFERENCES, ONCE.
- *
- * WITHOUT THIS, SHIPPING THE RENAME SILENTLY MOVES EVERY EXISTING INSTALL TO
- * THE DEFAULT CHANNEL. The app on this machine is on `nightly`;
- * `DEFAULT_UPDATE_PREFS.channel` is `beta`. The new build reads a different
- * directory, finds nothing, and defaults — so a nightly user takes exactly one
- * more update and then goes quiet on a stream they never chose. Nothing errors,
- * and the only visible symptom is updates that stop arriving.
- *
- * ONLY THIS FILE. The rest of the old directory is Chromium's — caches, Local
- * Storage, cookies — and copying a leveldb between profiles to preserve a theme
- * choice is a bad trade. localStorage resets once; that is a fresh origin doing
- * what a fresh origin does, and it is cosmetic.
- *
- * NEVER OVERWRITES, so it is a no-op on every run after the first and on a
- * genuinely new install.
- */
 function adoptLegacyUpdatePrefs() {
   const fs = require("node:fs");
-  // A dev build has no updater to hand a channel to, and the legacy directory
-  // is the INSTALLED app's — nothing of it belongs in the dev build's home.
+
   if (DEV_BUILD) return;
   try {
     if (fs.existsSync(updatePrefs.path())) return;
     const legacy = path.join(app.getPath("appData"), LEGACY_USER_DATA_NAME, "update-prefs.json");
     if (!fs.existsSync(legacy)) return;
-    // Read through the validating reader rather than copying bytes: the old
-    // file is as user-editable as the new one, and a bad channel name adopted
-    // verbatim would point electron-updater at a feed that does not exist.
+
     const prefs = validUpdatePrefs(JSON.parse(fs.readFileSync(legacy, "utf8")));
     writeUpdatePrefs(prefs);
     console.log(`[telar-desktop] adopted update preferences from the previous install (channel ${prefs.channel})`);
   } catch (err) {
-    // A first run that cannot read the old directory is a first run, not a
-    // crash. The default channel is a survivable wrong answer; failing to start
-    // is not.
     console.error("[telar-desktop] could not adopt previous update preferences:", err.message);
   }
 }
 
-// --- Window appearance preference (userData, same idiom as updates) ----------
-//
-// TRANSLUCENT-CAPABLE IS A WINDOW-CREATION FACT; THE TINT IS NOT. The renderer
-// owns the look — globals.css keys alpha surfaces off `data-translucent`, and
-// the settings pane owns the toggle — but a vibrancy layer has to exist UNDER
-// the page for that alpha to reveal anything, and a window can only be marked
-// non-opaque at construction. So every window is built able to wear glass
-// (./window-material.js) and the preference, persisted here, decides only which
-// backdrop it is wearing — at construction and live, by the same two setters.
-//
-// macOS only: vibrancy is NSVisualEffectView. Everywhere else `supported` is
-// false and the cockpit hides the control.
 const DEFAULT_UI_PREFS = { translucent: false, frost: "blur" };
 
 const { read: readUiPrefs, write: writeUiPrefs } = jsonPrefs(
   "ui-prefs.json",
   DEFAULT_UI_PREFS,
-  // "clear" drops the vibrancy layer: crisp desktop, tinted only by the page's
-  // own wash. "blur" is the frosted NSVisualEffectView.
+
   (raw) => ({ translucent: raw.translucent === true, frost: raw.frost === "clear" ? "clear" : "blur" }),
   "ui prefs",
 );
@@ -2575,19 +1545,6 @@ function supportsTranslucency() {
   return process.platform === "darwin";
 }
 
-// --- Keybindings (userData, same idiom as the UI prefs above) ----------------
-//
-// THE COCKPIT IS THE WRITER AND THIS IS ITS MIRROR (#367). The chords live in
-// the renderer's own storage — see apps/web/lib/commands.ts — and are pushed
-// here on every change. The shell keeps a copy for exactly one reason: the
-// application menu is built at launch, LONG before the renderer has painted, and
-// a menu that showed the defaults until the page booted would flash the wrong
-// accelerators on every start.
-//
-// SPARSE, and stays sparse: only what differs from the registry's defaults, so a
-// default this app later improves still reaches somebody who opened the pane
-// once. `keymapOverrides(mergeKeymap(...))` is how a hand-edited or stale record
-// is normalised on the way in.
 const { read: readKeybindingOverrides, write: writeKeybindingOverrides } = jsonPrefs(
   "keybindings.json",
   {},
@@ -2595,35 +1552,15 @@ const { read: readKeybindingOverrides, write: writeKeybindingOverrides } = jsonP
   "keybindings",
 );
 
-/** The live map every accelerator is read out of. */
 function readKeymap() {
   return mergeKeymap(readKeybindingOverrides());
 }
 
-/**
- * THE TOGGLE IS A RETINT, NEVER A REBUILD (#243).
- *
- * Transparency IS a creation-time fact in Chromium — `setBackgroundColor
- * ("#00000000")` on a window born opaque does not re-plumb the compositor, so
- * the page paints alpha into a buffer nothing clears and every previously-shown
- * frame ghosts through (navigate Settings → session and the settings pane stays
- * visible behind the transcript). This used to be answered by REBUILDING the
- * window when the preference was turned on, which cost the cockpit a flash and
- * its scroll position, and stranded a per-partition extension host on every
- * flip.
- *
- * So the fact is settled at creation for every window instead: all of them are
- * born `transparent: true` (./window-material.js), and the preference only ever
- * chooses between a vibrancy material and a solid background colour. Both of
- * those have live setters, in both directions.
- */
 function applyTranslucency(on, frost) {
   const dark = nativeTheme.shouldUseDarkColors;
-  // The material is the scheme's (./window-material.js); `null` removes the
-  // effect view, which is what both "off" and "clear" want.
+
   const material = vibrancyMaterial({ translucent: on, frost, dark });
-  // The opaque colour is the scheme's own canvas, the same one createWindow
-  // paints — a window turned opaque again must not flash the other scheme.
+
   const backgroundColor = windowBackgroundColor({ translucent: on, dark });
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
@@ -2636,52 +1573,21 @@ function applyTranslucency(on, frost) {
   }
 }
 
-/**
- * THE SCHEME MOVED, SO THE MATERIAL HAS TO. Light and dark wear DIFFERENT
- * vibrancy materials (./window-material.js), and the material is attached to a
- * live NSVisualEffectView — nothing re-picks it on its own. Without this, going
- * Light in the cockpit left the window on the dark "hud" frost until the next
- * launch, which is the muddy half of #399 arriving by a second route.
- *
- * AND THE OPAQUE HALF MOVES WITH IT, which is why this is the same retint the
- * toggle does rather than a vibrancy-only one: with translucency off the window
- * wears the scheme's canvas colour, so an evening switch that left the dark
- * hex on a light cockpit would flash the wrong scheme on the next resize.
- */
 function reapplyVibrancy() {
   if (!supportsTranslucency()) return;
   const { translucent, frost } = readUiPrefs();
   applyTranslucency(translucent, frost);
 }
 
-/**
- * `nativeTheme` fires `updated` for BOTH ways the resolved scheme can move: the
- * cockpit writing `themeSource` (the handler below), and — while that source is
- * `system` — the Mac itself flipping at sunset. One listener covers both, which
- * is why the ipc handler does not also call `reapplyVibrancy` by hand.
- *
- * Registered from `whenReady`, because nativeTheme is not addressable before it.
- */
 function watchSchemeForVibrancy() {
   if (!supportsTranslucency()) return;
   nativeTheme.on("updated", reapplyVibrancy);
 }
 
-// THE APP'S OWN URL, as last handed to createWindow. Kept because two things
-// need to name the cockpit when no window can be asked: the network-service
-// cookie re-seat (`wireShellDiagnostics`, whose whole point is that a child
-// process just died) and `telar:app:open-window`, when the asking renderer's
-// webContents is already gone.
 let lastWindowUrl = null;
 
 let updaterWindow = null;
-/**
- * The last status broadcast, held so a renderer that mounted AFTER the event
- * can ask. The push alone lost the one state that matters most: an update
- * downloads while the user is elsewhere, they reload or the window rebuilds,
- * and the "restart to install" affordance never reappears because
- * electron-updater does not re-emit `update-downloaded`.
- */
+
 let lastUpdateStatus = null;
 function broadcastUpdateStatus(status, extra = {}) {
   lastUpdateStatus = { status, ...extra };
@@ -2689,49 +1595,16 @@ function broadcastUpdateStatus(status, extra = {}) {
   win?.webContents.send("telar:updates:status", lastUpdateStatus);
 }
 
-// A packaged build only has a real feed to talk to when --publish-r2 baked both
-// the proxy URL and its key in together; without the key the publish.url is
-// still the package.json placeholder, so checking would only ever produce a
-// DNS error. That makes the key the honest test for "updates are available
-// here at all" — both for the automatic checks and for the Settings button.
 function updatesConfigured() {
-  // A dev-packaged build has no feed and must never replace itself — or, worse,
-  // be replaced by a nightly of the installed app it exists to sit beside.
   if (DEV_BUILD) return false;
   return app.isPackaged && Boolean(updateProxyKey());
 }
 
-// --- A DEAD DOWNLOAD MUST NOT WEDGE EVERY LATER CHECK (issue #317) ----------
-//
-// Observed on 0.1.0-nightly.20260911.3: a full download stopped at 11 MB of
-// 145 and neither finished nor errored, and every "Check for updates" after it
-// sat on "Checking for a newer build…" until the app was quit. Nothing in
-// electron-updater times a transfer out, and its `checkForUpdates()` hands back
-// the in-flight check's promise — so one stalled socket poisoned the feature
-// for the rest of the session.
-//
-// TWO CHANGES MAKE THAT SHAPE UNREACHABLE.
-//
-//   · THE DOWNLOAD IS OURS. `autoDownload` mints the CancellationToken inside
-//     checkForUpdates and starts the transfer there, which puts the token out
-//     of reach and entangles the check with the download. Starting it here, on
-//     `update-available`, keeps downloading just as automatic and makes the
-//     transfer killable.
-//
-//   · EVERY WAIT HAS A CLOCK. No progress for STALL_MS cancels the transfer,
-//     deletes its part-file and says so in the pane; a check that has not
-//     answered in CHECK_TIMEOUT_MS reports a timeout and drops the cached
-//     promise so the next press starts clean.
-//
-// The decisions live in update-watchdog.js, where they are testable without an
-// Electron to run in; the consequences live here.
 const downloadWatch = updateWatchdog.createDownloadWatch({
   stallMs: updateWatchdog.STALL_MS,
   onStall: (stalled) => abandonDownload(stalled, "stalled"),
 });
 
-/** Delete the part-file a cancelled transfer leaves behind, wherever this
- *  build's updater happens to keep it. */
 function discardPendingDownload() {
   try {
     return updateWatchdog.removeStaleTempFiles(updateWatchdog.pendingUpdateDir(autoUpdater));
@@ -2740,18 +1613,11 @@ function discardPendingDownload() {
   }
 }
 
-/**
- * Kill a transfer and account for it. `reason` distinguishes the watchdog
- * firing on its own from a person pressing Check and finding a corpse — the
- * user is only told about the first, because the second is about to be replaced
- * by a fresh check's own status within the second.
- */
 function abandonDownload(download, reason) {
   if (!download) return;
   try {
     download.token?.cancel();
   } catch {
-    /* a token that will not cancel is still a download we are done with */
   }
   const removed = discardPendingDownload();
   const percent = Math.round(download.percent ?? 0);
@@ -2766,20 +1632,11 @@ function abandonDownload(download, reason) {
   });
 }
 
-/**
- * Start the download for an update the feed just offered.
- *
- * GUARDED AGAINST A SECOND START: two checks can race (the six-hourly timer and
- * a channel switch), and two `downloadUpdate` calls write the same temp file.
- */
 function startUpdateDownload(info) {
   if (downloadWatch.inFlight()) return;
   const token = new CancellationToken();
   downloadWatch.begin({ token, version: info?.version });
   autoUpdater.downloadUpdate(token).catch((err) => {
-    // A real failure has already reached the UI through the `error` event, and
-    // a cancellation was this process's own decision. Either way the transfer
-    // is over and the watchdog must stop counting.
     downloadWatch.settle();
     if (updateWatchdog.isCancellationError(err)) return;
     autoUpdater.logger?.error?.(`download failed: ${err?.message || err}`);
@@ -2787,13 +1644,9 @@ function startUpdateDownload(info) {
 }
 
 async function checkForUpdates() {
-  // The 'error' event already reports failures to the UI; settleWithin's own
-  // catch only stops a background check's rejection from surfacing as an
-  // unhandled rejection.
   const outcome = await updateWatchdog.settleWithin(autoUpdater.checkForUpdates(), updateWatchdog.CHECK_TIMEOUT_MS);
   if (!outcome.timedOut) return outcome.value ?? null;
-  // The wedge itself. Saying so beats a spinner that never stops, and dropping
-  // the cached promise is what stops the NEXT press inheriting this one's hang.
+
   updateWatchdog.clearCachedCheckPromise(autoUpdater);
   autoUpdater.logger?.warn?.(`update check did not answer within ${updateWatchdog.CHECK_TIMEOUT_MS / 1000}s — giving up on it`);
   broadcastUpdateStatus("error", {
@@ -2802,36 +1655,12 @@ async function checkForUpdates() {
   return null;
 }
 
-// Long enough to be invisible on a working day, short enough that a nightly
-// lands the same day it is published.
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-// WHY THERE IS A LOG AT ALL. The install race above produced no error, no
-// dialog and no console output — the app simply relaunched on the same version,
-// and the only way it got diagnosed was a user toggling a setting and noticing
-// the difference. electron-updater reports its whole lifecycle to a logger and
-// had none attached, so all of it was being discarded.
-//
-// A file rather than console: a packaged mac app's stdout goes nowhere anyone
-// can read. Kept in userData beside the other per-install state, appended, and
-// deliberately not rotated — the volume is a handful of lines per check.
 function updateLogPath() {
   return path.join(app.getPath("userData"), "update.log");
 }
 
-/**
- * THE SHELL'S OWN LOG, BESIDE update.log AND FOR THE SAME REASON.
- *
- * The un-pairing bug (issue #259) was reported several times over months and
- * every report was a person describing a screen, because the app recorded
- * nothing when its own window was refused: no crashed-child event, no 401, no
- * redirect. The mechanism had to be reasoned out from a cookie's semantics
- * rather than read off a line. So the two events that would have named it
- * immediately are written here.
- *
- * Same shape as updateLogger: appended, in userData, never rotated — this is a
- * handful of lines per launch, and it must never be the reason anything fails.
- */
 function shellLogPath() {
   return path.join(app.getPath("userData"), "shell.log");
 }
@@ -2841,39 +1670,10 @@ function logShell(level, message) {
   try {
     fs.appendFileSync(shellLogPath(), line);
   } catch {
-    /* logging must never be the reason the shell fails */
   }
   console.log(`[telar-shell] ${level} ${message}`);
 }
 
-/**
- * THE MAIN PROCESS'S OWN HEAP, ONE LINE A MINUTE — issue #296.
- *
- * The shell's main process climbed to 100% CPU and multi-gigabyte memory over
- * an evening and died with a V8 SIGTRAP, and there was nothing to read
- * afterwards: a `sample` names the shape of the stack but not which JS
- * structure grew. So the process writes its own series.
- *
- * TWO LEVELS, DELIBERATELY.
- *
- *   · THE GUARD IS ALWAYS ON. One `v8.getHeapStatistics()` a minute costs
- *     nothing, and the single line it writes when the heap first passes 1 GB
- *     is the difference between "it died" and "it had been over a gigabyte
- *     since 21:40". It warns ONCE — a warning that repeats every minute for
- *     three hours is a log nobody reads.
- *
- *   · THE SERIES IS OPT-IN, behind `--telar-heap-log` or
- *     `TELAR_SHELL_HEAP_LOG=1`. It writes the whole picture every minute —
- *     RSS, heap, the OS's own footprint, the window and view counts, and the
- *     manager's growing collections — and, the first time the heap passes
- *     1 GB, a `v8.writeHeapSnapshot` into <userData>/diagnostics so the
- *     retaining path can be named rather than guessed. The snapshot is
- *     gigabytes and is written at most once per launch, which is why it is
- *     not part of the always-on guard.
- *
- * NOTHING IDENTIFYING IS WRITTEN. The manager hands back counts only (see
- * DesktopBrowserManager.diagnostics) — no URL, no title, no scope key.
- */
 const HEAP_LOG_INTERVAL_MS = 60_000;
 const HEAP_WARN_BYTES = 1_024 * 1_024 * 1_024;
 
@@ -2890,7 +1690,6 @@ const mb = (bytes) => Math.round(Number(bytes || 0) / (1024 * 1024));
 let heapWarned = false;
 let heapSnapshotWritten = false;
 
-/** The heap snapshot, once per launch. Returns the path, or null. */
 function writeHeapSnapshotOnce() {
   if (heapSnapshotWritten) return null;
   heapSnapshotWritten = true;
@@ -2909,13 +1708,11 @@ async function heapLogTick(detailed) {
   const heap = require("node:v8").getHeapStatistics();
   if (detailed) {
     const memory = process.memoryUsage();
-    // Electron's own figure: on macOS this is the private footprint the OS
-    // reports, which the #296 sample showed at 16.7 GB while RSS read 2.5 GB.
+
     let footprint = null;
     try {
       footprint = typeof process.getProcessMemoryInfo === "function" ? await process.getProcessMemoryInfo() : null;
     } catch {
-      // A figure the platform will not give is not a reason to lose the line.
     }
     const views = browserManager ? browserManager.diagnostics() : null;
     logShell(
@@ -2946,20 +1743,10 @@ function startHeapLog() {
   const detailed = heapLogRequested();
   if (detailed) void heapLogTick(true);
   const timer = setInterval(() => void heapLogTick(detailed), HEAP_LOG_INTERVAL_MS);
-  // A diagnostic must never be the reason the app stays alive.
+
   timer.unref?.();
 }
 
-/**
- * EVERY OS pid HOSTING A PAGE ANYBODY CAN SEE — the app's own windows, the
- * tabs, the DevTools views, the extension popups. A renderer that is not one of
- * these is showing nothing, which is the whole signal behind #487: Electron
- * will not tell us a renderer is a service worker (ProcessMetric.type has no
- * such value), so "hosts no WebContents" is what stands in for it.
- *
- * Read by the watchdog, which kills on it, and by the metrics surface (#488),
- * which draws it — the same sentence about the same pids, said once.
- */
 function liveRendererProcessIds() {
   const pids = [];
   for (const contents of webContents.getAllWebContents()) {
@@ -2968,24 +1755,11 @@ function liveRendererProcessIds() {
       const pid = contents.getOSProcessId();
       if (pid) pids.push(pid);
     } catch {
-      // A WebContents that will not name its process is one we cannot exclude
-      // by pid; skipping it can only make the watchdog more cautious, never
-      // less.
     }
   }
   return pids;
 }
 
-/**
- * THE SHELL'S ONE CALLER OF `app.getAppMetrics()` — see process-metrics.js for
- * why there is exactly one.
- *
- * Short version: `percentCPUUsage` averages over the gap since the last call to
- * the API, not since the last call by THIS caller. Adding the #488 page as a
- * second, faster caller would have silently retuned the #487 watchdog from a
- * thirty-second average to a two-second one — turning a kill path designed to
- * sit through spikes into one that fires on them. Both read this instead.
- */
 let processMetrics = null;
 function processMetricsReader() {
   if (!processMetrics) {
@@ -2997,50 +1771,11 @@ function processMetricsReader() {
   return processMetrics;
 }
 
-/**
- * THE RUNAWAY-RENDERER WATCHDOG — issue #487's consequences. The decisions are
- * in service-worker-watchdog.js, which is pure; this is the three readings it
- * needs and the kill.
- *
- * WHY A KILL AND NOT A STOP. Electron 43's `session.serviceWorkers` has
- * getAllRunning, getInfoFromVersionID, getWorkerFromVersionID and
- * startWorkerForScope — and no stop of any kind. Terminating the renderer
- * process is the only lever the platform actually gives us, and it is the one
- * that worked by hand in the incident: Chromium treats it as a crashed
- * renderer, and an MV3 worker is built to be killed when idle and restarted on
- * its next event, which is what Chrome itself does after thirty seconds.
- */
-/**
- * A RUNAWAY RENDERER, WHERE SOMEBODY WILL SEE IT — issue #787.
- *
- * #488 put the same figures on the Usage page, live while that page is VISIBLE.
- * So the honest answer to "would that have caught the 96%-for-seven-minutes" was
- * "only if somebody had that page open", and the incidents behind #487 and #488
- * are precisely the ones nobody was watching: fifty minutes in one case, an hour
- * before Activity Monitor found it in the other.
- *
- * PUSHED, NOT POLLED, which is what makes it free at rest. The watchdog already
- * decides this every thirty seconds and already has two polls of evidence before
- * it acts; this hands that decision to the windows rather than computing a
- * second one. The cockpit adds no timer and no `getAppMetrics()` caller — see
- * process-metrics.js for why a second caller would be a problem rather than a
- * cost.
- *
- * HELD, LIKE `lastUpdateStatus` AND FOR ITS REASON. A window that mounts between
- * polls — a reload, a second window, a renderer that crashed and came back —
- * would otherwise show nothing for up to thirty seconds while a core burns.
- *
- * AN EMPTY LIST IS A REAL ANSWER and is broadcast too: it is what takes the
- * indicator back down. A poll that FAILED sends nothing at all (see the
- * watchdog's `poll`), so a reading that could not be taken never reads as
- * all-clear.
- */
 let lastRunawayNotice = { at: 0, renderers: [] };
 function broadcastRunawayNotice(notices) {
   lastRunawayNotice = {
     at: Date.now(),
-    // Only what a person is shown. `key` and `creationTime` are the watchdog's
-    // own bookkeeping and mean nothing outside it.
+
     renderers: (notices || []).map((notice) => ({
       pid: notice.pid,
       percent: notice.percent,
@@ -3054,21 +1789,15 @@ function broadcastRunawayNotice(notices) {
     try {
       win.webContents.send("telar:metrics:runaway", lastRunawayNotice);
     } catch {
-      /* a window that went away mid-broadcast is not the watchdog's problem */
     }
   }
 }
 
 function startServiceWorkerWatchdog() {
   const watchdog = serviceWorkerWatchdog.createServiceWorkerWatchdog({
-    // A RATE OVER AT LEAST TWENTY-FIVE SECONDS, whatever else is sampling. The
-    // watchdog polls every thirty; asking for twenty-five keeps the window it
-    // was tuned for even when a poll lands slightly early, and never widens it
-    // into a different decision than the one #487 shipped.
     readMetrics: () => processMetricsReader().metricsForWatchdog({ minWindowMs: 25_000 }),
     readLiveProcessIds: liveRendererProcessIds,
-    // Every partition's running workers, each told whether its own origin
-    // still has a tab open in that partition.
+
     readWorkers: () => {
       const workers = [];
       const partitions = new Set();
@@ -3085,7 +1814,7 @@ function startServiceWorkerWatchdog() {
         try {
           running = session.fromPartition(partition).serviceWorkers.getAllRunning();
         } catch {
-          continue; // a partition that will not answer is one poll's worth of blindness
+          continue;
         }
         for (const info of Object.values(running || {})) {
           const origin = serviceWorkerWatchdog.originOfScope(info?.scope);
@@ -3114,7 +1843,6 @@ function updateLogger() {
     try {
       require("node:fs").appendFileSync(updateLogPath(), line);
     } catch {
-      /* logging must never be the reason an update fails */
     }
     console.log(`[telar-updates] ${level} ${message}`);
   };
@@ -3122,38 +1850,24 @@ function updateLogger() {
     info: (m) => write("info", m),
     warn: (m) => write("warn", m),
     error: (m) => write("error", m),
-    debug: () => {}, // electron-updater's debug is very chatty; not useful here
+    debug: () => {},
   };
 }
 
 function applyUpdatePrefs(prefs) {
-  // `channel` is electron-updater's own switch for WHICH feed file it fetches
-  // (beta-mac.yml vs nightly-mac.yml) from the same publish URL, which is
-  // exactly how build-desktop.sh publishes them — one bucket, one proxy, a feed
-  // per channel. So switching streams is a client-side choice and needs no
-  // reinstall and no second build.
   autoUpdater.channel = prefs.channel;
-  // The user's answer to "install it for me when I quit, or wait for my click".
-  // Downloading stays automatic either way; what this decides is whether
-  // quitting is also consent to install.
+
   autoUpdater.autoInstallOnAppQuit = prefs.installOnQuit;
 }
 
 function configureAutoUpdater() {
   autoUpdater.logger = updateLogger();
-  // OFF, AND STILL AUTOMATIC. The download starts on `update-available` below,
-  // with a CancellationToken this process holds — see the issue-#317 block
-  // above for why owning the token is the difference between a stalled
-  // transfer that can be killed and one that outlives the feature.
+
   autoUpdater.autoDownload = false;
   applyUpdatePrefs(readUpdatePrefs());
   const key = updateProxyKey();
   if (key) autoUpdater.requestHeaders = { "X-Telar-Update-Key": key };
 
-  // electron-updater's download-progress payload carries only transfer figures
-  // (percent/bytesPerSecond/transferred/total) — never a version. The preceding
-  // update-available event is the only place the version is known, so the watch
-  // holds it and it is threaded onto every downloading broadcast.
   autoUpdater.on("checking-for-update", () => broadcastUpdateStatus("checking"));
   autoUpdater.on("update-available", (info) => {
     broadcastUpdateStatus("available", { version: info.version });
@@ -3170,8 +1884,7 @@ function configureAutoUpdater() {
   });
   autoUpdater.on("error", (err) => {
     downloadWatch.settle();
-    // A cancellation is this process's own doing and has already been explained
-    // as a stall; re-reporting it would replace that sentence with "cancelled".
+
     if (updateWatchdog.isCancellationError(err)) return;
     broadcastUpdateStatus("error", { message: err && err.message ? err.message : String(err) });
   });
@@ -3179,9 +1892,8 @@ function configureAutoUpdater() {
   if (!updatesConfigured()) return;
   void checkForUpdates();
   const timer = setInterval(() => void checkForUpdates(), UPDATE_CHECK_INTERVAL_MS);
-  timer.unref?.(); // a pending check must never be the reason the app stays alive
-  // The move to the new bundle id (#1042), which Squirrel cannot carry. Inert
-  // in any build but com.telar.desktop, and until the new feed has a manifest.
+  timer.unref?.();
+
   desktopHandoff.start({
     channel: () => readUpdatePrefs().channel,
     key: updateProxyKey(),
@@ -3190,11 +1902,6 @@ function configureAutoUpdater() {
   });
 }
 
-/**
- * THE HAND-OFF'S QUIT, which is an install's quit: a planned restart for the
- * engine, and the terminals closed before the quit rather than during it —
- * see `telar:updates:install` below for why both.
- */
 async function quitForHandoff() {
   app.isQuitting = true;
   writePlannedRestart(path.join(telarHome(), "engine"));
@@ -3214,69 +1921,32 @@ ipcMain.handle("telar:updates:check", async () => {
   if (!updatesConfigured()) return { status: "unsupported" };
   const plan = downloadWatch.plan();
   if (plan === "report") {
-    // A DOWNLOAD THAT IS MOVING IS ALREADY THE ANSWER to "is there an update?".
-    // Re-broadcasting where it has got to also clears the renderer's spinner,
-    // which is the whole reason the button was pressed.
     const live = downloadWatch.inFlight();
     broadcastUpdateStatus("downloading", { percent: live.percent, version: live.version });
     return { status: "downloading", version: live.version, percent: live.percent };
   }
-  // `restart`: a transfer whose deadline passed while the watchdog's timer was
-  // suspended — the machine slept. The press is the wake-up; bury it and go.
+
   if (plan === "restart") abandonDownload(downloadWatch.settle(), "went quiet while the machine slept");
   await checkForUpdates();
   return { status: "checking" };
 });
-/**
- * A SECOND PRESS MUST NOT REACH electron-updater (issue #389). Which press this
- * is, and what it means, is decided in update-install.js — where it can be
- * tested without an Electron to quit.
- */
+
 const installGate = createInstallGate();
 
 ipcMain.handle("telar:updates:install", async () => {
   const decision = installGate.press({ packaged: app.isPackaged, devBuild: DEV_BUILD });
   if (decision === "unsupported") return { status: "unsupported" };
 
-  // SAID BEFORE ANYTHING IS STAGED, and said again on every repeat press. The
-  // renderer showed nothing during the seconds between the press and the quit,
-  // which is why people pressed twice; a status it can render is the whole
-  // difference between "restarting" and a dead button. A remounted window that
-  // missed the first broadcast picks this up through `telar:updates:status`.
   broadcastUpdateStatus("restarting", { version: lastUpdateStatus?.version });
-  // Already on its way: nothing more to do, and calling quitAndInstall again is
-  // exactly what produced the warning.
+
   if (decision === "pending") return { status: "restarting" };
 
-  // AN EXPLICIT INSTALL MUST NOT RACE THE ON-QUIT INSTALLER.
-  //
-  // `quitAndInstall()` stages the update and then quits. With
-  // autoInstallOnAppQuit ON, electron-updater has ALSO registered an installer
-  // on the app's own quit event — so that quit fires a second install while
-  // Squirrel is mid-swap. Observed symptom, reported 2026-08-06: pressing
-  // "Install & restart" relaunched the app on the SAME version, over and over,
-  // with no error anywhere; turning the setting off made the identical button
-  // work first time. That is the two paths colliding, not a broken download.
-  //
-  // Turning the flag off here is in-memory only and lasts exactly as long as
-  // this process, which is about to end. The stored preference is untouched and
-  // is re-applied from disk on the next launch, so a user who wants unattended
-  // installs keeps them — they simply do not also get one when they asked for
-  // an attended one.
   autoUpdater.autoInstallOnAppQuit = false;
   app.isQuitting = true;
-  // A PLANNED restart, for the next engine to read — see update-install.js.
-  // Written before the terminals close, so it is on disk before anything ends.
+
   const engineRoot = path.join(telarHome(), "engine");
   writePlannedRestart(engineRoot);
-  /**
-   * THE TERMINALS ARE CLOSED BEFORE THE INSTALLER GETS THE QUIT, NOT DURING IT.
-   * The press was the person's consent to restart, so nothing is asked; but
-   * the close still gets its SIGTERM-then-SIGKILL second, and doing it here
-   * means `before-quit` finds nothing to hold. Holding the updater's own quit
-   * and re-issuing it later is a path nobody has watched Squirrel survive,
-   * and this is the one quit where finding out the hard way costs an update.
-   */
+
   if (terminalHost && terminalHost.size > 0) {
     try {
       await terminalHost.closeAll();
@@ -3289,13 +1959,10 @@ ipcMain.handle("telar:updates:install", async () => {
   try {
     autoUpdater.quitAndInstall();
   } catch (err) {
-    // A THROW HERE IS THE ONE CASE THE RENDERER'S OWN DEADLINE CANNOT EXPLAIN.
-    // The gate is re-armed so the next press is a real install rather than a
-    // duplicate, and the app is no longer quitting — it plainly did not.
     installGate.reset();
     app.isQuitting = false;
     terminalsClosedForQuit = false;
-    // It did not restart, so nothing is owed a resume on the next start.
+
     clearPlannedRestart(engineRoot);
     const message = err && err.message ? err.message : String(err);
     autoUpdater.logger?.error?.(`quitAndInstall failed: ${message}`);
@@ -3305,15 +1972,8 @@ ipcMain.handle("telar:updates:install", async () => {
   return { status: "restarting" };
 });
 
-// The pull half of the status contract — see `lastUpdateStatus`.
 ipcMain.handle("telar:updates:status", () => lastUpdateStatus);
 
-/**
- * WHAT A RESTART WOULD END, asked by the cockpit's restart-to-update dialog so
- * it can say so in its one question — the install path never asks `decideQuit`'s
- * second one. Every terminal, a run's included, because the restart ends them
- * all. Facts only: a count and the commands, no handles.
- */
 ipcMain.handle("telar:updates:busy", async (event) => {
   requireCockpitSender(event, "ask what a restart would end");
   if (!terminalHost || terminalHost.size === 0) return { terminals: { count: 0, commands: [] } };
@@ -3321,14 +1981,6 @@ ipcMain.handle("telar:updates:busy", async (event) => {
   return { terminals: busyTerminals(await terminalHost.activeProcesses()) };
 });
 
-/**
- * THE DEV BUILD'S UPDATE PATH, reachable from the cockpit. A dev-packaged
- * build has no feed (`updatesConfigured` refuses it, deliberately) — its
- * updates come from the local checkout through the explicit window in
- * dev-update.js, which until now only the menu could open. Opening the window
- * changes nothing by itself; building and swapping stay behind that window's
- * own confirmation.
- */
 ipcMain.handle("telar:updates:openLocalUpdater", () => {
   if (!DEV_BUILD) return { ok: false, error: "This build updates from its published channel, not a local checkout." };
   devUpdate.openWindow();
@@ -3338,14 +1990,11 @@ ipcMain.handle("telar:updates:openLocalUpdater", () => {
 ipcMain.handle("telar:updates:getPrefs", () => ({
   ...readUpdatePrefs(),
   channels: UPDATE_CHANNELS,
-  // Surfaced so the log is findable without knowing where userData lives — the
-  // point of writing it is that someone can read it when an update misbehaves.
+
   logPath: updateLogPath(),
-  // So the settings surface can explain itself rather than offering controls
-  // that silently do nothing on an unpublished local build.
+
   configured: updatesConfigured(),
-  // The Dev build's separate path: update from the local checkout, through
-  // its own explicit window. Never true alongside a configured feed.
+
   localUpdater: DEV_BUILD,
 }));
 
@@ -3360,59 +2009,27 @@ ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {
   };
   writeUpdatePrefs(next);
   applyUpdatePrefs(next);
-  // A CHANNEL CHANGE RE-CHECKS IMMEDIATELY, because the alternative is a
-  // control that appears to do nothing for up to six hours. Switching from
-  // nightly to beta is a request to find out what is on beta, now — and the
-  // check is what turns the choice into a visible answer.
+
   if (next.channel !== current.channel && updatesConfigured()) void checkForUpdates();
   return next;
 });
 
-/**
- * THE VIBRANCY MATERIAL FOLLOWS TELAR'S THEME, NOT THE OS'S. The blur layer's
- * tint comes from the window's effective appearance, which Electron takes from
- * nativeTheme — by default the OS setting. Telar dark on a light Mac (or the
- * reverse) then composites a dark wash over a bright frost and reads as milk.
- * The cockpit reports its scheme here (theme-provider.tsx) and the shell keeps
- * nativeTheme in agreement.
- *
- * AND THE MATERIAL FOLLOWS IT. Writing `themeSource` fires nativeTheme's
- * `updated`, which `watchSchemeForVibrancy` turns into a retint — so the light
- * half gets the light material the moment the cockpit switches, rather than at
- * the next launch (#399).
- */
 ipcMain.handle("telar:appearance:setTheme", (_event, theme) => {
   if (theme === "light" || theme === "dark" || theme === "system") nativeTheme.themeSource = theme;
 });
 
-// Settings → Keybindings. `get` is only ever read by a renderer whose own
-// storage is empty (a cleared cache inside a shell that still remembers); the
-// ordinary direction is `set`, and the REBUILD is the whole point of it — the
-// menu's accelerators come from this map, so a chord changed in the cockpit is
-// live in the File menu before the pane has finished animating the row.
 ipcMain.handle("telar:keybindings:get", () => readKeybindingOverrides());
 
-// A row is armed and the next press belongs to it, not to the menu.
 ipcMain.handle("telar:keybindings:capture", (_event, capturing) => {
   chordCapture = Boolean(capturing);
   buildApplicationMenu();
   return chordCapture;
 });
 
-/**
- * A surface on screen claims these chords (#656) — the menu gives up the
- * accelerators that collide with them until the claim is released.
- *
- * TOTAL ABOUT ITS INPUT on purpose. This is called on every palette open and
- * close; a malformed payload must cost the claim, never the menu. Anything that
- * is not an array of strings reads as "nothing is claimed", which is the state
- * that leaves every accelerator live.
- */
 ipcMain.handle("telar:keybindings:scope", (_event, chords) => {
   const accepted = chordScopes.setRenderer(chords);
   buildApplicationMenu();
-  // The RENDERER's own list back, not the union: this answers "what did you take
-  // from my announcement", and a page's claim is not the caller's to hear about.
+
   return accepted;
 });
 
@@ -3423,9 +2040,6 @@ ipcMain.handle("telar:keybindings:set", (_event, overrides) => {
   return stored;
 });
 
-// The window-appearance half of Settings → Appearance. `get` answers whether
-// this platform can do it at all, so the cockpit hides rather than disables
-// the control where it would be a lie.
 ipcMain.handle("telar:appearance:get", () => ({ ...readUiPrefs(), supported: supportsTranslucency() }));
 
 ipcMain.handle("telar:appearance:set", (_event, patch) => {
@@ -3435,43 +2049,23 @@ ipcMain.handle("telar:appearance:set", (_event, patch) => {
     frost: patch?.frost === "clear" || patch?.frost === "blur" ? patch.frost : current.frost,
   };
   writeUiPrefs(next);
-  // Applied to the OPEN windows too: a preference that only takes effect on
-  // the next launch reads as a broken toggle.
+
   if (supportsTranslucency()) applyTranslucency(next.translucent, next.frost);
   return { ...next, supported: supportsTranslucency() };
 });
 
-// --- (f) Teardown ------------------------------------------------------------
-/**
- * BOTH CHILDREN, and the engine LAST.
- *
- * The cockpit proxies to the engine, so killing the engine first leaves a live
- * server answering `engine_unavailable` for however long the shutdown takes. The
- * engine also holds the store's lock and reconciles in-flight turns on the way
- * out; giving it the later signal means it is not doing that while a request is
- * still arriving.
- */
 function killServer() {
   for (const [name, child] of [["server", serverChild], ["engine", engineChild]]) {
     if (!child || child.killed) continue;
     try {
       child.kill("SIGTERM");
     } catch {
-      /* already gone */
     }
     if (name === "server") serverChild = null;
     else engineChild = null;
   }
 }
-/**
- * THE COMPUTER-USE HELPER'S DAEMON GOES WITH US — issue #931. The engine
- * launched it through LaunchServices, so it is launchd's child, not the
- * engine's, and would otherwise outlive Telar indefinitely. Here and not in the
- * engine's shutdown, which the IPC disconnect cuts short — see
- * computer-use-stop.js. AFTER `killServer`, so the engine has already been told
- * to stop before its helper is taken away. The next engine start launches a
- * fresh one; the grants belong to the helper's bundle id and survive this.
- */
+
 function stopComputerUseHelper() {
   const helperApp = computerUseHelperPath();
   if (!helperApp) return;
@@ -3487,31 +2081,6 @@ function closeBrowserControl() {
   if (control) void control.close();
 }
 
-/**
- * QUITTING CLOSES EVERY TERMINAL, AND ASKS ONCE IF THAT ENDS SOMETHING.
- *
- * A terminal owns its process, so Telar going away takes them with it — the
- * alternative, which is what used to happen, is a dev server that outlives
- * the app, holds its port against the next launch, and that nothing in Telar
- * can reach any more. The QUESTION is only asked when something is actually
- * running (`decideQuit` in terminal-host.js): a Telar with idle prompts open
- * quits exactly as it always did.
- *
- * WHY `before-quit` AND NOT `will-quit`: closing is SIGTERM, then SIGKILL a
- * second later, and the dialog is asynchronous. `will-quit` cannot be held
- * open for either. So the first quit is held here, the terminals are closed
- * and drained, and the quit is then re-issued with `terminalsClosedForQuit`
- * set so it passes straight through. With no terminals at all this does
- * nothing and holds nothing.
- *
- * NO QUESTION FOR AN UPDATE. "Install & restart" was the person's answer
- * already; `telar:updates:install` closes the terminals itself before handing
- * the quit to the installer, so this handler never holds that quit. Nor is
- * anything asked in a smoke or E2E shell, which has nobody to click a button.
- *
- * CANCEL LEAVES EVERYTHING AS IT WAS. `app.isQuitting` is put back so the
- * engine and server exit handlers go on treating an unexpected exit as one.
- */
 let terminalsClosedForQuit = false;
 let closingTerminalsForQuit = false;
 app.on("before-quit", (event) => {
@@ -3536,13 +2105,9 @@ async function closeTerminalsThenQuit() {
       }
     }
     await host.closeAll({ final: true });
-    // node-pty calls back into JS as each of those ends; exiting into one of
-    // those callbacks aborts the process. See `drain` in terminal-host.js.
+
     await host.drain();
   } catch (error) {
-    // The person asked to quit. A failure to ask or to close must not turn
-    // that into a Telar that cannot be quit; `will-quit` still signals every
-    // group that is left.
     logShell("error", `closing terminals before quit failed: ${error?.stack || error}`);
   }
   terminalsClosedForQuit = true;
@@ -3550,83 +2115,28 @@ async function closeTerminalsThenQuit() {
 }
 
 app.on("will-quit", () => {
-  // The tab inventory's last word, before the windows go: what each session
-  // had open is what it will have open on the next launch.
-  // EVERY window's inventory, not the focused one's: a second window's tabs are
-  // as much "what that session had open" as the first window's are.
   for (const manager of browserManagers) { try { manager.persistSync(); } catch {} }
-  // THE TERMINALS ARE NORMALLY ALREADY CLOSED by `before-quit` above, and their
-  // exits already delivered to the engine over its channel. This `dispose` is
-  // the last resort for anything left — a quit path that skipped
-  // `before-quit` — and it ENDS them (SIGTERM to each shell's group) rather
-  // than marking them `unknown` and leaving them running.
-  // The host BEFORE the engine's channel now: a SIGTERM sent here can still
-  // produce an exit frame, and the channel is where it goes. Closing the
-  // channel then makes the engine treat anything it had not yet heard end as
-  // lost, which is the truth once this process is going away.
+
   if (terminalHost) { try { void terminalHost.dispose(); } catch {} }
   if (runTerminalChannel) { try { void runTerminalChannel.close(); } catch {} runTerminalChannel = null; }
   killServer();
   stopComputerUseHelper();
   closeBrowserControl();
-  // The serve mapping outlives the process otherwise, pointing at a port
-  // nobody answers. Best-effort and unawaited: quitting must not wait on
-  // `tailscale`.
+
   if (tailscaleServeUrl) void tailscale.stopServe();
 });
 
-/**
- * RESTART, FROM SETTINGS. A remote-access change (bind address, Tailscale
- * serve) is read at launch, so the panel offers a restart rather than
- * pretending it took. `relaunch` schedules a fresh instance; `quit` runs the
- * teardown above, engine included.
- */
 ipcMain.handle("telar:app:relaunch", () => {
   app.relaunch();
   app.quit();
 });
 
-/**
- * WHAT THIS APP'S PROCESSES ARE DOING, for the Usage page (#488).
- *
- * NOT GUARDED TO THE COCKPIT'S TOP FRAME, unlike the destructive bridges above,
- * and that is a decision rather than an omission: the answer is CPU
- * percentages, working-set sizes and pids of THIS app's own processes. It
- * carries no URL, no origin, no title and no path — a page in the integrated
- * browser learns from it only that Telar is busy, which it can already tell by
- * being slow.
- *
- * Every window shares one reader, so opening the page in two of them samples
- * once, not twice.
- */
 ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
-// The last thing the watchdog said, for a window that mounted between polls —
-// see `broadcastRunawayNotice`. Same shape as the push.
+
 ipcMain.handle("telar:metrics:runaway", () => lastRunawayNotice);
 
-// Whether the asking window can be seen, for a renderer that mounted after the
-// last edge — see window-visibility.js. One boolean; nothing to guard.
 ipcMain.handle("telar:window:visibility", (event) => windowVisible(BrowserWindow.fromWebContents(event.sender)));
 
-/**
- * A SECOND WINDOW ON A PAGE OF THE APP — "Open in a new window", from the
- * session menu (#287). The only thing the web build cannot do for itself, which
- * is why the menu item is absent without this bridge rather than disabled.
- *
- * ONLY A WINDOW'S OWN TOP FRAME MAY ASK. The guard is the open-external
- * handler's, for the same reason and matched the same way: a native browser
- * tab's preload, a subframe, or anything an agent can reach is not a person
- * choosing a menu item, and a window it opened would carry Telar's preload.
- *
- * AND IT RESOLVES THE PATH ITSELF — see window-target.js. The asking window's
- * own address is the base, so a second window can only ever be the same app on
- * the same origin.
- */
-/**
- * THE LINKS SETTING, CLAIMED BY THE PAGE THAT CAN HONOUR IT — see
- * link-routing.js. A window's own top frame only: a native browser tab or a
- * subframe claiming the window's links would be steering the human's clicks.
- */
 ipcMain.handle("telar:links:set-routing", (event, input) => {
   const asking = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents === event.sender);
   if (!asking || event.senderFrame !== event.sender.mainFrame) {
@@ -3655,12 +2165,6 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
   });
 }
 
-/**
- * THE NEW BUILD'S HALF OF THE HAND-OFF (#1042). A swap helper is waiting for
- * this launch to prove it works, and the bar is the smoke's: an engine with a
- * registered worker. A launch that doesn't reach it writes nothing, and the
- * helper puts the previous app back.
- */
 async function recordHandoffBoot(home) {
   if (!app.isPackaged || DEV_BUILD) return;
   try {
@@ -3671,7 +2175,6 @@ async function recordHandoffBoot(home) {
   }
 }
 
-// --- Smoke mode (no window, ever) -------------------------------------------
 async function runSmoke() {
   try {
     let port;
@@ -3682,11 +2185,7 @@ async function runSmoke() {
       captureLoginShellEnv();
       const home = telarHome();
       startEngineChild(home);
-      // PROVES THE ENGINE, NOT JUST ITS FILE. A bundle can be present and still
-      // fail to boot — a bad import in the bundled graph, a store it cannot
-      // open. `/v2/health` answering is the difference between "the file
-      // shipped" and "the app has a back end" — and a REGISTERED WORKER is
-      // the difference between a back end and one that accepts a turn.
+
       engineDiscovery = await waitForEngine(home, { requireWorker: true });
       console.log("ENGINE_OK");
       console.log(`ENGINE_WORKER_OK ${engineDiscovery.workerId}`);
@@ -3696,10 +2195,7 @@ async function runSmoke() {
     await waitForServer(port);
     console.log(`BUILD ${windowTitle()}`);
     console.log("SMOKE_OK");
-    // Verify the bundled @playwright/mcp cli.js the engine's browser depends on
-    // actually shipped. Packaged: a hard failure (no browser tools without it).
-    // Dev-repo: best-effort — the walk-up resolver, not the bundle, is the real
-    // path there.
+
     const cli = bundledPlaywrightMcpCli();
     if (fs.existsSync(cli)) {
       console.log("PLAYWRIGHT_MCP_BUNDLED_OK");
@@ -3712,15 +2208,7 @@ async function runSmoke() {
         return;
       }
     }
-    // The Agent SDK is kept EXTERNAL to the engine bundle, so a Claude session
-    // cannot start without this file beside it. Packaged: fail-closed.
-    //
-    // WHAT THIS DELIBERATELY NO LONGER CHECKS is the SDK's ~272MB native CLI
-    // binary. The app does not ship one; the engine resolves the USER's Claude
-    // Code install and refuses the turn with an actionable message when there is
-    // none. Asserting an install here would fail every release build on a CI
-    // runner that has no reason to have one — and would be asserting a property
-    // of the machine, not of the artefact this command exists to verify.
+
     const sdk = bundledAgentSdkEntry();
     if (fs.existsSync(sdk)) {
       console.log("AGENT_SDK_BUNDLED_OK");
@@ -3744,41 +2232,16 @@ async function runSmoke() {
   }
 }
 
-// --- Main --------------------------------------------------------------------
-
-/**
- * TRANSLUCENCY STAYS ON THE GPU. An earlier cut ran it on software
- * compositing to beat ghosting — but the ghosting's real cause was the window
- * never being MARKED transparent (`transparent: true` in createWindow), and
- * once that landed the CPU path only bought a new bug: a large transparent
- * window redisplaying on focus takes long enough in software that macOS shows
- * a bad frame first — the activation flicker. What survives of that era is
- * the occlusion switch: Chromium stops drawing a fully-covered window and
- * evicts its frame, and a transparent window shows the eviction on refocus.
- *
- * NOT GATED ON THE PREFERENCE ANY MORE (#243). Every window is now born
- * transparent so the toggle need not rebuild it — and a switch can only be
- * appended before `ready`, so reading the pref here would have left anyone who
- * turned translucency on mid-session with the eviction flicker until their next
- * launch. The platform is the only condition left.
- */
 if (supportsTranslucency()) {
   app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 }
 
 if (SMOKE) {
-  // Never take the single-instance lock or create a window in smoke mode.
-  app.on("window-all-closed", () => {}); // no-op; there are no windows
+  app.on("window-all-closed", () => {});
   app.whenReady().then(runSmoke);
 } else {
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
-    // SAY WHOSE LOCK IT WAS. Quitting silently here is correct behaviour and
-    // was also completely unreadable: an app that exits with no window, no
-    // output and no crash report is indistinguishable from one that crashed on
-    // its first line. Naming the directory the lock is scoped to is enough to
-    // find the other instance — and to notice when it is a DIFFERENT build of
-    // Telar rather than a second copy of this one.
     console.error(
       `[telar-desktop] another instance already holds the lock for ${app.getPath("userData")} — focusing it and quitting.`,
     );
@@ -3794,26 +2257,18 @@ if (SMOKE) {
 
     app.whenReady().then(async () => {
       try {
-        // First, so a child that dies during startup is still named.
         wireShellDiagnostics();
-        // And the heap guard with it: #296 died five hours in, so the series
-        // has to start at launch, not at the first window.
+
         startHeapLog();
-        // The same reasoning for #487, which took fifty minutes to become
-        // visible: the poll has to be running before the first tab, not after
-        // somebody notices the fans.
+
         startServiceWorkerWatchdog();
         applyDevelopmentAppIcon();
         buildApplicationMenu();
-        // Before the first window exists, so no scheme change can be missed.
+
         watchSchemeForVibrancy();
-        // Before anything reads the update preferences, and before the updater
-        // is configured with a channel.
+
         adoptLegacyUpdatePrefs();
-        // THE INSTALLED APP EXPORTS THESE INTO EVERY SHELL IT OPENS (they are
-        // how its agent sessions reach its browser). A dev build launched from
-        // such a shell would bind the live app's control port — measured:
-        // EADDRINUSE on 127.0.0.1:<live port>, no window — so it takes neither.
+
         const configuredControlPort = DEV_BUILD ? NaN : Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
         browserControlConfig = {
           port: Number.isInteger(configuredControlPort) && configuredControlPort > 0
@@ -3823,66 +2278,30 @@ if (SMOKE) {
         };
         browserControl = await startBrowserControlServer({
           ...browserControlConfig,
-          // BY SCOPE, ACROSS THE WINDOWS (issue #311). An agent has no window
-          // to be recognised by, so the scope it names is what picks the host;
-          // the focused window is the fallback when no window claims it.
+
           getBrowserManager: (scopeKey) => managerForScope(browserManagers, scopeKey, browserManager),
-          // And the one reading that is about the app rather than a session's
-          // tabs (#488): the cockpit's server is a sibling process and cannot
-          // call `app.getAppMetrics()` itself, so this is how the Usage page
-          // and anything reaching it remotely get the figures.
+
           readProcessMetrics: () => processMetricsReader().summary(),
         });
-        /**
-         * AND THE ENGINE'S DOOR TO THIS PROCESS'S PTYs (#198 W4).
-         *
-         * Its OWN port and token rather than more routes on the one above: the
-         * closed route set is the security property, and adding "start a
-         * process with this command line" to the browser surface would turn a
-         * leaked browser token into arbitrary code execution.
-         *
-         * Always an ephemeral port and a fresh token, with no environment
-         * override — unlike the browser channel, nothing outside this process
-         * has ever needed to predict these, so there is nothing to keep
-         * compatible and one less thing an installed app exports into a shell.
-         * `getTerminalHost` stays lazy so starting this server does not load
-         * node-pty.
-         */
+
         runTerminalConfig = { port: await findFreePort(), token: randomUUID() };
         runTerminalChannel = await startRunTerminalServer({
           ...runTerminalConfig,
-          // `requireTerminalHost` rather than the variable: the engine may open the
-          // first terminal this process ever has. Constructing the host does not
-          // load node-pty — that is lazy behind its `spawnPty` getter.
+
           getTerminalHost: () => requireTerminalHost(),
-          /**
-           * AND THE WAY BACK (#890): the engine's redacted view of a run's
-           * output, delivered to whichever renderer adopted that terminal. The
-           * `cursor` rides along so a chip that read its scrollback from
-           * `/run/bytes` can tell a frame it has already drawn from a new one
-           * and join the two exactly, instead of repeating or gapping a screen.
-           */
+
           onMirror: (id, data, cursor) => deliverToTerminalReader(id, "telar:terminal:data", { id, data, cursor }),
         });
         let url = OVERRIDE_URL;
         if (!url) {
           captureLoginShellEnv();
-          /**
-           * THE STORE BEFORE THE ENGINE — issue #630. This may wait
-           * indefinitely, which is the point: a drive that is meant to be
-           * plugged in and is not is a condition to sit in, not a reason to
-           * start without somebody's history and create a second one.
-           */
+
           resolvedStoreHome = await openStoreGate();
           if (resolvedStoreHome === null) {
             app.quit();
             return;
           }
-          // THE ENGINE FIRST, AND WAITED FOR. The cockpit's server components
-          // ask the engine for the session list while rendering the first page;
-          // starting them together means that first paint races a daemon that
-          // may not be listening yet, and loses often enough to be the thing
-          // people report as "it opens empty sometimes".
+
           const home = telarHome();
           startEngineChild(home);
           engineDiscovery = await waitForEngine(home);
@@ -3894,29 +2313,15 @@ if (SMOKE) {
           url = `http://127.0.0.1:${port}/`;
         }
         updaterWindow = createWindow(url);
-        // From here on an engine that exits has a window to be reported in, so
-        // the dialogs in `startEngineChild` stand down — see #894.
+
         mainWindowShown = true;
         configureAutoUpdater();
-        /**
-         * AND WATCH THE MOUNT ROOTS — issue #534. After the window, because it
-         * is a hint rather than a precondition: the engine's own poll already
-         * makes a project on an unplugged drive correct, and this only decides
-         * how quickly the rail says so. See `volume-watch.js` for why it is
-         * `fs.watch` plus `resume` rather than a `diskutil activity` child.
-         */
+
         watchVolumes({ onChanged: reportVolumesChanged, powerMonitor });
         app.on("activate", () => {
           if (BrowserWindow.getAllWindows().length === 0) createWindow(url);
         });
       } catch (err) {
-        /**
-         * THE OTHER SILENT QUIT — #894. `waitForEngine` rejects on a 30 s
-         * timeout, and this caught it, logged to a console nobody has, and
-         * quit. A daemon that is up but not answering produces exactly the
-         * same picture as the lock conflict above, and deserves the same
-         * treatment: say so on screen before going.
-         */
         logShell("error", `failed to start: ${err?.stack || err}`);
         reportStartupFailure(
           "Telar could not start",
@@ -3928,7 +2333,7 @@ if (SMOKE) {
 
     app.on("window-all-closed", () => {
       app.isQuitting = true;
-      app.quit(); // macOS convention would keep the app; viable tier quits.
+      app.quit();
     });
   }
 }
