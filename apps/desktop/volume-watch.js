@@ -51,7 +51,7 @@
 const fs = require("node:fs");
 
 /** This platform's mount roots — where an external disk appears. The third copy
- *  of this list (`apps/engine/src/volumes.ts`, `apps/web/lib/fs-dirs.ts`); three
+ *  of this list (`apps/engine/src/volumes.ts`, `apps/engine/src/fs-dirs.ts`); three
  *  apps, none of which imports another, and each says so. */
 function mountRootsFor(platform) {
   return platform === "darwin" ? ["/Volumes"] : platform === "linux" ? ["/media", "/mnt"] : [];

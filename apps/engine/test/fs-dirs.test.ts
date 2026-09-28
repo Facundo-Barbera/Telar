@@ -1,18 +1,3 @@
-/**
- * THE DIRECTORY LISTING BOTH ADD-PROJECT BROWSERS RUN ON — the palette's and
- * the phone's.
- *
- * Against a REAL filesystem, in a scratch home, rather than a mocked `fs`: the
- * three things this module exists to get right — a link that loops, a path that
- * leaves the allowed roots, and the lstat rule that makes links not-folders —
- * are all properties of the filesystem, and a fake would only ever agree with
- * whatever this module already believes.
- *
- * THE SHAPE TESTS ARE THE PHONE'S CONTRACT. `dirs`, `name` and `git` are what
- * `DirectoryListing` decodes in Swift (apps/ios/.../CatalogModels.swift), and
- * this route was answering it before the palette existed.
- */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync, type Dirent, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,15 +12,11 @@ import {
   listRoots,
   MAX_ENTRIES,
   within,
-  type DirectoryListing,
   type DirectoryOutcome,
-} from "./fs-dirs";
+} from "../src/fs-dirs";
+import type { DirectoryListing } from "@telar/engine-client";
 
 const homes: string[] = [];
-/** A scratch home, CANONICALISED — the listing resolves symlinks before it
- *  checks containment, and macOS's `/var/folders/…` is a symlink to
- *  `/private/var/folders/…`, so an un-resolved root would refuse its own
- *  children. */
 function scratchHome(): string {
   const home = realpathSync.native(mkdtempSync(path.join(tmpdir(), "telar-fs-dirs-")));
   homes.push(home);
@@ -45,8 +26,6 @@ afterAll(() => {
   for (const home of homes) rmSync(home, { recursive: true, force: true });
 });
 
-/** The listing, or a failure naming the refusal instead of an unhelpful
- *  "undefined is not an object" three lines later. */
 function listing(result: DirectoryOutcome): DirectoryListing {
   if (isDirectoryFailure(result)) throw new Error(`expected a listing, got ${result.code}: ${result.message}`);
   return result;
@@ -69,8 +48,6 @@ describe("expandHome", () => {
   });
 
   test("~someone is NOT expanded — another account's home is not this one's", () => {
-    // Left verbatim, which then fails the absolute-path check rather than
-    // quietly becoming a path under the wrong home.
     expect(expandHome("~root/secrets", "/Users/someone")).toBe("~root/secrets");
     expect(listDirectories({ path: "~root" }, { home: "/Users/someone" })).toMatchObject({ code: "invalid_request" });
   });
@@ -80,7 +57,6 @@ describe("within", () => {
   test("containment is tested on a separator boundary", () => {
     expect(within("/Users/someone", "/Users/someone")).toBe(true);
     expect(within("/Users/someone", "/Users/someone/code")).toBe(true);
-    // The bug this prevents: a prefix match letting another account's home in.
     expect(within("/Users/some", "/Users/someone")).toBe(false);
     expect(within("/Users/someone", "/Users")).toBe(false);
   });
@@ -97,8 +73,6 @@ describe("browseRoots", () => {
       "/media",
       "/mnt",
     ]);
-    // A mount root that is not there is left out, so the refusal names only
-    // places that really exist.
     expect(browseRoots({ home: "/Users/someone", platform: "darwin", exists: () => false })).toEqual(["/Users/someone"]);
   });
 });
@@ -119,12 +93,7 @@ describe("listDirectories", () => {
     expect(result.path).toBe(home);
     expect(result.name).toBe(path.basename(home));
     expect(result.home).toBe(home);
-    // `git` is the entry's own word, and it stays that: renaming it would be a
-    // cosmetic change that broke a shipped client.
     expect(result.dirs[0]).toEqual({ name: "code", path: path.join(home, "code"), git: false, hidden: false });
-    // Home's parent is outside the roots, so offering an up gesture there would
-    // be offering a button whose answer is a refusal. The phone never reads
-    // `parent`, and its type is optional.
     expect(result.parent).toBeNull();
   });
 
@@ -142,8 +111,6 @@ describe("listDirectories", () => {
     mkdirSync(path.join(home, "code"));
     mkdirSync(path.join(home, ".config"));
     mkdirSync(path.join(home, ".cache"));
-    // A home directory is mostly dotfolders; offering them by default buries
-    // `code` under three screens of them.
     expect(names(listDirectories({}, { home, platform: "darwin" }))).toEqual(["code"]);
     expect(names(listDirectories({ hidden: true }, { home, platform: "darwin" }))).toEqual([".cache", ".config", "code"]);
     const shown = listing(listDirectories({ hidden: true }, { home, platform: "darwin" })).dirs;
@@ -177,40 +144,25 @@ describe("listDirectories", () => {
     const refused = listDirectories({ path: outside }, { home, mounts: ["/Volumes"], exists: () => true });
     expect(refused).toMatchObject({ code: "invalid_request" });
     if (!isDirectoryFailure(refused)) throw new Error("expected a refusal");
-    // The sentence names the places that WOULD work — "outside your home
-    // directory" alone leaves somebody with an external disk guessing.
     expect(refused.message).toContain(home);
     expect(refused.message).toContain("/Volumes");
   });
 
   test("a mounted volume is browsable, because that is where a second checkout lives", () => {
     const home = scratchHome();
-    // A scratch directory standing in for `/Volumes` — same rule, a root that
-    // is not home. Refusing mounts would send somebody with an external disk
-    // back to the Finder dialog this replaces.
     const volumes = scratchHome();
     mkdirSync(path.join(volumes, "Backup", "telar"), { recursive: true });
     const result = listing(listDirectories({ path: path.join(volumes, "Backup") }, { home, mounts: [volumes] }));
     expect(result.path).toBe(path.join(volumes, "Backup"));
     expect(result.dirs.map((entry) => entry.name)).toEqual(["telar"]);
-    // Up stops at the mount root, not at `/`.
     expect(result.parent).toBe(volumes);
     expect(listing(listDirectories({ path: volumes }, { home, mounts: [volumes] })).parent).toBeNull();
   });
 
-  /**
-   * ISSUE #630. Browsing a drive was always ALLOWED and never REACHABLE: the
-   * browser opens at home, home's parent is null by design, and so the only
-   * route to a volume was knowing its path and typing it. These roots are what
-   * makes the allowance visible — a drive being MOUNTED is what puts it in the
-   * list, which is why the `st_dev` test is here and not just in `volumes.ts`.
-   */
   test("the roots offer home and each mounted drive, by the name a person calls it", () => {
     const home = scratchHome();
     const volumes = scratchHome();
     mkdirSync(path.join(volumes, "Backup"), { recursive: true });
-    // A differing `st_dev` is what makes it a mount. A test cannot create one,
-    // so this is the seam — the same arrangement the containment cases use.
     const roots = listRoots({
       home,
       mounts: [volumes],
@@ -225,8 +177,6 @@ describe("listDirectories", () => {
     const home = scratchHome();
     const volumes = scratchHome();
     mkdirSync(path.join(volumes, "Ghost"), { recursive: true });
-    // Same `dev` as its parent: not a mount, however much the path looks like
-    // one. Offering it would send somebody into a directory that vanishes.
     const roots = listRoots({ home, mounts: [volumes], exists: () => true, stat: () => ({ dev: 1 }) as never });
     expect(roots.map((root) => root.name)).toEqual(["Home"]);
   });
@@ -240,8 +190,6 @@ describe("listDirectories", () => {
   test("a symlink is never a folder here, so a loop cannot be walked into", () => {
     const home = scratchHome();
     mkdirSync(path.join(home, "code"));
-    // `loop` points at the directory that contains it. Listing it as a folder
-    // is how a browser walks `loop/loop/loop/…` for ever.
     symlinkSync(home, path.join(home, "loop"));
     expect(names(listDirectories({}, { home, platform: "darwin" }))).toEqual(["code"]);
   });
@@ -251,8 +199,6 @@ describe("listDirectories", () => {
     const outside = scratchHome();
     mkdirSync(path.join(outside, "secrets"));
     symlinkSync(outside, path.join(home, "escape"));
-    // Not listed — and typing its path resolves to where it really goes, which
-    // is outside the roots.
     expect(names(listDirectories({}, { home, platform: "darwin" }))).toEqual([]);
     expect(listDirectories({ path: path.join(home, "escape") }, { home, platform: "darwin" })).toMatchObject({
       code: "invalid_request",
@@ -261,15 +207,11 @@ describe("listDirectories", () => {
 
   test("a link that resolves through itself is a refusal, not a hang", () => {
     const home = scratchHome();
-    // A relative self-link: resolving `mirror` requires resolving `mirror`.
-    // This is the shape that makes the kernel answer ELOOP, and the one that
-    // would spin a resolver written by hand.
     symlinkSync("mirror", path.join(home, "mirror"));
     expect(listDirectories({ path: path.join(home, "mirror") }, { home, platform: "darwin" })).toMatchObject({
       code: "invalid_request",
       message: "That path loops through itself.",
     });
-    // And it is not offered as a folder in the first place.
     expect(names(listDirectories({}, { home, platform: "darwin" }))).toEqual([]);
   });
 
@@ -281,8 +223,6 @@ describe("listDirectories", () => {
     mkdirSync(b);
     symlinkSync(b, path.join(a, "to-b"));
     symlinkSync(a, path.join(b, "to-a"));
-    // Every hop here is finite, so this is `b` and answering it is correct —
-    // the defence is the lstat rule above, not a refusal of every link.
     expect(listing(listDirectories({ path: path.join(a, "to-b", "to-a", "to-b") }, { home, platform: "darwin" })).path).toBe(b);
   });
 
@@ -293,7 +233,6 @@ describe("listDirectories", () => {
       code: "not_found",
       message: "That folder does not exist.",
     });
-    // A file's realpath resolves fine; it is the stat that catches it.
     expect(listDirectories({ path: path.join(home, "notes.md") }, { home, platform: "darwin" })).toMatchObject({
       code: "invalid_request",
       message: "That is a file, not a folder.",
@@ -312,21 +251,10 @@ describe("listDirectories", () => {
     for (let index = 0; index <= MAX_ENTRIES; index += 1) mkdirSync(path.join(home, `d${String(index).padStart(4, "0")}`));
     const result = listing(listDirectories({}, { home, platform: "darwin" }));
     expect(result.dirs.length).toBe(MAX_ENTRIES);
-    // Silently truncated is a list somebody scrolls to the bottom of looking
-    // for a folder that is there.
     expect(result.truncated).toBe(true);
   });
 });
 
-/**
- * A FOLDER INSIDE A CLOUD DRIVE'S LOCAL MIRROR — the reported case.
- *
- * macOS puts these under `~/Library/CloudStorage/<Provider>-<account>/…`, served
- * by a FileProvider extension: inside home, so the root check passes, with
- * spaces, `@` and brackets in the path, and with reads that can be slow,
- * typeless or refused. The fixture is a scratch home laid out with that name;
- * the real `~/Library/CloudStorage` is never touched.
- */
 describe("a cloud folder", () => {
   const DRIVE = path.join("Library", "CloudStorage", "GoogleDrive-me@example.com", "My Drive");
 
@@ -353,7 +281,6 @@ describe("a cloud folder", () => {
     expect(result.missing).toBeUndefined();
     const tilde = listing(listDirectories({ path: `~/${path.relative(home, repo)}` }, { home, platform: "darwin" }));
     expect(tilde.path).toBe(repo);
-    // Its up leads back into the drive, not to a refusal.
     expect(tilde.parent).toBe(work);
   });
 
@@ -363,10 +290,8 @@ describe("a cloud folder", () => {
     const walked = listing(listDirectories({ path: gone, nearest: true }, { home, platform: "darwin" }));
     expect(walked.path).toBe(work);
     expect(walked.missing).toBe(gone);
-    // A pasted FILE opens the folder it is in.
     const file = listing(listDirectories({ path: path.join(repo, "README.md"), nearest: true }, { home, platform: "darwin" }));
     expect(file.path).toBe(repo);
-    // Without it, the answer is the one the phone has always had.
     expect(listDirectories({ path: gone }, { home, platform: "darwin" })).toMatchObject({ code: "not_found" });
   });
 
@@ -415,13 +340,10 @@ describe("a cloud folder", () => {
     const denied = listDirectories({ path: work }, { home, platform: "darwin", readdir: failing("EPERM") });
     expect(denied).toMatchObject({ code: "invalid_request" });
     expect(message(denied)).toContain("Privacy & Security");
-    // A stalled sync app is not a missing folder, and `nearest` does not walk
-    // past it to some other folder as though it were.
     const stalled = listDirectories({ path: work, nearest: true }, { home, platform: "darwin", realpath: failing("ETIMEDOUT") });
     expect(stalled).toMatchObject({ code: "invalid_request" });
     expect(message(stalled)).toContain("(ETIMEDOUT)");
     expect(message(stalled)).toContain("sync app");
-    // No vendor names in what a person reads.
     expect(message(stalled)).not.toContain("Google");
   });
 
@@ -436,7 +358,6 @@ describe("a cloud folder", () => {
         {
           home,
           platform: "darwin",
-          // Every probe costs a whole second of the fake clock.
           now: () => clock,
           mounts: [],
           exists: (target) => {
@@ -449,7 +370,6 @@ describe("a cloud folder", () => {
     );
     expect(result.dirs.length).toBe(5);
     expect(result.gitPartial).toBe(true);
-    // Probes at 0ms and 1000ms are inside the budget; by 2000ms it is spent.
     expect(probed).toEqual(["a", "b"]);
     expect(GIT_PROBE_BUDGET_MS).toBe(1500);
   });

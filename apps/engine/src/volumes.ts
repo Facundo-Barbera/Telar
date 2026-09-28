@@ -21,7 +21,7 @@
  * read-only System volume, so `~/code/anything` sits on a different `st_dev`
  * than `/` and every ordinary project would have been declared external. The
  * mount ROOTS are named instead: `/Volumes` on macOS, `/media` and `/mnt` on
- * Linux. `apps/web/lib/fs-dirs.ts` keeps the same list for the registration
+ * Linux. `apps/engine/src/fs-dirs.ts` keeps the same list for the registration
  * browser's sake; they are two apps and neither imports the other, so the
  * duplication is deliberate and both say so.
  *

@@ -135,9 +135,7 @@ import type {
 } from "@telar/engine-client";
 import { diffBaseQuery, filePatchQuery, forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pathnameFetcher, pinnedHost } from "@/lib/hosts/client";
-// Type-only, like `Channel` above: `lib/fs-dirs.ts` reads the filesystem and
-// must not follow into the browser bundle.
-import type { DirectoryListing } from "@/lib/fs-dirs";
+import type { DirectoryListing } from "@telar/engine-client";
 import type { ExecResult, KernelState, NotebookRead, TableWindow, VarRow } from "@/lib/ds";
 // Type-only, like `Channel` above: the store reads the filesystem and must not
 // follow into the browser bundle.
