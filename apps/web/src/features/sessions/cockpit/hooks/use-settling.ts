@@ -10,8 +10,6 @@ import { withSnooze } from "../../session-mutations";
 import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, type SettleableSession } from "../../session-settling";
 import type { useSessionSync } from "./use-session-sync";
 
-const api = createEngineApi();
-
 function settleableOf(session: Session): SettleableSession {
   return {
     archived: false,
@@ -41,8 +39,8 @@ export function useSettling(hostId: string, sessionId: string | undefined, { ses
   const unsettle = async () => {
     if (!sessionId) return;
     try {
-      if (session?.settledOverride !== "settled") await api.updateSession(sessionId, { settledOverride: "active" });
-      const next = await api.updateSession(sessionId, { settledOverride: null });
+      if (session?.settledOverride !== "settled") await menuApi.updateSession(sessionId, { settledOverride: "active" });
+      const next = await menuApi.updateSession(sessionId, { settledOverride: null });
       setSession(next.session);
       setError(undefined);
     } catch (cause) {
