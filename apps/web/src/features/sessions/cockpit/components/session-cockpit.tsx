@@ -124,27 +124,14 @@ export function SessionCockpit({
           />
         )}
         <TranscriptList
-          conversation={sync.syncKey}
-          landed={transcriptLanded}
+          sync={sync}
+          model={model}
+          receipt={receipt}
           follow={follow}
           onAtBottomChange={onAtBottomChange}
           onConversationClick={onConversationClick}
           projectId={projectId}
-          session={session}
-          stale={sync.stale}
-          error={sync.error}
           fresh={fresh}
-          loading={sync.loading}
-          page={sync.page}
-          loadingOlder={sync.loadingOlder}
-          loadOlder={sync.loadOlder}
-          transcript={model.transcript}
-          active={active}
-          requests={sync.requests}
-          openRequests={model.openRequests}
-          composerQuestion={model.composerQuestion}
-          newestResultRunId={receipt.newestResult?.runId}
-          markerRefFor={receipt.markerRefFor}
           turn={{
             roster: model.roster,
             sending: actions.sending,
