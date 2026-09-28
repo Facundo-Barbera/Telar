@@ -17,7 +17,7 @@
  */
 import type { RestartConfirmation } from "@/lib/desktop-updates";
 import { restartDialogCopy } from "@/lib/desktop-updates";
-import { useSessionDefaults } from "@/lib/session-defaults";
+import { useSessionDefaults } from "@/features/sessions";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 

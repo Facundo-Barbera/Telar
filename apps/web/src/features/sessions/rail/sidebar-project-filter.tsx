@@ -1,10 +1,9 @@
 "use client";
 
 import { CheckIcon, ChevronDownIcon, FolderGit2Icon } from "lucide-react";
-import { ProjectAvatar, type NewConversationTarget } from "@/features/projects";
+import { ProjectAvatar, type NewConversationTarget, projectFilterKey } from "@/features/projects";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CAPTION } from "@/lib/idiom";
-import { projectFilterKey } from "@/lib/project-filter";
 import { cn } from "@/lib/utils";
 
 function groupTargetsByHost(

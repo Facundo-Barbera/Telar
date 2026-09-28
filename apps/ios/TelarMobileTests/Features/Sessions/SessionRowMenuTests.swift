@@ -3,7 +3,7 @@ import Testing
 @testable import TelarMobile
 
 /// THE PHONE'S MENU AGAINST THE MAC'S, in the one form the two can be compared
-/// in: a list of ids and labels. `apps/web/src/lib/session-action-menu.ts` is the
+/// in: a list of ids and labels. `apps/web/src/features/sessions/session-action-menu.ts` is the
 /// list this is checked against — see #326 for the four verbs the phone was
 /// missing and the three the two surfaces are allowed to differ on.
 @Suite struct SessionRowMenuTests {

@@ -32,20 +32,15 @@ import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiErro
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
 import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
-import { projectSettingsHref } from "@/lib/project-settings-link";
+import { projectSettingsHref } from "@/features/projects";
 import { actionableRequests } from "@/lib/failed-turn-recovery";
-import { canvasHref, sessionHref } from "@/lib/session-list";
-import { newSessionId, withSnooze } from "@/lib/session-mutations";
-import { sessionLink } from "@/lib/session-link";
+import { canvasHref, sessionHref, newSessionId, withSnooze, sessionLink, isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity, useInboxPolicy, useSessionDefaults, LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore, buildSessionActionMenuItems, type SessionActionHandlers, type SessionActionMenuState, dropdownSessionMenuParts, SessionActionContextMenu, SessionActionMenuItems } from "@/features/sessions";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { usePluginPanels } from "@/components/plugins/use-plugin-panels";
-import { projectLabel } from "@/lib/hosts/host-projects";
-import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity } from "@/lib/session-settling";
+import { projectLabel } from "@/features/hosts";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
-import { useInboxPolicy } from "@/lib/inbox-policy";
-import { useSessionDefaults } from "@/lib/session-defaults";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { normaliseContextNoticePercent } from "@/lib/context-notice";
@@ -55,7 +50,6 @@ import { insertReference } from "@/lib/drag-reference";
 import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/platform/engine";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/platform/engine";
-import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
 import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";
 import { processToReveal, stillWorking } from "@/lib/background-presence";
@@ -111,12 +105,6 @@ import {
 } from "@/lib/editor-workspace";
 import { pluginCommands } from "@/lib/plugins/registry";
 import { forgeParams, openForge, readForgeOpen } from "@/lib/forge-workspace";
-import {
-  buildSessionActionMenuItems,
-  type SessionActionHandlers,
-  type SessionActionMenuState,
-} from "@/lib/session-action-menu";
-import { dropdownSessionMenuParts, SessionActionContextMenu, SessionActionMenuItems } from "./session/session-action-menu";
 import { ApprovalCard } from "./approval-card";
 import { MainSidebarTrigger, useMainIsLeftmost } from "@/components/ui/main-sidebar-trigger";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -370,7 +358,7 @@ function SessionMasthead({
   /**
    * THE TITLE IS THE MENU, which is what buys it: a header that spends no
    * permanent space on a `⋯` and still reaches every verb. Same list the rail
-   * row draws — see `lib/session-action-menu.ts`, which exists so these two
+   * row draws — see `features/sessions/session-action-menu.ts`, which exists so these two
    * cannot disagree.
    */
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1621,7 +1609,7 @@ export function SessionCockpit({
    * WHEN WHAT IS ON SCREEN WAS LAST TRUE — set only while the engine is not
    * answering and the transcript being shown came out of the browser's own
    * recording (or was live until a moment ago). `undefined` is the ordinary
-   * case: this is live. See lib/snapshot-cache.ts and lib/stale-state.ts.
+   * case: this is live. See features/sessions/snapshot-cache.ts and lib/stale-state.ts.
    */
   const [stale, setStale] = useState<number>();
   /** The same value, readable from callbacks that must not re-subscribe the
@@ -1712,7 +1700,7 @@ export function SessionCockpit({
    * A DIFFERENT MAC IS A DIFFERENT REGISTRY, so what is held describes the old
    * one. Cleared during render rather than from an effect, so no frame names
    * one Mac's project under another's address — the same rule, for the same
-   * reason, as `lib/hosts/host-projects.ts`. Without it, remote B → local left
+   * reason, as `features/hosts/host-projects.ts`. Without it, remote B → local left
    * B's project name in the breadcrumb until the local read landed, and with
    * overlapping ids there was nothing on screen to say it had.
    */
@@ -3743,7 +3731,7 @@ export function SessionCockpit({
    *
    * THE RAIL ALREADY DID THIS AND THE COCKPIT DID NOT. A row's snooze is
    * `mutate(withSnooze(…))` — the guess first, the engine's record folded in
-   * after, the row put back if it refuses (`mutateRow`, lib/session-mutations.ts)
+   * after, the row put back if it refuses (`mutateRow`, features/sessions/session-mutations.ts)
    * — while `patchFromMenu` above awaits the PATCH before anything moves. Two
    * surfaces, two speeds, and the slower one is the surface you are looking at.
    *

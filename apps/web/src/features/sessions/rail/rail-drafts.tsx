@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Project } from "@telar/engine-client";
-import { DraftRow } from "@/components/session/draft-row";
+import { DraftRow } from "./draft-row";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/features/composer";
-import { projectFilterKey } from "@/lib/project-filter";
+import { projectFilterKey } from "@/features/projects";
 
 export function RailDrafts({
   projects,

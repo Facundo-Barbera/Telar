@@ -9,7 +9,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { SidebarSession } from "@/lib/session-list";
+import type { SidebarSession } from "../session-list";
 import { SessionDetails, hasFigures } from "./session-row";
 
 const session = (over: Partial<SidebarSession> = {}): SidebarSession =>

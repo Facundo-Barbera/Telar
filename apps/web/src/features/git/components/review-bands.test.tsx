@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SessionDiff } from "@telar/engine-client";
-import type { SessionReview } from "@/lib/session-review";
+import type { SessionReview } from "../session-review";
 import { DiffUnknownBand, ReviewEmptyState } from "./review-bands";
 
 const band = (diff: Partial<SessionDiff>, onRetry?: () => void) =>

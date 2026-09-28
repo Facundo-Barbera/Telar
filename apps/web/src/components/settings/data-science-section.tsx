@@ -48,7 +48,7 @@ import { JobLog, type JobHandle } from "./job-log";
 import { MANAGER_LABEL, PackagesPanel } from "./packages-panel";
 import { cn } from "@/lib/utils";
 import { writeDraft } from "@/features/composer";
-import { canvasHref } from "@/lib/session-list";
+import { canvasHref } from "@/features/sessions";
 
 const api = createEngineApi();
 

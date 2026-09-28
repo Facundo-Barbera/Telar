@@ -3,7 +3,7 @@ import { FolderPlusIcon, MessageSquarePlusIcon, XIcon } from "lucide-react";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import { Button } from "@/components/ui/button";
 import { KeyHint, type CommandId } from "@/features/commands";
-import type { SidebarSession } from "@/lib/session-list";
+import type { SidebarSession } from "../session-list";
 
 export function RailSearch({
   query,

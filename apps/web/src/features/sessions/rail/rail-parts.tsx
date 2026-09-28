@@ -1,12 +1,12 @@
 import { ChevronRightIcon } from "lucide-react";
 import type { SidebarMode } from "@telar/engine-client";
-import { RailModeSwitch } from "@/components/session/flat-session-list";
+import { RailModeSwitch } from "./flat-session-list";
 import { KeyHint } from "@/features/commands";
 import { SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarTrigger } from "@/components/ui/sidebar";
 import { CAPTION } from "@/lib/idiom";
-import { sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";
-import type { SessionRowChanged } from "@/lib/session-mutations";
-import type { RailJumpSlot } from "@/lib/session-groups";
+import { sessionKey, type SessionBand, type SidebarSession } from "../session-list";
+import type { SessionRowChanged } from "../session-mutations";
+import type { RailJumpSlot } from "../session-groups";
 import { cn } from "@/lib/utils";
 import { SessionRow } from "./session-row";
 

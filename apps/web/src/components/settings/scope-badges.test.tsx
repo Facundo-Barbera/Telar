@@ -6,12 +6,12 @@ import { BrowserLoginsSection } from "./browser-logins-section";
 import { BrowserProfilesSection } from "./browser-profiles-section";
 import { DictationMicrophoneSection } from "./dictation-microphone-section";
 import { DictationSection } from "./dictation-section";
-import { InboxSection } from "./inbox-section";
+import { InboxSection } from "@/features/sessions/components/inbox-section";
 import { LinksSection } from "./links-section";
 import { SECTIONS } from "./settings-sections";
 import { Row, SettingsGroup, ToggleRow } from "./settings-shell";
 import { TextGenSection } from "./textgen-section";
-import { WorkspaceSection } from "./workspace-section";
+import { WorkspaceSection } from "@/features/projects";
 
 test("a group's scope renders as a quiet label, with its meaning behind the ⓘ", () => {
   const html = renderToStaticMarkup(

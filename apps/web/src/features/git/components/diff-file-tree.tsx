@@ -5,7 +5,7 @@ import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
 
 import type { GitFileChange } from "@telar/engine-client";
 import { buildFileTree, directoryPaths, flattenTree, type FileTreeRow } from "@/lib/file-tree";
-import { REVIEW_STATUS_LETTER } from "@/lib/session-review";
+import { REVIEW_STATUS_LETTER } from "../session-review";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { cn } from "@/lib/utils";
 

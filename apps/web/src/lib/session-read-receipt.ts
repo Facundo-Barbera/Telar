@@ -3,7 +3,7 @@
  *
  * The engine records that a human was shown an answer (`markSessionRead`), and
  * the inbox refuses to shelve a session whose newest answer nobody has read
- * (`lib/session-settling.ts`). That only works if the client is HONEST about
+ * (`features/sessions/session-settling.ts`). That only works if the client is HONEST about
  * what "shown" means, and the ways to be dishonest are all easy:
  *
  *   - MARKING ON HYDRATE. A tab that opens a session in the background — a

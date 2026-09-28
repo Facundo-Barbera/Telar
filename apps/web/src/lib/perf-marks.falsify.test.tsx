@@ -115,7 +115,7 @@ mockNavigation();
  * calls `app-shell.tsx:116-119` makes.
  */
 
-const { forgetInboxPolicies, readInboxPolicy } = await import("@/lib/inbox-policy");
+const { forgetInboxPolicies, readInboxPolicy } = await import("@/features/sessions/inbox-policy");
 const { SessionCockpit } = await import("@/components/session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
 const { installNavigationMarks, markNavigation, navigationTimings, startNavigation } = await import("./perf-marks");
@@ -201,7 +201,7 @@ beforeEach(() => {
 /**
  * EVERY PIECE OF PROCESS-WIDE STATE A MOUNT HERE WARMS, PUT BACK.
  *
- * Mounting the real cockpit is not a local act. `lib/inbox-policy.ts` keeps a
+ * Mounting the real cockpit is not a local act. `features/sessions/inbox-policy.ts` keeps a
  * `Map` keyed by host at module scope with a 30 s TTL (`:38`, `:44`), and the
  * cockpit's `useInboxPolicy()` fills the `"local"` entry from this file's stub
  * answer to `/api/inbox`. `inbox-policy.test.ts` then asserts that nine callers

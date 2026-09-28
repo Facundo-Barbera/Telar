@@ -3,13 +3,13 @@ import type { InboxPolicy, Project, PublicHost, SidebarLayout } from "@telar/eng
 import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
 import { hostFetcher } from "@/lib/hosts/client";
-import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
-import { dedupeAcrossHosts } from "@/lib/session-groups";
-import { toSidebarSession, type SidebarSession } from "@/lib/session-list";
-import { applyRowChange, type SessionRowChange } from "@/lib/session-mutations";
-import { readSidebarCache, rememberRows, staleRows, writeSidebarCache } from "@/lib/sidebar-cache";
-import { observeSidebarLayout } from "@/lib/sidebar-layout";
-import { LOCAL_HOST } from "@/lib/snapshot-cache";
+import { PROJECTS_CHANGED_EVENT } from "@/features/projects";
+import { dedupeAcrossHosts } from "../session-groups";
+import { toSidebarSession, type SidebarSession } from "../session-list";
+import { applyRowChange, type SessionRowChange } from "../session-mutations";
+import { readSidebarCache, rememberRows, staleRows, writeSidebarCache } from "./sidebar-cache";
+import { observeSidebarLayout } from "./sidebar-layout";
+import { LOCAL_HOST } from "../snapshot-cache";
 
 const api = createEngineApi();
 

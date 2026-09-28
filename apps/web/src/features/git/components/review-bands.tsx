@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { GitCommitHorizontalIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import type { SessionDiff } from "@telar/engine-client";
-import type { SessionReview } from "@/lib/session-review";
+import type { SessionReview } from "../session-review";
 import { fmtAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 

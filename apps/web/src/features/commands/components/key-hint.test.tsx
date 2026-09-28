@@ -18,7 +18,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { restoreDefaultKeymap, setChord } from "../commands";
 import type { PanelTabItem } from "@/features/panel";
-import type { SidebarSession } from "@/lib/session-list";
+import type { SidebarSession } from "@/features/sessions";
 import { KeyHint, KeyHintOverlay } from "./key-hint";
 
 const navigation = await import("next/navigation");
@@ -153,7 +153,7 @@ describe("the call sites #401 lists", () => {
 
   test("a rail row wears its jump number while the modifier is held", async () => {
     installNavigation();
-    const { SessionRow } = await import("@/features/sessions");
+    const { SessionRow } = await import("@/features/sessions/rail/session-row");
     const { SidebarProvider } = await import("@/components/ui/sidebar");
     const session = { id: "session_1", title: "Exoplanets", projectId: "p1", activity: "idle", createdAt: 1, updatedAt: 1 } as SidebarSession;
     const host = await mount(

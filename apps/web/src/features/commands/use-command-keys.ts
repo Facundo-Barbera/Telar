@@ -16,7 +16,7 @@ import {
   type CommandId,
   type Keymap,
 } from "./commands";
-import { sessionHref, type SidebarSession } from "@/lib/session-list";
+import { sessionHref, type SidebarSession } from "@/features/sessions";
 
 type DesktopCommandKeyBridge = {
   isDesktop?: boolean;

@@ -28,7 +28,7 @@ import { commandDestination } from "../command-keys";
 import { COMMANDS, commandHandler, type CommandId } from "../commands";
 import { ACCENTS, ACCENT_LABELS, useQuickSettings } from "../quick-settings";
 import { useKeymap } from "../use-command-keys";
-import type { SidebarSession } from "@/lib/session-list";
+import type { SidebarSession } from "@/features/sessions";
 
 export type CommandPalettePage = "root" | PalettePage | PaletteQuickPage;
 

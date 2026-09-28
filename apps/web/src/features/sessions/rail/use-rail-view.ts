@@ -1,6 +1,6 @@
-import { useExpandedParents, flatRailRows, flattenSessions } from "@/lib/flat-rail";
-import { useInboxPolicy } from "@/lib/inbox-policy";
-import { appliedProjectFilter, filterSessionsToProjects, projectFilterKey, useProjectFilter } from "@/lib/project-filter";
+import { useExpandedParents, flatRailRows, flattenSessions } from "./flat-rail";
+import { useInboxPolicy } from "../inbox-policy";
+import { appliedProjectFilter, filterSessionsToProjects, projectFilterKey, useProjectFilter } from "@/features/projects";
 import {
   groupSessions,
   moveProjectGroupStep,
@@ -9,9 +9,9 @@ import {
   railJumpSlots,
   railRowsForCommandKeys,
   useCollapsedGroups,
-} from "@/lib/session-groups";
-import { bandOf, deriveSessionList, sessionKey, windowFor, type SidebarSession } from "@/lib/session-list";
-import { useSidebarLayout } from "@/lib/sidebar-layout";
+} from "../session-groups";
+import { bandOf, deriveSessionList, sessionKey, windowFor, type SidebarSession } from "../session-list";
+import { useSidebarLayout } from "./sidebar-layout";
 import type { RowEnv } from "./rail-parts";
 import type { RailData } from "./use-rail-data";
 import { useRailDrag } from "./use-rail-drag";

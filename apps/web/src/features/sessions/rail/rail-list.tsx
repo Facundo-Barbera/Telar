@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { FolderPlusIcon, FoldVerticalIcon, MessageSquareIcon, MessageSquarePlusIcon, MonitorIcon, UnfoldVerticalIcon } from "lucide-react";
-import { FlatSessionList } from "@/components/session/flat-session-list";
-import { ProjectGroupSection } from "@/components/session/project-group";
+import { FlatSessionList } from "./flat-session-list";
+import { ProjectGroupSection } from "./project-group";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
-import { projectPlaces } from "@/lib/hosts/project-places";
+import { projectPlaces } from "@/features/hosts";
 import { CAPTION } from "@/lib/idiom";
-import { sessionKey, type SidebarSession } from "@/lib/session-list";
+import { sessionKey, type SidebarSession } from "../session-list";
 import { cn } from "@/lib/utils";
 import { jumpProp, SessionShelf, SidebarEmpty, type RowEnv } from "./rail-parts";
 import { SessionRow } from "./session-row";

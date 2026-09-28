@@ -1,10 +1,9 @@
 import { remoteErrorResponse } from "@/lib/remote/http";
-import { findHost } from "@/lib/hosts/store";
-import { forward } from "@/lib/hosts/proxy";
+import { findHost, forward } from "@/features/hosts/server";
 
 /**
  * `/api/hosts/:id/*` → that Mac's `/api/*`, with its token. The rules are in
- * lib/hosts/proxy.ts; this only looks the host up.
+ * features/hosts/proxy.ts; this only looks the host up.
  *
  * GATED LIKE EVERYTHING ELSE under `/api` (proxy.ts): a device that may only
  * observe THIS cockpit may only observe through it, whatever its standing

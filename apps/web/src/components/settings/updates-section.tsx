@@ -23,7 +23,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { UpdateToast } from "@/components/ui/update-toast";
 import { RestartUpdateDialog } from "@/components/ui/restart-update-dialog";
-import { useSessionDefaults } from "@/lib/session-defaults";
+import { useSessionDefaults } from "@/features/sessions";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**

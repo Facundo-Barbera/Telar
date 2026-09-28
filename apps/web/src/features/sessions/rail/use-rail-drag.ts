@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { moveProjectGroup, moveSessionRow, PINNED_ROW_SCOPE, PROJECT_GROUP_MIME, SESSION_ROW_MIME } from "@/lib/session-groups";
-import type { useSidebarLayout } from "@/lib/sidebar-layout";
+import { moveProjectGroup, moveSessionRow, PINNED_ROW_SCOPE, PROJECT_GROUP_MIME, SESSION_ROW_MIME } from "../session-groups";
+import type { useSidebarLayout } from "./sidebar-layout";
 
 type Layout = Pick<
   ReturnType<typeof useSidebarLayout>,

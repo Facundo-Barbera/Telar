@@ -10,7 +10,7 @@
  * gap again in full, for rows this tab had already folded and thrown away.
  *
  * THIS IS NOT THE SNAPSHOT CACHE, and the two answer different questions.
- * `lib/snapshot-cache.ts` is IndexedDB: it survives the tab, it is read
+ * `features/sessions/snapshot-cache.ts` is IndexedDB: it survives the tab, it is read
  * asynchronously (so it cannot paint in the commit that switches), and what it
  * holds may be days old — which is why a restore from it dates the screen with
  * a "last true at" banner. This is sixteen entries of plain memory, read

@@ -15,7 +15,7 @@ mock.module("next/navigation", () => ({
 
 const { SessionRow } = await import("./session-row");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
-import type { SidebarSession } from "@/lib/session-list";
+import type { SidebarSession } from "../session-list";
 
 const row = (over: Partial<SidebarSession>, active = false) =>
   renderToStaticMarkup(
