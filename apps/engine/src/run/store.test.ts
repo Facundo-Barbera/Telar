@@ -2,8 +2,8 @@ import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RunStore } from "../src/run/store";
-import { DEFAULT_RUN_ICON, redactConfiguration, RunError, secretValues, redactText } from "../src/run/types";
+import { RunStore } from "./store";
+import { DEFAULT_RUN_ICON, redactConfiguration, RunError, secretValues, redactText } from "./types";
 
 const tempDirs: string[] = [];
 const tempDir = () => {

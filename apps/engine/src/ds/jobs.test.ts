@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { JobRunner } from "../src/ds/jobs";
+import { JobRunner } from "./jobs";
 
 const settle = async (runner: JobRunner, jobId: string) => runner.wait(jobId, 10_000);
 

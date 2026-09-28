@@ -8,9 +8,9 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RunManager, type StartRunInput } from "../src/run/manager";
-import { RunJournalFile } from "../src/run/journal";
-import { RunConfigurationInput, type RunConfiguration, type RunProbeResult } from "../src/run/types";
+import { RunManager, type StartRunInput } from "./manager";
+import { RunJournalFile } from "./journal";
+import { RunConfigurationInput, type RunConfiguration, type RunProbeResult } from "./types";
 
 const temp = (label: string) => track(fs.mkdtempSync(path.join(os.tmpdir(), `telar-run-${label}-`)));
 

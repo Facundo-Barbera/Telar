@@ -29,13 +29,13 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { RunLaunchEvents, RunLauncher } from "../src/run/launcher";
-import { RunManager, type StartRunInput } from "../src/run/manager";
-import { escapeScan, PTY_MASK } from "../src/run/pty-stream";
-import { matchRunRoute } from "../src/run/routes";
-import { RunStore } from "../src/run/store";
-import { storeRunCapability } from "../src/run/store-capability";
-import type { RunConfiguration } from "../src/run/types";
+import type { RunLaunchEvents, RunLauncher } from "./launcher";
+import { RunManager, type StartRunInput } from "./manager";
+import { escapeScan, PTY_MASK } from "./pty-stream";
+import { matchRunRoute } from "./routes";
+import { RunStore } from "./store";
+import { storeRunCapability } from "./store-capability";
+import type { RunConfiguration } from "./types";
 
 const managers: RunManager[] = [];
 const tempDirs: string[] = [];
@@ -85,7 +85,7 @@ const input = (dir: string, overrides: Partial<StartRunInput> = {}): StartRunInp
  *
  * `kind` is the whole of what `capture()` branches on, so this reaches the byte
  * path exactly as `terminalLauncher` does — without a loopback port, which
- * `run-terminal-channel.test.ts` already drives the real server over.
+ * `terminal-client.test.ts` already drives the real server over.
  */
 function fakePty() {
   const state = {

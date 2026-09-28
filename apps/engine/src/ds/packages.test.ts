@@ -2,10 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { canonicalName, declaredDependencies, installCommandFor, installSteps, listPackages, projectRequirements, removeSteps, requirementsStep, validSpec } from "../src/ds/packages";
-import { condaEnvRoot, planBootstrap, planEnvironment } from "../src/ds/telar-venv";
-import type { Toolchain } from "../src/ds/toolchain";
-import type { Exec } from "../src/ds/python-env";
+import { canonicalName, declaredDependencies, installCommandFor, installSteps, listPackages, projectRequirements, removeSteps, requirementsStep, validSpec } from "./packages";
+import { condaEnvRoot, planBootstrap, planEnvironment } from "./telar-venv";
+import type { Toolchain } from "./toolchain";
+import type { Exec } from "./python-env";
 
 const roots: string[] = [];
 const root = (): string => {

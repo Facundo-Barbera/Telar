@@ -8,11 +8,11 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RunJournalFile } from "../src/run/journal";
-import type { RunLauncher } from "../src/run/launcher";
-import { RunManager, type StartRunInput } from "../src/run/manager";
-import { createOutputSplitter, safeCut } from "../src/run/stream";
-import { REDACTED, type RunConfiguration } from "../src/run/types";
+import { RunJournalFile } from "./journal";
+import type { RunLauncher } from "./launcher";
+import { RunManager, type StartRunInput } from "./manager";
+import { createOutputSplitter, safeCut } from "./stream";
+import { REDACTED, type RunConfiguration } from "./types";
 
 const temp = (label: string) => track(fs.mkdtempSync(path.join(os.tmpdir(), `telar-run-${label}-`)));
 

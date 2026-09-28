@@ -23,7 +23,7 @@ import {
   ManagedTectonic,
   managedRelease,
   managedTectonicBinary,
-} from "../src/latex/managed";
+} from "./managed";
 
 const roots: string[] = [];
 const root = (): string => {

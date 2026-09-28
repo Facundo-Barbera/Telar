@@ -16,12 +16,12 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RunJournalFile, type RunRecord } from "../src/run/journal";
-import type { RunHandle, RunLaunchEvents, RunLauncher } from "../src/run/launcher";
-import { RunManager, type StartRunInput } from "../src/run/manager";
-import type { TerminalFacts } from "../src/run/terminal-client";
-import { PTY_MASK } from "../src/run/pty-stream";
-import type { RunConfiguration } from "../src/run/types";
+import { RunJournalFile, type RunRecord } from "./journal";
+import type { RunHandle, RunLaunchEvents, RunLauncher } from "./launcher";
+import { RunManager, type StartRunInput } from "./manager";
+import type { TerminalFacts } from "./terminal-client";
+import { PTY_MASK } from "./pty-stream";
+import type { RunConfiguration } from "./types";
 
 const temp = (label: string) => track(fs.mkdtempSync(path.join(os.tmpdir(), `telar-run-${label}-`)));
 const track = (dir: string): string => (tempDirs.push(dir), dir);

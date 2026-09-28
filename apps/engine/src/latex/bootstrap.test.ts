@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { planLatexBootstrap } from "../src/latex/bootstrap";
-import type { LatexToolchain } from "../src/latex/toolchain";
+import { planLatexBootstrap } from "./bootstrap";
+import type { LatexToolchain } from "./toolchain";
 
 const bare: LatexToolchain = { texlive: [] };
 const withBrew: LatexToolchain = { texlive: [], brew: { path: "/opt/homebrew/bin/brew", version: "4.4.0" } };

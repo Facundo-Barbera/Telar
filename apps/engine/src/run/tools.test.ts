@@ -11,17 +11,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, type FetchLike } from "@telar/engine-client";
-import { withTurnNotes } from "../src/domains/turns";
-import { clientRunCapability } from "../src/run/client-capability";
-import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "../src/run/launcher";
-import { RunManager } from "../src/run/manager";
-import { personClosedNote } from "../src/run/mount";
-import { matchRunRoute } from "../src/run/routes";
-import { RunStore } from "../src/run/store";
-import { storeRunCapability } from "../src/run/store-capability";
-import { runTools } from "../src/run/tools";
-import type { RunView } from "../src/run/types";
-import { EngineStore } from "../src/state";
+import { withTurnNotes } from "../domains/turns";
+import { clientRunCapability } from "./client-capability";
+import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "./launcher";
+import { RunManager } from "./manager";
+import { personClosedNote } from "./mount";
+import { matchRunRoute } from "./routes";
+import { RunStore } from "./store";
+import { storeRunCapability } from "./store-capability";
+import { runTools } from "./tools";
+import type { RunView } from "./types";
+import { EngineStore } from "../state";
 
 const tempDirs: string[] = [];
 const temp = (label: string) => {

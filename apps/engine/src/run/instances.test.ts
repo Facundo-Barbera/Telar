@@ -15,9 +15,9 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "../src/run/launcher";
-import { RunManager, type StartRunInput } from "../src/run/manager";
-import type { RunConfiguration } from "../src/run/types";
+import type { RunHandle, RunLaunchEvents, RunLaunchRequest, RunLauncher } from "./launcher";
+import { RunManager, type StartRunInput } from "./manager";
+import type { RunConfiguration } from "./types";
 
 const worktree = () => track(fs.mkdtempSync(path.join(os.tmpdir(), "telar-run-tree-")));
 

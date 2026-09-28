@@ -19,10 +19,10 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RunManager, type StartRunInput } from "../src/run/manager";
-import { resolveShell } from "../src/run/shell";
-import { RunStore } from "../src/run/store";
-import { redactConfiguration, type RunConfiguration } from "../src/run/types";
+import { RunManager, type StartRunInput } from "./manager";
+import { resolveShell } from "./shell";
+import { RunStore } from "./store";
+import { redactConfiguration, type RunConfiguration } from "./types";
 
 const managers: RunManager[] = [];
 const tempDirs: string[] = [];
@@ -59,7 +59,7 @@ function input(tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput
   return { projectId: "proj_1", config: cfg, worktreePath: tree, sessionId: "sess_a", ...extra };
 }
 
-/** Matches this file's own ceiling; see `run-manager.test.ts` for why. */
+/** Matches this file's own ceiling; see `manager.test.ts` for why. */
 async function until(predicate: () => boolean, ms = 6_000): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < ms) {

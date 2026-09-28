@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Exec } from "../src/ds/python-env";
-import { findLatexBinary, parseTexliveYear, probeTexliveRoot } from "../src/latex/toolchain";
+import type { Exec } from "../ds/python-env";
+import { findLatexBinary, parseTexliveYear, probeTexliveRoot } from "./toolchain";
 
 const roots: string[] = [];
 const dir = (): string => {
