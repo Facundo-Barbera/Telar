@@ -20,8 +20,7 @@ import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
 import type { LoginGrantStore } from "./secrets/login-grants";
 import { providerProcessEnv } from "./provider-instances";
-import { SteerMailbox } from "./steering";
-import { framedTurnInput, withTurnNotes } from "./domains/turns";
+import { framedTurnInput, SteerMailbox, withTurnNotes } from "./domains/turns";
 
 type WorkerClient = Pick<
   EngineClient,

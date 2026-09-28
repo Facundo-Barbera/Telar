@@ -5,7 +5,7 @@ import type { NotesCapability } from "./domains/notes";
 import type { PromptsCapability } from "./prompts-tools/tools";
 import type { DisplayCapability } from "./display/tools";
 import type { RunCapability } from "./run/capability";
-import type { SteerMailbox } from "./steering";
+import type { SteerMailbox } from "./domains/turns";
 
 export type { SessionsCapability };
 

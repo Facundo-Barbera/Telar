@@ -1,49 +1,12 @@
-/**
- * THE TURN PROJECTION AND THE QUERY ROUTES ON IT — issue #516.
- *
- * Three claims, and the third is the one the issue actually bought:
- *
- *   1. A row exists for every turn — written when the turn is accepted, brought
- *      level when it ends, and backfilled for a store whose conversations
- *      predate this table.
- *   2. The routes are bounded, keyset-paged, and state what they left out.
- *   3. NONE OF IT FOLDS THE JOURNAL. A session of 60,000 events beside one of a
- *      handful, and `outline` on the big one is asserted to cost what it costs
- *      on a small one — because if the answer were still being derived from
- *      events, that is the assertion that would fail.
- *
- * ── WHERE THE ACCEPTANCE NUMBERS LIVE, WHICH IS NOT HERE ───────────────────
- * This header used to say the PR's before/after came from "`bench:outline`
- * below". There was no such bench and no such script, here or anywhere: the
- * sentence described an intention in the present tense, which is the one shape
- * a reader cannot tell from a fact. It is worth keeping the correction visible
- * rather than deleting the line, because the claim survived review.
- *
- * The measurements #516 asks for are now real and are in two places:
- *
- *   - `query-acceptance.test.ts` — the byte table and the latency comparison on
- *     ONE engine of 300 sessions carrying a 60,000-event journal, against an
- *     explicit fold control, with the instrument falsified before its result is
- *     reported.
- *   - `bench:outline` (`bench/outline.ts`) — the same two readers swept across
- *     several journal sizes, for a person deciding whether to believe them.
- *
- * WHAT STAYS HERE is the projection's behaviour: that a row exists, that it is
- * right, that the pages are bounded and keyset. The test below is the cheap
- * regression guard for the fold; it is not the acceptance measurement, and it
- * says so now rather than implying otherwise.
- */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { stubModels } from "./stub-models";
-import { summariseTurn, ANSWER_HEAD_CHARS, INPUT_LINE_CHARS, OUTLINE_ANSWER_CHARS } from "../src/turn-summary";
+import { EngineStore } from "../../state";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { stubModels } from "../../../test/stub-models";
+import { summariseTurn, ANSWER_HEAD_CHARS, INPUT_LINE_CHARS, OUTLINE_ANSWER_CHARS } from "./turn-summary";
 
-/** The ceiling one step may answer with: the 8,000-character default plus the
- *  scalar envelope that identifies it. */
 const ITEM_BUDGET = 8_600;
 
 const roots: string[] = [];
@@ -63,8 +26,6 @@ const open = (home: string): EngineStore => {
   return store;
 };
 
-/** Close a store WITHOUT the afterEach double-closing it — used when a test
- *  reopens the same home to prove the backfill runs on open. */
 const close = (store: EngineStore): void => {
   store.closeExecutionStore();
   const at = stores.indexOf(store);
@@ -77,8 +38,6 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-/** One completed turn, through the public path — a hand-written queue would
- *  price a store no engine ever wrote. */
 function conversation(store: EngineStore, sessionId: string, runId: string, input: string, answer: string, items = 2): void {
   store.submitTurn(sessionId, { runId, input });
   const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
@@ -102,8 +61,6 @@ test("a turn has a row when it is ACCEPTED, and the row is right when it ENDS", 
   const { store } = seeded();
   store.submitTurn("session_0", { runId: "run_1", input: "the appearance rework\nsecond line" });
 
-  // Accepted: the input line is searchable from this instant, and nothing
-  // pretends the turn has ended.
   const queued = store.turnOutline("session_0", { limit: 10 });
   expect(queued.turns).toHaveLength(1);
   expect(queued.turns[0]!.input).toBe("the appearance rework");
@@ -123,13 +80,10 @@ test("a turn has a row when it is ACCEPTED, and the row is right when it ENDS", 
   expect(ended.state).toBe("completed");
   expect(ended.items).toBe(1);
   expect(ended.answerChars).toBe(5_000);
-  // A page shows a LINE of the answer; the row remembers the head, and both say
-  // they were cut rather than looking like short text. See `outlineRow`.
   expect(ended.answer).toHaveLength(OUTLINE_ANSWER_CHARS);
   expect(ended.answer.endsWith("…")).toBe(true);
   expect(ended.endedAt).toBeGreaterThan(0);
 
-  // The stored row, which keeps what the page leaves behind.
   const stored = summariseTurn(store.turns("session_0")[0]!, store.items("session_0"));
   expect(stored.itemTitles).toEqual(["Read state.ts"]);
   expect(stored.answerHead).toHaveLength(ANSWER_HEAD_CHARS);
@@ -154,8 +108,6 @@ test("the backfill folds a store whose turns predate the table, once", () => {
   for (let index = 0; index < 4; index += 1) conversation(store, "session_0", `run_${index}`, `message ${index}`, `answer ${index}`);
   close(store);
 
-  // Drop the projection the way a binary without it would have left the store:
-  // the documents are all still there, the rows are not.
   const sqlite = new (require("bun:sqlite").Database)(path.join(home, "execution.sqlite"));
   sqlite.exec("DELETE FROM turn_summaries");
   sqlite.close();
@@ -165,8 +117,6 @@ test("the backfill folds a store whose turns predate the table, once", () => {
   expect(reopened.turnOutline("session_0", { limit: 10 }).turns).toHaveLength(4);
   close(reopened);
 
-  // IDEMPOTENT, and silent on every open after the first: the gaps read finds
-  // nothing, so nothing is folded and the daemon prints no line.
   const again = open(home);
   expect(again.turnSummaryBackfill).toEqual({ sessions: 0, turns: 0 });
 });
@@ -207,19 +157,14 @@ test("a run's items are a list to choose from, and one step is clamped with its 
   const listed = store.runItems("session_0", "run_1");
   expect(listed.map((item) => item.title)).toEqual(["small", "big"]);
   expect(listed[0]!.index).toBe(0);
-  // `bytes` is the whole point: an agent must be able to see the expensive one.
   expect(listed[1]!.bytes).toBeGreaterThan(listed[0]!.bytes * 100);
 
   const step = store.runItem("session_0", "run_1", 1, 500);
   expect(step.more).toBe(true);
   expect(step.title).toBe("big");
-  // The envelope is scalars: the detail rides in `text`, bounded, and nowhere
-  // else — a second unbounded copy is what made this route unpredictable.
   expect(Buffer.byteLength(JSON.stringify(step), "utf8")).toBeLessThan(1_000);
   expect(step.totalChars).toBeGreaterThan(20_000);
   expect(step.text).toContain(`[… ${step.totalChars - 500} more characters]`);
-  // Addressed by id as well as by position — a caller holding one from a
-  // journal page must not have to translate it first.
   expect(store.runItem("session_0", "run_1", "item_b", 500).index).toBe(1);
   expect(() => store.runItem("session_0", "run_1", 9, 500)).toThrow();
 });
@@ -227,8 +172,6 @@ test("a run's items are a list to choose from, and one step is clamped with its 
 test("the answer is sliced, states its true length, and defaults to the last turn that spoke", () => {
   const { store } = seeded();
   conversation(store, "session_0", "run_1", "first", "a".repeat(10_000));
-  // A later turn that completed having said NOTHING: the default must not land
-  // on it and answer the empty string.
   store.submitTurn("session_0", { runId: "run_2", input: "second" });
   const token = store.claimTurn("session_0", "worker_one")!.claim!.token;
   store.markRunning("session_0", "run_2", token);
@@ -254,7 +197,6 @@ test("grep finds a phrase in the journal, newest first, with context around it",
   const found = store.grepSession("session_0", "index.lock", { limit: 10 });
   expect(found.matches.length).toBeGreaterThan(0);
   expect(found.matches[0]!.context).toContain("index.lock");
-  // Newest first, so ids descend.
   const ids = found.matches.map((match) => match.id);
   expect([...ids].sort((a, b) => b - a)).toEqual(ids);
 
@@ -262,7 +204,6 @@ test("grep finds a phrase in the journal, newest first, with context around it",
   expect(paged.matches).toHaveLength(1);
   expect(paged.more).toBe(true);
   expect(store.grepSession("session_0", "index.lock", { limit: 1, before: paged.next }).matches[0]!.id).toBeLessThan(paged.next!);
-  // A wildcard a person typed is text, not a `LIKE` operator.
   expect(store.grepSession("session_0", "%", { limit: 5 }).matches).toHaveLength(0);
 });
 
@@ -283,18 +224,6 @@ test("find matches an input line, an answer and a title, and says which index an
   expect(store.findSessions({ q: "appearance", since: Date.now() + 60_000, limit: 10 }).sessions).toHaveLength(0);
 });
 
-/**
- * THE CLAIM THE ISSUE IS ACTUALLY BUYING.
- *
- * A session of 60,000 journal events beside one of a handful, and `outline`
- * asked of both. If the answer were still folded from events the big one would
- * be three orders of magnitude slower; it is the same read either way, so the
- * assertion is that its cost does not track the journal.
- *
- * ASSERTED AS A RATIO AND A CEILING, not as a wall-clock number — a loaded CI
- * runner must not be able to fail this for being busy. The ceiling is generous
- * (100 ms against a measured 1–2 ms) and the fold it rules out is 1.2 s.
- */
 test("outline does not fold the journal: a 60,000-event session costs what a small one costs", () => {
   const { store } = seeded(2);
   conversation(store, "session_1", "run_1", "small", "small answer");
@@ -305,8 +234,6 @@ test("outline does not fold the journal: a 60,000-event session costs what a sma
   store.ingestObservations("session_0", "run_big", token, [
     { kind: "item.started", item: { id: "item_big", detail: { type: "assistant_message", text: "" } } },
   ]);
-  // 60,000 deltas is 60,000 journal rows — the shape of the dogfood store's
-  // largest session (61,977), built the only way an engine ever builds one.
   for (let batch = 0; batch < 60; batch += 1) {
     store.ingestObservations("session_0", "run_big", token, Array.from({ length: 1_000 }, () => ({
       kind: "content.delta" as const, itemId: "item_big", stream: "assistant_text" as const, text: "tok ",
@@ -328,29 +255,9 @@ test("outline does not fold the journal: a 60,000-event session costs what a sma
 
   expect(outline.turns).toHaveLength(1);
   expect(outline.turns[0]!.answer).toBe("the big answer");
-  /**
-   * RELATIVE, NOT ABSOLUTE (#706).
-   *
-   * There was an `expect(bigMs).toBeLessThan(100)` here. It asserted that this
-   * machine was not busy, which is not a property of `turnOutline` — and on a
-   * shared runner it is a coin toss rather than a claim.
-   *
-   * The line below is what the test exists to prove and it survives load: the
-   * outline must not fold events at request time, so a session holding sixty
-   * thousand of them answers in about the same time as one holding a handful.
-   * Both measurements inflate together when the machine is busy, so the
-   * COMPARISON holds where the absolute number does not. If the fold ever
-   * comes back, `bigMs` grows with the journal and this fails — which is the
-   * regression anyone cares about.
-   */
   expect(bigMs).toBeLessThan(smallMs + 50);
 });
 
-/**
- * THE ROUTES OVER THE REAL WIRE, on an engine of 300 sessions — the size the
- * issue names, because the byte budgets are claims about a real engine and a
- * three-session fixture cannot falsify one.
- */
 test("every query route answers under its budget on a 300-session engine", async () => {
   const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
@@ -371,15 +278,11 @@ test("every query route answers under its budget on a 300-session engine", async
     return { status: answer.status, bytes: Buffer.byteLength(text, "utf8"), body: JSON.parse(text) as Record<string, unknown> };
   };
 
-  // THE TWO-NUMBER BOUND, on data chosen to make the byte half bite: every
-  // answer here is 4,000 characters, so each row carries a full 200-character
-  // line and the page stops short of twenty rows rather than over 6 KB.
   const outline = await get("/v2/sessions/session_0/outline");
   expect(outline.status).toBe(200);
   expect((outline.body.turns as unknown[]).length).toBeLessThan(20);
   expect(outline.body.more).toBe(true);
   expect(outline.bytes).toBeLessThan(6_500);
-  // And a page of ordinary one-line turns reaches the row limit instead.
   const roomy = await get("/v2/sessions/session_5/outline");
   expect((roomy.body.turns as unknown[]).length).toBe(1);
   expect(roomy.bytes).toBeLessThan(1_000);
@@ -407,21 +310,12 @@ test("every query route answers under its budget on a 300-session engine", async
   expect(grep.status).toBe(200);
   expect(grep.bytes).toBeLessThan(12_000);
 
-  // A bad bound is a bug in the caller, refused rather than defaulted — the
-  // rule `/events` already follows.
   expect((await get("/v2/sessions/session_0/outline?limit=all")).status).toBe(400);
   expect((await get("/v2/sessions/find")).status).toBe(400);
   expect((await get("/v2/sessions/session_0/grep")).status).toBe(400);
-  // And a ceiling is a ceiling: asking past it is clamped, never served.
   expect(((await get("/v2/sessions/session_0/outline?limit=9999")).body.turns as unknown[]).length).toBeLessThanOrEqual(100);
 });
 
-/**
- * #550 — A NOTIFICATION TURN'S ROW SHOWS THE NOTIFICATION'S LINE.
- *
- * `input` on such a turn is either a machine label or a peer's whole message,
- * and neither is what an orchestrator scanning twenty rows is asking for.
- */
 test("a wake's outline row is its summary line, not the machine label on `input`", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-summary-notify-"));
   roots.push(home);
@@ -442,6 +336,5 @@ test("a wake's outline row is its summary line, not the machine label on `input`
   expect(row.input).not.toContain("[notification:");
   expect(row.input.length).toBeLessThanOrEqual(INPUT_LINE_CHARS);
 
-  // The same line the transcript row shows, because it is the same string.
   expect(row.input).toBe(wake.notification!.summary.slice(0, row.input.length));
 });
