@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../../state";
-import { legacyLongSpelling } from ".";
+import { legacyLongSpelling } from "../providers";
 import { toLegacyHome } from "../../../test/store-internals";
 
 const roots: string[] = [];

@@ -12,7 +12,6 @@ import {
   autoResolution,
   deadlineResolution,
   defaultAllowed,
-  defaultInstanceIdForDriver,
   countsAsActivity,
   isBackgroundWork,
   type RetentionPolicy,
@@ -24,7 +23,6 @@ import {
   EngineRequest as RequestSchema,
   machineAllows,
   type ProjectPlugins,
-  migrateLegacyPluginFields,
   assignmentsOf,
   // THE CLIENTS' OWN SETTLING RULE, imported rather than re-implemented: the
   // live list drops the rows a rail would shelve (#457), so an engine that
@@ -78,7 +76,6 @@ import {
   type McpServer,
   type NotificationDetail,
   type ProviderInstance,
-  type ProviderInstanceEnvVar,
   type TurnAttachment,
   type ProviderDriverKind,
   // The runtime enum too, not just the type: `readProviderInstances` asks it
@@ -108,8 +105,6 @@ import {
   type WorktreeInventory,
   type WorktreeReclaimItem,
   type WorktreeReclaimResult,
-  CLAUDE_COMPACTION_ENV_NAMES,
-  migrateClaudeCompaction,
 } from "@telar/engine-client";
 import { type ProjectPatch, ProjectProbes, ProjectRegistry, ProjectRemounts, WorkspaceConfigStore } from "./domains/projects";
 import { assertId, EngineStateError, Kernel, type JournalEntry } from "./platform/kernel";
@@ -120,7 +115,7 @@ import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, typ
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { type AttachmentInput, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, isPeerMail, newestAssignment, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TERMINAL_WAKE_KINDS } from "./domains/sessions";
-import { FOLDING_INTENTS, heldDelivery, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
+import { FOLDING_INTENTS, heldDelivery, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, wakeNotification, withoutWakesFrom } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -132,12 +127,12 @@ import { GitHubStore, defaultGhRunner, SessionPulls, type GhRunner } from "./dom
 import {  } from "zod";
 import { type AdoptionInput, ConversationAdoption } from "./domains/providers";
 import { type ClaudeConversation } from "./drivers/claude";
-import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
+import { BUNDLED_MANIFEST, type ModelManifest, readModelCatalogue } from "./domains/providers";
 import { type BootstrapRequest, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, type DsCapability, DsFiles, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type RequirementsSource, type ResolvedLatex, storeDsCapability, storeLatexCapability, type TableWindow, telarVenvDir, type Toolchain, windowCsv } from "./domains/plugins";
 import { ScheduleBook, type ScheduleInput } from "./domains/schedules";
 import { WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
-import { CheckoutSizes, CleanupStore, copyStore, type CheckoutSizesOptions } from "./domains/storage";
+import { backfillTurnSummaries, CheckoutSizes, CleanupStore, copyStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
 import { type AttachedTerminals, pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
 import { type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
 
@@ -1345,11 +1340,11 @@ export class EngineStore {
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
     this.sessionIndexBackfill = this.sessionIndex.backfill();
-    this.turnSummaryBackfill = this.backfillTurnSummaries();
+    this.turnSummaryBackfill = backfillTurnSummaries(this.kernel, this.sessionItems, this.sessionQueues);
     // Before anything can claim a turn — see the method.
-    this.claudeLongWindowMigration = this.migrateBareClaudeIds();
-    this.claudeCompactionMigration = this.migrateClaudeCompactionToLimits();
-    this.pluginFieldMigration = this.migrateLegacyPluginFieldsOnOpen();
+    this.claudeLongWindowMigration = migrateBareClaudeIds(this.kernel, () => this.records.ids(), this.catalogues.manifest);
+    this.claudeCompactionMigration = migrateClaudeCompactionToLimits(this.kernel);
+    this.pluginFieldMigration = migrateLegacyPluginFieldsOnOpen(this.kernel);
   }
 
   /**
@@ -1458,257 +1453,14 @@ export class EngineStore {
 
   /** How many projects the legacy-field fold changed on this open (0 on most). */
   readonly pluginFieldMigration: number;
-
-  /**
-   * THE LEGACY `dataScience` / `latex` BLOCKS FOLD INTO THE PLUGIN MAP — on
-   * every open, not once.
-   *
-   * EVERY OPEN because the input can come back: an older engine (one rolled
-   * back to) writes those keys again, and the next open of this one must fold
-   * them rather than ignore them. That is affordable because the pass is
-   * IDEMPOTENT AND NON-DESTRUCTIVE (`migrateLegacyPluginFields`): an existing
-   * map entry always wins, settings come across whole, and a registry with no
-   * legacy keys is not written at all.
-   *
-   * The raw registry, before the schema, so nothing the schema would strip is
-   * lost on the way. A registry that will not parse is left for every other
-   * reader of it to report.
-   */
-  private migrateLegacyPluginFieldsOnOpen(): number {
-    return this.kernel.command("migrateLegacyPluginFields", () => {
-      let projects = 0;
-      try {
-        const stored = this.readDocument(this.paths.projects) as { projects?: Record<string, unknown>[] } | undefined;
-        const next = (stored?.projects ?? []).map((project) => {
-          const migrated = migrateLegacyPluginFields(project);
-          if (migrated.changed) projects += 1;
-          return migrated.project;
-        });
-        if (projects > 0) this.writeDocument(this.paths.projects, { ...stored, projects: next });
-      } catch {
-        // Reported by every other reader of the registry.
-      }
-      return projects;
-    });
-  }
-
-  /** How many logins the one-time #587 rewrite changed on this open, or nothing
-   *  when it had already run. */
+  /** How many logins the one-time compaction rewrite changed on this open, or nothing when it had already run. */
   readonly claudeCompactionMigration?: number;
-
-  /**
-   * CLAUDE'S COMPACTION ROWS BECOME THE PER-CLASS SETTING — once, marked (#587).
-   *
-   * Before #587 the Claude login's compaction was a token count written as
-   * environment rows. `migrateClaudeCompaction` reads them back as the setting
-   * they meant — T becomes the 200k-class limit, 1M takes the default — and the
-   * rows leave the list, so the setting and a stale row cannot disagree.
-   *
-   * The raw registry, not `readProviderInstances`, which seeds one on first
-   * read. A login whose compaction rows are sensitive keeps them: their values
-   * live in the secrets file and are not this pass's to read.
-   */
-  private migrateClaudeCompactionToLimits(): number | undefined {
-    if (this.readDocument(this.paths.claudeCompactionMigration) !== undefined) return undefined;
-    return this.kernel.command("migrateClaudeCompactionToLimits", () => {
-      let logins = 0;
-      try {
-        const stored = this.readDocument(this.paths.providerInstances) as { providerInstances?: Record<string, unknown>[] } | undefined;
-        const next = (stored?.providerInstances ?? []).map((instance) => {
-          const env = instance.env as ProviderInstanceEnvVar[] | undefined;
-          if (instance.driver !== "claude" || !Array.isArray(env) || instance.autoCompact !== undefined) return instance;
-          if (env.some((variable) => CLAUDE_COMPACTION_ENV_NAMES.includes(variable.name) && variable.sensitive)) return instance;
-          const migrated = migrateClaudeCompaction(env);
-          if (!migrated) return instance;
-          logins += 1;
-          return { ...instance, env: migrated.env, ...(migrated.autoCompact ? { autoCompact: migrated.autoCompact } : {}) };
-        });
-        if (logins > 0) this.writeDocument(this.paths.providerInstances, { ...stored, providerInstances: next });
-      } catch {
-        // A registry that will not parse is reported by every other reader of it.
-      }
-      this.writeDocument(this.paths.claudeCompactionMigration, { version: 1, at: this.now(), logins });
-      return logins;
-    });
-  }
-
-  /** What the one-time `[1m]` rewrite changed on this open, or nothing when it
-   *  had already run. See `migrateBareClaudeIds`. */
+  /** What the one-time `[1m]` rewrite changed on this open, or nothing when it had already run. */
   readonly claudeLongWindowMigration?: { sessions: number; projects: number };
-
-  /**
-   * RECORDS SAVED BEFORE 200k WAS A CHOICE KEEP RUNNING AT 1M — once, marked.
-   *
-   * Until #986 a bare Claude id whose model defaults to 1M (`opus`,
-   * `claude-opus-5-5`, Fable) was rewritten to its `[1m]` row at every door, so
-   * a session or project default saved bare ran 1M. From #986 a bare id is a pick
-   * of the 200k window. Without this, those older records would silently halve
-   * their window on the next turn; with it, their stored model is rewritten to
-   * the explicit `[1m]` id it always ran as, and only picks made from now on can
-   * mean 200k.
-   *
-   * ONCE, AND BEFORE THE FIRST CLAIM. The marker document is written in the same
-   * transaction as the rewrites, and its presence skips the pass on every later
-   * open. It runs in the constructor rather than lazily because a claim that
-   * reached an old record first would run it at 200k. It reads only session
-   * METADATA documents — no queue, items or journal — which is the part of a
-   * session #646's startup lesson says is cheap.
-   *
-   * IDEMPOTENT ANYWAY: a `[1m]` id is never rewritten, so running it twice
-   * changes nothing. Queued turns are left alone — the old `submitTurn` already
-   * stored them in the `[1m]` spelling.
-   */
-  private migrateBareClaudeIds(): { sessions: number; projects: number } | undefined {
-    if (this.readDocument(this.paths.claudeLongWindowMigration) !== undefined) return undefined;
-    const rewrite = (selection: unknown): string | undefined => {
-      const model = (selection as { model?: unknown } | undefined)?.model;
-      if (typeof model !== "string") return undefined;
-      const long = legacyLongSpelling(model, this.catalogues.manifest);
-      return long === model ? undefined : long;
-    };
-    return this.kernel.command("migrateBareClaudeIds", () => {
-      let sessions = 0;
-      for (const id of this.records.ids()) {
-        try {
-          const file = sessionMetadataFile(this.paths, id);
-          const raw = this.readDocument(file) as { driver?: unknown; model?: Record<string, unknown> } | undefined;
-          if (!raw || raw.driver !== "claude") continue;
-          const long = rewrite(raw.model);
-          if (!long) continue;
-          this.writeDocument(file, { ...raw, model: { ...raw.model, model: long } });
-          sessions += 1;
-        } catch {
-          // One unreadable session must not stop an engine from starting.
-        }
-      }
-      let projects = 0;
-      try {
-        const stored = this.readDocument(this.paths.projects) as { projects?: Record<string, unknown>[] } | undefined;
-        // The raw registry, not `readProviderInstances`, which seeds one on
-        // first read and would make this pass write a file nobody asked for.
-        const registry = this.readDocument(this.paths.providerInstances) as { providerInstances?: { id?: unknown; driver?: unknown }[] } | undefined;
-        const claudeInstances = new Set(
-          (registry?.providerInstances ?? []).flatMap((instance) => (instance.driver === "claude" && typeof instance.id === "string" ? [instance.id] : [])),
-        );
-        claudeInstances.add(defaultInstanceIdForDriver("claude"));
-        const next = (stored?.projects ?? []).map((project) => {
-          const selection = project.defaultModel as { instanceId?: unknown } | undefined;
-          if (typeof selection?.instanceId !== "string" || !claudeInstances.has(selection.instanceId)) return project;
-          const long = rewrite(selection);
-          if (!long) return project;
-          projects += 1;
-          return { ...project, defaultModel: { ...selection, model: long } };
-        });
-        if (projects > 0) this.writeDocument(this.paths.projects, { ...stored, projects: next });
-      } catch {
-        // A registry that will not parse is reported by every other reader of it.
-      }
-      this.writeDocument(this.paths.claudeLongWindowMigration, { version: 1, at: this.now(), sessions, projects });
-      return { sessions, projects };
-    });
-  }
-
-  /**
-   * WHAT THE INDEX BACKFILL BUILT ON OPEN — issue #493. See `backfillSessionRows`.
-   *
-   * Surfaced so the daemon can say it, on the same argument the housekeeping
-   * sweep makes one screen up: a first open after this shipped folds every
-   * session on the machine, and a person watching a slow start deserves to know
-   * what it was doing. Absent on a store with no execution database; zero on
-   * every open after the first, which the daemon says nothing about.
-   */
+  /** What the index backfill built on open, for the daemon to report; zero on every open after the first. */
   readonly sessionIndexBackfill?: { built: number; removed: number };
-
-
-  /**
-   * WHAT THE TURN PROJECTION BUILT ON OPEN — issue #516. See
-   * `backfillTurnSummaries`. Reported in one line by the daemon, like #493's,
-   * and for its reason: a first open after this shipped folds every conversation
-   * on the machine, and a person watching a slow start deserves to know why.
-   */
+  /** What the turn projection built on open, reported like the index backfill. */
   readonly turnSummaryBackfill?: { sessions: number; turns: number };
-
-  /**
-   * EVERY TURN HAS A ROW BY THE TIME THIS RETURNS — the one-time backfill.
-   *
-   * WHOLE SESSIONS AT A TIME, not turn by turn. `turnSummaryGaps` asks which
-   * sessions have NO rows at all, which is a `DISTINCT` over a primary key on
-   * one side and a covering key seek on the other — no document text on either.
-   * A session already summarised is skipped entirely; one that is not is folded
-   * from its queue and its items, both parsed once.
-   *
-   * IT PARSES `items.json` WHOLE, DELIBERATELY. The indexed span read that the
-   * steady state uses is the right shape for ONE run and the wrong one for all
-   * of them: reading four hundred spans out of one document is four hundred
-   * queries to avoid a parse the backfill was always going to pay in full.
-   *
-   * NOT A REBUILD OF ROWS THAT EXIST. A session whose rows went stale under a
-   * binary that did not maintain them is corrected by `reconcileTurnSummaries`
-   * the next time it is written to — the same trade the session index makes, and
-   * bounded the same way: the conversations a downgrade can touch are the ones
-   * it was used to work in.
-   *
-   * NEVER THROWS FOR ONE BAD SESSION. A corrupt queue is skipped, exactly as the
-   * live fold skips an unreadable directory: one conversation must not be able to
-   * stop an engine from starting.
-   */
-  private backfillTurnSummaries(): { sessions: number; turns: number } {
-    const store = this.kernel.executionStore;
-    const missing = store.turnSummaryGaps();
-    if (missing.length === 0) return { sessions: 0, turns: 0 };
-    let turns = 0;
-    let sessions = 0;
-    /**
-     * AND IT MIGRATES NOTHING — issue #658, and #646's lesson kept.
-     *
-     * This pass reads every `items.json` on the machine, which makes it the
-     * most tempting place in the codebase to move them all to rows: the text is
-     * already parsed and the loop is already written. It is also the OPEN PATH,
-     * and #646's compaction sweep looked exactly this free in the constructor
-     * and cost 54 s on the first launch after it shipped.
-     *
-     * So the per-session migration stays lazy and stays where a person is
-     * already waiting for that one session. A store opened and never used
-     * migrates nothing at all.
-     */
-    this.sessionItems.withoutMigration(() => {
-      for (const sessionId of missing) {
-        try {
-          this.kernel.command("backfillTurnSummaries", () => {
-            const queue = this.readQueue(sessionId);
-            if (queue.turns.length === 0) return;
-            const items = this.sessionItems.values(sessionId);
-            const byRun = new Map<string, Item[]>();
-            for (const item of items) {
-              const filed = byRun.get(item.runId);
-              if (filed) filed.push(item);
-              else byRun.set(item.runId, [item]);
-            }
-            for (const turn of queue.turns) store.writeTurnSummary(summariseTurn(turn, byRun.get(turn.runId) ?? []));
-            turns += queue.turns.length;
-            sessions += 1;
-          });
-        } catch {
-          // Unreadable is skipped, not thrown — see the note above.
-        }
-      }
-    });
-    /**
-     * AND THE BACKFILL LETS GO OF EVERYTHING IT READ TO GET HERE — the argument
-     * `liveQueueSessionIds` makes about its own cold build, for the same reason
-     * and with a sharper edge: this is the one pass that parses every
-     * conversation's `items.json` on the machine, and leaving those maps in the
-     * caches would hand the first read after a start a projection it did not
-     * pay for. A store that looks cheaper than it is cannot be measured, and
-     * `readAccounting` exists precisely to measure it.
-     *
-     * The memo goes with them: it names rows this wrote from outside the
-     * ordinary write path, so the first reconcile per session re-reads them.
-     */
-    this.sessionItems.clear();
-    this.sessionQueues.clear();
-    return { sessions, turns };
-  }
 
   /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
    *  project has none rather than guessing. */
