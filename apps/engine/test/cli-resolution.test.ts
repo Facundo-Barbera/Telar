@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { candidatePathsFor, cliUsable, expectedClaudeCliVersion, findExecutable, isExecutableFile, resolveCli } from "../src/cli-resolution";
-import { OPENCODE_VERSION, openCodeVersionVerdict } from "../src/opencode/version";
+import { OPENCODE_VERSION, openCodeVersionVerdict } from "../src/drivers/opencode";
 
 const roots: string[] = [];
 const root = (): string => {

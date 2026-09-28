@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AutoCompact } from "@telar/engine-client";
-import { openCodeServerIdentity } from "../src/opencode/driver";
+import { openCodeServerIdentity } from "./driver";
 import {
   openCodeCompactionConfig,
   openCodeCompactionEnv,
@@ -12,10 +12,9 @@ import {
   openCodeModelLimits,
   parseOpenCodeModelLimits,
   type OpenCodeModelLimits,
-} from "../src/opencode/runtime";
-import type { DriverRun } from "../src/provider-contract";
+} from "./runtime";
+import type { DriverRun } from "../../provider-contract";
 
-// Real limits from `opencode models opencode --verbose` (1.18.31).
 const OPUS_200K: OpenCodeModelLimits = { context: 200_000, output: 64_000 };
 const GPT_1M: OpenCodeModelLimits = { context: 1_050_000, output: 128_000, input: 922_000 };
 const LIMITS: AutoCompact = { mode: "limits", standard: 150_000, long: 400_000 };
@@ -24,7 +23,6 @@ const run = (overrides: Partial<DriverRun> = {}): DriverRun => ({
   sessionId: "s", cwd: "/tmp", prompt: "hi", signal: new AbortController().signal, onObservations: async () => {}, ...overrides,
 });
 
-/** OpenCode's own trigger for the limit Telar wrote, merged over the real one the way its config does. */
 const triggerFor = (limits: OpenCodeModelLimits, written: Partial<OpenCodeModelLimits>, reserved?: number) =>
   openCodeCompactionThreshold({ ...limits, ...written }, reserved);
 

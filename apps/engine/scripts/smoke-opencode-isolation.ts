@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
-import { startOpenCodeRuntime, type OpenCodeRuntime } from "../src/opencode/runtime";
+import { startOpenCodeRuntime, type OpenCodeRuntime } from "../src/drivers/opencode";
 const binaryPath = process.argv[2];
 if (!binaryPath) throw new Error("Pass the absolute path of the supported OpenCode binary");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-opencode-isolation-"));
