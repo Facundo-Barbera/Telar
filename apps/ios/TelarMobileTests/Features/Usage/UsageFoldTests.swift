@@ -2,12 +2,7 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The Usage screen's arithmetic — `foldUsage` and its formatters, pinned
-/// against the web's `apps/web/lib/usage-report.ts` so the phone and the Mac
-/// print the same figures for the same window.
 @Suite struct UsageFoldTests {
-    /// The wire shape verbatim — the `{usage: …}` envelope `/api/usage` answers
-    /// with, including a source that was never installed.
     private let wire = """
     {"usage":{
       "sinceMs":1000,"untilMs":2000,"resolution":"day","timeZone":"Europe/Madrid",
@@ -47,38 +42,26 @@ import Testing
 
     @Test func totalsSumEveryBucketAndCarryThePricedFlagDown() throws {
         let fold = foldUsage(try decoded())
-        // 1000 + 15 + 300. The middle bucket also reports 3 reasoning tokens,
-        // and they are NOT in the sum: `TokenUsage.processed` excludes
-        // `reasoning` because the providers that report it also count it inside
-        // `output`, so adding it would count those tokens twice. The web's
-        // `processedTokens` does the same, and this suite exists to keep the two
-        // printing the same figure. This read 1318 — 1000 + 18 + 300, the
-        // reasoning tokens counted — until CI first executed the suite (#755).
+
         #expect(fold.total.processed == 1315)
         #expect(fold.total.tokens.input == 310)
         #expect(fold.total.tokens.cacheRead == 800)
         #expect(fold.total.turns == 7)
         #expect(abs(fold.total.costUsd - 1.75) < 0.0001)
-        // ONE UNPRICED BUCKET MAKES THE WHOLE FIGURE A FLOOR, which is what the
-        // screen says out loud rather than printing a total that looks complete.
+
         #expect(fold.total.priced == false)
         #expect(fold.sessions == 3)
     }
 
-    /// PROCESSED TOKENS, NEVER COST. Codex reports no cost at all, so a share of
-    /// spend would read 100% Claude on a window where Codex did most of the
-    /// work — the web's reason, and the same arithmetic.
     @Test func sharesAreOfProcessedTokens() throws {
         let fold = foldUsage(try decoded())
         #expect(fold.providers.map(\.driver) == ["claude", "codex"])
         let claude = try #require(fold.providers.first)
-        // 1000 + 15, reasoning excluded — see the note on the total above.
+
         #expect(claude.totals.processed == 1015)
         #expect(abs(claude.share - 1015.0 / 1315.0) < 0.0001)
         #expect(abs(fold.providers[1].share - 300.0 / 1315.0) < 0.0001)
-        // Unchanged, and worth noticing: 1018/1318 and 1015/1315 both round to
-        // 77.2%, so the formatted figure this test was really about was right
-        // either way. The share assertions above are what caught the arithmetic.
+
         #expect(formatShare(claude.share) == "77.2%")
     }
 
@@ -89,8 +72,6 @@ import Testing
         #expect(fold.providers.map(\.driver) == ["claude"])
     }
 
-    /// A provider a newer Mac reports still counts and still shows — named by
-    /// its own id rather than dropped into a total nothing accounts for.
     @Test func anUnknownDriverKeepsItsRowAfterTheKnownOnes() throws {
         var report = try decoded()
         report.buckets.append(UsageBucket(period: "2026-09-12", driver: "gemini", model: "g",
@@ -106,12 +87,10 @@ import Testing
         #expect(fold.providers.isEmpty)
         #expect(fold.total.processed == 0)
         #expect(fold.total.turns == 0)
-        // Vacuously true, and the screen only reads it when there is spend.
+
         #expect(fold.total.priced == true)
     }
 
-    /// Three significant figures with JavaScript's trailing zeroes — values
-    /// taken from `formatTokens` in apps/web/lib/usage-report.ts.
     @Test func tokenFiguresMatchTheWebsFormatter() {
         #expect(formatTokens(0) == "0")
         #expect(formatTokens(999) == "999")

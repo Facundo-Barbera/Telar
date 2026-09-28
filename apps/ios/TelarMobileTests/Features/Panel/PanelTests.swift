@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The panel's pure rules: the tree from a flat list, the file-view decision,
-/// the editor's open/close arithmetic, the notebook-read classifier, and the
-/// wire shapes every surface decodes.
 @Suite struct FileTreeTests {
     @Test func directoriesFirstThenNaturalOrder() {
         let tree = buildFileTree(["b.txt", "a/step-10.md", "a/step-2.md", "README.md", "a/z", "package.json"])
@@ -48,8 +45,7 @@ import Testing
 @Suite struct PanelModelTests {
     @Test func viewDecisionMirrorsTheDesktop() {
         #expect(panelView(for: "nb.ipynb", enabled: [.dataScience]) == .notebook)
-        // A notebook is still a notebook without the plugin — read-only, from
-        // the file's own JSON, never the raw-JSON code view.
+
         #expect(panelView(for: "nb.ipynb", enabled: []) == .notebookReadOnly)
         #expect(panelView(for: "data/rows.CSV", enabled: [.dataScience]) == .table)
         #expect(panelView(for: "data/rows.parquet", enabled: []) == .code)
@@ -66,7 +62,7 @@ import Testing
         editor.open("c.md", view: .code, pin: false)
         #expect(editor.files.map(\.path) == ["b.md", "c.md"])
         #expect(editor.activePath == "c.md")
-        // A notebook is always pinned, read-only or not.
+
         editor.open("n.ipynb", view: .notebook, pin: false)
         #expect(editor.files.first { $0.path == "n.ipynb" }?.pinned == true)
         editor.open("r.ipynb", view: .notebookReadOnly, pin: false)
@@ -92,8 +88,7 @@ import Testing
         editor.closeToTheRight("b")
         #expect(editor.files.map(\.path) == ["a", "b"])
         #expect(editor.activePath == "a")
-        // Closing everything but a file has to leave THAT file active, however
-        // the focus rule moved while the others went.
+
         editor.closeOthers("b")
         #expect(editor.files.map(\.path) == ["b"])
         #expect(editor.activePath == "b")
@@ -112,7 +107,7 @@ import Testing
         #expect(panel.pendingReference == "`a.ts`")
         panel.clearReference()
         #expect(panel.pendingReference == nil)
-        // It is not persisted: a draft fragment must not outlive the app.
+
         panel.insertReference("`b.ts`")
         #expect(PanelModel(hostId: host, sessionId: "s", defaults: defaults).pendingReference == nil)
     }
@@ -125,10 +120,10 @@ import Testing
         let panelA = PanelModel(hostId: a, sessionId: "s", defaults: defaults)
         panelA.openFile("notes.md")
         #expect(panelA.isOpen && panelA.active == .files)
-        // Same session id on another Mac sees nothing of it.
+
         let panelB = PanelModel(hostId: b, sessionId: "s", defaults: defaults)
         #expect(!panelB.isOpen && panelB.editor.files.isEmpty)
-        // The same Mac re-opens where it left.
+
         let again = PanelModel(hostId: a, sessionId: "s", defaults: defaults)
         #expect(again.editor.files.map(\.path) == ["notes.md"])
     }
@@ -144,8 +139,6 @@ import Testing
         #expect(panel.active == .diff)
     }
 
-    /// THE REGISTRY, NOT A CLOSED SET (P2b). A plugin id this build has never
-    /// heard of is carried, adds no tab and no viewer, and costs nothing else.
     @Test @MainActor func anUnknownPluginDrawsNothingAndBreaksNothing() {
         let suite = "telar.panel.test.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -156,35 +149,29 @@ import Testing
         #expect(panelView(for: "nb.ipynb", enabled: [PluginID("hello")]) == .notebookReadOnly)
         #expect(panelView(for: "rows.csv", enabled: [PluginID("hello")]) == .code)
         #expect(PluginUI.surfaces(enabled: [PluginID("hello")]).isEmpty)
-        // A saved tab the registry does not know restores, and falls back.
+
         #expect(PanelTab(rawValue: "someday").label == "someday")
         panel.select(PanelTab(rawValue: "someday"))
         panel.setPlugins([PluginID("hello")])
         #expect(panel.active == .diff)
     }
 
-    /// The bundled two keep their tabs, labels, icons and viewers exactly.
     @Test func theBundledPluginsContributeWhatTheyAlwaysDid() throws {
         #expect(PluginUI.surfaces(enabled: [.latex, .dataScience]).map(\.tab) == [.data, .latex])
         #expect(PanelTab.data.label == "Data" && PanelTab.data.icon == "flask")
         #expect(PanelTab.latex.label == "LaTeX" && PanelTab.latex.icon == "function")
         #expect(PluginUI.viewerAvailable(.table, enabled: [.dataScience]))
         #expect(!PluginUI.viewerAvailable(.table, enabled: [.latex]))
-        // A tab saved while this was an enum decodes the same.
+
         #expect(try JSONDecoder().decode(PanelTab.self, from: Data("\"data\"".utf8)) == .data)
     }
 
-    /// ENABLED IDS COME FROM THE MAP — any id, not just the two this build names.
     @Test func aProjectReportsEveryEnabledPlugin() throws {
         let json = #"{"id":"p","name":"P","plugins":{"version":1,"entries":{"data-science":{"enabled":true},"hello":{"enabled":true},"latex":{"enabled":false}}}}"#
         let project = try JSONDecoder().decode(Project.self, from: Data(json.utf8))
         #expect(project.enabledPlugins == [.dataScience, PluginID("hello")])
     }
 
-    /// AGENTS IS NOT A PLUGIN TAB — issue #390. Who is working for this
-    /// conversation is a fact about the conversation, so the tab is there
-    /// whatever the project turned on, and the fallback that removes a tab the
-    /// project no longer offers must never take it.
     @Test @MainActor func agentsIsOfferedWhateverThePluginsSay() {
         let suite = "telar.panel.test.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -199,10 +186,6 @@ import Testing
         #expect(panel.active == .agents)
     }
 
-    /// THE TAB SURVIVES THE APP. `PanelTab` persists by its raw value, so the
-    /// new case has to round-trip like the other four — a saved "agents" that
-    /// failed to decode would take the whole panel record with it (the open
-    /// files, the arrangement), not just the tab.
     @Test @MainActor func theAgentsTabIsRestoredWhereItWasLeft() throws {
         #expect(PanelTab(rawValue: "agents") == .agents)
         let round = try JSONDecoder().decode(PanelTab.self, from: JSONEncoder().encode(PanelTab.agents))
@@ -215,7 +198,7 @@ import Testing
         let panel = PanelModel(hostId: host, sessionId: "s", defaults: defaults)
         panel.open(.agents)
         #expect(PanelModel(hostId: host, sessionId: "s", defaults: defaults).active == .agents)
-        // And nothing else was lost on the way out and back.
+
         #expect(PanelModel(hostId: host, sessionId: "s", defaults: defaults).isOpen)
     }
 }
@@ -304,13 +287,6 @@ import Testing
     }
 }
 
-/// THE PLUGIN FLAG, and the rule that keeps a disabled feature disabled.
-///
-/// `packages/engine-client/src/protocol/plugins.ts` `readProjectPlugins`: once
-/// a project carries the map's `version` marker the map is the WHOLE truth,
-/// and the legacy `dataScience` / `latex` blocks — which only an older engine
-/// still sends — are never read again. A per-key fallback is what resurrects a
-/// feature somebody turned off.
 @Suite struct ProjectPluginTests {
     private func project(_ json: String) throws -> Project {
         try JSONDecoder().decode(Project.self, from: Data(json.utf8))
@@ -329,20 +305,15 @@ import Testing
     }
 
     @Test func theMapWinsOverAStaleLegacyBlock() throws {
-        // Data Science was turned OFF: the entry is gone from the map and the
-        // legacy block still says true. Falling back to it would turn the plugin
-        // back on by itself.
         let gone = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":true}}}}"#)
         #expect(!gone.pluginEnabled(.dataScience))
         #expect(gone.pluginEnabled(.latex))
-        // And the explicit `false` entry beats the legacy block just the same.
+
         let off = try project(#"{"id":"p","name":"P","latex":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":false}}}}"#)
         #expect(!off.pluginEnabled(.latex))
     }
 
     @Test func aMapThatWillNotParseIsNotAMigratedProject() throws {
-        // No `version`, so no marker, so this project has never been migrated
-        // — and it must not be dropped from the list over it.
         let p = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"entries":{"data-science":{"enabled":false}}}}"#)
         #expect(p.plugins == nil)
         #expect(p.pluginEnabled(.dataScience))
@@ -355,8 +326,6 @@ import Testing
     }
 }
 
-/// THE CLIENT-SIDE nbformat READ — what a notebook looks like with no plugin
-/// and no kernel to ask.
 @Suite struct NotebookFileTests {
     private func parse(_ json: String) -> NotebookRead? {
         parseNotebookFile(Data(json.utf8), path: "evidencia/report.ipynb", sha256: "")
@@ -371,8 +340,7 @@ import Testing
         """#))
         #expect(nb.cells.count == 2 && nb.cellCount == 2)
         #expect(nb.cells[0].type == .markdown && nb.cells[0].source == "# Title\nprose")
-        // The lines already carry their newlines — joining with one more would
-        // double every break in the file.
+
         #expect(nb.cells[1].type == .code && nb.cells[1].source == "import pandas as pd\ndf = pd.read_csv('a.csv')")
         #expect(nb.cells[1].executionCount == 3)
         #expect(nb.cells[1].index == 1)
@@ -390,9 +358,7 @@ import Testing
         #expect(nb.cells[0].id == "c9")
         #expect(outputs.count == 3)
         #expect(outputs[0] == .text(stream: "stderr", text: "one\ntwo\n", truncated: false))
-        // Richest first: the picture, not the `<Figure>` repr beside it — and
-        // the saved base64 comes back without the newlines it was wrapped at,
-        // or `Data(base64Encoded:)` would refuse it.
+
         #expect(outputs[1] == .image(mediaType: "image/png", dataB64: "aGVsbG8=", attachmentId: nil, width: nil, height: nil))
         #expect(outputs[2] == .text(stream: "result", text: "42", truncated: false))
     }
@@ -431,7 +397,7 @@ import Testing
         #expect(parse(#"{"nbformat":4,"metadata":{}}"#) == nil)
         #expect(parse("not json at all") == nil)
         #expect(parse("[1,2,3]") == nil)
-        // An empty notebook IS one, and renders as one.
+
         #expect(parse(#"{"cells":[]}"#)?.cells.isEmpty == true)
     }
 }

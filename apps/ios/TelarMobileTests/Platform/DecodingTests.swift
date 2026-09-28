@@ -2,8 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// Anchor for locating the test bundle — Swift Testing has no XCTestCase to
-/// hang `Bundle(for:)` off, so a throwaway class does it.
 private final class FixtureAnchor {}
 
 func fixture(_ name: String) throws -> Data {
@@ -14,7 +12,6 @@ func fixture(_ name: String) throws -> Data {
     return try Data(contentsOf: url)
 }
 
-/// The fixtures are real cockpit responses; they pin shapes, not content.
 @Suite struct DecodingTests {
     @Test func healthDecodes() throws {
         let health = try JSONDecoder().decode(EngineHealth.self, from: fixture("health"))
@@ -26,8 +23,7 @@ func fixture(_ name: String) throws -> Data {
         let live = try JSONDecoder().decode(LiveSessions.self, from: fixture("live-sessions"))
         #expect(!live.sessions.isEmpty)
         #expect(!live.projects.isEmpty)
-        // Every session names a project that exists in the same payload, or
-        // none (the project-less master chat is legitimate).
+
         let projectIds = Set(live.projects.map(\.id))
         for session in live.sessions {
             if let projectId = session.projectId {
@@ -36,20 +32,6 @@ func fixture(_ name: String) throws -> Data {
         }
     }
 
-    /// THE LIVE LIST SENDS ROWS, NOT WHOLE SESSIONS (#459).
-    ///
-    /// That route is what the phone polls; on the owner's store it was 318 KB a
-    /// read for 267 conversations, most of it fields no row on this phone draws.
-    /// The engine now sends only what a rail renders — no `environmentId`, no
-    /// `providerInstanceId`, no `runtimeMode`, no `detached`, no `resumeCursor`,
-    /// and no `workspace.baseRef`.
-    ///
-    /// EVERY ONE OF THOSE WAS ALREADY OPTIONAL HERE, which is why this build
-    /// needs no change to read the narrower answer — and this test is what says
-    /// so out loud, so a later edit cannot quietly make one of them required and
-    /// blank the phone's list against a current Mac. The fields the rail DOES
-    /// draw are asserted present: losing one of those is a blank row, not a
-    /// blank list, which is the harder bug to see.
     @Test func theLiveListDecodesWithoutTheFieldsNoRowDraws() throws {
         let lean = #"""
         {"sessions":[{"id":"session_one","projectId":"project_one","title":"Lean the live list",
@@ -66,41 +48,26 @@ func fixture(_ name: String) throws -> Data {
         #expect(session.workspace.branch == "telar/459-lean")
         #expect(session.model?.model == "claude-opus-5[1m]")
         #expect(session.settledOverride == "active")
-        // Absent, and absent has to keep meaning what it meant: the engine's own
-        // defaults, never "unknown" and never a blank row.
+
         #expect(session.providerInstanceId == nil)
         #expect(session.resumeCursor == nil)
         #expect(session.workspace.baseRef == nil)
         #expect(session.runtimeMode == "approval-required")
         #expect(session.detached == false)
-        // No policy on this payload: an engine that predates the fold, which the
-        // store reads as "ask for it yourself, once a minute" and not as "off".
+
         #expect(live.inbox == nil)
     }
 
-    /// THE SETTLING WINDOW RIDES THE LIST (#459) — one read a pass instead of
-    /// three. Nil is not "no window": it is a Mac too old to stamp one, and the
-    /// store falls back to the rationed request it used to make every time.
     @Test func theLiveListCarriesTheSettlingWindowAndToleratesItsAbsence() throws {
         let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
         #expect(try decode(#"{"sessions":[],"projects":[]}"#).inbox == nil)
         #expect(try decode(#"{"sessions":[],"projects":[],"inbox":{"autoSettleAfterHours":72}}"#).inbox?.autoSettleAfterHours == 72)
-        // "Off" is a real answer and must survive as one, not become the default.
+
         #expect(try decode(#"{"sessions":[],"projects":[],"inbox":{"autoSettleAfterHours":null}}"#).inbox?.autoSettleAfterHours == nil)
-        // And a policy this build cannot read costs the window, never the list.
+
         #expect(try decode(#"{"sessions":[],"projects":[],"inbox":"never"}"#).inbox == nil)
     }
 
-    /// THE CONDITIONAL READ (#459). A phone that hands back the revision it was
-    /// given gets sixty bytes and no rows when nothing has moved — which is
-    /// every three-second tick of an idle inbox, and most of what "the phone
-    /// crawls" (#457) was made of.
-    ///
-    /// `unchanged` IS NOT "THIS MAC HAS NO CONVERSATIONS", and that distinction
-    /// is the one thing this decoder must not blur: `sessions` is absent on such
-    /// an answer, and it decodes to empty so that ONE type reads both shapes.
-    /// The store checks the flag before it applies anything; these assertions
-    /// are what stop a later edit making the empty list look like an answer.
     @Test func theLiveListCarriesACursorAndAnUnchangedAnswer() throws {
         let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
 
@@ -111,25 +78,15 @@ func fixture(_ name: String) throws -> Data {
         let quiet = try decode(#"{"unchanged":true,"revision":1789362240259,"daemonId":"d1"}"#)
         #expect(quiet.unchanged)
         #expect(quiet.revision == 1_789_362_240_259)
-        // No rows at all — and the store must keep the ones it has rather than
-        // reading this as an empty inbox.
+
         #expect(quiet.sessions.isEmpty)
         #expect(quiet.projects.isEmpty)
 
-        // A Mac too old to count says neither, and the phone then makes full
-        // reads forever — the old behaviour, which is the correct fallback.
         let old = try decode(#"{"sessions":[],"projects":[]}"#)
         #expect(old.revision == nil)
         #expect(old.unchanged == false)
     }
 
-    /// THE ARRANGEMENT RIDES THE LIVE READ (#306) — and every part of it is
-    /// optional, at both levels. The fixture predates the field, so this pins
-    /// the tolerance the wire needs rather than the fixture's content: a Mac
-    /// too old to send `layout` decodes to nil (which the phone reads as "keep
-    /// what you have"), and a layout with no row arrangements decodes to empty
-    /// lists rather than failing and costing the project order stored beside
-    /// them.
     @Test func theLiveReadCarriesAnOptionalArrangementAtEveryLevel() throws {
         let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
         #expect(try decode(#"{"sessions":[],"projects":[]}"#).layout == nil)
@@ -140,16 +97,9 @@ func fixture(_ name: String) throws -> Data {
         let whole = try decode(#"{"sessions":[],"projects":[],"layout":{"projectOrder":["p1"],"sessionOrder":{"p1":["s2","s1"]},"pinnedOrder":["s9"]}}"#)
         #expect(whole.layout == SidebarLayout(projectOrder: ["p1"], sessionOrder: ["p1": ["s2", "s1"]], pinnedOrder: ["s9"]))
 
-        // A layout this build cannot read costs the arrangement, never the
-        // list — the same tolerance `Skippable` gives the rows beside it.
         #expect(try decode(#"{"sessions":[],"projects":[],"layout":"b,a"}"#).layout == nil)
     }
 
-    /// WHICH REPOSITORY A PROJECT IS A CHECKOUT OF, and the absence of one.
-    /// The engine derives `remoteUrl` on its metadata refresh and sends it
-    /// already reduced; a Mac too old to derive it, an unversioned directory
-    /// and a checkout with no origin all send nothing, and nothing must stay
-    /// nothing rather than becoming a name to fold two strangers on.
     @Test func projectRefsCarryTheRepositoryTheyAreACheckoutOf() throws {
         let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
         let live = try decode(#"""
@@ -162,14 +112,6 @@ func fixture(_ name: String) throws -> Data {
         #expect(live.projects.last?.remoteUrl == nil)
     }
 
-    /// WHO IS WORKING FOR WHOM, on the wire — the two relationships the rail's
-    /// tree is made of. `assignments` rides the live list as a map keyed by
-    /// session id (the engine folds it over each session's whole queue);
-    /// `startedFrom` rides the session itself.
-    ///
-    /// AN ABSENT MAP IS THE ORDINARY ANSWER, not a failure: a cockpit that does
-    /// not forward the field sends none, and the rail then draws exactly the
-    /// flat list it always did rather than losing the list.
     @Test func theLiveReadCarriesWhoIsWorkingForWhom() throws {
         let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
         let session = #"""
@@ -183,10 +125,9 @@ func fixture(_ name: String) throws -> Data {
         #expect(live.sessions.first?.startedFrom == SessionProvenance(sessionId: "coord", runId: "run_1"))
         #expect(live.assignments["child"]?.first?.fromSessionId == "coord")
         #expect(live.assignments["child"]?.first?.scope == "the parser")
-        // Outstanding: no outcome, not unresolved.
+
         #expect(live.assignments["child"]?.first?.outcome == nil)
-        // AND WHEN — the two stamps the Agents surface dates a row by (#390).
-        // `receivedAt` on an outstanding errand; `endedAt` only once it ends.
+
         #expect(live.assignments["child"]?.first?.receivedAt == 1)
         #expect(live.assignments["child"]?.first?.endedAt == nil)
         let ended = try decode(#"""
@@ -196,10 +137,7 @@ func fixture(_ name: String) throws -> Data {
         #expect(ended.assignments["child"]?.first?.receivedAt == 1739791245123)
         #expect(ended.assignments["child"]?.first?.endedAt == 1739791309456)
         #expect(ended.assignments["child"]?.first?.outcome == "completed")
-        // AN ENGINE THAT STAMPED NEITHER STILL HAS ITS ROW. The contract makes
-        // `receivedAt` required, and this build decodes it leniently anyway:
-        // through `Skippable` a missing required field does not cost a
-        // timestamp, it costs the whole relationship.
+
         let undated = try decode(#"""
         {"sessions":[],"projects":[],"assignments":{"child":[{"fromSessionId":"coord"}]}}
         """#)
@@ -207,7 +145,7 @@ func fixture(_ name: String) throws -> Data {
         #expect(undated.assignments["child"]?.first?.receivedAt == nil)
 
         #expect(try decode(#"{"sessions":[],"projects":[]}"#).assignments.isEmpty)
-        // A map this build cannot read costs the tree, never the list.
+
         #expect(try decode(#"{"sessions":[],"projects":[],"assignments":"nope"}"#).assignments.isEmpty)
     }
 
@@ -228,7 +166,7 @@ func fixture(_ name: String) throws -> Data {
             let page = try JSONDecoder().decode(EventPage.self, from: fixture(name))
             #expect(!page.events.isEmpty)
             #expect(page.cursor > 0)
-            // Envelope ids are strictly increasing — the replay contract.
+
             let ids = page.events.map(\.id)
             #expect(ids == ids.sorted())
             #expect(Set(ids).count == ids.count)
@@ -291,13 +229,6 @@ func fixture(_ name: String) throws -> Data {
         #expect(session.activity == .idle)
     }
 
-    /// WHY A DICTATION FAILED, OFF THE WIRE (#711).
-    ///
-    /// The sentence is the whole of what this screen shows, so `reason` is
-    /// required and everything else is not. `fault` is a PLAIN STRING for
-    /// `provider`'s reason: a Mac that has learned a fifth kind of fault must
-    /// not fail to decode on a phone that has not been updated — the phone
-    /// would lose the one sentence the whole route exists to deliver.
     @Test func dictationDiagnosisDecodesAndToleratesAFaultThisBuildHasNotHeardOf() throws {
         let known = try JSONDecoder().decode(
             DictationDiagnosisAnswer.self,
@@ -312,8 +243,6 @@ func fixture(_ name: String) throws -> Data {
         )
         #expect(newer.reason.contains("rate limiting"))
 
-        // AND A MAC THAT SENDS ONLY THE SENTENCE still decodes, because the
-        // sentence is the only field anything here reads.
         let bare = try JSONDecoder().decode(DictationDiagnosisAnswer.self, from: Data(#"{"reason":"This Mac could not reach Deepgram at all."}"#.utf8))
         #expect(bare.fault == nil)
         #expect(bare.reason.contains("could not reach"))
@@ -335,10 +264,6 @@ func fixture(_ name: String) throws -> Data {
         #expect(request.isOpen)
     }
 
-    /// One `request.opened` row copied verbatim out of the live journal
-    /// (`select value from events where value like '%"user_input"%' ...`), not
-    /// typed by hand. Only the events-page envelope around it is ours — the
-    /// event itself is exactly what the engine wrote.
     private static let journalUserInputEvent = #"""
     {"id":1895,"at":1789074205111,"sessionId":"session_d016f60f8e27488d9f832539fb90b9fd","runId":"run_211867ec91144c5cbae3e648a1d12552","type":"request.opened","request":{"id":"req_toolu_018f7ocXFLHU7zFbe3gZ6KSm","runId":"run_211867ec91144c5cbae3e648a1d12552","sessionId":"session_d016f60f8e27488d9f832539fb90b9fd","state":"open","detail":{"kind":"user_input","prompt":"The agent needs your input to continue.","fields":[{"key":"I can't find Terra in this ChatGPT build. Where should I set it?","label":"I can't find Terra in this ChatGPT build. Where should I set it?","kind":"choice","choices":["It's under Create image","Switch back to Work mode","Just send with the default","I'll set Terra myself"],"required":true}]},"openedAt":1789074205111,"notified":false}}
     """#
@@ -356,8 +281,6 @@ func fixture(_ name: String) throws -> Data {
     }
 
     @Test func journalChoiceFieldHasNoMultipleAndStaysSingle() throws {
-        // Every `choice` the engine has ever sent omits `multiple` — this is
-        // the shape in the journal today, and it must keep meaning one pick.
         let field = try Self.decodeUserInputField(Self.journalUserInputEvent)
         #expect(field.kind == "choice")
         #expect(field.choices?.count == 4)
@@ -366,11 +289,6 @@ func fixture(_ name: String) throws -> Data {
     }
 
     @Test func multipleTrueDecodesAsMultiSelect() throws {
-        // The same verbatim journal event, with `"multiple":true` spliced into
-        // the field object by string edit. The journal carries no such sample
-        // yet because the feature did not exist — so this is the one place the
-        // shape is asserted rather than observed, and everything around the
-        // inserted key stays exactly as the engine wrote it.
         let withMultiple = Self.journalUserInputEvent
             .replacingOccurrences(of: #""kind":"choice""#, with: #""kind":"choice","multiple":true"#)
         let field = try Self.decodeUserInputField(withMultiple)
@@ -393,9 +311,6 @@ func fixture(_ name: String) throws -> Data {
     }
 
     @Test func secretAccessRequestDecodesCandidates() throws {
-        // The 1Password fill card: metadata only, by contract — origin,
-        // field kinds, and domain-matched candidates. Approving it sends
-        // answers.item back; the values never reach this app.
         let data = Data("""
         {"id":"req_2","runId":"run_1","sessionId":"s","state":"open","openedAt":1,
          "detail":{"kind":"secret_access","secret":{
