@@ -88,10 +88,10 @@ export function pinnedHost(fetcher: Fetcher): string | undefined {
 
 /** A fetcher pinned to one host — for a screen that knows which Mac it is
  *  about regardless of the address bar (the sidebar, fanning out). */
-export function hostFetcher(hostId: string, base: Fetcher = fetch): PinnedFetcher {
-  // WRAPPED EVEN WHEN IT IS A NO-OP: this used to hand `base` back for local,
-  // and stamping the pin onto that value would write a property onto the global
-  // `fetch`. One closure is cheaper than a mutated global.
+export function hostFetcher(hostId: string, given?: Fetcher): PinnedFetcher {
+  // The global `fetch` is looked up per call, so a module-level fetcher follows
+  // whatever `fetch` is installed when it is used rather than at import.
+  const base: Fetcher = given ?? ((input, init) => fetch(input, init));
   if (hostId === LOCAL_HOST_ID) {
     const local: Fetcher = (input, init) => base(input, init);
     return Object.assign(local, { telarHostId: LOCAL_HOST_ID });

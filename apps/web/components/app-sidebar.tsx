@@ -362,6 +362,33 @@ function SessionShelf({
 /** A paired Mac's project, with the Mac it lives on — what the New menu lists. */
 type RemoteProject = Pick<Project, "id" | "name" | "icon" | "iconName"> & { hostId: string; hostName: string };
 
+/** Every project the cockpit can reach, this Mac's first. */
+export function pickerTargetsFor(projects: readonly Project[], remoteProjects: readonly RemoteProject[]): NewConversationTarget[] {
+  return [
+    ...projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      ...(project.icon ? { icon: project.icon } : {}),
+      ...(project.iconName ? { iconName: project.iconName } : {}),
+      ...(project.root ? { root: project.root } : {}),
+    })),
+    ...remoteProjects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      ...(project.icon ? { icon: project.icon } : {}),
+      ...(project.iconName ? { iconName: project.iconName } : {}),
+      hostId: project.hostId,
+      hostName: project.hostName,
+    })),
+  ];
+}
+
+/** Where a chosen project's canvas opens: its id, on the Mac it lives on. */
+export const composerTargetOf = (target: { id: string; hostId?: string }) => ({
+  projectId: target.id,
+  ...(target.hostId ? { hostId: target.hostId } : {}),
+});
+
 /** One Mac's pass, composed — what `loadHost` returns and what an UNCHANGED
  *  answer hands back untouched. Named so it can be held in a ref. */
 type HostPage = {
@@ -1286,70 +1313,14 @@ function SidebarBody() {
     router.push(target ? canvasHref(target.projectId, target.hostId) : "/");
   };
 
-  /**
-   * EVERY PROJECT THIS COCKPIT CAN REACH, in one list, this Mac's first.
-   *
-   * The rail already holds both halves — it reads each paired Mac's registry on
-   * the same pass it reads its sessions — so the palette costs no request of
-   * its own and can never offer a project the rail does not show.
-   */
-  const pickerTargets: NewConversationTarget[] = [
-    ...projects.map((project) => ({
-      id: project.id,
-      name: project.name,
-      ...(project.icon ? { icon: project.icon } : {}),
-      ...(project.iconName ? { iconName: project.iconName } : {}),
-      ...(project.root ? { root: project.root } : {}),
-    })),
-    ...remoteProjects.map((project) => ({
-      id: project.id,
-      name: project.name,
-      ...(project.icon ? { icon: project.icon } : {}),
-      ...(project.iconName ? { iconName: project.iconName } : {}),
-      hostId: project.hostId,
-      hostName: project.hostName,
-    })),
-  ];
-
-  /**
-   * A PALETTE OF ONE IS A QUESTION WITH ONE ANSWER.
-   *
-   * On a cockpit with a single project registered — which is where most people
-   * start, and where many stay — pressing New conversation opened a search
-   * field over a list of one row, to be told the thing it already knew. The
-   * palette earns itself the moment there are two places a conversation could
-   * go; until then the button does what the button says.
-   *
-   * Undefined while the registry is still empty too: `startSession` has its own
-   * fallback for a cockpit with no project at all, and the palette's "No
-   * projects registered yet." is the better answer there.
-   */
+  const pickerTargets = pickerTargetsFor(projects, remoteProjects);
+  // With exactly one place a conversation could go, New conversation skips the palette.
   const soleTarget = pickerTargets.length === 1 ? pickerTargets[0] : undefined;
   const newConversation = () => {
-    if (soleTarget) startSession({ projectId: soleTarget.id, ...(soleTarget.hostId ? { hostId: soleTarget.hostId } : {}) });
+    if (soleTarget) startSession(composerTargetOf(soleTarget));
     else openPalette("projects");
   };
 
-  /**
-   * THE RAIL NO LONGER ANSWERS "REVEAL IN FINDER" — issue #470.
-   *
-   * It used to, from the bottom of the command stack: a guess at "the project
-   * at hand" behind a button in the header pill. The verb is not gone — it is on
-   * every project group's own menu (`project-group.tsx`) and on the session's
-   * Reveal button (`session/open-workspace-button.tsx`), both of which name the
-   * folder they will open instead of guessing at one. What went with the button
-   * is the guess: a rail-wide ⌘O whose target the reader had to infer from a
-   * tooltip, and which was wrong exactly when they had several projects open.
-   *
-   * THE CHORD FOLLOWS THE BINDING, which is the point. The palette lists a
-   * command only when a mounted component can run it, and the held-⌘ hints read
-   * the same registry — so outside a conversation, ⌘O now promises nothing
-   * rather than promising a folder nobody chose.
-   *
-   * `project-settings` stays: it is the same guess, but it navigates inside the
-   * app rather than opening something on the machine, and it is the rail's only
-   * answer to that command.
-   */
   const localProjectId = composerTarget && !composerTarget.hostId ? composerTarget.projectId : undefined;
   useCommandHandlers(
     {
@@ -1444,7 +1415,7 @@ function SidebarBody() {
             sessions={sessions}
             railOpen={railOpen}
             onRun={run}
-            onChooseProject={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+            onChooseProject={(target) => startSession(composerTargetOf(target))}
             onOpenSession={(session) => {
               onNavigate();
               router.push(sessionHref(session));
