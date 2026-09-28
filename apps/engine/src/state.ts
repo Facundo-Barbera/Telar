@@ -12,7 +12,6 @@ import {
   autoResolution,
   deadlineResolution,
   defaultAllowed,
-  PROVIDER_CAPABILITIES,
   defaultInstanceIdForDriver,
   countsAsActivity,
   isBackgroundWork,
@@ -46,7 +45,6 @@ import {
   type SessionSettledBy,
   type PluginPatch,
   TurnObservation as TurnObservationSchema,
-  WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
   type BrowserSnapshot,
   type GitCommitEntry,
   type GitHubCheckLog,
@@ -112,7 +110,6 @@ import {
   type TurnObservation,
   type WakeKind,
   type WakeReason,
-  type UsageSnapshot,
   type WorkerClaim,
   type WorkerStatus,
   type WorkspaceFile,
@@ -133,7 +130,7 @@ import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, typ
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { type AttachmentInput, awaitsRateLimitSweep, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
-import { FOLDING_INTENTS, heldDelivery, MAX_TEXT_LENGTH, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
+import { FOLDING_INTENTS, heldDelivery, type StoppedClaim, TurnLifecycle, MAX_TEXT_LENGTH, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -279,15 +276,6 @@ function requestTitle(detail: RequestDetail): string {
 
 type TurnFailure = TurnFailureShape;
 
-/**
- * WHICH FAILURES A WORKER MAY REPORT — a strict subset of `TurnFailureCode`.
- * `cancelled` is the engine's own word for a stop it already recorded, and
- * `internal_error` is the engine's; a worker claiming either would let a
- * provider crash masquerade as a control-plane decision.
- */
-/** The codes a WORKER may report, from the contract's own list rather than a
- *  fourth copy of it — see `WorkerTurnFailureCode`. */
-const TURN_FAILURE_CODES = new Set<TurnFailureCode>(WorkerTurnFailureCodeSchema.options);
 
 
 /**
@@ -633,7 +621,6 @@ export const SETTLED_TERMINAL_GRACE_MS = 30 * 60_000;
  * returns, plus the worker it belongs to, because this is PUSHED rather than
  * asked for and the receiver has to check the claim is its own.
  */
-export type StoppedClaim = { sessionId: string; runId: string; claimToken: string; workerId: string };
 
 export type EngineNotifier = (input: {
   sessionId: string;
@@ -712,6 +699,7 @@ export class EngineStore {
   private readonly attachments: SessionAttachments;
   private readonly queries: SessionQueries;
   private readonly intake: TurnIntake;
+  private readonly turnLifecycle: TurnLifecycle;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1539,6 +1527,7 @@ export class EngineStore {
     this.subscriptions = this.createSubscriptions();
     this.lifecycle = this.createLifecycle();
     this.intake = this.createIntake();
+    this.turnLifecycle = this.createTurnLifecycle();
     this.worktrees = this.worktreeMaintenance();
     ({ dataScienceOps: this.dataScienceOps, latexOps: this.latexOps } = this.createPluginOps());
     this.dictation = new Dictation(this.paths.root, {
@@ -3117,6 +3106,25 @@ export class EngineStore {
   }
 
 
+  private createTurnLifecycle(): TurnLifecycle {
+    return new TurnLifecycle(this.kernel, {
+      records: this.records,
+      items: this.sessionItems,
+      tasks: this.sessionTasks,
+      requests: this.sessionRequests,
+      readQueue: (id) => this.readQueue(id),
+      writeQueue: (id, queue) => this.writeQueue(id, queue),
+      requireRunningClaimFromQueue: (queue, runId, token) => this.requireRunningClaimFromQueue(queue, runId, token),
+      assertProjectAvailable: (id) => this.assertProjectAvailable(id),
+      anchorTurn: (id, runId, side) => this.anchorTurn(id, runId, side),
+      fireSubscriptions: (id, kind, turn, context) => this.fireSubscriptions(id, kind, turn, context),
+      flushPendingNotifications: (id) => this.flushPendingNotifications(id),
+      evaluateDelegationSettling: (id) => this.evaluateDelegationSettling(id),
+      stopBackgroundTasks: (id) => this.stopBackgroundTasks(id),
+      announceStoppedClaims: (cancellations) => this.announceStoppedClaims(cancellations),
+    });
+  }
+
   private createIntake(): TurnIntake {
     return new TurnIntake(this.kernel, {
       records: this.records,
@@ -3946,70 +3954,11 @@ export class EngineStore {
     return { ...normalized, instanceId: normalized?.instanceId ?? instanceId, model };
   }
 
-  /**
-   * INVARIANT: a message submitted after a turn was claimed is steered into
-   * THAT turn, at the first moment there is a provider to steer into.
-   *
-   * `steerIfRunning` needs a turn that is `running` with a claim, because that
-   * is what proves a provider exists — `claimed` proves the opposite, by
-   * design (`worker.ts` marks the turn running before it builds the driver, so
-   * recovery may requeue a merely-claimed turn). A message arriving in that
-   * window therefore could not steer and nothing reconsidered it; it ran later
-   * as a turn of its own, though the person had typed it into a live session.
-   *
-   * The boundary is `claim.sequence`, the queue's own submission order — not a
-   * clock, which cannot separate two messages in one millisecond and can run
-   * backwards. Turns below the watermark are the pre-claim backlog and stay
-   * queued. A re-claim takes a new watermark, so a target that was requeued
-   * and claimed again does not inherit the old window's messages.
-   *
-   * Eligibility is `promoteInQueue`'s, not a second opinion: held, compaction
-   * and compacting-target refusals are skipped here rather than reimplemented.
-   */
-  private promoteClaimWindow(sessionId: string, queue: SessionQueue, running: Turn, at: number): Turn[] {
-    const watermark = running.claim?.sequence;
-    if (watermark === undefined) return [];
-    const promoted: Turn[] = [];
-    for (const turn of queue.turns) {
-      if (turn.state !== "queued" || turn.sequence < watermark) continue;
-      try {
-        this.promoteInQueue(sessionId, queue, turn, running, at);
-      } catch (error) {
-        // A refusal is "this one waits", never a failure to start the turn:
-        // the message keeps its place in the queue and runs in its own right.
-        if (error instanceof EngineStateError && error.code === "conflict") continue;
-        throw error;
-      }
-      promoted.push(turn);
-    }
-    return promoted;
-  }
 
   markRunning(sessionId: string, runId: string, claimToken: string): Turn {
-    return this.kernel.command("markRunning", () => {
-      const queue = this.readQueue(sessionId);
-      const turn = queue.turns.find((candidate) => candidate.runId === runId);
-      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-      if (turn.state !== "claimed" || turn.claim?.token !== claimToken) {
-        throw new EngineStateError("conflict", "turn is not claimed by this worker");
-      }
-      const at = this.now();
-      turn.state = "running";
-      turn.startedAt = at;
-      turn.updatedAt = at;
-      const promoted = this.promoteClaimWindow(sessionId, queue, turn, at);
-      this.writeQueue(sessionId, queue);
-      this.records.touch(sessionId, at);
-      // WHERE THE REPOSITORY STANDS AS THIS TURN BEGINS (#741). Dispatched, never
-      // awaited — see `anchorTurn` for why this one line may not be a git call.
-      this.anchorTurn(sessionId, turn.runId, "before");
-      this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
-      // AFTER `turn.started`, so a client reading the journal in order never sees
-      // a message steered into a turn it has not yet been told began.
-      for (const late of promoted) this.appendEvent(sessionId, { type: "turn.steering", intoRunId: turn.runId }, late.runId);
-      return structuredClone(turn);
-    });
+    return this.turnLifecycle.markRunning(sessionId, runId, claimToken);
   }
+
 
   /**
    * Journal what a worker saw.
@@ -4117,448 +4066,56 @@ export class EngineStore {
     return { accepted: parsed.data.length };
   }
 
-  completeTurn(
-    sessionId: string,
-    runId: string,
-    claimToken: string,
-    input: { text: string; providerSessionId?: string; usage?: UsageSnapshot },
-  ): Turn {
-    return this.kernel.command("completeTurn", () => {
-      if (typeof input.text !== "string" || input.text.length > MAX_TEXT_LENGTH) {
-        throw new EngineStateError("invalid_request", "final text exceeds the allowed size");
-      }
-      const queue = this.readQueue(sessionId);
-      const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
-      const at = this.now();
-      turn.state = "completed";
-      turn.completedAt = at;
-      turn.updatedAt = at;
-      turn.resultText = input.text;
-      if (input.usage !== undefined) turn.usage = input.usage;
-      if (input.providerSessionId !== undefined) {
-        if (typeof input.providerSessionId !== "string" || !input.providerSessionId.trim() || input.providerSessionId.length > 4_000) {
-          throw new EngineStateError("invalid_request", "provider session id is invalid");
-        }
-        turn.providerSessionId = input.providerSessionId;
-      }
-      const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
-      this.writeQueue(sessionId, queue);
-      // ...and where it stands now it has ended (#741). The pair is what makes
-      // `before..after` a range git can be asked about.
-      this.anchorTurn(sessionId, turn.runId, "after");
-      this.sessionTasks.closeOrphaned(sessionId, turn.runId, at, "the turn ended before this agent reported back");
-      this.records.touch(sessionId, at, input.providerSessionId);
-      this.appendEvent(
-        sessionId,
-        {
-          type: "turn.completed",
-          resultText: input.text,
-          ...(input.usage ? { usage: input.usage } : {}),
-          ...(input.providerSessionId ? { providerSessionId: input.providerSessionId } : {}),
-        },
-        turn.runId,
-      );
-      for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
-      this.fireSubscriptions(sessionId, "turn_completed", turn, { resultText: input.text });
-      this.flushPendingNotifications(sessionId);
-      // AFTER THE WAKE, NOT BEFORE. A coordinator's turn completing is what makes
-      // its wake "consumed", and this session may be that coordinator — see
-      // `evaluateDelegationSettling`.
-      this.evaluateDelegationSettling(sessionId);
-      return structuredClone(turn);
-    });
+  completeTurn(...args: Parameters<TurnLifecycle["completeTurn"]>): Turn {
+    return this.turnLifecycle.completeTurn(...args);
   }
 
-  /**
-   * RESUME NOW — a person deciding not to wait for the limit.
-   *
-   * THE CLOCK IS DELIBERATELY NOT CHECKED. "I know something you don't" is the
-   * whole reason the button exists: another credential came free, the proxy
-   * moved account, the provider lifted it early. Refusing until `resumeAt`
-   * would make the control a decoration on the only occasions it is wanted.
-   *
-   * `resumedAfterRateLimit` IS NOT SET. That field means the engine brought the
-   * turn back on its own; a person pressing a button is already visible as the
-   * press, and claiming otherwise would put a small lie in the record.
-   *
-   * A HUMAN GESTURE like release and discard, so no claim token — and like
-   * `releaseHeldTurn` it answers to the project gate, because resuming is
-   * starting work and a project the person removed from Telar must not be
-   * resumed into.
-   */
+
   resumeRateLimitedTurn(sessionId: string, runId: string): Turn {
-    assertId(runId, "run id");
-    const session = this.records.get(sessionId);
-    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
-    const queue = this.readQueue(sessionId);
-    const turn = queue.turns.find((candidate) => candidate.runId === runId);
-    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-    if (turn.state !== "failed" || turn.failure?.code !== "rate_limited") {
-      throw new EngineStateError("conflict", "turn is not waiting for a usage limit");
-    }
-    // One turn at a time is the engine's own invariant; a resume that produced
-    // a second live turn would be the one place it could be broken by a click.
-    if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) {
-      throw new EngineStateError("conflict", "the session is already running a turn");
-    }
-    const at = this.now();
-    turn.state = "queued";
-    turn.updatedAt = at;
-    // Stamped decided, so the sweep does not consider it again and the session
-    // leaves the live index by the ordinary route once this turn settles.
-    turn.failure = { ...turn.failure, resumeDecidedAt: at };
-    delete turn.completedAt;
-    delete turn.claim;
-    this.writeQueue(sessionId, queue);
-    this.appendEvent(sessionId, { type: "turn.requeued", reason: "rate_limit_resumed" }, turn.runId);
-    this.records.wakeForNewWork(sessionId);
-    this.records.touch(sessionId, at);
-    return structuredClone(turn);
+    return this.turnLifecycle.resumeRateLimitedTurn(sessionId, runId);
   }
 
-  failTurn(
-    sessionId: string,
-    runId: string,
-    claimToken: string,
-    failure: { code: TurnFailure["code"]; message: string; resumeAt?: number; limitType?: TurnFailure["limitType"] },
-  ): Turn {
-    return this.kernel.command("failTurn", () => {
-      if (!TURN_FAILURE_CODES.has(failure.code) || typeof failure.message !== "string" || !failure.message.trim()) {
-        throw new EngineStateError("invalid_request", "turn failure is invalid");
-      }
-      const resumeAt =
-        typeof failure.resumeAt === "number" && Number.isFinite(failure.resumeAt) && failure.resumeAt >= 0
-          ? Math.trunc(failure.resumeAt)
-          : undefined;
-      if (failure.code === "rate_limited" && resumeAt === undefined) {
-        throw new EngineStateError("invalid_request", "a rate-limited failure must say when the limit resets");
-      }
-      const queue = this.readQueue(sessionId);
-      const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
-      const at = this.now();
-      turn.state = "failed";
-      turn.completedAt = at;
-      turn.updatedAt = at;
-      turn.failure = {
-        code: failure.code,
-        message: failure.message.slice(0, 4_000),
-        // Only on the code that means them: a `driver_failed` carrying a reset
-        // time would be a row inviting a resume that nothing will ever perform.
-        ...(failure.code === "rate_limited" && resumeAt !== undefined ? { resumeAt } : {}),
-        ...(failure.code === "rate_limited" && failure.limitType ? { limitType: failure.limitType } : {}),
-      };
-      const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
-      this.anchorTurn(sessionId, turn.runId, "after");
-      if (failure.code === "interrupted") {
-        for (const reverted of requeued) reverted.held = { at, reason: "engine_restart" };
-      }
-      this.writeQueue(sessionId, queue);
-      // A failed turn means the provider process died — background shells died
-      // with it, whichever turn started them.
-      this.sessionTasks.closeLive(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
-      this.sessionItems.closeOpen(sessionId, new Set([turn.runId]), at);
-      this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
-      this.records.touch(sessionId, at);
-      this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
-      for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
-      this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
-      this.flushPendingNotifications(sessionId);
-      // A FAILED TURN STILL ENDS ONE. It never makes this session settleable —
-      // clause 1 refuses a failed assignment — but the session may be the
-      // COORDINATOR whose delegate is now waiting on nothing.
-      this.evaluateDelegationSettling(sessionId);
-      return structuredClone(turn);
-    });
+
+  failTurn(...args: Parameters<TurnLifecycle["failTurn"]>): Turn {
+    return this.turnLifecycle.failTurn(...args);
   }
 
-  /**
-   * End session-owned work at this command boundary, including legacy held
-   * messages and background tasks. Delivered steering stays in history.
-   * Queue terminal states fence late claims, observations and completions
-   * before cancellation is delivered to the provider. No Resume is required.
-   * Detached project services are owned outside this session task store.
-   */
+
   stopSession(sessionId: string, by: "user" | "agent" = "user"): { stopped: Turn[]; live?: Turn } {
-    return this.kernel.command("stopSession", () => {
-      const session = this.records.get(sessionId);
-      const queue = this.readQueue(sessionId);
-      const at = this.now();
-      const live = queue.turns.find((turn) => turn.state === "claimed" || turn.state === "running");
-      const stopped = queue.turns.filter((turn) =>
-        turn.state === "queued" || turn.state === "claimed" || turn.state === "running" ||
-        turn.state === "steering" || turn.state === "ambiguous",
-      );
-      for (const turn of stopped) {
-        turn.state = "stopped";
-        turn.stopReason = by;
-        turn.completedAt = at;
-        turn.updatedAt = at;
-        delete turn.steer;
-        delete turn.held;
-      }
-      if (stopped.length > 0) this.writeQueue(sessionId, queue);
-      // A peer must not undo a human Stop by immediately sending another turn.
-      // A fresh human message clears this gate; no discarded work is replayed.
-      if (by === "user") {
-        session.agentMessagesBlocked = true;
-        session.agentMessagesBlockedAt = at;
-        session.updatedAt = at;
-        this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-      }
-      // Clear a legacy latch only after its backlog has been terminalized.
-      if (session.paused) {
-        delete session.paused;
-        session.updatedAt = at;
-        this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-      }
-      for (const turn of stopped) {
-        this.sessionTasks.closeOrphaned(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
-        this.sessionItems.closeOpen(sessionId, new Set([turn.runId]), at);
-        this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
-      }
-      // Also runs when no foreground turn exists: a background task outlives
-      // its turn, but belongs to the session the user just stopped.
-      const backgroundStopped = this.stopBackgroundTasks(sessionId);
-      if (stopped.length > 0 || backgroundStopped > 0) this.records.touch(sessionId, at);
-      for (const turn of stopped) this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
-      this.announceStoppedClaims(
-        stopped.flatMap((turn) =>
-          turn.claim ? [{ sessionId, runId: turn.runId, claimToken: turn.claim.token, workerId: turn.claim.workerId }] : [],
-        ),
-      );
-      // One wake for the live turn, not one per cancelled backlog message.
-      if (live) this.fireSubscriptions(sessionId, "turn_stopped", live, {});
-      this.flushPendingNotifications(sessionId);
-      this.evaluateDelegationSettling(sessionId);
-      return { stopped: stopped.map((turn) => structuredClone(turn)), ...(live ? { live: structuredClone(live) } : {}) };
-    });
+    return this.turnLifecycle.stopSession(sessionId, by);
   }
 
-  /**
-   * STOP ONE TURN. The worker claims the next queued message within a
-   * heartbeat, an undelivered steer is requeued and claimed, and subscribers
-   * are woken — this is a stop of a RUN, not of the session. For the Stop
-   * button's "end this session's work" see `stopSession`; for "stop and stay
-   * stopped until a human resumes" see `pauseSession`.
-   */
+
   stopTurn(sessionId: string, requestedRunId?: string): { turn?: Turn; stopped: boolean } {
-    return this.kernel.command("stopTurn", () => {
-      const queue = this.readQueue(sessionId);
-      const turn = requestedRunId
-        ? queue.turns.find((candidate) => candidate.runId === requestedRunId)
-        : queue.turns.find((candidate) => candidate.state === "queued" || candidate.state === "claimed" || candidate.state === "running");
-      if (!turn || turn.state === "stopped" || turn.state === "ambiguous" || (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running")) {
-        const swept = this.stopBackgroundTasks(sessionId);
-        return { ...(turn ? { turn: structuredClone(turn) } : {}), stopped: swept > 0 };
-      }
-      const at = this.now();
-      turn.state = "stopped";
-      turn.completedAt = at;
-      turn.updatedAt = at;
-      const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
-      this.writeQueue(sessionId, queue);
-      // Where the repository stands now this turn has ended (#741). A STOPPED
-      // turn is the case the anchor is worth most for: the work ended where it
-      // stood, and the range is the only account of it that is not the agent's.
-      this.anchorTurn(sessionId, turn.runId, "after");
-      this.sessionTasks.closeOrphaned(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
-      this.sessionItems.closeOpen(sessionId, new Set([turn.runId]), at);
-      this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
-      this.records.touch(sessionId, at);
-      this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
-      for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
-      this.fireSubscriptions(sessionId, "turn_stopped", turn, {});
-      this.flushPendingNotifications(sessionId);
-      // A stopped assignment IS finished (clause 1 takes it), so a Stop is one of
-      // the moments a delegate can become settleable.
-      this.evaluateDelegationSettling(sessionId);
-      return { turn: structuredClone(turn), stopped: true };
-    });
+    return this.turnLifecycle.stopTurn(sessionId, requestedRunId);
   }
 
-  /**
-   * Promote a queued turn into the RUNNING one. `submitTurn` calls this for
-   * every message that arrives mid-turn; the HTTP route still exposes it for
-   * a turn that fell back to `queued` (compaction, a claim not yet running)
-   * and can be sent now that the moment has passed.
-   *
-   * `promoteTurn` is a promise of NOT-LOSING, never of delivery: the turn goes
-   * `steering`, the worker hears about it on its next heartbeat, and if the
-   * running turn settles first the sweep in the terminal transitions puts the
-   * message back to `queued`, where it runs as an ordinary next turn.
-   *
-   * REFUSED WHILE THE PROVIDER COMPACTS. Codex rejects a steer during
-   * compaction at the protocol level ("cannot steer a compact turn"), so the
-   * engine refuses up front rather than discovering it as a failed delivery —
-   * and the client disables the button for the same reason, so all three tell
-   * one story.
-   */
-  /**
-   * THE ELIGIBILITY RULES, in one place, over an in-memory queue.
-   *
-   * `promoteTurn` and `markRunning` both promote, and a second copy of these
-   * checks is how the two would come to disagree about what may be steered.
-   * Throws exactly what `promoteTurn` documents; the caller writes the queue.
-   */
-  private promoteInQueue(sessionId: string, queue: SessionQueue, turn: Turn, running: Turn, at: number): void {
-    if (!PROVIDER_CAPABILITIES[this.records.get(sessionId).driver].liveSteering)
-      throw new EngineStateError("conflict", "this provider queues follow-up messages until the active turn ends");
-    if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
-    // A HOLD IS SOMEBODY'S DECISION about this message — a pause, or a
-    // restart's re-read. Releasing it by steering it would be that decision
-    // undoing itself.
-    if (turn.held) throw new EngineStateError("conflict", "a held message is not sent until it is released");
-    // A compaction is a gesture on the session, not words for the model.
-    if (turn.kind === "compact") throw new EngineStateError("conflict", "a compaction always waits its turn");
-    if (running.state !== "running" || !running.claim) throw new EngineStateError("conflict", "no turn is running to send this into");
-    // AND NOT INTO A COMPACTION EITHER. The target being a compaction turn is
-    // the same refusal from the other side: there is no conversation to
-    // interrupt, only a context being squeezed.
-    if (running.kind === "compact") throw new EngineStateError("conflict", "the provider is compacting its context and cannot take a message right now");
-    const compacting = [...this.sessionItems.read(sessionId).values()].some(
-      (item) => item.runId === running.runId && item.detail.type === "context_compaction" && item.status === "inProgress",
-    );
-    if (compacting) {
-      throw new EngineStateError("conflict", "the provider is compacting its context and cannot take a message right now");
-    }
-    turn.state = "steering";
-    turn.steer = { intoRunId: running.runId, requestedAt: at };
-    turn.updatedAt = at;
-  }
+
 
   promoteTurn(sessionId: string, runId: string): Turn {
-    return this.kernel.command("promoteTurn", () => {
-      assertId(runId, "run id");
-      const queue = this.readQueue(sessionId);
-      const turn = queue.turns.find((candidate) => candidate.runId === runId);
-      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-      // Checked here as well as inside, to keep the refusals in the order this
-      // route has always reported them: what you asked for, then what is live.
-      if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
-      const running = queue.turns.find((candidate) => candidate.state === "running" && candidate.claim);
-      if (!running) throw new EngineStateError("conflict", "no turn is running to send this into");
-      const at = this.now();
-      this.promoteInQueue(sessionId, queue, turn, running, at);
-      this.writeQueue(sessionId, queue);
-      this.records.touch(sessionId, at);
-      this.appendEvent(sessionId, { type: "turn.steering", intoRunId: running.runId }, turn.runId);
-      return structuredClone(turn);
-    });
+    return this.turnLifecycle.promoteTurn(sessionId, runId);
   }
 
-  /**
-   * The worker's half of delivery: the text is in the driver's mailbox.
-   * IDEMPOTENT — a retried ack after a dropped response returns the already-
-   * steered turn rather than a conflict, because the provider has the words
-   * either way and the record must not lie about that.
-   */
+
   ackSteer(sessionId: string, steerRunId: string, claimToken: string): Turn {
-    return this.kernel.command("ackSteer", () => {
-      assertId(steerRunId, "run id");
-      const queue = this.readQueue(sessionId);
-      const turn = queue.turns.find((candidate) => candidate.runId === steerRunId);
-      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-      if (turn.state === "steered") return structuredClone(turn);
-      if (turn.state !== "steering" || !turn.steer) {
-        throw new EngineStateError("conflict", "turn is not being steered");
-      }
-      const running = queue.turns.find((candidate) => candidate.runId === turn.steer!.intoRunId);
-      if (!running || running.state !== "running" || running.claim?.token !== claimToken) {
-        throw new EngineStateError("conflict", "the running turn is not held by this claim");
-      }
-      const at = this.now();
-      turn.state = "steered";
-      turn.steer.deliveredAt = at;
-      turn.completedAt = at;
-      turn.updatedAt = at;
-      this.writeQueue(sessionId, queue);
-      this.records.touch(sessionId, at);
-      this.appendEvent(sessionId, { type: "turn.steered", intoRunId: turn.steer.intoRunId }, turn.runId);
-      return structuredClone(turn);
-    });
+    return this.turnLifecycle.ackSteer(sessionId, steerRunId, claimToken);
   }
 
-  /**
-   * THE NOT-LOSING GUARANTEE. Every terminal transition of a running turn
-   * calls this: any `steering` turn still pointing at it was never delivered,
-   * and goes back to `queued` to run as its own turn. Mutates the queue the
-   * caller is about to write; the caller appends the events after its own, so
-   * the journal reads settlement-then-requeue.
-   */
+
   private requeueUndeliveredSteers(queue: { turns: Turn[] }, runId: string, at: number): Turn[] {
-    const reverted: Turn[] = [];
-    for (const turn of queue.turns) {
-      if (turn.state !== "steering" || turn.steer?.intoRunId !== runId) continue;
-      turn.state = "queued";
-      delete turn.steer;
-      turn.updatedAt = at;
-      reverted.push(turn);
-    }
-    return reverted;
+    return this.turnLifecycle.requeueUndeliveredSteers(queue, runId, at);
   }
 
-  /** Runs a held message: clears the flag, and the claim path takes it from its original place in the queue. */
+
   releaseHeldTurn(sessionId: string, runId: string): Turn {
-    return this.kernel.command("releaseHeldTurn", () => {
-      assertId(runId, "run id");
-      const session = this.records.get(sessionId);
-      if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
-      const queue = this.readQueue(sessionId);
-      const turn = queue.turns.find((candidate) => candidate.runId === runId);
-      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-      if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be released");
-      // Already runnable: nothing to do, and saying so is kinder than a conflict
-      // for a button pressed twice.
-      if (!turn.held) return structuredClone(turn);
-      // Releasing ONE message does not un-pause the session — `claimTurn` would
-      // still refuse it. The honest answer is to say so: resume is the verb.
-      if (turn.held.reason === "session_paused" && session.paused) {
-        throw new EngineStateError("conflict", "the session is paused; resume it to run this message");
-      }
-      const at = this.now();
-      delete turn.held;
-      turn.updatedAt = at;
-      this.writeQueue(sessionId, queue);
-      this.records.touch(sessionId, at);
-      this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
-      return structuredClone(turn);
-    });
+    return this.turnLifecycle.releaseHeldTurn(sessionId, runId);
   }
 
-  /**
-   * An ambiguous turn may already have reached a provider, so it is never
-   * replayed or deleted.  A human must make this one-way decision before the
-   * session can accept fresh work.
-   *
-   * DISCARDING IT DOES NOT RELEASE THE BACKLOG. Messages `recover()` marked
-   * `held` stay held: this decision is about THIS turn, and the pre-crash
-   * messages behind it each need their own. Before `held` existed the hold was
-   * inferred from the presence of an ambiguous turn, so this call — which is
-   * exactly what "Continue" performs — released every one of them at once.
-   */
+
   discardAmbiguousTurn(sessionId: string, runId: string): Turn {
-    return this.kernel.command("discardAmbiguousTurn", () => {
-      assertId(runId, "run id");
-      const queue = this.readQueue(sessionId);
-      const turn = queue.turns.find((candidate) => candidate.runId === runId);
-      if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-      if (turn.state !== "ambiguous") {
-        throw new EngineStateError("conflict", "only an ambiguous turn can be discarded");
-      }
-      const at = this.now();
-      turn.state = "discarded";
-      turn.completedAt = at;
-      turn.updatedAt = at;
-      // The stale worker claim must not remain usable after human resolution.
-      delete turn.claim;
-      this.writeQueue(sessionId, queue);
-      this.sessionTasks.closeOrphaned(sessionId, turn.runId, at, "the turn was discarded before this agent reported back");
-      this.sessionRequests.closeOpen(sessionId, new Set([turn.runId]), at);
-      this.records.touch(sessionId, at);
-      this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
-      return structuredClone(turn);
-    });
+    return this.turnLifecycle.discardAmbiguousTurn(sessionId, runId);
   }
+
 
   archiveSession(sessionId: string, options: { releaseCheckout?: boolean } = {}): Session {
     return this.lifecycle.archiveSession(sessionId, options);

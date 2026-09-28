@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { EngineClientError, type EngineDiscovery } from "@telar/engine-client";
 import type { HttpError } from "../platform/http/http";
-import type { EngineStore, StoppedClaim } from "../state";
+import type { StoppedClaim } from "../domains/turns";
+import type { EngineStore } from "../state";
 import { withDirectExecution, type ExecutionPort } from "./execution-port";
 import type { DriverSelector } from "./options";
 import type { createWorkerRegistry } from "./registry";
