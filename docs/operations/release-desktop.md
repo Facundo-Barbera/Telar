@@ -37,14 +37,14 @@ git tag v0.1.0-beta.7 origin/main
 git push origin v0.1.0-beta.7
 ```
 
-Or dispatch from main. There are no inputs. The build uses the tip of `origin/main` and derives the version itself:
+Or dispatch from main. There are no inputs. The nightly builds the tip of `origin/main`, the beta builds the commit `main` pointed at when dispatched, and both derive the version themselves:
 
 ```sh
 gh workflow run nightly-desktop.yml --ref main
 gh workflow run release-desktop.yml --ref main
 ```
 
-After a dispatched nightly publishes, the workflow pushes the `v<version>` tag, which later runs count. A dispatched beta gets its tag from `gh release create`.
+After a dispatched nightly publishes, the workflow pushes the `v<version>` tag, which later runs count. A dispatched beta gets its tag from `gh release create --target`, on the commit it built.
 
 Pick tag numbers that sort above the version currently on the channel. Clients compare semver, and numeric prerelease parts compare as numbers.
 
@@ -63,7 +63,7 @@ Pick tag numbers that sort above the version currently on the channel. Clients c
    - uploads zip/dmg/blockmap to R2 first, and `<channel>-mac.yml` last, under `--feed-prefix`.
 5. Nightly: pushes the tag (dispatch only). Beta: creates the GitHub prerelease.
 
-Targets: nightly builds `zip` only, beta builds `zip,dmg`. Both run on `macos-latest`. Nightlies share a `nightly-publish` concurrency group. The beta workflow has no concurrency group.
+Targets: nightly builds `zip` only, beta builds `zip,dmg`. Both run on `macos-latest`. Nightlies share the `nightly-publish` concurrency group and betas the `Release desktop app` group. A run in progress is never cancelled; a new run queues behind it, and GitHub keeps only the newest queued run.
 
 ### Secrets used
 
