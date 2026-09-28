@@ -1,7 +1,7 @@
 import { type ClaudeSessionRuntime, type RuntimeBindings, MessageFeed, type RuntimeQuery, taskMemoryFrom } from "./runtime";
 import { type ClaudeTurnBindings, type SdkCanUseTool, type SdkUserMessage, singleUserMessage, claudeInitialContent, claudeNotificationContent } from "./sdk";
 import { type TaskSeed, TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
-import { toSdkTools, telarWall } from "../../domains/agent-tools";
+import { advertiseLeanSchemas, toSdkTools, telarWall } from "../../domains/agent-tools";
 import { isTerminalTaskState } from "./tasks";
 import { type TurnState, type Rest } from "./turn";
 
@@ -35,7 +35,7 @@ export const buildRuntime = (ctx: RuntimeCtx): ClaudeSessionRuntime<ClaudeTurnBi
   const telarTools = ctx.turn.sdk.tool ? toSdkTools(telarWall(() => bindings.current), ctx.turn.sdk.tool) : [];
   const telarServer =
     telarTools.length > 0 && ctx.turn.sdk.createSdkMcpServer
-      ? { [TELAR_MCP_SERVER]: ctx.turn.sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
+      ? { [TELAR_MCP_SERVER]: advertiseLeanSchemas(ctx.turn.sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools })) }
       : undefined;
 
   const telarBrowserServer = ctx.browserSocket
