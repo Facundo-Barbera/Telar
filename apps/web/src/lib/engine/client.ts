@@ -1,6 +1,4 @@
-// Type-only, so the browser bundle never follows it into `node:fs`: the channel
-// is DECIDED server-side (lib/build-identity.ts) and only described here.
-import type { Channel } from "@/lib/build-identity";
+import type { BuildChannel as Channel } from "@telar/engine-client";
 import type {
   BrowserSnapshot,
   ClaudeConversation,

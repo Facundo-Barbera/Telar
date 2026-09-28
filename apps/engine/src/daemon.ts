@@ -130,6 +130,7 @@ import { createIconPng } from "./domains/projects";
 import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote";
 import { createHostsStore, hostsRoutes } from "./domains/hosts";
 import { mcpOAuthRoutes } from "./domains/agent-tools";
+import { aboutRoutes } from "./domains/updates";
 import { matchRoute } from "./platform/http/route";
 
 /**
@@ -1197,7 +1198,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const pluginsDir = options.pluginsDir ?? externalPluginsDir(root);
   const remoteDir = options.remoteDir ?? remoteDirFor(root);
   const iconPng = createIconPng(path.join(store.paths.root, "icon-png"));
-  const domainRoutes = [...filesRoutes(), ...remoteRoutes(createRemoteStore(remoteDir)), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)())];
+  const domainRoutes = [...filesRoutes(), ...remoteRoutes(createRemoteStore(remoteDir)), ...hostsRoutes(createHostsStore(remoteDir)), ...mcpOAuthRoutes(store, () => (options.now ?? Date.now)()), ...aboutRoutes(root)];
   const external = loadInstalledPlugins(pluginsDir);
   const externalModule = (loaded: LoadedExternalPlugin) =>
     externalPlugin(loaded, {
@@ -1856,9 +1857,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       const domainRoute = matchRoute(domainRoutes, request.method ?? "GET", url.pathname);
       if (domainRoute) {
-        const input = { body: request.method === "GET" ? {} : await body(request), params: domainRoute.params, query: url.searchParams };
-        const answer = await domainRoute.route.handle(input);
-        writeJson(response, answer.status, answer.body);
+        const answer = await domainRoute.route.handle({ body: request.method === "GET" ? {} : await body(request), params: domainRoute.params, query: url.searchParams });
+        if (answer.bytes) response.writeHead(answer.status, answer.headers).end(answer.bytes); else writeJson(response, answer.status, answer.body);
         return;
       }
       if (request.method === "GET" && url.pathname === "/v2/models") {

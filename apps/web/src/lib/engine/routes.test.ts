@@ -7,6 +7,8 @@ import { GET as projectsGet, POST as projectsPost } from "@/app/api/projects/rou
 import { GET as eventsGet } from "@/app/api/sessions/[sessionId]/events/route";
 import { GET as liveGet } from "@/app/api/sessions/live/route";
 import { GET as fsGet } from "@/app/api/fs/route";
+import { GET as aboutGet } from "@/app/api/about/route";
+import { GET as aboutIconGet } from "@/app/api/about/icon/route";
 import { POST as discardPost } from "@/app/api/sessions/[sessionId]/turns/[runId]/discard/route";
 import { EngineClient } from "@telar/engine-client";
 import { engineRootFromWebEnv } from "@/lib/engine/engine-server";
@@ -215,4 +217,21 @@ describe("engine route adapters", () => {
       turn: { runId: "fresh_run", state: "queued" },
     });
   });
+});
+
+test("about and its icon are the engine's, bytes included", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
+  roots.push(home);
+  process.env.TELAR_HOME = home;
+  process.env.TELAR_COCKPIT = "1";
+  const daemon = await startEngine({ engineRoot: path.join(home, "engine") });
+  daemons.push(daemon);
+
+  const about = await (await aboutGet(new Request("http://cockpit.test/api/about"))).json();
+  expect(about).toMatchObject({ channel: "dev", stateRoot: expect.stringContaining(path.basename(home)) });
+  expect(about.iconUrl).toMatch(/^\/api\/about\/icon\?v=/);
+
+  const icon = await aboutIconGet(new Request(`http://cockpit.test${about.iconUrl}`));
+  expect(icon.headers.get("content-type")).toBe("image/png");
+  expect([...new Uint8Array(await icon.arrayBuffer()).slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
 });

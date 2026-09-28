@@ -1,4 +1,4 @@
-export type RouteAnswer = { status: number; body: unknown };
+export type RouteAnswer = { status: number; body: unknown; bytes?: Uint8Array; headers?: Record<string, string> };
 
 type RouteInput = { body: Record<string, unknown>; params: string[]; query: URLSearchParams };
 
