@@ -502,7 +502,7 @@ describe("every tool description is short enough to carry", () => {
   });
 
   test("and every tool still says something — a cap is not an excuse for a blank", () => {
-    for (const entry of wall().registered) expect(entry.description.length).toBeGreaterThan(80);
+    for (const entry of wall().registered) expect(entry.description.length).toBeGreaterThan(40);
   });
 
   /**

@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Session } from "@telar/engine-client";
 import { err, failure, fillWithin, json, type ToolFactory } from "../../agent-tools";
 import { delegationAnswer, WAIT, waitForDelegation } from "./wait";
-import { FIND_LIMIT_DEFAULT, FIND_LIMIT_MAX, findView } from "./query";
+import { FIND_LIMIT_DEFAULT, findView } from "./query";
 import { CREATE, LIST, LIST_CHARS, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, SEND, type SessionsCapability, summarise, summariseOne } from "./shared";
 
 const runIdFor = (tool: string, toolCallId: string | undefined): string =>
@@ -17,21 +17,21 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
       "sessions_list",
       LIST,
       {
-        q: z.string().min(1).optional().describe("Search instead of list. Lexical, not semantic — the phrase you remember seeing."),
+        q: z.string().min(1).optional().describe("Search text instead of listing; lexical, not semantic."),
         settled: z
           .boolean()
           .optional()
-          .describe("Default false — the list a person has open. With q: true for shelved only, false for open, omit for both."),
+          .describe("Shelved sessions instead. With q, omit for both."),
         projectId: z.string().optional(),
-        since: z.number().int().min(0).optional().describe("With q only. Epoch milliseconds."),
+        since: z.number().int().min(0).optional().describe("With q: epoch ms."),
         limit: z
           .number()
           .int()
           .min(1)
           .max(LIST_LIMIT_MAX)
           .optional()
-          .describe(`Default ${LIST_LIMIT_DEFAULT}. With q: default ${FIND_LIMIT_DEFAULT}, max ${FIND_LIMIT_MAX}.`),
-        after: z.number().int().min(0).optional().describe("Without q. The cursor a previous answer's `more` hands back."),
+          .describe(`Default ${LIST_LIMIT_DEFAULT}; with q ${FIND_LIMIT_DEFAULT}.`),
+        after: z.number().int().min(0).optional().describe("The `next` of a previous page."),
       },
       async (args) => {
         if (typeof args.q === "string" && args.q.trim()) {
@@ -91,9 +91,9 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
       SEND,
       {
         sessionId: z.string().min(1),
-        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default) passive, for progress mid-task; task assigns work; result is your FINAL answer — send it last; blocker asks for intervention. After any of these reaches a subscriber, your run completing does not wake them again."),
+        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default, passive), task (assigns work), result (your final answer, sent last), blocker (needs a decision)."),
         input: z.string().min(1).describe("The whole message; it cannot see this conversation."),
-        corrects: z.string().min(1).optional().describe("The runId of your earlier message to them that this one corrects: unread, it is replaced; already read, this one arrives at once."),
+        corrects: z.string().min(1).optional().describe("runId of your earlier message this corrects; replaced if still unread."),
         wait: WAIT,
       },
       async (args, context) => {
@@ -134,21 +134,21 @@ function createTool(tool: ToolFactory, capability: SessionsCapability): unknown 
     "sessions_create",
     CREATE,
     {
-      projectId: z.string().min(1).describe("From sessions_list's `projects`."),
+      projectId: z.string().min(1).describe("From sessions_list."),
       title: z
         .string()
         .optional()
-        .describe("A few words. Write one — an untitled session is unidentifiable an hour later."),
+        .describe("A few words; always set one."),
       envMode: z
         .enum(["local", "worktree"])
         .describe(
-          '"worktree" for anything that edits files: a checkout of its own. "local" shares the project\'s checkout with every other local session and the user\'s editor. No safe default.',
+          "worktree: its own checkout, for anything that edits files. local: shares the project's checkout.",
         ),
       driver: z
         .enum(["claude", "codex"])
         .optional()
-        .describe("Omit unless the user asked for one."),
-      task: z.string().min(1).optional().describe("A brief to assign at once, as sessions_send intent task would. It cannot see this conversation."),
+        .describe("Omit unless the user asked."),
+      task: z.string().min(1).optional().describe("A self-contained brief; it cannot see this conversation."),
       wait: WAIT,
     },
     async (args, context) => {

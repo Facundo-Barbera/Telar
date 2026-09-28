@@ -34,7 +34,7 @@ export function controlTools(tool: ToolFactory, capability: SessionsCapability):
       SETTLE,
       {
         sessionId: z.string().min(1),
-        settled: z.boolean().optional().describe("Default true; false returns it to the active list."),
+        settled: z.boolean().optional().describe("Default true."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");

@@ -18,9 +18,9 @@ function subscriptionTools(tool: ToolFactory, capability: SessionsCapability): u
           .min(1)
           .max(20)
           .optional()
-          .describe("A cohort: one notification when ALL of these are done — each sent its result, or a turn failed or was stopped, or it was settled or archived. A turn that merely ends is not done."),
-        timeoutMinutes: z.number().int().min(1).max(10_080).optional().describe("With sessionIds only. Default 240: past it you get what arrived and who is still pending."),
-        cancel: z.string().min(1).optional().describe("A subscription or cohort id to stop. Not with sessionIds."),
+          .describe("One wake when all are done; a turn that merely ends is not done."),
+        timeoutMinutes: z.number().int().min(1).max(10_080).optional().describe("Default 240; then you get what arrived."),
+        cancel: z.string().min(1).optional().describe("An id to stop."),
       },
       async (args) => {
         if (!capability.self) return err(NO_SELF);
@@ -138,15 +138,15 @@ function requestTools(tool: ToolFactory, capability: SessionsCapability): unknow
       RESOLVE_REQUEST,
       {
         sessionId: z.string().min(1),
-        requestId: z.string().min(1).describe("From sessions_requests, or the wake that named it."),
+        requestId: z.string().min(1).describe("From sessions_requests or a wake."),
         decision: z
           .enum(["accept", "acceptForSession", "decline"])
-          .describe('"accept" once; "acceptForSession" every later one of the same kind there; "decline".'),
+          .describe('acceptForSession also accepts later ones of that kind.'),
         answers: z
           .record(z.string(), z.string())
           .optional()
-          .describe("Each field's answer, keyed as sessions_requests listed it."),
-        reason: z.string().optional().describe("One sentence, read beside the decision."),
+          .describe("Keyed as sessions_requests listed them."),
+        reason: z.string().optional().describe("One sentence."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");

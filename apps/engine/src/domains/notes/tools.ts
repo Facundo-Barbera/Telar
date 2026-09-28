@@ -96,12 +96,11 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
   return [
     tool(
       "notes_list",
-      "A project's notebook — the notes kept beside the code so nobody is asked twice. Pinned first; titles and a " +
-        "120-character preview. noteId reads one whole; projects lists the notebooks you can use.",
+      "A project's notes, pinned first, as titles and previews. noteId reads one whole; projects lists the notebooks.",
       {
-        projectId: z.string().optional().describe("Omit inside a session for this one's."),
-        noteId: z.string().optional().describe("One note in full, from whichever project holds it."),
-        projects: z.boolean().optional().describe("List every project's id and name instead."),
+        projectId: z.string().optional().describe("Default: this session's project."),
+        noteId: z.string().optional().describe("Read one note whole."),
+        projects: z.boolean().optional().describe("List project ids instead."),
       },
       async (args) => {
         if (typeof args.noteId === "string") return await readNote(capability, args.noteId);
@@ -112,14 +111,13 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_write",
-      "Write or edit a note in a project's notebook. Use it when the user ASKS you to keep something — not for scratch " +
-        "notes and not to log what you just did. Stamped as an agent's, permanently.",
+      "Write or edit a project note, only when the user asks you to keep something. Stamped as an agent's.",
       {
-        projectId: z.string().optional().describe("Omit inside a session for this one's."),
-        title: z.string().optional().describe("A few words. Required for a new note."),
-        body: z.string().optional().describe("Markdown; the user's own words."),
-        pinned: z.boolean().optional().describe("Keep it at the top of the strip."),
-        noteId: z.string().optional().describe("Edit this note instead of writing a new one."),
+        projectId: z.string().optional().describe("Default: this session's project."),
+        title: z.string().optional().describe("Required for a new note."),
+        body: z.string().optional().describe("Markdown."),
+        pinned: z.boolean().optional().describe("Keep at the top."),
+        noteId: z.string().optional().describe("Edit this note."),
       },
       async (args) => {
         const projectId = resolveProject(capability, args.projectId);
@@ -152,8 +150,7 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_delete",
-      "Delete a note an AGENT wrote; one the user wrote is theirs and this refuses it. Deleting is real, not a retire. " +
-        "Nothing else on this wall removes anything.",
+      "Delete a note an agent wrote; the user's own are refused. It is gone for good.",
       { noteId: z.string() },
       async (args) => {
         const id = String(args.noteId);
