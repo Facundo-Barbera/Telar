@@ -1,9 +1,10 @@
 const { ipcMain, app, BrowserWindow } = require("electron");
 const { windowVisible } = require("./window-visibility");
 const { windowTargetUrl } = require("./window-target");
+const { lastRunawayNotice, processMetricsReader } = require("./renderer-watch");
 
 function registerAppIpc(main) {
-  const { createWindow, linkRouting, processMetricsReader } = main;
+  const { createWindow, linkRouting } = main;
   ipcMain.handle("telar:app:relaunch", () => {
     app.relaunch();
     app.quit();
@@ -11,7 +12,7 @@ function registerAppIpc(main) {
 
   ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
 
-  ipcMain.handle("telar:metrics:runaway", () => main.lastRunawayNotice);
+  ipcMain.handle("telar:metrics:runaway", () => lastRunawayNotice());
 
   ipcMain.handle("telar:window:visibility", (event) => windowVisible(BrowserWindow.fromWebContents(event.sender)));
 

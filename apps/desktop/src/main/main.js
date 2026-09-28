@@ -1,55 +1,43 @@
 const path = require("node:path");
-const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
-const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, dialog, Menu, nativeTheme, Notification, powerMonitor, session, shell, webContents } = require("electron");
+const { app, BrowserWindow, dialog, nativeTheme, Notification, powerMonitor, shell } = require("electron");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy } = require("../browser/browser-manager");
 const { createLinkRouting } = require("./link-routing");
 const { startBrowserControlServer } = require("../browser/browser-control-server");
 const { startRunTerminalServer } = require("../terminal/run-terminal-server");
-const tailscale = require("./tailscale");
-const remoteFile = require("./remote-file");
-const { claimedCommandIds, keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
-const { ChordScopes } = require("./chord-scope");
+const { publishTailscaleServe, serveEnv, unpublishTailscaleServe } = require("./tailscale");
 const { macWindowChrome } = require("./window-chrome");
-const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
+const { backdropWindowOptions } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
 const { watchWindowVisibility } = require("./window-visibility");
 const { ACTIVE_IDLE_SECONDS, createDesktopNotifier, createPresenceReporter, routeOf } = require("./desktop-notifications");
 const { watchVolumes } = require("./volume-watch");
 const { awaitStore } = require("../store/store-gate");
 const { createStoreGateWindow } = require("../store/store-gate-window");
-const { ExtensionHost, extensionsEnabled } = require("../browser/extension-host");
 const { createBrowserSuggestions } = require("../browser/browser-suggestions");
 const { readProfileRegistry } = require("../browser/browser-profiles");
 const { createTabStore } = require("../browser/browser-tab-store");
 const { createSitePermissionStore } = require("../browser/site-permissions");
-const { resolveHelperExec } = require("./helper-exec");
 const { bundledHelperDaemon, stopHelperDaemon } = require("./computer-use-stop");
-const devUpdate = require("../dev/dev-update");
 const desktopHandoff = require("../handoff/desktop-handoff");
-const serviceWorkerWatchdog = require("./service-worker-watchdog");
-const { createProcessMetricsReader } = require("./process-metrics");
 const { wireLoginOffer } = require("../login/login-offer-window");
 const uiServer = require("./ui-server");
 const { findFreePort, getStablePort, seatHostCookie, seatHostHeader, waitForServer } = uiServer;
 const engineNotices = require("./engine-notices").createEngineNotices({ onMessage: (message) => desktopNotifier.handleServerMessage(message) });
-const { jsonPrefs } = require("./prefs");
+const { DEV_BUILD, E2E_USER_DATA, OVERRIDE_URL, SMOKE } = require("./flags");
+const { applyDevelopmentAppIcon, bundledAgentSdkEntry, bundledPlaywrightMcpCli, computerUseHelperPath, developmentIconPath, nodeExecPath, windowTitle } = require("./bundle-paths");
+const { captureLoginShellEnv } = require("./login-shell-env");
+const { findVolumeMount } = require("./volumes");
+const { logShell, shellLogPath, startHeapLog, watchForUnpairing } = require("./shell-log");
+const { processMetricsReader, startServiceWorkerWatchdog } = require("./renderer-watch");
+const { engineDiscoveryFile, markMainWindowShown, postToEngine, rememberEngine, reportStartupFailure, startEngineChild, stopEngineChild, waitForEngine } = require("./engine-child");
+const { readUiPrefs, supportsTranslucency, watchSchemeForVibrancy } = require("./appearance");
+const { buildApplicationMenu, chords, setBrowserChordScope } = require("./app-menu");
+const { startExtensionHost } = require("./cockpit-extensions");
+const { adoptLegacyUpdatePrefs } = require("./update-prefs");
 
-const SMOKE = process.argv.includes("--smoke");
-
-const DEV_BUILD = (() => {
-  try {
-    return require("../../package.json").telarDev === true;
-  } catch {
-    return false;
-  }
-})();
-const OVERRIDE_URL = DEV_BUILD ? undefined : process.env.TELAR_DESKTOP_URL;
-
-const E2E_USER_DATA = DEV_BUILD ? undefined : process.env.TELAR_DESKTOP_E2E_USER_DATA?.trim();
 
 if (E2E_USER_DATA) {
   app.setPath("userData", E2E_USER_DATA);
@@ -65,8 +53,6 @@ if (E2E_USER_DATA) {
   app.setPath("userData", path.join(app.getPath("appData"), "Telar (dev)"));
 }
 
-let engineChild = null;
-
 let browserManager = null;
 const browserManagers = new Set();
 let browserSuggestions;
@@ -78,106 +64,11 @@ let browserControlConfig = null;
 
 let runTerminalChannel = null;
 let runTerminalConfig = null;
-
 const REMOTE_DEBUGGING_PORT = process.env.TELAR_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
 if (REMOTE_DEBUGGING_PORT && /^\d+$/.test(REMOTE_DEBUGGING_PORT)) {
   app.commandLine.appendSwitch("remote-debugging-port", REMOTE_DEBUGGING_PORT);
 
   app.commandLine.appendSwitch("remote-allow-origins", "*");
-}
-
-function captureLoginShellEnv() {
-  try {
-    const shell = process.env.SHELL || "/bin/zsh";
-    const out = execFileSync(shell, ["-ilc", "env"], {
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-    for (const line of out.split("\n")) {
-      const eq = line.indexOf("=");
-      if (eq <= 0) continue;
-      const key = line.slice(0, eq);
-      const val = line.slice(eq + 1);
-      if (key === "PATH") {
-        const seen = new Set();
-        const merged = [];
-        for (const p of [...val.split(":"), ...(process.env.PATH || "").split(":")]) {
-          if (p && !seen.has(p)) {
-            seen.add(p);
-            merged.push(p);
-          }
-        }
-        process.env.PATH = merged.join(":");
-      } else if (process.env[key] === undefined) {
-        process.env[key] = val;
-      }
-    }
-  } catch (err) {
-    console.error("[telar-desktop] login-shell env capture failed:", err.message);
-  }
-}
-
-function readBuildInfo() {
-  const fs = require("node:fs");
-  const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, "standalone", "build-info.json")]
-    : [path.join(__dirname, "..", "..", "..", "web", ".next-desktop", "standalone", "build-info.json")];
-  for (const c of candidates) {
-    try {
-      if (fs.existsSync(c)) return JSON.parse(fs.readFileSync(c, "utf8"));
-    } catch {
-    }
-  }
-  return null;
-}
-
-function windowTitle() {
-  if (!app.isPackaged) return "Telar Dev";
-  const info = readBuildInfo();
-
-  const name = DEV_BUILD ? "Telar Dev" : "Telar";
-  if (!info || !info.shortSha) return name;
-  return `${name} ${info.shortSha}${DEV_BUILD && info.dirty ? "+dirty" : ""}`;
-}
-
-function developmentIconPath() {
-  if (app.isPackaged) return undefined;
-
-  for (const name of ["icon-dev.png", "icon.png"]) {
-    const icon = path.join(__dirname, "..", "..", "assets", name);
-    if (fs.existsSync(icon)) return icon;
-  }
-  return undefined;
-}
-
-function applyDevelopmentAppIcon() {
-  const icon = developmentIconPath();
-  if (icon && process.platform === "darwin" && app.dock) app.dock.setIcon(icon);
-  return icon;
-}
-
-function bundledPlaywrightMcpCli() {
-  return app.isPackaged
-    ? path.join(process.resourcesPath, "engine", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js")
-    : path.join(__dirname, "..", "..", "..", "engine", "dist", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js");
-}
-
-function bundledAgentSdkEntry() {
-  return app.isPackaged
-    ? path.join(process.resourcesPath, "engine", "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs")
-    : path.join(__dirname, "..", "..", "..", "engine", "dist", "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs");
-}
-
-function resolveEngineJs() {
-  const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, "engine", "engine.mjs")]
-    : [path.join(__dirname, "..", "..", "..", "engine", "dist", "engine.mjs")];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  throw new Error(
-    `engine bundle not found (looked in: ${candidates.join(", ")}). Run \`bun run build:app\` first.`,
-  );
 }
 
 let smokeHome = null;
@@ -214,42 +105,6 @@ async function openStoreGate() {
   }
 }
 
-function findVolumeMount(uuid) {
-  if (process.platform !== "darwin") return undefined;
-  for (const root of ["/Volumes"]) {
-    let names;
-    try {
-      names = fs.readdirSync(root);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      const mount = path.join(root, name);
-      try {
-        if (fs.statSync(mount).dev === fs.statSync(root).dev) continue;
-        const plist = execFileSync("diskutil", ["info", "-plist", mount], {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-
-          timeout: 5_000,
-        });
-        if (/<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim() === uuid) return mount;
-      } catch {
-      }
-    }
-  }
-  return undefined;
-}
-
-function nodeExecPath() {
-  if (app.isPackaged && process.platform === "darwin") {
-    const frameworks = path.join(path.dirname(process.execPath), "..", "Frameworks");
-    const helper = resolveHelperExec(frameworks, app.getName());
-    if (helper) return helper;
-  }
-  return process.execPath;
-}
-
 function wireShellDiagnostics() {
   app.on("child-process-gone", (_event, details) => {
     logShell(
@@ -259,62 +114,6 @@ function wireShellDiagnostics() {
 
     if (lastWindowUrl) void seatHostCookie(lastWindowUrl);
   });
-}
-
-function watchForUnpairing(webContents) {
-  const originOf = (value) => {
-    try {
-      return new URL(value).origin;
-    } catch {
-      return "an unparseable URL";
-    }
-  };
-  webContents.on("did-navigate", (_event, url, httpResponseCode) => {
-    if (httpResponseCode === 401) logShell("warn", `the host window was refused (401) by ${originOf(url)}`);
-  });
-  webContents.on("did-redirect-navigation", (_event, url, _isInPlace, isMainFrame) => {
-    if (!isMainFrame) return;
-    let parsed;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return;
-    }
-    if (parsed.pathname === "/pair" || parsed.pathname.startsWith("/pair/")) {
-      logShell("warn", `the host window was sent to the pairing page by ${parsed.origin}`);
-    }
-  });
-}
-
-let tailscaleServeUrl = null;
-
-const TAILSCALE_SERVE_ERROR_ENV = "TELAR_TAILSCALE_SERVE_ERROR";
-let tailscaleServeError = null;
-async function publishTailscaleServe(home, port) {
-  tailscaleServeError = null;
-  if (!remoteFile.tailscaleServeRequested(home)) return null;
-  const domain = await tailscale.certDomain();
-  if (!domain) {
-    tailscaleServeError = "no-cert-domain";
-    console.error("[telar-desktop] tailscale serve requested but tailscale is missing, not running, or has HTTPS certificates disabled; skipped.");
-    return null;
-  }
-  const outcome = await tailscale.startServe(port);
-  if (outcome !== "none") {
-    tailscaleServeError = outcome;
-    console.error(`[telar-desktop] tailscale serve failed (${outcome}); the ts.net endpoint is down.`);
-    return null;
-  }
-  tailscaleServeUrl = `https://${domain}`;
-  console.log(`[telar-desktop] tailnet: ${tailscaleServeUrl}/`);
-  return tailscaleServeUrl;
-}
-
-function computerUseHelperPath() {
-  if (!app.isPackaged) return null;
-  const { appName } = require("./computer-use-helper.json");
-  const helper = path.join(path.dirname(process.resourcesPath), "Helpers", `${appName}.app`);
-  return fs.existsSync(helper) ? helper : null;
 }
 
 function childEnv(home) {
@@ -340,155 +139,13 @@ function childEnv(home) {
   };
 }
 
-const ENGINE_EXIT_LOCK_HELD = 3;
-
-let mainWindowShown = false;
-
-let startupFailureReported = false;
-
-function reportStartupFailure(title, detail) {
-  if (mainWindowShown || startupFailureReported) return;
-  startupFailureReported = true;
-  dialog.showErrorBox(title, detail);
-}
-
-function engineLockFile(home) {
-  return path.join(home, "engine", "engine.lock");
-}
-
-function engineLockOwnerPid(home) {
-  try {
-    const pid = JSON.parse(fs.readFileSync(engineLockFile(home), "utf8"))?.pid;
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-function startEngineChild(home) {
-  const engineJs = resolveEngineJs();
-  engineChild = fork(engineJs, [], {
-    cwd: path.dirname(engineJs),
-    execPath: nodeExecPath(),
-
-    execArgv: ["--require", path.join(__dirname, "..", "preload", "server-preload.js")],
-    env: {
-      ...childEnv(home),
-      TELAR_HOST_TOKEN: uiServer.HOST_TOKEN,
-      TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-engine-dev" : "telar-engine",
-      NODE_ENV: "production",
-
-      ...(app.isPackaged && !process.env.TELAR_PLAYWRIGHT_MCP_BIN
-        ? { TELAR_PLAYWRIGHT_MCP_BIN: bundledPlaywrightMcpCli() }
-        : {}),
-    },
-    stdio: ["ignore", "inherit", "inherit", "ipc"],
-  });
-  engineChild.on("exit", (code, signal) => {
-    engineChild = null;
-
-    if (SMOKE || app.isQuitting) return;
-    logShell("error", `engine exited (code=${code} signal=${signal})`);
-
-    if (code === ENGINE_EXIT_LOCK_HELD && !mainWindowShown && !startupFailureReported) {
-      startupFailureReported = true;
-      const pid = engineLockOwnerPid(home);
-      dialog.showMessageBoxSync({
-        type: "warning",
-        title: "Telar is already running",
-        message: "Another Telar is using this store.",
-        detail:
-          `A Telar daemon${pid === null ? "" : ` (pid ${pid})`} already holds ${home}.\n\n` +
-          "Switch to the Telar that is already open, or quit it before launching this one.",
-        buttons: ["Quit"],
-      });
-      app.quit();
-      return;
-    }
-
-    reportStartupFailure(
-      "Telar's engine stopped",
-      `The engine exited (code=${code} signal=${signal}) before Telar could open.\n\n` +
-        `There is more in ${shellLogPath()}.`,
-    );
-    app.quit();
-  });
-  return engineChild;
-}
-
-function engineDiscoveryFile(home) {
-  return path.join(home, "engine", "engine.json");
-}
-
-function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150, requireWorker = false } = {}) {
-  const discoveryFile = engineDiscoveryFile(home);
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      let discovery = null;
-      try {
-        discovery = JSON.parse(fs.readFileSync(discoveryFile, "utf8"));
-      } catch {
-      }
-      if (discovery?.port && discovery?.token) {
-        const request = http.request(
-          {
-            host: discovery.host || "127.0.0.1",
-            port: discovery.port,
-            path: "/v2/health",
-            headers: { authorization: `Bearer ${discovery.token}` },
-            timeout: 2_000,
-          },
-          (response) => {
-            if (response.statusCode !== 200) {
-              response.resume();
-              return retry();
-            }
-            if (!requireWorker) {
-              response.resume();
-              return resolve(discovery);
-            }
-            let raw = "";
-            response.setEncoding("utf8");
-            response.on("data", (chunk) => (raw += chunk));
-            response.on("end", () => {
-              let health = null;
-              try {
-                health = JSON.parse(raw);
-              } catch {
-              }
-              if (health?.worker?.registered === true) return resolve({ ...discovery, workerId: health.worker.workerId });
-              retry();
-            });
-          },
-        );
-        request.on("error", retry);
-        request.on("timeout", () => {
-          request.destroy();
-          retry();
-        });
-        request.end();
-        return;
-      }
-      retry();
-    };
-    const retry = () => {
-      if (Date.now() >= deadline) {
-        reject(new Error(`engine did not become ${requireWorker ? "healthy with a registered worker" : "healthy"} within ${timeoutMs}ms`));
-      } else setTimeout(tick, intervalMs);
-    };
-    tick();
-  });
-}
-
 function startServer(port, home) {
   const child = uiServer.startServer(port, home, {
     execPath: nodeExecPath(),
     env: {
       ...childEnv(home),
       TELAR_PROCESS_TITLE: DEV_BUILD ? "telar-ui-dev" : "telar-ui",
-      ...(tailscaleServeUrl ? { TELAR_TAILSCALE_URL: tailscaleServeUrl } : {}),
-      ...(tailscaleServeError ? { [TAILSCALE_SERVE_ERROR_ENV]: tailscaleServeError } : {}),
+      ...serveEnv(),
     },
     onExit: (code, signal) => {
       presenceReporter.stop();
@@ -637,9 +294,9 @@ function createWindow(url) {
 
     linkRouting.set(win.webContents, false);
 
-    if (!chordScopes.empty || chordCapture) {
-      chordScopes.setRenderer([]);
-      chordCapture = false;
+    if (!chords.scopes.empty || chords.capturing) {
+      chords.scopes.setRenderer([]);
+      chords.capturing = false;
       buildApplicationMenu();
     }
   });
@@ -654,7 +311,7 @@ function createWindow(url) {
     manager.destroy();
     browserManagers.delete(manager);
 
-    if (chordScopes.forget(manager)) buildApplicationMenu();
+    if (chords.scopes.forget(manager)) buildApplicationMenu();
 
     if (browserManager === manager) browserManager = browserManagers.values().next().value ?? null;
   });
@@ -687,50 +344,6 @@ function createWindow(url) {
   return win;
 }
 
-function startExtensionHost(win, manager, partition) {
-  const wanted = extensionsEnabled({ dev: DEV_BUILD, packaged: app.isPackaged, version: app.getVersion(), override: process.env.TELAR_EXTENSIONS });
-  if (!wanted || SMOKE) return null;
-  const ses = session.fromPartition(partition);
-  const host = new ExtensionHost(ses, {
-    window: win,
-    tabs: {
-      createTab: async (details) => {
-        const url = details.url || "about:blank";
-        if (url.startsWith('chrome-extension:')) {
-          const page = host.openExtensionPage(url, win);
-          return [page.webContents, page];
-        }
-
-        const onPartition = (scope) => { try { return manager.partitionOf(scope) === partition; } catch { return false; } };
-        const scope = (manager.visibleScopeKey && onPartition(manager.visibleScopeKey))
-          ? manager.visibleScopeKey
-          : [...new Set(manager.tabs.map((t) => t.scopeKey))].find(onPartition);
-        if (!scope) throw new Error("No browser session for this profile is open to receive a tab.");
-        const tab = await manager.createTab(scope, url, "human");
-        return [tab.view.webContents, win];
-      },
-      selectTab: (wc) => {
-        const tab = manager.tabs.find((t) => t.view && t.view.webContents === wc);
-        if (tab) manager.selectTab(tab.scopeKey, manager.scopeTabs(tab.scopeKey).indexOf(tab)).catch(() => undefined);
-      },
-      removeTab: (wc) => {
-        const tab = manager.tabs.find((t) => t.view && t.view.webContents === wc);
-        if (tab) { manager.closeTabRef(tab); return; }
-        for (const page of host.extensionWindows) if (!page.isDestroyed() && page.webContents === wc) page.close();
-      },
-    },
-  });
-  host.onHealthChange = (status) => { if (!win.isDestroyed()) win.webContents.send("telar:browser:extension", { partition, ...status }); };
-
-  host.onHoldOpen = (id, reason) => manager.addUiHold(id, reason);
-  host.onHoldClose = (id) => manager.removeUiHold(id);
-  host.startOnce().then((status) => {
-    if (status.phase === "failed") console.error(`[telar-desktop] 1Password extension (${partition}): ${status.error}`);
-    if (!win.isDestroyed()) win.webContents.send("telar:browser:extension", { partition, ...status });
-  });
-  return host;
-}
-
 function managerForEvent(event) {
   const sender = event?.sender;
   if (!sender) return null;
@@ -759,114 +372,6 @@ let loginOffer = null;
 function requireLoginOffer() {
   loginOffer ??= wireLoginOffer({ stateRoot: path.join(telarHome(), "engine") });
   return loginOffer;
-}
-
-let chordCapture = false;
-
-const chordScopes = new ChordScopes();
-
-function setBrowserChordScope(manager, chords) {
-  if (chordScopes.setOwner(manager, chords)) buildApplicationMenu();
-}
-
-function sendCommandKey(browserWindow, id) {
-  const win = browserWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-  win?.webContents.send("telar:command-keys:invoke", id);
-}
-
-function buildApplicationMenu(keymap = readKeymap()) {
-  const claimed = new Set(claimedCommandIds(keymap, chordScopes.all()));
-  const toMenuItem = (command) => ({
-    label: command.label,
-
-    ...(command.accelerator && !chordCapture && !claimed.has(command.id) ? { accelerator: command.accelerator } : {}),
-    enabled: !chordCapture,
-    click: (_menuItem, browserWindow) => sendCommandKey(browserWindow, command.id),
-  });
-  const fileCommands = menuCommands(keymap, "file");
-  const panelCommands = menuCommands(keymap, "panel");
-  const viewCommands = menuCommands(keymap, "view");
-
-  const jumpBindings = fileCommands.filter((command) => command.jump);
-  const otherBindings = fileCommands.filter((command) => !command.jump);
-  const isMac = process.platform === "darwin";
-  const template = [
-
-    ...(isMac ? [{ role: "appMenu" }] : []),
-    {
-      label: "File",
-      submenu: [
-        ...otherBindings.map(toMenuItem),
-        { type: "separator" },
-
-        { label: "Jump to", submenu: jumpBindings.map(toMenuItem) },
-
-        ...(DEV_BUILD
-          ? [
-              { type: "separator" },
-              { label: "Update from Local Checkout…", click: () => devUpdate.openWindow() },
-            ]
-          : []),
-      ],
-    },
-    { role: "editMenu" },
-
-    {
-      label: "View",
-      submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
-        { type: "separator" },
-        ...viewCommands.map(toMenuItem),
-        { role: "toggleDevTools", label: "Cockpit Developer Tools", accelerator: "CommandOrControl+Alt+Shift+I" },
-        { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
-        { type: "separator" },
-        { role: "togglefullscreen" },
-      ],
-    },
-
-    ...(panelCommands.length > 0 ? [{ label: "Panel", submenu: panelCommands.map(toMenuItem) }] : []),
-    { role: "windowMenu" },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
-
-let engineDiscovery = null;
-let discoveryReadAt = 0;
-
-function currentEngineDiscovery() {
-  if (!engineDiscovery && Date.now() - discoveryReadAt > 5_000) {
-    discoveryReadAt = Date.now();
-    try {
-      engineDiscovery = JSON.parse(fs.readFileSync(engineDiscoveryFile(telarHome()), "utf8"));
-    } catch {
-    }
-  }
-  return engineDiscovery;
-}
-
-function postToEngine(routePath, body) {
-  const discovery = currentEngineDiscovery();
-  if (!discovery?.port || !discovery?.token) return;
-  const payload = JSON.stringify(body ?? {});
-  const request = http.request({
-    host: discovery.host || "127.0.0.1",
-    port: discovery.port,
-    path: routePath,
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${discovery.token}`,
-      "content-length": Buffer.byteLength(payload),
-    },
-    timeout: 2_000,
-  });
-  request.on("error", () => {});
-  request.on("timeout", () => request.destroy());
-  request.end(payload);
 }
 
 function reportBrowserControl(change) {
@@ -914,311 +419,13 @@ function requireTerminalHost() {
 
 const RENDERER = TerminalOwner.RENDERER;
 
-function volumeIdentityFor(target) {
-  if (process.platform !== "darwin") return undefined;
-  const prefix = "/Volumes/";
-  if (!target.startsWith(prefix)) return undefined;
-  const [name] = target.slice(prefix.length).split(path.sep);
-  if (!name) return undefined;
-  const mount = path.join("/Volumes", name);
-  try {
-    if (fs.statSync(mount).dev === fs.statSync("/Volumes").dev) return undefined;
-    const plist = execFileSync("diskutil", ["info", "-plist", mount], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
-    });
-    const uuid = /<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist)?.[1]?.trim();
-    return { mount, label: name, ...(uuid ? { uuid } : {}) };
-  } catch {
-    return { mount, label: name };
-  }
-}
-
-function updateProxyKey() {
-  try {
-    return require("../../package.json").updateProxyKey || null;
-  } catch {
-    return null;
-  }
-}
-
-const UPDATE_CHANNELS = ["beta", "nightly"];
-const DEFAULT_UPDATE_PREFS = { channel: "beta", installOnQuit: false };
-
-const validUpdatePrefs = (raw) => ({
-  channel: UPDATE_CHANNELS.includes(raw.channel) ? raw.channel : DEFAULT_UPDATE_PREFS.channel,
-  installOnQuit: raw.installOnQuit === true,
-});
-
-const updatePrefs = jsonPrefs("update-prefs.json", DEFAULT_UPDATE_PREFS, validUpdatePrefs, "update prefs");
-const readUpdatePrefs = updatePrefs.read;
-const writeUpdatePrefs = updatePrefs.write;
-
-const LEGACY_USER_DATA_NAME = "telar-desktop";
-
-function adoptLegacyUpdatePrefs() {
-  const fs = require("node:fs");
-
-  if (DEV_BUILD) return;
-  try {
-    if (fs.existsSync(updatePrefs.path())) return;
-    const legacy = path.join(app.getPath("appData"), LEGACY_USER_DATA_NAME, "update-prefs.json");
-    if (!fs.existsSync(legacy)) return;
-
-    const prefs = validUpdatePrefs(JSON.parse(fs.readFileSync(legacy, "utf8")));
-    writeUpdatePrefs(prefs);
-    console.log(`[telar-desktop] adopted update preferences from the previous install (channel ${prefs.channel})`);
-  } catch (err) {
-    console.error("[telar-desktop] could not adopt previous update preferences:", err.message);
-  }
-}
-
-const DEFAULT_UI_PREFS = { translucent: false, frost: "blur" };
-
-const { read: readUiPrefs, write: writeUiPrefs } = jsonPrefs(
-  "ui-prefs.json",
-  DEFAULT_UI_PREFS,
-
-  (raw) => ({ translucent: raw.translucent === true, frost: raw.frost === "clear" ? "clear" : "blur" }),
-  "ui prefs",
-);
-
-function supportsTranslucency() {
-  return process.platform === "darwin";
-}
-
-const { read: readKeybindingOverrides, write: writeKeybindingOverrides } = jsonPrefs(
-  "keybindings.json",
-  {},
-  (raw) => keymapOverrides(mergeKeymap(raw)),
-  "keybindings",
-);
-
-function readKeymap() {
-  return mergeKeymap(readKeybindingOverrides());
-}
-
-function applyTranslucency(on, frost) {
-  const dark = nativeTheme.shouldUseDarkColors;
-
-  const material = vibrancyMaterial({ translucent: on, frost, dark });
-
-  const backgroundColor = windowBackgroundColor({ translucent: on, dark });
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    try {
-      win.setVibrancy(material);
-      win.setBackgroundColor(backgroundColor);
-    } catch (err) {
-      console.error("[telar-desktop] failed to retint a window:", err.message);
-    }
-  }
-}
-
-function reapplyVibrancy() {
-  if (!supportsTranslucency()) return;
-  const { translucent, frost } = readUiPrefs();
-  applyTranslucency(translucent, frost);
-}
-
-function watchSchemeForVibrancy() {
-  if (!supportsTranslucency()) return;
-  nativeTheme.on("updated", reapplyVibrancy);
-}
-
 let lastWindowUrl = null;
 
 let updaterWindow = null;
 
-function updateLogPath() {
-  return path.join(app.getPath("userData"), "update.log");
-}
-
-function shellLogPath() {
-  return path.join(app.getPath("userData"), "shell.log");
-}
-
-function logShell(level, message) {
-  const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
-  try {
-    fs.appendFileSync(shellLogPath(), line);
-  } catch {
-  }
-  console.log(`[telar-shell] ${level} ${message}`);
-}
-
-const HEAP_LOG_INTERVAL_MS = 60_000;
-const HEAP_WARN_BYTES = 1_024 * 1_024 * 1_024;
-
-function heapLogRequested() {
-  return process.argv.includes("--telar-heap-log") || process.env.TELAR_SHELL_HEAP_LOG === "1";
-}
-
-function diagnosticsDir() {
-  return path.join(app.getPath("userData"), "diagnostics");
-}
-
-const mb = (bytes) => Math.round(Number(bytes || 0) / (1024 * 1024));
-
-let heapWarned = false;
-let heapSnapshotWritten = false;
-
-function writeHeapSnapshotOnce() {
-  if (heapSnapshotWritten) return null;
-  heapSnapshotWritten = true;
-  try {
-    fs.mkdirSync(diagnosticsDir(), { recursive: true });
-    const file = path.join(diagnosticsDir(), `main-${new Date().toISOString().replace(/[:.]/g, "-")}.heapsnapshot`);
-    require("node:v8").writeHeapSnapshot(file);
-    return file;
-  } catch (error) {
-    logShell("warn", `could not write a heap snapshot: ${error && error.message ? error.message : error}`);
-    return null;
-  }
-}
-
-async function heapLogTick(detailed) {
-  const heap = require("node:v8").getHeapStatistics();
-  if (detailed) {
-    const memory = process.memoryUsage();
-
-    let footprint = null;
-    try {
-      footprint = typeof process.getProcessMemoryInfo === "function" ? await process.getProcessMemoryInfo() : null;
-    } catch {
-    }
-    const views = browserManager ? browserManager.diagnostics() : null;
-    logShell(
-      "info",
-      [
-        `heap rss=${mb(memory.rss)}MB heapUsed=${mb(memory.heapUsed)}MB heapTotal=${mb(memory.heapTotal)}MB`,
-        `external=${mb(memory.external)}MB arrayBuffers=${mb(memory.arrayBuffers)}MB`,
-        `usedHeapSize=${mb(heap.used_heap_size)}MB heapLimit=${mb(heap.heap_size_limit)}MB`,
-        footprint ? `private=${Math.round(Number(footprint.private || 0) / 1024)}MB residentSet=${Math.round(Number(footprint.residentSet || 0) / 1024)}MB` : "private=?",
-        `windows=${BrowserWindow.getAllWindows().length}`,
-        views
-          ? `scopes=${views.scopes} tabs=${views.tabs} liveViews=${views.liveViews} wcListeners=${views.wcListeners} extensionHosts=${views.extensionHosts} console=${views.consoleEntries} network=${views.networkEntries} expectedReports=${views.expectedReports} refs=${views.refs} scopeEntries=${views.scopeEntries} pendingPopups=${views.pendingPopups} uiHolds=${views.uiHolds}`
-          : "manager=none",
-      ].join(" "),
-    );
-  }
-  if (heap.used_heap_size < HEAP_WARN_BYTES || heapWarned) return;
-  heapWarned = true;
-  const snapshot = detailed ? writeHeapSnapshotOnce() : null;
-  logShell(
-    "warn",
-    `the main process V8 heap passed ${mb(HEAP_WARN_BYTES)}MB (used=${mb(heap.used_heap_size)}MB of a ${mb(heap.heap_size_limit)}MB limit) — see issue #296. This warns once per launch.` +
-      (snapshot ? ` Heap snapshot: ${snapshot}` : heapLogRequested() ? "" : " Relaunch with TELAR_SHELL_HEAP_LOG=1 for a per-minute series and a heap snapshot."),
-  );
-}
-
-function startHeapLog() {
-  const detailed = heapLogRequested();
-  if (detailed) void heapLogTick(true);
-  const timer = setInterval(() => void heapLogTick(detailed), HEAP_LOG_INTERVAL_MS);
-
-  timer.unref?.();
-}
-
-function liveRendererProcessIds() {
-  const pids = [];
-  for (const contents of webContents.getAllWebContents()) {
-    if (contents.isDestroyed()) continue;
-    try {
-      const pid = contents.getOSProcessId();
-      if (pid) pids.push(pid);
-    } catch {
-    }
-  }
-  return pids;
-}
-
-let processMetrics = null;
-function processMetricsReader() {
-  if (!processMetrics) {
-    processMetrics = createProcessMetricsReader({
-      readMetrics: () => app.getAppMetrics(),
-      readLiveProcessIds: liveRendererProcessIds,
-    });
-  }
-  return processMetrics;
-}
-
-let lastRunawayNotice = { at: 0, renderers: [] };
-function broadcastRunawayNotice(notices) {
-  lastRunawayNotice = {
-    at: Date.now(),
-
-    renderers: (notices || []).map((notice) => ({
-      pid: notice.pid,
-      percent: notice.percent,
-      polls: notice.polls,
-      killed: Boolean(notice.killed),
-      origins: notice.origins || [],
-    })),
-  };
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    try {
-      win.webContents.send("telar:metrics:runaway", lastRunawayNotice);
-    } catch {
-    }
-  }
-}
-
-function startServiceWorkerWatchdog() {
-  const watchdog = serviceWorkerWatchdog.createServiceWorkerWatchdog({
-    readMetrics: () => processMetricsReader().metricsForWatchdog({ minWindowMs: 25_000 }),
-    readLiveProcessIds: liveRendererProcessIds,
-
-    readWorkers: () => {
-      const workers = [];
-      const partitions = new Set();
-      const liveOrigins = new Map();
-      for (const manager of browserManagers) {
-        for (const partition of manager.activePartitions()) partitions.add(partition);
-        for (const [partition, origins] of manager.liveOriginsByPartition()) {
-          if (!liveOrigins.has(partition)) liveOrigins.set(partition, new Set());
-          for (const origin of origins) liveOrigins.get(partition).add(origin);
-        }
-      }
-      for (const partition of partitions) {
-        let running;
-        try {
-          running = session.fromPartition(partition).serviceWorkers.getAllRunning();
-        } catch {
-          continue;
-        }
-        for (const info of Object.values(running || {})) {
-          const origin = serviceWorkerWatchdog.originOfScope(info?.scope);
-          workers.push({
-            partition,
-            scope: info?.scope,
-            scriptUrl: info?.scriptUrl,
-            versionId: info?.versionId,
-            hasLiveTab: Boolean(origin && liveOrigins.get(partition)?.has(origin)),
-          });
-        }
-      }
-      return workers;
-    },
-    terminate: (pid) => process.kill(pid, "SIGKILL"),
-    log: logShell,
-    onNotice: broadcastRunawayNotice,
-  });
-  watchdog.start();
-  return watchdog;
-}
-
 function killServer() {
   uiServer.stopServer();
-  if (!engineChild || engineChild.killed) return;
-  try {
-    engineChild.kill("SIGTERM");
-  } catch {
-  }
-  engineChild = null;
+  stopEngineChild();
 }
 
 function stopComputerUseHelper() {
@@ -1278,7 +485,7 @@ app.on("will-quit", () => {
   stopComputerUseHelper();
   closeBrowserControl();
 
-  if (tailscaleServeUrl) void tailscale.stopServe();
+  unpublishTailscaleServe();
 });
 
 process.on("exit", killServer);
@@ -1311,9 +518,10 @@ async function runSmoke() {
       const home = telarHome();
       startEngineChild(home);
 
-      engineDiscovery = await waitForEngine(home, { requireWorker: true });
+      const discovery = await waitForEngine(home, { requireWorker: true });
+      rememberEngine(discovery);
       console.log("ENGINE_OK");
-      console.log(`ENGINE_WORKER_OK ${engineDiscovery.workerId}`);
+      console.log(`ENGINE_WORKER_OK ${discovery.workerId}`);
       port = await findFreePort();
       startServer(port, home);
     }
@@ -1373,51 +581,21 @@ require("./ipc-terminal").registerTerminalIpc({
   terminalReaders,
 });
 
-require("./ipc-store").registerWorkspaceAndStoreIpc({
-  DEV_BUILD,
-  telarHome,
-  volumeIdentityFor,
-});
+require("./ipc-store").registerWorkspaceAndStoreIpc({ telarHome });
 
-require("./ipc-prefs").registerPrefsIpc({
-  applyTranslucency,
-  buildApplicationMenu,
-  chordScopes,
-  readKeybindingOverrides,
-  readUiPrefs,
-  supportsTranslucency,
-  writeKeybindingOverrides,
-  writeUiPrefs,
-  get chordCapture() {
-    return chordCapture;
-  },
-  set chordCapture(value) {
-    chordCapture = value;
-  },
-});
+require("./ipc-prefs").registerPrefsIpc();
 
 require("./ipc-app").registerAppIpc({
   createWindow,
   linkRouting,
-  processMetricsReader,
-  get lastRunawayNotice() {
-    return lastRunawayNotice;
-  },
   get lastWindowUrl() {
     return lastWindowUrl;
   },
 });
 
 const { configureAutoUpdater } = require("./updates").registerUpdates({
-  DEV_BUILD,
-  UPDATE_CHANNELS,
-  logShell,
-  readUpdatePrefs,
   requireCockpitSender,
   telarHome,
-  updateLogPath,
-  updateProxyKey,
-  writeUpdatePrefs,
   get updaterWindow() {
     return updaterWindow;
   },
@@ -1459,9 +637,9 @@ if (SMOKE) {
       try {
         wireShellDiagnostics();
 
-        startHeapLog();
+        startHeapLog(() => (browserManager ? browserManager.diagnostics() : null));
 
-        startServiceWorkerWatchdog();
+        startServiceWorkerWatchdog(browserManagers);
         applyDevelopmentAppIcon();
         buildApplicationMenu();
 
@@ -1504,7 +682,7 @@ if (SMOKE) {
 
           const home = telarHome();
           startEngineChild(home);
-          engineDiscovery = await waitForEngine(home);
+          rememberEngine(await waitForEngine(home));
           await recordHandoffBoot(home);
           const port = await getStablePort();
           await publishTailscaleServe(home, port);
@@ -1514,7 +692,7 @@ if (SMOKE) {
         }
         updaterWindow = createWindow(url);
 
-        mainWindowShown = true;
+        markMainWindowShown();
         configureAutoUpdater();
 
         watchVolumes({ onChanged: reportVolumesChanged, powerMonitor });
