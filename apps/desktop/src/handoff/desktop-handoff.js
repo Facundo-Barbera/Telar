@@ -1,14 +1,3 @@
-// THE WIRED HALF OF THE IDENTITY HAND-OFF (#1042) — see desktop-handoff-core.js
-// for the decisions. Two entry points:
-//
-//   start()      in the old-id app (H): find N's manifest, fetch and verify N,
-//                explain what macOS will ask again, and swap on the person's
-//                click. Nothing installs without that click: the Keychain
-//                prompt that follows needs somebody there to answer it.
-//   recordBoot() in every packaged launch: N's first boot confirms the swap
-//                and removes what the old id left behind.
-//
-// Inert until a handoff-<channel>-mac.json exists under N's feed prefix.
 "use strict";
 const { app, dialog, net, shell } = require("electron");
 const { execFile, spawn } = require("node:child_process");
@@ -21,11 +10,11 @@ const helperPin = require("../main/computer-use-helper.json");
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MANIFEST_TIMEOUT_MS = 30_000;
-// How long the helper waits for H itself to quit before abandoning the swap.
+
 const PARENT_EXIT_SECONDS = 600;
-// SIGTERM to SIGKILL, when a new app that never confirmed is stopped.
+
 const KILL_GRACE_SECONDS = 30;
-// Past this the helper has either exited or is rolling back.
+
 const HELPER_EXIT_WAIT_MS = (core.CONFIRM_SECONDS + KILL_GRACE_SECONDS + 30) * 1000;
 const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
@@ -58,7 +47,6 @@ async function fetchManifest(url, headers) {
   }
 }
 
-/** Fetch N's zip (or reuse a matching one), unpack it and return the staged app. */
 async function stage(manifest, feedUrl, headers, log) {
   const dir = workDir();
   fs.mkdirSync(dir, { recursive: true });
@@ -129,7 +117,6 @@ async function reportFailure(failed) {
   if (response === 1) shell.showItemInFolder(helperLog());
 }
 
-/** Copy N beside the target, re-check the copy, and hand over to the helper. */
 async function handOver({ plan, stagedApp, manifest, team, quit, log }) {
   fs.rmSync(plan.incoming, { recursive: true, force: true });
   await execAsync("ditto", [stagedApp, plan.incoming]);
@@ -172,7 +159,6 @@ async function attempt({ channel, key, quit, log }) {
   try {
     feedUrl = core.readFeedUrl(fs.readFileSync(path.join(process.resourcesPath, "app-update.yml"), "utf8"));
   } catch {
-    /* no baked feed: nothing to hand off from */
   }
   if (!feedUrl) return;
   const headers = key ? { "X-Telar-Update-Key": key } : {};
@@ -186,8 +172,6 @@ async function attempt({ channel, key, quit, log }) {
   if (decision.action === "notify-failed") return reportFailure(decision.failed);
   if (decision.action === "blocked") return;
 
-  // THE TEAM COMES FROM THIS APP'S OWN SIGNATURE, never from the feed: a
-  // feed that could name the team could name any team.
   const team = core.runningTeam(bundle);
   if (!team) throw new Error("this build is not signed, so it cannot check the new one");
   if (manifest.teamId !== team) throw new Error(`the manifest names team ${manifest.teamId}, this app is ${team}`);
@@ -231,11 +215,6 @@ async function check(options) {
   }
 }
 
-/**
- * Look for the hand-off now and with every update check after. `channel` is a
- * function so a channel switch takes effect on the next check; `quit` is how
- * main.js quits for an install.
- */
 function start({ channel, key, quit, log }) {
   if (!ownBundle()) return;
   const run = () => void check({ channel: channel(), key, quit, log });
@@ -243,12 +222,10 @@ function start({ channel, key, quit, log }) {
   setInterval(run, CHECK_INTERVAL_MS).unref?.();
 }
 
-/** Whether this launch is the one a helper is waiting on. */
 function awaitingConfirmation() {
   return fs.existsSync(core.paths(workDir()).pending);
 }
 
-/** Never rejects: a cleanup step that fails is logged, not fatal. */
 function execResult(cmd, args) {
   return new Promise((resolve) => {
     execFile(cmd, args, { timeout: 60_000 }, (err, stdout, stderr) => resolve({ ok: !err, output: `${stderr || ""}${stdout || ""}`.trim() || err?.message || "" }));
@@ -261,11 +238,6 @@ function helperRunning(script) {
   });
 }
 
-/**
- * Remove the old identity: its System Settings entries, the rollback copy and
- * its ~/Library leftovers. Waits for the swap helper first, because it moves
- * last-good back if the confirmation reached it too late.
- */
 async function cleanUpOldIdentity(log) {
   const dir = workDir();
   const p = core.paths(dir);
@@ -274,8 +246,7 @@ async function cleanUpOldIdentity(log) {
     if (Date.now() - started > HELPER_EXIT_WAIT_MS) return log("hand-off: the swap helper is still running; cleaning up next launch");
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
-  // tccutil only resolves an id LaunchServices knows: last-good carries the old
-  // one; without it, an empty stub does.
+
   const holder = fs.existsSync(p.lastGood) ? p.lastGood : core.writeLegacyStub(dir);
   await execResult(LSREGISTER, ["-f", holder]);
   const reset = await execResult("tccutil", core.TCC_RESET_ARGS);
@@ -293,7 +264,6 @@ async function cleanUpOldIdentity(log) {
   log("hand-off: removed the previous app and the old identity's leftovers");
 }
 
-/** Called once the engine has a worker. `log` takes one line. */
 function recordBoot(log) {
   const bundle = ownBundle();
   if (!bundle) return;

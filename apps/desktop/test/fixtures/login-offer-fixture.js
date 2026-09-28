@@ -1,18 +1,3 @@
-// A review fixture for the ACTUAL login-offer.html: serves the real file
-// (read from disk on every request — never a copy) with one injected script
-// that stands in for login-offer-preload.js, implementing the same
-// window.telarLoginOffer contract with scripted vault METADATA per scenario.
-// Nothing here touches Electron, the engine, a vault, or any installed state;
-// confirm/dismiss are recorded on window.__offerCalls and echoed into the
-// document title so a browser reviewer can see the outcome.
-//
-//   bun apps/desktop/test-fixtures/login-offer-fixture.js [port]
-//   → http://127.0.0.1:43195/          (scenario index)
-//   → http://127.0.0.1:43195/offer?scenario=two-accounts
-//
-// Scenarios: two-accounts (confirm succeeds), vault-locked, no-items,
-// replaced-on-confirm (refusal after selection), expired, live-refresh
-// (the offer is replaced while open; the page's onRefresh re-renders).
 "use strict";
 const fs = require("node:fs");
 const http = require("node:http");
@@ -90,8 +75,6 @@ const server = http.createServer((request, response) => {
   const url = new URL(request.url, `http://127.0.0.1:${PORT}`);
   const scenario = SCENARIOS.includes(url.searchParams.get("scenario")) ? url.searchParams.get("scenario") : "two-accounts";
   if (url.pathname === "/offer") {
-    // The actual bytes, at request time; the bridge rides in ahead of the
-    // page's own script (which runs at the end of body).
     const html = fs.readFileSync(OFFER_HTML, "utf8").replace('<meta charset="utf-8" />', `<meta charset="utf-8" /><script src="/bridge.js?scenario=${scenario}"></script>`);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(html);

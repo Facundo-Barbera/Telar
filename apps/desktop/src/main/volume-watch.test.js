@@ -1,19 +1,8 @@
 "use strict";
 
-/**
- * THE SHELL NOTICING A DISK MOVE — issue #534, `volume-watch.js`.
- *
- * The watcher and the clock are both injected, so nothing here mounts a volume,
- * touches `/Volumes`, or needs Electron. What is pinned is the contract the
- * engine relies on: one call per burst, a wake counts as a change, a mount root
- * that cannot be watched is one root fewer rather than a failed start, and
- * stopping actually stops.
- */
-
 const { expect, test } = require("bun:test");
 const { mountRootsFor, watchVolumes } = require("./volume-watch");
 
-/** A watcher whose events a test fires by hand. */
 function stubWatch() {
   const listeners = new Map();
   const closed = [];
@@ -24,7 +13,6 @@ function stubWatch() {
   return { watch, closed, fire: (dir) => listeners.get(dir)(), watched: () => [...listeners.keys()] };
 }
 
-/** Electron's `powerMonitor`, reduced to the one event this uses. */
 function stubPowerMonitor() {
   const listeners = new Map();
   return { on: (event, listener) => listeners.set(event, listener), wake: () => listeners.get("resume")?.() };

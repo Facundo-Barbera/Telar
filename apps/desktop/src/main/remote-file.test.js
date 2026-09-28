@@ -1,16 +1,3 @@
-// THE SHELL MUST NOT WIDEN ON A FILE THE GATE HAS GIVEN UP ON — issue #627.
-//
-// `readRemote` (apps/web/lib/remote/store.ts) resets an unknown-version file to
-// `requireAuth: false` on purpose. The shell used to read the same file raw and
-// decide the bind address and `tailscale serve` from it, so such a file bound
-// every interface and published to the tailnet with the gate admitting
-// everyone. That is not a type error, not a lint error and not a failing route
-// test — it is one JSON.parse with no version check, so it is tested here.
-//
-// The reads take an injected `readFile` rather than touching a real home: these
-// are rules, and a rule that needs a temp directory to check is a rule nobody
-// re-checks.
-
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -25,8 +12,6 @@ const {
 
 const HOME = "/tmp/telar-test-home";
 
-/** A reader that answers with one file's text, or throws the way a missing
- *  file does. */
 const serving = (text) => () => {
   if (text === undefined) {
     const error = new Error("ENOENT");
@@ -40,8 +25,6 @@ const file = (value) => serving(JSON.stringify(value));
 const WIDE_OPEN = { version: 1, requireAuth: true, exposure: "network-accessible", tailscaleServe: true, devices: [] };
 
 describe("an unknown version never widens", () => {
-  // THE REGRESSION. Every field says "publish me" and the shell must still
-  // refuse, because a version it cannot read is a file it cannot trust.
   const rolledBack = file({ ...WIDE_OPEN, version: 2 });
 
   test("a version:2 file binds loopback", () => {
@@ -56,8 +39,7 @@ describe("an unknown version never widens", () => {
     const posture = readRemotePosture(HOME, rolledBack);
     expect(posture.state).toBe("unknown-version");
     expect(posture.trusted).toBe(false);
-    // The gate WILL admit everyone here — that is `readRemote`'s RESET, and the
-    // posture must say so rather than reporting the file's own `requireAuth`.
+
     expect(posture.requireAuth).toBe(false);
     expect(gateWillRequireAuth(HOME, rolledBack)).toBe(false);
   });
@@ -100,9 +82,6 @@ describe("a missing file is a fresh store, which requires pairing", () => {
     expect(tailscaleServeRequested(HOME, missing)).toBe(false);
   });
 
-  // The dev launcher's warning line reads this. Announcing an unguarded
-  // cockpit on the one install that is guarded by default is the bug that
-  // comment in dev.mjs is about.
   test("and the gate requires auth", () => {
     expect(gateWillRequireAuth(HOME, missing)).toBe(true);
   });
@@ -133,9 +112,6 @@ describe("a known version is honoured, with both conditions", () => {
 });
 
 describe("the version tracks the store's", () => {
-  // Same contract-across-two-languages problem host-header.test.js has: a bump
-  // in store.ts that is not mirrored here reads every file as unknown, which is
-  // safe and closes remote access for everybody.
   test("store.ts declares the version this module knows", () => {
     const storeTs = path.join(__dirname, "..", "..", "..", "web", "lib", "remote", "store.ts");
     const source = fs.readFileSync(storeTs, "utf8");

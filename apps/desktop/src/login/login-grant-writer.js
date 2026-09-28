@@ -1,22 +1,3 @@
-/**
- * The shell's writer for remembered login authorizations — a mirror of the
- * engine's `LoginGrantStore.remember` (apps/engine/src/secrets/login-grants.ts)
- * over the same file: same schema, same lock protocol, same replace rule.
- *
- * Why a mirror and not a daemon route: the daemon authenticates with a bearer
- * token local agents can read, so an HTTP "create a grant" route would let an
- * agent authorize itself. The write therefore happens only in the Electron
- * main process, downstream of a click inside the sender-validated offer window
- * (login-offer-window.js) — a surface no agent-reachable API drives. Listing
- * and revoking stay on the daemon (`/v2/browser/logins`).
- *
- * Why async where the engine is sync: this runs on Electron's main thread,
- * where the engine's `Atomics.wait` lock loop (worst case ~6 s under
- * contention) would freeze every window. Same mkdir-lock protocol, same
- * timings — the waiting just yields the event loop. Schema, constants and
- * contention behaviour are pinned against the real engine store in
- * login-grant-writer.test.js.
- */
 "use strict";
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -26,8 +7,6 @@ const { setTimeout: delay } = require("node:timers/promises");
 const LOGIN_GRANTS_VERSION = 1;
 const LOGIN_GRANTS_FILE = "browser-login-grants.json";
 
-// The engine's lock protocol: mkdir is the atomic primitive, a dead holder's
-// lock is broken after STALE_LOCK_MS, and giving up takes ~6 s of contention.
 const STALE_LOCK_MS = 10_000;
 const LOCK_WAIT_MS = 15;
 const LOCK_ATTEMPTS = 400;
@@ -44,10 +23,10 @@ async function withFileLock(lockPath, run) {
       try {
         age = Date.now() - fs.statSync(lockPath).mtimeMs;
       } catch {
-        continue; // released between the mkdir and the stat
+        continue;
       }
       if (age > STALE_LOCK_MS) {
-        try { fs.rmdirSync(lockPath); } catch { /* someone else broke it first */ }
+        try { fs.rmdirSync(lockPath); } catch {  }
         continue;
       }
       await delay(LOCK_WAIT_MS);
@@ -57,11 +36,10 @@ async function withFileLock(lockPath, run) {
   try {
     return run();
   } finally {
-    try { fs.rmdirSync(lockPath); } catch { /* already broken as stale */ }
+    try { fs.rmdirSync(lockPath); } catch {  }
   }
 }
 
-/** An origin string is only usable if it IS an origin: scheme + host, http(s). */
 function exactOrigin(value) {
   try {
     const url = new URL(value);
@@ -72,8 +50,6 @@ function exactOrigin(value) {
   }
 }
 
-/** The engine's parse, rule for rule: a malformed entry is dropped, a `field`
- *  kind with no label is dropped whole, an unknown version is an empty list. */
 function parse(raw) {
   if (!raw || typeof raw !== "object") return [];
   if (raw.version !== LOGIN_GRANTS_VERSION || !Array.isArray(raw.grants)) return [];
@@ -109,12 +85,6 @@ function parse(raw) {
   return grants;
 }
 
-/**
- * Persist one grant a human just confirmed, with the engine's `remember`
- * semantics: read-modify-write under the cross-process lock, one grant per
- * (profile, origin, item) — re-approving replaces — atomic rename, mode 0600.
- * Resolves to the stored grant.
- */
 async function rememberLoginGrant(stateRoot, input, { now = Date.now, mintId = () => `lg_${crypto.randomBytes(8).toString("hex")}` } = {}) {
   const origin = exactOrigin(input && input.origin);
   if (!origin) throw new Error("A remembered login needs an exact http(s) origin.");
@@ -128,8 +98,6 @@ async function rememberLoginGrant(stateRoot, input, { now = Date.now, mintId = (
     try {
       existing = parse(JSON.parse(fs.readFileSync(file, "utf8")));
     } catch (error) {
-      // An unreadable file authorizes nothing, and never resurrects — same
-      // posture as the engine's read().
       if (error.code !== "ENOENT") console.error(`[telar-desktop] ignoring an unreadable browser login grant file: ${error.message}`);
     }
     const grant = { ...input, origin, id: mintId(), createdAt: now() };
@@ -139,7 +107,7 @@ async function rememberLoginGrant(stateRoot, input, { now = Date.now, mintId = (
     const temporary = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify({ version: LOGIN_GRANTS_VERSION, grants: [...kept, grant] }, null, 2), { mode: 0o600 });
     fs.renameSync(temporary, file);
-    try { fs.chmodSync(file, 0o600); } catch { /* a filesystem without modes */ }
+    try { fs.chmodSync(file, 0o600); } catch {  }
     return grant;
   });
 }

@@ -1,17 +1,3 @@
-/**
- * ZERO-TAB BOOT HARNESS — the app's real startup order, which the compat
- * harness did not reproduce: window up, extension loaded with NO tabs
- * tracked, then the toolbar popup opened for a tab created afterwards.
- *
- * Reports (no payloads, no vault): the worker's error lines during boot,
- * whether `browser.runtime.connectNative` is the library's (native-host
- * spawning) or Electron's native stub, whether the popup window became
- * visible and its size, and whether a 1Password-BrowserSupport child of
- * THIS process appeared (signature acceptance is a separate question).
- *
- *   TELAR_1P_CRX=<cached crx> [TELAR_BOOT_REGISTER_WINDOW=0] \
- *     env -u ELECTRON_RUN_AS_NODE electron ./extension-boot.electron-test.js
- */
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -33,8 +19,6 @@ async function main() {
   const t0 = Date.now();
   const note = (line) => console.log(`BOOT ${line}`);
 
-  // Observe the native host's LIFECYCLE only (path basename, exit code) —
-  // never its stdio. The library looks spawn up on the module at call time.
   const cp = require("node:child_process");
   const realSpawn = cp.spawn;
   report.nativeSpawns = [];
@@ -55,8 +39,7 @@ async function main() {
   const window = new BrowserWindow({ show: false, width: 1000, height: 700 });
   registerShimPreload(ses, work, [ONE_PASSWORD.id]);
   const hostTabs = [];
-  // The product's route for the extension's own pages (main.js createTab →
-  // ExtensionHost.openExtensionPage): a human-only window, not a tab.
+
   const { ExtensionHost } = require("./extension-host");
   const pageHost = Object.assign(Object.create(ExtensionHost.prototype), { session: ses, extensionWindows: new Set() });
   const extensions = attachExtensionSupport(ses, {
@@ -84,7 +67,6 @@ async function main() {
   await sleep(8000);
   note(`worker errors during 8 s boot: ${JSON.stringify(report.workerErrors)}`);
 
-  // Now a tab appears (the user opens the fixture) and the key is clicked.
   const view = new WebContentsView({ webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } });
   window.contentView.addChildView(view);
   view.setBounds({ x: 0, y: 0, width: 1000, height: 700 });

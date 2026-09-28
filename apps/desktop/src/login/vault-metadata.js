@@ -1,17 +1,3 @@
-/**
- * DOMAIN-MATCHED VAULT ITEM METADATA for the login offer — the shell's port of
- * the engine's `listLoginCandidates` (apps/engine/src/secrets/onepassword.ts).
- *
- * METADATA ONLY, BY CONSTRUCTION: the one `op` invocation here is
- * `op item list`, whose output is ids, titles, vault names and website URLs.
- * No item is ever `get`-ed, so no credential value can pass through this
- * module — the offer shows a person WHICH items match the page, and the value
- * stays in the vault until a fill the engine separately authorizes.
- *
- * The domain heuristic is the engine's, pinned against it by
- * vault-metadata.test.js so the offer lists exactly the items a later
- * `browser_fill_secret` would list.
- */
 "use strict";
 const { spawn } = require("node:child_process");
 
@@ -20,8 +6,6 @@ const OP_NOT_INSTALLED =
 const OP_LOCKED =
   "1Password is locked or the CLI integration is disabled. Unlock the 1Password app (or set OP_SERVICE_ACCOUNT_TOKEN for detached use) and try again.";
 
-// The engine's short list of two-part public suffixes — see onepassword.ts for
-// why this heuristic (strict, never over-grouping) instead of the PSL.
 const TWO_PART_SUFFIXES = new Set([
   "co.uk", "org.uk", "ac.uk", "gov.uk", "co.jp", "or.jp", "ne.jp", "com.au", "net.au", "org.au",
   "co.nz", "com.br", "com.mx", "com.ar", "co.in", "co.kr", "com.sg", "com.hk", "com.tw", "com.cn",
@@ -29,7 +13,7 @@ const TWO_PART_SUFFIXES = new Set([
 
 function registrableDomain(hostname) {
   const host = String(hostname || "").trim().toLowerCase().replace(/\.$/, "");
-  if (!host || /^[\d.]+$/.test(host) || host.includes(":")) return null; // IPs never match a vault item
+  if (!host || /^[\d.]+$/.test(host) || host.includes(":")) return null;
   const labels = host.split(".").filter(Boolean);
   if (labels.length < 2) return null;
   const lastTwo = labels.slice(-2).join(".");
@@ -47,7 +31,6 @@ function registrableDomainOfUrl(value) {
   }
 }
 
-/** The engine's allowlisted `op` runner: no inherited provider keys. */
 function defaultOpExec(args) {
   return new Promise((resolve, reject) => {
     const env = {};
@@ -57,17 +40,12 @@ function defaultOpExec(args) {
     const child = spawn("op", args, { stdio: ["ignore", "pipe", "pipe"], env });
     let stdout = "";
     child.stdout.on("data", (chunk) => (stdout += chunk.toString("utf8")));
-    child.stderr.on("data", () => {}); // 1Password's prose is dropped, not relayed
+    child.stderr.on("data", () => {});
     child.once("error", reject);
     child.once("close", (code) => resolve({ code, stdout }));
   });
 }
 
-/**
- * Login items whose website matches the page's registrable domain —
- * `{ ok: true, candidates: [{ id, title, domain, vault? }] }` or
- * `{ ok: false, error }`. Same answers, same errors as the engine's listing.
- */
 async function listLoginCandidates(origin, exec = defaultOpExec) {
   const domain = registrableDomainOfUrl(origin);
   if (!domain) return { ok: false, error: `Credentials can only be filled on an http(s) page with a real domain; the browser is on ${origin}.` };

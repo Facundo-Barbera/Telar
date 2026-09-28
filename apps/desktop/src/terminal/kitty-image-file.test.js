@@ -1,11 +1,3 @@
-/**
- * EVERY REFUSAL, ON A REAL FILESYSTEM (#884).
- *
- * A temporary directory holds the one file that should be read, and one of
- * each thing that should not. Each refusal asserts its code — and that the code
- * is a bare kitty code, since it goes back into the terminal and must not carry
- * the path.
- */
 const { afterAll, beforeAll, describe, expect, test } = require("bun:test");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -71,8 +63,6 @@ describe("each refusal, and its bare code", () => {
   test("a file that is not a PNG", () => refused(at("notes.txt"), "EBADPNG"));
 
   test("a link swapped in after the resolve is refused on the descriptor, not followed", async () => {
-    // The race, forced: realpath answers the logo, and by the time it is opened
-    // that name is a symlink to /dev/null. O_NOFOLLOW refuses the open.
     fs.symlinkSync("/dev/null", at("swapped"));
     const fsp = { ...fs.promises, realpath: async () => at("swapped") };
     await refused(at("logo.png"), "ENOENT", { fsp });

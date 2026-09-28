@@ -1,21 +1,3 @@
-/**
- * THE VISIBILITY SIGNAL, MEASURED IN A REAL ELECTRON — issue #834.
- *
- * `window-visibility.test.js` proves the edge logic against a hand-made window.
- * What it cannot prove is the thing #834 is about: that a REAL window, built
- * with `backgroundThrottling: false` like the cockpit's, fires the events that
- * logic listens to, and that the answer reaches a real renderer through the
- * real preload bridge. That needs a window on a real window server, which is
- * why this runs in CI's `electron` job and nowhere else — do not run it on a
- * machine somebody is working at; it shows a window.
- *
- * THE CONTROL is `document.visibilityState`, read in the same renderer at the
- * same moment. It is only recorded, not asserted: the point is that the page
- * could not see its own hide, and a future Electron that fixes that should not
- * turn this red.
- *
- * Run: `bun run test:desktop:visibility`.
- */
 const { app, BrowserWindow, ipcMain } = require("electron");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -26,7 +8,6 @@ const { removeUserData } = require("../../test/electron/electron-test-teardown")
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "telar-window-visibility-"));
 app.setPath("userData", userData);
 
-// A hang is a failure, and must say which step it was on.
 const DEADLINE_MS = 60_000;
 let stage = "app.whenReady()";
 
@@ -40,9 +21,6 @@ const at = (next) => {
   note(`… ${next}`);
 };
 
-/** Poll the renderer until the last pushed value is `expected`. Window-server
- *  events are asynchronous — a minimise animates — so this waits for the
- *  answer rather than for a guessed interval. */
 async function rendererSees(win, expected) {
   let seen;
   for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -67,13 +45,12 @@ async function main() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      // MATCHING `createWindow` IN main.js — this flag is the reason the signal
-      // exists, so a test without it asks about a window the product never builds.
+
       backgroundThrottling: false,
     },
   });
   watchWindowVisibility(win);
-  // main.js's handler, registered here because requiring main.js starts the app.
+
   ipcMain.handle("telar:window:visibility", (event) => windowVisible(BrowserWindow.fromWebContents(event.sender)));
 
   try {
@@ -116,8 +93,6 @@ async function main() {
     const restored = await rendererSees(win, true);
     assert(restored.seen === true && restored.asked === true, `after restore() the renderer saw ${JSON.stringify(restored)}`);
 
-    // A COUNT AND A PAIR OF OPPOSITE ANSWERS, like the other markers in this
-    // job: printed only after every step passed. Edit the count with the steps.
     console.log(`WINDOW_VISIBILITY_OK 5/5 hidden=${hidden.seen} shown=${restored.seen}`);
   } finally {
     at("tearing down");
