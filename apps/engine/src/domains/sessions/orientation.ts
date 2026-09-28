@@ -262,10 +262,7 @@ Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
 - The Run menu — a project's saved commands. A project with no run
   configuration can be given one rather than being told it lacks the
   capability; open one with \`terminal_open({configId})\`. Tools:
-  \`run_configs\`, \`run_save_config\`, \`run_delete_config\`. The old
-  names \`run_start\`, \`run_stop\`, \`run_restart\`, \`run_status\`,
-  \`run_output\` and \`run_wait\` still answer for one release; use the
-  terminal ones.
+  \`run_configs\`, \`run_save_config\`, \`run_delete_config\`.
 
 A project may also turn on plugins, which add toolkits of their own. They exist
 only where the project turned them on, the session is told about each one it

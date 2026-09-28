@@ -255,11 +255,8 @@ function telarToolNames(): string[] {
 }
 
 test("the skill names every tool on the telar wall, so it cannot drift", () => {
-  // `run_release` is still registered so a model that learned it gets "no
-  // longer needed" rather than "no such tool" — and the skill must not teach it.
-  const missing = telarToolNames().filter((name) => name !== "run_release" && !TELAR_SKILL.includes(name));
+  const missing = telarToolNames().filter((name) => !TELAR_SKILL.includes(name));
   expect(missing).toEqual([]);
-  expect(TELAR_SKILL).not.toContain("run_release");
   // The loop above reaches every toolkit there is. The one tool it could NOT
   // reach was `warp` — Claude-only, with no toolkit to enumerate — and #877
   // retired it, so the skill must not name it at all. Case-folded, because the

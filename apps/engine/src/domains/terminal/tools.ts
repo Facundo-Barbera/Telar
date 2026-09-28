@@ -49,12 +49,12 @@ function runToolsContext(tool: ToolFactory, capability: RunCapability) {
   };
   const idOf = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
   const target = (terminalId: string | undefined): RunTarget => (terminalId ? { terminalId } : {});
-  const list = async (only?: "run") => {
+  const list = async () => {
     try {
       const status = await capability.status();
-      const terminals = only ? status.terminals.filter((run) => run.origin === only) : status.terminals;
+      const terminals = status.terminals;
       const where = status.sessionWorktreePath ? `\nThis session's worktree: ${status.sessionWorktreePath}` : "";
-      if (!terminals.length) return ok(`This session has no terminals${only ? " from run configurations" : ""}.${where}`);
+      if (!terminals.length) return ok(`This session has no terminals.${where}`);
       return ok(`${terminals.map((run) => `- ${describe(run)}`).join("\n")}${where}`);
     } catch (error) {
       return err(`Could not list the terminals: ${failure(error)}`);
@@ -137,8 +137,7 @@ function runToolsContext(tool: ToolFactory, capability: RunCapability) {
     exit: z.boolean().optional().describe("Wait for it to end, e.g. a build or a test run."),
     timeoutMs: z.number().int().min(0).max(60_000).describe("How long to wait, at most 60000. Pick a budget and handle a timeout."),
   };
-  const RUN_ID = z.string().min(1).optional().describe("The terminalId. Default: this session's one open terminal.");
-  return { personClosed, idOf, target, list, opened, openFromConfig, kill, output, wait, OUTPUT_SHAPE, WAIT_SHAPE, RUN_ID };
+  return { idOf, list, opened, openFromConfig, kill, output, wait, OUTPUT_SHAPE, WAIT_SHAPE };
 }
 
 export function runTools(tool: ToolFactory, capability: RunCapability): unknown[] {
@@ -146,7 +145,6 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
   return [
     ...terminalTools(tool, capability, h),
     ...configTools(tool, capability),
-    ...processTools(tool, capability, h),
   ];
 }
 
@@ -294,68 +292,3 @@ function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
     ),
   ];
 }
-
-function processTools(tool: ToolFactory, capability: RunCapability, h: ReturnType<typeof runToolsContext>): unknown[] {
-  const { idOf, target, list, opened, openFromConfig, kill, output, wait, OUTPUT_SHAPE, WAIT_SHAPE, RUN_ID } = h;
-  return [
-    tool(
-      "run_start",
-      "Deprecated: use terminal_open({configId}). Opens a new terminal from a saved configuration; replace is ignored.",
-      {
-        configId: z.string().min(1).describe("Which saved configuration to open (see run_configs)."),
-        replace: z.boolean().optional().describe("Ignored."),
-      },
-      async (args) => await openFromConfig(String(args.configId)),
-    ),
-
-    tool(
-      "run_status",
-      "Deprecated: use terminal_list. Lists only this session's terminals opened from run configurations.",
-      {},
-      async () => await list("run"),
-    ),
-
-    tool(
-      "run_stop",
-      "Deprecated: use terminal_kill. Closes a terminal as you; runId is its terminalId.",
-      { runId: RUN_ID, signal: SIGNAL },
-      async (args) => await kill(idOf(args.runId), args.signal),
-    ),
-
-    tool(
-      "run_restart",
-      "Deprecated: use terminal_kill, then terminal_open. Closes a terminal and opens the same command in a new one, with a new terminalId.",
-      { runId: RUN_ID },
-      async (args) => {
-        try {
-          const run = await capability.restart({ ...target(idOf(args.runId)), closedBy: "agent" });
-          return opened(run);
-        } catch (error) {
-          return err(`Did not restart: ${failure(error)}`);
-        }
-      },
-    ),
-
-    tool(
-      "run_output",
-      "Deprecated: use terminal_output. runId is the terminalId; without one, the open terminal or the last to end.",
-      { runId: RUN_ID, ...OUTPUT_SHAPE },
-      async (args) => await output(idOf(args.runId), args),
-    ),
-
-    tool(
-      "run_wait",
-      "Deprecated: use terminal_wait. runId is the terminalId; without one, this session's one open terminal.",
-      { runId: RUN_ID, ...WAIT_SHAPE },
-      async (args) => await wait(idOf(args.runId), args),
-    ),
-
-    tool(
-      "run_release",
-      "No longer needed: nothing is ever held for a terminal. To end one, close it with terminal_kill.",
-      { runId: z.string().min(1).optional().describe("Ignored.") },
-      async () => ok("No longer needed: nothing is held for a terminal, and nothing blocks opening a new one. To end one, close it with terminal_kill."),
-    ),
-  ];
-}
-

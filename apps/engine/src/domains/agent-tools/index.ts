@@ -1,5 +1,5 @@
 export { createDisplayCapability, type DisplayCapability, displayTools } from "./display-tools";
-export { collectTools, connectCard, ensureSecretFile, handleSocketMessage, readSocketBody, type SocketTool, toolInputSchema } from "./mcp-socket";
+export { advertiseLeanSchemas, collectTools, connectCard, ensureSecretFile, handleSocketMessage, readSocketBody, type SocketTool, toolInputSchema } from "./mcp-socket";
 export { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "./orchestrate-skill";
 export { mcpOAuthRoutes } from "./routes";
 export { collectTelarWall, type TelarCapabilities, type TelarSocketLease, TelarToolSocket, telarWall, toSdkTools } from "./telar-socket";

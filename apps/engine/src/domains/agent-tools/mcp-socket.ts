@@ -34,7 +34,35 @@ export function collectTools<Capability>(
 }
 
 export function toolInputSchema(shape: Record<string, unknown>): Record<string, unknown> {
-  return z.toJSONSchema(z.object(shape as Record<string, z.ZodType>), { io: "input" }) as Record<string, unknown>;
+  return leanSchema(z.toJSONSchema(z.object(shape as Record<string, z.ZodType>), { io: "input" })) as Record<string, unknown>;
+}
+
+const UNADVERTISED = new Set(["$schema", "minLength", "maxLength", "maxItems"]);
+
+/** The advertised schema only; calls are still validated against the full zod shape. */
+function leanSchema(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(leanSchema);
+  if (!node || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (UNADVERTISED.has(key)) continue;
+    if ((key === "maximum" || key === "minimum") && Math.abs(Number(value)) === Number.MAX_SAFE_INTEGER) continue;
+    out[key] = leanSchema(value);
+  }
+  return out;
+}
+
+type ListHandler = (request: unknown, extra: unknown) => Promise<{ tools?: { inputSchema?: unknown }[] }>;
+
+export function advertiseLeanSchemas<Server>(server: Server): Server {
+  const handlers = (server as { instance?: { server?: { _requestHandlers?: Map<string, ListHandler> } } }).instance?.server?._requestHandlers;
+  const list = handlers?.get("tools/list");
+  if (!handlers || !list) return server;
+  handlers.set("tools/list", async (request, extra) => {
+    const answer = await list(request, extra);
+    return { ...answer, tools: answer.tools?.map((tool) => ({ ...tool, inputSchema: leanSchema(tool.inputSchema) })) };
+  });
+  return server;
 }
 
 export function ensureSecretFile(file: string): string {

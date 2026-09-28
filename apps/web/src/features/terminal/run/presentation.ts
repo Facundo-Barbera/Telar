@@ -204,8 +204,8 @@ export function draftProblems(draft: RunConfigurationDraft): DraftProblem[] {
  * "the cursor went backwards" has to mean `term.reset()` rather than a replaced
  * array.
  *
- * `/run/output` ITSELF IS NOT GONE and is not deprecated: `run_output` is an
- * agent tool, and an agent wants lines rather than a stream with `CSI H` in it.
+ * `/run/output` ITSELF IS NOT GONE and is not deprecated: `terminal_output` is
+ * an agent tool, and an agent wants lines rather than a stream with `CSI H` in it.
  * What was removed is a client for it that no longer has a screen to draw on.
  */
 
