@@ -1,5 +1,6 @@
 "use client";
 
+import { OpenWorkspaceButton } from "@/features/files";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDownIcon, FolderGit2Icon, TriangleAlertIcon } from "lucide-react";
