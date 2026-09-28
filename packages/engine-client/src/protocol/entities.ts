@@ -535,65 +535,6 @@ export const DEFAULT_INBOX_POLICY: InboxPolicy = {
   settledTerminalLimit: DEFAULT_SETTLED_TERMINAL_LIMIT,
 };
 
-export const MIN_RETENTION_DAYS = 1;
-export const MAX_RETENTION_DAYS = 365;
-export const RetentionPolicy = z.object({
-  /** Days of idleness after which a settled session's raw journal may go.
-   *  `null` — the default — is never, and nothing sweeps. */
-  idleAfterDays: z.number().int().min(MIN_RETENTION_DAYS).max(MAX_RETENTION_DAYS).nullable(),
-  /** Absolute directory the journal is written to before it is dropped. A
-   *  window with no destination deletes nothing; see the header. */
-  exportTo: z.string().min(1).nullable().default(null),
-});
-export type RetentionPolicy = z.infer<typeof RetentionPolicy>;
-
-export const DEFAULT_RETENTION_POLICY: RetentionPolicy = { idleAfterDays: null, exportTo: null };
-
-export const ScheduleRule = z.union([
-  z.object({ kind: z.literal("interval"), everyMs: z.number().int().min(60_000) }),
-  z.object({
-    kind: z.literal("fixed"),
-    hour: z.number().int().min(0).max(23),
-    minute: z.number().int().min(0).max(59),
-    weekdays: z.array(z.number().int().min(0).max(6)).default([]),
-  }),
-]);
-export type ScheduleRule = z.infer<typeof ScheduleRule>;
-
-export const Schedule = z.object({
-  id: Id,
-  /** The session whose composer the prompt is submitted to. */
-  sessionId: Id,
-  prompt: z.string(),
-  rule: ScheduleRule,
-  zone: z.string(),
-  enabled: z.boolean(),
-  createdAt: Timestamp,
-  nextRunAt: Timestamp,
-  lastRunAt: Timestamp.optional(),
-  lastRunId: Id.optional(),
-  lastRunStatus: z.enum(["fired", "skipped"]).optional(),
-  lastSkippedAt: Timestamp.optional(),
-});
-export type Schedule = z.infer<typeof Schedule>;
-
-export const RETENTION_BUCKET_DAYS = [7, 14, 30, 60] as const;
-
-export const RetentionBucket = z.object({
-  days: z.number().int().min(1),
-  sessions: z.number().min(0),
-  events: z.number().min(0),
-  bytes: z.number().min(0).optional(),
-});
-export type RetentionBucket = z.infer<typeof RetentionBucket>;
-
-export const JournalRetirement = z.object({
-  retired: z.number().min(0),
-  skipped: z.number().min(0),
-  events: z.number().min(0),
-});
-export type JournalRetirement = z.infer<typeof JournalRetirement>;
-
 export const AgentOrientation = z.object({
   /** The paragraph, injected once per turn through each driver's existing
    *  briefing seam. See `apps/engine/src/orientation.ts`. */
