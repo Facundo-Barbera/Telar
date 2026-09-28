@@ -14,13 +14,14 @@ import { providersClient } from "../providers/client";
 import { schedulesClient } from "../schedules/client";
 import { settingsClient } from "../settings/client";
 import { storageClient } from "../storage/client";
+import { terminalClient } from "../terminal/client";
 import { usageClient } from "../usage/client";
 import { worktreesClient } from "../worktrees/client";
 import type { EngineTransport } from "./transport";
 
 type Methods<T> = { [K in keyof T]: OmitThisParameter<T[K]> };
 
-export const domainClients = [agentToolsClient, appearanceClient, browserClient, computerUseClient, dictationClient, filesClient, gitClient, githubClient, notesClient, pluginsClient, projectsClient, promptsClient, providersClient, schedulesClient, settingsClient, storageClient, usageClient, worktreesClient];
+export const domainClients = [agentToolsClient, appearanceClient, browserClient, computerUseClient, dictationClient, filesClient, gitClient, githubClient, notesClient, pluginsClient, projectsClient, promptsClient, providersClient, schedulesClient, settingsClient, storageClient, terminalClient, usageClient, worktreesClient];
 
 export type EngineDomainMethods = Methods<typeof agentToolsClient> &
   Methods<typeof appearanceClient> &
@@ -38,6 +39,7 @@ export type EngineDomainMethods = Methods<typeof agentToolsClient> &
   Methods<typeof schedulesClient> &
   Methods<typeof settingsClient> &
   Methods<typeof storageClient> &
+  Methods<typeof terminalClient> &
   Methods<typeof usageClient> &
   Methods<typeof worktreesClient>;
 

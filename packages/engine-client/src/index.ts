@@ -1,4 +1,5 @@
 import type { EngineTransport } from "./platform/transport";
+import { runBase } from "./terminal/client";
 import { domainClients, type EngineDomainMethods } from "./platform/domains";
 import type { InboxPolicy, SidebarLayout } from "./settings/schema";
 import {
@@ -40,21 +41,6 @@ import {
   type AgentTurnInput,
   type WorkerStatus,
   type WorkerTurnFailure,
-  type RunConfigurationDraft,
-  type RunView,
-  type RunConfigurationView,
-  type RunConfigurationsAnswer,
-  type RunOutputAnswer,
-  type RunOutputFilter,
-  type RunWaitAnswer,
-  type RunStopSignal,
-  type RunClosedBy,
-  type RunBytesAnswer,
-  type RunWriteAnswer,
-  type RunResizeAnswer,
-  type RunStartInput,
-  type RunOpenInput,
-  type RunStatusAnswer,
   type SessionAssignment,
 } from "./protocol";
 
@@ -69,6 +55,8 @@ export * from "./providers/schema";
 export * from "./schedules/schema";
 export * from "./settings/schema";
 export * from "./storage/schema";
+export * from "./terminal/schema";
+export type { RunTargetInput } from "./terminal/client";
 export * from "./usage/schema";
 export * from "./worktrees/schema";
 export * from "./agent-tools/schema";
@@ -287,40 +275,6 @@ export type LiveSessionsAnswer = {
 };
 
 export type LiveSessionsUnchanged = { unchanged: true; revision: number; daemonId?: string };
-
-/** The run surface hangs off the session that is asking — see `runStatus` for
- *  why a project-scoped answer lives under a session-scoped path. */
-function runBase(sessionId: string): string {
-  return `/v2/sessions/${encodeURIComponent(sessionId)}/run`;
-}
-
-export type RunTargetInput = { terminalId?: string; runId?: string };
-
-/** The wire's spelling of a target: `terminalId`, whichever name it came in. */
-function runTarget(input: RunTargetInput): { terminalId?: string } {
-  const terminalId = input.terminalId ?? input.runId;
-  return terminalId === undefined ? {} : { terminalId };
-}
-
-/** The same, for a JSON body: the target spelled once, the rest untouched. */
-function runBody<T extends RunTargetInput>(input: T): Omit<T, "runId" | "terminalId"> & { terminalId?: string } {
-  const { runId: _runId, terminalId: _terminalId, ...rest } = input;
-  return { ...rest, ...runTarget(input) };
-}
-
-/** `?terminalId=&after=` for the two windows that share a cursor contract,
- *  written once so the line view and the byte view cannot drift apart in their
- *  spelling of it. */
-function runCursor(input: RunTargetInput & { after?: number } & RunOutputFilter): string {
-  const query = new URLSearchParams();
-  const { terminalId } = runTarget(input);
-  if (terminalId !== undefined) query.set("terminalId", terminalId);
-  if (input.after !== undefined) query.set("after", String(input.after));
-  if (input.tail !== undefined) query.set("tail", String(input.tail));
-  if (input.grep !== undefined) query.set("grep", input.grep);
-  if (input.stream !== undefined) query.set("stream", input.stream);
-  return query.size === 0 ? "" : `?${query.toString()}`;
-}
 
 export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery, type DiffBaseOption, type FilePatchOptions } from "./git/diff-query";
 export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
@@ -668,75 +622,11 @@ export class EngineClient implements EngineTransport {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/plugins/${pluginId}/${method}`, body ?? {});
   }
 
-  runConfigurations(sessionId: string): Promise<RunConfigurationsAnswer> {
-    return this.request("GET", `${runBase(sessionId)}/configs`);
-  }
-
-  createRunConfiguration(sessionId: string, draft: RunConfigurationDraft): Promise<RunConfigurationView> {
-    return this.request("POST", `${runBase(sessionId)}/configs`, draft);
-  }
-
-  updateRunConfiguration(sessionId: string, configId: string, patch: Partial<RunConfigurationDraft>): Promise<RunConfigurationView> {
-    return this.request("POST", `${runBase(sessionId)}/configs/${encodeURIComponent(configId)}`, patch);
-  }
-
-  removeRunConfiguration(sessionId: string, configId: string): Promise<{ removed: string }> {
-    return this.request("DELETE", `${runBase(sessionId)}/configs/${encodeURIComponent(configId)}`);
-  }
-
-  /** The calling session's terminals, newest first. */
-  runStatus(sessionId: string): Promise<RunStatusAnswer> {
-    return this.request("GET", `${runBase(sessionId)}/status`);
-  }
-
-  startRun(sessionId: string, input: RunStartInput): Promise<RunView> {
-    return this.request("POST", `${runBase(sessionId)}/start`, input);
-  }
-
-  openTerminal(sessionId: string, input: RunOpenInput): Promise<RunView> {
-    return this.request("POST", `${runBase(sessionId)}/open`, input);
-  }
-
-  stopRun(sessionId: string, terminalId?: string, signal?: RunStopSignal, options: { closedBy?: RunClosedBy } = {}): Promise<RunView> {
-    return this.request("POST", `${runBase(sessionId)}/stop`, {
-      ...(terminalId === undefined ? {} : { terminalId }),
-      ...(signal === undefined ? {} : { signal }),
-      ...(options.closedBy === undefined ? {} : { closedBy: options.closedBy }),
-    });
-  }
-
-  restartRun(sessionId: string, terminalId?: string, options: { closedBy?: RunClosedBy } = {}): Promise<RunView> {
-    return this.request("POST", `${runBase(sessionId)}/restart`, {
-      ...(terminalId === undefined ? {} : { terminalId }),
-      ...(options.closedBy === undefined ? {} : { closedBy: options.closedBy }),
-    });
-  }
-
-  runOutput(sessionId: string, input: RunTargetInput & { after?: number } & RunOutputFilter = {}): Promise<RunOutputAnswer> {
-    return this.request("GET", `${runBase(sessionId)}/output${runCursor(input)}`);
-  }
-
-  runWait(sessionId: string, input: RunTargetInput & { pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitAnswer> {
-    return this.request("POST", `${runBase(sessionId)}/wait`, runBody(input));
-  }
-
-  runBytes(sessionId: string, input: RunTargetInput & { after?: number } = {}): Promise<RunBytesAnswer> {
-    return this.request("GET", `${runBase(sessionId)}/bytes${runCursor(input)}`);
-  }
-
   runStream(sessionId: string): { url: string; headers: Record<string, string> } {
     return {
       url: `http://${this.discovery.host}:${this.discovery.port}${runBase(sessionId)}/stream`,
       headers: { authorization: `Bearer ${this.discovery.token}` },
     };
-  }
-
-  writeRun(sessionId: string, input: RunTargetInput & { data: string }): Promise<RunWriteAnswer> {
-    return this.request("POST", `${runBase(sessionId)}/write`, runBody(input));
-  }
-
-  resizeRun(sessionId: string, input: RunTargetInput & { cols: number; rows: number }): Promise<RunResizeAnswer> {
-    return this.request("POST", `${runBase(sessionId)}/resize`, runBody(input));
   }
 
   /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */
@@ -805,14 +695,6 @@ export class EngineClient implements EngineTransport {
 
   stopBackgroundTasks(sessionId: string): Promise<{ stopped: number }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop-background`, {});
-  }
-
-  sessionTerminals(sessionId: string): Promise<{ open: number }> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/terminals`);
-  }
-
-  closeSessionTerminals(sessionId: string): Promise<{ closed: number }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/terminals/close`, {});
   }
 
   /** A page of a background task's log from byte `after`; without it, the
