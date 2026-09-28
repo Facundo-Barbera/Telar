@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { JournalItem } from "@/features/transcript";
+import type { JournalItem } from "@/platform/engine";
 import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "@/features/transcript";
 import { cockpitPlugins, describeTurnState, pinToggleOverride, retryInputForJournalTurn, SessionTurn, transcriptRows } from "./session-cockpit";
 
@@ -202,7 +202,7 @@ describe("a message another agent sent is labelled as an agent's, never the pers
     expect(agentSenderLabel({})).toBe("agent · outside any session");
   });
   test("the journal keeps the sender so the transcript can draw it", async () => {
-    const { projectJournal } = await import("@/features/transcript");
+    const { projectJournal } = await import("@/platform/engine");
     const [turn] = projectJournal(
       [{ runId: "run_a", sessionId: "s1", sequence: 1, input: "do it", state: "queued", origin: "session", sender: { sessionId: "session_boss" }, acceptedAt: 1, updatedAt: 1 }],
       [],
@@ -245,7 +245,7 @@ describe("a wake is a wake wherever it lands — never the person's bubble", () 
   });
 
   test("the journal keeps a steered wake's stamp on the row the transcript reads", async () => {
-    const { projectJournal } = await import("@/features/transcript");
+    const { projectJournal } = await import("@/platform/engine");
     const wakeReason = { kind: "turn_completed" as const, sessionId: "session_child", runId: "run_child" };
     const [turn] = projectJournal(
       [{ runId: "run_host", sessionId: "s1", sequence: 1, input: "work", state: "running", acceptedAt: 1, updatedAt: 1 }],
@@ -330,7 +330,7 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
 
 describe("a held message is not a running one", () => {
   test("the journal carries why a turn is held, and a paused hold is told apart from a restart's", async () => {
-    const { projectJournal } = await import("@/features/transcript");
+    const { projectJournal } = await import("@/platform/engine");
     const [paused, restart] = projectJournal(
       [
         { runId: "run_p", sessionId: "s1", sequence: 1, input: "later", state: "queued", held: { at: 1, reason: "session_paused" }, acceptedAt: 1, updatedAt: 1 },
@@ -356,7 +356,7 @@ describe("a sub-agent's background claim is not a row in the main chat", () => {
   /** Two person's turns with a claim the engine opened between them, the first
    *  having spawned the agent the claim decides for. */
   const withClaim = async (claim: { taskId?: string }) => {
-    const { projectJournal } = await import("@/features/transcript");
+    const { projectJournal } = await import("@/platform/engine");
     return projectJournal(
       [
         { runId: "run_ask", sessionId: "s1", sequence: 1, input: "research this", state: "completed", acceptedAt: 1, updatedAt: 1 },

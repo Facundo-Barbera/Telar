@@ -4,7 +4,7 @@ import { useState } from "react";
 import {
 ChevronRightIcon
 } from "lucide-react";
-import { type JournalTurn } from "@/features/transcript";
+import { type JournalTurn } from "@/platform/engine";
 import { ROW } from "./transcript-fold";
 import { cn } from "@/lib/utils";
 import { notificationLabel } from "../model";

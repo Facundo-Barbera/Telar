@@ -1,5 +1,5 @@
 import type { SnapshotWindow } from "@telar/engine-client";
-import { appendJournalEvents } from "./journal-events";
+import { appendJournalEvents } from "./journal";
 import { hydrateSession, tailSession, mergeRows, type HydratedSession, type SessionSyncApi } from "./session-sync";
 
 /**
