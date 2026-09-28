@@ -46,16 +46,16 @@ import {
   XIcon,
 } from "lucide-react";
 import dynamic from "next/dynamic";
-import type { AnnotateCapture } from "@/components/browser-annotate";
-import { captionFor, captureFileName, type ElementBox } from "@/lib/browser-annotation";
-import { BrowserStartPage } from "@/components/browser-start-page";
+import type { AnnotateCapture } from "./annotate-overlay";
+import { captionFor, captureFileName, type ElementBox } from "../annotation";
+import { BrowserStartPage } from "./start-page";
 import {
   describePermissionDenial,
   SitePermissionPrompt,
   SitePermissionsPopover,
   SiteSecurityIcon,
   type PermissionAnswer,
-} from "@/components/browser-permission-prompt";
+} from "./permission-prompt";
 import {
   describePermissionKinds,
   siteLabel,
@@ -67,12 +67,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { axesOf, describeViewport, fitViewport, groupedViewportPresets, keepRatio, ratioOf, resizeByKey, resizeToEdge, sizeFromFields, stageOf, stepField, viewportPreset, VIEWPORT_RAIL, VIEWPORT_ZOOMS, zoomFits, type ResizeDirection, type StageRect, type ViewportMode, type ViewportPresetKey, type ViewportZoom } from "@/lib/browser-viewport";
+import { axesOf, describeViewport, fitViewport, groupedViewportPresets, keepRatio, ratioOf, resizeByKey, resizeToEdge, sizeFromFields, stageOf, stepField, viewportPreset, VIEWPORT_RAIL, VIEWPORT_ZOOMS, zoomFits, type ResizeDirection, type StageRect, type ViewportMode, type ViewportPresetKey, type ViewportZoom } from "../viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
-import { useFrozenOverlay } from "@/features/browser";
+import { useFrozenOverlay } from "../hooks/use-frozen-overlay";
 import { useCommandHandlers, claimChords } from "@/features/commands";
-import { makeScopeGuard } from "@/lib/scope-guard";
+import { makeScopeGuard } from "../scope-guard";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
 
@@ -88,7 +88,7 @@ import { cn } from "@/lib/utils";
  * `annotating`, which starts undefined and is only ever set from a capture the
  * shell performed.
  */
-const BrowserAnnotateOverlay = dynamic(() => import("@/components/browser-annotate").then((mod) => mod.BrowserAnnotateOverlay));
+const BrowserAnnotateOverlay = dynamic(() => import("./annotate-overlay").then((mod) => mod.BrowserAnnotateOverlay));
 
 /**
  * ⌘1..⌘9, WHICH THIS PANEL BINDS TO ITS OWN TABS (#660).

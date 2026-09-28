@@ -9,11 +9,11 @@ import {
   addressRowFitsTools,
   describeDownload,
   zoomLabel,
-} from "./browser-live";
+} from "./components/desktop-browser-surface";
 // The bridge probe moved out of the surface so the surface could be split off
 // the conversation route's first bundle (#492); the rule it enforces is
 // unchanged and so is the test below.
-import { desktopBrowserBridge } from "../lib/desktop-browser-bridge";
+import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 
 test("remote host routes cannot use this computer's native browser", () => {
   const original = Object.getOwnPropertyDescriptor(globalThis, "window");

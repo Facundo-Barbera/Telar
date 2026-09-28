@@ -54,7 +54,7 @@ import {
   type ElementBox,
   type Mark,
   type Point,
-} from "@/lib/browser-annotation";
+} from "../annotation";
 import { cn } from "@/lib/utils";
 
 /** The frozen frame and everything measured on it, as the shell answered. */

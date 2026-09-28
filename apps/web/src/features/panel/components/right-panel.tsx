@@ -32,7 +32,7 @@ import { AgentsSurface, ProcessesSurface } from "./task-surfaces";
  * Every surface is its own chunk, so a conversation whose panel is shut loads none of them. No `ssr: false`: tests
  * could never mount it. A bare `dynamic()` suspends to the nearest boundary, so each render sits under a `Suspense` here.
  */
-const DesktopBrowserSurface = dynamic(() => import("@/components/browser-live").then((mod) => mod.DesktopBrowserSurface));
+const DesktopBrowserSurface = dynamic(() => import("@/features/browser").then((mod) => mod.DesktopBrowserSurface));
 const DiffSurface = dynamic(() => import("@/features/git").then((mod) => mod.DiffSurface));
 const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface));
 const FileViewSurface = dynamic(() => import("@/features/files").then((mod) => mod.FileViewSurface));

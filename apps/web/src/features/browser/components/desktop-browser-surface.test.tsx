@@ -24,7 +24,7 @@ import {
   type DesktopBrowserBridge,
   type DesktopBrowserPanelState,
   type DesktopBrowserTab,
-} from "./browser-live";
+} from "./desktop-browser-surface";
 import { claimNativeView, nativeViewOverlayHidden } from "@/lib/native-view-overlay";
 
 GlobalRegistrator.register({ url: "http://localhost/" });

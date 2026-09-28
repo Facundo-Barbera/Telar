@@ -11,7 +11,7 @@ import {
   type ViewportPresetEntryKey,
   type ViewportPresetGroup,
   type ViewportPresetKey,
-} from "../../../desktop/src/browser/viewport-presets.js";
+} from "../../../../desktop/src/browser/viewport-presets.js";
 
 export { viewportPreset, VIEWPORT_PRESETS };
 export type { ViewportPreset, ViewportPresetEntryKey, ViewportPresetGroup, ViewportPresetKey };

@@ -12,7 +12,7 @@ import {
   picksOf,
   undoMark,
   type ElementBox,
-} from "./browser-annotation";
+} from "./annotation";
 
 const page = { url: "https://example.com/pricing", title: "Pricing", width: 1280, height: 800 };
 

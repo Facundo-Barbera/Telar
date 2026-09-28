@@ -16,7 +16,7 @@ import { TableSurface } from "./session/table-surface";
 import { DiffSurface, ReviewFileRow } from "@/features/git";
 import { TranscriptItem } from "@/features/transcript";
 import { Composer } from "@/features/composer";
-import { DesktopBrowserSurface, type DesktopBrowserBridge, type DesktopBrowserPanelState, type DesktopBrowserTab } from "./browser-live";
+import { DesktopBrowserSurface, type DesktopBrowserBridge, type DesktopBrowserPanelState, type DesktopBrowserTab } from "@/features/browser";
 import { appendToDraft } from "./session-cockpit";
 
 installTestDom();

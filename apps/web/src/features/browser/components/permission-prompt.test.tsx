@@ -21,7 +21,7 @@ import {
   type PermissionPrompt,
   type SitePermissionKind,
 } from "@/lib/desktop-site-permissions";
-import { describePermissionDenial, SitePermissionPrompt, SitePermissionsPopover } from "./browser-permission-prompt";
+import { describePermissionDenial, SitePermissionPrompt, SitePermissionsPopover } from "./permission-prompt";
 
 const prompt = (patch: Partial<PermissionPrompt> = {}): PermissionPrompt => ({
   requestId: "perm_1",

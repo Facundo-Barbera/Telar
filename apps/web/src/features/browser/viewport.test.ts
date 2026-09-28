@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { describeViewport, fitViewport, groupedViewportPresets, keepRatio, parseViewportInput, presetFor, RESIZE_DIRECTIONS, resizeByKey, resizeToEdge, sizeFromFields, stageOf, stepField, viewportPreset, VIEWPORT_PRESETS, VIEWPORT_RAIL, zoomFits, type ViewportPresetEntryKey } from "./browser-viewport";
+import { describeViewport, fitViewport, groupedViewportPresets, keepRatio, parseViewportInput, presetFor, RESIZE_DIRECTIONS, resizeByKey, resizeToEdge, sizeFromFields, stageOf, stepField, viewportPreset, VIEWPORT_PRESETS, VIEWPORT_RAIL, zoomFits, type ViewportPresetEntryKey } from "./viewport";
 
 describe("the browser viewport vocabulary", () => {
   test("presets are named from their size, and a custom size is just its numbers", () => {
