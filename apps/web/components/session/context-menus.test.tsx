@@ -127,12 +127,12 @@ describe("the project header's menu", () => {
 
 describe("the project header, mounted alone", () => {
   const group = (over: Partial<ProjectGroup> = {}): ProjectGroup => ({ key: "p1", projectId: "p1", name: "Telar", sessions: [], ...over });
-  const mountHeader = (over: Partial<ProjectGroup> = {}) =>
+  const mountHeader = (over: Partial<ProjectGroup> = {}, onToggle = () => {}) =>
     mount(
       <ProjectGroupSection
         group={group(over)}
         open={false}
-        onToggle={() => {}}
+        onToggle={onToggle}
         onNavigate={() => {}}
         renderedAt={0}
         bandFor={() => "active"}
@@ -158,6 +158,20 @@ describe("the project header, mounted alone", () => {
     expect(trigger.closest("button")?.getAttribute("draggable")).toBe("true");
     expect(trigger.hasAttribute("draggable")).toBe(false);
     expect(trigger.textContent).toContain("Telar");
+  });
+
+  test("a pick in the menu does not also fold the header it was opened from", async () => {
+    let toggles = 0;
+    const { host } = await mountHeader({}, () => toggles++);
+    const trigger = host.querySelector('[data-slot="context-menu-trigger"]')!;
+    await rightClick(trigger);
+    await click(item("Project settings"));
+    expect(toggles).toBe(0);
+    await rightClick(trigger);
+    await click(item("Expand"));
+    expect(toggles).toBe(1);
+    await click(trigger.closest("button")!);
+    expect(toggles).toBe(2);
   });
 
   test("the + beside the header is outside the menu's reach", async () => {

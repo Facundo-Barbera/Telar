@@ -315,7 +315,7 @@ export function ProjectGroupSection({
           id={headingId}
           aria-expanded={open}
           aria-controls={`${headingId}-rows`}
-          onClick={onToggle}
+          onClick={(event) => event.currentTarget.contains(event.target as Node) && onToggle()}
           draggable
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
