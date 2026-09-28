@@ -113,3 +113,7 @@ export class RateLimitedError extends Error {
     if (limitType !== undefined) this.limitType = limitType;
   }
 }
+
+export const PROVIDER_SILENCE_MS = 30_000;
+
+export const END_TURN_GRACE_MS = 2_000;

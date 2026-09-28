@@ -1,3 +1,4 @@
+import { type TurnState, type Rest } from "./turn";
 import type { ItemDetail, ItemSeed, TurnObservation } from "@telar/engine-client";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "../../domains/git";
 import { asRecord, str, isFileTool, pathFromPartialInput, itemDetailForToolCall, titleForToolCall } from "./mapping";
@@ -18,7 +19,7 @@ export type OpenBlock = {
 
 const THINKING_TOKEN_STEP = 500;
 
-export function reasoningDetail(block: OpenBlock): ItemDetail {
+function reasoningDetail(block: OpenBlock): ItemDetail {
   return {
     type: "reasoning",
     text: block.text,
@@ -143,4 +144,22 @@ function withToolOutput(detail: ItemDetail, output: string): ItemDetail {
     default:
       return detail;
   }
+}
+
+export type BlockCtx = {
+  turn: TurnState;
+
+};
+
+export const closeBlock = (ctx: BlockCtx, block: OpenBlock): TurnObservation => ({
+  kind: "item.completed",
+  itemId: block.id,
+  status: "completed",
+  detail: block.kind === "text" ? { type: "assistant_message", text: block.text } : reasoningDetail(block),
+});
+
+export function bindBlocks(ctx: BlockCtx) {
+  return {
+    closeBlock: (...args: Rest<typeof closeBlock>) => closeBlock(ctx, ...args),
+  };
 }

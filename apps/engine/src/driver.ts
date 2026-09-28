@@ -14,89 +14,29 @@
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "./domains/browser";
 import { RUN_BRIEFING } from "./run/briefing";
-import { isBackgroundWork, isUnstatedEnding, parseToolName, TELAR_BROWSER_MCP_SERVER, TELAR_MCP_SERVER, claudeCompactionEnv, type ItemDetail, type ItemSeed, type ProviderWaitDetail, type TaskSeed, type TaskState, type TurnObservation, type UsageSnapshot, type UserInputField } from "@telar/engine-client";
+import { isBackgroundWork, claudeCompactionEnv, type ItemDetail, type ItemSeed, type TaskSeed } from "@telar/engine-client";
 import { claudeEffortFor, claudeWindowTokensOf, requireCli } from "./domains/providers";
-import { telarWall, toSdkTools } from "./domains/agent-tools";
 import { pluginBriefings } from "./plugins/bundled";
-import { canonicalEnvPatch, canonicalJson, canonicalServers, changedFields, fieldDigest, fieldDigests, resolveChildEnv, ClaudeRuntimeStore, MessageFeed, UNATTENDED_BACKGROUND_WORK_MS, taskMemoryFrom, type ClaudeSessionRuntime, type RuntimeBindings, type RuntimeQuery } from "./drivers/claude";
-import { framedSteerText, steerRowTitle, type SteerMessage } from "./domains/turns";
-import { ProviderUnavailableError, normalizeOutcome, requireCwd, type DriverRun, type ProviderTurnBinding, type DriverSessionHooks, type TurnDriver } from "./drivers/contract";
-import { taskOutputFileFrom } from "./drivers/claude";
-import { claudeInitialContent, claudeNotificationOrigin, claudeNotificationContent, claudeStreamingInputEnabled, singleUserMessage, claudeMcpServers, claudeContextEnvForModel, claudeToolSearchEnv, SESSION_STATE_ENV, claudeWindowOf, selectedContextMaxFromModel, claudeEffort, type SdkCanUseTool, type SdkUserMessage, type ClaudeTurnBindings, type ClaudeSdk } from "./drivers/claude/sdk";
-import { requestKindForTool, requestDetailForToolCall, itemId, oneLine, asRecord, contentBlocks, str, itemDetailForToolCall, titleForToolCall } from "./drivers/claude/mapping";
-import { taskKindForType, taskKindForTypeOrUndefined, isForegroundShell, taskStateForStatus, isTerminalTaskState, planDetailForTodos } from "./drivers/claude/tasks";
+import { canonicalEnvPatch, canonicalJson, canonicalServers, changedFields, fieldDigest, fieldDigests, resolveChildEnv, ClaudeRuntimeStore, UNATTENDED_BACKGROUND_WORK_MS } from "./drivers/claude";
+import { framedSteerText } from "./domains/turns";
+import { ProviderUnavailableError, requireCwd, type TurnDriver } from "./drivers/contract";
+import { claudeInitialContent, claudeNotificationOrigin, claudeNotificationContent, claudeStreamingInputEnabled, claudeMcpServers, claudeContextEnvForModel, claudeToolSearchEnv, SESSION_STATE_ENV, claudeWindowOf, selectedContextMaxFromModel, claudeEffort, type ClaudeTurnBindings, type ClaudeSdk } from "./drivers/claude/sdk";
+import { itemId, oneLine, asRecord, contentBlocks, str, itemDetailForToolCall, titleForToolCall } from "./drivers/claude/mapping";
+import { isTerminalTaskState, planDetailForTodos } from "./drivers/claude/tasks";
 import { usageFrom, turnCostFrom, contextUsedFrom, contextMaxFrom } from "./drivers/claude/usage";
-import { providerWaitFrom, takeProviderWait, titleForProviderWait, RateLimitedError, type LimitWarningSeen } from "./drivers/claude/limits";
-import { reasoningDetail, noteThinkingTokens, streamingToolSeed, streamingInputFor, streamedPathUpdate, openThinkingOf, userText, withToolResult, type OpenBlock, type StreamingInput } from "./drivers/claude/observations";
-
-/**
- * HOW LONG A REQUEST MAY BE OUT WITH NOTHING BACK before the turn says so.
- *
- * The CLI announces `system/status {status:"requesting"}` as each request goes
- * out and opens the reply with `message_start`. Between them it reports nothing
- * at all, whatever happens — a request that stalled before its response headers
- * produced sixty seconds of complete silence in the #261 measurement, unchanged
- * with the CLI's own byte and stream watchdogs set — so the engine is the only
- * party that can tell a person the model is unreachable.
- *
- * 30s IS A PRODUCT CHOICE, not a measurement. First token at a large context is
- * routinely slow (the #263 note puts p90 near 15s at 300K), and a row on every
- * slow first token would be noise that teaches people to ignore the row. Double
- * that p90 is late enough to mean something and early enough to beat a person's
- * own "is this thing broken" by a wide margin.
- */
-const PROVIDER_SILENCE_MS = 30_000;
-
-/**
- * How long a turn waits for the CLI's `result` after the model has already
- * said `end_turn` before the engine settles the turn itself (#465).
- *
- * MEASURED, NOT ASSUMED. On the coordinator session (session_b1d34698…,
- * 2026-09-14, turns …e52d15 and …7e852d) the main loop's final assistant
- * envelope arrived with `stop_reason: "end_turn"`, every tool result before it
- * was answered, and the `result` frame that ends the turn NEVER came — the
- * CLI's own transcript for the whole two-hour window holds zero `result`
- * rows. The engine turn sat `running` with no output for 15–25 minutes until
- * the owner restarted Telar, five times in one evening. A steered session
- * (peer reports and mid-turn messages injected as steers) is where it shows;
- * the exact CLI-side cause is not known and this driver cannot fix it there.
- *
- * `end_turn` is the model's own statement that it is done; on a healthy
- * producer the `result` follows within milliseconds. Two seconds is long
- * enough that a slow result on a loaded machine still wins, and short enough
- * that a person never reads it as a stall. The turn that settles this way
- * carries a warning row saying so, so a future stall names its cause.
- */
-const END_TURN_GRACE_MS = 2_000;
-
-/**
- * WHAT A CHILD IS TOLD WHEN THERE IS NO CLAIM LEFT TO DECIDE ITS CALL UNDER
- * — #891's floor, and #835's "a crash is not a refusal" once more.
- *
- * A model that reads a refusal as the person's stops asking and reports back
- * that it was declined: that is #28's whole lesson, measured again here as
- * sub-agents that gave up 18 seconds in. Nobody declined anything, so the
- * sentence says so, names the cause, and says what to do instead. Reached only
- * when there is genuinely nothing alive to open a claim for — with live
- * background work, `backgroundGate` opens one rather than saying this.
- */
-const NO_CLAIM_FOR_BACKGROUND_WORK =
-  "The turn that started this agent has ended, and this session has no live turn to decide the call under, so nothing ran. " +
-  "Nobody declined it — there was nobody to ask. Report what you have; the call can be made again from a new turn.";
-
-/** The result text the background claim's own turn settles with. It carries no
- *  prose — no model spoke in it — so it says what it was for. */
-const BACKGROUND_CLAIM_RESULT = "Decided a tool call for background work still running after its turn ended.";
-
-/**
- * HOW LONG A BACKGROUND CLAIM IS KEPT AFTER THE LAST BACKGROUND TASK ENDS.
- *
- * While any task lives the claim is held outright (#912); this is only the
- * tail, so a task that hands off to a sibling within seconds shares the turn
- * rather than opening another. A person's message does not wait it out: it
- * takes the session through the binding's `wanted` signal.
- */
-const BACKGROUND_CLAIM_LINGER_MS = 5_000;
+import { providerWaitFrom, takeProviderWait, titleForProviderWait, RateLimitedError, PROVIDER_SILENCE_MS, END_TURN_GRACE_MS } from "./drivers/claude/limits";
+import { noteThinkingTokens, streamingToolSeed, streamingInputFor, streamedPathUpdate, openThinkingOf, withToolResult, bindBlocks, type OpenBlock, type StreamingInput } from "./drivers/claude/observations";
+import { gateFor } from "./drivers/claude/permission-gate";
+import type { SdkFrame } from "./drivers/claude/frames";
+import { BACKGROUND_CLAIM_LINGER_MS } from "./drivers/claude/background-claims";
+import type { TurnState } from "./drivers/claude/turn";
+import { createEmitter } from "./drivers/claude/emitter";
+import { bindTasks } from "./drivers/claude/task-tracker";
+import { bindProviderWait } from "./drivers/claude/provider-wait";
+import { bindClaims, createBackgroundGate } from "./drivers/claude/background-claims";
+import { bindSteering } from "./drivers/claude/steering";
+import { bindRuntime } from "./drivers/claude/session-runtime";
+import { bindIdlePump } from "./drivers/claude/idle-pump";
 
 /**
  * The user's own Claude Code, or a refusal naming what to install.
@@ -114,13 +54,6 @@ function defaultClaudeExecutable(binaryPath?: string): string {
   }
 }
 
-/**
- * Thin, injectable bridge to the locally installed Agent SDK. It does not
- * import Telar's legacy route/core execution layer and leaves approvals at the
- * SDK's normal default — `canUseTool` and hooks arrive in stage 2, and until
- * they do this driver cannot open a request. A missing SDK or login is surfaced
- * as a failure, never a fabricated answer.
- */
 export function createClaudeDriver(
   loadSdk: () => Promise<ClaudeSdk> = () => import("@anthropic-ai/claude-agent-sdk") as Promise<ClaudeSdk>,
   options: {
@@ -232,9 +165,11 @@ export function createClaudeDriver(
       tasks: seededTasks,
       session: sessionHooks,
     }) {
-      let sdk: ClaudeSdk;
+      const turn = {} as TurnState;
+      const { flush, flushSoon, emit } = createEmitter(turn);
+      
       try {
-        sdk = await loadSdk();
+        turn.sdk = await loadSdk();
       } catch {
         throw new ProviderUnavailableError(
           "Claude Agent SDK is unavailable; install and configure Claude Code before retrying",
@@ -242,53 +177,30 @@ export function createClaudeDriver(
       }
       // The Claude SDK spawns its CLI in a directory; a session with none is a
       // routing mistake and says so before anything starts. See `requireCwd`.
-      const cwd = requireCwd(claimedCwd, "Claude Code");
+      turn.cwd = requireCwd(claimedCwd, "Claude Code");
       // The manifest maps an effort a model runs under another name (Opus 4.7: xhigh → max).
-      const sdkEffort = claudeEffort(claudeEffortFor(model, effort));
-      const userServers = claudeMcpServers(userMcpServers);
-      const contextEnv = claudeContextEnvForModel(model);
+      turn.sdkEffort = claudeEffort(claudeEffortFor(model, effort));
+      turn.userServers = claudeMcpServers(userMcpServers);
+      turn.contextEnv = claudeContextEnvForModel(model);
       // The login's per-class limit (#587), for the window this model runs.
       // After the login's own patch, so the setting beats a stale row.
-      const compactionEnv = claudeCompactionEnv(autoCompact, model ? claudeWindowTokensOf(model) : undefined);
-      const defaultEnv = { ...SESSION_STATE_ENV, ...claudeToolSearchEnv(process.env) };
+      turn.compactionEnv = claudeCompactionEnv(autoCompact, model ? claudeWindowTokensOf(model) : undefined);
+      turn.defaultEnv = { ...SESSION_STATE_ENV, ...claudeToolSearchEnv(process.env) };
 
-      let finalText = "";
-      let receivedPartialText = false;
-      let reportedSessionId: string | undefined;
-      let usage: UsageSnapshot | undefined;
-      let completed = false;
+      turn.finalText = "";
+      turn.receivedPartialText = false;
+      
+      
+      turn.completed = false;
       /**
        * The context meter's two halves, tracked run-scoped: `contextUsed` from
        * the newest assistant message (see `contextUsedFrom`), `contextMax`
        * from each result's `modelUsage` — a constant per model, carried
        * forward because a slash-command result can arrive with an empty table.
        */
-      let contextUsed: number | undefined;
-      let contextMax: number | undefined = selectedContextMaxFromModel(model);
-      /** The newest main-loop assistant envelope's raw `usage`, kept so the
-       *  response's closing `message_delta` can correct its placeholder
-       *  output count rather than replace the whole record. */
-      let lastEnvelopeUsage: unknown;
-      const decorateUsage = (snapshot: UsageSnapshot | undefined): UsageSnapshot | undefined =>
-        snapshot === undefined
-          ? undefined
-          : {
-              ...snapshot,
-              ...(contextUsed === undefined ? {} : { contextUsed }),
-              ...(contextMax === undefined ? {} : { contextMax }),
-            };
-      /** The open "Retrying…" / "Rate limit reached" row, while the provider
-       *  has the turn standing still. Closed by the next frame of any kind. */
-      let waitItemId: string | undefined;
-      /** The last rate-limit WARNING this turn journalled, so the CLI's
-       *  per-request repeat of it is dropped (#897). Turn-scoped like every
-       *  binding here, which is what "reset at turn start" amounts to. */
-      let lastLimitWarning: LimitWarningSeen | undefined;
-      const closeProviderWait = (): void => {
-        if (!waitItemId) return;
-        emit({ kind: "item.completed", itemId: waitItemId, status: "completed" });
-        waitItemId = undefined;
-      };
+      
+      turn.contextMax = selectedContextMaxFromModel(model);
+      const { decorateUsage, closeProviderWait, disarmProviderSilence, armProviderSilence } = bindProviderWait({ turn, emit, flush, providerSilenceMs });
       /**
        * THE SILENCE WATCH — a request that is out and has not answered (#263).
        *
@@ -311,38 +223,10 @@ export function createClaudeDriver(
        * grace wins, the turn settles here with a warning row instead of
        * waiting forever on a `result` that measurably does not always come.
        */
-      let endTurnSeenAt: number | undefined;
+      
       /** Our main loop's successful `result` has been read — on a process that
        *  reports session state, that is when an `idle` can be ours. */
-      let ownResultRead = false;
-      let silenceTimer: ReturnType<typeof setTimeout> | undefined;
-      const disarmProviderSilence = (): void => {
-        if (silenceTimer === undefined) return;
-        clearTimeout(silenceTimer);
-        silenceTimer = undefined;
-      };
-      const armProviderSilence = (): void => {
-        disarmProviderSilence();
-        const sentAt = Date.now();
-        silenceTimer = setTimeout(() => {
-          silenceTimer = undefined;
-          // A retry or a rejected limit is already holding a row open about
-          // this same silence, and it has the provider's own account of it.
-          // Two rows for one wait would be the engine arguing with the SDK.
-          // A compaction is a silence the provider ANNOUNCED: minutes of it are
-          // the work, not a stall, and its own row already says what it is.
-          if (waitItemId || compactionItemId) return;
-          const id = itemId();
-          // The timer firing IS the proof the threshold passed; `Date.now()`
-          // truncates to whole ms and can read one short of it.
-          const wait: ProviderWaitDetail = { kind: "no_response", waitedMs: Math.max(providerSilenceMs, Date.now() - sentAt) };
-          const detail: ItemDetail = { type: "provider_wait", wait };
-          emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(wait) } });
-          waitItemId = id;
-          void flush().catch(() => undefined);
-        }, providerSilenceMs);
-        silenceTimer.unref?.();
-      };
+      turn.ownResultRead = false;
       /**
        * THE LAST REJECTED LIMIT THAT IS STILL STANDING — the evidence that, if
        * this turn now ends without succeeding, it ended because of a limit.
@@ -359,13 +243,13 @@ export function createClaudeDriver(
        * it: an `api_retry` that follows a rejected limit is the same limit
        * still biting.
        */
-      let standingLimit: { resumeAt: number; limitType?: ProviderWaitDetail["limitType"] } | undefined;
+      
       /** The open "Compacting context" row, when the provider announced one. */
-      let compactionItemId: string | undefined;
+      
       /** `compact_result: "success"` seen; the row waits for its boundary. */
-      let compactionSucceeded = false;
+      turn.compactionSucceeded = false;
       /** The open row's `compact_boundary` (the numbers) has arrived. */
-      let compactionMeasured = false;
+      turn.compactionMeasured = false;
 
       /**
        * Streaming blocks keyed by the provider's content-block index.
@@ -379,19 +263,13 @@ export function createClaudeDriver(
        * empty reasoning and empty assistant messages from the snapshot. Found
        * by running it, not by a test; the test now exists.
        */
-      const openBlocks = new Map<string, OpenBlock>();
-
-      const closeBlock = (block: OpenBlock): TurnObservation => ({
-        kind: "item.completed",
-        itemId: block.id,
-        status: "completed",
-        detail: block.kind === "text" ? { type: "assistant_message", text: block.text } : reasoningDetail(block),
-      });
+      turn.openBlocks = new Map<string, OpenBlock>();
+      const { closeBlock } = bindBlocks({ turn });
       /** Tool rows keyed by `tool_use_id`, so a later `tool_result` closes the
        *  row its call opened rather than opening a second one. */
-      const openTools = new Map<string, { id: string; detail: ItemDetail }>();
+      turn.openTools = new Map<string, { id: string; detail: ItemDetail }>();
       /** File calls whose input is still streaming — see `streamedPathUpdate`. */
-      const streamingInputs = new Map<string, StreamingInput>();
+      turn.streamingInputs = new Map<string, StreamingInput>();
       /**
        * The MAIN LOOP'S tool calls whose `tool_result` has not arrived yet — a
        * subset of `openTools` (which also tracks sub-agent tools). Kept apart
@@ -401,7 +279,7 @@ export function createClaudeDriver(
        * Sub-agent tools must not hold the turn — a backgrounded agent's rows
        * legitimately outlive it.
        */
-      const openTopLevelTools = new Set<string>();
+      turn.openTopLevelTools = new Set<string>();
 
       /**
        * Sub-agents, keyed by the SDK's own `task_id`.
@@ -415,7 +293,7 @@ export function createClaudeDriver(
        * map exists.
        */
       /** The turn's single plan row, once TodoWrite has opened one. */
-      let planItemId: string | undefined;
+      
 
       /**
        * THE PROCESS'S TASK MEMORY, NOT THE TURN'S. Assigned once the runtime
@@ -424,97 +302,31 @@ export function createClaudeDriver(
        * in one turn reports in a later one under its SDK id alone — see
        * `TaskMemory` in ./claude-runtime.ts for the measured ghost rows.
        */
-      let taskIdsBySdkId: Map<string, string> = new Map();
+      turn.taskIdsBySdkId = new Map();
       /** Last seed per task, so `task_updated`'s PATCH can be folded onto
        *  something rather than sent as a task with no title or kind. */
-      let knownTasks: Map<string, TaskSeed> = new Map();
+      turn.knownTasks = new Map();
       /** The SDK's `task_type` per task id — see `TaskMemory.typesBySdkId`. */
-      let taskTypesBySdkId: Map<string, string> = new Map();
+      turn.taskTypesBySdkId = new Map();
       /** SDK task ids that are not rows: `ambient` housekeeping, and shells
        *  that block their turn (`isForegroundShell`). Remembered, so the
        *  progress/notification edges of the same task cannot re-create the row
        *  through `emitTask`'s fold-or-invent path. A foreground shell leaves
        *  the set the moment the CLI backgrounds it (Ctrl+B). On the runtime's
        *  memory like the rows — see `TaskMemory`. */
-      let suppressedTasks: Set<string> = new Set();
+      turn.suppressedTasks = new Set();
       /** Log paths a backgrounded Bash result stated before its task had a
        *  row, by SDK id — folded in when the row is minted (`emitTask`). */
-      const pendingOutputFiles = new Map<string, string>();
+      turn.pendingOutputFiles = new Map<string, string>();
       /** The turn the pump is reading is one the CLI started on its own (a
        *  background task's wake-up), not this engine turn — see the
        *  `message_start` check in the loop. Its rows are filed under the task
        *  that fired it; its result ends nothing. */
-      let foreignTurn: { taskId: string | undefined } | undefined;
+      
       /** Our reply's first frame has arrived (`user_message_uuid` = ours).
        *  Until then a sender-less turn is not ours; after, it is. */
-      let ownTurnOpen = false;
-      /**
-       * Background work this turn knows about that has not ended — the shells,
-       * monitors and detached agents still alive inside the process.
-       *
-       * READ FROM THE ROWS, NOT COUNTED FROM `background_tasks_changed`. The
-       * rows are already the fold of every frame that spoke about a task (see
-       * `emitTask`), so a shell whose ending arrived as a notification rather
-       * than as a membership change is correctly absent here; counting the
-       * level signal instead would be a second, worse copy of state the fold
-       * already holds.
-       */
-      const liveBackgroundTasks = (): Array<TaskSeed & { id: string }> =>
-        [...knownTasks.entries()].flatMap(([id, task]) =>
-          isBackgroundWork(task) && !isTerminalTaskState(task.state) ? [{ ...task, id }] : [],
-        );
-
-      /**
-       * THE PROCESS IS GONE, AND SO IS EVERYTHING THAT WAS RUNNING INSIDE IT.
-       *
-       * Background work is the one thing the turn-end sweep deliberately leaves
-       * alone, because outliving its turn is exactly what backgrounding means —
-       * it keeps running in the live process and reports through the next
-       * turn's pump. That reasoning holds only WHILE THE PROCESS LIVES. When
-       * the CLI exits (a crash, a quit, the owner restarting Telar) those
-       * shells and monitors die with it, and a row left at `running` is then a
-       * claim about a process that no longer exists: `livenessOf` reads task
-       * state, so the session reports itself as still monitoring for ever, with
-       * no live stream left to correct it and nothing a human can stop.
-       *
-       * MEASURED AS THE TAIL OF #465 — five task ids (b3053dry9, bzzuxuedf,
-       * b25tzicb4, brheodr3w, bdj7jqyvf) that the NEXT session learned about
-       * only second-hand, as the model's own "didn't finish before the previous
-       * session ended". The rows close as `stopped` (the work was ended by
-       * something outside it, which is what `stopped` means) and the COUNT goes
-       * on the journal, so the loss is stated when it happens rather than
-       * inferred an hour later from a model's aside.
-       *
-       * EMITTED WHOLE RATHER THAN THROUGH `emitTask`, exactly as the turn-end
-       * sweep does: the row is already in hand, and `emitTask` would re-derive
-       * its id from an SDK task id that a row minted off a `tool_use` alone
-       * does not have — `taskIdFor(undefined, undefined)` invents one, which is
-       * a ghost row for a task the store already holds. Folding the ending back
-       * into `knownTasks` is what makes a second call (the stream ending and
-       * then throwing) say nothing the second time.
-       */
-      const reportLostBackgroundWork = (): void => {
-        const lost = liveBackgroundTasks();
-        if (lost.length === 0) return;
-        for (const task of lost) {
-          const ended: TaskSeed = { ...task, state: "stopped", failure: "the provider process ended before this background task reported back" };
-          knownTasks.set(task.id, ended);
-          emit({ kind: "task.completed", task: ended });
-        }
-        emit({
-          kind: "runtime.warning",
-          message: `the Claude process ended with ${lost.length} background task${lost.length === 1 ? "" : "s"} still running; ${lost.length === 1 ? "it was" : "they were"} lost with it`,
-        });
-      };
-
-      const taskIdFor = (sdkTaskId: string | undefined, toolUseId: string | undefined): string => {
-        if (toolUseId) return `task_${toolUseId}`;
-        if (sdkTaskId && taskIdsBySdkId.has(sdkTaskId)) return taskIdsBySdkId.get(sdkTaskId)!;
-        // A task this process never launched and the store never told it
-        // about: the SDK id is the only handle, and the row it mints is
-        // anonymous. Named so the journal says which case produced it.
-        return `task_${sdkTaskId ?? crypto.randomUUID().replaceAll("-", "")}`;
-      };
+      turn.ownTurnOpen = false;
+      const { liveBackgroundTasks, reportLostBackgroundWork, noteTaskOutput, handleTaskFrame } = bindTasks({ turn, emit });
 
       /**
        * WHERE OBSERVATIONS GO. A turn's own go to its `onObservations`; a
@@ -522,435 +334,12 @@ export function createClaudeDriver(
        * engine opened for it; and task frames read BETWEEN turns go to the
        * session's `onTasks`. Swapped by the pump, read by `emit`/`flush`.
        */
-      let sink: (observations: TurnObservation[]) => Promise<void> = onObservations;
-
-      /** Fold a partial report onto what this task was last known to be, then
-       *  emit it whole — the repetition ./tasks.ts requires of every event. */
-      const emitTask = (
-        kind: "task.started" | "task.progress" | "task.completed",
-        sdkTaskId: string | undefined,
-        patch: Partial<TaskSeed> & { state: TaskState },
-        toolUseId?: string,
-        message?: string,
-      ): void => {
-        const id = taskIdFor(sdkTaskId, toolUseId);
-        if (sdkTaskId) taskIdsBySdkId.set(sdkTaskId, id);
-        const known = knownTasks.get(id);
-        const statedKind = sdkTaskId ? taskKindForTypeOrUndefined(taskTypesBySdkId.get(sdkTaskId)) : undefined;
-        /**
-         * THE FIRST ENDING IS THE ENDING. A task that has finished never changes
-         * state again; later reports may still add to it.
-         *
-         * The SDK keeps talking about a task after it ends — a notification
-         * carrying the summary, a progress line that arrives out of order — and
-         * each of those carries a state this fold would otherwise apply.
-         * Measured on a real turn: `task_updated{status: killed}` followed by a
-         * status-less `task_notification` put a stopped task back to `running`,
-         * where it read as still working with nothing left in the stream that
-         * could correct it.
-         *
-         * NOT "THE MOST SPECIFIC WINS", which was the first shape of this and is
-         * subtly worse: the notification above says only "here is the summary",
-         * so its ending is INFERRED, and letting it through rewrote an explicit
-         * `killed` as `completed` — losing the one fact the SDK had actually
-         * stated. Everything else on the patch is still folded in, so the
-         * summary and the usage arrive either way.
-         */
-        // …except an ending nobody stated, which a stated worse one corrects —
-        // see `isUnstatedEnding`, and the store's copy of this rule.
-        const corrected = known !== undefined && isUnstatedEnding(known) && (patch.state === "failed" || patch.state === "stopped");
-        const state = known && isTerminalTaskState(known.state) && !corrected ? known.state : patch.state;
-        const pendingOutput = sdkTaskId ? pendingOutputFiles.get(sdkTaskId) : undefined;
-        if (sdkTaskId) pendingOutputFiles.delete(sdkTaskId);
-        const task: TaskSeed = {
-          ...known,
-          ...(pendingOutput ? { outputFile: pendingOutput } : {}),
-          ...patch,
-          id,
-          // PRECEDENCE: what the frame says, then what the SDK ever STATED
-          // about this task, then what we last held, then the default. The
-          // stated type outranks `known.kind` because that may itself be a
-          // default this fold wrote before the type was ever announced.
-          kind: patch.kind ?? statedKind ?? known?.kind ?? "agent",
-          state,
-          ...(sdkTaskId ? { providerTaskId: sdkTaskId } : {}),
-        };
-        knownTasks.set(id, task);
-        // The EVENT follows the state, not the message that carried it: a
-        // notification about an already-finished task must not be announced as
-        // progress, and a resurrection blocked above must not be announced at
-        // all as a completion of something that already completed.
-        const settled = isTerminalTaskState(state);
-        const announced = kind === "task.started" ? kind : settled ? "task.completed" : "task.progress";
-        emit(announced === "task.progress" ? { kind: announced, task, ...(message ? { message } : {}) } : { kind: announced, task });
-      };
-
-      /**
-       * A BACKGROUNDED BASH CALL NAMES ITS LOG AT ONCE. Its result carries the
-       * SDK task id (`backgroundTaskId`) and, in the text, the file the shell is
-       * writing to — the only statement of the path while the shell runs; the
-       * notification's `output_file` comes only at the end. The row usually
-       * exists already (`task_started` precedes the result); if not, the path
-       * waits for `emitTask` to mint it.
-       */
-      const noteTaskOutput = (structured: unknown, output: string): void => {
-        const sdkId = str(asRecord(structured).backgroundTaskId);
-        const file = sdkId ? taskOutputFileFrom(output) : undefined;
-        if (!sdkId || !file || suppressedTasks.has(sdkId)) return;
-        const rowId = taskIdsBySdkId.get(sdkId);
-        const known = rowId ? knownTasks.get(rowId) : undefined;
-        if (!known) {
-          pendingOutputFiles.set(sdkId, file);
-          return;
-        }
-        if (known.outputFile === file) return;
-        emitTask("task.progress", sdkId, { state: known.state, outputFile: file });
-      };
-
-      /** A sub-agent's usage, in the contract's shape. The SDK reports one
-       *  total rather than an input/output split, and inventing a split would
-       *  be a fabricated number — it is carried as output, which is the field a
-       *  cost roll-up sums. */
-      const taskUsage = (value: unknown): UsageSnapshot | undefined => {
-        const usage = asRecord(value);
-        if (typeof usage.total_tokens !== "number") return undefined;
-        return { tokens: { input: 0, output: usage.total_tokens, cacheRead: 0, cacheCreate: 0 } };
-      };
-
-      /** The frame shape both pumps read; declared once so `handleTaskFrame`
-       *  and the turn loop agree on it. */
-      type SdkFrame = {
-        type?: string;
-        subtype?: string;
-        session_id?: string;
-        total_cost_usd?: number;
-        usage?: unknown;
-        /** Result messages only: per-model usage, where `contextWindow`
-         *  lives. Tokens in it are cumulative — see `contextMaxFrom`. */
-        modelUsage?: unknown;
-        compact_result?: string;
-        compact_metadata?: unknown;
-        message?: { content?: unknown[]; usage?: unknown; stop_reason?: string | null };
-        /** The tool's full structured Output — where `structuredPatch` lives. */
-        tool_use_result?: unknown;
-        /** Set on everything a sub-agent produced: the id of the `Task`
-         *  call that launched it. `null` on the main loop's own messages. */
-        parent_tool_use_id?: string | null;
-        /** Result messages: the final assistant message's stop reason.
-         *  `"tool_use"` means the model stopped to run tools and will
-         *  continue after their results — the turn is NOT over. Absent on
-         *  older producers and the fake SDKs. */
-        stop_reason?: string | null;
-        /** Result messages: the CLI's own verdict on the turn, which does
-         *  NOT always agree with `subtype`. Its safeguards report
-         *  `subtype: "success"` with this true — see the two result guards
-         *  below, which read both rather than the subtype alone (#779). */
-        is_error?: boolean;
-        /** The join key of the send this frame answers — see `turnUuid`. On
-         *  the first stream frame and the result of a turn only. */
-        user_message_uuid?: string;
-        /** Set on a turn the CLI started by ITSELF (a background task's
-         *  notification, an auto-continuation); absent on a human send. */
-        origin?: { kind?: string };
-        task_id?: string;
-        tool_use_id?: string;
-        description?: string;
-        subagent_type?: string;
-        task_type?: string;
-        is_backgrounded?: boolean;
-        workflow_name?: string;
-        summary?: string;
-        status?: string;
-        /** `task_notification` only: where the task's output was written. */
-        output_file?: string;
-        /** `task_started` only: housekeeping the CLI does not surface as
-         *  user work — the SDK says to exclude it from activity. */
-        ambient?: boolean;
-        /** `background_tasks_changed` only: every live background task
-         *  after the change, with REPLACE semantics. */
-        tasks?: unknown;
-        /** `api_retry` only: the request failed retryably and the SDK is
-         *  about to sleep `retry_delay_ms` before attempt `attempt`. */
-        attempt?: number;
-        max_retries?: number;
-        retry_delay_ms?: number;
-        /** `null` for a connection error that never got a response. */
-        error_status?: number | null;
-        /** `rate_limit_event` only: the account's limit state. */
-        rate_limit_info?: unknown;
-        /** Result messages: whitelisted lifecycle scalars, for the gated
-         *  diagnostic line. Never journalled. */
-        duration_ms?: number;
-        duration_api_ms?: number;
-        ttft_ms?: number;
-        num_turns?: number;
-        patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
-        /** `system/thinking_tokens` only: the open thought's running size. */
-        estimated_tokens?: number;
-        /** `session_state_changed` only: `idle | running | requires_action`. */
-        state?: string;
-        event?: {
-          type?: string;
-          index?: number;
-          /** `id`/`name` on a `tool_use` block only. */
-          content_block?: { type?: string; id?: string; name?: string };
-          /** `estimated_tokens` rides `thinking_delta` when the CLI omits the
-           *  thinking text itself — a running total, not an increment. */
-          delta?: { type?: string; text?: string; thinking?: string; estimated_tokens?: number };
-          /** `message_delta` only: the response's FINAL output token count.
-           *  Every earlier report of it is a placeholder — see the pump. */
-          usage?: unknown;
-        };
-      };
-
-      /**
-       * The five task frames, folded into rows. Returns true when the frame
-       * was one of them (handled, whether or not it emitted). Shared by the
-       * turn pump and the idle pump: a `task_notification` means the same
-       * thing whichever of them reads it, and the idle pump is the one that
-       * hears a monitor's ending when it happens rather than at the next
-       * human message.
-       */
-      const handleTaskFrame = async (item: SdkFrame): Promise<boolean> => {
-        if (item.type !== "system") return false;
-        /**
-         * THE LAST TASK THAT SPOKE names the wake-up that follows. Measured:
-         * a Monitor's tick is a `task_progress`, not a notification, and the
-         * CLI wakes the model on it just the same — so remembering only
-         * notifications left the tick's turn with no reason. Any frame about
-         * a task that is (or becomes) a row counts; ambient and foreground
-         * shells do not, they are not rows anybody can be woken by.
-         */
-        const spokeFor = str(item.task_id) && !suppressedTasks.has(item.task_id!) && item.ambient !== true
-          ? taskIdFor(str(item.task_id), str(item.tool_use_id))
-          : undefined;
-        if (spokeFor && runtimeRef && item.subtype !== "background_tasks_changed" && !isForegroundShell(str(item.task_type), item.is_backgrounded)) {
-          runtimeRef.tasks.lastWokenTaskId = spokeFor;
-        }
-        if (item.subtype === "task_started") {
-          // Before the suppression branch: a blocking shell announces
-          // `local_bash` and then earns no row, so this is the only place its
-          // type is stated before Ctrl+B gives it one.
-          if (str(item.task_id) && str(item.task_type)) taskTypesBySdkId.set(item.task_id!, item.task_type!);
-          /**
-           * AMBIENT TASKS ARE THE CLI'S HOUSEKEEPING, NOT WORK. The SDK marks
-           * them itself and says what to do ("hosts should exclude them from
-           * activity indicators"); surfaced as a row, an auto-started
-           * live-update watcher would make `livenessOf` report the session
-           * as monitoring over work no human asked for and none can stop.
-           */
-          if (item.ambient === true || isForegroundShell(str(item.task_type), item.is_backgrounded)) {
-            if (str(item.task_id)) suppressedTasks.add(item.task_id!);
-            return true;
-          }
-          emitTask(
-            "task.started",
-            str(item.task_id),
-            {
-              state: "running",
-              kind: taskKindForType(str(item.task_type)),
-              // Launched detached: it outlives this turn, whatever it is.
-              ...(item.is_backgrounded === true ? { backgrounded: true } : {}),
-              ...(str(item.description) ? { title: oneLine(item.description!) } : {}),
-              ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
-            },
-            str(item.tool_use_id),
-          );
-          return true;
-        }
-        if (item.subtype === "task_progress") {
-          if (str(item.task_id) && suppressedTasks.has(item.task_id!)) return true;
-          /**
-           * A PROGRESS DESCRIPTION DOES NOT RENAME THE TASK.
-           *
-           * Measured against the real SDK: `task_started` carried "Find
-           * top-level .ts files non-recursively" and the progress messages
-           * that followed carried "Running Find top-level .ts files
-           * non-recursively". Taking the later one as the title makes a
-           * roster row read as status prose, and makes it churn while the
-           * agent runs. The start event names the task; progress reports on
-           * it. A task that never announced a start still takes one, because
-           * an ugly title beats an anonymous row.
-           */
-          const known = knownTasks.get(taskIdFor(str(item.task_id), str(item.tool_use_id)));
-          emitTask(
-            "task.progress",
-            str(item.task_id),
-            {
-              state: "running",
-              ...(!known?.title && str(item.description) ? { title: oneLine(item.description!) } : {}),
-              ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
-              ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
-            },
-            str(item.tool_use_id),
-            str(item.summary),
-          );
-          return true;
-        }
-        if (item.subtype === "task_updated") {
-          if (str(item.task_id) && suppressedTasks.has(item.task_id!)) {
-            // Ctrl+B on a blocking shell: from here on it IS background work
-            // and earns the row the never-announced branch below mints.
-            if (item.patch?.is_backgrounded !== true) return true;
-            suppressedTasks.delete(item.task_id!);
-          }
-          const status = str(item.patch?.status);
-          const state = taskStateForStatus(status);
-          const terminal = state === "completed" || state === "failed" || state === "stopped";
-          /**
-           * MOVED TO THE BACKGROUND MID-FLIGHT (Ctrl+B, or the SDK's own
-           * decision). A task this turn already announced keeps its kind —
-           * an agent sent to the background is still an agent — and only
-           * gains `backgrounded`. A task NEVER announced is the foreground
-           * Bash case: a blocking shell announces no `task_started` at all
-           * and first appears here, so its only honest classification is
-           * "a backgrounded shell".
-           */
-          const backgrounded = item.patch?.is_backgrounded === true;
-          // `task_updated` states no `task_type`, and `is_backgrounded` is set
-          // for `local_agent` AND `local_bash` — so it cannot name a kind. The
-          // fold reads the type the SDK stated elsewhere.
-          emitTask(
-            terminal ? "task.completed" : "task.progress",
-            str(item.task_id),
-            {
-              state,
-              ...(str(item.patch?.description) ? { title: oneLine(item.patch!.description!) } : {}),
-              ...(str(item.patch?.error) ? { failure: item.patch!.error! } : {}),
-              ...(backgrounded ? { backgrounded: true } : {}),
-            },
-            undefined,
-          );
-          return true;
-        }
-        if (item.subtype === "task_notification") {
-          if (str(item.task_id) && suppressedTasks.has(item.task_id!)) return true;
-          const id = taskIdFor(str(item.task_id), str(item.tool_use_id));
-          // Only a shell's file is a log; an agent's is its transcript, which
-          // the Agents tab already draws as steps.
-          const logged = knownTasks.get(id)?.kind === "background" && str(item.output_file);
-          // Remembered on the PROCESS: the wake-up this notification triggers
-          // may be read by the idle pump, or by the next turn's pump, and
-          // either has to name the shell that spoke.
-          emitTask(
-            "task.completed",
-            str(item.task_id),
-            {
-              // A NOTIFICATION IS AN ENDING. Its default is `completed` rather
-              // than the shared `running`, because "the task is over and here
-              // is what it produced" is the only thing this message means —
-              // see `taskStateForStatus`.
-              state: taskStateForStatus(str(item.status), "completed"),
-              ...(str(item.summary) ? { resultText: item.summary! } : {}),
-              ...(logged ? { outputFile: logged } : {}),
-              ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
-            },
-            str(item.tool_use_id),
-          );
-          return true;
-        }
-        if (item.subtype === "background_tasks_changed") {
-          /**
-           * THE LEVEL SIGNAL, CONSUMED BESIDE THE EDGE BOOKENDS. The SDK's
-           * own doc on this message is the design brief: it carries EVERY
-           * live background task after each membership change, with REPLACE
-           * semantics, "so a missed bookend cannot wedge a stale running
-           * indicator". That wedge is measured, not hypothetical: a Monitor
-           * stream announced `task_started`, its ending edge never arrived,
-           * and `tasks.json` kept it `running` — the session claimed to be
-           * monitoring forever, and the only cure was a human pressing Stop.
-           *
-           * A task this process announced that is background work, not yet
-           * settled, and ABSENT from the payload has therefore ended. It is
-           * closed as `completed` with no failure and no resultText — the
-           * notification that carried the summary may simply have been lost,
-           * and inventing one would be fabrication. If that notification
-           * limps in later anyway, `emitTask` folds its summary in, and lets
-           * a stated `failed`/`stopped` replace this bare `completed`
-           * (`isUnstatedEnding`).
-           *
-           * ONLY background WORK (`isBackgroundWork`), and ONLY tasks whose SDK
-           * id THIS process minted or was seeded with (`taskIdsBySdkId`). A
-           * FOREGROUND agent missing from a background-membership list means
-           * nothing — closing it is the turn-end sweep's job. A BACKGROUNDED
-           * agent is different: the SDK lists it ("a foreground agent being
-           * backgrounded" is one of the changes it announces), and the sweep
-           * spares it on purpose, so a lost notification left it running for
-           * ever with nothing else able to close it. If its notification does
-           * arrive and says it failed, `isUnstatedEnding` lets that stand.
-           * The SDK says the level is per-process ("reset to
-           * the empty set whenever the session's CLI process (re)starts"),
-           * which is exactly the memory's lifetime.
-           *
-           * Membership is tested against ALL entries, ambient included: an
-           * ambient entry never becomes a row, but treating its presence as
-           * absence would close a real task the payload still lists.
-           */
-          const entries = (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
-            const entry = asRecord(raw);
-            const id = str(entry.task_id);
-            if (!id) return [];
-            // The one frame that states `task_type` for a task this process
-            // never announced. Remembered so the kind is read, not inferred
-            // from `is_backgrounded` — set for sub-agents and shells alike.
-            const taskType = str(entry.task_type);
-            if (taskType) taskTypesBySdkId.set(id, taskType);
-            return [{ id, ambient: entry.ambient === true }];
-          });
-          const live = new Set(entries.map((entry) => entry.id));
-          /**
-           * EVERY LIVE ROW IS RECONCILED TO ITS ENTRY — the payload is the
-           * truth about these three facts, whatever the edges said:
-           *  - KIND: a row minted before any frame stated its type carries a
-           *    defaulted kind, and this payload is the statement.
-           *  - BACKGROUNDED: being listed IS being background work. A
-           *    foreground agent sent to the background shows up here before
-           *    its `task_updated` patch; if that patch is lost, the turn-end
-           *    sweep would otherwise fail a live agent.
-           *  - AMBIENT: the SDK flips it on a live entry ("or an entry's
-           *    `ambient` flag flips"). The row keeps existing — it may still
-           *    be shown — but stops counting as activity (`countsAsActivity`).
-           * Re-announced so it lands even if nothing else about the task ever
-           * arrives. Live rows only — a settled one is history.
-           *
-           * AN ENTRY WITH NO ROW MINTS NOTHING. The payload carries ids only,
-           * and the SDK says not to correlate it with the edge stream; the
-           * level usually PRECEDES `task_started`, whose `tool_use_id` is what
-           * a row's id — and every sub-agent item filed under it — is keyed
-           * on. A row minted here under the bare SDK id would split an agent
-           * from its own work. The ambient ones are remembered as suppressed,
-           * so their edges cannot mint one either.
-           */
-          for (const entry of entries) {
-            const rowId = taskIdsBySdkId.get(entry.id);
-            const row = rowId ? knownTasks.get(rowId) : undefined;
-            if (!row) {
-              if (entry.ambient) suppressedTasks.add(entry.id);
-              continue;
-            }
-            if (isTerminalTaskState(row.state)) continue;
-            const stated = taskKindForTypeOrUndefined(taskTypesBySdkId.get(entry.id));
-            const kind = stated && stated !== row.kind ? { kind: stated } : {};
-            const backgrounded = isBackgroundWork(row) ? {} : { backgrounded: true };
-            const ambient = (row.ambient === true) === entry.ambient ? {} : { ambient: entry.ambient };
-            if (Object.keys({ ...kind, ...backgrounded, ...ambient }).length === 0) continue;
-            emitTask("task.progress", entry.id, { state: row.state, ...kind, ...backgrounded, ...ambient });
-          }
-          for (const task of knownTasks.values()) {
-            if (!isBackgroundWork(task) || isTerminalTaskState(task.state)) continue;
-            const sdkId = task.providerTaskId;
-            if (!sdkId || !taskIdsBySdkId.has(sdkId) || live.has(sdkId)) continue;
-            emitTask("task.completed", sdkId, { state: "completed" });
-          }
-          return true;
-        }
-        return false;
-      };
+      turn.sink = onObservations;
       /** The live runtime once claimed or built; `handleTaskFrame` writes the
        *  woken-task id to its memory. */
-      let runtimeRef: ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> | undefined;
+      
 
-      const pending: TurnObservation[] = [];
+      turn.pending = [];
       /**
        * FLUSHES ARE SERIALISED, and that is load-bearing the moment anything
        * flushes off the main loop.
@@ -967,267 +356,9 @@ export function createClaudeDriver(
        * Same failure mode the browser socket's state queue avoids, for the
        * same reason; this generalises it to every observation.
        */
-      let flushQueue: Promise<unknown> = Promise.resolve();
-      /**
-       * THE SINK `pending` WAS ACCUMULATED UNDER.
-       *
-       * This used to be read at flush time, on the grounds that `emit` and
-       * `flush` were always adjacent so the two were the same sink. Streamed
-       * deltas are no longer flushed adjacently (see `flushSoon`), and the pump
-       * swaps the sink between frames — so the binding has to be taken when the
-       * frames are produced, or a turn's buffered text could be posted to the
-       * binding a wake-up opened after it.
-       */
-      let pendingSink: ((observations: TurnObservation[]) => Promise<void>) | undefined;
-      let coalescing: ReturnType<typeof setTimeout> | undefined;
-      const flush = (): Promise<void> => {
-        if (coalescing !== undefined) {
-          clearTimeout(coalescing);
-          coalescing = undefined;
-        }
-        const target = pendingSink ?? sink;
-        // Taken SYNCHRONOUSLY. A deferred flush runs from a timer, so anything
-        // emitted between this call and the chain reaching it belongs to the
-        // next batch — draining inside the callback would hand those frames to
-        // the sink this call captured.
-        const batch = pending.splice(0, pending.length);
-        pendingSink = undefined;
-        const next = flushQueue.then(async () => {
-          if (batch.length === 0) return;
-          await target(batch);
-        });
-        // The CHAIN must survive a rejection or every later flush inherits it;
-        // the caller still sees the failure on the promise it was handed.
-        flushQueue = next.catch(() => undefined);
-        return next;
-      };
-      /**
-       * A STREAMED DELTA COSTS A WHOLE ENGINE COMMAND, so it must not cost one
-       * PER TOKEN-CHUNK. Measured: the real ingest path is 1.66 ms per delta
-       * against a 327-item session — a transaction, a queue read and the item
-       * projection's read and rewrite around a 261-byte insert — which at the
-       * measured peak of 133 deltas/s is more than two cores. The same 400
-       * deltas sixteen to a call are 0.096 ms each.
-       *
-       * 16 ms is a frame. Buffering streamed text for a frame does not defeat
-       * streaming — the cockpit re-reads the tail once a second, and the phone
-       * once a second — while a transaction per chunk does defeat the machine.
-       * Any other observation flushes immediately and takes the buffered deltas
-       * with it, in order, so nothing terminal ever waits on this timer.
-       */
-      const COALESCE_MS = 16;
-      const flushSoon = (): void => {
-        if (coalescing !== undefined) return;
-        coalescing = setTimeout(() => {
-          coalescing = undefined;
-          void flush().catch(() => undefined);
-        }, COALESCE_MS);
-        coalescing.unref?.();
-      };
-      const emit = (observation: TurnObservation): void => {
-        // The pump swapped sinks with frames still buffered: they belong to the
-        // sink that produced them, so they go now rather than to the new one.
-        if (pending.length > 0 && pendingSink !== sink) void flush().catch(() => undefined);
-        const last = pending.at(-1);
-        if (
-          observation.kind === "content.delta" &&
-          last?.kind === "content.delta" &&
-          last.itemId === observation.itemId &&
-          last.stream === observation.stream
-        ) {
-          // COALESCED PER ITEM, which is exactly what a reader does with them:
-          // deltas for one open block are concatenated in order, so N of them
-          // and one carrying the same text are the same transcript — and the
-          // journal holds one row instead of N.
-          pending[pending.length - 1] = { ...last, text: last.text + observation.text };
-          return;
-        }
-        pending.push(observation);
-        pendingSink ??= sink;
-      };
-
-      /**
-       * The permission gate.
-       *
-       * IT MUST ALWAYS ANSWER. The SDK's own docs are blunt about the failure
-       * mode: a permission prompt has no park deadline, so a callback that
-       * throws or never settles blocks the tool indefinitely with nothing to
-       * report it. Any failure here therefore becomes an explicit `deny`
-       * carrying the reason, which is recoverable, rather than a hang.
-       */
-      /** The gate, built around whichever `onRequest` a turn carries — this
-       *  turn's, or a provider turn's own (see the idle pump). */
-      const gateFor = (onRequest: NonNullable<DriverRun["onRequest"]>): SdkCanUseTool =>
-        async (toolName, input, options) => {
-            // THE BROWSER SOCKET IS THE DECIDER for its own tools. The gate
-            // bound to this turn's lease already asked the engine before the
-            // call ran; answering again here would put two cards in front of
-            // one click.
-            if (parseToolName(toolName).server === TELAR_BROWSER_MCP_SERVER) return { behavior: "allow" };
-            /**
-             * `AskUserQuestion`, ANSWERED THROUGH THE PERMISSION CALLBACK.
-             *
-             * Measured against claude-cli 2.1.246 / SDK 0.3.224: the CLI's
-             * dialog channel (`request_user_dialog`) is never emitted to this
-             * SDK even with the kinds declared, so a question used to reach
-             * the human NOWHERE — the tool reported "the user did not answer"
-             * and, before that, killed the stream outright. What DOES work,
-             * measured by running it: `allow` with `updatedInput` carrying an
-             * `answers` map (question text → chosen label) completes the tool
-             * with those answers. So the questions become the contract's own
-             * `user_input` request — which no runtime mode auto-answers — and
-             * the human's form answers ride back in `updatedInput`.
-             */
-            if (toolName === "AskUserQuestion") {
-              const questions = Array.isArray(asRecord(input).questions)
-                ? (asRecord(input).questions as unknown[]).map(asRecord)
-                : [];
-              const fields = questions.flatMap((question): UserInputField[] => {
-                const text = str(question.question);
-                if (!text) return [];
-                const choices = Array.isArray(question.options)
-                  ? question.options.map(asRecord).flatMap((option) => (str(option.label) ? [str(option.label)!] : []))
-                  : [];
-                // KEYED BY THE QUESTION TEXT — that is AskUserQuestionOutput's
-                // own answer key. The label repeats it because the header is a
-                // 12-character chip, not a sentence a human can answer.
-                //
-                // `multiSelect` is the tool's own flag for "pick several", and
-                // it is carried rather than dropped: without it the form asks
-                // for one answer to a question that offered many, and the
-                // human's other picks have nowhere to go. Only set when TRUE,
-                // so a single-select field stays exactly the shape it was.
-                return [{
-                  key: text,
-                  label: text,
-                  kind: "choice",
-                  choices,
-                  ...(question.multiSelect === true ? { multiple: true } : {}),
-                  required: true,
-                }];
-              });
-              if (fields.length > 0) {
-                try {
-                  const outcome = normalizeOutcome(
-                    await onRequest({
-                      kind: "user_input",
-                      detail: { kind: "user_input", prompt: "The agent needs your input to continue.", fields },
-                      toolUseId: options.toolUseID,
-                    }),
-                  );
-                  if (outcome.decision === "cancel") {
-                    return { behavior: "deny", message: "The human cancelled this turn.", interrupt: true };
-                  }
-                  if ((outcome.decision === "accept" || outcome.decision === "acceptForSession") && outcome.answers) {
-                    const answers: Record<string, string> = {};
-                    for (const field of fields) {
-                      const value = outcome.answers[field.key];
-                      if (value === undefined) continue;
-                      if (!Array.isArray(value)) {
-                        answers[field.key] = String(value);
-                        continue;
-                      }
-                      // SEVERAL PICKS ARE STILL ONE ANSWER to this tool —
-                      // `AskUserQuestionOutput` maps a question to a string,
-                      // not to a list — so a multi-select's labels join.
-                      //
-                      // An array on a SINGLE-select field is a client bug, and
-                      // the honest reading of it is the first pick. Joining
-                      // would manufacture a multi-answer out of a question that
-                      // never offered one, and the model would act on it.
-                      if (field.multiple) answers[field.key] = value.join(", ");
-                      else if (value.length > 0) answers[field.key] = String(value[0]);
-                    }
-                    return { behavior: "allow", updatedInput: { ...asRecord(input), answers } };
-                  }
-                } catch {
-                  // Fall through: an unanswerable question is a DISMISSED one,
-                  // never a hang — same rule as the generic arm below.
-                }
-                // Declined, or answered with nothing: the tool's own graceful
-                // arm ("the user did not answer") beats a deny that reads as a
-                // broken tool.
-                return { behavior: "allow" };
-              }
-            }
-            try {
-              const { decision } = normalizeOutcome(
-                await onRequest({
-                  kind: requestKindForTool(toolName),
-                  detail: requestDetailForToolCall(toolName, input),
-                  toolUseId: options.toolUseID,
-                }),
-              );
-              if (decision === "accept" || decision === "acceptForSession") return { behavior: "allow" };
-              // `cancel` withdraws the whole turn rather than just this call.
-              return {
-                behavior: "deny",
-                message: decision === "cancel" ? "The human cancelled this turn." : "The human declined this tool call.",
-                ...(decision === "cancel" ? { interrupt: true } : {}),
-              };
-            } catch (error) {
-              return { behavior: "deny", message: error instanceof Error ? error.message : "permission request failed" };
-            }
-          };
-      const canUseTool: SdkCanUseTool | undefined = onRequest ? gateFor(onRequest) : undefined;
-
-      /**
-       * ── THE CLAIM BACKGROUND WORK ASKS UNDER (#891) ───────────────────────
-       *
-       * THE INVARIANT, and the one sentence this block exists to make true:
-       * A TASK THE ENGINE KEEPS ALIVE PAST TURN END ALWAYS HAS A CLAIM ITS
-       * PERMISSION REQUESTS ARE HONOURED UNDER.
-       *
-       * Two deliberate decisions used to contradict each other. `completeTurn`
-       * keeps `isBackgroundWork` rows alive on purpose (`closeOrphanedTasks`
-       * with `includeBackground: false`) because outliving its turn is what
-       * backgrounding MEANS — and the same call settles the only claim those
-       * rows' permission requests could be made under. Nothing reassigned the
-       * gate the query holds, so a backgrounded child's next decision was asked
-       * of a dead claim and came back `turn has already settled (completed)`.
-       * Sixteen sub-agent transcripts, roughly 500k tokens of builders that
-       * reported back empty-handed.
-       *
-       * THIS IS THE SIXTH VISIT TO THAT SENTENCE and the first at the gate's
-       * LIFETIME. #21 fixed its ROUTING (the SDK's `agentID` was dropped, so a
-       * child's request could not be attributed); #28 fixed what a LOST channel
-       * was reported as; #297 fixed a RESTART reading a live turn as settled;
-       * #378 fixed when a delegated conversation SETTLES. Each closed one route
-       * to the sentence. None of them asked how long the gate may point at one
-       * turn, which is the thing that was wrong.
-       *
-       * SO THE WORK GETS A TURN OF ITS OWN, through the very hook a wake-up
-       * uses (`onProviderTurn`) — the machinery was already there, and #21's
-       * routing is what lets the engine attribute the request to the child.
-       *
-       * OPENED ON DEMAND, THEN HELD WHILE THE WORK LIVES — #912. It opens when
-       * a child first needs a decision and stays open for as long as any
-       * background task is alive, closing `BACKGROUND_CLAIM_LINGER_MS` after
-       * the last one ends. The earlier rule gave it up after every burst, and a
-       * research sub-agent calling a tool every 10-20 s opened a fresh turn per
-       * burst: five one-line rows in a row, each saying nothing a person could
-       * use. One stretch of background work is one turn.
-       *
-       * NOT A TURN THAT NEVER SETTLES, because it yields to anything that wants
-       * the session: a real wake-up (the idle pump gives it up first), and a
-       * person's message, which arrives as a steer into this turn and aborts
-       * the binding's `wanted` signal. Either way it waits for decisions
-       * already being made, then settles, and the turn that wanted the session
-       * decides the children's calls from there.
-       */
-      type BackgroundClaim = {
-        binding: ProviderTurnBinding;
-        gate: SdkCanUseTool | undefined;
-        /** Decisions being made under it right now. */
-        inFlight: number;
-        /** Resolves the next time `inFlight` reaches zero. */
-        idle: Promise<void>;
-        goneIdle: () => void;
-        /** Armed once it is idle AND no background task is alive; cancelled by
-         *  the next request. */
-        linger: ReturnType<typeof setTimeout> | undefined;
-      };
-      let backgroundClaim: BackgroundClaim | undefined;
+      turn.flushQueue = Promise.resolve();
+      turn.canUseTool = onRequest ? gateFor(onRequest) : undefined;
+      
       /**
        * OPENS AND CLOSES ARE SERIALISED. Two of these racing would ask the
        * engine for a second live turn — the invariant above — and a close
@@ -1236,216 +367,23 @@ export function createClaudeDriver(
        * a human, and holding it would make one child's card block another
        * child's question.
        */
-      let backgroundClaimChain: Promise<unknown> = Promise.resolve();
-      const onClaimChain = <T>(step: () => Promise<T>): Promise<T> => {
-        const next = backgroundClaimChain.then(step, step);
-        backgroundClaimChain = next.then(() => undefined, () => undefined);
-        return next;
-      };
+      turn.backgroundClaimChain = Promise.resolve();
+      const { acquireBackgroundClaim, closeBackgroundClaim, lingerOnceQuiet, releaseBackgroundClaim } = bindClaims({ turn, backgroundClaimLingerMs, liveBackgroundTasks, runtimes, sessionHooks, sessionId });
 
-      /**
-       * The claim to decide ONE background request under, with that request
-       * already counted against it. `undefined` when there is none to be had —
-       * either nothing is alive to claim for, or a turn took the session first.
-       */
-      const acquireBackgroundClaim = (): Promise<BackgroundClaim | undefined> =>
-        onClaimChain(async () => {
-          let claim = backgroundClaim;
-          if (!claim) {
-            /**
-             * NOTHING ALIVE, NOTHING TO CLAIM FOR. A request from a child the
-             * turn-end sweep already failed is a genuinely dead one, and it
-             * gets the honest refusal below rather than a turn opened for a
-             * ghost. This is the same `isBackgroundWork` read `completeTurn`
-             * makes when it decides to keep the row — the two answers are now
-             * the same answer, which is the whole repair.
-             */
-            const live = liveBackgroundTasks();
-            if (!sessionHooks || live.length === 0) return undefined;
-            const binding = await sessionHooks
-              .onProviderTurn({
-                input: "",
-                // Named when it can only be one task; a session with several
-                // live children has no honest single answer.
-                reason: { kind: "background_task", ...(live.length === 1 ? { taskId: live[0]!.id } : {}) },
-              })
-              .catch(() => undefined);
-            // A human turn or a wake-up took the session first: it owns the
-            // decision, and the gate below reads ITS binding instead.
-            if (!binding) return undefined;
-            // LIVE WORK, so the pool stops treating this process as spare —
-            // the same reason the wake path sets it.
-            runtimes.setWakeActive(sessionId, true);
-            const opened: BackgroundClaim = {
-              binding,
-              gate: binding.onRequest ? gateFor(binding.onRequest) : undefined,
-              inFlight: 0,
-              idle: Promise.resolve(),
-              goneIdle: () => undefined,
-              linger: undefined,
-            };
-            // Somebody else wants the session — a person's message sent into
-            // this turn. It is theirs once the decisions in flight are made.
-            binding.wanted?.addEventListener("abort", () => void closeBackgroundClaim(opened).catch(() => undefined), { once: true });
-            claim = backgroundClaim = opened;
-          }
-          if (claim.linger !== undefined) {
-            clearTimeout(claim.linger);
-            claim.linger = undefined;
-          }
-          const acquired = claim;
-          if (acquired.inFlight === 0) acquired.idle = new Promise<void>((resolve) => { acquired.goneIdle = resolve; });
-          acquired.inFlight += 1;
-          return acquired;
-        });
-
-      /**
-       * Give the claim up. WAITS FOR THE DECISIONS ALREADY BEING MADE UNDER IT:
-       * completing the turn out from under a parked request would leave the
-       * child that is waiting on it blocked with nothing to report it, which is
-       * the hang `gateFor`'s own comment refuses to allow. `only` names the
-       * claim a timer or signal was armed for, so a late one cannot close its
-       * successor.
-       */
-      const closeBackgroundClaim = (only?: BackgroundClaim): Promise<void> =>
-        onClaimChain(async () => {
-          const claim = backgroundClaim;
-          if (!claim || (only && claim !== only)) return;
-          if (claim.linger !== undefined) {
-            clearTimeout(claim.linger);
-            claim.linger = undefined;
-          }
-          if (claim.inFlight > 0) await claim.idle;
-          backgroundClaim = undefined;
-          runtimes.setWakeActive(sessionId, false);
-          await claim.binding.close({ text: BACKGROUND_CLAIM_RESULT }).catch(() => undefined);
-        });
-
-      /**
-       * THE LINGER, armed only once the claim has nothing left to be held for:
-       * no decision in flight and no background task alive (#912). While a
-       * task lives its next call is coming, and giving the claim up between
-       * calls is what wrote a row per burst. The tail after the last task ends
-       * keeps a task that spawns a sibling within seconds from reopening.
-       * Called on every release and on every task frame the idle pump reads.
-       * Unref'd: a pending linger must not hold the worker process open.
-       */
-      const lingerOnceQuiet = (claim: BackgroundClaim): void => {
-        if (claim !== backgroundClaim || claim.inFlight > 0 || claim.linger !== undefined) return;
-        if (liveBackgroundTasks().length > 0) return;
-        claim.linger = setTimeout(() => { void closeBackgroundClaim(claim); }, backgroundClaimLingerMs);
-        claim.linger.unref?.();
-      };
-
-      const releaseBackgroundClaim = (claim: BackgroundClaim): void => {
-        claim.inFlight -= 1;
-        if (claim.inFlight > 0) return;
-        claim.goneIdle();
-        lingerOnceQuiet(claim);
-      };
-
-      /**
-       * THE GATE THE QUERY HOLDS ONCE THE TURN THAT STARTED THE WORK HAS ENDED
-       * — installed over the settled turn's `askEngine` in `run`'s `finally`,
-       * and restored after every wake-up (see `endWake`).
-       */
-      const backgroundGate: SdkCanUseTool = async (toolName, input, options) => {
-        /** A turn of some kind has rebound the query's gate since it read the
-         *  binding: that turn owns the session, and its claim is the live one. */
-        const boundToATurn = (): SdkCanUseTool | undefined => {
-          const bound = runtimeRef?.bindings.current.canUseTool;
-          return bound && bound !== backgroundGate ? bound : undefined;
-        };
-        const before = boundToATurn();
-        if (before) return before(toolName, input, options);
-        // NEVER THROWS OUT OF HERE. A permission callback that rejects blocks
-        // the tool indefinitely with nothing to report it — `gateFor`'s own
-        // rule, and the reason every failure below becomes a deny instead.
-        const claim = await acquireBackgroundClaim().catch(() => undefined);
-        if (!claim) {
-          // The engine refused because a turn opened while we were asking —
-          // it can decide this, and it is the right one to.
-          const after = boundToATurn();
-          if (after) return after(toolName, input, options);
-          return { behavior: "deny", message: NO_CLAIM_FOR_BACKGROUND_WORK };
-        }
-        try {
-          // A binding with no `onRequest` is the `full-access` shape, the same
-          // answer the query's own gate gives a turn that carries none.
-          return claim.gate ? await claim.gate(toolName, input, options) : { behavior: "allow" as const };
-        } finally {
-          releaseBackgroundClaim(claim);
-        }
-      };
-
-      /**
-       * THE KEY IS WHAT NAMES THE SERVER, not `createSdkMcpServer`'s `name`.
-       *
-       * Measured, by running it: with `createSdkMcpServer({ name: "telar" })`
-       * but this key left as `browser`, the model still saw
-       * `mcp__browser__browser_navigate` and every call landed back in the
-       * generic `mcp_tool_call` arm. The title read correctly the whole time,
-       * which is exactly why a passing unit test on `itemDetailForToolCall` did
-       * not catch it — the mapping was right and the input to it was wrong.
-       */
-      /**
-       * TELAR'S IN-PROCESS TOOLS, IN ONE SERVER.
-       *
-       * THE BROWSER IS NOT HERE ANY MORE: it is served by the worker's own
-       * `BrowserToolSocket` and registered below as an HTTP entry, the same
-       * registration the Codex driver makes — one transport, both providers.
-       * Its approval gate rides the socket's binding, which is why `canUseTool`
-       * above waves its calls through.
-       */
-      const onSteered = (message: SteerMessage) => {
-        const id = itemId();
-        const attachments = message.attachments ?? [];
-        emit({
-          kind: "item.started",
-          item: {
-            id,
-            /**
-             * A NOTIFICATION IS ITS OWN ROW, MID-TURN AS WELL — #550.
-             *
-             * The engine writes this row itself when the notification opens a
-             * turn of its own; a message steered into a RUNNING turn belongs on
-             * that turn's timeline, in the order the provider received it, so
-             * the seam that hands it over is the only party that can write it.
-             * Same detail either way, so the transcript cannot tell whether the
-             * recipient happened to be busy — which is the asymmetry being
-             * closed.
-             */
-            detail: message.notification
-              ? { type: "notification", notification: message.notification }
-              : {
-                  type: "user_message",
-                  text: message.text,
-                  ...(attachments.length > 0 ? { attachments } : {}),
-                  ...(message.sender ? { sender: message.sender } : {}),
-                  // The row keeps the BODY in `text` and the engine's notice beside
-                  // it, so the transcript can collapse to the one line the model
-                  // was handed and still expand to everything the peer sent.
-                  ...(message.notice ? { notice: message.notice } : {}),
-                  // WHO SAID IT SURVIVES THE ROW. A wake steered into a running
-                  // turn used to land here bare and draw as the person's bubble.
-                  ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
-                },
-            title: steerRowTitle(message),
-          },
-        });
-        emit({ kind: "item.completed", itemId: id, status: "completed" });
-      };
+      const backgroundGate = createBackgroundGate(turn, acquireBackgroundClaim, releaseBackgroundClaim);
+      const { startIdlePump } = bindIdlePump({ turn, backgroundGate, closeBackgroundClaim, closeBlock, decorateUsage, emit, flush, handleTaskFrame, lingerOnceQuiet, reportLostBackgroundWork, runtimes });
+      const { onSteered, consumeSteerCut, closeCutTools } = bindSteering({ turn, emit });
 
       /** The `claude` binary this turn runs on, resolved once: the query below
        *  takes it as `pathToClaudeCodeExecutable`, and the fingerprint records
        *  it so a turn on a different binary does not reuse the query. */
-      const executable = resolveExecutable(binaryPath);
+      turn.executable = resolveExecutable(binaryPath);
 
       /** This turn's half of the runtime, swapped in whole below whether the
        *  runtime is fresh or reused — see `ClaudeTurnBindings`. */
-      const turnBindings: ClaudeTurnBindings = {
+      turn.turnBindings = {
         signal,
-        canUseTool,
+        canUseTool: turn.canUseTool,
         sessions,
         notes,
         prompts,
@@ -1454,7 +392,7 @@ export function createClaudeDriver(
         plugins,
       };
 
-      const streaming = claudeStreamingInputEnabled();
+      turn.streaming = claudeStreamingInputEnabled();
 
       /**
        * WHAT THIS SESSION IS TOLD ABOUT ITS OWN SURFACES, one paragraph per
@@ -1490,7 +428,7 @@ export function createClaudeDriver(
        * same reason it carries `orientation`. Before the capability briefings
        * because it says what this conversation is, not how to drive a tool.
        */
-      const briefings = [
+      turn.briefings = [
         ...(orientation ? [orientation] : []),
         ...(mainBriefing ? [mainBriefing] : []),
         ...(browserSocket ? [BROWSER_BRIEFING] : []),
@@ -1507,18 +445,18 @@ export function createClaudeDriver(
        * one and this turn cold-starts. `model` is deliberately absent: it is
        * the one knob a live query can turn (`setModel`).
        */
-      const fingerprintFields: Record<string, unknown> = {
-        cwd,
+      turn.fingerprintFields = {
+        cwd: turn.cwd,
         /**
          * THE PATCH, NOT THE RESOLVED ENVIRONMENT, and with a deletion spelled
          * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
          * opposite instructions that `JSON.stringify` rendered identically.
          */
-        env: canonicalEnvPatch(defaultEnv, env, contextEnv, compactionEnv),
-        effort: sdkEffort ?? null,
+        env: canonicalEnvPatch(turn.defaultEnv, env, turn.contextEnv, turn.compactionEnv),
+        effort: turn.sdkEffort ?? null,
         fastMode: fastMode ?? null,
         ultracode: ultracode ?? null,
-        executable: executable ?? null,
+        executable: turn.executable ?? null,
         /**
          * ID AND SPEC ONLY, deduplicated and sorted — never the whole record.
          * Measured on the dev app: the auto-registered Computer Use server is
@@ -1564,186 +502,18 @@ export function createClaudeDriver(
          * map's key order is not a decision anybody made.
          */
         plugins: Object.keys(plugins ?? {}).sort(),
-        gate: Boolean(canUseTool),
+        gate: Boolean(turn.canUseTool),
         instance: providerInstanceId ?? null,
       };
       /** CANONICAL, not `JSON.stringify`: key order is not identity, and an
        *  explicit deletion is. See ./claude-identity.ts. */
-      const fingerprint = canonicalJson(fingerprintFields);
-      const fingerprintDigests = fieldDigests(fingerprintFields);
+      turn.fingerprint = canonicalJson(turn.fingerprintFields);
+      turn.fingerprintDigests = fieldDigests(turn.fingerprintFields);
 
       /** The child's environment with the patch's deletions APPLIED, resolved
        *  once so the query options and the fingerprint cannot disagree. */
-      const childEnv = resolveChildEnv(process.env, defaultEnv, env, contextEnv, compactionEnv);
-
-      const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
-        const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
-        /** The permission gate the QUERY holds: a stable wrapper over the
-         *  current turn's `canUseTool`, because the worker's gate is bound to
-         *  a claim token that dies with each turn while the query lives on. */
-        const gate: SdkCanUseTool | undefined = canUseTool
-          ? (toolName, input, options) => {
-              const current = bindings.current.canUseTool;
-              if (!current) return Promise.resolve({ behavior: "allow" as const });
-              return current(toolName, input, options);
-            }
-          : undefined;
-
-        /**
-         * THE `telar` WALL, IN-PROCESS — the same parts list the socket serves
-         * Codex and OpenCode (see `telarWall`). NO APPROVAL GATE is added here:
-         * none of these toolkits lands anything by itself, and plugin tools
-         * answer to the same `canUseTool` ladder as every `mcp__telar__` tool.
-         */
-        const telarTools = sdk.tool ? toSdkTools(telarWall(() => bindings.current), sdk.tool) : [];
-        const telarServer =
-          telarTools.length > 0 && sdk.createSdkMcpServer
-            ? { [TELAR_MCP_SERVER]: sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
-            : undefined;
-
-        // The worker-hosted browser socket, in the SDK's own http shape — the
-        // same entry `claudeMcpServers` builds for a user's http server. The
-        // token rides a header; the URL is loopback and the credential is
-        // per-SESSION (the worker keeps one binding per session so this
-        // baked-in entry stays valid for the life of the runtime).
-        const telarBrowserServer = browserSocket
-          ? {
-              [TELAR_BROWSER_MCP_SERVER]: {
-                type: "http" as const,
-                url: browserSocket.url,
-                headers: { Authorization: `Bearer ${browserSocket.token}` },
-              },
-            }
-          : undefined;
-
-        /**
-         * TELAR'S SERVERS AND THE USER'S, IN ONE RECORD — and Telar's are applied
-         * LAST on purpose. The keys become the `mcp__<key>__<tool>` addressing
-         * every client parses, so a user server called `telar` would shadow the
-         * engine's own capabilities and route their approvals to the generic arm.
-         * Losing a colliding user server is the better failure of the two, and it
-         * is the one the naming standard in ./protocol/tools.ts already assumes.
-         */
-        const mcpServers =
-          userServers || telarServer || telarBrowserServer
-            ? { ...userServers, ...telarBrowserServer, ...telarServer }
-            : undefined;
-
-        const feed = new MessageFeed();
-        /** Ends the PROCESS, never a turn — aborted only by `destroy`. */
-        const processController = new AbortController();
-        const query = sdk.query({
-          /**
-           * THE INPUT STREAM IS THE SESSION'S LIFETIME. The feed's generator
-           * parks between turns, which is exactly what keeps the CLI process
-           * alive — the SDK reads a closed input stream as "the session is
-           * over" and tears everything down, background work included. The
-           * kill switch keeps the old one-shot forms.
-           */
-          prompt: streaming
-            ? (feed.stream() as AsyncIterable<SdkUserMessage>)
-            : // THE KILL-SWITCH PATH KEEPS THE SYSTEM WRAPPER even though it
-              // cannot carry an origin: `sdk.query`'s non-streaming form takes
-              // a bare string with nowhere to stamp provenance, so the content
-              // half is the whole of what this path can say — and it is the
-              // half that does not silently drop.
-              (attachments?.length ?? 0) > 0 || notification
-              ? singleUserMessage(claudeInitialContent(notification ? claudeNotificationContent(prompt, notification) : prompt, attachments ?? []))
-              : prompt,
-          options: {
-            cwd,
-            permissionMode: "default",
-            ...(briefings.length
-              ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: briefings.join("\n\n") } }
-              : {}),
-            abortController: processController,
-            includePartialMessages: true,
-            forwardSubagentText: true,
-            // Spare background tasks on a turn Stop, and get `stopTask` for the
-            // per-task control the UI's "N tasks still working" chip needs.
-            perTaskStopAffordance: true,
-            ...(model ? { model } : {}),
-            ...(sdkEffort ? { effort: sdkEffort } : {}),
-            // Absent unless asked for: a settings override is a request for
-            // non-default behaviour, and inventing one would make every session
-            // inherit a choice nobody made.
-            // Ultracode rides the same layer — `Settings.ultracode`, which the
-            // CLI documents as xhigh effort plus standing workflow orchestration.
-            ...(fastMode === undefined && ultracode === undefined
-              ? {}
-              : {
-                  settings: {
-                    ...(fastMode === undefined ? {} : { fastMode }),
-                    ...(ultracode === undefined ? {} : { ultracode }),
-                  },
-                }),
-            // COLD START ONLY. Continuity between turns is now the live
-            // process's own; `resume` is what a NEW process uses to pick up a
-            // conversation an old one carried.
-            ...(providerSessionId ? { resume: providerSessionId } : {}),
-            ...(gate ? { canUseTool: gate } : {}),
-            ...(mcpServers ? { mcpServers } : {}),
-            // WHOLE, NOT A PATCH, because that is what the SDK's option means:
-            // "when omitted the subprocess inherits process.env", so supplying
-            // one replaces it. The patch is applied over the worker's own
-            // environment here, which is where the child's PATH and HOME come
-            // from — and a key patched to `undefined` is DELETED rather than
-            // left present-but-undefined, which is how a configured instance
-            // stops inheriting a credential. See `resolveChildEnv`.
-            ...(childEnv ? { env: childEnv } : {}),
-            // Part of the fingerprint: a CLI that upgraded itself between two
-            // turns changes the resolved path, and the runtime is recreated.
-            ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
-          },
-        }) as RuntimeQuery;
-
-        // An EXPLICIT iterator, held for the runtime's life. `for await`
-        // would call `.return()` on any break — the SDK's cue to shut the
-        // process down, which is the exact teardown this store exists to
-        // avoid. `.return()` is reserved for `destroy` below.
-        const iterator = query[Symbol.asyncIterator]();
-
-        return {
-          sessionId,
-          fingerprint,
-          fingerprintDigests,
-          feed,
-          query,
-          iterator,
-          bindings,
-          // Seeded from the store's live rows so a process built cold — after
-          // a restart, an eviction, a config change — still files a shell's
-          // notification on the row the store already has. Settled rows are
-          // deliberately absent: nothing left to report on, and a stale
-          // terminal seed would only tempt the level signal to re-close it.
-          tasks: taskMemoryFrom((seededTasks ?? []).filter((seed) => !isTerminalTaskState(seed.state))),
-          pendingStep: undefined,
-          parked: [],
-          idlePump: undefined,
-          streamEnded: false,
-          destroy: () => {
-            feed.end();
-            if (typeof query.close === "function") query.close();
-            else processController.abort(new Error("the session runtime was destroyed"));
-            // The one place `.return()` is allowed: it runs the generator's
-            // own cleanup for implementations without `close` (fake SDKs).
-            // Swallowed because a generator busy at a yield point rejects the
-            // return and there is nobody left to care.
-            void Promise.resolve()
-              .then(() => iterator.return?.(undefined))
-              .catch(() => undefined);
-          },
-          model,
-          // A NEW PROCESS IS A NEW QUERY, so its running cost total starts
-          // unknown — which is not the same as zero.
-          costTotalUsd: undefined,
-          busy: true,
-          wakeActive: false,
-          lastUsedAt: Date.now(),
-          echoesUserMessageUuid: false,
-          reportsSessionState: false,
-        };
-      };
+      turn.childEnv = resolveChildEnv(process.env, turn.defaultEnv, env, turn.contextEnv, turn.compactionEnv);
+      const { buildRuntime } = bindRuntime({ turn, attachments, browserSocket, fastMode, model, notification, prompt, providerSessionId, seededTasks, sessionId, ultracode });
 
       /**
        * THE RUNTIME: with streaming input, ONE LIVE QUERY PER SESSION — the
@@ -1752,7 +522,7 @@ export function createClaudeDriver(
        * must not end it. The kill switch restores a process per turn, at the
        * cost of send-now and of anything outliving its turn.
        */
-      const persistent = streaming;
+      turn.persistent = turn.streaming;
       /**
        * ONE PUMP PER SESSION, EVER. Measured (session_7657b2ef…, turns
        * 112–113): a stopped turn's pump can stay parked on the iterator for up
@@ -1762,7 +532,7 @@ export function createClaudeDriver(
        * result" four seconds after the user typed. Wait for the previous
        * turn to let go; a runtime destroyed meanwhile just cold-starts below.
        */
-      if (persistent) await runtimes.idle(sessionId);
+      if (turn.persistent) await runtimes.idle(sessionId);
       /**
        * WHICH FIELD BROKE REUSE — read BEFORE the claim, because a mismatched
        * claim destroys the runtime whose identity the answer needs.
@@ -1773,16 +543,16 @@ export function createClaudeDriver(
        * diagnostic worth turning on during a live latency investigation was the
        * one that could not safely be turned on.
        */
-      const outgoing = persistent ? runtimes.peek(sessionId)?.fingerprintDigests : undefined;
-      let claimed = persistent ? runtimes.claim(sessionId, fingerprint) : undefined;
+      turn.outgoing = turn.persistent ? runtimes.peek(sessionId)?.fingerprintDigests : undefined;
+      turn.claimed = turn.persistent ? runtimes.claim(sessionId, turn.fingerprint) : undefined;
       if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
-        const changed = outgoing ? changedFields(outgoing, fingerprintDigests) : [];
+        const changed = turn.outgoing ? changedFields(turn.outgoing, turn.fingerprintDigests) : [];
         console.error(
-          `[claude-runtime] session=${sessionId} reuse=${Boolean(claimed)} identity=${fieldDigest(fingerprintFields)}` +
+          `[claude-runtime] session=${sessionId} reuse=${Boolean(turn.claimed)} identity=${fieldDigest(turn.fingerprintFields)}` +
             (changed.length > 0 ? ` changed=${changed.join(",")}` : ""),
         );
       }
-      if (claimed && claimed.model !== model) {
+      if (turn.claimed && turn.claimed.model !== model) {
         // The one knob a live query can turn. A query that cannot (a fake
         // SDK, an older CLI) is replaced instead of patched.
         //
@@ -1791,12 +561,12 @@ export function createClaudeDriver(
         // suffix through `setModel` is not something this driver can verify
         // — so it is a cold start, where the id is baked into the query and
         // the provider's first result reports the window it actually got.
-        const setModel = claudeWindowOf(claimed.model) === claudeWindowOf(model) ? claimed.query.setModel?.bind(claimed.query) : undefined;
+        const setModel = claudeWindowOf(turn.claimed.model) === claudeWindowOf(model) ? turn.claimed.query.setModel?.bind(turn.claimed.query) : undefined;
         let switched = false;
         if (setModel) {
           try {
             await setModel(model);
-            claimed.model = model;
+            turn.claimed.model = model;
             switched = true;
           } catch {
             switched = false;
@@ -1804,18 +574,18 @@ export function createClaudeDriver(
         }
         if (!switched) {
           runtimes.destroy(sessionId);
-          claimed = undefined;
+          turn.claimed = undefined;
         }
       }
-      const runtime = claimed ?? buildRuntime();
-      if (persistent && !claimed) runtimes.adopt(runtime);
-      runtime.bindings.current = turnBindings;
-      runtimeRef = runtime;
+      turn.runtime = turn.claimed ?? buildRuntime();
+      if (turn.persistent && !turn.claimed) runtimes.adopt(turn.runtime);
+      turn.runtime.bindings.current = turn.turnBindings;
+      turn.runtimeRef = turn.runtime;
       // From here on the turn reads and writes the PROCESS's task memory.
-      taskIdsBySdkId = runtime.tasks.bySdkId;
-      knownTasks = runtime.tasks.known;
-      suppressedTasks = runtime.tasks.suppressed;
-      taskTypesBySdkId = runtime.tasks.typesBySdkId;
+      turn.taskIdsBySdkId = turn.runtime.tasks.bySdkId;
+      turn.knownTasks = turn.runtime.tasks.known;
+      turn.suppressedTasks = turn.runtime.tasks.suppressed;
+      turn.taskTypesBySdkId = turn.runtime.tasks.typesBySdkId;
 
       /**
        * THIS TURN'S JOIN KEY. The CLI echoes it as `user_message_uuid` on the
@@ -1825,7 +595,7 @@ export function createClaudeDriver(
        * turn of the CLI's own, whose frames sit buffered on the shared iterator
        * until the next engine turn pumps them out.
        */
-      const turnUuid = crypto.randomUUID();
+      turn.turnUuid = crypto.randomUUID();
       /**
        * EVERY SEND OF THIS TURN IS OURS, not only the first. A person's steer
        * interrupts, and when it lands before the reply's first frame the CLI
@@ -1835,14 +605,14 @@ export function createClaudeDriver(
        * until someone pressed Stop — 7m46s on the Delta coordinator, with nine
        * messages steered into a turn that could no longer end.
        */
-      const ownSends = new Set<string>([turnUuid]);
-      let steerSent = false;
-      if (persistent) {
+      turn.ownSends = new Set<string>([turn.turnUuid]);
+      turn.steerSent = false;
+      if (turn.persistent) {
         // The turn begins as one message pushed into the open stream. Stamped
         // as the person's only when it IS the person's — see `promptFromHuman`
         // on the contract, and `FeedMessage.origin` for why `human` is the only
         // kind the CLI keeps.
-        runtime.feed.push({
+        turn.runtime.feed.push({
           type: "user",
           message: {
             role: "user",
@@ -1854,7 +624,7 @@ export function createClaudeDriver(
               : claudeInitialContent(prompt, attachments ?? []),
           },
           parent_tool_use_id: null,
-          uuid: turnUuid,
+          uuid: turn.turnUuid,
           ...(notification
             ? { origin: claudeNotificationOrigin(notification) }
             : promptFromHuman
@@ -1872,7 +642,7 @@ export function createClaudeDriver(
        * Claude Code does. After the turn's result the pump stops taking;
        * anything later is the engine sweep's to requeue.
        */
-      let turnDone = false;
+      turn.turnDone = false;
       /**
        * Interrupts issued to deliver a person's steer, still unanswered — one
        * token each, not a count.
@@ -1889,54 +659,12 @@ export function createClaudeDriver(
        * exactly one result per turn — so a cut that raced a finishing answer
        * leaves nothing behind to swallow an unrelated failure later.
        */
-      const outstandingSteerCuts = new Set<symbol>();
-      const consumeSteerCut = (): boolean => {
-        const [first] = outstandingSteerCuts;
-        if (first === undefined) return false;
-        outstandingSteerCuts.delete(first);
-        return true;
-      };
-      /**
-       * THE CALLS THE CUT KILLED ARE OVER — AND SAYING SO IS WHAT LETS THE TURN
-       * EVER END AGAIN (#465).
-       *
-       * A steer is delivered by interrupting the CLI, which kills the in-flight
-       * response. A `Bash` the model had just called therefore never produces a
-       * `tool_result` — and `openTopLevelTools` only ever loses an id ON a
-       * tool_result. Left alone, that id sits in the set for the rest of the
-       * turn, with two consequences that compound: the end-turn grace above
-       * never arms (it requires an empty set, because a genuinely open call is
-       * exactly what a turn SHOULD wait for), and every later `result` whose
-       * `stop_reason` is null or `tool_use` trips `toolsStillRunning` and keeps
-       * the pump waiting. Nothing in the stream can ever clear it, so only a
-       * human pressing Stop ends the turn.
-       *
-       * That matches the measured session exactly: after the first steer landed
-       * at 05:56 UTC every turn ended as `turn.stopped` and not one as
-       * `turn.completed`, and the single turn that did complete was the first
-       * turn of a fresh process, before any steer.
-       *
-       * CLOSED AS FAILED, WITH THE REASON ON THE ROW, rather than silently
-       * dropped: the call really did not finish, and a spinner left on the
-       * transcript for the rest of the turn is the same lie told visually. The
-       * sub-agent rows are deliberately left to the turn-end sweep — a
-       * backgrounded agent's rows legitimately outlive the turn, and only the
-       * top-level set is what gates the turn's ending.
-       */
-      const closeCutTools = (): void => {
-        for (const useId of openTopLevelTools) {
-          openTopLevelTools.delete(useId);
-          const open = openTools.get(useId);
-          if (!open) continue;
-          openTools.delete(useId);
-          emit({ kind: "item.completed", itemId: open.id, status: "failed", detail: withToolResult(open.detail, "cut by a steer") });
-        }
-      };
-      if (persistent && steer) {
+      turn.outstandingSteerCuts = new Set<symbol>();
+      if (turn.persistent && steer) {
         void (async () => {
           for (;;) {
             await steer.wake();
-            if (turnDone) return;
+            if (turn.turnDone) return;
             const queued = steer.drain();
             if (queued.length > 0) {
               // ONE ROW PER MESSAGE, ONE PUSH FOR THE BATCH. The transcript
@@ -1969,9 +697,9 @@ export function createClaudeDriver(
               const notifications = queued.map((message) => message.notification).filter((detail) => detail !== undefined);
               const allNotifications = !typedByAPerson && notifications.length === queued.length && notifications[0] !== undefined;
               const steerUuid = crypto.randomUUID();
-              ownSends.add(steerUuid);
-              steerSent = true;
-              runtime.feed.push({
+              turn.ownSends.add(steerUuid);
+              turn.steerSent = true;
+              turn.runtime.feed.push({
                 type: "user",
                 message: { role: "user", content: claudeInitialContent(allNotifications ? claudeNotificationContent(text, notifications[0]!) : text, attachments) },
                 parent_tool_use_id: null,
@@ -1992,19 +720,19 @@ export function createClaudeDriver(
                * Only for words a PERSON typed: an agent report or engine wake is
                * a notice, not a change of direction.
                */
-              if (typedByAPerson && runtime.query.interrupt) {
+              if (typedByAPerson && turn.runtime.query.interrupt) {
                 // Armed BEFORE the await: the pump is concurrent and the result
                 // can land first. Disarmed only if the call itself refuses, which
                 // leaves the message queued — late rather than lost.
                 const cut = Symbol("steer-cut");
-                outstandingSteerCuts.add(cut);
+                turn.outstandingSteerCuts.add(cut);
                 try {
-                  await runtime.query.interrupt();
+                  await turn.runtime.query.interrupt();
                 } catch {
                   // Removes only ITS OWN arm, and only if a result has not
                   // already consumed it — a refused cut leaves the message
                   // queued, which is late rather than lost.
-                  outstandingSteerCuts.delete(cut);
+                  turn.outstandingSteerCuts.delete(cut);
                 }
               }
               await flush();
@@ -2021,14 +749,14 @@ export function createClaudeDriver(
        * for an interrupt the CLI never answers: this worker runs one turn at
        * a time, so a pump parked forever would park the whole worker.
        */
-      let streamEnded = false;
-      let cancelReap: (() => void) | undefined;
+      turn.streamEnded = false;
+      
       const onAbort = () => {
-        if (!persistent) {
-          runtime.destroy();
+        if (!turn.persistent) {
+          turn.runtime.destroy();
           return;
         }
-        const interrupted = runtime.query.interrupt?.();
+        const interrupted = turn.runtime.query.interrupt?.();
         if (!interrupted) {
           runtimes.destroy(sessionId);
           return;
@@ -2036,7 +764,7 @@ export function createClaudeDriver(
         interrupted.catch(() => runtimes.destroy(sessionId));
         // The grace is named and shared now — see STOP_REAP_GRACE_MS for what
         // it does and does not bound (#409).
-        cancelReap = runtimes.reapAfter(sessionId);
+        turn.cancelReap = runtimes.reapAfter(sessionId);
       };
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
@@ -2048,8 +776,8 @@ export function createClaudeDriver(
        * the frame it eventually yields is read exactly once.
        */
       const raceEndTurnGrace = async <S,>(read: Promise<S>): Promise<S | "end-turn-grace"> => {
-        if (endTurnSeenAt === undefined || !persistent) return read;
-        const remaining = Math.max(0, endTurnSeenAt + endTurnGraceMs - Date.now());
+        if (turn.endTurnSeenAt === undefined || !turn.persistent) return read;
+        const remaining = Math.max(0, turn.endTurnSeenAt + endTurnGraceMs - Date.now());
         let timer: ReturnType<typeof setTimeout> | undefined;
         const grace = new Promise<"end-turn-grace">((resolve) => {
           timer = setTimeout(() => resolve("end-turn-grace"), remaining);
@@ -2071,9 +799,9 @@ export function createClaudeDriver(
            * refused the provider turn because THIS turn had the session). It
            * is this turn's stream now; nothing is lost.
            */
-          const step = runtime.parked.length > 0
-            ? { done: false as const, value: runtime.parked.shift()! }
-            : await raceEndTurnGrace(ClaudeRuntimeStore.takeStep(runtime));
+          const step = turn.runtime.parked.length > 0
+            ? { done: false as const, value: turn.runtime.parked.shift()! }
+            : await raceEndTurnGrace(ClaudeRuntimeStore.takeStep(turn.runtime));
           if (step === "end-turn-grace") {
             /**
              * THE MODEL SAID IT WAS DONE AND THE RESULT NEVER CAME (#465).
@@ -2090,14 +818,14 @@ export function createClaudeDriver(
             if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
               console.error(`[claude-runtime] session=${sessionId} settled on the end-turn grace after ${endTurnGraceMs}ms; no result frame arrived`);
             }
-            completed = true;
+            turn.completed = true;
             await flush();
-            if (persistent) break;
+            if (turn.persistent) break;
             continue;
           }
           if (step.done) {
-            streamEnded = true;
-            runtime.streamEnded = true;
+            turn.streamEnded = true;
+            turn.runtime.streamEnded = true;
             // The process took its background work with it — see
             // `reportLostBackgroundWork`. Flushed HERE rather than left to the
             // post-loop flush, because a turn that ends this way usually ends
@@ -2109,8 +837,8 @@ export function createClaudeDriver(
           const message = step.value;
           const item = message as SdkFrame;
 
-          if (str(item.session_id) && item.session_id !== reportedSessionId) {
-            reportedSessionId = item.session_id;
+          if (str(item.session_id) && item.session_id !== turn.reportedSessionId) {
+            turn.reportedSessionId = item.session_id;
             // REPORTED THE MOMENT IT IS KNOWN, not only in the result: a turn
             // that is stopped never completes, and without this the session
             // would lose its resume cursor — the next turn starting a fresh
@@ -2150,14 +878,14 @@ export function createClaudeDriver(
            */
           if (item.type === "stream_event" && item.event?.type === "message_start" && !parentToolUseId) {
             const sender = str(item.user_message_uuid);
-            if (sender !== undefined && ownSends.has(sender)) {
+            if (sender !== undefined && turn.ownSends.has(sender)) {
               // Our reply has begun. Later message_starts INSIDE it (the
               // continuation after a tool round) carry no uuid — measured —
               // and are ours by position.
-              ownTurnOpen = true;
-              foreignTurn = undefined;
-              runtime.echoesUserMessageUuid = true;
-            } else if (sender !== undefined || (runtime.echoesUserMessageUuid && !ownTurnOpen && !steerSent)) {
+              turn.ownTurnOpen = true;
+              turn.foreignTurn = undefined;
+              turn.runtime.echoesUserMessageUuid = true;
+            } else if (sender !== undefined || (turn.runtime.echoesUserMessageUuid && !turn.ownTurnOpen && !turn.steerSent)) {
               // (A senderless reply after a steer is the steer's answer: a
               // steer can cut our first send before its reply began, and a
               // turn that disowns the answer to its own message never ends.)
@@ -2169,7 +897,7 @@ export function createClaudeDriver(
               // dropped — the idle pump is the path that gives it a turn of
               // its own, and this one is merely the fallback for a wake-up
               // that landed in a human turn's window.
-              foreignTurn = { taskId: runtime.tasks.lastWokenTaskId };
+              turn.foreignTurn = { taskId: turn.runtime.tasks.lastWokenTaskId };
             }
           }
           if (item.type === "result" && !parentToolUseId) {
@@ -2202,28 +930,28 @@ export function createClaudeDriver(
              */
             const sender = str(item.user_message_uuid);
             const foreignResult =
-              foreignTurn !== undefined ||
-              (sender !== undefined && !ownSends.has(sender)) ||
+              turn.foreignTurn !== undefined ||
+              (sender !== undefined && !turn.ownSends.has(sender)) ||
               // A CLI-originated turn that produced no message_start (a
               // notification answered without streaming) is still caught
               // by an origin that is NOT a person's — `human` is the one
               // kind Telar itself stamps, and the CLI echoes it back.
               (str(item.origin?.kind) !== undefined && item.origin?.kind !== "human");
             if (foreignResult) {
-              foreignTurn = undefined;
-              runtime.tasks.lastWokenTaskId = undefined;
+              turn.foreignTurn = undefined;
+              turn.runtime.tasks.lastWokenTaskId = undefined;
               await flush();
               continue;
             }
           }
 
-          const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : foreignTurn?.taskId;
+          const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : turn.foreignTurn?.taskId;
           /** The MAIN LOOP OF OUR TURN — not a sub-agent's, not the CLI's own
            *  turn. Only this contributes to `finalText`, holds the turn open
            *  through `openTopLevelTools`, and moves the usage meter. A foreign
            *  turn with no task to name still shows its rows, but never as
            *  the answer to a question nobody asked. */
-          const ours = !parentToolUseId && foreignTurn === undefined;
+          const ours = !parentToolUseId && turn.foreignTurn === undefined;
 
           // ── the provider made the turn wait, and said why ─────────────
           /**
@@ -2236,8 +964,8 @@ export function createClaudeDriver(
            */
           const waited = providerWaitFrom(item);
           if (waited) {
-            const taken = takeProviderWait(waited.detail, lastLimitWarning);
-            lastLimitWarning = taken.seen;
+            const taken = takeProviderWait(waited.detail, turn.lastLimitWarning);
+            turn.lastLimitWarning = taken.seen;
             // DROPPED BEFORE `closeProviderWait`: a frame that says nothing new
             // is not an event, so it must not close a standing wait row either.
             if (!taken.emit) continue;
@@ -2245,13 +973,13 @@ export function createClaudeDriver(
             const id = itemId();
             const detail: ItemDetail = { type: "provider_wait", wait: waited.detail };
             emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(waited.detail) } });
-            if (waited.blocking) waitItemId = id;
+            if (waited.blocking) turn.waitItemId = id;
             else emit({ kind: "item.completed", itemId: id, status: "completed", detail });
             // SECONDS TO MILLISECONDS, the one place it happens: the row above
             // keeps the provider's own units, and everything downstream of here
             // is a time the engine schedules against. See `TurnFailure.resumeAt`.
             if (waited.blocking && waited.detail.kind === "rate_limit" && waited.detail.resetsAt !== undefined) {
-              standingLimit = {
+              turn.standingLimit = {
                 resumeAt: waited.detail.resetsAt * 1_000,
                 ...(waited.detail.limitType === undefined ? {} : { limitType: waited.detail.limitType }),
               };
@@ -2302,9 +1030,9 @@ export function createClaudeDriver(
             ourLoopSpoke &&
             (item.type === "user" || item.type === "result" || (item.type === "stream_event" && item.event?.type === "message_start"))
           ) {
-            endTurnSeenAt = undefined;
+            turn.endTurnSeenAt = undefined;
           }
-          if (waitItemId && ourLoopSpoke) {
+          if (turn.waitItemId && ourLoopSpoke) {
             closeProviderWait();
             /**
              * MODEL OUTPUT CLEARS THE LIMIT; A `result` DOES NOT.
@@ -2318,7 +1046,7 @@ export function createClaudeDriver(
              * SUCCESSFUL result never reaches the throw, so the standing limit
              * is moot there.
              */
-            if (item.type !== "result") standingLimit = undefined;
+            if (item.type !== "result") turn.standingLimit = undefined;
           }
 
           // ── compaction, announced then bounded ────────────────────────
@@ -2341,18 +1069,18 @@ export function createClaudeDriver(
              * is why compaction looked like the agent hanging and then
              * forgetting things.
              */
-            if (str(item.status) === "compacting" && !compactionItemId) {
+            if (str(item.status) === "compacting" && !turn.compactionItemId) {
               // The silence watch belongs to a request; a compaction is not one.
               disarmProviderSilence();
-              compactionItemId = itemId();
-              compactionSucceeded = false;
-              compactionMeasured = false;
+              turn.compactionItemId = itemId();
+              turn.compactionSucceeded = false;
+              turn.compactionMeasured = false;
               emit({
                 kind: "item.started",
-                item: { id: compactionItemId, detail: { type: "context_compaction" }, title: "Compacting context" },
+                item: { id: turn.compactionItemId, detail: { type: "context_compaction" }, title: "Compacting context" },
               });
               await flush();
-            } else if (item.compact_result !== undefined && compactionItemId) {
+            } else if (item.compact_result !== undefined && turn.compactionItemId) {
               if (item.compact_result === "success") {
                 // NOT CLOSED YET unless the numbers are already in. On CLI
                 // 2.1.259 the `compact_boundary` — the one message with the
@@ -2360,14 +1088,14 @@ export function createClaudeDriver(
                 // the boundary open a second one ("Compacted context" twice,
                 // measured). Whichever of the boundary and this comes last
                 // closes the row; the turn's end closes it if neither does.
-                compactionSucceeded = true;
-                if (compactionMeasured) {
-                  emit({ kind: "item.completed", itemId: compactionItemId, status: "completed" });
-                  compactionItemId = undefined;
+                turn.compactionSucceeded = true;
+                if (turn.compactionMeasured) {
+                  emit({ kind: "item.completed", itemId: turn.compactionItemId, status: "completed" });
+                  turn.compactionItemId = undefined;
                 }
               } else {
-                emit({ kind: "item.completed", itemId: compactionItemId, status: "failed" });
-                compactionItemId = undefined;
+                emit({ kind: "item.completed", itemId: turn.compactionItemId, status: "failed" });
+                turn.compactionItemId = undefined;
               }
               await flush();
             }
@@ -2387,12 +1115,12 @@ export function createClaudeDriver(
               ...(typeof metadata.pre_tokens === "number" ? { preTokens: metadata.pre_tokens } : {}),
               ...(typeof metadata.post_tokens === "number" ? { postTokens: metadata.post_tokens } : {}),
             };
-            if (compactionItemId) {
-              emit({ kind: "item.updated", item: { id: compactionItemId, detail, title: "Compacting context" } });
-              compactionMeasured = true;
-              if (compactionSucceeded) {
-                emit({ kind: "item.completed", itemId: compactionItemId, status: "completed", detail });
-                compactionItemId = undefined;
+            if (turn.compactionItemId) {
+              emit({ kind: "item.updated", item: { id: turn.compactionItemId, detail, title: "Compacting context" } });
+              turn.compactionMeasured = true;
+              if (turn.compactionSucceeded) {
+                emit({ kind: "item.completed", itemId: turn.compactionItemId, status: "completed", detail });
+                turn.compactionItemId = undefined;
               }
             } else {
               const id = itemId();
@@ -2413,7 +1141,7 @@ export function createClaudeDriver(
 
           // ── the CLI's own word on whether the turn is over ────────────
           if (item.type === "system" && item.subtype === "session_state_changed") {
-            runtime.reportsSessionState = true;
+            turn.runtime.reportsSessionState = true;
             /**
              * `idle` ENDS THE TURN — once the turn is demonstrably ours: our
              * reply has begun, or our result was read (a `/compact` answers
@@ -2434,10 +1162,10 @@ export function createClaudeDriver(
              * is what the turn already is, and the second is a permission
              * request the engine already holds as an open request.
              */
-            if (str(item.state) === "idle" && foreignTurn === undefined && outstandingSteerCuts.size === 0 && (ownResultRead || (ownTurnOpen && !steerSent))) {
-              completed = true;
+            if (str(item.state) === "idle" && turn.foreignTurn === undefined && turn.outstandingSteerCuts.size === 0 && (turn.ownResultRead || (turn.ownTurnOpen && !turn.steerSent))) {
+              turn.completed = true;
               await flush();
-              if (persistent) break;
+              if (turn.persistent) break;
             }
             continue;
           }
@@ -2460,7 +1188,7 @@ export function createClaudeDriver(
             // 200k window, which is exactly the meter that lied on the
             // dogfood app. A result with no table keeps the last known value.
             const reportedContextMax = contextMaxFrom(item.modelUsage);
-            contextMax = reportedContextMax ?? contextMax;
+            turn.contextMax = reportedContextMax ?? turn.contextMax;
             /**
              * THE LIFECYCLE SCALARS, TO THE GATED LOG AND NOWHERE ELSE.
              *
@@ -2486,8 +1214,8 @@ export function createClaudeDriver(
               );
             }
             // THIS TURN'S SPEND, not the query's running total — see `turnCostFrom`.
-            usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, runtime)) ?? usage);
-            if (usage) emit({ kind: "usage", usage });
+            turn.usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, turn.runtime)) ?? turn.usage);
+            if (turn.usage) emit({ kind: "usage", usage: turn.usage });
             if (item.subtype !== "success") {
               // An interrupt surfaces as a non-success result; the human's
               // stop must read as a stop, never as a provider failure.
@@ -2509,7 +1237,7 @@ export function createClaudeDriver(
                * fault that is not there; this one is a wait with an end, and
                * the engine can sit it out on its own.
                */
-              if (standingLimit) throw new RateLimitedError(standingLimit.resumeAt, standingLimit.limitType);
+              if (turn.standingLimit) throw new RateLimitedError(turn.standingLimit.resumeAt, turn.standingLimit.limitType);
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
             }
             /**
@@ -2554,8 +1282,8 @@ export function createClaudeDriver(
              * closing as failed rather than parking the pump forever.
              */
             const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
-            const toolsStillRunning = openTopLevelTools.size > 0 && (stopReason === "tool_use" || stopReason === null);
-            if (persistent && toolsStillRunning) {
+            const toolsStillRunning = turn.openTopLevelTools.size > 0 && (stopReason === "tool_use" || stopReason === null);
+            if (turn.persistent && toolsStillRunning) {
               await flush();
               continue;
             }
@@ -2589,16 +1317,16 @@ export function createClaudeDriver(
              * background agents run — the grace settles the turn as a result
              * always did, so this can end a turn later but never hold one.
              */
-            if (persistent && runtime.reportsSessionState) {
-              ownResultRead = true;
+            if (turn.persistent && turn.runtime.reportsSessionState) {
+              turn.ownResultRead = true;
               // Steering stops here, as it did when the result ended the turn:
               // a message arriving after it is the engine's to requeue.
-              turnDone = true;
-              endTurnSeenAt = Date.now();
+              turn.turnDone = true;
+              turn.endTurnSeenAt = Date.now();
               await flush();
               continue;
             }
-            completed = true;
+            turn.completed = true;
             await flush();
             /**
              * A FINAL RESULT ENDS THE TURN AND NOTHING ELSE. The pump stops
@@ -2608,7 +1336,7 @@ export function createClaudeDriver(
              * stream is already exhausted, so the loop instead runs on to the
              * stream's natural close, exactly as it always did.
              */
-            if (persistent) break;
+            if (turn.persistent) break;
             continue;
           }
 
@@ -2617,7 +1345,7 @@ export function createClaudeDriver(
           // when it withholds the text. Names no block, so the owner's newest
           // open thought is the one it is about.
           if (item.type === "system" && item.subtype === "thinking_tokens") {
-            const open = openThinkingOf(openBlocks, parentToolUseId);
+            const open = openThinkingOf(turn.openBlocks, parentToolUseId);
             const progress = open ? noteThinkingTokens(open, item.estimated_tokens) : undefined;
             if (progress) {
               emit(progress);
@@ -2645,7 +1373,7 @@ export function createClaudeDriver(
               const blockType = event.content_block?.type;
               if (blockType === "text" || blockType === "thinking") {
                 const id = itemId();
-                openBlocks.set(index, { id, kind: blockType, text: "", ...(ownerTaskId ? { taskId: ownerTaskId } : {}) });
+                turn.openBlocks.set(index, { id, kind: blockType, text: "", ...(ownerTaskId ? { taskId: ownerTaskId } : {}) });
                 emit({
                   kind: "item.started",
                   item: {
@@ -2675,12 +1403,12 @@ export function createClaudeDriver(
                */
               const useId = str(event.content_block?.id);
               const name = str(event.content_block?.name);
-              if (blockType === "tool_use" && useId && name && name !== "TodoWrite" && !openTools.has(useId)) {
+              if (blockType === "tool_use" && useId && name && name !== "TodoWrite" && !turn.openTools.has(useId)) {
                 const seed = streamingToolSeed(useId, name, ownerTaskId);
-                openTools.set(useId, { id: seed.id, detail: seed.detail });
+                turn.openTools.set(useId, { id: seed.id, detail: seed.detail });
                 const input = streamingInputFor(useId, name, ownerTaskId);
-                if (input) streamingInputs.set(index, input);
-                if (ours) openTopLevelTools.add(useId);
+                if (input) turn.streamingInputs.set(index, input);
+                if (ours) turn.openTopLevelTools.add(useId);
                 emit({ kind: "item.started", item: seed });
                 await flush();
               }
@@ -2688,13 +1416,13 @@ export function createClaudeDriver(
             }
 
             if (event.type === "content_block_delta") {
-              const pathUpdate = streamedPathUpdate(streamingInputs, openTools, index, event.delta);
+              const pathUpdate = streamedPathUpdate(turn.streamingInputs, turn.openTools, index, event.delta);
               if (pathUpdate) {
                 emit(pathUpdate);
                 await flush();
                 continue;
               }
-              const open = openBlocks.get(index);
+              const open = turn.openBlocks.get(index);
               if (!open) continue;
               const progress = noteThinkingTokens(open, event.delta?.estimated_tokens);
               if (progress) {
@@ -2706,8 +1434,8 @@ export function createClaudeDriver(
               open.text += text;
               // The producer streams, whoever the text belongs to: the
               // envelope's own text is a repeat and must not become a row.
-              if (open.kind === "text") receivedPartialText = true;
-              if (open.kind === "text" && ours) finalText += text;
+              if (open.kind === "text") turn.receivedPartialText = true;
+              if (open.kind === "text" && ours) turn.finalText += text;
               emit({
                 kind: "content.delta",
                 itemId: open.id,
@@ -2721,10 +1449,10 @@ export function createClaudeDriver(
             }
 
             if (event.type === "content_block_stop") {
-              streamingInputs.delete(index);
-              const open = openBlocks.get(index);
+              turn.streamingInputs.delete(index);
+              const open = turn.openBlocks.get(index);
               if (!open) continue;
-              openBlocks.delete(index);
+              turn.openBlocks.delete(index);
               emit(closeBlock(open));
               await flush();
               continue;
@@ -2759,21 +1487,21 @@ export function createClaudeDriver(
               event.type === "message_delta" &&
               ours &&
               str(asRecord(event.delta).stop_reason) === "end_turn" &&
-              openTopLevelTools.size === 0
+              turn.openTopLevelTools.size === 0
             ) {
-              endTurnSeenAt = Date.now();
+              turn.endTurnSeenAt = Date.now();
             }
-            if (event.type === "message_delta" && ours && lastEnvelopeUsage) {
+            if (event.type === "message_delta" && ours && turn.lastEnvelopeUsage) {
               const output = asRecord(event.usage).output_tokens;
               if (typeof output !== "number" || output < 0) continue;
-              lastEnvelopeUsage = { ...asRecord(lastEnvelopeUsage), output_tokens: output };
-              contextUsed = contextUsedFrom(lastEnvelopeUsage) ?? contextUsed;
-              const snapshot = usageFrom(lastEnvelopeUsage, undefined);
+              turn.lastEnvelopeUsage = { ...asRecord(turn.lastEnvelopeUsage), output_tokens: output };
+              turn.contextUsed = contextUsedFrom(turn.lastEnvelopeUsage) ?? turn.contextUsed;
+              const snapshot = usageFrom(turn.lastEnvelopeUsage, undefined);
               if (!snapshot) continue;
               // The cost already recorded for this turn is kept: this frame
               // says nothing about price, and dropping it would read as free.
-              usage = decorateUsage({ ...snapshot, ...(usage?.costUsd === undefined ? {} : { costUsd: usage.costUsd }) });
-              emit({ kind: "usage", usage: usage! });
+              turn.usage = decorateUsage({ ...snapshot, ...(turn.usage?.costUsd === undefined ? {} : { costUsd: turn.usage.costUsd }) });
+              emit({ kind: "usage", usage: turn.usage! });
               await flush();
             }
             continue;
@@ -2789,9 +1517,9 @@ export function createClaudeDriver(
               if (snapshot) {
                 // Kept raw so the response's closing `message_delta` can
                 // correct its placeholder output count against it.
-                lastEnvelopeUsage = item.message?.usage;
-                contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
-                usage = decorateUsage(snapshot);
+                turn.lastEnvelopeUsage = item.message?.usage;
+                turn.contextUsed = contextUsedFrom(item.message?.usage) ?? turn.contextUsed;
+                turn.usage = decorateUsage(snapshot);
                 /**
                  * EMITTED PER ENVELOPE, not held until the result — this is
                  * what makes the context ring move DURING a Claude turn, the
@@ -2799,7 +1527,7 @@ export function createClaudeDriver(
                  * Before this the local variable updated and nothing left the
                  * driver until the turn ended.
                  */
-                emit({ kind: "usage", usage: usage! });
+                emit({ kind: "usage", usage: turn.usage! });
               }
             }
             for (const raw of contentBlocks(item.message?.content)) {
@@ -2821,10 +1549,10 @@ export function createClaudeDriver(
                 const plan = name === "TodoWrite" ? planDetailForTodos(block.input) : undefined;
                 if (plan) {
                   const detail: ItemDetail = { type: "plan", plan };
-                  if (planItemId) emit({ kind: "item.updated", item: { id: planItemId, detail, title: "Plan" } });
+                  if (turn.planItemId) emit({ kind: "item.updated", item: { id: turn.planItemId, detail, title: "Plan" } });
                   else {
-                    planItemId = `item_plan_${crypto.randomUUID().replaceAll("-", "")}`;
-                    emit({ kind: "item.started", item: { id: planItemId, detail, title: "Plan" } });
+                    turn.planItemId = `item_plan_${crypto.randomUUID().replaceAll("-", "")}`;
+                    emit({ kind: "item.started", item: { id: turn.planItemId, detail, title: "Plan" } });
                   }
                   continue;
                 }
@@ -2853,9 +1581,9 @@ export function createClaudeDriver(
                 };
                 // Already opened by its `content_block_start`: this is the
                 // same row, now with its input — an update, never a second row.
-                const streamed = openTools.has(useId);
-                openTools.set(useId, { id: seed.id, detail });
-                if (ours) openTopLevelTools.add(useId);
+                const streamed = turn.openTools.has(useId);
+                turn.openTools.set(useId, { id: seed.id, detail });
+                if (ours) turn.openTopLevelTools.add(useId);
                 emit({ kind: streamed ? "item.updated" : "item.started", item: seed });
                 continue;
               }
@@ -2863,10 +1591,10 @@ export function createClaudeDriver(
               // Emitting it again would double both the transcript and the
               // final result, so this is only the compatibility fallback for
               // an SDK that produced no stream events at all.
-              if (block.type === "text" && !receivedPartialText) {
+              if (block.type === "text" && !turn.receivedPartialText) {
                 const text = str(block.text);
                 if (!text) continue;
-                if (ours) finalText += text;
+                if (ours) turn.finalText += text;
                 const id = itemId();
                 emit({
                   kind: "item.started",
@@ -2882,7 +1610,7 @@ export function createClaudeDriver(
              * the turn forever. A `tool_use` stop reason, or an open tool,
              * means more is coming and the grace stays down.
              */
-            if (ours && item.message?.stop_reason === "end_turn" && openTopLevelTools.size === 0) endTurnSeenAt = Date.now();
+            if (ours && item.message?.stop_reason === "end_turn" && turn.openTopLevelTools.size === 0) turn.endTurnSeenAt = Date.now();
             await flush();
             continue;
           }
@@ -2903,10 +1631,10 @@ export function createClaudeDriver(
             const structured = results.length === 1 ? item.tool_use_result : undefined;
             for (const block of results) {
               const useId = str(block.tool_use_id);
-              const open = useId ? openTools.get(useId) : undefined;
+              const open = useId ? turn.openTools.get(useId) : undefined;
               if (!open || !useId) continue;
-              openTools.delete(useId);
-              openTopLevelTools.delete(useId);
+              turn.openTools.delete(useId);
+              turn.openTopLevelTools.delete(useId);
               const failed = block.is_error === true;
               const output = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? null);
               if (!failed && structured) noteTaskOutput(structured, output);
@@ -2927,19 +1655,19 @@ export function createClaudeDriver(
         // as far as saying it failed — so the same evidence answers here, or a
         // rate-limited turn would fail as `driver_failed` purely because the
         // provider hung up quietly rather than loudly.
-        if (!completed && standingLimit) throw new RateLimitedError(standingLimit.resumeAt, standingLimit.limitType);
-        if (!completed) throw new Error("Claude ended without a successful result");
+        if (!turn.completed && turn.standingLimit) throw new RateLimitedError(turn.standingLimit.resumeAt, turn.standingLimit.limitType);
+        if (!turn.completed) throw new Error("Claude ended without a successful result");
 
         // A tool whose result never arrived (the stream ended first) would
         // otherwise sit spinning in the UI forever.
-        for (const [, open] of openTools) {
+        for (const [, open] of turn.openTools) {
           emit({ kind: "item.completed", itemId: open.id, status: "failed" });
         }
         // A block the provider never closed still gets its accumulated text,
         // for the same reason: the projection has no other source for it.
-        for (const [, open] of openBlocks) emit(closeBlock(open));
+        for (const [, open] of turn.openBlocks) emit(closeBlock(open));
         // The plan is turn-scoped and has no tool_result to close it.
-        if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
+        if (turn.planItemId) emit({ kind: "item.completed", itemId: turn.planItemId, status: "completed" });
         // A wait the stream ended inside is over — the turn is not waiting for
         // anything any more, whatever the reason it stopped. The watch goes
         // with it: a timer left armed past the turn would open a row on a sink
@@ -2948,7 +1676,7 @@ export function createClaudeDriver(
         disarmProviderSilence();
         // A compaction the stream ended inside is over: finished if the CLI
         // said so and only the boundary never came, failed otherwise.
-        if (compactionItemId) emit({ kind: "item.completed", itemId: compactionItemId, status: compactionSucceeded ? "completed" : "failed" });
+        if (turn.compactionItemId) emit({ kind: "item.completed", itemId: turn.compactionItemId, status: turn.compactionSucceeded ? "completed" : "failed" });
         /**
          * A task left running when the turn ended is closed as failed.
          *
@@ -2961,7 +1689,7 @@ export function createClaudeDriver(
          * launched detached, which is still running inside the live process
          * and will report through the next turn's pump.
          */
-        for (const [id, task] of knownTasks) {
+        for (const [id, task] of turn.knownTasks) {
           if (isBackgroundWork(task)) continue;
           if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
           emit({ kind: "task.completed", task: { ...task, id, state: "failed", failure: "the turn ended before this agent reported back" } });
@@ -2969,9 +1697,9 @@ export function createClaudeDriver(
         await flush();
 
         return {
-          text: finalText,
-          ...(reportedSessionId ? { providerSessionId: reportedSessionId } : {}),
-          ...(usage ? { usage } : {}),
+          text: turn.finalText,
+          ...(turn.reportedSessionId ? { providerSessionId: turn.reportedSessionId } : {}),
+          ...(turn.usage ? { usage: turn.usage } : {}),
         };
       } catch (error) {
         /**
@@ -2983,19 +1711,19 @@ export function createClaudeDriver(
          * non-success result, an SDK throw — leaves a process this driver
          * cannot vouch for, so the next turn cold-starts from `resume`.
          */
-        if (persistent && (!signal.aborted || streamEnded)) runtimes.destroy(sessionId);
+        if (turn.persistent && (!signal.aborted || turn.streamEnded)) runtimes.destroy(sessionId);
         throw error;
       } finally {
-        turnDone = true;
-        cancelReap?.();
+        turn.turnDone = true;
+        turn.cancelReap?.();
         signal.removeEventListener("abort", onAbort);
-        if (persistent) {
+        if (turn.persistent) {
           runtimes.release(sessionId);
           // Only what the CLI says BETWEEN turns names a wake-up. A task that
           // spoke inside this turn (its own `task_started`) is not what woke
           // the model — measured: two monitor ticks both attributed to a
           // shell that had merely been launched in the same turn.
-          runtime.tasks.lastWokenTaskId = undefined;
+          turn.runtime.tasks.lastWokenTaskId = undefined;
           /**
            * AND THE GATE STOPS POINTING AT THIS TURN (#891). Nothing used to
            * clear it, so the work this turn deliberately left alive kept asking
@@ -3006,455 +1734,10 @@ export function createClaudeDriver(
           // A turn that ran with NO gate (the `full-access` shape) leaves none:
           // opening a claim to decide what nobody was going to be asked about
           // would write a turn per tool call for nothing.
-          runtime.bindings.current = { ...runtime.bindings.current, canUseTool: canUseTool ? backgroundGate : undefined };
+          turn.runtime.bindings.current = { ...turn.runtime.bindings.current, canUseTool: turn.canUseTool ? backgroundGate : undefined };
           // The turn is over; the process is not. Keep reading it.
-          if (sessionHooks && !runtime.streamEnded) startIdlePump(runtime, sessionHooks);
-        } else runtime.destroy();
-      }
-
-      /**
-       * THE IDLE PUMP: what reads the stream when no turn does.
-       *
-       * Between turns the CLI keeps talking. Task frames (a monitor's tick,
-       * a shell's ending, the level signal) go straight to the session's
-       * `onTasks`, so a row closes when its shell exits instead of at the
-       * next human message — the ten-hour "Wait for CI" row, measured. And
-       * when the CLI wakes the model on a notification and runs a turn of its
-       * own, the pump asks the engine for a PROVIDER TURN and reads that turn
-       * through a binding of its own: a gate that decides its tool calls, a
-       * sink its rows land in, a completion of its own. Before this, those
-       * frames sat buffered until the next human turn, were read as a
-       * stranger's, and their tool calls were refused against a settled
-       * claim — the agent could wake but not act, and nobody saw it.
-       *
-       * Ends the moment a turn claims the runtime (`claim` calls `stop`); the
-       * `next()` it was parked on is handed to that turn via `pendingStep`.
-       */
-      function startIdlePump(idleRuntime: ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed>, hooks: DriverSessionHooks): void {
-        if (idleRuntime.idlePump) return;
-        let stopped = false;
-        idleRuntime.idlePump = { stop: () => { stopped = true; } };
-        void (async () => {
-          // A wake-up in flight, once the engine has opened a turn for it.
-          let wake:
-            | {
-                binding: ProviderTurnBinding;
-                text: string;
-                usage: UsageSnapshot | undefined;
-                gate: SdkCanUseTool | undefined;
-                blocks: Map<string, OpenBlock>;
-                tools: Map<string, { id: string; detail: ItemDetail }>;
-                inputs: Map<string, StreamingInput>;
-                /** The open provider-wait row, exactly as a human turn keeps one. */
-                waitItemId: string | undefined;
-                /** And its warning memory, for the same reason (#897): this
-                 *  record is the wake-up's turn, so it starts with none. */
-                lastLimitWarning: LimitWarningSeen | undefined;
-                /** The newest main-loop envelope's raw usage, so this turn's
-                 *  closing `message_delta` can correct its placeholder output. */
-                lastUsage: unknown;
-              }
-            | undefined;
-          const idleSink = (observations: TurnObservation[]) => hooks.onTasks(observations);
-          sink = idleSink;
-          /** The engine refused a wake-up: a human turn has the session and
-           *  will claim this runtime any moment. Everything read from here
-           *  on is that turn's, in order — parked, not handled. */
-          let parkingForTurn = false;
-          const endWake = async (result: { text: string } | { failure: string }) => {
-            if (!wake) return;
-            const current = wake;
-            wake = undefined;
-            // The wake-up is over; the process may be evicted again.
-            runtimes.setWakeActive(idleRuntime.sessionId, false);
-            // A wait this turn ended inside is over, whatever ended it.
-            if (current.waitItemId) emit({ kind: "item.completed", itemId: current.waitItemId, status: "completed" });
-            for (const [, open] of current.tools) emit({ kind: "item.completed", itemId: open.id, status: "failed" });
-            for (const [, open] of current.blocks) emit(closeBlock(open));
-            await flush();
-            sink = idleSink;
-            // BACK TO THE BACKGROUND GATE, not to nothing (#891): the wake-up's
-            // claim is gone, and the work it leaves behind still needs one. A
-            // session running with no gate at all keeps none, as above.
-            idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: canUseTool ? backgroundGate : undefined };
-            await current.binding.close("failure" in result ? result : { text: result.text, ...(current.usage ? { usage: current.usage } : {}) }).catch(() => undefined);
-          };
-          try {
-            for (;;) {
-              if (stopped) return;
-              // NOT `takeStep`: a pump told to stop while parked must leave
-              // the frame on `pendingStep` for the turn that stopped it —
-              // the turn may not have awaited the promise yet.
-              const step = idleRuntime.pendingStep ?? (idleRuntime.pendingStep = idleRuntime.iterator.next());
-              const result = await step;
-              if (stopped) return;
-              if (idleRuntime.pendingStep === step) idleRuntime.pendingStep = undefined;
-              if (result.done) {
-                idleRuntime.streamEnded = true;
-                /**
-                 * THE CASE THE TURN PUMP CANNOT SEE, and the common one once a
-                 * turn settles with its shells still alive: the process dies
-                 * BETWEEN turns, with nobody's turn open to fail. Nothing else
-                 * would ever close those rows — the turn that started them has
-                 * long since ended and deliberately left background work alone
-                 * — so the session would read as monitoring for ever.
-                 *
-                 * AFTER `endWake`, never before: it emits the wake-up's own
-                 * closing rows into THAT turn's sink and only then restores
-                 * `idleSink`. Reporting first would file a dead process's task
-                 * rows on a turn that is about to settle.
-                 */
-                await endWake({ failure: "the provider process ended" });
-                sink = idleSink;
-                reportLostBackgroundWork();
-                // The work the claim was held for died with the process; a
-                // claim left open would be a turn nothing will ever settle.
-                await closeBackgroundClaim().catch(() => undefined);
-                await flush();
-                return;
-              }
-              const item = result.value as SdkFrame;
-              if (parkingForTurn) {
-                idleRuntime.parked.push(item);
-                continue;
-              }
-              const parentToolUseId = str(item.parent_tool_use_id ?? undefined);
-              if (str(item.session_id)) reportedSessionId = item.session_id;
-
-              if (await handleTaskFrame(item)) {
-                // The last task may just have ended, which is what a held
-                // background claim was waiting for.
-                if (backgroundClaim) lingerOnceQuiet(backgroundClaim);
-                await flush();
-                continue;
-              }
-              // Sub-agent frames between turns: a backgrounded agent still
-              // working. Filed under its task like inside a turn.
-              const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : undefined;
-
-              if (!wake) {
-                const wokenTask = idleRuntime.tasks.lastWokenTaskId;
-                /**
-                 * THE REQUEST GOING OUT OPENS THE TURN — not the first token
-                 * that comes back (#71).
-                 *
-                 * A turn is what makes the cockpit say anything at all: the
-                 * working indicator and the sidebar's liveness dot read the
-                 * session's live turn and nothing else. So for as long as the
-                 * wake-up had no turn, a background task's ending was followed
-                 * by complete silence on screen — measured twice, and read both
-                 * times as "the task didn't wake you up" while a full response
-                 * was being generated. The gap is the request itself: the CLI
-                 * announces `system/status {requesting}` as it goes out and then
-                 * reports NOTHING until the reply opens (#263 puts p90 near 15s
-                 * at a large context, and measured a stall at sixty), so opening
-                 * on `message_start` meant opening after the whole silence.
-                 *
-                 * ONLY WHEN A TASK HAS JUST SPOKEN, which is what makes this a
-                 * wake-up rather than a guess. `lastWokenTaskId` is set by the
-                 * notification (or a monitor's tick) and cleared the moment a
-                 * turn opens, so exactly one request can be read this way — and
-                 * a request the CLI sends between turns for its own reasons,
-                 * which may never produce a main-loop `result` to close a turn
-                 * with, cannot mint one. A wake that announced no task still
-                 * opens the old way, on the reply.
-                 *
-                 * THE INPUT IS THE COST. The CLI echoes the notification it
-                 * injected as a `user` frame, and whichever of the two comes
-                 * first is the one that opens the turn — so a turn opened here
-                 * has no `input` to carry (the echo that follows is not a row:
-                 * `pumpFrame` reads tool results out of a user frame and
-                 * nothing else). A wake row with no expandable text is a
-                 * smaller loss than a wake nobody can see.
-                 */
-                const requesting =
-                  item.type === "system" && item.subtype === "status" && str(item.status) === "requesting" && !parentToolUseId && wokenTask !== undefined;
-                // Anything the main loop says with no turn open is the CLI
-                // starting one of its own. Open a real turn for it.
-                const opens = requesting || (item.type === "stream_event" && item.event?.type === "message_start") || item.type === "assistant" || (item.type === "user" && !parentToolUseId);
-                if (!opens && !ownerTaskId) continue;
-                if (ownerTaskId) {
-                  // Sub-agent output with no turn: stays visible on its task.
-                  sink = idleSink;
-                  if (await pumpFrame(item, ownerTaskId, undefined)) await flush();
-                  continue;
-                }
-                const text = item.type === "user" ? userText(item.message?.content) : undefined;
-                /**
-                 * THE BACKGROUND CLAIM YIELDS TO A REAL WAKE-UP (#891). One
-                 * live turn per session, so a claim held for a child's
-                 * decisions would refuse this one — and a refused wake parks
-                 * every frame after it for a human turn that may never come,
-                 * losing the wake-up outright. Given up here, and the wake's
-                 * own gate then serves the children too; `endWake` puts the
-                 * background gate back. Waits for decisions already in flight,
-                 * so nothing is cut short — which means a card a person has not
-                 * answered holds the wake-up here. That is the honest order:
-                 * the session cannot proceed until they answer, the frame is
-                 * held rather than lost, and the wake opens the moment it does.
-                 */
-                await closeBackgroundClaim().catch(() => undefined);
-                const binding = await hooks.onProviderTurn({
-                  input: text ?? "",
-                  reason: wokenTask ? { kind: "task_notification", taskId: wokenTask } : { kind: "unknown" },
-                });
-                if (!binding) {
-                  // A human turn took the session first. Park this and every
-                  // frame after it for that turn; the pump ends when the turn
-                  // claims the runtime.
-                  parkingForTurn = true;
-                  idleRuntime.parked.push(item);
-                  continue;
-                }
-                idleRuntime.tasks.lastWokenTaskId = undefined;
-                // LIVE WORK, so the pool stops treating this process as spare.
-                // The engine has opened a real turn against it; evicting it now
-                // would kill a turn nobody could see start.
-                runtimes.setWakeActive(idleRuntime.sessionId, true);
-                wake = {
-                  binding,
-                  text: "",
-                  usage: undefined,
-                  gate: binding.onRequest ? gateFor(binding.onRequest) : undefined,
-                  blocks: new Map(),
-                  tools: new Map(),
-                  inputs: new Map(),
-                  waitItemId: undefined,
-                  lastLimitWarning: undefined,
-                  lastUsage: undefined,
-                };
-                sink = (observations) => binding.onObservations(observations);
-                idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: wake.gate };
-                // The announcement said a request went out, and the turn just
-                // opened above IS that. Nothing is left of it to render.
-                if (requesting) continue;
-                // The CLI's injected notification message is the turn's input
-                // — already on the turn; not a row.
-                if (item.type === "user" && !parentToolUseId && text !== undefined) continue;
-              }
-
-              /**
-               * THE METER MOVES ON A WAKE-UP TOO. A turn the CLI starts on its
-               * own spends context like any other, and until this the idle
-               * pump read neither the envelope's usage nor the result's
-               * `modelUsage` — so a session that worked for an hour on
-               * monitor ticks reported the ring where the last human turn
-               * left it. Same two reads as the turn pump, same rule: the
-               * provider's reported window replaces the assumption.
-               */
-              /**
-               * A WAKE-UP WAITS THE SAME WAY A HUMAN TURN DOES.
-               *
-               * The engine has opened a real turn with a real observation sink,
-               * so there is somewhere to put the row — an earlier version of
-               * this patch claimed otherwise and was wrong. A retry inside an
-               * autonomous turn is exactly as invisible as one inside a human's
-               * and just as worth explaining.
-               *
-               * EXPLICITLY LIMITED: a wait announced BEFORE the engine grants a
-               * binding still goes unrecorded. Those frames belong to no turn
-               * yet, and the session-level task channel takes task reports
-               * rather than rows. That gap closes with the single-consumer
-               * consolidation, not here.
-               */
-              const idleWaited = providerWaitFrom(item);
-              if (idleWaited) {
-                // The repeat warning is dropped here too, and for the same
-                // reason: an autonomous turn makes as many requests as a
-                // human's, so it collects as many identical frames (#897).
-                const idleTaken = takeProviderWait(idleWaited.detail, wake.lastLimitWarning);
-                wake.lastLimitWarning = idleTaken.seen;
-                if (!idleTaken.emit) continue;
-                if (wake.waitItemId) emit({ kind: "item.completed", itemId: wake.waitItemId, status: "completed" });
-                const id = itemId();
-                const detail: ItemDetail = { type: "provider_wait", wait: idleWaited.detail };
-                emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(idleWaited.detail) } });
-                wake.waitItemId = idleWaited.blocking ? id : undefined;
-                if (!idleWaited.blocking) emit({ kind: "item.completed", itemId: id, status: "completed", detail });
-                await flush();
-                continue;
-              }
-              // Same ownership rule as the turn pump: only this turn's own main
-              // loop speaking proves the request went through.
-              if (wake.waitItemId && !parentToolUseId && (item.type === "stream_event" || item.type === "assistant" || item.type === "user" || item.type === "result")) {
-                emit({ kind: "item.completed", itemId: wake.waitItemId, status: "completed" });
-                wake.waitItemId = undefined;
-              }
-
-              if (item.type === "assistant" && !parentToolUseId) {
-                const snapshot = usageFrom(item.message?.usage, undefined);
-                if (snapshot) {
-                  // Kept raw so this turn's closing `message_delta` can correct
-                  // its placeholder output count against it.
-                  wake.lastUsage = item.message?.usage;
-                  contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
-                  wake.usage = decorateUsage(snapshot);
-                  emit({ kind: "usage", usage: wake.usage! });
-                }
-              }
-              /** The response's REAL output count, for a wake-up too — see the
-               *  turn pump's copy of this. */
-              if (item.type === "stream_event" && item.event?.type === "message_delta" && !parentToolUseId && wake.lastUsage) {
-                const output = asRecord(item.event.usage).output_tokens;
-                if (typeof output === "number" && output >= 0) {
-                  wake.lastUsage = { ...asRecord(wake.lastUsage), output_tokens: output };
-                  contextUsed = contextUsedFrom(wake.lastUsage) ?? contextUsed;
-                  const snapshot = usageFrom(wake.lastUsage, undefined);
-                  if (snapshot) {
-                    wake.usage = decorateUsage({ ...snapshot, ...(wake.usage?.costUsd === undefined ? {} : { costUsd: wake.usage.costUsd }) });
-                    emit({ kind: "usage", usage: wake.usage! });
-                    await flush();
-                  }
-                }
-                continue;
-              }
-              if (item.type === "result" && !parentToolUseId) {
-                const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
-                if (wake.tools.size > 0 && (stopReason === "tool_use" || stopReason === null)) continue;
-                contextMax = contextMaxFrom(item.modelUsage) ?? contextMax;
-                // The same accounting a human turn gets: a wake-up spends
-                // against the same query, so it takes the same baseline.
-                wake.usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, idleRuntime)) ?? wake.usage);
-                if (wake.usage) emit({ kind: "usage", usage: wake.usage });
-                /**
-                 * THE SAME TWO WAYS A RESULT FAILS as the turn pump's guards,
-                 * because it is the same producer: a subtype that is not
-                 * `success`, or a `success` the CLI flagged `is_error` anyway
-                 * (#779). Reading the subtype alone would file a safeguard's
-                 * error as the wake-up's answer. Widened inline here — this
-                 * branch has no interrupt, steer or limit handling to disturb.
-                 */
-                const failure =
-                  item.subtype !== "success"
-                    ? `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`
-                    : item.is_error === true
-                      ? "Claude did not complete successfully (the result was flagged as an error)"
-                      : undefined;
-                await endWake(failure ? { failure } : { text: wake.text });
-                continue;
-              }
-              const text = await pumpFrame(item, ownerTaskId, wake);
-              if (text) wake.text += text;
-              await flush();
-            }
-          } catch {
-            await endWake({ failure: "the provider stream failed between turns" }).catch(() => undefined);
-            // A stream that threw is a process that is going away, with the
-            // same consequence for its shells — see `reportLostBackgroundWork`.
-            sink = idleSink;
-            reportLostBackgroundWork();
-            await closeBackgroundClaim().catch(() => undefined);
-            await flush().catch(() => undefined);
-            runtimes.destroy(idleRuntime.sessionId);
-          } finally {
-            if (idleRuntime.idlePump?.stop === undefined || stopped) idleRuntime.idlePump = undefined;
-            // A pump that stops for any other reason (eviction, dispose, a turn
-            // claiming the runtime) must not leave a claim's turn running with
-            // nothing left to settle it. A no-op when none is open, which is
-            // the ordinary case.
-            void closeBackgroundClaim().catch(() => undefined);
-          }
-        })();
-      }
-
-      /**
-       * One frame of assistant output — text, thinking, tool calls, tool
-       * results — into rows, for the idle pump. The turn pump has its own
-       * inlined copy of this logic with more state (usage, compaction, the
-       * plan row); this is the subset a wake-up produces. Returns the
-       * main-loop text the frame added, so the turn's `resultText` can be
-       * built; true-ish when it emitted anything.
-       */
-      async function pumpFrame(
-        item: SdkFrame,
-        ownerTaskId: string | undefined,
-        wake:
-          | { blocks: Map<string, OpenBlock>; tools: Map<string, { id: string; detail: ItemDetail }>; inputs: Map<string, StreamingInput> }
-          | undefined,
-      ): Promise<string> {
-        const blocks = wake?.blocks ?? new Map<string, OpenBlock>();
-        const tools = wake?.tools ?? new Map<string, { id: string; detail: ItemDetail }>();
-        const inputs = wake?.inputs ?? new Map<string, StreamingInput>();
-        let added = "";
-        // The silent thought's running size — see the turn pump's copy. The
-        // idle pump flushes after every frame, so there is nothing to schedule.
-        if (item.type === "system" && item.subtype === "thinking_tokens") {
-          const open = openThinkingOf(blocks, ownerTaskId);
-          const progress = open ? noteThinkingTokens(open, item.estimated_tokens) : undefined;
-          if (progress) emit(progress);
-          return added;
-        }
-        if (item.type === "stream_event") {
-          const event = item.event ?? {};
-          const index = `${ownerTaskId ?? ""}#${typeof event.index === "number" ? event.index : -1}`;
-          if (event.type === "content_block_start") {
-            const blockType = event.content_block?.type;
-            const useId = str(event.content_block?.id);
-            const name = str(event.content_block?.name);
-            if (blockType === "text" || blockType === "thinking") {
-              const id = itemId();
-              blocks.set(index, { id, kind: blockType, text: "", ...(ownerTaskId ? { taskId: ownerTaskId } : {}) });
-              emit({ kind: "item.started", item: { id, detail: blockType === "text" ? { type: "assistant_message", text: "" } : { type: "reasoning", text: "" }, ...(ownerTaskId ? { taskId: ownerTaskId } : {}) } });
-            } else if (wake && blockType === "tool_use" && useId && name && name !== "TodoWrite" && !tools.has(useId)) {
-              // Opened as the model starts writing the call — see the turn pump.
-              // Only inside a wake-up: with no turn the map is this frame's
-              // alone, so the envelope could not tell it had been opened.
-              const seed = streamingToolSeed(useId, name, ownerTaskId);
-              tools.set(useId, { id: seed.id, detail: seed.detail });
-              const input = streamingInputFor(useId, name, ownerTaskId);
-              if (input) inputs.set(index, input);
-              emit({ kind: "item.started", item: seed });
-            }
-          } else if (event.type === "content_block_delta") {
-            const pathUpdate = streamedPathUpdate(inputs, tools, index, event.delta);
-            if (pathUpdate) emit(pathUpdate);
-            const open = blocks.get(index);
-            const progress = open ? noteThinkingTokens(open, event.delta?.estimated_tokens) : undefined;
-            if (progress) emit(progress);
-            const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
-            if (open && typeof text === "string" && text.length > 0) {
-              open.text += text;
-              if (open.kind === "text" && !ownerTaskId) added += text;
-              emit({ kind: "content.delta", itemId: open.id, stream: open.kind === "text" ? "assistant_text" : "reasoning_text", text });
-            }
-          } else if (event.type === "content_block_stop") {
-            inputs.delete(index);
-            const open = blocks.get(index);
-            if (open) {
-              blocks.delete(index);
-              emit(closeBlock(open));
-            }
-          }
-          return added;
-        }
-        if (item.type === "assistant") {
-          for (const raw of contentBlocks(item.message?.content)) {
-            const block = asRecord(raw);
-            if (block.type !== "tool_use") continue;
-            const name = str(block.name) ?? "tool";
-            const useId = str(block.id) ?? itemId();
-            const isTask = name === "Task" || name === "Agent";
-            const detail: ItemDetail = isTask ? { type: "task", taskId: `task_${useId}` } : itemDetailForToolCall(name, block.input);
-            const title = isTask ? oneLine(str(asRecord(block.input).description) ?? str(asRecord(block.input).subagent_type) ?? name) : titleForToolCall(name, detail);
-            const streamed = tools.has(useId);
-            tools.set(useId, { id: `item_${useId}`, detail });
-            emit({ kind: streamed ? "item.updated" : "item.started", item: { id: `item_${useId}`, detail, title, ...(ownerTaskId ? { taskId: ownerTaskId } : {}), providerRefs: { itemId: useId } } });
-          }
-          return added;
-        }
-        if (item.type === "user") {
-          const results = contentBlocks(item.message?.content).map(asRecord).filter((block) => block.type === "tool_result");
-          const structured = results.length === 1 ? item.tool_use_result : undefined;
-          for (const block of results) {
-            const useId = str(block.tool_use_id);
-            const open = useId ? tools.get(useId) : undefined;
-            if (!open || !useId) continue;
-            tools.delete(useId);
-            const output = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? null);
-            emit({ kind: "item.completed", itemId: open.id, status: block.is_error === true ? "failed" : "completed", detail: withToolResult(open.detail, output, structured) });
-          }
-        }
-        return added;
+          if (sessionHooks && !turn.runtime.streamEnded) startIdlePump(turn.runtime, sessionHooks);
+        } else turn.runtime.destroy();
       }
     },
   };
