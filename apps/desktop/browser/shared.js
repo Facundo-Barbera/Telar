@@ -94,4 +94,14 @@ function navigationFlag(webContents, method) {
 
 const TAB_SELECT_CHORDS = Array.from({ length: 9 }, (_, index) => `CommandOrControl+${index + 1}`);
 
-module.exports = { CURSOR_MOVE_MS, CURSOR_CLICK_LEAD_MS, RPC_TIMEOUT_MS, CAPTURE_TIMEOUT_MS, CAPTURE_TIMEOUT_MESSAGE, FREEZE_TIMEOUT_MS, FREEZE_TIMEOUT_MESSAGE, BOUNDS_SETTLE_MS, HIBERNATE_GRACE_MS, MAX_LIVE_VIEWS, MAX_TABS_PER_SCOPE, CLOSED_BY_PERSON_MESSAGE, HUMAN_ATTRIBUTION_GRACE_MS, SYNTHETIC_REPORT_TTL_MS, HUMAN_ACTIVE_MS, DEFER_MAX_MS, DEFER_POLL_MS, humanActiveOn, staleView, isReadTool, sleep, withTimeout, createElectronView, electronSessionFor, okText, textOfResult, errorResult, navigationFlag, TAB_SELECT_CHORDS };
+// Class methods are non-enumerable; mixed-in ones must be too.
+function mixin(target, ...sources) {
+  for (const source of sources) {
+    for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(source))) {
+      if (Object.hasOwn(target, name)) throw new Error(`mixin would replace ${name}`);
+      Object.defineProperty(target, name, { ...descriptor, enumerable: false });
+    }
+  }
+}
+
+module.exports = { mixin, CURSOR_MOVE_MS, CURSOR_CLICK_LEAD_MS, RPC_TIMEOUT_MS, CAPTURE_TIMEOUT_MS, CAPTURE_TIMEOUT_MESSAGE, FREEZE_TIMEOUT_MS, FREEZE_TIMEOUT_MESSAGE, BOUNDS_SETTLE_MS, HIBERNATE_GRACE_MS, MAX_LIVE_VIEWS, MAX_TABS_PER_SCOPE, CLOSED_BY_PERSON_MESSAGE, HUMAN_ATTRIBUTION_GRACE_MS, SYNTHETIC_REPORT_TTL_MS, HUMAN_ACTIVE_MS, DEFER_MAX_MS, DEFER_POLL_MS, humanActiveOn, staleView, isReadTool, sleep, withTimeout, createElectronView, electronSessionFor, okText, textOfResult, errorResult, navigationFlag, TAB_SELECT_CHORDS };
