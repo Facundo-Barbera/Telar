@@ -3280,10 +3280,10 @@ describe("a notification is delivered as system-authored, stamped with its real 
     steer.push({ text: "the body", sender: { sessionId: "session_peer" }, notification: peer });
     await run(driver, { steer }).result;
     expect(seen[1]?.origin).toEqual({ kind: "peer", from: "session_peer", fromSession: "session_peer" });
-    expect((seen[1]?.message as { content: string }).content).toStartWith("<system-reminder>");
+    expect((seen[1]!.message as { content: string }).content).toStartWith("<system-reminder>");
     // TIMING DOES NOT CHANGE THE ROLE — the same happening arriving on an idle
     // session and on a busy one is delivered the same way.
-    expect((seen[1]?.message as { content: string }).content).toContain(peer.body);
+    expect((seen[1]!.message as { content: string }).content).toContain(peer.body);
   });
 
   test("a batch mixing a notification with typed words stays the person's", async () => {
@@ -3303,7 +3303,7 @@ describe("a notification is delivered as system-authored, stamped with its real 
     steer.push("and the person weighs in");
     await run(driver, { steer }).result;
     expect(seen[1]?.origin).toEqual({ kind: "human" });
-    expect((seen[1]?.message as { content: string }).content).not.toContain("<system-reminder>");
+    expect((seen[1]!.message as { content: string }).content).not.toContain("<system-reminder>");
   });
 });
 
@@ -5184,7 +5184,7 @@ for (const providerSessionId of [undefined, 'resumed-browser-session']) {
     expect(briefing.append).toContain('telar-browser');
     expect(briefing.append).toContain('tools may be deferred');
     expect(JSON.stringify(prompts[0])).not.toContain('test-token');
-    await run(createClaudeDriver(sdk), { ...(providerSessionId ? { providerSessionId } : {}) }).result;
+    await run(createClaudeDriver(sdk), providerSessionId ? { providerSessionId } : {}).result;
     expect(prompts[1]).toBeUndefined();
   });
 }

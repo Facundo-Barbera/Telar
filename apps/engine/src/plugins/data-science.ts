@@ -353,7 +353,7 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
           ...(input.remove === true ? { remove: true } : {}),
         }),
       env: (input, capability) =>
-        (capability as DsCapability).environment({ ...(typeof input.use === "string" ? { use: input.use } : {}) }),
+        (capability as DsCapability).environment(typeof input.use === "string" ? { use: input.use } : {}),
       packages: (_input, capability) => (capability as DsCapability).packages(),
       install: (input, capability) =>
         (capability as DsCapability).install({

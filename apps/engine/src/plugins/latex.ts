@@ -276,7 +276,7 @@ export function latexPlugin(deps: LatexPluginDeps): PluginEngineModule<LatexSett
           ...(Array.isArray(input.add) ? { add: input.add.map(String) } : {}),
           ...(Array.isArray(input.remove) ? { remove: input.remove.map(String) } : {}),
         }),
-      clean: (input, capability) => (capability as LatexCapability).clean({ ...(input.pdf === true ? { pdf: true } : {}) }),
+      clean: (input, capability) => (capability as LatexCapability).clean(input.pdf === true ? { pdf: true } : {}),
     },
 
     projectRoutes: scoped.project,

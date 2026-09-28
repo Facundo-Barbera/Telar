@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { atomicWrite } from "../../platform/fs/atomic";
+import { atomicWrite, atomicWriteText } from "../../platform/fs/atomic";
 
 type AppearanceHomePaths = {
   root: string;
@@ -211,19 +211,7 @@ export function putImage(stateRoot: string, bytes: Uint8Array): string | undefin
   const digest = crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 16);
   const name = `${digest}.${extension}`;
   const file = path.join(paths.images, name);
-  if (!fs.existsSync(file)) {
-    const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-    try {
-      fs.writeFileSync(temporary, bytes, { mode: 0o600 });
-      fs.renameSync(temporary, file);
-    } finally {
-      try {
-        fs.unlinkSync(temporary);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
-  }
+  if (!fs.existsSync(file)) atomicWriteText(file, bytes);
   return name;
 }
 

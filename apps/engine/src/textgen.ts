@@ -178,7 +178,7 @@ async function runStructured(input: TextGenDriverInput, prompt: string, schema: 
  *  flag fails the run, and a failed run keeps the placeholder — the same
  *  best-effort contract as every other failure in this file. */
 async function runClaude(input: TextGenDriverInput, prompt: string, schema: object): Promise<Record<string, unknown> | undefined> {
-  const executable = requireCli("claude", { ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}) });
+  const executable = requireCli("claude", input.binaryPath ? { binaryPath: input.binaryPath } : {});
   const args = [
     "-p",
     "--no-session-persistence",
@@ -202,7 +202,7 @@ async function runClaude(input: TextGenDriverInput, prompt: string, schema: obje
  * Read-only sandbox because this call has no business writing anything.
  */
 async function runCodex(input: TextGenDriverInput, prompt: string, schema: object): Promise<Record<string, unknown> | undefined> {
-  const executable = requireCli("codex", { ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}) });
+  const executable = requireCli("codex", input.binaryPath ? { binaryPath: input.binaryPath } : {});
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "telar-textgen-"));
   const schemaPath = path.join(scratch, "schema.json");
   const outputPath = path.join(scratch, "answer.json");
@@ -248,7 +248,7 @@ function runToCompletion(executable: string, args: string[], input: TextGenDrive
     // this file (the engine's and the web app's embedded-worker build).
     const child = spawn(executable, args, {
       cwd: input.cwd,
-      env: { ...processEnv(), ...(input.env ?? {}) } as NodeJS.ProcessEnv,
+      env: { ...processEnv(), ...input.env } as NodeJS.ProcessEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
     // Consumed and discarded, not left unread: `codex exec` narrates progress

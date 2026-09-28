@@ -104,7 +104,7 @@ test("re-probing is unauthenticated-proof like every other route", async () => {
  * ------------------------------------------------------------------ */
 
 test("registration stores the drive, and the projects list publishes its availability", async () => {
-  const { client, get, mounts } = await onADrive();
+  const { get, mounts } = await onADrive();
 
   const registered = (await (await get("/v2/projects")).json()) as { projects: Array<{ id: string; volume?: unknown; availability?: string }> };
   expect(registered.projects[0]!.volume).toEqual({ mount: path.join(mounts.mountRoot, "TelarVR"), uuid: mounts.uuidOf("TelarVR") });

@@ -21,7 +21,6 @@ import type {
   McpServer,
   NotificationDetail,
   TurnAttachment,
-  RequestDecision,
   RequestDetail,
   RequestKind,
   PlanDetail,
@@ -41,7 +40,6 @@ import {
   isTelarMcpServer,
   isUnstatedEnding,
   parseToolName,
-  qualifyTelarTool,
   TELAR_BROWSER_MCP_SERVER,
   TELAR_MCP_SERVER,
   claudeCompactionEnv,
@@ -65,14 +63,13 @@ import {
   MessageFeed,
   UNATTENDED_BACKGROUND_WORK_MS,
   type ClaudeSessionRuntime,
-  type FeedMessage,
   type RuntimeBindings,
   type RuntimeQuery,
   taskMemoryFrom,
 } from "./claude-runtime";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./domains/git";
 import type { DisplayCapability } from "./display/tools";
-import { framedSteerText, RELAY_RULE, type SteerMailbox, type SteerMessage, steerRowTitle } from "./domains/turns";
+import { framedSteerText, RELAY_RULE, type SteerMessage, steerRowTitle } from "./domains/turns";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./domains/notes";
 import type { PromptsCapability } from "./prompts-tools/tools";
@@ -1191,7 +1188,7 @@ export class RateLimitedError extends Error {
  */
 function defaultClaudeExecutable(binaryPath?: string): string {
   try {
-    return requireCli("claude", { ...(binaryPath ? { binaryPath } : {}) });
+    return requireCli("claude", binaryPath ? { binaryPath } : {});
   } catch (error) {
     throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
   }
@@ -1890,7 +1887,6 @@ export function createClaudeDriver(
            * "a backgrounded shell".
            */
           const backgrounded = item.patch?.is_backgrounded === true;
-          const known = knownTasks.has(taskIdFor(str(item.task_id), undefined));
           // `task_updated` states no `task_type`, and `is_backgrounded` is set
           // for `local_agent` AND `local_bash` — so it cannot name a kind. The
           // fold reads the type the SDK stated elsewhere.
@@ -2020,7 +2016,7 @@ export function createClaudeDriver(
             if (Object.keys({ ...kind, ...backgrounded, ...ambient }).length === 0) continue;
             emitTask("task.progress", entry.id, { state: row.state, ...kind, ...backgrounded, ...ambient });
           }
-          for (const task of [...knownTasks.values()]) {
+          for (const task of knownTasks.values()) {
             if (!isBackgroundWork(task) || isTerminalTaskState(task.state)) continue;
             const sdkId = task.providerTaskId;
             if (!sdkId || !taskIdsBySdkId.has(sdkId) || live.has(sdkId)) continue;
@@ -2710,7 +2706,7 @@ export function createClaudeDriver(
          */
         const mcpServers =
           userServers || telarServer || telarBrowserServer
-            ? { ...(userServers ?? {}), ...(telarBrowserServer ?? {}), ...(telarServer ?? {}) }
+            ? { ...userServers, ...telarBrowserServer, ...telarServer }
             : undefined;
 
         const feed = new MessageFeed();
@@ -3008,7 +3004,7 @@ export function createClaudeDriver(
        * top-level set is what gates the turn's ending.
        */
       const closeCutTools = (): void => {
-        for (const useId of [...openTopLevelTools]) {
+        for (const useId of openTopLevelTools) {
           openTopLevelTools.delete(useId);
           const open = openTools.get(useId);
           if (!open) continue;

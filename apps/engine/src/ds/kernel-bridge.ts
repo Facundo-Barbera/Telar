@@ -40,7 +40,7 @@ export class KernelBridge {
 
   constructor(python: string, script: string, options: { cwd: string; env?: NodeJS.ProcessEnv; spawnImpl?: SpawnBridge }) {
     const spawnImpl = options.spawnImpl ?? defaultSpawnBridge;
-    this.child = spawnImpl(python, script, { cwd: options.cwd, env: { ...process.env, ...(options.env ?? {}), PYTHONUNBUFFERED: "1" } });
+    this.child = spawnImpl(python, script, { cwd: options.cwd, env: { ...process.env, ...options.env, PYTHONUNBUFFERED: "1" } });
     this.child.on("error", (error) => this.close(error));
     createInterface({ input: this.child.stdout }).on("line", (line) => this.consume(line));
     // Kept, bounded, for the error a failed spawn produces — "ModuleNotFoundError:

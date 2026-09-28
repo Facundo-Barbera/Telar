@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import type { TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";
 
@@ -53,8 +52,6 @@ async function engine(options: { onWorkerRetired?: (workerId: string) => void } 
   await client.createSession({ id: "session_one", projectId: "project_one" });
   return { daemon, client };
 }
-
-const silent: TurnDriver = { run: async () => ({ text: "" }) };
 
 test("A, retry A, then B, then the DELAYED ORIGINAL A — one allocation, and the straggler is refused", async () => {
   /**

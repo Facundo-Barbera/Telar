@@ -75,7 +75,7 @@ function raw(home: string): { stubs: number; needle: number; bytes: number } {
 test("a slimmed journal reads back exactly as it was written", () => {
   const home = build();
   const store = reopen(home);
-  store.sweep(["compact"]).journal;
+  store.sweep(["compact"]);
   const before = store.events("session_one");
   const stored = raw(home);
 
@@ -93,8 +93,8 @@ test("a slimmed journal reads back exactly as it was written", () => {
 test("it runs once: a second sweep changes nothing", () => {
   const home = build();
   const store = reopen(home);
-  store.sweep(["compact"]).journal;
-  store.sweep(["slim"]).slimmed;
+  store.sweep(["compact"]);
+  store.sweep(["slim"]);
   const once = store.events("session_one");
   const bytes = raw(home).bytes;
   expect(store.sweep(["slim"]).slimmed).toEqual({ rows: 0, sessions: 0 });
@@ -113,11 +113,11 @@ test("nothing the compaction has not read is slimmed", () => {
 test("grep finds text that now lives only in the items row, and answers it whole", () => {
   const home = build();
   const store = reopen(home);
-  store.sweep(["compact"]).journal;
+  store.sweep(["compact"]);
   const before = store.grepEvents("session_one", NEEDLE, undefined, 50);
   expect(before).toHaveLength(3);
 
-  store.sweep(["slim"]).slimmed;
+  store.sweep(["slim"]);
   expect(raw(home).needle).toBe(0);
   const after = store.grepEvents("session_one", NEEDLE, undefined, 50);
   expect(after.map((row) => row.id)).toEqual(before.map((row) => row.id));
@@ -129,7 +129,7 @@ test("grep finds text that now lives only in the items row, and answers it whole
 test("a row that differs from its event is not slimmed", () => {
   const home = build(1);
   const store = reopen(home);
-  store.sweep(["compact"]).journal;
+  store.sweep(["compact"]);
   const before = store.events("session_one");
   // The item row moves on, so the event is no longer a copy of it.
   store.upsertItems("session_one", [{ id: "cmd_0", runId: "run_0", value: JSON.stringify({ id: "cmd_0", runId: "run_0", status: "completed", changed: true }) }]);
@@ -140,9 +140,9 @@ test("a row that differs from its event is not slimmed", () => {
 test("a row that changes after it was slimmed gives the stub its item back first", () => {
   const home = build(1);
   const store = reopen(home);
-  store.sweep(["compact"]).journal;
+  store.sweep(["compact"]);
   const before = store.events("session_one");
-  store.sweep(["slim"]).slimmed;
+  store.sweep(["slim"]);
   expect(raw(home).stubs).toBe(2);
 
   store.upsertItems("session_one", [{ id: "cmd_0", runId: "run_9", value: JSON.stringify({ id: "cmd_0", runId: "run_9", status: "inProgress" }) }]);
@@ -153,9 +153,9 @@ test("a row that changes after it was slimmed gives the stub its item back first
 test("retention's guards and export are unchanged by a slimmed journal", () => {
   const home = build();
   const store = reopen(home);
-  store.sweep(["compact"]).journal;
+  store.sweep(["compact"]);
   const before = store.events("session_one");
-  store.sweep(["slim"]).slimmed;
+  store.sweep(["slim"]);
 
   const exportTo = path.join(home, "exports");
   expect(store.retireSession("session_one", { exportTo })).toEqual({ retired: true, events: before.length });

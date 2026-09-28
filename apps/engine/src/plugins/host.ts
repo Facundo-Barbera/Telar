@@ -201,8 +201,8 @@ export class PluginHost {
     const record = this.records.get(id);
     if (!record) return;
     this.records.delete(id);
-    for (const [prefix, owner] of [...this.prefixOwners]) if (owner === id) this.prefixOwners.delete(prefix);
-    for (const [key, timer] of [...this.drains]) {
+    for (const [prefix, owner] of this.prefixOwners) if (owner === id) this.prefixOwners.delete(prefix);
+    for (const [key, timer] of this.drains) {
       if (key.startsWith(`${id}:`)) {
         clearTimeout(timer);
         this.drains.delete(key);

@@ -192,7 +192,7 @@ export function sweep(hitRates: number[] = [0, 0.5, 0.9, 1]): Row[] {
 /** The multiplier #587 states as ~3.5×, per cache-hit assumption. */
 export function multipliers(rows: Row[]): { cacheHitRate: number; flatRatio: number; billedRatio: number }[] {
   const out: { cacheHitRate: number; flatRatio: number; billedRatio: number }[] = [];
-  for (const rate of [...new Set(rows.map((row) => row.cacheHitRate))]) {
+  for (const rate of new Set(rows.map((row) => row.cacheHitRate))) {
     const small = rows.find((row) => row.cacheHitRate === rate && row.thresholdTokens === THRESHOLDS[0]);
     const large = rows.find((row) => row.cacheHitRate === rate && row.thresholdTokens === THRESHOLDS[1]);
     if (!small || !large) continue;

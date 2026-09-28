@@ -763,7 +763,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                   : {}),
               }
             : undefined;
-        const mcpServers = userTable || telarTable ? { ...(userTable ?? {}), ...(telarTable ?? {}) } : undefined;
+        const mcpServers = userTable || telarTable ? { ...userTable, ...telarTable } : undefined;
         /**
          * ONE DESKTOP PER THREAD. The claim carries a `mac` server two ways
          * now: Telar's own injection, which #521 restored to Codex after #368
@@ -1078,7 +1078,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
               for (const [, row] of open) emit({ kind: "item.completed", itemId: row.id, status: "failed" });
               open.clear();
               // Same for a child thread that never reported its own completion.
-              for (const child of [...childTasks]) closeThreadTask(child, "failed");
+              for (const child of childTasks) closeThreadTask(child, "failed");
               if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
               await flush();
               if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");

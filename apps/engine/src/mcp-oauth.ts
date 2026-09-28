@@ -274,7 +274,7 @@ export async function checkMcpHealth(
   const fetchImpl = options?.fetchImpl ?? globalThis.fetch;
   try {
     const headers: Record<string, string> = {
-      ...(options?.headers ?? {}),
+      ...options?.headers,
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
       "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
@@ -412,9 +412,7 @@ async function ensureClient(options: {
   clientDocUrl?: string;
   fetchImpl?: typeof fetch;
 }): Promise<OAuthClient> {
-  const strategy = decideClientStrategy(options.as, options.overrides, {
-    ...(options.clientDocUrl ? { clientDocUrl: options.clientDocUrl } : {}),
-  });
+  const strategy = decideClientStrategy(options.as, options.overrides, options.clientDocUrl ? { clientDocUrl: options.clientDocUrl } : {});
 
   if (strategy === "cimd") return { strategy: "cimd", id: options.clientDocUrl! };
   if (strategy === "manual") return { strategy: "manual", id: options.overrides.clientId! };

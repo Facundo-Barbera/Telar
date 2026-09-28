@@ -207,7 +207,7 @@ export class CodexAppServer {
  */
 export function resolveCodexBinary(binaryPath?: string): string {
   try {
-    return requireCli("codex", { ...(binaryPath ? { binaryPath } : {}) });
+    return requireCli("codex", binaryPath ? { binaryPath } : {});
   } catch (error) {
     throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
   }

@@ -110,7 +110,7 @@ function fakeClient(options: { register?: { heartbeatIntervalMs?: number } | und
       hang = on;
     },
     client: {
-      registerWorker: async () => ({ worker: { workerId: "worker_fake" }, ...(options.register ?? {}) }),
+      registerWorker: async () => ({ worker: { workerId: "worker_fake" }, ...options.register }),
       workerHeartbeat: async () => {
         state.heartbeats += 1;
         // A request that never resolves — the case that used to pin `ticking`

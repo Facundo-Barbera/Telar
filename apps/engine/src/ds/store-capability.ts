@@ -371,7 +371,7 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
       } else {
         const target = input.name ? runs.find((r) => r.name === input.name) : [...runs].reverse().find((r) => !r.endedAt);
         if (!target) throw new Error("no open experiment; start one");
-        if (input.action === "log") target.metrics.push({ ...(input.metrics ?? {}), _at: deps.now() });
+        if (input.action === "log") target.metrics.push({ ...input.metrics, _at: deps.now() });
         else target.endedAt = deps.now();
       }
       files.saveExperiments(runs);

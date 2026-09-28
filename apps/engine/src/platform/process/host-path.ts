@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import os from "node:os";
-import path from "node:path";
 
 const ENV_NAME = /^[A-Z0-9_]+$/;
 
