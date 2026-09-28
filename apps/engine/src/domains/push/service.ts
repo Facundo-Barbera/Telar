@@ -1,4 +1,3 @@
-import type http from "node:http";
 import { EngineClient, type EngineDiscovery } from "@telar/engine-client";
 import type { Route } from "../../platform/http/route";
 import { dismissDesktop } from "./desktop";
@@ -20,7 +19,28 @@ export function createPushService(options: { remoteDir: string; pairedDevices: P
   };
   const fullDevices = () => options.pairedDevices().filter((device) => device.role === "full").map((device) => device.id);
   return {
-    routes: pushRoutes(deps) as Route[],
+    routes: [
+      ...(pushRoutes(deps) as Route[]),
+      {
+        method: "GET",
+        path: "/v2/push/desktop/stream",
+        auth: "engine",
+        handle({ request, response }) {
+          const stop = serveDesktopStream(response, deps);
+          const finish: Stream = Object.assign(
+            () => {
+              stop();
+              options.openStreams.delete(finish);
+            },
+            { end: () => { finish(); response.end(); } },
+          );
+          options.openStreams.add(finish);
+          request.on("close", finish);
+          response.on("close", finish);
+          return undefined;
+        },
+      },
+    ] satisfies Route[],
     dismiss: dismissDesktop,
     listening(discovery: EngineDiscovery) {
       client = new EngineClient(discovery);
@@ -29,21 +49,6 @@ export function createPushService(options: { remoteDir: string; pairedDevices: P
     close() {
       stopMobilePushWorker();
       setPushHome(undefined);
-    },
-    serveStream(request: http.IncomingMessage, response: http.ServerResponse, pathname: string): boolean {
-      if (request.method !== "GET" || pathname !== "/v2/push/desktop/stream") return false;
-      const stop = serveDesktopStream(response, deps);
-      const finish: Stream = Object.assign(
-        () => {
-          stop();
-          options.openStreams.delete(finish);
-        },
-        { end: () => { finish(); response.end(); } },
-      );
-      options.openStreams.add(finish);
-      request.on("close", finish);
-      response.on("close", finish);
-      return true;
     },
   };
 }

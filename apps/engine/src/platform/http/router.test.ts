@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { errorFor, HttpError } from "./http";
-import { ok, type Route } from "./route";
+import { notModified, ok, type Route } from "./route";
 import { matchRoute, router } from "./router";
 
 const sessionPattern: Route = { method: "GET", path: /^\/v2\/sessions\/([^/]+)$/, auth: "engine", handle: ({ params }) => ok({ session: params[0] }) };
@@ -11,6 +11,12 @@ const socket: Route = { method: "GET", path: "/v2/sessions/mcp", auth: "engine",
 test("a literal path beats a pattern declared before it", () => {
   expect(matchRoute([sessionPattern, socket], "GET", "/v2/sessions/mcp")?.route).toBe(socket);
   expect(matchRoute([sessionPattern, socket], "GET", "/v2/sessions/abc")).toEqual({ route: sessionPattern, params: ["abc"] });
+});
+
+test("an optional group that did not match stays undefined", () => {
+  const items: Route = { method: "GET", path: /^\/v2\/runs\/([a-z]+)\/items(?:\/([a-z]+))?$/, auth: "engine", handle: () => ok({}) };
+  expect(matchRoute([items], "GET", "/v2/runs/abc/items")?.params).toEqual(["abc", undefined] as unknown as string[]);
+  expect(matchRoute([items], "GET", "/v2/runs/abc/items/xy")?.params).toEqual(["abc", "xy"]);
 });
 
 test("patterns are tried in declaration order and a method mismatch does not match", () => {
@@ -58,6 +64,27 @@ test("a route answering with bytes is sent raw with its own headers", async () =
   const icon: Route = { method: "GET", path: "/v2/icon", auth: "engine", handle: () => ({ status: 200, body: undefined, bytes: new Uint8Array([1, 2, 3]), headers: { "content-type": "image/png" } }) };
   const answer = await fetch(`${await serve([icon])}/v2/icon`, { headers: { authorization: "Bearer ok" } });
   expect([answer.headers.get("content-type"), [...new Uint8Array(await answer.arrayBuffer())]]).toEqual(["image/png", [1, 2, 3]]);
+});
+
+test("a raw route reads its own body and may write the response itself; a 304 carries no body", async () => {
+  const upload: Route = {
+    method: "POST",
+    path: "/v2/upload",
+    auth: "engine",
+    body: "raw",
+    async handle({ request, response }) {
+      let size = 0;
+      for await (const chunk of request) size += (chunk as Buffer).length;
+      response.writeHead(207).end(String(size));
+      return undefined;
+    },
+  };
+  const tagged: Route = { method: "GET", path: "/v2/tagged", auth: "engine", handle: () => notModified('W/"x"') };
+  const base = await serve([upload, tagged]);
+  const sent = await fetch(`${base}/v2/upload`, { method: "POST", headers: { authorization: "Bearer ok" }, body: "not json at all" });
+  expect([sent.status, await sent.text()]).toEqual([207, "15"]);
+  const cached = await fetch(`${base}/v2/tagged`, { headers: { authorization: "Bearer ok" } });
+  expect([cached.status, cached.headers.get("etag"), await cached.text()]).toEqual([304, 'W/"x"', ""]);
 });
 
 test("an unmatched request goes to the fallback, whose throw becomes the error answer", async () => {

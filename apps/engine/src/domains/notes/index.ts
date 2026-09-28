@@ -1,4 +1,5 @@
-export { createNote, deleteNote, getNote, ProjectNotesError, readNotes, updateNote } from "./store";
-export { collectNotesWallTools, ensureNotesSocketSecret, handleNotesSocketMessage, notesSocketConnectCard } from "./socket";
+export { ProjectNotesError } from "./store";
+export { collectNotesWallTools, ensureNotesSocketSecret, handleNotesSocketMessage } from "./socket";
 export { notesTools, type NotesCapability } from "./tools";
 export { notesCapability, storeNoteRead, storeNotesPort } from "./capability";
+export { notesRoutes } from "./routes";

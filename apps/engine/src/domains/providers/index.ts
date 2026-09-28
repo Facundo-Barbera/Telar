@@ -14,12 +14,8 @@ export {
   requireCli,
   resolveCli,
 } from "./cli";
-export { runCliUpdate, type CliUpdateRun } from "./cli-updates";
-export {
-  createProviderProber,
-  providerProcessEnv,
-  type VersionProbe,
-} from "./instances";
+export { type CliUpdateRun } from "./cli-updates";
+export { providerProcessEnv, type VersionProbe } from "./instances";
 export {
   codexHome,
   loadClaudeCommandSdk,
@@ -29,14 +25,14 @@ export {
   providerSkillRoots,
   readClaudeSupportedCommands,
   readProviderSkillsCached,
-  type LoadProviderCommands,
 } from "./skills";
 export {
   generateSessionTitle,
   maybeRetitleSession,
-  runStructuredForPolicy,
   textGenDisabledByEnv,
   type RetitleStore,
 } from "./textgen";
 export { ProviderRegistry, type ProviderInstanceInput } from "./registry";
 export { installedCli, ModelCatalogues, type InstalledCli } from "./catalogues";
+export { providersRoutes } from "./routes";
+export { sessionProviderRoutes, type ProviderSkillsOptions } from "./session-routes";

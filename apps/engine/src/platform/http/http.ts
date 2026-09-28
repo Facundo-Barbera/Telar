@@ -45,6 +45,19 @@ export function matchesETag(header: string | string[] | undefined, tag: string):
   return false;
 }
 
+/** Raw bytes up to `limit`, for a route whose body is not JSON; `body()` keeps its own tight cap. */
+export async function rawBody(request: http.IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > limit) throw new HttpError(400, "invalid_request", "attachment is larger than the engine accepts");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 export async function body(request: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -66,3 +79,4 @@ export async function body(request: http.IncomingMessage): Promise<Record<string
     throw new HttpError(400, "invalid_request", "request body is invalid JSON");
   }
 }
+

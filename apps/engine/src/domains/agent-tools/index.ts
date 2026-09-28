@@ -6,3 +6,4 @@ export { collectTelarWall, type TelarCapabilities, type TelarSocketLease, TelarT
 export { clampLimit, err, failure, fillWithin, json, MAX_ANSWER_CHARS, ok, type ToolFactory } from "./tool-kit";
 export { McpOAuthStore, type PendingMcpOAuth } from "./mcp-oauth-store";
 export { McpServers } from "./mcp-servers";
+export { mcpSocketRoute } from "./socket-routes";

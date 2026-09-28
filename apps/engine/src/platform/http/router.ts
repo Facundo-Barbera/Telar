@@ -12,13 +12,13 @@ type RouterOptions = {
 
 /** Exact paths win over patterns, whatever the order; patterns are tried in declaration order. */
 export function matchRoute(routes: readonly Route[], method: string, pathname: string): { route: Route; params: string[] } | undefined {
-  const candidates = routes.filter((route) => route.method === method);
+  const candidates = routes.filter((route) => route.method === method || route.method === "*");
   const exact = candidates.find((route) => route.path === pathname);
   if (exact) return { route: exact, params: [] };
   for (const route of candidates) {
     if (typeof route.path === "string") continue;
     const match = route.path.exec(pathname);
-    if (match) return { route, params: match.slice(1).map(decodeURIComponent) };
+    if (match) return { route, params: match.slice(1).map((group) => (group === undefined ? group : decodeURIComponent(group))) as string[] };
   }
   return undefined;
 }
@@ -36,10 +36,11 @@ export function router(routes: readonly Route[], options: RouterOptions): http.R
       const matched = matchRoute(routes, request.method ?? "GET", url.pathname);
       if (!matched) return await fallback(request, response, url);
       options.authorize(matched.route.auth, request);
-      const input = { body: request.method === "GET" ? {} : await body(request), params: matched.params, query: url.searchParams };
-      const answer = await matched.route.handle(input);
+      const parsed = request.method === "GET" || matched.route.body === "raw" ? {} : await body(request);
+      const answer = await matched.route.handle({ body: parsed, params: matched.params, query: url.searchParams, request, response });
+      if (!answer) return;
       if (answer.bytes) response.writeHead(answer.status, answer.headers).end(answer.bytes);
-      else writeJson(response, answer.status, answer.body);
+      else writeJson(response, answer.status, answer.body, answer.headers);
     } catch (error) {
       writeError(response, options.errorFor(error));
     }
