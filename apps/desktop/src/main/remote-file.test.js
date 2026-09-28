@@ -113,7 +113,7 @@ describe("a known version is honoured, with both conditions", () => {
 
 describe("the version tracks the store's", () => {
   test("store.ts declares the version this module knows", () => {
-    const storeTs = path.join(__dirname, "..", "..", "..", "web", "src", "features", "remote", "server", "store.ts");
+    const storeTs = path.join(__dirname, "..", "..", "..", "engine", "src", "domains", "remote", "store.ts");
     const source = fs.readFileSync(storeTs, "utf8");
     const declared = source.match(/version:\s*(\d+);/)?.[1];
     expect(declared).toBeDefined();
