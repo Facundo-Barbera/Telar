@@ -18,7 +18,8 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { GitOverview, GitRefEntry, Session } from "@telar/engine-client";
-import { BaseRefPicker, EnvironmentStrip } from "./workspace-environment";
+import { createEngineApi } from "@/platform/engine";
+import { BaseRefPicker, EnvironmentStrip, readWorkspaceGit } from "./workspace-environment";
 
 const session = { id: "session_1", projectId: "p1", workspace: { mode: "worktree", branch: "telar/x" } } as unknown as Session;
 
@@ -128,5 +129,34 @@ describe("the base-ref picker when git did not answer", () => {
     // git did answer is still a perfectly good base.
     const markup = picker({ incomplete: "timeout", onRetry: () => {} });
     expect(markup).toContain("origin/main");
+  });
+});
+
+describe("the uncommitted count", () => {
+  const engine = (worktreeFiles: string[] | "gone") =>
+    createEngineApi(async (url) => {
+      const path = String(url);
+      if (path === "/api/projects/p1/git") return Response.json({ git: git({ dirtyFiles: 7 }) });
+      if (path === "/api/sessions/session_1/diff?base=") {
+        if (worktreeFiles === "gone") return Response.json({ error: { code: "not_found", message: "gone" } }, { status: 404 });
+        const files = worktreeFiles.map((file) => ({ path: file, status: "modified" }));
+        return Response.json({ diff: { repository: true, workspacePath: "/wt", files, commits: [], linesAdded: 0, linesRemoved: 0, truncated: false } });
+      }
+      return Response.json({ error: { code: "not_found", message: path } }, { status: 404 });
+    });
+
+  test("a worktree session counts its own worktree, not the project's checkout", async () => {
+    expect((await readWorkspaceGit(engine([]), "p1", "session_1")).dirtyFiles).toBe(0);
+    expect((await readWorkspaceGit(engine(["a.ts", "b.ts"]), "p1", "session_1")).dirtyFiles).toBe(2);
+  });
+
+  test("a session on the checkout counts the checkout", async () => {
+    expect((await readWorkspaceGit(engine([]), "p1")).dirtyFiles).toBe(7);
+  });
+
+  test("an unreadable worktree draws no count rather than the checkout's", async () => {
+    const read = await readWorkspaceGit(engine("gone"), "p1", "session_1");
+    expect(read.dirtyFiles).toBeUndefined();
+    expect(read.branch).toBe("main");
   });
 });
