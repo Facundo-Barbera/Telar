@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import fs from "node:fs";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 import { useTempStores } from "../../../test/temp-store";
 
 const { root } = useTempStores();
@@ -10,8 +11,8 @@ test("a file patch cannot be asked for outside the session's own workspace", () 
   // asks to read a file it was never offered. Fenced in the store rather than at
   // the route, so an in-process caller cannot walk past it either.
   const store = new EngineStore(root(), () => 100, { git: () => ({ status: 0, stdout: "", stderr: "" }) });
-  store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  expect(() => store.sessionFilePatchAsync("session_one", "../../etc/passwd")).toThrow(EngineStateError);
-  expect(() => store.sessionFilePatchAsync("session_one", "  ")).toThrow(EngineStateError);
+  store.projectRegistry.register({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  expect(() => store.workspaceReads.sessionFilePatch("session_one", "../../etc/passwd")).toThrow(EngineStateError);
+  expect(() => store.workspaceReads.sessionFilePatch("session_one", "  ")).toThrow(EngineStateError);
 });

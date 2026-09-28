@@ -313,8 +313,8 @@ test("the token answer carries the keyterms, with the person's own terms first",
 test("an unsettled conversation and its project are words the recogniser is told about", async () => {
   const { daemon, client } = await engine();
   await switchedOn(client);
-  daemon.store.registerProject({ id: "project_one", name: "Zarigüeya", root: "/tmp" });
-  daemon.store.createSession({ id: "session_one", projectId: "project_one", title: "Nightly build triage" });
+  daemon.store.projectRegistry.register({ id: "project_one", name: "Zarigüeya", root: "/tmp" });
+  daemon.store.lifecycle.createSession({ id: "session_one", projectId: "project_one", title: "Nightly build triage" });
   const { keyterms } = await client.dictationToken();
   expect(keyterms).toContain("Nightly build triage");
   expect(keyterms).toContain("Zarigüeya");
@@ -323,9 +323,9 @@ test("an unsettled conversation and its project are words the recogniser is told
 test("the list stays bounded however many conversations are open", async () => {
   const { daemon, client } = await engine();
   await switchedOn(client);
-  daemon.store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  daemon.store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
   for (let index = 0; index < 60; index += 1) {
-    daemon.store.createSession({ id: `session_${index}`, projectId: "project_one", title: `Conversation number ${index}` });
+    daemon.store.lifecycle.createSession({ id: `session_${index}`, projectId: "project_one", title: `Conversation number ${index}` });
   }
   const { keyterms } = await client.dictationToken();
   expect(new TextEncoder().encode(keyterms!.join("")).length).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_BYTE_BUDGET);

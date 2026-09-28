@@ -8,7 +8,7 @@ import {
   PLUGIN_API_VERSION,
   type PluginMeta,
 } from "@telar/engine-client";
-import type { EngineStore } from "../../../state";
+import type { DataScienceOps } from "./operations";
 import { jobCursor, PluginInputError, requiredString, type PluginMachineRoutes, type PluginProjectRoutes } from "../scoped-routes";
 import type { DsCapability } from "./capability";
 import { KernelHost, type KernelHostOptions } from "./kernel-host";
@@ -79,16 +79,16 @@ export type DataSciencePluginDeps = {
   };
   projectOf: (sessionId: string) => string | undefined;
   settings: Pick<
-    EngineStore,
-    | "dataScienceEnvironments"
-    | "dataScienceCreateEnvironment"
-    | "dataSciencePackages"
-    | "dataScienceInstall"
-    | "dataScienceProbe"
-    | "dataScienceBootstrap"
-    | "dataScienceToolchain"
-    | "dataScienceJob"
-    | "dataScienceCancelJob"
+    DataScienceOps,
+    | "environments"
+    | "createEnvironment"
+    | "packages"
+    | "install"
+    | "probe"
+    | "bootstrap"
+    | "toolchain"
+    | "job"
+    | "cancelJob"
   >;
 };
 
@@ -100,31 +100,31 @@ function dataScienceScopedRoutes(settings: DataSciencePluginDeps["settings"]): {
     Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined;
   return {
     project: {
-      "GET environments": { beforeEnable: true, handle: (_request, { projectId }) => settings.dataScienceEnvironments(projectId) },
+      "GET environments": { beforeEnable: true, handle: (_request, { projectId }) => settings.environments(projectId) },
       "POST environments": {
         status: 202,
         beforeEnable: true,
         handle: ({ input }, { projectId }) => {
           const parsed = DataScienceCreateEnvironment.safeParse(input);
           if (!parsed.success) throw new PluginInputError("not a valid environment request");
-          return settings.dataScienceCreateEnvironment(projectId, parsed.data);
+          return settings.createEnvironment(projectId, parsed.data);
         },
       },
       "POST probe": {
         beforeEnable: true,
         handle: async ({ input }, { projectId }) => ({
-          probe: await settings.dataScienceProbe(projectId, requiredString(input.path, "python path")),
+          probe: await settings.probe(projectId, requiredString(input.path, "python path")),
         }),
       },
-      "GET packages": { handle: (_request, { projectId }) => settings.dataSciencePackages(projectId) },
+      "GET packages": { handle: (_request, { projectId }) => settings.packages(projectId) },
       "POST packages": {
         status: 202,
         handle: ({ input }, { projectId }) =>
-          settings.dataScienceInstall(projectId, {
+          settings.install(projectId, {
             ...(list(input, "add") ? { add: list(input, "add")! } : {}),
             ...(list(input, "remove") ? { remove: list(input, "remove")! } : {}),
             ...(typeof input.requirements === "string"
-              ? { requirements: input.requirements as Parameters<typeof settings.dataScienceInstall>[1]["requirements"] }
+              ? { requirements: input.requirements as Parameters<typeof settings.install>[1]["requirements"] }
               : {}),
           }),
       },
@@ -135,14 +135,14 @@ function dataScienceScopedRoutes(settings: DataSciencePluginDeps["settings"]): {
         handle: ({ input }) => {
           const parsed = DataScienceBootstrap.safeParse(input);
           if (!parsed.success) throw new PluginInputError("not a valid bootstrap request");
-          return settings.dataScienceBootstrap(parsed.data);
+          return settings.bootstrap(parsed.data);
         },
       },
-      "GET toolchain": { handle: async ({ query }) => ({ toolchain: await settings.dataScienceToolchain(query.get("fresh") === "1") }) },
-      "GET jobs/:id": { handle: ({ query, params }) => ({ job: settings.dataScienceJob(params.id!, jobCursor(query)) }) },
+      "GET toolchain": { handle: async ({ query }) => ({ toolchain: await settings.toolchain(query.get("fresh") === "1") }) },
+      "GET jobs/:id": { handle: ({ query, params }) => ({ job: settings.job(params.id!, jobCursor(query)) }) },
       "DELETE jobs/:id": {
         handle: ({ params }) => {
-          settings.dataScienceCancelJob(params.id!);
+          settings.cancelJob(params.id!);
           return {};
         },
       },

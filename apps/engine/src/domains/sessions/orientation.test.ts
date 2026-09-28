@@ -425,18 +425,18 @@ test("a claim carries the paragraph when the preamble is on, and nothing when it
    * the paragraph with the toggle off, is the regression this catches.
    */
   const store = new EngineStore(join(home, "state"));
-  store.registerProject({ id: "project_one", name: "One", root: home });
-  store.createSession({ id: "session_one", projectId: "project_one", driver: "codex" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: home });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", driver: "codex" });
 
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  expect(store.claimNextTurn("worker_one")?.orientation).toBe(TELAR_ORIENTATION);
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(store.claims.claimNextTurn("worker_one")?.orientation).toBe(TELAR_ORIENTATION);
 
-  store.setAgentOrientation({ preamble: false });
+  store.settings.setOrientation({ preamble: false });
   // The skill's switch is a different question and must not answer this one.
-  expect(store.getAgentOrientation()).toEqual({ preamble: false, skill: true });
-  store.createSession({ id: "session_two", projectId: "project_one", driver: "codex" });
-  store.submitTurn("session_two", { runId: "run_two", input: "Hello" });
-  expect(store.claimNextTurn("worker_one")?.orientation).toBeUndefined();
+  expect(store.settings.orientation()).toEqual({ preamble: false, skill: true });
+  store.lifecycle.createSession({ id: "session_two", projectId: "project_one", driver: "codex" });
+  store.intake.submitTurn("session_two", { runId: "run_two", input: "Hello" });
+  expect(store.claims.claimNextTurn("worker_one")?.orientation).toBeUndefined();
 });
 
 test("switching the skill off over HTTP deletes the file that was installed", async () => {

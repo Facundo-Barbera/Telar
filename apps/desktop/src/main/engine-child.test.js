@@ -60,7 +60,7 @@ describe("after the window opened", () => {
 });
 
 test("the shell and the engine agree what a held lock exits with, and it is not a crash's 1", async () => {
-  const { ENGINE_EXIT_LOCK_HELD } = await import("../../../engine/src/state.ts");
+  const { ENGINE_EXIT_LOCK_HELD } = await import("../../../engine/src/platform/process/daemon-lock.ts");
   expect(ENGINE_EXIT_LOCK_HELD).toBeGreaterThan(2);
   const { onEngineExit } = freshEngineChild();
   onEngineExit(storeWithLock(1), ENGINE_EXIT_LOCK_HELD, null);

@@ -3,7 +3,7 @@ import { ok, type Route } from "../../platform/http/route";
 import { TELAR_ORIENTATION } from "../sessions";
 import type { EngineStore } from "../../state";
 
-type AgentOrientation = ReturnType<EngineStore["getAgentOrientation"]>;
+type AgentOrientation = ReturnType<EngineStore["settings"]["orientation"]>;
 
 const present = (input: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> =>
   Object.fromEntries(keys.filter((key) => key in input).map((key) => [key, input[key]]));
@@ -17,7 +17,7 @@ export function settingsRoutes(store: EngineStore, syncOrientationSkill: (policy
       path: "/v2/inbox",
       auth: "engine",
       handle: ({ body }) =>
-        ok({ inbox: store.setInboxPolicy(present(body, ["autoSettleAfterHours", "settleDelegatedAfterHours", "settledTerminalLimit"])) }),
+        ok({ inbox: store.settings.setInbox(present(body, ["autoSettleAfterHours", "settleDelegatedAfterHours", "settledTerminalLimit"])) }),
     },
     { method: "GET", path: "/v2/orientation", auth: "engine", handle: () => ok({ orientation: store.settings.orientation(), text: TELAR_ORIENTATION }) },
     {

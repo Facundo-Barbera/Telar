@@ -34,11 +34,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../../state";
+import { copyStore } from "./copy";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterEach(() => {
-  for (const store of stores.splice(0)) { try { store.closeExecutionStore(); } catch { /* already closed */ } }
+  for (const store of stores.splice(0)) { try { store.kernel.executionStore.close(); } catch { /* already closed */ } }
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -49,12 +50,12 @@ function scene(): { home: string; store: EngineStore } {
   homes.push(home);
   const store = new EngineStore(home, () => START);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "one", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  store.submitTurn("session_one", { runId: "run_one", input: "what is in there" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.completeTurn("session_one", "run_one", token, { text: "this, and it can be read" });
+  store.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "what is in there" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "this, and it can be read" });
   return { home, store };
 }
 
@@ -62,7 +63,7 @@ test("the copy opens, and holds the conversation the original holds", () => {
   const { home, store } = scene();
   const destination = path.join(home, "..", `telar-copy-${Date.now()}`);
   homes.push(destination);
-  const copy = store.copyStoreTo(destination);
+  const copy = copyStore(store.paths.root, store.kernel.executionStore, destination);
   expect(copy.root).toBe(destination);
   expect(copy.files).toBeGreaterThan(1);
   expect(copy.bytes).toBeGreaterThan(0);
@@ -75,17 +76,17 @@ test("the copy opens, and holds the conversation the original holds", () => {
    */
   const opened = new EngineStore(destination, () => START);
   stores.push(opened);
-  expect(opened.getSession("session_one").id).toBe("session_one");
-  expect(opened.turns("session_one")[0]?.input).toBe("what is in there");
-  expect(opened.readEvents("session_one").length).toBe(store.readEvents("session_one").length);
-  expect(opened.listProjects().map((project) => project.id)).toEqual(["project_one"]);
+  expect(opened.records.get("session_one").id).toBe("session_one");
+  expect(opened.queries.turns("session_one")[0]?.input).toBe("what is in there");
+  expect(opened.queries.readEvents("session_one").length).toBe(store.queries.readEvents("session_one").length);
+  expect(opened.projectRegistry.list().map((project) => project.id)).toEqual(["project_one"]);
 });
 
 test("the copy is 0600, and no `-wal` travels beside it", () => {
   const { home, store } = scene();
   const destination = path.join(home, "..", `telar-copy-mode-${Date.now()}`);
   homes.push(destination);
-  store.copyStoreTo(destination);
+  copyStore(store.paths.root, store.kernel.executionStore, destination);
   expect(fs.statSync(path.join(destination, "execution.sqlite")).mode & 0o777).toBe(0o600);
   // A log beside a vacuumed database is a log that describes a different file.
   expect(fs.existsSync(path.join(destination, "execution.sqlite-wal"))).toBe(false);
@@ -106,7 +107,7 @@ test("the reproducible tier is not carried, and neither is the live daemon's loc
 
   const destination = path.join(home, "..", `telar-copy-tiers-${Date.now()}`);
   homes.push(destination);
-  store.copyStoreTo(destination);
+  copyStore(store.paths.root, store.kernel.executionStore, destination);
   for (const skipped of ["worktrees", "python", "tools", "engine.lock", "execution.sqlite-wal"]) {
     expect(fs.existsSync(path.join(destination, skipped))).toBe(false);
   }
@@ -119,10 +120,10 @@ test("the reproducible tier is not carried, and neither is the live daemon's loc
 test("the original is not touched — no vacuum, no compaction, no watermark", () => {
   const { home, store } = scene();
   const file = path.join(home, "execution.sqlite");
-  const before = { size: fs.statSync(file).size, events: store.readEvents("session_one").length };
+  const before = { size: fs.statSync(file).size, events: store.queries.readEvents("session_one").length };
   const destination = path.join(home, "..", `telar-copy-readonly-${Date.now()}`);
   homes.push(destination);
-  store.copyStoreTo(destination);
+  copyStore(store.paths.root, store.kernel.executionStore, destination);
   /**
    * A COPY THAT REWROTE ITS SOURCE would be the opposite of the point — and it
    * is the shape a naive implementation takes, because the in-place `VACUUM`
@@ -131,7 +132,7 @@ test("the original is not touched — no vacuum, no compaction, no watermark", (
    * size does not move.
    */
   expect(fs.statSync(file).size).toBe(before.size);
-  expect(store.readEvents("session_one").length).toBe(before.events);
+  expect(store.queries.readEvents("session_one").length).toBe(before.events);
 });
 
 test("a destination that already exists is refused rather than written into", () => {
@@ -140,12 +141,12 @@ test("a destination that already exists is refused rather than written into", ()
   homes.push(destination);
   fs.mkdirSync(destination, { recursive: true });
   fs.writeFileSync(path.join(destination, "somebody-elses-work"), "do not overwrite me");
-  expect(() => store.copyStoreTo(destination)).toThrow(/already exists/);
+  expect(() => copyStore(store.paths.root, store.kernel.executionStore, destination)).toThrow(/already exists/);
   // And it really left it alone, rather than refusing after doing half the job.
   expect(fs.readdirSync(destination)).toEqual(["somebody-elses-work"]);
 });
 
 test("a relative destination is not a destination", () => {
   const { store } = scene();
-  expect(() => store.copyStoreTo("somewhere/relative")).toThrow(/absolute/);
+  expect(() => copyStore(store.paths.root, store.kernel.executionStore, "somewhere/relative")).toThrow(/absolute/);
 });

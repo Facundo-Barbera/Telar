@@ -10,13 +10,14 @@
  * These tests pin the two halves of the fix: WHICH KEYS reach the wire, and
  * what a store the size of the owner's actually costs.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine } from "../../daemon";
 import { EngineStore } from "../../state";
+import { SessionQueues } from "./queue";
 import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
@@ -45,11 +46,11 @@ const checkout = (): string => {
  *  fields, which is not a saving at all. */
 function loadedStore(count: number): EngineStore {
   const store = new EngineStore(root(), () => 1_700_000_000_000);
-  store.registerProject({ id: "project_one", name: "Telar", root: checkout() });
+  store.projectRegistry.register({ id: "project_one", name: "Telar", root: checkout() });
   for (let index = 0; index < count; index += 1) {
     const id = `session_${index.toString(16).padStart(8, "0")}b2c3d4e5f60718293a4b5c`;
-    store.createSession({ id, projectId: "project_one", title: `Lean the live list: cursor, not poll (${index})` });
-    store.updateSession(id, {
+    store.lifecycle.createSession({ id, projectId: "project_one", title: `Lean the live list: cursor, not poll (${index})` });
+    store.lifecycle.updateSession(id, {
       model: { instanceId: "claude", model: "claude-opus-5[1m]", effort: "high" },
       runtimeMode: "full-access",
       detached: true,
@@ -65,8 +66,8 @@ test("the live list answers rows, not whole sessions — every key a rail draws 
   const store = loadedStore(1);
   // `all` because this is about the row's SHAPE, not about which rows are on
   // it — and session 0 is one of the fixture's pinned-settled third (#457).
-  const [row] = store.liveSessionRows({ all: true }).sessions;
-  const [full] = store.liveSessions().sessions;
+  const [row] = store.live.rows({ all: true }).sessions;
+  const [full] = store.live.all().sessions;
   expect(row).toBeDefined();
   expect(full).toBeDefined();
 
@@ -105,8 +106,8 @@ test("a 267-session store answers the live list in a fraction of what it used to
   // `all` on both sides: this measures the PROJECTION, so the two answers have
   // to describe the same 267 rows. What the narrower default is worth on top of
   // it is the test below (#457).
-  const wide = store.liveSessionRows({ all: true });
-  const full = JSON.stringify(store.liveSessions()).length;
+  const wide = store.live.rows({ all: true });
+  const full = JSON.stringify(store.live.all()).length;
   const lean = JSON.stringify(wide).length;
 
   expect(wide.sessions).toHaveLength(267);
@@ -139,8 +140,8 @@ test("the shapes disagree about rows and about nothing else", () => {
   // that could drift from it. A client asking for either must not find itself
   // reading a different LIST.
   const store = loadedStore(3);
-  const full = store.liveSessions();
-  const lean = store.liveSessionRows({ all: true });
+  const full = store.live.all();
+  const lean = store.live.rows({ all: true });
   expect(lean.sessions.map((session) => session.id)).toEqual(full.sessions.map((session) => session.id));
   expect(lean.projects).toEqual(full.projects);
   expect(lean.layout).toEqual(full.layout);
@@ -161,8 +162,8 @@ test("the shapes disagree about rows and about nothing else", () => {
  */
 test("the default answer carries only the rows a rail draws, and says how many it kept", () => {
   const store = loadedStore(267);
-  const before = store.liveSessionRows({ all: true });
-  const after = store.liveSessionRows();
+  const before = store.live.rows({ all: true });
+  const after = store.live.rows();
 
   // Every third session is pinned settled by the fixture.
   const settled = Math.ceil(267 / 3);
@@ -188,32 +189,18 @@ test("the default answer carries only the rows a rail draws, and says how many i
   for (const id of Object.keys(after.assignments)) expect(kept.has(id)).toBe(true);
 });
 
-/**
- * ISSUE #464, PINNED ON THE THING IT IS ABOUT: how many times the pass opens
- * each queue.
- *
- * SPYING ON A PRIVATE METHOD, deliberately. The claim is not about an answer —
- * both shapes were correct before and after — it is about the WORK, and the
- * only honest way to fail when the work comes back is to count it. `readQueue`
- * is where the sqlite read, the `JSON.parse` and the `TurnSchema` validation
- * all happen, so it is the call that costs what this issue measured.
- */
+// Counts the work, not the answer: `SessionQueues.read` is where the sqlite read, parse and validation happen.
 test("the live fold opens each session's queue once, and an archived one not at all", () => {
   const store = new EngineStore(root(), () => 1_700_000_000_000);
-  store.registerProject({ id: "project_one", name: "Telar", root: checkout() });
+  store.projectRegistry.register({ id: "project_one", name: "Telar", root: checkout() });
   const ids = ["session_aaaaaaaa1111111111111111111111", "session_bbbbbbbb2222222222222222222222", "session_cccccccc3333333333333333333333"];
-  for (const id of ids) store.createSession({ id, projectId: "project_one", title: id });
-  store.archiveSession(ids[2]!);
+  for (const id of ids) store.lifecycle.createSession({ id, projectId: "project_one", title: id });
+  store.lifecycle.archiveSession(ids[2]!);
 
-  const spied = store as unknown as { readQueue(sessionId: string): { turns: unknown[] } };
-  const original = spied.readQueue.bind(store);
-  const opened: string[] = [];
-  spied.readQueue = (sessionId: string) => {
-    opened.push(sessionId);
-    return original(sessionId);
-  };
-
-  const answer = store.liveSessionRows({ all: true });
+  const reads = spyOn(SessionQueues.prototype, "read");
+  const answer = store.live.rows({ all: true });
+  const opened = reads.mock.calls.map(([sessionId]) => sessionId);
+  reads.mockRestore();
   expect(answer.sessions).toHaveLength(2);
   // ONCE EACH. It was twice — the activity fold read one copy and the
   // assignment fold read another of the same document, moments apart. Sorted
@@ -228,22 +215,22 @@ test("the live fold opens each session's queue once, and an archived one not at 
 test("a blocker, a pin and a draft all survive the filter — the rows it must never drop", () => {
   const now = 1_700_000_000_000;
   const store = new EngineStore(root(), () => now);
-  store.registerProject({ id: "project_one", name: "Telar", root: checkout() });
+  store.projectRegistry.register({ id: "project_one", name: "Telar", root: checkout() });
   // An hour is the shortest window the policy allows, and every session below
   // is stamped `now`, so NOTHING is stale: this isolates the guards from the
   // clock. The clock's own case is the 267-session test above.
-  store.setInboxPolicy({ autoSettleAfterHours: 1 });
+  store.settings.setInbox({ autoSettleAfterHours: 1 });
 
   const make = (suffix: string, draft = false): string => {
     const id = `session_${suffix.padEnd(30, "0")}`;
-    store.createSession({ id, projectId: "project_one", title: suffix, draft });
+    store.lifecycle.createSession({ id, projectId: "project_one", title: suffix, draft });
     return id;
   };
 
   const pinnedSettled = make("settled");
-  store.updateSession(pinnedSettled, { settledOverride: "settled" });
+  store.lifecycle.updateSession(pinnedSettled, { settledOverride: "settled" });
   const pinnedActive = make("active");
-  store.updateSession(pinnedActive, { settledOverride: "active" });
+  store.lifecycle.updateSession(pinnedActive, { settledOverride: "active" });
   // A DRAFT IS NEVER SHELVED BY THE CLOCK. `isStale` is true of every draft
   // ever opened — an unsent conversation has done nothing to measure — so
   // without the carve-out this row would vanish off the rail a window after
@@ -252,34 +239,34 @@ test("a blocker, a pin and a draft all survive the filter — the rows it must n
   // A SETTLED PIN STILL TAKES A DRAFT: the carve-out is against the clock, not
   // against a person's decision.
   const settledDraft = make("draftsettled", true);
-  store.updateSession(settledDraft, { settledOverride: "settled" });
+  store.lifecycle.updateSession(settledDraft, { settledOverride: "settled" });
 
-  const rows = new Set(store.liveSessionRows().sessions.map((session) => session.id));
+  const rows = new Set(store.live.rows().sessions.map((session) => session.id));
   expect(rows.has(pinnedActive)).toBe(true);
   expect(rows.has(draft)).toBe(true);
   expect(rows.has(pinnedSettled)).toBe(false);
   expect(rows.has(settledDraft)).toBe(false);
-  expect(store.liveSessionRows().settledCount).toBe(2);
+  expect(store.live.rows().settledCount).toBe(2);
   // And `?all=1` is the same list with nothing held back.
-  expect(store.liveSessionRows({ all: true }).sessions).toHaveLength(4);
+  expect(store.live.rows({ all: true }).sessions).toHaveLength(4);
 });
 
 test("the revision moves when the list would, and not when only a transcript grows", () => {
   const store = loadedStore(2);
-  const first = store.sessionsRevision();
+  const first = store.live.revision();
   // A read is a read: nothing about asking changes the answer.
-  store.liveSessionRows();
-  store.liveSessionRows();
-  expect(store.sessionsRevision()).toBe(first);
+  store.live.rows();
+  store.live.rows();
+  expect(store.live.revision()).toBe(first);
 
   // Anything the fold reads moves it. Renaming a session is the cheapest proof:
   // it writes `session.json`, which is a row.
-  store.updateSession(store.liveSessionRows().sessions[0]!.id, { title: "Renamed" });
-  expect(store.sessionsRevision()).toBeGreaterThan(first);
+  store.lifecycle.updateSession(store.live.rows().sessions[0]!.id, { title: "Renamed" });
+  expect(store.live.revision()).toBeGreaterThan(first);
 
   // And the answer carries the number a client should hand back.
-  const answer = store.liveSessionRows();
-  expect(answer.revision).toBe(store.sessionsRevision());
+  const answer = store.live.rows();
+  expect(answer.revision).toBe(store.live.revision());
 });
 
 test("an unchanged answer costs almost nothing, which is the whole point", async () => {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { LatexBootstrap, LatexMachineSettings, LatexMachineSettingsWrite, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
-import type { EngineStore } from "../../../state";
+import type { PluginToolchains } from "../toolchains";
+import type { LatexOps } from "./operations";
 import { jobCursor, PluginInputError, type PluginMachineRoutes, type PluginProjectRoutes } from "../scoped-routes";
 import type { LatexCapability } from "./capability";
 import { clientLatexCapability } from "./client-capability";
@@ -67,30 +68,20 @@ export type LatexPluginDeps = {
     list(): { status: string }[];
     disposeAll(): void;
   };
-  settings: Pick<
-    EngineStore,
-    | "latexDistributions"
-    | "latexPackages"
-    | "latexInstall"
-    | "latexBootstrap"
-    | "latexToolchain"
-    | "managedTectonic"
-    | "installManagedTectonic"
-    | "latexJob"
-    | "latexCancelJob"
-  >;
+  settings: Pick<LatexOps, "distributions" | "packages" | "install" | "bootstrap" | "toolchain" | "job" | "cancelJob">;
+  managed: Pick<PluginToolchains, "managedStatus" | "installManaged">;
 };
 
-function latexScopedRoutes(settings: LatexPluginDeps["settings"]): { project: PluginProjectRoutes; machine: PluginMachineRoutes } {
+function latexScopedRoutes({ settings, managed }: LatexPluginDeps): { project: PluginProjectRoutes; machine: PluginMachineRoutes } {
   return {
     project: {
-      "GET distributions": { beforeEnable: true, handle: (_request, { projectId }) => settings.latexDistributions(projectId) },
-      "GET packages": { handle: (_request, { projectId }) => settings.latexPackages(projectId) },
+      "GET distributions": { beforeEnable: true, handle: (_request, { projectId }) => settings.distributions(projectId) },
+      "GET packages": { handle: (_request, { projectId }) => settings.packages(projectId) },
       "POST packages": {
         status: 202,
         handle: ({ input }, { projectId }) => {
           const list = (key: string) => (Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined);
-          return settings.latexInstall(projectId, {
+          return settings.install(projectId, {
             ...(list("add") ? { add: list("add")! } : {}),
             ...(list("remove") ? { remove: list("remove")! } : {}),
           });
@@ -103,18 +94,18 @@ function latexScopedRoutes(settings: LatexPluginDeps["settings"]): { project: Pl
         handle: ({ input }) => {
           const parsed = LatexBootstrap.safeParse(input);
           if (!parsed.success) throw new PluginInputError("not a valid bootstrap request");
-          return settings.latexBootstrap(parsed.data);
+          return settings.bootstrap(parsed.data);
         },
       },
-      "GET toolchain": { handle: async ({ query }) => ({ toolchain: await settings.latexToolchain(query.get("fresh") === "1") }) },
-      "GET managed": { handle: () => ({ managed: settings.managedTectonic() }) },
-      "POST managed": { status: 202, handle: async () => ({ managed: await settings.installManagedTectonic() }) },
+      "GET toolchain": { handle: async ({ query }) => ({ toolchain: await settings.toolchain(query.get("fresh") === "1") }) },
+      "GET managed": { handle: () => ({ managed: managed.managedStatus() }) },
+      "POST managed": { status: 202, handle: async () => ({ managed: await managed.installManaged() }) },
       "GET jobs/:id": {
-        handle: ({ query, params }) => ({ job: settings.latexJob(params.id!, jobCursor(query)) }),
+        handle: ({ query, params }) => ({ job: settings.job(params.id!, jobCursor(query)) }),
       },
       "DELETE jobs/:id": {
         handle: ({ params }) => {
-          settings.latexCancelJob(params.id!);
+          settings.cancelJob(params.id!);
           return {};
         },
       },
@@ -123,7 +114,7 @@ function latexScopedRoutes(settings: LatexPluginDeps["settings"]): { project: Pl
 }
 
 export function latexPlugin(deps: LatexPluginDeps): PluginEngineModule<LatexSettings> {
-  const scoped = latexScopedRoutes(deps.settings);
+  const scoped = latexScopedRoutes(deps);
   return {
     meta: latexMeta,
     settingsSchema: LatexSettings,

@@ -41,7 +41,7 @@ const open = (home: string): EngineStore => {
 };
 
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -60,25 +60,25 @@ const BODY = "x".repeat(800);
 function seeded(turns: number, perTurn: number): string {
   const home = root();
   const store = open(home);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   for (let turn = 0; turn < turns; turn += 1) {
     const runId = `run_${turn}`;
-    store.submitTurn("session_one", { runId, input: `message ${turn}` });
-    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-    store.markRunning("session_one", runId, token);
+    store.intake.submitTurn("session_one", { runId, input: `message ${turn}` });
+    const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning("session_one", runId, token);
     for (let step = 0; step < perTurn; step += 1) {
       const id = `${runId}_item_${step}`;
-      store.ingestObservations("session_one", runId, token, [
+      store.ingest.ingestObservations("session_one", runId, token, [
         { kind: "item.started", item: { id, detail: { type: "assistant_message", text: "" } } },
       ]);
-      store.ingestObservations("session_one", runId, token, [
+      store.ingest.ingestObservations("session_one", runId, token, [
         { kind: "item.completed", itemId: id, status: "completed", detail: { type: "assistant_message", text: `${BODY} ${turn}.${step}` } },
       ]);
     }
-    store.completeTurn("session_one", runId, token, { text: `answer ${turn}` });
+    store.turnLifecycle.completeTurn("session_one", runId, token, { text: `answer ${turn}` });
   }
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   stores.splice(stores.indexOf(store), 1);
   return home;
 }
@@ -96,32 +96,32 @@ test("a turn of item events reads the projection once, not once each", () => {
   // What one whole read weighs, priced by a store of its own so the one under
   // test starts cold and nothing it is about to do has been paid for here.
   const measured = open(home);
-  expect(measured.items("session_one")).toHaveLength(SEEDED_ITEMS);
-  expect(measured.readAccounting.itemParses).toBe(1);
-  const wholeDocument = measured.readAccounting.documentBytes;
+  expect(measured.queries.items("session_one")).toHaveLength(SEEDED_ITEMS);
+  expect(measured.kernel.readAccounting.itemParses).toBe(1);
+  const wholeDocument = measured.kernel.readAccounting.documentBytes;
   expect(wholeDocument).toBeGreaterThan(SEEDED_ITEMS * BODY.length);
 
   const store = open(home);
   const runId = "run_measured";
-  store.submitTurn("session_one", { runId, input: "once more" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", runId, token);
+  store.intake.submitTurn("session_one", { runId, input: "once more" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", runId, token);
 
-  store.readAccounting.documentBytes = 0;
-  store.readAccounting.itemParses = 0;
+  store.kernel.readAccounting.documentBytes = 0;
+  store.kernel.readAccounting.itemParses = 0;
 
   const EVENTS = 20;
   for (let index = 0; index < EVENTS; index += 1) {
     const id = `measured_item_${index}`;
-    store.ingestObservations("session_one", runId, token, [
+    store.ingest.ingestObservations("session_one", runId, token, [
       { kind: "item.started", item: { id, detail: { type: "assistant_message", text: "" } } },
     ]);
     // The delta between them is the half of the cost the issue did not count:
     // `hasItem` re-read the projection too, once per streamed chunk.
-    store.ingestObservations("session_one", runId, token, [
+    store.ingest.ingestObservations("session_one", runId, token, [
       { kind: "content.delta", itemId: id, stream: "assistant_text", text: BODY },
     ]);
-    store.ingestObservations("session_one", runId, token, [
+    store.ingest.ingestObservations("session_one", runId, token, [
       { kind: "item.completed", itemId: id, status: "completed", detail: { type: "assistant_message", text: BODY } },
     ]);
   }
@@ -130,7 +130,7 @@ test("a turn of item events reads the projection once, not once each", () => {
   // document; every event after it is answered from what the write left
   // behind. Before this fix each of the twenty item events and each of the
   // twenty deltas paid for its own parse.
-  expect(store.readAccounting.itemParses).toBe(1);
+  expect(store.kernel.readAccounting.itemParses).toBe(1);
 
   // AND THE INSTRUMENT IS LOOKING — the bound that fails when the measurement
   // stops measuring rather than when the engine stops behaving. A counter
@@ -143,14 +143,14 @@ test("a turn of item events reads the projection once, not once each", () => {
   // put `readQueue` in the same total: forty batches read the queue as well,
   // so an exact figure would be measuring two documents at once. Five whole
   // projections still catches the shape this issue is about, which is forty.
-  expect(store.readAccounting.documentBytes).toBeGreaterThan(wholeDocument * 0.9);
-  expect(store.readAccounting.documentBytes).toBeLessThan(wholeDocument * 5);
+  expect(store.kernel.readAccounting.documentBytes).toBeGreaterThan(wholeDocument * 0.9);
+  expect(store.kernel.readAccounting.documentBytes).toBeLessThan(wholeDocument * 5);
 
   // …and the projection the cache kept is the projection the store holds.
-  const every = store.items("session_one");
+  const every = store.queries.items("session_one");
   expect(every).toHaveLength(SEEDED_ITEMS + EVENTS);
   expect(every.filter((item) => item.runId === runId).map((item) => item.id))
     .toEqual(Array.from({ length: EVENTS }, (_, index) => `measured_item_${index}`));
   const reopened = open(home);
-  expect(reopened.items("session_one")).toEqual(every);
+  expect(reopened.queries.items("session_one")).toEqual(every);
 }, 60_000); // Seeding rewrites a growing projection 400 times.

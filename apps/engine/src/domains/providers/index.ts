@@ -32,8 +32,8 @@ export {
   textGenDisabledByEnv,
   type RetitleStore,
 } from "./textgen";
-export { ProviderRegistry, type ProviderInstanceInput } from "./registry";
+export { ProviderRegistry } from "./registry";
 export { installedCli, ModelCatalogues, type InstalledCli } from "./catalogues";
 export { providersRoutes } from "./routes";
 export { sessionProviderRoutes, type ProviderSkillsOptions } from "./session-routes";
-export { type AdoptionInput, ConversationAdoption } from "./adoption";
+export { ConversationAdoption } from "./adoption";

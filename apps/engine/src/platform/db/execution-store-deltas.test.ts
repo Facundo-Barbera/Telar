@@ -14,34 +14,34 @@ function streamed(home: string): Array<Record<string, unknown>> {
 
 test("deltas arriving in one tick are held, read back whole, and stored in a single write", () => {
   const { store, home } = setup();
-  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
-  const turn = store.claimTurn("session_one", "worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const turn = store.claims.claimTurn("session_one", "worker_one")!;
   const token = turn.claim!.token;
-  store.markRunning("session_one", turn.runId, token);
-  store.ingestObservations("session_one", turn.runId, token, [
+  store.turnLifecycle.markRunning("session_one", turn.runId, token);
+  store.ingest.ingestObservations("session_one", turn.runId, token, [
     { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
   ]);
   const settledBefore = streamed(home).length;
-  const cursorBefore = store.eventCursor("session_one");
+  const cursorBefore = store.queries.eventCursor("session_one");
 
   // Twenty deltas, one call each, all inside this tick — the shape a driver
   // reporting a chunk at a time produces.
   const chunks = Array.from({ length: 20 }, (_, n) => `chunk-${n} `);
   for (const text of chunks) {
-    store.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
+    store.ingest.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
   }
 
   // NOT ONE OF THEM IS ON DISK YET — that is the whole saving.
   expect(streamed(home)).toHaveLength(settledBefore);
   // …and no reader can tell. Every delta, in arrival order, contiguous ids.
-  const read = store.readEvents("session_one", cursorBefore);
+  const read = store.queries.readEvents("session_one", cursorBefore);
   expect(read.map((event) => (event as { text?: string }).text)).toEqual(chunks);
   expect(read.map((event) => event.id)).toEqual(chunks.map((_, n) => cursorBefore + 1 + n));
-  expect(store.eventCursor("session_one")).toBe(cursorBefore + chunks.length);
+  expect(store.queries.eventCursor("session_one")).toBe(cursorBefore + chunks.length);
 
   // The event that settles the item takes the batch to the disk with it, and
   // nothing may be stored ahead of the deltas it concludes.
-  store.ingestObservations("session_one", turn.runId, token, [
+  store.ingest.ingestObservations("session_one", turn.runId, token, [
     { kind: "item.completed", itemId: "item_one", status: "completed", detail: { type: "assistant_message", text: chunks.join("") } },
   ]);
   const stored = streamed(home);
@@ -53,60 +53,60 @@ test("deltas arriving in one tick are held, read back whole, and stored in a sin
 
 test("a failed command does not take already-accepted deltas with it", () => {
   const { store, home } = setup();
-  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
-  const turn = store.claimTurn("session_one", "worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const turn = store.claims.claimTurn("session_one", "worker_one")!;
   const token = turn.claim!.token;
-  store.markRunning("session_one", turn.runId, token);
-  store.ingestObservations("session_one", turn.runId, token, [
+  store.turnLifecycle.markRunning("session_one", turn.runId, token);
+  store.ingest.ingestObservations("session_one", turn.runId, token, [
     { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
   ]);
   for (const text of ["held-one ", "held-two "]) {
-    store.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
+    store.ingest.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
   }
-  const cursor = store.eventCursor("session_one");
+  const cursor = store.queries.eventCursor("session_one");
 
-  expect(() => store.executeCommand("broken", () => {
-    store.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "rolled-back " }]);
+  expect(() => store.kernel.command("broken", () => {
+    store.ingest.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "rolled-back " }]);
     throw new Error("injected disk failure");
   })).toThrow("injected disk failure");
 
   // The rolled-back delta is gone; the two accepted before it are not.
-  expect(store.eventCursor("session_one")).toBe(cursor);
-  expect(store.readEvents("session_one").filter((event) => event.type === "content.delta")
+  expect(store.queries.eventCursor("session_one")).toBe(cursor);
+  expect(store.queries.readEvents("session_one").filter((event) => event.type === "content.delta")
     .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
 
   // And a clean close is what puts them on the disk, ids still contiguous.
-  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+  store.kernel.executionStore.close(); stores.splice(stores.indexOf(store), 1);
   const stored = streamed(home);
   expect(stored.map((row) => Number(row.id))).toEqual(stored.map((_, n) => n + 1));
   const reopened = new EngineStore(home); stores.push(reopened);
-  expect(reopened.readEvents("session_one").filter((event) => event.type === "content.delta")
+  expect(reopened.queries.readEvents("session_one").filter((event) => event.type === "content.delta")
     .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
 });
 
 function streaming(): { store: EngineStore; home: string; runId: string; token: string } {
   const { store, home } = setup();
-  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
-  const turn = store.claimTurn("session_one", "worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const turn = store.claims.claimTurn("session_one", "worker_one")!;
   const token = turn.claim!.token;
-  store.markRunning("session_one", turn.runId, token);
-  store.ingestObservations("session_one", turn.runId, token, [
+  store.turnLifecycle.markRunning("session_one", turn.runId, token);
+  store.ingest.ingestObservations("session_one", turn.runId, token, [
     { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
   ]);
   return { store, home, runId: turn.runId, token };
 }
 const deltas = (store: EngineStore): string[] =>
-  store.readEvents("session_one").filter((event) => event.type === "content.delta").map((event) => (event as { text: string }).text);
+  store.queries.readEvents("session_one").filter((event) => event.type === "content.delta").map((event) => (event as { text: string }).text);
 
 test("a stream cannot outlive its turn, even though the delta path reads a shared queue", () => {
   const { store, runId, token } = streaming();
   const delta = (text: string) => () =>
-    store.ingestObservations("session_one", runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
+    store.ingest.ingestObservations("session_one", runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
   // The first one is what puts the queue in the shared cache the fast path
   // reads; the turn then settles behind it. A cache that outlived the write
   // would let this stream go on writing into a turn that is over.
   delta("live ")();
-  store.completeTurn("session_one", runId, token, { text: "done" });
+  store.turnLifecycle.completeTurn("session_one", runId, token, { text: "done" });
   expect(delta("late ")).toThrow(/already settled \(completed\)/);
   expect(deltas(store)).toEqual(["live "]);
 });
@@ -114,7 +114,7 @@ test("a stream cannot outlive its turn, even though the delta path reads a share
 test("a delta under a claim that is not the running one is refused and journals nothing", () => {
   const { store, runId } = streaming();
   expect(() =>
-    store.ingestObservations("session_one", runId, "not-the-token-at-all", [
+    store.ingest.ingestObservations("session_one", runId, "not-the-token-at-all", [
       { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "forged " },
     ]),
   ).toThrow(/not running under this worker claim/);
@@ -124,7 +124,7 @@ test("a delta under a claim that is not the running one is refused and journals 
 test("one malformed delta refuses the whole batch, including the valid ones ahead of it", () => {
   const { store, runId, token } = streaming();
   expect(() =>
-    store.ingestObservations("session_one", runId, token, [
+    store.ingest.ingestObservations("session_one", runId, token, [
       { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "accepted " },
       // Empty text is the one thing the schema refuses about a delta.
       { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "" },
@@ -136,7 +136,7 @@ test("one malformed delta refuses the whole batch, including the valid ones ahea
 test("a delta for an item that never opened is dropped, and one for an item opened mid-stream is not", () => {
   const { store, runId, token } = streaming();
   const say = (itemId: string, text: string) =>
-    store.ingestObservations("session_one", runId, token, [{ kind: "content.delta", itemId, stream: "assistant_text", text }]);
+    store.ingest.ingestObservations("session_one", runId, token, [{ kind: "content.delta", itemId, stream: "assistant_text", text }]);
   say("item_one", "one ");
   // No such item: accepted as a report, journalled as nothing — the same thing
   // the command path does with it.
@@ -145,7 +145,7 @@ test("a delta for an item that never opened is dropped, and one for an item open
 
   // …and the cached projection must not make that verdict permanent: an item
   // opened AFTER the stream began has to be visible to the very next delta.
-  store.ingestObservations("session_one", runId, token, [
+  store.ingest.ingestObservations("session_one", runId, token, [
     { kind: "item.started", item: { id: "item_two", detail: { type: "assistant_message", text: "" } } },
   ]);
   say("item_two", "two ");

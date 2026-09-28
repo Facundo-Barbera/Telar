@@ -32,11 +32,11 @@ const MARKER = "claude-long-window-migration.json";
 function oldStore(): string {
   const root = dir("telar-long-window-");
   const store = new EngineStore(root, () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: dir("telar-long-window-checkout-") });
-  store.registerProject({ id: "project_two", name: "Two", root: dir("telar-long-window-checkout-") });
-  store.createSession({ id: "session_opus", projectId: "project_one" });
-  store.createSession({ id: "session_sonnet", projectId: "project_one" });
-  store.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: dir("telar-long-window-checkout-") });
+  store.projectRegistry.register({ id: "project_two", name: "Two", root: dir("telar-long-window-checkout-") });
+  store.lifecycle.createSession({ id: "session_opus", projectId: "project_one" });
+  store.lifecycle.createSession({ id: "session_sonnet", projectId: "project_one" });
+  store.lifecycle.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
   // What an older engine wrote, as a legacy home the next open imports: this
   // build keeps a bare id as the 200k pick it now is, so it cannot write one.
   const models: Record<string, unknown> = {
@@ -59,32 +59,32 @@ describe("the one-time [1m] rewrite", () => {
     const root = oldStore();
     const store = new EngineStore(root, () => 200);
     expect(store.claudeLongWindowMigration).toEqual({ sessions: 1, projects: 1 });
-    expect(store.getSession("session_opus").model).toEqual({ instanceId: "claude", model: "opus[1m]", effort: "high" });
-    store.submitTurn("session_opus", { runId: "run_one", input: "hi" });
-    expect(store.claimNextTurn("worker_one")?.model?.model).toBe("opus[1m]");
+    expect(store.records.get("session_opus").model).toEqual({ instanceId: "claude", model: "opus[1m]", effort: "high" });
+    store.intake.submitTurn("session_opus", { runId: "run_one", input: "hi" });
+    expect(store.claims.claimNextTurn("worker_one")?.model?.model).toBe("opus[1m]");
     // The project default too, so new sessions from it open on 1M.
-    expect(store.getProject("project_one").defaultModel).toEqual({ instanceId: "claude", model: "claude-opus-5-5[1m]", effort: "medium" });
+    expect(store.projectRegistry.get("project_one").defaultModel).toEqual({ instanceId: "claude", model: "claude-opus-5-5[1m]", effort: "medium" });
   });
 
   test("only 1M-default Claude ids move: Sonnet's bare id is already its default, and Codex is never touched", () => {
     const store = new EngineStore(oldStore(), () => 200);
-    expect(store.getSession("session_sonnet").model?.model).toBe("sonnet");
-    expect(store.getSession("session_codex").model?.model).toBe("gpt-5-codex");
-    expect(store.getProject("project_two").defaultModel?.model).toBe("gpt-5-codex");
+    expect(store.records.get("session_sonnet").model?.model).toBe("sonnet");
+    expect(store.records.get("session_codex").model?.model).toBe("gpt-5-codex");
+    expect(store.projectRegistry.get("project_two").defaultModel?.model).toBe("gpt-5-codex");
   });
 
   test("a 200k pick made after the migration stays 200k", () => {
     const root = oldStore();
     const first = new EngineStore(root, () => 200);
-    first.updateSession("session_opus", { model: { instanceId: "claude", model: "opus" } });
-    first.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "claude-opus-5-5" } });
+    first.lifecycle.updateSession("session_opus", { model: { instanceId: "claude", model: "opus" } });
+    first.projectRegistry.update("project_one", { defaultModel: { instanceId: "claude", model: "claude-opus-5-5" } });
     // Reopened: the marker is there, so nothing is rewritten.
     const reopened = new EngineStore(root, () => 300);
     expect(reopened.claudeLongWindowMigration).toBeUndefined();
-    expect(reopened.getSession("session_opus").model?.model).toBe("opus");
-    expect(reopened.getProject("project_one").defaultModel?.model).toBe("claude-opus-5-5");
-    reopened.submitTurn("session_opus", { runId: "run_one", input: "hi" });
-    expect(reopened.claimNextTurn("worker_one")?.model?.model).toBe("opus");
+    expect(reopened.records.get("session_opus").model?.model).toBe("opus");
+    expect(reopened.projectRegistry.get("project_one").defaultModel?.model).toBe("claude-opus-5-5");
+    reopened.intake.submitTurn("session_opus", { runId: "run_one", input: "hi" });
+    expect(reopened.claims.claimNextTurn("worker_one")?.model?.model).toBe("opus");
   });
 
   test("it runs once: the marker records what it did, and a later open skips it", () => {
@@ -102,7 +102,7 @@ describe("the one-time [1m] rewrite", () => {
     fs.rmSync(path.join(root, MARKER));
     const rerun = new EngineStore(root, () => 300);
     expect(rerun.claudeLongWindowMigration).toEqual({ sessions: 0, projects: 0 });
-    expect(rerun.getSession("session_opus").model?.model).toBe("opus[1m]");
+    expect(rerun.records.get("session_opus").model?.model).toBe("opus[1m]");
   });
 
   test("a fresh store writes the marker and nothing else it did not already write", () => {
@@ -115,14 +115,14 @@ describe("the one-time [1m] rewrite", () => {
   test("the SQLite backend is migrated the same way", () => {
     const root = dir("telar-long-window-sqlite-");
     const store = new EngineStore(root, () => 100);
-    store.registerProject({ id: "project_one", name: "One", root: dir("telar-long-window-checkout-") });
-    store.createSession({ id: "session_opus", projectId: "project_one" });
+    store.projectRegistry.register({ id: "project_one", name: "One", root: dir("telar-long-window-checkout-") });
+    store.lifecycle.createSession({ id: "session_opus", projectId: "project_one" });
     // A bare id stored the way an older engine left it: a record, with no marker.
-    store.updateSession("session_opus", { model: { instanceId: "claude", model: "opus" } });
+    store.lifecycle.updateSession("session_opus", { model: { instanceId: "claude", model: "opus" } });
     fs.rmSync(path.join(root, MARKER));
     const reopened = new EngineStore(root, () => 200);
     expect(reopened.claudeLongWindowMigration).toEqual({ sessions: 1, projects: 0 });
-    expect(reopened.getSession("session_opus").model?.model).toBe("opus[1m]");
+    expect(reopened.records.get("session_opus").model?.model).toBe("opus[1m]");
   });
 });
 

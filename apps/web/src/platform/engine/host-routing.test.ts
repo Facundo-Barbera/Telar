@@ -54,7 +54,7 @@ const wire: typeof fetch = (async (input: string | URL | Request) => {
   if (session) {
     const held = engine.sessions[session[1]!];
     if (!held) {
-      // The engine's own words (apps/engine/src/state.ts).
+      // The engine's own words (apps/engine/src/domains/sessions/records.ts).
       return Response.json({ error: { code: "not_found", message: "session does not exist" } }, { status: 404, headers });
     }
     return Response.json({ session: { id: session[1], projectId: held.projectId, engine: engine.hostId } }, { headers });

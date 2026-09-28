@@ -77,7 +77,7 @@ test("Claude, Codex and OpenCode are handed the same `telar` wall, once", async 
   });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
-  daemon.store.saveProviderInstance({ id: "opencode", driver: "opencode", enabled: true });
+  daemon.store.providers.save({ id: "opencode", driver: "opencode", enabled: true });
   await client.registerProject({ id: "project_wall", name: "wall", root: root() });
   const providers = ["claude", "codex", "opencode"] as const;
   for (const provider of providers) {

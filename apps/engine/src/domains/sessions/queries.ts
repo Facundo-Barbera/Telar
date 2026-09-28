@@ -1,12 +1,18 @@
 import {
+  assignmentsOf,
+  countsAsActivity,
+  isBackgroundWork,
   Turn as TurnSchema,
+  type AssignmentTurn,
+  type EngineEvent,
   type EngineRequest,
   type Item,
+  type SessionAssignment,
   type Task,
   type Turn,
 } from "@telar/engine-client";
 import { EngineStateError, type Kernel } from "../../platform/kernel";
-import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "../turns";
+import { boundedOutline, context, FIND_SCAN, isLiveTask, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "../turns";
 import type { SessionItems } from "./items";
 import { sessionQueueFile, sessionQueueIndexFile, type SessionQueue } from "./queue";
 import type { SessionRecords } from "./records";
@@ -295,5 +301,51 @@ export class SessionQueries {
   snapshotRequests(sessionId: string): EngineRequest[] {
     this.deps.records.require(sessionId);
     return structuredClone(boundedRequests([...this.deps.requests.read(sessionId).values()]));
+  }
+
+  turns(sessionId: string): Turn[] {
+    this.deps.records.require(sessionId);
+    return structuredClone(this.deps.readQueue(sessionId).turns);
+  }
+
+  items(sessionId: string): Item[] {
+    this.deps.records.require(sessionId);
+    return structuredClone([...this.deps.items.read(sessionId).values()]);
+  }
+
+  tasks(sessionId: string): Task[] {
+    this.deps.records.require(sessionId);
+    return structuredClone([...this.deps.tasks.read(sessionId).values()]);
+  }
+
+  /** The journal above `after`, keyed on the event id so a page never shifts; no `limit` is the whole tail. */
+  readEvents(sessionId: string, after = 0, limit?: number): EngineEvent[] {
+    this.deps.records.require(sessionId);
+    if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) throw new EngineStateError("invalid_request", "event limit is invalid");
+    return this.kernel.executionStore.events(sessionId, after, limit);
+  }
+
+  /** The id of the journal's last event, for a client tailing from the snapshot it just read. */
+  eventCursor(sessionId: string): number {
+    this.deps.records.require(sessionId);
+    return this.kernel.executionStore.cursor(sessionId);
+  }
+
+  /** Every assignment the session holds, folded over its whole queue: a client's page cannot tell "finished" from "not in this window". */
+  assignments(sessionId: string): SessionAssignment[] {
+    return assignmentsOf(this.deps.readQueue(sessionId).turns as AssignmentTurn[]);
+  }
+
+  /** Something running or that might be: `ambiguous` counts as busy, and so do live backgrounded tasks. */
+  hasWorkInFlight(sessionId: string): boolean {
+    const unsettled: ReadonlySet<Turn["state"]> = new Set<Turn["state"]>(["queued", "claimed", "running", "steering", "ambiguous"]);
+    if (this.turns(sessionId).some((turn) => unsettled.has(turn.state))) return true;
+    return [...this.deps.tasks.read(sessionId).values()].some(isLiveTask);
+  }
+
+  /** Background work still moving, asked of the tasks directly rather than a possibly stale index row. */
+  hasLiveBackgroundWork(sessionId: string): boolean {
+    return [...this.deps.tasks.read(sessionId).values()].some((task) => countsAsActivity(task) && isBackgroundWork(task));
   }
 }

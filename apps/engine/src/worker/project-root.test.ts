@@ -32,7 +32,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore, EngineStateError } from "../state";
+import { EngineStore } from "../state";
+import { EngineStateError } from "../platform/kernel";
 import { assertProjectRoot } from ".";
 import { createClaudeDriver } from "../drivers/claude";
 import { createCodexDriver } from "../drivers/codex";
@@ -53,7 +54,7 @@ const store = (): EngineStore => new EngineStore(path.join(root(), "state"), () 
 
 test("a session created with no project has no project, no path and no branch", () => {
   const engine = store();
-  const session = engine.createSession({ id: "session_main", title: "Main", driver: "codex" });
+  const session = engine.lifecycle.createSession({ id: "session_main", title: "Main", driver: "codex" });
 
   expect(session.projectId).toBeUndefined();
   expect(session.workspace).toEqual({ mode: "none" });
@@ -66,24 +67,24 @@ test("a session created with no project has no project, no path and no branch", 
   expect(session.envMode).toBe("local");
   // Re-read from disk, because the interesting failure is a variant that
   // round-trips through the schema as something else.
-  expect(engine.getSession("session_main").workspace).toEqual({ mode: "none" });
+  expect(engine.records.get("session_main").workspace).toEqual({ mode: "none" });
 });
 
 test("a worktree cannot be asked for without a project — refused, never downgraded", () => {
   const engine = store();
-  expect(() => engine.createSession({ id: "session_nope", envMode: "worktree", driver: "codex" })).toThrow(
+  expect(() => engine.lifecycle.createSession({ id: "session_nope", envMode: "worktree", driver: "codex" })).toThrow(
     /worktree is cut from a project/,
   );
   // And nothing was written for the id that was refused.
-  expect(() => engine.getSession("session_nope")).toThrow(EngineStateError);
+  expect(() => engine.records.get("session_nope")).toThrow(EngineStateError);
 });
 
 test("the claim for such a session carries no projectRoot at all", () => {
   const engine = store();
-  engine.createSession({ id: "session_main", title: "Main", driver: "codex" });
-  engine.submitTurn("session_main", { runId: "run_one", input: "hello" });
+  engine.lifecycle.createSession({ id: "session_main", title: "Main", driver: "codex" });
+  engine.intake.submitTurn("session_main", { runId: "run_one", input: "hello" });
 
-  const claim = engine.claimNextTurn("worker_one");
+  const claim = engine.claims.claimNextTurn("worker_one");
   expect(claim?.sessionId).toBe("session_main");
   expect(claim?.projectRoot).toBeUndefined();
   expect(claim?.projectId).toBeUndefined();
@@ -93,13 +94,13 @@ test("the claim for such a session carries no projectRoot at all", () => {
 test("an ordinary session still claims with its project root", () => {
   const engine = store();
   const project = root();
-  engine.registerProject({ id: "project_one", name: "One", root: project });
+  engine.projectRegistry.register({ id: "project_one", name: "One", root: project });
   // Codex rather than Claude: a Claude claim waits on the model catalogue, and
   // what this test is about is the path, not the model.
-  engine.createSession({ id: "session_one", projectId: "project_one", driver: "codex" });
-  engine.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  engine.lifecycle.createSession({ id: "session_one", projectId: "project_one", driver: "codex" });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
 
-  const claim = engine.claimNextTurn("worker_one");
+  const claim = engine.claims.claimNextTurn("worker_one");
   expect(claim?.projectRoot).toBe(fs.realpathSync.native(project));
 });
 
@@ -130,10 +131,10 @@ test("a driver that spawns a CLI refuses a turn with no directory, by name", asy
 
 test("the store refuses a files or diff read on a session that has no directory", () => {
   const engine = store();
-  engine.createSession({ id: "session_main", driver: "codex" });
+  engine.lifecycle.createSession({ id: "session_main", driver: "codex" });
 
   // Synchronously, even on the async readers: the refusal happens before the
   // first await, which is where a caller wants it.
-  expect(() => engine.sessionFilesAsync("session_main")).toThrow(/no working directory/);
-  expect(() => engine.sessionDiffAsync("session_main")).toThrow(/no working directory/);
+  expect(() => engine.workspaceReads.sessionFiles("session_main")).toThrow(/no working directory/);
+  expect(() => engine.workspaceReads.sessionDiff("session_main")).toThrow(/no working directory/);
 });

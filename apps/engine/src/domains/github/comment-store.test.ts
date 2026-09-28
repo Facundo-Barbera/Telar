@@ -28,7 +28,7 @@ import type { GhResult } from "./gh";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterAll(() => {
-  for (const store of stores) store.closeExecutionStore();
+  for (const store of stores) store.kernel.executionStore.close();
   for (const home of homes) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -50,11 +50,11 @@ function setup(reply: GhResult = POSTED) {
     },
   });
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
-  for (const id of ["session_writer", "session_other"]) store.createSession({ id, projectId: "project_one" });
-  store.submitTurn("session_writer", { runId: "run_live", input: "work" });
-  const claimToken = store.claimTurn("session_writer", "worker_one")!.claim!.token;
-  store.markRunning("session_writer", "run_live", claimToken);
+  store.projectRegistry.register({ id: "project_one", name: "test", root: "/tmp" });
+  for (const id of ["session_writer", "session_other"]) store.lifecycle.createSession({ id, projectId: "project_one" });
+  store.intake.submitTurn("session_writer", { runId: "run_live", input: "work" });
+  const claimToken = store.claims.claimTurn("session_writer", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_writer", "run_live", claimToken);
   return { store, calls, proof: { sessionId: "session_writer", runId: "run_live", claimToken } };
 }
 
@@ -67,7 +67,7 @@ function bodyFrom(calls: string[][]): string {
 
 test("the comment is stamped with the session the claim proves, and gh is told", async () => {
   const { store, calls, proof } = setup();
-  const result = await store.projectGitHubComment("project_one", { kind: "issue", number: 791, body: "The finding." }, proof);
+  const result = await store.github.comment("project_one", { kind: "issue", number: 791, body: "The finding." }, proof);
 
   expect(result).toEqual({
     posted: true,
@@ -96,15 +96,15 @@ test("a comment is stamped with the session that proved itself, and nobody else"
   const { store, calls, proof } = setup();
   // `session_other` gets a live claim too, so it is a real alternative rather
   // than a name the store was always going to reject.
-  store.submitTurn("session_other", { runId: "run_other", input: "work" });
-  const otherToken = store.claimTurn("session_other", "worker_two")!.claim!.token;
-  store.markRunning("session_other", "run_other", otherToken);
+  store.intake.submitTurn("session_other", { runId: "run_other", input: "work" });
+  const otherToken = store.claims.claimTurn("session_other", "worker_two")!.claim!.token;
+  store.turnLifecycle.markRunning("session_other", "run_other", otherToken);
   const otherProof = { sessionId: "session_other", runId: "run_other", claimToken: otherToken };
 
   // 1. Each proof stamps its own session.
-  const mine = await store.projectGitHubComment("project_one", { kind: "issue", number: 791, body: "mine" }, proof);
+  const mine = await store.github.comment("project_one", { kind: "issue", number: 791, body: "mine" }, proof);
   expect(mine).toMatchObject({ posted: true, attribution: { sessionId: "session_writer" } });
-  const theirs = await store.projectGitHubComment("project_one", { kind: "issue", number: 791, body: "theirs" }, otherProof);
+  const theirs = await store.github.comment("project_one", { kind: "issue", number: 791, body: "theirs" }, otherProof);
   expect(theirs).toMatchObject({ posted: true, attribution: { sessionId: "session_other" } });
 
   const before = calls.length;
@@ -113,7 +113,7 @@ test("a comment is stamped with the session that proved itself, and nobody else"
   //    store looks the claim up under the name it was GIVEN and finds nothing
   //    live there, so there is no id for it to stamp.
   await expect(
-    store.projectGitHubComment("project_one", { kind: "issue", number: 791, body: "not mine to sign" }, { ...proof, sessionId: "session_other" }),
+    store.github.comment("project_one", { kind: "issue", number: 791, body: "not mine to sign" }, { ...proof, sessionId: "session_other" }),
   ).rejects.toThrow();
 
   // 3. And it refused before `gh`, so there is no comment to unpost.
@@ -124,10 +124,10 @@ test("a comment is stamped with the session that proved itself, and nobody else"
 test("a claim that is not live posts nothing at all", async () => {
   const { store, calls, proof } = setup();
   await expect(
-    store.projectGitHubComment("project_one", { kind: "issue", number: 1, body: "x" }, { ...proof, claimToken: `${proof.claimToken}-forged` }),
+    store.github.comment("project_one", { kind: "issue", number: 1, body: "x" }, { ...proof, claimToken: `${proof.claimToken}-forged` }),
   ).rejects.toThrow();
   await expect(
-    store.projectGitHubComment("project_one", { kind: "issue", number: 1, body: "x" }, { ...proof, runId: "run_never" }),
+    store.github.comment("project_one", { kind: "issue", number: 1, body: "x" }, { ...proof, runId: "run_never" }),
   ).rejects.toThrow();
   // Nothing reached GitHub on either path — a refusal that posted first would
   // be a comment nobody can unpost.
@@ -137,7 +137,7 @@ test("a claim that is not live posts nothing at all", async () => {
 test("a proof naming a session other than the claim's posts nothing", async () => {
   const { store, calls, proof } = setup();
   await expect(
-    store.projectGitHubComment("project_one", { kind: "issue", number: 1, body: "x" }, { ...proof, sessionId: "agent" }),
+    store.github.comment("project_one", { kind: "issue", number: 1, body: "x" }, { ...proof, sessionId: "agent" }),
   ).rejects.toThrow();
   expect(calls).toEqual([]);
 });
@@ -168,23 +168,23 @@ test("a posted comment drops the thread's cache so the panel is not thirty secon
     gh: async (_cwd, args) => (args[1] === "comment" ? POSTED : args[1] === "view" ? thread(body) : { status: 1, stdout: "", stderr: "no" }),
   });
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
-  store.createSession({ id: "session_writer", projectId: "project_one" });
-  store.submitTurn("session_writer", { runId: "run_live", input: "work" });
-  const claimToken = store.claimTurn("session_writer", "worker_one")!.claim!.token;
-  store.markRunning("session_writer", "run_live", claimToken);
+  store.projectRegistry.register({ id: "project_one", name: "test", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_writer", projectId: "project_one" });
+  store.intake.submitTurn("session_writer", { runId: "run_live", input: "work" });
+  const claimToken = store.claims.claimTurn("session_writer", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_writer", "run_live", claimToken);
 
-  const first = await store.projectIssue("project_one", 791);
+  const first = await store.github.issue("project_one", 791);
   expect("issue" in first && first.issue.comments[0]!.body).toBe("before");
 
   body = "after";
   // Without the cache drop this read is served the thirty-second-old copy and
   // still says "before" — which is the assertion that fails if the drop goes.
-  await store.projectGitHubComment("project_one", { kind: "issue", number: 791, body: "posted" }, {
+  await store.github.comment("project_one", { kind: "issue", number: 791, body: "posted" }, {
     sessionId: "session_writer",
     runId: "run_live",
     claimToken,
   });
-  const second = await store.projectIssue("project_one", 791);
+  const second = await store.github.issue("project_one", 791);
   expect("issue" in second && second.issue.comments[0]!.body).toBe("after");
 });

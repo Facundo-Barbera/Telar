@@ -18,8 +18,8 @@ test("a project whose git stalls or throws is still listed, without a branch, un
     throw new Error("runner exploded");
   };
   const store = new EngineStore(root(), () => 100, { git });
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  const [listed] = store.listProjects();
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  const [listed] = store.projectRegistry.list();
   expect(listed).toMatchObject({ id: "project_one", name: "One", root: projectRoot });
   expect(listed?.branch).toBeUndefined();
   // The poll-path bound is tighter than the runner's general default.
@@ -30,6 +30,6 @@ test("a project whose git stalls or throws is still listed, without a branch, un
       throw new Error("runner exploded");
     },
   });
-  exploding.registerProject({ id: "project_two", name: "Two", root: projectRoot });
-  expect(exploding.listProjects().map((project) => project.id)).toEqual(["project_two"]);
+  exploding.projectRegistry.register({ id: "project_two", name: "Two", root: projectRoot });
+  expect(exploding.projectRegistry.list().map((project) => project.id)).toEqual(["project_two"]);
 });

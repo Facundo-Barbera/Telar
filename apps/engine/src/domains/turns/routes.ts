@@ -35,10 +35,10 @@ export function workerRoutes(execution: ExecutionPort): Route[] {
 /** A person's gestures on a turn carry no claim token; a worker's reports must carry the one its claim was given. */
 export function turnRoutes(store: EngineStore, execution: ExecutionPort): Route[] {
   const gestures = {
-    release: store.releaseHeldTurn.bind(store),
-    resume: store.resumeRateLimitedTurn.bind(store),
-    discard: store.discardAmbiguousTurn.bind(store),
-    promote: store.promoteTurn.bind(store),
+    release: store.turnLifecycle.releaseHeldTurn.bind(store.turnLifecycle),
+    resume: store.turnLifecycle.resumeRateLimitedTurn.bind(store.turnLifecycle),
+    discard: store.turnLifecycle.discardAmbiguousTurn.bind(store.turnLifecycle),
+    promote: store.turnLifecycle.promoteTurn.bind(store.turnLifecycle),
   };
   return [
     {

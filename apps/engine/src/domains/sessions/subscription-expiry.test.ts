@@ -15,7 +15,7 @@ import { EngineStore } from "../../state";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -28,35 +28,35 @@ function setup() {
   const clock = { advance: (ms: number) => (now += ms) };
   const store = new EngineStore(home, () => now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
-  for (const id of ["session_host", "session_a", "session_b", "session_c", "session_d"]) store.createSession({ id, projectId: "project_one", title: id });
+  store.projectRegistry.register({ id: "project_one", name: "test", root: "/tmp" });
+  for (const id of ["session_host", "session_a", "session_b", "session_c", "session_d"]) store.lifecycle.createSession({ id, projectId: "project_one", title: id });
   return { store, clock };
 }
 
-const watching = (store: EngineStore) => store.subscriptionsFor("session_host").map((each) => each.targetSessionId).sort();
+const watching = (store: EngineStore) => store.subscriptions.subscriptionsFor("session_host").map((each) => each.targetSessionId).sort();
 
 test("a subscription on a settled or deleted target goes at the next sweep", () => {
   const { store } = setup();
   for (const targetSessionId of ["session_a", "session_b", "session_c"]) {
-    store.subscribe("session_host", { targetSessionId, events: ["turn_failed", "request_opened"], once: false });
+    store.subscriptions.subscribe("session_host", { targetSessionId, events: ["turn_failed", "request_opened"], once: false });
   }
-  expect(store.sweepSubscriptions()).toEqual([]);
+  expect(store.subscriptions.sweepSubscriptions()).toEqual([]);
 
-  store.updateSession("session_a", { settledOverride: "settled" });
-  store.deleteSession("session_b");
-  store.sweepSubscriptions();
+  store.lifecycle.updateSession("session_a", { settledOverride: "settled" });
+  store.lifecycle.deleteSession("session_b");
+  store.subscriptions.sweepSubscriptions();
   expect(watching(store)).toEqual(["session_c"]);
 });
 
 test("an ongoing watcher is bounded in age; a one-shot is not", () => {
   const { store, clock } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a", once: false });
-  store.subscribe("session_host", { targetSessionId: "session_b", once: true });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a", once: false });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_b", once: true });
   clock.advance(7 * DAY - 1);
-  store.subscribe("session_host", { targetSessionId: "session_d", once: false });
-  expect(store.sweepSubscriptions()).toEqual([]);
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_d", once: false });
+  expect(store.subscriptions.sweepSubscriptions()).toEqual([]);
 
   clock.advance(1);
-  store.sweepSubscriptions();
+  store.subscriptions.sweepSubscriptions();
   expect(watching(store)).toEqual(["session_b", "session_d"]);
 });

@@ -208,12 +208,12 @@ test("the person closing a terminal the agent never touched is not a note", asyn
 test("a note reaches the session's next claim once, before the turn's own input", () => {
   const home = temp("engine");
   const store = new EngineStore(path.join(home, "state"));
-  store.registerProject({ id: "project_one", name: "One", root: home });
-  store.createSession({ id: "session_one", projectId: "project_one", driver: "codex" });
-  store.noteForNextTurn("session_one", 'The person closed terminal "web" (term_1). Do not reopen it unless they ask.');
+  store.projectRegistry.register({ id: "project_one", name: "One", root: home });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", driver: "codex" });
+  store.mailbox.noteForNextTurn("session_one", 'The person closed terminal "web" (term_1). Do not reopen it unless they ask.');
 
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claim = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claim = store.claims.claimNextTurn("worker_one")!;
   expect(claim.notes).toEqual(['The person closed terminal "web" (term_1). Do not reopen it unless they ask.']);
   expect(withTurnNotes("Hello", claim.notes)).toBe(
     '[telar note, not typed by the person] The person closed terminal "web" (term_1). Do not reopen it unless they ask.\n\nHello',
@@ -224,19 +224,19 @@ test("a note reaches the session's next claim once, before the turn's own input"
 test("a note is handed over once", () => {
   const home = temp("engine");
   const store = new EngineStore(path.join(home, "state"));
-  store.registerProject({ id: "project_one", name: "One", root: home });
-  store.createSession({ id: "session_one", projectId: "project_one", driver: "codex" });
-  store.noteForNextTurn("session_one", "note");
-  store.noteForNextTurn("session_one", "note");
-  store.submitTurn("session_one", { runId: "run_one", input: "one" });
-  const first = store.claimNextTurn("worker_one")!;
+  store.projectRegistry.register({ id: "project_one", name: "One", root: home });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", driver: "codex" });
+  store.mailbox.noteForNextTurn("session_one", "note");
+  store.mailbox.noteForNextTurn("session_one", "note");
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "one" });
+  const first = store.claims.claimNextTurn("worker_one")!;
   expect(first.notes).toEqual(["note"]);
   const token = first.turn.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.completeTurn("session_one", "run_one", token, { text: "done" });
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "done" });
 
-  store.submitTurn("session_one", { runId: "run_two", input: "two" });
-  expect(store.claimNextTurn("worker_one")!.notes).toBeUndefined();
+  store.intake.submitTurn("session_one", { runId: "run_two", input: "two" });
+  expect(store.claims.claimNextTurn("worker_one")!.notes).toBeUndefined();
 });
 
 test("each run_* alias maps onto the terminal it replaced", async () => {

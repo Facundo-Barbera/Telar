@@ -20,7 +20,6 @@
       "files": [
         "apps/desktop/src/browser/browser-downloads.js",
         "apps/engine/src/domains/remote/routes.ts",
-        "apps/engine/src/state.ts",
         "apps/engine/src/worker/diagnostics.ts"
       ],
       "rules": {
@@ -29,7 +28,7 @@
     },
     {
       "files": [
-        "apps/engine/src/state.ts"
+        "apps/engine/src/platform/process/daemon-lock.ts"
       ],
       "rules": {
         "no-unsafe-finally": "off"
@@ -58,7 +57,6 @@
         "apps/engine/src/domains/turns/claims.ts",
         "apps/engine/src/drivers/claude/runtime.ts",
         "apps/engine/src/platform/kernel/kernel.ts",
-        "apps/engine/src/state.ts",
         "apps/engine/src/worker/worker.ts"
       ],
       "rules": {

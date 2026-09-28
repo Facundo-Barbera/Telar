@@ -4,6 +4,7 @@ import {
   wokeAt,
   type AssignmentTurn,
   type Session,
+  type SessionSettleEnded,
   type SessionSettledBy,
 } from "@telar/engine-client";
 import type { Kernel } from "../../platform/kernel";
@@ -18,6 +19,9 @@ type SettlerDeps = {
   settleDelegatedAfterHours: () => number | null;
   reviewCohorts: () => void;
   onShelfGrew: () => void;
+  stopBackgroundTasks: (sessionId: string, reason: string) => number;
+  releaseBrowser: (sessionId: string, reason: string) => Promise<unknown> | undefined;
+  closeTerminals: (sessionId: string) => Promise<number>;
 };
 
 /**
@@ -130,5 +134,21 @@ export class SessionSettler {
     this.kernel.appendEvent(sessionId, { type: "session.updated", session: next });
     this.deps.reviewCohorts();
     this.deps.onShelfGrew();
+  }
+
+  /**
+   * An explicit settle (the person's, or `sessions_settle`) ends what the session left running: its terminals, its
+   * background tasks and its browser pages. Never the clock's settle. Best-effort, and un-settling restores none of it.
+   */
+  async endLeftovers(sessionId: string): Promise<SessionSettleEnded> {
+    let backgroundTasks = 0;
+    try {
+      backgroundTasks = this.deps.stopBackgroundTasks(sessionId, "stopped when the session was settled");
+    } catch {
+      // A session that cannot be read has no tasks this can stop.
+    }
+    void this.deps.releaseBrowser(sessionId, "The session was settled.")?.catch(() => undefined);
+    const terminals = await this.deps.closeTerminals(sessionId);
+    return { terminals, backgroundTasks };
   }
 }

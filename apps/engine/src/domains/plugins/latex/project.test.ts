@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pluginBlock } from "@telar/engine-client";
-import { EngineStateError, EngineStore } from "../../../state";
+import { EngineStore } from "../../../state";
+import { EngineStateError } from "../../../platform/kernel";
 
 const roots: string[] = [];
 const dir = (prefix: string): string => {
@@ -25,19 +26,19 @@ function fakeTectonic(): string {
 function readyStore(): { store: EngineStore; projectRoot: string } {
   const store = new EngineStore(dir("telar-latex-project-"), () => 100);
   const projectRoot = dir("telar-latex-checkout-");
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
   return { store, projectRoot };
 }
 
 test("a project starts with no latex block; a patch adds one and null removes it", () => {
   const { store } = readyStore();
-  expect(pluginBlock(store.getProject("project_one"), "latex")).toBeUndefined();
+  expect(pluginBlock(store.projectRegistry.get("project_one"), "latex")).toBeUndefined();
   const config = { enabled: true, toolchain: { kind: "tectonic" as const, path: fakeTectonic() }, mainFile: "main.tex" };
-  const updated = store.updateProject("project_one", { latex: config });
+  const updated = store.projectRegistry.update("project_one", { latex: config });
   expect(pluginBlock(updated, "latex")).toEqual(config);
   expect("latex" in updated).toBe(false);
-  expect(pluginBlock(store.getProject("project_one"), "latex")).toEqual(config);
-  const off = store.updateProject("project_one", { latex: null });
+  expect(pluginBlock(store.projectRegistry.get("project_one"), "latex")).toEqual(config);
+  const off = store.projectRegistry.update("project_one", { latex: null });
   expect(pluginBlock(off, "latex")).toBeUndefined();
   const stored = JSON.parse(fs.readFileSync(path.join(store.paths.root, "projects.json"), "utf8")).projects[0];
   expect("latex" in stored).toBe(false);
@@ -46,11 +47,11 @@ test("a project starts with no latex block; a patch adds one and null removes it
 
 test("an invalid latex block is refused; dataScience beside it is untouched", () => {
   const { store } = readyStore();
-  expect(() => store.updateProject("project_one", { latex: { enabled: "yes" } as never })).toThrow(EngineStateError);
-  expect(pluginBlock(store.getProject("project_one"), "latex")).toBeUndefined();
-  store.updateProject("project_one", { dataScience: { enabled: true } });
-  store.updateProject("project_one", { latex: { enabled: true } });
-  const project = store.getProject("project_one");
+  expect(() => store.projectRegistry.update("project_one", { latex: { enabled: "yes" } as never })).toThrow(EngineStateError);
+  expect(pluginBlock(store.projectRegistry.get("project_one"), "latex")).toBeUndefined();
+  store.projectRegistry.update("project_one", { dataScience: { enabled: true } });
+  store.projectRegistry.update("project_one", { latex: { enabled: true } });
+  const project = store.projectRegistry.get("project_one");
   expect(pluginBlock(project, "data-science")?.enabled).toBe(true);
   expect(pluginBlock(project, "latex")?.enabled).toBe(true);
 });
@@ -58,22 +59,22 @@ test("an invalid latex block is refused; dataScience beside it is untouched", ()
 test("enabling on a git checkout gitignores the aux dir", () => {
   const { store, projectRoot } = readyStore();
   fs.mkdirSync(path.join(projectRoot, ".git"));
-  store.updateProject("project_one", { latex: { enabled: true } });
+  store.projectRegistry.update("project_one", { latex: { enabled: true } });
   expect(fs.readFileSync(path.join(projectRoot, ".gitignore"), "utf8")).toContain(".telar/latex/");
 });
 
 test("the session door refuses until the project opted in AND the binary exists", () => {
   const { store } = readyStore();
-  const session = store.createSession({ projectId: "project_one", envMode: "local" });
-  expect(() => store.latex(session.id)).toThrow("LaTeX is not enabled");
+  const session = store.lifecycle.createSession({ projectId: "project_one", envMode: "local" });
+  expect(() => store.pluginDoors.latex(session.id)).toThrow("LaTeX is not enabled");
   // Enabled but pointing at a binary that is not on disk: still nothing.
-  store.updateProject("project_one", { latex: { enabled: true, toolchain: { kind: "tectonic", path: "/nope/tectonic" } } });
-  expect(() => store.latex(session.id)).toThrow("LaTeX is not enabled");
-  expect(store.resolveLatex(store.getSession(session.id))).toBeUndefined();
+  store.projectRegistry.update("project_one", { latex: { enabled: true, toolchain: { kind: "tectonic", path: "/nope/tectonic" } } });
+  expect(() => store.pluginDoors.latex(session.id)).toThrow("LaTeX is not enabled");
+  expect(store.toolchains.resolveLatex(store.records.get(session.id))).toBeUndefined();
   // A real binary opens the door.
-  store.updateProject("project_one", { latex: { enabled: true, toolchain: { kind: "tectonic", path: fakeTectonic() }, mainFile: "main.tex" } });
-  const resolved = store.resolveLatex(store.getSession(session.id));
+  store.projectRegistry.update("project_one", { latex: { enabled: true, toolchain: { kind: "tectonic", path: fakeTectonic() }, mainFile: "main.tex" } });
+  const resolved = store.toolchains.resolveLatex(store.records.get(session.id));
   expect(resolved?.kind).toBe("tectonic");
   expect(resolved?.mainFile).toBe("main.tex");
-  expect(store.latex(session.id)).toBeDefined();
+  expect(store.pluginDoors.latex(session.id)).toBeDefined();
 });

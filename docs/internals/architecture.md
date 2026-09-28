@@ -56,7 +56,7 @@ A feature can have a second entry when the main index would pull too much into e
 ### Around the domains
 
 - **Engine:**
-  - `src/` root: `main.ts` (process entry), `daemon.ts` (wiring only: stores, routes, timers) and `state.ts` (the `EngineStore` facade, still being taken apart).
+  - `src/` root: `main.ts` (process entry), `daemon.ts` (wiring only: stores, routes, timers) and `state.ts` (`EngineStore`, which only builds the domain modules; callers use the modules directly).
   - `platform/`: `kernel/` (commands, the journal, commit hooks), `db/` (the SQLite execution store), `http/` (router, auth, params), `git/`, `fs/`, `process/`, `diagnose/`.
   - `drivers/`: `claude/`, `codex/`, `opencode/` behind `contract.ts`.
   - `worker/`: claim loop, execute, leases, supervisor.

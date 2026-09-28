@@ -75,8 +75,8 @@ export function windowedReads(client: Pick<EngineClient, "session">): SessionsRe
 /** In-process: every turn with the held notifications, every request, and scheduling. */
 export function storeReads(store: EngineStore): SessionsReads {
   return {
-    cursor: async (id) => store.eventCursor(id),
-    status: async (id) => ({ session: store.records.get(id), turns: store.turns(id), pendingNotifications: store.wakes.pendingNotifications(id) }),
+    cursor: async (id) => store.queries.eventCursor(id),
+    status: async (id) => ({ session: store.records.get(id), turns: store.queries.turns(id), pendingNotifications: store.wakes.pendingNotifications(id) }),
     requests: async (id) => store.requestGate.list(id),
     putSchedule: async (input) => store.schedules.put({ ...input, rule: input.rule as never }),
   };
@@ -85,15 +85,15 @@ export function storeReads(store: EngineStore): SessionsReads {
 /** The store behind the daemon's socket, shaped like the client so both doors share one capability. */
 export function storeSessionsPort(store: EngineStore): SessionsPort {
   return {
-    liveSessions: async (options) => store.liveSessionRows(options),
-    createSession: async (input) => ({ session: await store.createSessionAsync(input) }),
-    submitAgentTurn: async (id, { proof, ...input }) => store.submitAgentTurnAsync(id, input, proof),
-    events: async (id, after, limit) => ({ events: store.readEvents(id, after, limit) }),
+    liveSessions: async (options) => store.live.rows(options),
+    createSession: async (input) => ({ session: await store.requestPath.createSession(input) }),
+    submitAgentTurn: async (id, { proof, ...input }) => store.requestPath.submitAgentTurn(id, input, proof),
+    events: async (id, after, limit) => ({ events: store.queries.readEvents(id, after, limit) }),
     stopSession: async (id, by) => store.turnLifecycle.stopSession(id, by),
     settleSession: async (id, settled) => {
       const session = store.lifecycle.updateSession(id, { settledOverride: settled ? "settled" : "active" });
       if (!settled) return { session };
-      const ended = await store.endSessionLeftovers(id);
+      const ended = await store.settler.endLeftovers(id);
       return { session: store.records.get(id), ended };
     },
     sessionDiff: async (id) => ({ diff: await store.workspaceReads.sessionDiff(id) }),

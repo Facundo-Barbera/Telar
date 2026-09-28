@@ -86,9 +86,9 @@ async function scene() {
   fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
   let now = 1_000 * HOUR;
   const store = new EngineStore(home, () => now);
-  store.attachTerminals(manager);
-  store.registerProject({ id: "project_one", name: "One", root: home });
-  for (const id of ["session_one", "session_two", "session_three", "session_four"]) store.createSession({ id, projectId: "project_one" });
+  store.sessionTerminals.attach(manager);
+  store.projectRegistry.register({ id: "project_one", name: "One", root: home });
+  for (const id of ["session_one", "session_two", "session_three", "session_four"]) store.lifecycle.createSession({ id, projectId: "project_one" });
 
   const open = (sessionId: string, overrides: Partial<StartRunInput> = {}) =>
     manager.start({
@@ -102,7 +102,7 @@ async function scene() {
     });
   const advance = (ms: number) => (now += ms);
   const settle = (sessionId: string) => {
-    store.updateSession(sessionId, { settledOverride: "settled" });
+    store.lifecycle.updateSession(sessionId, { settledOverride: "settled" });
     advance(60_000);
   };
   return { host, manager, store, closedByPerson, open, advance, settle };
@@ -110,7 +110,7 @@ async function scene() {
 
 test("past the limit, the session settled longest ago closes first, as Telar, and says so", async () => {
   const { host, manager, store, closedByPerson, open, settle } = await scene();
-  store.setInboxPolicy({ settledTerminalLimit: 3 });
+  store.settings.setInbox({ settledTerminalLimit: 3 });
   const run = await open("session_one");
   host.personShell("session_two");
   host.personShell("session_two");
@@ -120,26 +120,26 @@ test("past the limit, the session settled longest ago closes first, as Telar, an
   settle("session_two");
   settle("session_three");
 
-  await store.refreshTerminalCensus();
-  expect(await store.enforceSettledTerminalLimit()).toEqual(["session_one"]);
+  await store.sessionTerminals.refresh();
+  expect(await store.sessionTerminals.enforceLimit()).toEqual(["session_one"]);
   expect(host.sessionCloses).toEqual(["session_one"]);
   expect(manager.run(run.terminalId)).toMatchObject({ status: "closed", closedBy: "telar" });
   expect(closedByPerson).toEqual([]);
   expect(host.held("session_two")).toBe(2);
   expect(host.held("session_four")).toBe(4);
 
-  const one = store.getSession("session_one");
+  const one = store.records.get("session_one");
   expect(one.terminalsClosed).toMatchObject({ terminals: 1, reason: "limit" });
   expect(one.terminalsClosed!.at).toBeGreaterThanOrEqual(one.updatedAt);
   expect(one.settledOverride).toBe("settled");
-  expect(store.getSession("session_two").terminalsClosed).toBeUndefined();
+  expect(store.records.get("session_two").terminalsClosed).toBeUndefined();
 
-  expect(await store.enforceSettledTerminalLimit()).toEqual([]);
+  expect(await store.sessionTerminals.enforceLimit()).toEqual([]);
 });
 
 test("the setting is the limit: five by default, lowering it applies it, and a bad value is refused", async () => {
   const { host, store, settle } = await scene();
-  expect(store.getInboxPolicy().settledTerminalLimit).toBe(DEFAULT_SETTLED_TERMINAL_LIMIT);
+  expect(store.settings.inbox().settledTerminalLimit).toBe(DEFAULT_SETTLED_TERMINAL_LIMIT);
   expect(DEFAULT_SETTLED_TERMINAL_LIMIT).toBe(5);
   host.personShell("session_one");
   host.personShell("session_two");
@@ -148,35 +148,35 @@ test("the setting is the limit: five by default, lowering it applies it, and a b
   settle("session_one");
   settle("session_two");
   settle("session_three");
-  await store.refreshTerminalCensus();
-  expect(await store.enforceSettledTerminalLimit()).toEqual([]);
+  await store.sessionTerminals.refresh();
+  expect(await store.sessionTerminals.enforceLimit()).toEqual([]);
   expect(host.sessionCloses).toEqual([]);
 
-  store.setInboxPolicy({ settledTerminalLimit: 1 });
-  expect(await store.enforceSettledTerminalLimit()).toEqual(["session_one", "session_two"]);
+  store.settings.setInbox({ settledTerminalLimit: 1 });
+  expect(await store.sessionTerminals.enforceLimit()).toEqual(["session_one", "session_two"]);
   expect(host.sessionCloses).toEqual(["session_one", "session_two"]);
   expect(host.held("session_three")).toBe(1);
 
-  expect(() => store.setInboxPolicy({ settledTerminalLimit: -1 })).toThrow(/settled terminal limit/);
-  expect(() => store.setInboxPolicy({ settledTerminalLimit: 2.5 })).toThrow(/settled terminal limit/);
-  expect(store.getInboxPolicy().settledTerminalLimit).toBe(1);
+  expect(() => store.settings.setInbox({ settledTerminalLimit: -1 })).toThrow(/settled terminal limit/);
+  expect(() => store.settings.setInbox({ settledTerminalLimit: 2.5 })).toThrow(/settled terminal limit/);
+  expect(store.settings.inbox().settledTerminalLimit).toBe(1);
 });
 
 test("the automatic settle's sweep closes a shell the person opened, which only the host can see", async () => {
   const { host, manager, store, advance } = await scene();
   const shell = host.personShell("session_one");
   expect(manager.openSessions()).toEqual([]);
-  const window = store.getInboxPolicy().autoSettleAfterHours!;
+  const window = store.settings.inbox().autoSettleAfterHours!;
 
   advance(window * HOUR + 60_000);
-  expect(await store.sweepSettledTerminals()).toEqual([]);
+  expect(await store.sessionTerminals.sweepSettled()).toEqual([]);
   expect(host.terminals.has(shell)).toBe(true);
 
   advance(SETTLED_TERMINAL_GRACE_MS);
-  expect(await store.sweepSettledTerminals()).toEqual(["session_one"]);
+  expect(await store.sessionTerminals.sweepSettled()).toEqual(["session_one"]);
   expect(host.terminals.has(shell)).toBe(false);
-  expect(store.getSession("session_one").terminalsClosed).toMatchObject({ terminals: 1, reason: "grace" });
-  expect(store.liveSessionRows({ all: true }).terminals).toEqual({});
+  expect(store.records.get("session_one").terminalsClosed).toMatchObject({ terminals: 1, reason: "grace" });
+  expect(store.live.rows({ all: true }).terminals).toEqual({});
 });
 
 test("the counts include the person's shells: what Settle would close, and what the rail is told", async () => {
@@ -184,16 +184,16 @@ test("the counts include the person's shells: what Settle would close, and what 
   await open("session_one");
   host.personShell("session_one");
   host.personShell("session_three");
-  const before = store.sessionsRevision();
+  const before = store.live.revision();
 
-  expect(await store.sessionTerminalCount("session_one")).toBe(2);
-  expect(await store.sessionTerminalCount("session_two")).toBe(0);
-  expect(store.liveSessionRows().terminals).toEqual({ session_one: 2, session_three: 1 });
-  expect(store.sessionsRevision()).toBeGreaterThan(before);
+  expect(await store.sessionTerminals.countNow("session_one")).toBe(2);
+  expect(await store.sessionTerminals.countNow("session_two")).toBe(0);
+  expect(store.live.rows().terminals).toEqual({ session_one: 2, session_three: 1 });
+  expect(store.live.revision()).toBeGreaterThan(before);
 
-  store.updateSession("session_one", { settledOverride: "settled" });
-  expect(await store.endSessionLeftovers("session_one")).toEqual({ terminals: 2, backgroundTasks: 0 });
-  expect(store.liveSessionRows({ all: true }).terminals).toEqual({ session_three: 1 });
+  store.lifecycle.updateSession("session_one", { settledOverride: "settled" });
+  expect(await store.settler.endLeftovers("session_one")).toEqual({ terminals: 2, backgroundTasks: 0 });
+  expect(store.live.rows({ all: true }).terminals).toEqual({ session_three: 1 });
 });
 
 test("the person closing a settled session's terminals is recorded as the person's", async () => {
@@ -201,9 +201,9 @@ test("the person closing a settled session's terminals is recorded as the person
   const run = await open("session_one");
   host.personShell("session_one");
   settle("session_one");
-  expect(await store.closeSessionTerminals("session_one")).toBe(2);
+  expect(await store.sessionTerminals.closeForPerson("session_one")).toBe(2);
   expect(manager.run(run.terminalId)).toMatchObject({ status: "closed", closedBy: "person" });
   expect(closedByPerson.map((view) => view.terminalId)).toEqual([run.terminalId]);
-  expect(store.getSession("session_one").terminalsClosed).toBeUndefined();
-  expect(store.liveSessionRows({ all: true }).terminals).toEqual({});
+  expect(store.records.get("session_one").terminalsClosed).toBeUndefined();
+  expect(store.live.rows({ all: true }).terminals).toEqual({});
 });

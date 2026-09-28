@@ -29,13 +29,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { autoResolution, narrowerRuntimeMode, type RequestKind, type RuntimeMode } from "@telar/engine-client";
-import { EngineStateError, EngineStore } from "../../state";
+import { EngineStore } from "../../state";
+import { EngineStateError } from "../../platform/kernel";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -44,9 +45,9 @@ function setup(creatorMode: RuntimeMode): EngineStore {
   homes.push(home);
   const store = new EngineStore(home, () => 1_000);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_creator", projectId: "project_one", title: "Coordinator" });
-  store.updateSession("session_creator", { runtimeMode: creatorMode });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_creator", projectId: "project_one", title: "Coordinator" });
+  store.lifecycle.updateSession("session_creator", { runtimeMode: creatorMode });
   return store;
 }
 
@@ -66,7 +67,7 @@ const ALL_KINDS: RequestKind[] = ["command_execution", "file_change", "file_read
  */
 test("a creator that has to ask cannot produce a child that does not", () => {
   const store = setup("approval-required");
-  const child = store.createSession({
+  const child = store.lifecycle.createSession({
     id: "session_child",
     projectId: "project_one",
     detached: true,
@@ -83,7 +84,7 @@ test("a creator with full access can still produce a narrower child", () => {
   // Attended: the posture's own default is `approval-required`, which is
   // narrower than the ceiling. A ceiling that CLAMPED UP would widen this to
   // full-access, which is the rule this test exists to refuse.
-  const attended = store.createSession({
+  const attended = store.lifecycle.createSession({
     id: "session_attended",
     projectId: "project_one",
     detached: false,
@@ -93,7 +94,7 @@ test("a creator with full access can still produce a narrower child", () => {
 
   // And a detached child under the same creator keeps the posture's own answer
   // rather than being raised to the creator's.
-  const detached = store.createSession({
+  const detached = store.lifecycle.createSession({
     id: "session_detached",
     projectId: "project_one",
     detached: true,
@@ -112,7 +113,7 @@ test("the child's mode is a function of the creator's, across the whole ladder",
   const seen: Array<[RuntimeMode, RuntimeMode]> = [];
   for (const creatorMode of ALL_MODES) {
     const store = setup(creatorMode);
-    const child = store.createSession({
+    const child = store.lifecycle.createSession({
       id: "session_child",
       projectId: "project_one",
       detached: true,
@@ -141,8 +142,8 @@ test("the child's mode is a function of the creator's, across the whole ladder",
  */
 test("with no ceiling the line is exactly what it was", () => {
   const store = setup("approval-required");
-  expect(store.createSession({ id: "session_plain", projectId: "project_one" }).runtimeMode).toBe("auto");
-  expect(store.createSession({ id: "session_attended", projectId: "project_one", detached: false }).runtimeMode).toBe("approval-required");
+  expect(store.lifecycle.createSession({ id: "session_plain", projectId: "project_one" }).runtimeMode).toBe("auto");
+  expect(store.lifecycle.createSession({ id: "session_attended", projectId: "project_one", detached: false }).runtimeMode).toBe("approval-required");
 });
 
 /**
@@ -156,15 +157,15 @@ test("with no ceiling the line is exactly what it was", () => {
  */
 test("a creator widening itself later does not widen a session it already made", () => {
   const store = setup("approval-required");
-  const child = store.createSession({
+  const child = store.lifecycle.createSession({
     id: "session_child",
     projectId: "project_one",
     detached: true,
     ceilingFrom: "session_creator",
   });
   expect(child.runtimeMode).toBe("approval-required");
-  store.updateSession("session_creator", { runtimeMode: "full-access" });
-  expect(store.getSession("session_child").runtimeMode).toBe("approval-required");
+  store.lifecycle.updateSession("session_creator", { runtimeMode: "full-access" });
+  expect(store.records.get("session_child").runtimeMode).toBe("approval-required");
 });
 
 /**
@@ -178,9 +179,9 @@ test("a creator widening itself later does not widen a session it already made",
 test("an unreadable ceiling refuses rather than falling back to the widest mode", () => {
   const store = setup("approval-required");
   expect(() =>
-    store.createSession({ id: "session_child", projectId: "project_one", ceilingFrom: "session_nope" }),
+    store.lifecycle.createSession({ id: "session_child", projectId: "project_one", ceilingFrom: "session_nope" }),
   ).toThrow(EngineStateError);
-  expect(() => store.getSession("session_child")).toThrow();
+  expect(() => store.records.get("session_child")).toThrow();
 });
 
 /* ------------------------------------------------------------------ *

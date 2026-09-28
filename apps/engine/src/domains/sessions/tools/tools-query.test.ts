@@ -8,15 +8,15 @@ function queryEngine(): { store: EngineStore; projectId: string } {
   const projectRoot = repo();
   const store = new EngineStore(tmp("telar-sessions-query-"), () => Date.now());
   openStores.push(store);
-  const project = store.registerProject({ name: "aurora", root: projectRoot });
+  const project = store.projectRegistry.register({ name: "aurora", root: projectRoot });
   return { store, projectId: project.id };
 }
 
 function conversation(store: EngineStore, sessionId: string, runId: string, input: string, answer: string, items = 3): void {
-  store.submitTurn(sessionId, { runId, input });
-  const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
-  store.markRunning(sessionId, runId, token);
-  store.ingestObservations(
+  store.intake.submitTurn(sessionId, { runId, input });
+  const token = store.claims.claimTurn(sessionId, "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning(sessionId, runId, token);
+  store.ingest.ingestObservations(
     sessionId,
     runId,
     token,
@@ -25,13 +25,13 @@ function conversation(store: EngineStore, sessionId: string, runId: string, inpu
       { kind: "item.completed" as const, itemId: id, status: "completed" as const, detail: { type: "assistant_message" as const, text: `body of step ${step}` } },
     ]),
   );
-  store.completeTurn(sessionId, runId, token, { text: answer });
+  store.turnLifecycle.completeTurn(sessionId, runId, token, { text: answer });
 }
 
 describe("the six query tools", () => {
   test("each one answers its own question, from the projection rather than the journal", async () => {
     const { store, projectId } = queryEngine();
-    const session = store.createSession({ projectId, title: "the appearance rework" });
+    const session = store.lifecycle.createSession({ projectId, title: "the appearance rework" });
     conversation(store, session.id, "run_1", "rework the appearance panel\nand a second line", "I finished the appearance rework.");
     const tools = wall(store);
 
@@ -78,7 +78,7 @@ describe("the six query tools", () => {
 
   test("a long run is paged by rows and by bytes, and the cursor skips nothing", async () => {
     const { store, projectId } = queryEngine();
-    const session = store.createSession({ projectId });
+    const session = store.lifecycle.createSession({ projectId });
     conversation(store, session.id, "run_long", "do a great many things", "done", 140);
     const tools = wall(store);
 
@@ -106,7 +106,7 @@ describe("the six query tools", () => {
 
   test("a step is addressed by index or by item id, and a step that is not there refuses readably", async () => {
     const { store, projectId } = queryEngine();
-    const session = store.createSession({ projectId });
+    const session = store.lifecycle.createSession({ projectId });
     conversation(store, session.id, "run_1", "ask", "answer");
     const tools = wall(store);
 
@@ -127,16 +127,16 @@ describe("the six query tools", () => {
 
   test("a step longer than the budget is clamped, marked, and says how to ask for more", async () => {
     const { store, projectId } = queryEngine();
-    const session = store.createSession({ projectId });
-    store.submitTurn(session.id, { runId: "run_big", input: "write a lot" });
-    const token = store.claimTurn(session.id, "worker_one")!.claim!.token;
-    store.markRunning(session.id, "run_big", token);
+    const session = store.lifecycle.createSession({ projectId });
+    store.intake.submitTurn(session.id, { runId: "run_big", input: "write a lot" });
+    const token = store.claims.claimTurn(session.id, "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning(session.id, "run_big", token);
     const huge = "the body of one enormous step, said again and again. ".repeat(400);
-    store.ingestObservations(session.id, "run_big", token, [
+    store.ingest.ingestObservations(session.id, "run_big", token, [
       { kind: "item.started", item: { id: "item_big", title: "a big step", detail: { type: "assistant_message", text: "" } } },
       { kind: "item.completed", itemId: "item_big", status: "completed", detail: { type: "assistant_message", text: huge } },
     ]);
-    store.completeTurn(session.id, "run_big", token, { text: "done" });
+    store.turnLifecycle.completeTurn(session.id, "run_big", token, { text: "done" });
     const tools = wall(store);
 
     const clamped = await call(tools, "sessions_step", { sessionId: session.id, runId: "run_big", step: 0, maxChars: 2_000 });
@@ -152,7 +152,7 @@ describe("the six query tools", () => {
 
   test("grep pages newest first, and an empty search says so rather than looking like a small answer", async () => {
     const { store, projectId } = queryEngine();
-    const session = store.createSession({ projectId });
+    const session = store.lifecycle.createSession({ projectId });
     for (let lap = 0; lap < 6; lap += 1) conversation(store, session.id, `run_${lap}`, `lap ${lap}`, `could not take the index.lock on lap ${lap}`);
     const tools = wall(store);
 

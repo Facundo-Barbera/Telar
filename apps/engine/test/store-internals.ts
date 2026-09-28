@@ -32,7 +32,7 @@ export function toLegacyHome(store: EngineStore, root: string, edit?: (key: stri
   for (const sessionId of execution.sessionIds()) {
     journals.set(sessionId, execution.events(sessionId).map((event) => JSON.stringify(event)));
   }
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   for (const name of fs.readdirSync(root)) if (name.startsWith("execution.sqlite") || name === "execution-store.json") fs.rmSync(path.join(root, name));
   for (const row of documents) {
     const key = String(row.key);

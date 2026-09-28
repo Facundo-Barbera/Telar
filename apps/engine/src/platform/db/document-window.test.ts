@@ -35,7 +35,7 @@ const open = (home: string): EngineStore => {
 };
 
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -55,23 +55,23 @@ const BODY = "x".repeat(800);
 function conversation(turns: number, itemsPerTurn = 3): string {
   const home = root();
   const store = open(home);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   for (let index = 0; index < turns; index += 1) {
     const runId = `run_${index}`;
-    store.submitTurn("session_one", { runId, input: `message ${index}` });
-    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-    store.markRunning("session_one", runId, token);
+    store.intake.submitTurn("session_one", { runId, input: `message ${index}` });
+    const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning("session_one", runId, token);
     // One ingest per turn rather than one per item: the projection is rewritten
     // per call, and seeding a hundred turns a call at a time is the slowest
     // thing in this file.
-    store.ingestObservations("session_one", runId, token, Array.from({ length: itemsPerTurn }, (_, step) => `${runId}_item_${step}`).flatMap((id) => [
+    store.ingest.ingestObservations("session_one", runId, token, Array.from({ length: itemsPerTurn }, (_, step) => `${runId}_item_${step}`).flatMap((id) => [
       { kind: "item.started" as const, item: { id, detail: { type: "assistant_message", text: "" } } },
       { kind: "item.completed" as const, itemId: id, status: "completed" as const, detail: { type: "assistant_message", text: `${BODY} ${index}` } },
     ]));
-    store.completeTurn("session_one", runId, token, { text: `answer ${index}` });
+    store.turnLifecycle.completeTurn("session_one", runId, token, { text: `answer ${index}` });
   }
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   stores.splice(stores.indexOf(store), 1);
   return home;
 }
@@ -82,14 +82,14 @@ test("opening a 120-turn session reads its tail, not its history", () => {
   // What the whole projection weighs, read by a store of its own so the one
   // under test starts with nothing parsed and nothing cached.
   const measured = open(home);
-  const everyItem = measured.items("session_one");
-  const whole = JSON.stringify(everyItem).length + JSON.stringify(measured.turns("session_one")).length;
+  const everyItem = measured.queries.items("session_one");
+  const whole = JSON.stringify(everyItem).length + JSON.stringify(measured.queries.turns("session_one")).length;
 
   const cold = open(home);
-  cold.readAccounting.documentBytes = 0;
-  cold.readAccounting.documentReads = 0;
-  const window = cold.snapshotWindow("session_one", { limit: 10 });
-  const touched = cold.readAccounting.documentBytes;
+  cold.kernel.readAccounting.documentBytes = 0;
+  cold.kernel.readAccounting.documentReads = 0;
+  const window = cold.queries.snapshotWindow("session_one", { limit: 10 });
+  const touched = cold.kernel.readAccounting.documentBytes;
 
   // THE ANSWER IS THE SAME ANSWER. The window is what it always was; only the
   // route to it changed.
@@ -112,47 +112,47 @@ test("a conversation migrated into SQLite reads correctly before it is indexed a
   // whole-document read, and the first write earns the index back.
   const home = conversation(30);
   const seeded = open(home);
-  const before = seeded.snapshotWindow("session_one", { limit: 8 });
+  const before = seeded.queries.snapshotWindow("session_one", { limit: 8 });
   // Items live as rows, not documents, so the legacy home gets its blob by hand.
-  const items = seeded.items("session_one");
+  const items = seeded.queries.items("session_one");
   toLegacyHome(seeded, home);
   fs.writeFileSync(path.join(home, "sessions", "session_one", "items.json"), JSON.stringify({ items }));
 
   const migrated = open(home);
-  migrated.readAccounting.documentBytes = 0;
-  expect(migrated.snapshotWindow("session_one", { limit: 8 })).toEqual(before);
-  const whole = migrated.readAccounting.documentBytes;
+  migrated.kernel.readAccounting.documentBytes = 0;
+  expect(migrated.queries.snapshotWindow("session_one", { limit: 8 })).toEqual(before);
+  const whole = migrated.kernel.readAccounting.documentBytes;
   expect(whole).toBeGreaterThan(JSON.stringify(before.items).length * 2);
 
   // One write rebuilds both indexes against sqlite's own text, and the next
   // read is a tail read again.
-  migrated.submitTurn("session_one", { runId: "run_next", input: "and again" });
-  const token = migrated.claimTurn("session_one", "worker_one")!.claim!.token;
-  migrated.markRunning("session_one", "run_next", token);
-  migrated.ingestObservations("session_one", "run_next", token, [
+  migrated.intake.submitTurn("session_one", { runId: "run_next", input: "and again" });
+  const token = migrated.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  migrated.turnLifecycle.markRunning("session_one", "run_next", token);
+  migrated.ingest.ingestObservations("session_one", "run_next", token, [
     { kind: "item.started", item: { id: "run_next_item", detail: { type: "assistant_message", text: "" } } },
     { kind: "item.completed", itemId: "run_next_item", status: "completed", detail: { type: "assistant_message", text: BODY } },
   ]);
-  migrated.completeTurn("session_one", "run_next", token, { text: "done" });
+  migrated.turnLifecycle.completeTurn("session_one", "run_next", token, { text: "done" });
 
   const warm = open(home);
-  warm.readAccounting.documentBytes = 0;
-  const after = warm.snapshotWindow("session_one", { limit: 8 });
+  warm.kernel.readAccounting.documentBytes = 0;
+  const after = warm.queries.snapshotWindow("session_one", { limit: 8 });
   expect(after.turns.map((turn) => turn.runId)).toEqual([...before.turns.slice(1).map((turn) => turn.runId), "run_next"]);
-  expect(warm.readAccounting.documentBytes).toBeLessThan(whole / 2);
+  expect(warm.kernel.readAccounting.documentBytes).toBeLessThan(whole / 2);
 });
 
 test("a windowed read still pages, and an unsettled turn still rides along", () => {
   const home = conversation(12);
   const store = open(home);
-  store.submitTurn("session_one", { runId: "run_live", input: "Now" });
+  store.intake.submitTurn("session_one", { runId: "run_live", input: "Now" });
 
-  const first = store.snapshotWindow("session_one", { limit: 3 });
+  const first = store.queries.snapshotWindow("session_one", { limit: 3 });
   expect(first.turns.map((turn) => turn.runId)).toEqual(["run_9", "run_10", "run_11", "run_live"]);
   expect(first.page).toEqual({ before: "run_9", more: true, total: 13 });
 
   // An older page is history: it drops the live turn rather than repeating it.
-  const older = store.snapshotWindow("session_one", { limit: 3, before: "run_9" });
+  const older = store.queries.snapshotWindow("session_one", { limit: 3, before: "run_9" });
   expect(older.turns.map((turn) => turn.runId)).toEqual(["run_6", "run_7", "run_8"]);
   expect(older.items.every((item) => ["run_6", "run_7", "run_8"].includes(item.runId))).toBe(true);
   expect(older.page).toEqual({ before: "run_6", more: true, total: 13 });
@@ -161,7 +161,7 @@ test("a windowed read still pages, and an unsettled turn still rides along", () 
 test("paging back from the tail reaches the first turn with no gap and no repeat", () => {
   const home = conversation(17, 2);
   const store = open(home);
-  store.submitTurn("session_one", { runId: "run_live", input: "Now" });
+  store.intake.submitTurn("session_one", { runId: "run_live", input: "Now" });
   const whole = sessionSnapshot(store, "session_one");
   // No window, no page: the unwindowed answer is the shape it always was.
   expect(Object.keys(whole).sort()).toEqual(["assignments", "cursor", "items", "requests", "session", "tasks", "turns"]);
@@ -215,20 +215,20 @@ test("the windowed item read searches items_run rather than scanning the table",
 test("a snapshot carries a bounded tail of settled requests, and every open one", () => {
   const home = root();
   const store = open(home);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
   // Attached, so a request parks for a human rather than resolving by policy.
-  store.createSession({ id: "session_one", projectId: "project_one", detached: false });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", detached: false });
 
-  store.submitTurn("session_one", { runId: "run_busy", input: "do the thing" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_busy", token);
-  store.openRequest("session_one", "run_busy", token, {
+  store.intake.submitTurn("session_one", { runId: "run_busy", input: "do the thing" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", "run_busy", token);
+  store.requestGate.open("session_one", "run_busy", token, {
     requestId: "req_seed",
     kind: "command_execution",
     detail: { kind: "command_execution", command: { command: "echo seed" } },
   });
-  store.resolveRequest("session_one", "req_seed", { decision: "accept" });
-  store.openRequest("session_one", "run_busy", token, {
+  store.requestGate.resolve("session_one", "req_seed", { decision: "accept" });
+  store.requestGate.open("session_one", "run_busy", token, {
     requestId: "req_open",
     kind: "command_execution",
     detail: { kind: "command_execution", command: { command: "rm -rf build" } },
@@ -236,13 +236,13 @@ test("a snapshot carries a bounded tail of settled requests, and every open one"
 
   // The 2,000 settled ones are clones of a request this store wrote, imported
   // as a legacy home: opening each through the public path would be too slow.
-  const settled = store.requests("session_one").find((request) => request.id === "req_seed")!;
-  const opened = store.requests("session_one").find((request) => request.id === "req_open")!;
+  const settled = store.requestGate.list("session_one").find((request) => request.id === "req_seed")!;
+  const opened = store.requestGate.list("session_one").find((request) => request.id === "req_open")!;
   const many = Array.from({ length: 2_000 }, (_, at) => ({ ...settled, id: `req_${at}`, openedAt: 100 + at }));
   toLegacyHome(store, home, (key, value) => key.endsWith("/requests.json") ? { ...(value as object), requests: [...many, opened] } : value);
 
   const reopened = open(home);
-  const window = reopened.snapshotWindow("session_one", { limit: 10 });
+  const window = reopened.queries.snapshotWindow("session_one", { limit: 10 });
 
   // THE PROOF THE ISSUE ASKS FOR: 2,000 settled requests, and the key the
   // snapshot carries is under 30 KB.
@@ -254,27 +254,27 @@ test("a snapshot carries a bounded tail of settled requests, and every open one"
   expect(carried.map((request) => request.id)).toEqual(Array.from({ length: 50 }, (_, at) => `req_${1_950 + at}`));
 
   // The unwindowed snapshot is bounded the same way…
-  expect(JSON.stringify(reopened.snapshotRequests("session_one")).length).toBeLessThan(30_000);
-  expect(reopened.snapshotRequests("session_one").map((request) => request.id).at(-1)).toBe("req_open");
+  expect(JSON.stringify(reopened.queries.snapshotRequests("session_one")).length).toBeLessThan(30_000);
+  expect(reopened.queries.snapshotRequests("session_one").map((request) => request.id).at(-1)).toBe("req_open");
   // …and `requests()` is untouched: what a session was ever asked is a
   // different question from what a transcript renders.
-  expect(reopened.requests("session_one")).toHaveLength(2_001);
+  expect(reopened.requestGate.list("session_one")).toHaveLength(2_001);
 });
 
 test("a session with few requests carries all of them, open or settled", () => {
   const home = conversation(3);
   const store = open(home);
-  const window = store.snapshotWindow("session_one", { limit: 10 });
+  const window = store.queries.snapshotWindow("session_one", { limit: 10 });
   expect(window.requests).toEqual([]);
-  expect(store.snapshotRequests("session_one")).toEqual([]);
+  expect(store.queries.snapshotRequests("session_one")).toEqual([]);
 });
 
 test("a window carries every item its turns own", () => {
   const home = conversation(12, 8);
   const store = open(home);
-  const everyItem = store.items("session_one");
+  const everyItem = store.queries.items("session_one");
   expect(everyItem).toHaveLength(12 * 8);
-  const window = open(home).snapshotWindow("session_one", { limit: 2 });
+  const window = open(home).queries.snapshotWindow("session_one", { limit: 2 });
   expect(window.items).toEqual(everyItem.filter((item) => ["run_10", "run_11"].includes(item.runId)));
   expect(window.items).toHaveLength(16);
 });

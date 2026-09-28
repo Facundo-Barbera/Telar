@@ -72,7 +72,7 @@ const stores: EngineStore[] = [];
 /** Every variable that must point inside the sandbox, with what it was. */
 let restore: Array<[string, string | undefined]> = [];
 afterEach(() => {
-  for (const store of stores.splice(0)) { try { store.closeExecutionStore(); } catch { /* already closed */ } }
+  for (const store of stores.splice(0)) { try { store.kernel.executionStore.close(); } catch { /* already closed */ } }
   for (const [name, was] of restore.splice(0)) { if (was === undefined) delete process.env[name]; else process.env[name] = was; }
   for (const directory of scratch.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -143,29 +143,29 @@ const unsanctioned = (root: string): string[] => {
 function drive(engineRoot: string): EngineStore {
   const store = new EngineStore(engineRoot, () => START);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "one", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  store.submitTurn("session_one", { runId: "run_one", input: "write something down" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
+  store.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "write something down" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "item.started", item: { id: "item_one", title: "answering", detail: { type: "assistant_message", text: "" } } },
     { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "part one " },
     { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "part two" },
     { kind: "item.completed", itemId: "item_one", status: "completed", detail: { type: "assistant_message", text: "part one part two" } },
   ]);
-  store.completeTurn("session_one", "run_one", token, { text: "done" });
-  store.markSessionRead("session_one", "run_one");
-  store.saveMcpServer({ id: "linear", spec: { transport: "stdio", command: "linear-mcp", args: [] } });
-  store.setSessionDefaults({ envMode: "local" });
-  store.setAppearance({ look: { name: "something" } });
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "done" });
+  store.records.markRead("session_one", "run_one");
+  store.mcpServers.save({ id: "linear", spec: { transport: "stdio", command: "linear-mcp", args: [] } });
+  store.settings.setSessionDefaults({ envMode: "local" });
+  store.appearance.set({ look: { name: "something" } });
   return store;
 }
 
 test("a representative workload leaves nothing at the store root that nothing declared", () => {
   const { engineRoot } = sandbox();
   const store = drive(engineRoot);
-  store.closeExecutionStore();
+  store.kernel.executionStore.close();
   stores.splice(stores.indexOf(store), 1);
   // A SECOND BOOT OVER THE SAME HOME, because several things are written only
   // on open — the legacy fence, the backup sweep, the reconciles — and a test

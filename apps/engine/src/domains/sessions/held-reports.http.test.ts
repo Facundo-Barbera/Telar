@@ -29,14 +29,14 @@ async function ready() {
   await client.createSession({ id: "session_coord", projectId: "project_one" });
   await client.createSession({ id: "session_worker", projectId: "project_one" });
   const store = daemon.store;
-  store.submitTurn("session_worker", { runId: "run_source", input: "work" });
-  const claimToken = store.claimTurn("session_worker", "worker_one")!.claim!.token;
-  store.markRunning("session_worker", "run_source", claimToken);
+  store.intake.submitTurn("session_worker", { runId: "run_source", input: "work" });
+  const claimToken = store.claims.claimTurn("session_worker", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_worker", "run_source", claimToken);
   return { client, store, proof: { sessionId: "session_worker", runId: "run_source", claimToken } };
 }
 
-const report = (store: EngineDaemon["store"], proof: Parameters<EngineDaemon["store"]["submitAgentTurn"]>[2], runId: string) =>
-  store.submitAgentTurn("session_coord", { runId, input: "progress", intent: "report" }, proof);
+const report = (store: EngineDaemon["store"], proof: Parameters<EngineDaemon["store"]["intake"]["submitAgentTurn"]>[2], runId: string) =>
+  store.intake.submitAgentTurn("session_coord", { runId, input: "progress", intent: "report" }, proof);
 
 test("the route counts what is waiting for the next turn", async () => {
   const { client, store, proof } = await ready();

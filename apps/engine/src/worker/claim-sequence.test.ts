@@ -199,12 +199,12 @@ test("a claim waiting behind authorization cannot allocate after its worker reti
   await client.createSession({ id: "session_one", projectId: "project_one" });
   await client.registerWorker("worker_old");
   await client.submitTurn("session_one", { runId: "run_one", input: "first" });
-  const authorize = daemon.store.authorizeClaimedMcpServers.bind(daemon.store);
+  const authorize = daemon.store.mcpOAuth.authorizeClaim.bind(daemon.store.mcpOAuth);
   let entered!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   let release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
-  daemon.store.authorizeClaimedMcpServers = async claim => { entered(); await barrier; return authorize(claim); };
+  daemon.store.mcpOAuth.authorizeClaim = async claim => { entered(); await barrier; return authorize(claim); };
   const first = client.claimTurn("worker_old", 1).catch(error => error);
   await started;
   const next = client.claimTurn("worker_old", 2).catch(error => error);

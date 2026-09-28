@@ -39,15 +39,14 @@ describe("a test cannot spawn a provider", () => {
     // The real store, the real default policy — the exact shape that was
     // spending model calls: `titles: true`, a seed title, a directory to run in.
     const store = new EngineStore(tmp("telar-np-state-"), () => 100);
-    expect(store.getTextGenPolicy().titles).toBe(true);
+    expect(store.settings.textGen().titles).toBe(true);
 
     const asked: unknown[] = [];
     const retitle: RetitleStore = {
-      getTextGenPolicy: () => store.getTextGenPolicy(),
-      getSession: () => ({ title: "fix the thing", state: "active", workspace: { mode: "local", path: tmp("telar-np-cwd-") } }),
-      resolveProviderInstance: () => ({ enabled: true, env: [] }),
-      updateSession: () => undefined,
-      refreshWorktreeBranchFromTitle: () => undefined,
+      settings: store.settings,
+      records: { get: () => ({ title: "fix the thing", state: "active", workspace: { mode: "local", path: tmp("telar-np-cwd-") } }) },
+      providers: { resolve: () => ({ enabled: true, env: [] }) },
+      lifecycle: { updateSession: () => undefined, refreshWorktreeBranchFromTitle: () => undefined },
     };
     await maybeRetitleSession(retitle, "session_one", "fix the thing", ((input: unknown) => {
       asked.push(input);

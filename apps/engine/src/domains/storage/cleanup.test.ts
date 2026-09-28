@@ -74,8 +74,8 @@ async function setup() {
   const home = tmp("telar-cleanup-home-");
   fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
   const store = new EngineStore(home, () => now);
-  store.registerProject({ id: "project_one", name: "One", root });
-  const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root });
+  const session = store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   await worktreeReady(store, "session_one");
   if (session.workspace.mode !== "worktree") throw new Error("expected a worktree");
   const checkout = session.workspace.path;
@@ -87,7 +87,7 @@ async function setup() {
 test("with every switch off, a sweep touches nothing and records an empty result", async () => {
   const { store, checkout, advance } = await setup();
   advance(60 * DAY);
-  await store.runCleanup();
+  await store.worktrees.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
   expect(store.cleanup.last()).toMatchObject({ released: 0, logs: 0, freedBytes: 0 });
 });
@@ -97,14 +97,14 @@ test("an inactive session's checkout is released past the window, and the branch
   git(checkout, "push", "-q", "origin", branch);
   store.cleanup.setPolicy({ inactiveDays: 7 });
   advance(3 * DAY);
-  await store.runCleanup();
+  await store.worktrees.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
   advance(5 * DAY);
-  await store.runCleanup();
+  await store.worktrees.runCleanup();
   expect(fs.existsSync(checkout)).toBe(false);
   expect(git(root, "branch", "--list", branch)).toContain(branch);
   expect(store.cleanup.last()).toMatchObject({ released: 1 });
-  const session = store.getSession("session_one");
+  const session = store.records.get("session_one");
   expect(session.workspace.mode === "worktree" && session.workspace.released?.reason).toBe("inactive");
 });
 
@@ -113,7 +113,7 @@ test("the fixed rules hold whatever the switches say: uncommitted work is skippe
   fs.writeFileSync(path.join(checkout, "README.md"), "edited\n");
   store.cleanup.setPolicy({ inactiveDays: 3 });
   advance(10 * DAY);
-  await store.runCleanup();
+  await store.worktrees.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
   expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
 });
@@ -125,80 +125,80 @@ test("unchanged: an idle session with no commits beyond the default branch is re
   git(withWork.checkout, "commit", "-qm", "feature");
   git(withWork.checkout, "push", "-q", "origin", withWork.branch);
   withWork.store.cleanup.setPolicy({ unchanged: true });
-  await withWork.store.runCleanup();
+  await withWork.store.worktrees.runCleanup();
   expect(fs.existsSync(withWork.checkout)).toBe(true);
 
   const empty = await setup();
   empty.store.cleanup.setPolicy({ unchanged: true });
-  await empty.store.runCleanup();
+  await empty.store.worktrees.runCleanup();
   expect(fs.existsSync(empty.checkout)).toBe(false);
-  const session = empty.store.getSession("session_one");
+  const session = empty.store.records.get("session_one");
   expect(session.workspace.mode === "worktree" && session.workspace.released?.reason).toBe("unchanged");
 });
 
 test("unchanged never releases a session that is not idle", async () => {
   const { store, checkout } = await setup();
-  store.submitTurn("session_one", { runId: "run_busy", input: "working" });
+  store.intake.submitTurn("session_one", { runId: "run_busy", input: "working" });
   store.cleanup.setPolicy({ unchanged: true });
-  await store.runCleanup();
+  await store.worktrees.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
   expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
 });
 
 function backgroundTask(store: EngineStore, state: "running" | "waiting", options: { ambient?: boolean } = {}) {
-  store.submitTurn("session_one", { runId: "run_bg", input: "Watch the build" });
-  const claimed = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_bg", input: "Watch the build" });
+  const claimed = store.claims.claimNextTurn("worker_one")!;
   const token = claimed.turn.claim!.token;
-  store.markRunning("session_one", "run_bg", token);
-  store.ingestObservations("session_one", "run_bg", token, [
+  store.turnLifecycle.markRunning("session_one", "run_bg", token);
+  store.ingest.ingestObservations("session_one", "run_bg", token, [
     { kind: "task.started", task: { id: "task_bg", providerTaskId: "bg1", kind: "background", backgrounded: true, state, title: "Tail the log", ...options } },
   ]);
-  store.completeTurn("session_one", "run_bg", token, { text: "Watching" });
+  store.turnLifecycle.completeTurn("session_one", "run_bg", token, { text: "Watching" });
 }
 
 test("live background work: the sweep leaves a monitoring session's checkout alone, and the reaper counts it live", async () => {
   const { store, checkout, advance } = await setup();
   backgroundTask(store, "running");
-  expect(store.getSession("session_one").activity).toBe("monitoring");
+  expect(store.records.get("session_one").activity).toBe("monitoring");
   store.cleanup.setPolicy({ unchanged: true, inactiveDays: 7 });
   advance(30 * DAY);
-  await store.runCleanup();
+  await store.worktrees.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
   expect(store.cleanup.last()).toMatchObject({ released: 0 });
-  store.archiveSession("session_one");
-  expect(store.reapableWorktrees()).toEqual([expect.objectContaining({ sessionId: "session_one", archived: true, live: true })]);
+  store.lifecycle.archiveSession("session_one");
+  expect(store.worktrees.reapable()).toEqual([expect.objectContaining({ sessionId: "session_one", archived: true, live: true })]);
 });
 
 test("paused or ambient background tasks are not live work: the sweep and the reaper may take the checkout", async () => {
   for (const [state, ambient] of [["waiting", false], ["running", true]] as const) {
     const { store, checkout } = await setup();
     backgroundTask(store, state, ambient ? { ambient } : {});
-    expect(store.getSession("session_one").activity).toBe("idle");
-    expect(store.reapableWorktrees()).toEqual([expect.objectContaining({ sessionId: "session_one", live: false })]);
+    expect(store.records.get("session_one").activity).toBe("idle");
+    expect(store.worktrees.reapable()).toEqual([expect.objectContaining({ sessionId: "session_one", live: false })]);
     store.cleanup.setPolicy({ unchanged: true });
-    await store.runCleanup();
+    await store.worktrees.runCleanup();
     expect(fs.existsSync(checkout), `${state}${ambient ? " ambient" : ""}`).toBe(false);
   }
 });
 
 test("an open terminal: the unchanged sweep skips the session's checkout, and the reaper counts it live (#883)", async () => {
   const { store, checkout } = await setup();
-  store.attachTerminals({ openCount: (sessionId) => (sessionId === "session_one" ? 1 : 0), openSessions: () => ["session_one"], closeSession: async () => 1 });
+  store.sessionTerminals.attach({ openCount: (sessionId) => (sessionId === "session_one" ? 1 : 0), openSessions: () => ["session_one"], closeSession: async () => 1 });
   store.cleanup.setPolicy({ unchanged: true });
-  await store.runCleanup();
+  await store.worktrees.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
   expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
-  expect(store.reapableWorktrees()).toEqual([expect.objectContaining({ sessionId: "session_one", live: true })]);
+  expect(store.worktrees.reapable()).toEqual([expect.objectContaining({ sessionId: "session_one", live: true })]);
 });
 
 test("archiving keeps the checkout unless the switch is on", async () => {
   const off = await setup();
-  off.store.archiveSession("session_one");
+  off.store.lifecycle.archiveSession("session_one");
   expect(fs.existsSync(off.checkout)).toBe(true);
 
   const on = await setup();
   on.store.cleanup.setPolicy({ archived: true });
-  on.store.archiveSession("session_one");
+  on.store.lifecycle.archiveSession("session_one");
   await until("the checkout is gone", () => !fs.existsSync(on.checkout));
 });
 

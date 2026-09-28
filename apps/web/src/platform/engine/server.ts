@@ -28,7 +28,7 @@ export function engineRootFromWebEnv(
       "TELAR_HOME must not point at legacy Telar state; choose a dedicated Telar directory.",
     );
   }
-  // Must stay the same subdirectory `engineRootFromEnv` (apps/engine/src/state.ts)
+  // Must stay the same subdirectory `engineRootFromEnv` (apps/engine/src/platform/fs/engine-root.ts)
   // composes. The engine MIGRATES this directory on boot; the cockpit only reads
   // it, so it deliberately does not — a client that renamed the store would race
   // the process that owns it.

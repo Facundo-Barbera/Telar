@@ -64,13 +64,13 @@ async function claimedModel(
   options: { driver?: "claude" | "codex"; sessionModel?: { instanceId: string; model?: string }; warm?: boolean } = {},
 ): Promise<string | undefined> {
   const driver = options.driver ?? "claude";
-  if (options.warm !== false) await engine.modelCatalogue(driver);
-  engine.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  engine.createSession({ id: "session_one", projectId: "project_one", driver });
+  if (options.warm !== false) await engine.catalogues.catalogue(driver);
+  engine.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  engine.lifecycle.createSession({ id: "session_one", projectId: "project_one", driver });
   // The model is a session PATCH, not a creation field.
-  if (options.sessionModel) engine.updateSession("session_one", { model: options.sessionModel });
-  engine.submitTurn("session_one", { runId: "run_one", input: "hello" });
-  return engine.claimNextTurn("worker_one")?.model?.model;
+  if (options.sessionModel) engine.lifecycle.updateSession("session_one", { model: options.sessionModel });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  return engine.claims.claimNextTurn("worker_one")?.model?.model;
 }
 
 test("a session with NO model claims the catalogue's default at its long window", async () => {
@@ -90,17 +90,17 @@ test("without a manifest default the CLI's family runs, on its default window", 
 
 test("an OLD session saved with no model is covered at claim, with its history untouched", async () => {
   const engine = engineWith([model("claude-opus-5", true)]);
-  await engine.modelCatalogue("claude");
-  engine.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await engine.catalogues.catalogue("claude");
+  engine.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
   // Saved before the window was a control: no model at all.
-  engine.createSession({ id: "session_old", projectId: "project_one", driver: "claude" });
+  engine.lifecycle.createSession({ id: "session_old", projectId: "project_one", driver: "claude" });
 
-  engine.submitTurn("session_old", { runId: "run_one", input: "hello" });
-  const claim = engine.claimNextTurn("worker_one");
+  engine.intake.submitTurn("session_old", { runId: "run_one", input: "hello" });
+  const claim = engine.claims.claimNextTurn("worker_one");
   expect(claim?.model?.model).toBe("claude-fable-5-1[1m]");
   // The stored record is NOT rewritten: the claim decides what runs, it does
   // not edit what happened.
-  expect(engine.getSession("session_old").model).toBeUndefined();
+  expect(engine.records.get("session_old").model).toBeUndefined();
 });
 
 test("an EXPLICIT model runs as named — a bare id is its standard window, and 1M is picked by its row", async () => {
@@ -124,12 +124,12 @@ test("an EFFORT-ONLY selection keeps its effort and gains the model", async () =
   // (see `ModelSelection`'s refine). Filling in the model must not drop what
   // the person actually chose, and the instanceId they picked is kept.
   const engine = engineWith([model("claude-opus-5", true)]);
-  engine.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  await engine.modelCatalogue("claude");
-  engine.createSession({ id: "session_one", projectId: "project_one", driver: "claude" });
-  engine.updateSession("session_one", { model: { instanceId: "claude", effort: "max" } });
-  engine.submitTurn("session_one", { runId: "run_one", input: "hello" });
-  const claim = engine.claimNextTurn("worker_one");
+  engine.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  await engine.catalogues.catalogue("claude");
+  engine.lifecycle.createSession({ id: "session_one", projectId: "project_one", driver: "claude" });
+  engine.lifecycle.updateSession("session_one", { model: { instanceId: "claude", effort: "max" } });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  const claim = engine.claims.claimNextTurn("worker_one");
   expect(claim?.model).toEqual({ instanceId: "claude", effort: "max", model: "claude-fable-5-1[1m]" });
 });
 

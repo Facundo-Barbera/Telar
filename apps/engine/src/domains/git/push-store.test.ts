@@ -34,7 +34,7 @@ const tmp = (prefix: string): string => {
   return directory;
 };
 afterEach(() => {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const directory of made.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -75,10 +75,10 @@ async function withSession(options: { envMode?: "local" | "worktree"; gh?: GhRes
     },
   });
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
   const envMode = options.envMode ?? "worktree";
-  store.createSession({ id: "session_one", projectId: "project_one", envMode });
-  const workspace = () => store.getSession("session_one").workspace;
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode });
+  const workspace = () => store.records.get("session_one").workspace;
   if (envMode === "worktree") {
     expect(await until(() => workspace().mode === "worktree" && fs.existsSync((workspace() as { path: string }).path))).toBe(true);
   }
@@ -112,10 +112,10 @@ const believePushed = (cwd: string, name: string, at = "HEAD") => run(cwd, "upda
 test("a local session is refused without git being asked, and without gh being asked", async () => {
   const { store, calls } = await withSession({ envMode: "local" });
 
-  const pushed = await store.pushSessionBranch("session_one");
+  const pushed = await store.sessionGit.push("session_one");
   expect(pushed).toMatchObject({ pushed: false, refusal: "local_checkout" });
 
-  const opened = await store.openSessionPullRequest("session_one", { title: "Anything" });
+  const opened = await store.sessionPulls.open("session_one", { title: "Anything" });
   expect(opened).toMatchObject({ opened: false, refusal: "not_pushed" });
   // A `local` session shares the PROJECT's checkout with the user's editor.
   // There is no session branch to publish, and nothing to look at to find that
@@ -127,10 +127,10 @@ test("a checkout with no origin is refused from data — nothing is pushed, and 
   const { store, calls, branch } = await withSession();
   expect(branch).not.toBe("");
 
-  const pushed = await store.pushSessionBranch("session_one");
+  const pushed = await store.sessionGit.push("session_one");
   expect(pushed).toMatchObject({ pushed: false, refusal: "no_remote" });
 
-  const opened = await store.openSessionPullRequest("session_one", { title: "Anything" });
+  const opened = await store.sessionPulls.open("session_one", { title: "Anything" });
   expect(opened).toMatchObject({ opened: false, refusal: "failed" });
   expect(opened).toHaveProperty("message", "This checkout has no origin, so there is nowhere to push it.");
   expect(calls).toEqual([]);
@@ -140,7 +140,7 @@ test("A BRANCH THE REMOTE HAS NEVER SEEN CANNOT HAVE A PULL REQUEST, and GitHub 
   const { store, calls, projectRoot } = await withSession();
   addOrigin(projectRoot);
 
-  const opened = await store.openSessionPullRequest("session_one", { title: "Anything" });
+  const opened = await store.sessionPulls.open("session_one", { title: "Anything" });
   expect(opened).toMatchObject({ opened: false, refusal: "not_pushed" });
   // The remedy is the OTHER arm, which is three centimetres away on the Diff
   // surface — and finding that out cost no round trip.
@@ -154,7 +154,7 @@ test("the pull request names the session's OWN branch, read off the record rathe
   believePushed(cwd, branch);
   believePushed(cwd, "main", "main");
 
-  const opened = await store.openSessionPullRequest("session_one", { title: "Push and PR creation", body: "Why." });
+  const opened = await store.sessionPulls.open("session_one", { title: "Push and PR creation", body: "Why." });
   expect(opened).toMatchObject({ opened: true, url: "https://example.invalid/owner/repo/pull/812", number: 812 });
 
   expect(calls).toHaveLength(1);
@@ -175,7 +175,7 @@ test("a base that is not a branch name never reaches an argv", async () => {
   // braces are what keep a text field from becoming a command the day somebody
   // adds one.
   for (const base of ["--web", "-f", "main;rm -rf /", "$(whoami)", "../../etc/passwd"]) {
-    await expect(store.openSessionPullRequest("session_one", { title: "x", base })).rejects.toThrow();
+    await expect(store.sessionPulls.open("session_one", { title: "x", base })).rejects.toThrow();
   }
   expect(calls).toEqual([]);
 });
@@ -188,7 +188,7 @@ test("a base nobody named and nobody could derive is a refusal, not a guess", as
   addOrigin(projectRoot);
   believePushed(cwd, branch);
 
-  const opened = await store.openSessionPullRequest("session_one", { title: "x" });
+  const opened = await store.sessionPulls.open("session_one", { title: "x" });
   expect(opened).toMatchObject({ opened: false, refusal: "failed" });
   expect(opened).toHaveProperty("message", expect.stringContaining("could not work out which branch"));
   expect(calls).toEqual([]);
@@ -196,6 +196,6 @@ test("a base nobody named and nobody could derive is a refusal, not a guess", as
 
 test("a caller cannot push or open a pull request for a session that is not theirs to name", async () => {
   const { store } = await withSession();
-  await expect(store.pushSessionBranch("session_missing")).rejects.toThrow();
-  await expect(store.openSessionPullRequest("session_missing", { title: "x" })).rejects.toThrow();
+  await expect(store.sessionGit.push("session_missing")).rejects.toThrow();
+  await expect(store.sessionPulls.open("session_missing", { title: "x" })).rejects.toThrow();
 });

@@ -8,7 +8,7 @@ const stores: EngineStore[] = [];
 
 /** Closes every store opened through this fixture; pass to `afterEach`. */
 export function closeStores(): void {
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
 }
 
@@ -49,7 +49,7 @@ export function busy(store: EngineStore, runId = "run_host"): { runId: string; t
   return { runId, token };
 }
 
-export const notifications = (store: EngineStore) => store.turns("session_host").filter((turn) => turn.notification !== undefined);
+export const notifications = (store: EngineStore) => store.queries.turns("session_host").filter((turn) => turn.notification !== undefined);
 
 /** A worker's run that sends its coordinator a result and then ends. */
 export function reports(store: EngineStore, opts: { runId?: string; intent?: "result" | "report"; sent?: string } = {}) {
@@ -67,4 +67,4 @@ export function reports(store: EngineStore, opts: { runId?: string; intent?: "re
 
 /** The passive row recorded for a completion that woke nobody, if one was. */
 export const recordOf = (store: EngineStore, runId: string) =>
-  store.turns("session_host").find((turn) => turn.wakeReason?.runId === runId && turn.agentDelivery === "passive");
+  store.queries.turns("session_host").find((turn) => turn.wakeReason?.runId === runId && turn.agentDelivery === "passive");

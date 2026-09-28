@@ -20,8 +20,8 @@ export function useTempStores(): { root: () => string; readyStore: () => { store
   const readyStore = () => {
     const stateRoot = root();
     const store = new EngineStore(stateRoot, () => 100);
-    store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-    store.createSession({ id: "session_one", projectId: "project_one" });
+    store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+    store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
     return { store, root: stateRoot };
   };
   return { root, readyStore };

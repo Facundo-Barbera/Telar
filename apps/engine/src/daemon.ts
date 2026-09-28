@@ -38,7 +38,9 @@ import { closeServer, listenLoopback, removeOwnDiscovery, writeDiscovery } from 
 import type { Route } from "./platform/http/route";
 import { router } from "./platform/http/router";
 import { startSweepers, type Sweep } from "./platform/process/sweepers";
-import { acquireDaemonLock, EngineStore, engineRootFromEnv, migrateLegacyEngineRoot, type EngineNotifier } from "./state";
+import { EngineStore, type EngineNotifier } from "./state";
+import { engineRootFromEnv, migrateLegacyEngineRoot } from "./platform/fs/engine-root";
+import { acquireDaemonLock } from "./platform/process/daemon-lock";
 import { startEmbeddedWorker, type EmbeddedDoorbell, type EmbeddedWorkerConfig } from "./worker/embedded";
 import { createExecutionPort } from "./worker/execution-port";
 import { createWorkerRegistry } from "./worker/registry";
@@ -175,7 +177,7 @@ type RouteContext = {
   remoteStore: ReturnType<typeof createRemoteStore>;
   remoteDir: string;
   push: ReturnType<typeof createPushService>;
-  syncOrientationSkill: (policy: ReturnType<EngineStore["getAgentOrientation"]>) => Promise<unknown>;
+  syncOrientationSkill: (policy: ReturnType<EngineStore["settings"]["orientation"]>) => Promise<unknown>;
   computerUseGate: ComputerUseGate;
   storageMeter: ReturnType<typeof createStorageMeter>;
   notesDoor: ReturnType<typeof notesSocketDoor>;
@@ -284,7 +286,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const pluginStatuses = await plugins.host.startAll();
   // The host, not a plugin's own manifest, is the authority on which of its tools are reads.
   setPluginReadTools(plugins.host.ratifiedReadTools());
-  store.attachPluginRelease((sessionId, reason) => void plugins.host.releaseSession(sessionId, reason));
+  store.pluginDoors.attachRelease((sessionId, reason) => void plugins.host.releaseSession(sessionId, reason));
   const token = crypto.randomBytes(32).toString("base64url");
   const startedAt = now();
   const workers = createWorkerRegistry(store, { now, leaseMs: leaseMs(options), ...(options.onWorkerRetired ? { onRetired: options.onWorkerRetired } : {}) });
@@ -362,14 +364,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         store.checkoutSizes.stop();
         store.setups.stopAll();
         removeOwnDiscovery(store.paths.engine, daemonId);
-        store.closeExecutionStore();
+        store.kernel.executionStore.close();
         lock.release();
       },
     };
   } catch (error) {
     sweepers.stop();
     server.close();
-    store.closeExecutionStore();
+    store.kernel.executionStore.close();
     lock.release();
     throw error;
   }

@@ -36,7 +36,7 @@ const root = (): string => {
 
 afterEach(async () => {
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
-  for (const store of stores.splice(0)) store.closeExecutionStore();
+  for (const store of stores.splice(0)) store.kernel.executionStore.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -50,16 +50,16 @@ afterEach(async () => {
 function streaming(deltas: number, home = root()) {
   const store = new EngineStore(home, Date.now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
   ]);
   for (let index = 0; index < deltas; index += 1) {
-    store.ingestObservations("session_one", "run_one", token, [
+    store.ingest.ingestObservations("session_one", "run_one", token, [
       { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: `chunk-${index} ` },
     ]);
   }
@@ -68,10 +68,10 @@ function streaming(deltas: number, home = root()) {
 
 test("a bounded read answers with the first page and nothing else", () => {
   const { store } = streaming(40);
-  const whole = store.readEvents("session_one");
+  const whole = store.queries.readEvents("session_one");
   expect(whole.length).toBeGreaterThan(20);
 
-  const page = store.readEvents("session_one", 0, 20);
+  const page = store.queries.readEvents("session_one", 0, 20);
   expect(page).toHaveLength(20);
   // THE SAME ROWS, not merely the same count: a page is a prefix of the tail.
   expect(page).toEqual(whole.slice(0, 20));
@@ -79,12 +79,12 @@ test("a bounded read answers with the first page and nothing else", () => {
 
 test("paging from the last id seen reassembles the journal exactly", () => {
   const { store } = streaming(97);
-  const whole = store.readEvents("session_one");
+  const whole = store.queries.readEvents("session_one");
 
   const walked = [];
   let cursor = 0;
   for (let page = 0; page < 200; page += 1) {
-    const read = store.readEvents("session_one", cursor, 7);
+    const read = store.queries.readEvents("session_one", cursor, 7);
     if (!read.length) break;
     walked.push(...read);
     cursor = read.at(-1)!.id;
@@ -97,23 +97,23 @@ test("paging from the last id seen reassembles the journal exactly", () => {
 
 test("a page that begins mid-journal starts at the row after the cursor", () => {
   const { store } = streaming(30);
-  const whole = store.readEvents("session_one");
+  const whole = store.queries.readEvents("session_one");
   const from = whole[9]!.id;
-  expect(store.readEvents("session_one", from, 5)).toEqual(whole.slice(10, 15));
+  expect(store.queries.readEvents("session_one", from, 5)).toEqual(whole.slice(10, 15));
 });
 
 test("an absent limit still answers with the whole tail", () => {
   // The export and the in-process folds ask without one, and #494 must not
   // have quietly truncated them.
   const { store } = streaming(25);
-  expect(store.readEvents("session_one", 0, undefined).length).toBe(store.readEvents("session_one").length);
+  expect(store.queries.readEvents("session_one", 0, undefined).length).toBe(store.queries.readEvents("session_one").length);
 });
 
 test("a limit that is not a positive integer is refused, not defaulted", () => {
   const { store } = streaming(3);
-  expect(() => store.readEvents("session_one", 0, 0)).toThrow(/limit/);
-  expect(() => store.readEvents("session_one", 0, -5)).toThrow(/limit/);
-  expect(() => store.readEvents("session_one", 0, 1.5)).toThrow(/limit/);
+  expect(() => store.queries.readEvents("session_one", 0, 0)).toThrow(/limit/);
+  expect(() => store.queries.readEvents("session_one", 0, -5)).toThrow(/limit/);
+  expect(() => store.queries.readEvents("session_one", 0, 1.5)).toThrow(/limit/);
 });
 
 /** What has actually been COMMITTED, on a second connection — the only way to
@@ -131,7 +131,7 @@ test("unflushed deltas are paged with the stored rows, not appended past the lim
   // disk first and topped up from the buffer, or it would overrun its limit or
   // step over rows not yet written.
   const { store, home } = streaming(40);
-  const whole = store.readEvents("session_one");
+  const whole = store.queries.readEvents("session_one");
 
   // THE PREMISE OF THE TEST, asserted rather than assumed: some of that tail is
   // still in memory, so the page boundary below genuinely lands inside it.
@@ -141,13 +141,13 @@ test("unflushed deltas are paged with the stored rows, not appended past the lim
   // A window that straddles the flush line: it starts among stored rows and
   // ends among held ones.
   const from = whole[onDisk - 2]!.id;
-  const page = store.readEvents("session_one", from, 6);
+  const page = store.queries.readEvents("session_one", from, 6);
   expect(page).toHaveLength(6);
   expect(page).toEqual(whole.slice(onDisk - 1, onDisk + 5));
 
   // And a page that begins ENTIRELY inside the buffer is still a page, not the
   // whole remaining tail.
-  const held = store.readEvents("session_one", whole[onDisk]!.id, 3);
+  const held = store.queries.readEvents("session_one", whole[onDisk]!.id, 3);
   expect(held).toEqual(whole.slice(onDisk + 1, onDisk + 4));
 });
 

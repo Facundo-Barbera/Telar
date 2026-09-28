@@ -25,7 +25,7 @@ export function sessionLifecycleRoutes(store: EngineStore, dismiss: (sessionId: 
         });
         if (body.settledOverride !== "settled") return ok({ session: updated });
         // An explicit settle ends what the session left running, and says what it ended.
-        const ended = await store.endSessionLeftovers(sessionId!);
+        const ended = await store.settler.endLeftovers(sessionId!);
         return ok({ session: store.records.get(sessionId!), ended });
       },
     },
@@ -82,7 +82,7 @@ export function sessionLifecycleRoutes(store: EngineStore, dismiss: (sessionId: 
     { method: "GET", path: sessionRoute("/terminals"), auth: "engine", handle: async ({ params }) => ok({ open: await store.sessionTerminals.countNow(params[0]!) }) },
     { method: "POST", path: sessionRoute("/terminals/close"), auth: "engine", handle: async ({ params }) => ok({ closed: await store.sessionTerminals.closeForPerson(params[0]!) }) },
     // Pause stops the run and holds the session until resume; only the worker's `by: "session"` is not a person.
-    { method: "POST", path: sessionRoute("/pause"), auth: "engine", handle: ({ params, body }) => ok(store.pauseSession(params[0]!, body.by === "session" ? "session" : "human")) },
+    { method: "POST", path: sessionRoute("/pause"), auth: "engine", handle: ({ params }) => ok(store.worker.pauseSession(params[0]!)) },
     { method: "POST", path: sessionRoute("/resume"), auth: "engine", handle: ({ params }) => ok(store.worker.resumeSession(params[0]!)) },
   ];
 }

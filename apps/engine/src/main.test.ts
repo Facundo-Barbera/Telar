@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ENGINE_EXIT_LOCK_HELD } from "./state";
+import { ENGINE_EXIT_LOCK_HELD } from "./platform/process/daemon-lock";
 
 const dirs: string[] = [];
 afterEach(() => {

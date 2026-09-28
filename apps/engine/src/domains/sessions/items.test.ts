@@ -47,7 +47,7 @@ const root = (): string => {
 
 afterEach(() => {
   for (const store of stores.splice(0)) {
-    try { store.closeExecutionStore(); } catch { /* the test closed it itself */ }
+    try { store.kernel.executionStore.close(); } catch { /* the test closed it itself */ }
   }
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -77,19 +77,19 @@ const closed = (id: string, text: string) =>
  * `ingestObservations` CALL PER OBSERVATION — trap 4.
  */
 function seed(store: EngineStore, sessionId = "session_one"): void {
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: sessionId, projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: sessionId, projectId: "project_one" });
   for (let turn = 0; turn < ITEMS / PER_TURN; turn += 1) {
     const runId = `run_${turn}`;
-    store.submitTurn(sessionId, { runId, input: `message ${turn}` });
-    const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
-    store.markRunning(sessionId, runId, token);
+    store.intake.submitTurn(sessionId, { runId, input: `message ${turn}` });
+    const token = store.claims.claimTurn(sessionId, "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning(sessionId, runId, token);
     for (let step = 0; step < PER_TURN; step += 1) {
       const id = `${runId}_item_${step}`;
-      store.ingestObservations(sessionId, runId, token, [opened(id)]);
-      store.ingestObservations(sessionId, runId, token, [closed(id, `${BODY} ${turn}.${step}`)]);
+      store.ingest.ingestObservations(sessionId, runId, token, [opened(id)]);
+      store.ingest.ingestObservations(sessionId, runId, token, [closed(id, `${BODY} ${turn}.${step}`)]);
     }
-    store.completeTurn(sessionId, runId, token, { text: `answer ${turn}` });
+    store.turnLifecycle.completeTurn(sessionId, runId, token, { text: `answer ${turn}` });
   }
 }
 
@@ -136,7 +136,7 @@ test("two hundred items cost two hundred items' worth of writes, not two hundred
   const bytes = countItemBytes(store);
   seed(store);
 
-  const items = store.items("session_one");
+  const items = store.queries.items("session_one");
   expect(items).toHaveLength(ITEMS);
   const projection = Buffer.byteLength(JSON.stringify(items), "utf8");
 
@@ -165,15 +165,15 @@ test("the item a batch did not touch is not rewritten", () => {
   seed(store);
 
   const runId = "run_last";
-  store.submitTurn("session_one", { runId, input: "one more" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", runId, token);
+  store.intake.submitTurn("session_one", { runId, input: "one more" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", runId, token);
 
   const bytes = countItemBytes(store);
-  store.ingestObservations("session_one", runId, token, [opened("last_item")]);
-  store.ingestObservations("session_one", runId, token, [closed("last_item", BODY)]);
+  store.ingest.ingestObservations("session_one", runId, token, [opened("last_item")]);
+  store.ingest.ingestObservations("session_one", runId, token, [closed("last_item", BODY)]);
 
-  const stored = store.items("session_one").find((item) => item.id === "last_item")!;
+  const stored = store.queries.items("session_one").find((item) => item.id === "last_item")!;
   const one = Buffer.byteLength(JSON.stringify(stored), "utf8");
   expect(bytes()).toBeGreaterThan(one * 0.9);
   // Two writes of one item, not two writes of two hundred and one.
@@ -189,22 +189,22 @@ test("the projection reads back whole and in first-open order", () => {
   const expected = Array.from({ length: ITEMS / PER_TURN }, (_, turn) =>
     Array.from({ length: PER_TURN }, (_, step) => `run_${turn}_item_${step}`)).flat();
 
-  expect(store.items("session_one").map((item) => item.id)).toEqual(expected);
+  expect(store.queries.items("session_one").map((item) => item.id)).toEqual(expected);
   // And across a restart, from whatever shape it is actually stored in.
   const reopened = open(directory);
-  expect(reopened.items("session_one")).toEqual(store.items("session_one"));
+  expect(reopened.queries.items("session_one")).toEqual(store.queries.items("session_one"));
 });
 
 test("a window carries its own turns' items and no others", () => {
   const directory = root();
   const store = open(directory);
   seed(store);
-  const every = store.items("session_one");
+  const every = store.queries.items("session_one");
 
   // A store of its own, so the answer comes from storage rather than from a
   // cache the seeding left warm — which is the path the run index is for.
   const cold = open(directory);
-  const window = cold.snapshotWindow("session_one", { limit: 4 });
+  const window = cold.queries.snapshotWindow("session_one", { limit: 4 });
   const chosen = new Set(window.turns.map((turn) => turn.runId));
   expect(chosen.size).toBe(4);
   expect(window.items).toEqual(every.filter((item) => chosen.has(item.runId)));
@@ -215,11 +215,11 @@ test("a window carries its own turns' items and no others", () => {
 
 /** A legacy JSON home whose items are the blob, so the next open imports a
  *  session in the OLD shape: the blob and no marker. */
-function blobShaped(): { directory: string; expected: ReturnType<EngineStore["items"]> } {
+function blobShaped(): { directory: string; expected: ReturnType<EngineStore["queries"]["items"]> } {
   const directory = root();
   const seeded = open(directory);
   seed(seeded);
-  const expected = seeded.items("session_one");
+  const expected = seeded.queries.items("session_one");
   toLegacyHome(seeded, directory);
   fs.writeFileSync(path.join(directory, "sessions", "session_one", "items.json"), JSON.stringify({ items: expected }));
   return { directory, expected };
@@ -237,14 +237,14 @@ test("a session stored as a blob is moved to rows the first time it is read, and
   expect(inner(store).itemsAreRows("session_one")).toBe(false);
   expect(inner(store).byteLength(items)).toBeGreaterThan(ITEMS * BODY.length);
 
-  expect(store.items("session_one")).toEqual(expected);
+  expect(store.queries.items("session_one")).toEqual(expected);
 
   // And now it is rows: marker present, blob gone.
   expect(inner(store).itemsAreRows("session_one")).toBe(true);
   expect(inner(store).byteLength(items)).toBeUndefined();
 
   // The answer survives the shape change and a restart.
-  expect(open(directory).items("session_one")).toEqual(expected);
+  expect(open(directory).queries.items("session_one")).toEqual(expected);
 });
 
 test("a migration killed before it commits leaves the blob and no marker", () => {
@@ -277,7 +277,7 @@ test("a migration killed before it commits leaves the blob and no marker", () =>
     return real(sql);
   };
 
-  expect(() => store.items("session_one")).toThrow("killed mid-migration");
+  expect(() => store.queries.items("session_one")).toThrow("killed mid-migration");
   expect(intercepted).toBe(1);
   seam.kernel.executionStore.statement = real;
 
@@ -287,7 +287,7 @@ test("a migration killed before it commits leaves the blob and no marker", () =>
   expect(inner(store).byteLength(items)).toBe(before!);
 
   // And the next read simply tries again and succeeds.
-  expect(store.items("session_one")).toEqual(expected);
+  expect(store.queries.items("session_one")).toEqual(expected);
   expect(inner(store).itemsAreRows("session_one")).toBe(true);
 });
 
@@ -295,10 +295,10 @@ test("deleting a session takes its rows and the marker that points at them", () 
   const directory = root();
   const store = open(directory);
   seed(store);
-  expect(store.items("session_one")).toHaveLength(ITEMS);
+  expect(store.queries.items("session_one")).toHaveLength(ITEMS);
   expect(inner(store).itemsAreRows("session_one")).toBe(true);
 
-  expect(store.deleteSession("session_one")).toBe(true);
+  expect(store.lifecycle.deleteSession("session_one")).toBe(true);
   expect(inner(store).itemsAreRows("session_one")).toBe(false);
 
   /**
@@ -306,20 +306,20 @@ test("deleting a session takes its rows and the marker that points at them", () 
    * the sweep exists to prevent, which a marker left behind turns into a
    * conversation that reads as empty rather than into an error.
    */
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  expect(store.items("session_one")).toEqual([]);
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  expect(store.queries.items("session_one")).toEqual([]);
 });
 
 test("the cached item projection is per session and never outlives a write", () => {
   // The cache is what makes the read above cheap; a stale one would serve a
   // closed item as still open, or one session's rows to another.
   const { store } = readyStore();
-  store.createSession({ id: "session_two", projectId: "project_one" });
+  store.lifecycle.createSession({ id: "session_two", projectId: "project_one" });
   const open = (sessionId: string, runId: string, itemId: string): string => {
-    store.submitTurn(sessionId, { runId, input: "Hello" });
-    const token = store.claimTurn(sessionId, `worker_${sessionId}`)!.claim!.token;
-    store.markRunning(sessionId, runId, token);
-    store.ingestObservations(sessionId, runId, token, [
+    store.intake.submitTurn(sessionId, { runId, input: "Hello" });
+    const token = store.claims.claimTurn(sessionId, `worker_${sessionId}`)!.claim!.token;
+    store.turnLifecycle.markRunning(sessionId, runId, token);
+    store.ingest.ingestObservations(sessionId, runId, token, [
       { kind: "item.started", item: { id: itemId, detail: { type: "assistant_message", text: "" } } },
     ]);
     return token;
@@ -328,10 +328,10 @@ test("the cached item projection is per session and never outlives a write", () 
   const twoToken = open("session_two", "run_two", "i_two");
 
   // Interleaved, so a cache keyed by anything but the session would cross them.
-  store.ingestObservations("session_one", "run_one", oneToken, [{ kind: "content.delta", itemId: "i_one", stream: "assistant_text", text: "a" }]);
-  store.ingestObservations("session_two", "run_two", twoToken, [{ kind: "content.delta", itemId: "i_two", stream: "assistant_text", text: "b" }]);
-  store.ingestObservations("session_one", "run_one", oneToken, [{ kind: "item.completed", itemId: "i_one", status: "completed", detail: { type: "assistant_message", text: "a" } }]);
+  store.ingest.ingestObservations("session_one", "run_one", oneToken, [{ kind: "content.delta", itemId: "i_one", stream: "assistant_text", text: "a" }]);
+  store.ingest.ingestObservations("session_two", "run_two", twoToken, [{ kind: "content.delta", itemId: "i_two", stream: "assistant_text", text: "b" }]);
+  store.ingest.ingestObservations("session_one", "run_one", oneToken, [{ kind: "item.completed", itemId: "i_one", status: "completed", detail: { type: "assistant_message", text: "a" } }]);
 
-  expect(store.items("session_one").map((item) => [item.id, item.status])).toEqual([["i_one", "completed"]]);
-  expect(store.items("session_two").map((item) => [item.id, item.status])).toEqual([["i_two", "inProgress"]]);
+  expect(store.queries.items("session_one").map((item) => [item.id, item.status])).toEqual([["i_one", "completed"]]);
+  expect(store.queries.items("session_two").map((item) => [item.id, item.status])).toEqual([["i_two", "inProgress"]]);
 });

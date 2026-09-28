@@ -21,5 +21,5 @@ test("a v1 document names the version break instead of reading as corruption", (
   editDocument(store, stateRoot, "queue.json", (queue) => { queue.version = 1; });
   // A bare schema failure here would read as disk corruption and send an
   // operator looking in the wrong place.
-  expect(() => store.turns("session_one")).toThrow(/protocol v1/);
+  expect(() => store.queries.turns("session_one")).toThrow(/protocol v1/);
 });

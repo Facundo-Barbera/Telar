@@ -16,6 +16,7 @@ import {
   type RuntimeMode,
   type Session,
   type SessionOrigin,
+  type Turn,
 } from "@telar/engine-client";
 import type { AsyncGitRunner, GitRunner } from "../../platform/git/runner";
 import type { ProjectAvailability } from "../../platform/fs/volumes";
@@ -447,6 +448,28 @@ export class SessionLifecycle {
     if (session.workspace.mode === "worktree" && session.projectId) {
       removeTelarVenv(telarVenvDir(this.kernel.paths.root, session.projectId, path.basename(session.workspace.path)));
     }
+  }
+
+  /** Continue independently: marks outstanding task turns detached without deleting or stopping anything. */
+  detachAssignments(sessionId: string, runId?: string): Turn[] {
+    const session = this.records.get(sessionId);
+    const at = this.kernel.now();
+    const queue = this.host.readQueue(session.id);
+    const detached: Turn[] = [];
+    for (const turn of queue.turns) {
+      if (turn.origin !== "session" || turn.agentIntent !== "task") continue;
+      if (runId && turn.runId !== runId) continue;
+      if (turn.assignmentDetachedAt !== undefined) continue;
+      turn.assignmentDetachedAt = at;
+      turn.updatedAt = at;
+      detached.push(structuredClone(turn));
+    }
+    if (detached.length > 0) {
+      this.host.writeQueue(session.id, queue);
+      // No `turn.updated` kind exists; the cockpit refolds from the snapshot on `session.updated`.
+      this.host.appendEvent(sessionId, { type: "session.updated", session });
+    }
+    return detached;
   }
 
   deleteSession(sessionId: string): boolean {

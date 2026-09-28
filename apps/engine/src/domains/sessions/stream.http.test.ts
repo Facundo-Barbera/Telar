@@ -112,10 +112,10 @@ test("a watcher whose socket has gone does not take down the write that found it
     await client.createSession({ id: "session_one", projectId: "project_one" });
 
     let reached = 0;
-    const stopAngry = daemon.store.watch(() => {
+    const stopAngry = daemon.store.kernel.watch(() => {
       throw new Error("this watcher's socket has gone");
     });
-    const stopCounting = daemon.store.watch(() => {
+    const stopCounting = daemon.store.kernel.watch(() => {
       reached += 1;
     });
     try {
@@ -148,7 +148,7 @@ test("unsubscribing stops the frames, so a closed reader costs nothing (#586)", 
     await client.createSession({ id: "session_one", projectId: "project_one" });
 
     let reached = 0;
-    const stop = daemon.store.watch(() => {
+    const stop = daemon.store.kernel.watch(() => {
       reached += 1;
     });
     await client.submitTurn("session_one", { runId: "run_1", input: "one" });
