@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-export const ORIENTATION_VERSION = 10;
+export const ORIENTATION_VERSION = 11;
 
 export const TELAR_SKILL_NAME = "telar";
 
@@ -51,13 +51,15 @@ It is not this CLI's own notion of a session, and not a chat thread.
   own and collides with nobody; a local one shares the project's checkout with
   every other local session and with the person's editor. Anything that writes
   code wants a worktree.
-- **Sessions you create are filed under you**, but that is all the link does:
-  one reports back only when you task it, and you learn what it did by asking.
+- **Sessions you create are filed under you**, even when others task them.
+  That is all the link does: one reports back only when you task it, and
+  you learn what it did by asking.
 - **Assignment** — \`intent: "task"\` is what starts work: pass \`task\` to
   \`sessions_create\`, or \`sessions_send\` it later. Creating alone starts none.
 - **Working for someone: end with a \`result\` and ONE line.** When the task
   is done, \`sessions_send\` intent \`result\` to whoever tasked you — the
-  point first, under ~800 characters — then end your turn with one short line
+  point first, under ~800 characters; tasked by several, each gets its own;
+  one that tasked you nothing is refused it — then end your turn with one short line
   ("Result sent."). The result IS your answer; do not write it out a second
   time. Need a decision: intent \`blocker\`. Do not send progress
   \`report\`s: they never wake anyone, and they only arrive with the other

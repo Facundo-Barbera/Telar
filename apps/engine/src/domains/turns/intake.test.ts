@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import { EngineStore } from "../../state";
 import { EngineStateError } from "../../platform/kernel";
 import type { ExecutionStore } from "../../platform/db/execution-store";
 import { useTempStores } from "../../../test/temp-store";
+import { closeStores, setup } from "./notification-fixture";
 
 const { root, readyStore } = useTempStores();
 
@@ -386,4 +387,63 @@ test("a per-turn selection may be an effort alone", () => {
   const session = store.records.get("session_one");
   const { turn } = store.intake.submitTurn("session_one", { runId: "run_one", input: "hi", model: { effort: "low" } });
   expect(turn.model).toEqual({ instanceId: session.providerInstanceId, effort: "low" });
+});
+
+describe("a worker tasked by two sessions", () => {
+  afterEach(closeStores);
+
+  function running(store: EngineStore, sessionId: string, runId: string) {
+    store.intake.submitTurn(sessionId, { runId, input: "work" });
+    const claimToken = store.claims.claimTurn(sessionId, `worker_${sessionId}`)!.claim!.token;
+    store.turnLifecycle.markRunning(sessionId, runId, claimToken);
+    return { sessionId, runId, claimToken };
+  }
+
+  function taskedTwice() {
+    const { store } = setup();
+    store.lifecycle.createSession({ id: "session_c", projectId: "project_one", title: "session_c" });
+    store.intake.submitAgentTurn("session_a", { runId: "run_task_host", input: "fix the parser", intent: "task" }, running(store, "session_host", "run_host"));
+    store.intake.submitAgentTurn("session_a", { runId: "run_task_b", input: "fix the lexer", intent: "task" }, running(store, "session_b", "run_b"));
+    const token = store.claims.claimTurn("session_a", "worker_a")!.claim!.token;
+    store.turnLifecycle.markRunning("session_a", "run_task_host", token);
+    const proof = { sessionId: "session_a", runId: "run_task_host", claimToken: token };
+    const send = (to: string, intent: "result" | "blocker", input: string) =>
+      store.intake.submitAgentTurn(to, { runId: `run_${intent}_to_${to}`, input, intent }, proof);
+    return { store, send, complete: () => store.turnLifecycle.completeTurn("session_a", "run_task_host", token, { text: "done" }) };
+  }
+
+  const from = (store: EngineStore, sessionId: string) => store.queries.turns(sessionId).filter((turn) => turn.sender?.sessionId === "session_a");
+
+  test("each result reaches only the session that assigned it", () => {
+    const { store, send } = taskedTwice();
+    send("session_host", "result", "Parser fixed.");
+    send("session_b", "result", "Lexer fixed.");
+    expect(from(store, "session_host").map((turn) => turn.input)).toEqual(["Parser fixed."]);
+    expect(from(store, "session_b").map((turn) => turn.input)).toEqual(["Lexer fixed."]);
+  });
+
+  test("a result or blocker to a session that assigned nothing is refused, naming who did", () => {
+    const { store, send } = taskedTwice();
+    for (const intent of ["result", "blocker"] as const) {
+      expect(() => send("session_c", intent, "Parser fixed.")).toThrow("Send it to the session that assigned the work you are answering (session_host, session_b)");
+    }
+    expect(store.queries.turns("session_c")).toHaveLength(0);
+  });
+
+  test("a session nobody tasked may still send a result anywhere", () => {
+    const { store } = setup();
+    const sent = store.intake.submitAgentTurn("session_host", { runId: "run_result", input: "Found it.", intent: "result" }, running(store, "session_a", "run_a"));
+    expect(sent.turn.agentIntent).toBe("result");
+  });
+
+  test("a subscriber that assigned nothing hears the worker is done, never another tasker's result", () => {
+    const { store, send, complete } = taskedTwice();
+    store.subscriptions.subscribe("session_c", { targetSessionId: "session_a" });
+    store.subscriptions.subscribeCohort("session_c", { sessionIds: ["session_a"] });
+    send("session_host", "result", "Parser fixed: the secret sauce.");
+    complete();
+    const heard = store.queries.turns("session_c").map((turn) => `${turn.input}\n${turn.notification?.body ?? ""}`).join("\n");
+    expect(store.queries.turns("session_c").some((turn) => turn.wakeReason?.sessionId === "session_a")).toBe(true);
+    expect(heard).not.toContain("secret sauce");
+  });
 });
