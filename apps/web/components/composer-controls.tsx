@@ -567,8 +567,7 @@ const MODEL_LIST_ID = "telar-model-picker-list";
  * popover, and the connection lived in a `max-w-24` bordered pill that truncated
  * "Amazon Bedrock" to make room for the name. Both facts now have a full line's
  * width instead of competing for one, at the cost of about twelve pixels of
- * row height. It is also what the reference does
- * (docs/design/t3code-survey/23-model-picker.png): name, then logo and provider
+ * row height. It is also what the reference does: name, then logo and provider
  * beneath it.
  *
  * WHAT THE SECOND LINE SAYS: the HARNESS, then the CONNECTION where there is

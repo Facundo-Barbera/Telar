@@ -5,9 +5,7 @@
  *
  * ── WHAT IT IS COPYING, AND WHY ─────────────────────────────────────────────
  * macOS and iOS both put a small floating badge at the insertion point while
- * their own dictation runs, and the owner asked for the same thing here (the
- * reference shot is `docs/design/dictation-caret-reference.png` — iOS's badge
- * sitting over this very composer). It is the right borrowing rather than a
+ * their own dictation runs, and the owner asked for the same thing here. It is the right borrowing rather than a
  * cosmetic one: the mic button lives in a toolbar the eye is not on, and the
  * place a person IS looking while they dictate is the place the words are
  * appearing. A recording nobody remembered starting is this feature's whole

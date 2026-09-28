@@ -38,8 +38,7 @@ export type ComposerWrite = { ok: true; draft: string } | ComposerRefusal;
 export type ComposerSubmit = { ok: true } | ComposerRefusal;
 
 export type ComposerEntry = {
-  /** The editable root's DOM id — `turn-prompt`. Stable for external clients;
-   *  see docs/page-api.md. */
+  /** The editable root's DOM id — `turn-prompt`. Stable for external clients. */
   id: string;
   kind: ComposerKind;
   /** What the box holds right now, exactly as it would be sent. */

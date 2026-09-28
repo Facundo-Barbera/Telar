@@ -951,7 +951,7 @@ export class RunManager {
    * installer asking `Proceed (Y/n)`, to a dev server waiting on `r`.
    *
    * WHAT THIS IS NOT ABLE TO PROMISE, stated at the door: what a person types
-   * is NOT redacted, in any launcher shape. docs/run-terminal.md §5.
+   * is NOT redacted, in any launcher shape.
    */
   async write(terminalId: string, data: string): Promise<boolean> {
     const run = this.requireLiveKeyboard(terminalId, "type into");

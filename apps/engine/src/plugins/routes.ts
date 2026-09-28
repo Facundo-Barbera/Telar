@@ -9,7 +9,7 @@
  * gates, parses and writes; the plugin only returns a value.
  *
  * Served at `/v2/projects/:id/plugins/<plugin>/<verb>` and
- * `/v2/plugins/<plugin>/<verb>`. See docs/design/plugins-contract.md.
+ * `/v2/plugins/<plugin>/<verb>`.
  */
 
 export type PluginRouteMethod = "GET" | "POST" | "DELETE";

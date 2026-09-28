@@ -1741,7 +1741,7 @@ export class EngineClient {
   }
 
   /**
-   * THE PROJECT NOTEBOOK — `docs/design/project-notes.md`.
+   * THE PROJECT NOTEBOOK.
    *
    * Notes hang off the PROJECT, so every session on it reads the same notebook,
    * and the composer's foot draws this list. Already ordered — pinned first,

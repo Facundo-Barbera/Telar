@@ -5,7 +5,7 @@ import SwiftUI
 /// ── WHAT IT IS COPYING, AND WHY ─────────────────────────────────────────────
 /// iOS puts a small floating badge at the insertion point while its own
 /// dictation runs, and the owner asked for the same thing here — the reference
-/// shot (`docs/design/dictation-caret-reference.png`) is iOS's own badge
+/// is iOS's own badge
 /// sitting over this very composer. It is the right borrowing rather than a
 /// cosmetic one: the mic button is in a toolbar the eye is not on, and the
 /// place a person IS looking while they dictate is where the words are landing.

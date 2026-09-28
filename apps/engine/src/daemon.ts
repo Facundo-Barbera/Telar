@@ -669,8 +669,7 @@ function snapshotWindowParam(url: URL): SessionBootstrapWindow | undefined {
  *
  * THIS COMMENT USED TO CITE "185 KB / 106 ms against 36.5 MB / 2.48 s for the
  * same session unpaged", attributed to #490's audit. That audit was never
- * produced (`docs/investigations/closure-audit-2026-09-19.md`), so the figure
- * had no invocation behind it. Re-measured, the 185 KB holds — 206 KB here, and
+ * produced, so the figure had no invocation behind it. Re-measured, the 185 KB holds — 206 KB here, and
  * the gap is body size. The other two do not survive as stated: 106 ms is 1.7 ms
  * at 40 turns and 10.7 ms at 400 at the ENGINE boundary, so whatever it measured
  * was end-to-end through a route handler and is not checkable from here; and
@@ -1001,7 +1000,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * THE CHECKOUTS ROOT IS ASKED FIRST, and its answer is passed in rather than
    * re-derived from a `stat`. A root on a drive that is out makes every tree
    * look already gone, and deleting on that reading is `git worktree prune`'s
-   * failure from `docs/store-location.md` §4a. `readWorktreesRoot` is the one
+   * failure. `readWorktreesRoot` is the one
    * place that tells "the drive is out" from "this build cannot tell" from "it
    * is right here".
    *
@@ -2951,7 +2950,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * THE PROJECT NOTEBOOK — `docs/design/project-notes.md`. Under
+       * THE PROJECT NOTEBOOK. Under
        * `/v2/projects/:id/` for the same reason the git route is: notes belong
        * to the PROJECT, and every session on it opens the same notebook.
        *

@@ -998,7 +998,7 @@ wait
  * queue time to each call's deadline (worktree.ts:108-155), so an unrelated slow
  * read could spend this test's whole budget before its own git ran. Measured:
  * with the four slots held for 3 s, one read waited 2950 ms and the body went
- * from 338 ms to 3357 ms (docs/investigations/197-git-test-timing.md).
+ * from 338 ms to 3357 ms.
  *
  * Production semantics are unchanged and still covered: the deadline including
  * queue time is what the dedicated pool tests above assert, and the singleton's

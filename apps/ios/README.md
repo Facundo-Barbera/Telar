@@ -157,9 +157,7 @@ testing: no review, live minutes after processing, builds expire after 90
 days). The same build is then offered to the EXTERNAL group "Nightly" by
 `apps/ios/testflight-external.sh` — added to the group and submitted for Beta
 App Review once processed; the first build of each new version waits hours in
-review, later builds of that version minutes. Why the Mac and not GitHub's
-macOS lane, and how every other workflow came to live there too:
-docs/operations/mac-mini-runner-plan-2026-09-11.md.
+review, later builds of that version minutes.
 
 The App Store Connect app is "Telar by Novarix" (`io.github.novarix.telar`,
 since #1042; the home screen still says "Telar"). Before each upload

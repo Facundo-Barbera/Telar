@@ -9,7 +9,6 @@
 // the old app if N never confirms a boot. N runs the same module to confirm.
 //
 // Everything testable without Electron lives here; desktop-handoff.js wires it.
-// Design: docs/design/1042-desktop-bundle-id.md.
 "use strict";
 const { execFile, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");

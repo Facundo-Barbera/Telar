@@ -3,9 +3,8 @@
  *
  * `daemon.ts`'s `EVENT_PAGE_DEFAULT = 200` carries a number in its comment —
  * "185 KB / 106 ms against 36.5 MB / 2.48 s for the same session unpaged" —
- * attributed to "#490's audit". That audit was never produced
- * (`docs/investigations/closure-audit-2026-09-19.md`), so the figure has no
- * traceable invocation behind it. This bench is what it would have come from.
+ * attributed to "#490's audit". That audit was never produced, so the figure
+ * has no traceable invocation behind it. This bench is what it would have come from.
  *
  * IT PRICES THE RATIO, NOT THE HEADLINE. 36.5 MB is a property of whatever
  * session was measured, and no bench can reproduce a session it was not told

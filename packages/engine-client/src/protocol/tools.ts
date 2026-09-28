@@ -45,7 +45,7 @@ export const TELAR_MCP_SERVER = "telar";
  * provider.
  *
  * THE NAME IS CONSTRAINED BY CODEX: server ids must match `^[a-zA-Z0-9_-]+$`
- * (measured — see docs/deferred-work.md), so no dot-separated spelling.
+ * (measured), so no dot-separated spelling.
  */
 export const TELAR_BROWSER_MCP_SERVER = "telar-browser";
 

@@ -16,7 +16,7 @@
  * IT WAS `new-conversation-dialog.tsx`, and it grew a second page because the
  * OTHER half of "which project" had no palette at all — registering one was a
  * modal form with a path field, a Browse button, an optional name and a switch.
- * T3 Code makes both the same gesture (see `docs/design/t3code-survey/`), and the
+ * T3 Code makes both the same gesture, and the
  * argument is the one the first page already made here: a palette is a list you
  * can type at, and "add a project" is a list — a folder on this disk, a URL to
  * clone, a forge that is not wired up yet.

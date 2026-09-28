@@ -2,7 +2,7 @@ import Foundation
 
 /// A REPLY AS SPEECH — the pass between the Markdown on screen and
 /// `AVSpeechUtterance`. Pure, so it tests the way `splitMath` and the reveal
-/// pacer do (`docs/investigations/ios-talkback-2026-09-11.md`, §1).
+/// pacer do.
 ///
 /// WHY NOT `MarkdownContent.renderPlainText()`. MarkdownUI exposes one, and it
 /// is not a speakable pass: it hands back fenced code VERBATIM, tables as pipe

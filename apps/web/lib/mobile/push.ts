@@ -200,8 +200,8 @@ export function pushFile(): string { return path.join(remoteHome(), "mobile-push
  * NOT DELETED WHEN IT IS READ. The first write after this lands goes to the new
  * path and the old file becomes inert; removing it would be a delete performed
  * on a read path, which is the shape that turns a downgrade into data loss. It
- * is a few hundred bytes, and `docs/storage-shape.md` names it as litter a
- * later pass may sweep once no shipped build reads it.
+ * is a few hundred bytes, litter a later pass may sweep once no shipped build
+ * reads it.
  */
 export function legacyPushFile(): string { return path.join(remoteHome(), "remote", "mobile-push.json"); }
 /**

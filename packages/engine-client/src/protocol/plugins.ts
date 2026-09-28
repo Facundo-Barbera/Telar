@@ -222,7 +222,6 @@ export type PluginMeta = z.infer<typeof PluginMeta>;
  *
  * THE PROCESS speaks newline-delimited JSON-RPC 2.0 on stdio: MCP's
  * `initialize` and `tools/call` for tools, and `telar/route` for route verbs.
- * See docs/design/plugins-contract.md, "External plugins".
  */
 export const ExternalPluginTool = z.strictObject({
   /** Must start with the manifest's `toolPrefix` and an underscore. */

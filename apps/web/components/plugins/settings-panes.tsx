@@ -19,8 +19,6 @@
  *                  (Data Science's default packages list).
  *
  * A plugin absent from here gets the generated pane alone, at both scopes.
- *
- * See docs/design/plugins-contract.md, contribution point 4.
  */
 import type { ComponentType } from "react";
 import type { Project, ProjectPlugins } from "@telar/engine-client";

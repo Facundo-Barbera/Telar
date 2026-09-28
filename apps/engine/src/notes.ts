@@ -1,8 +1,7 @@
 /**
  * THE PROJECT NOTEBOOK — one JSON file per project, at the engine root.
  *
- * `docs/design/project-notes.md` is the model. A note belongs to a PROJECT, not
- * a session, so every session on it opens the same notebook and the user's other
+ * A note belongs to a PROJECT, not a session, so every session on it opens the same notebook and the user's other
  * app reads the same file over `/v2/notes/mcp`.
  *
  * ── A FREE-STANDING MODULE, AND THAT IS THE POINT ───────────────────────────

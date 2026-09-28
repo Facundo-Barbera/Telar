@@ -8,7 +8,7 @@
 //
 // Plain CommonJS, zero dependencies, for the same reason as command-keys.js:
 // Electron's real main process requires it with no build step, and the web and
-// the engine import it by relative path (docs/command-keys-web-port.md).
+// the engine import it by relative path.
 //
 // SIZES ARE CSS PIXELS, PORTRAIT for phones and tablets, from Chrome DevTools'
 // device list. Device names appear ONLY as labels; nothing else here names a

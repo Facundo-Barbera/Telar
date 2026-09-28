@@ -17,7 +17,7 @@
  *     and `role: "windowMenu"`, and on macOS those are ⌘R and ⌘W — *Command*, not
  *     Control. A bare `^R` reaches the page here. (On Windows they would be the
  *     same chord, and this module would be doing much more work; Windows
- *     packaging does not exist — see docs/terminal-host.md §4.)
+ *     packaging does not exist.)
  *   - THE COCKPIT'S OWN WINDOW LISTENER, which is the real one.
  *     `useCommandKeys` listens on `window` and `resolveWebCommandKeyAction`
  *     treats any ctrl/meta press as "chorded", so its focus rule — the one that

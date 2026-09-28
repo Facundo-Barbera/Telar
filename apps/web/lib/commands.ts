@@ -5,9 +5,7 @@
  * THE TABLE LIVES ONCE, in plain CommonJS (`apps/desktop/command-keys.js`), so
  * Electron's real main process can `require` it without a build step. This file
  * is the only place in the cockpit that reaches across the app boundary to
- * import it; everything else imports THIS file. The reasoning for a relative
- * import over a `packages/*` dependency is in `docs/command-keys-web-port.md`
- * and still holds.
+ * import it; everything else imports THIS file.
  *
  * THREE THINGS LIVE HERE, and they are one thing:
  *

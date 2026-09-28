@@ -3,9 +3,6 @@ name: Verify
 # Typecheck, lint and test everything that does not need a Mac — plus the one
 # block that does, on a hosted Mac rather than a personal one.
 #
-# Measurements, cost analysis and the decisions behind this shape:
-#   docs/operations/ci-throughput-2026-09-20.md
-#
 # ON GITHUB-HOSTED RUNNERS SINCE 2026-09-20, having lived on the owner's Mac
 # mini since 2026-09-11. That move was made because the hosted lane stopped
 # starting jobs for billing; the repository is public now, hosted standard

@@ -482,7 +482,7 @@ export function SettingsShell({
  * shell is a FULL-PAGE TAKEOVER — it replaces the app rail rather than standing
  * inside a panelled surface (see `SettingsShell`) — so there is no outer card
  * for this one to nest in, and the pane the reference draws is the one this
- * follows now (`docs/design/t3code-survey/03-settings-landing.png`).
+ * follows now.
  *
  * WHY THE CARD EARNS ITS KEEP. Without it a pane of five groups is one column
  * of hairlines, and the only thing saying where a group ends is a heading a

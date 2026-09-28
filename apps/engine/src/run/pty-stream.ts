@@ -52,7 +52,7 @@
  * AND A TERMINAL IS WIDER THAN ITS CAPTURED OUTPUT. This module redacts what
  * the process writes. It cannot reach what a person TYPES into that tab, and it
  * cannot reach the emulator's own scrollback, which holds raw bytes on the
- * client. `docs/run-terminal.md` says so in the place a user will look.
+ * client.
  */
 
 /** ESC. Everything in here begins with it. */

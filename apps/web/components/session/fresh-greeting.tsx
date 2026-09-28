@@ -25,8 +25,7 @@
  * engine — two Macs can hand out the same one. So the list comes from
  * `useHostProjects`, which keeps each answer with the host it describes, and
  * every destination is built with that host in it. Listing a remote Mac's
- * projects behind a local link is the #204 defect in miniature
- * (docs/investigations/204-host-identity.md).
+ * projects behind a local link is the #204 defect in miniature.
  */
 
 import { useRouter } from "next/navigation";

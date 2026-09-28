@@ -457,8 +457,8 @@ export const ComposerEditor = forwardRef<
     placeholder?: string;
     disabled?: boolean;
     id?: string;
-    /** WHICH COMPOSER THIS IS, ON THE EDITABLE ROOT ITSELF. Documented as
-     *  stable for external clients in `docs/page-api.md`, beside `data-slot`. */
+    /** WHICH COMPOSER THIS IS, ON THE EDITABLE ROOT ITSELF. Stable for
+     *  external clients, beside `data-slot`. */
     "data-composer"?: "session";
     /** One line tall — the composer's reading-back shape. A class swap on the
      *  same node, so the caret and the undo stack survive the change. */

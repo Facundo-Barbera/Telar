@@ -3134,8 +3134,7 @@ test("a HUMAN steer interrupts the running generation instead of queueing behind
 /**
  * #241 — THE PROVIDER'S OWN PROVENANCE CHANNEL, and the one value on it that
  * works. The CLI drops every origin kind it does not recognise and persists
- * exactly `{kind:"human"}` (measured — see
- * docs/investigations/delivery-as-harness-input-2026-09-11.md §1). Telar sent
+ * exactly `{kind:"human"}` (measured). Telar sent
  * none at all, so a real person failed the SDK's own `isHuman` gate along with
  * every wake and peer report. The prose frames stay the load-bearing half; this
  * is the cheap part that also works.

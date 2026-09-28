@@ -13,7 +13,7 @@
  * `createdAt`). Nothing is read out of prose.
  *
  * WHAT NEVER FOLDS — the fold that was reverted in September hid completed
- * work (docs/investigations/session-communication-2026-09-09.md), so the rule
+ * work, so the rule
  * is a list of what a person must see, and anything on it stays a row:
  * - the close itself, and the live turn;
  * - a turn the person wrote in, or one that did not simply complete;

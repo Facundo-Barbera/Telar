@@ -1,8 +1,5 @@
 /**
- * engine protocol v2.
- *
- * The model is `docs/engine-contract-v2.md`; read that before changing
- * shapes here, because several of them encode decisions rather than data.
+ * engine protocol v2. Several shapes here encode decisions rather than data.
  *
  * Module map, in dependency order:
  *   common    ids, timestamps, providers, runtime modes, usage, raw payloads

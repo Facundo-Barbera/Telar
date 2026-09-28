@@ -722,7 +722,7 @@ export function ProjectsPage() {
         governs — the first card read as the first group, and a reader looking
         for the project picker had to work out that one of these rows was not a
         setting. The reference puts both controls on their own line above the
-        first card (`docs/design/t3code-survey/08-settings-projects.png`):
+        first card:
         machine on the left, project on the right, and the rows below bind to
         whatever they say.
 

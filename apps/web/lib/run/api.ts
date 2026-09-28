@@ -107,8 +107,7 @@ export function createRunApi(fetcher: Fetcher = pathnameFetcher) {
      */
     bytes: (sessionId: string, options: { runId?: string; after?: number } = {}) =>
       request<RunBytesAnswer>(fetcher, "GET", runPath(sessionId, "/bytes", { runId: options.runId, after: options.after })),
-    /** Keystrokes for the program the recipe named. Not redacted, and nothing
-     *  here pretends otherwise — docs/run-terminal.md §5. */
+    /** Keystrokes for the program the recipe named. Not redacted. */
     write: (sessionId: string, options: { runId?: string; data: string }) =>
       request<RunWriteAnswer>(fetcher, "POST", runPath(sessionId, "/write"), options),
     resize: (sessionId: string, options: { runId?: string; cols: number; rows: number }) =>

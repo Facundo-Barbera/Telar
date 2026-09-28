@@ -41,8 +41,7 @@
  * sight. There is no request logging in this file on purpose, and an error is
  * reported by its message rather than with the input that caused it. THAT RULE
  * GOT SHARPER WHEN `/write` LANDED: keystrokes cross this wire too, and
- * redaction only ever covered what a process WRITES — see docs/run-terminal.md
- * §5. A person answering `psql`'s password prompt is sending bytes through
+ * redaction only ever covered what a process WRITES. A person answering `psql`'s password prompt is sending bytes through
  * here that nothing downstream knows are a secret.
  *
  * WHY `/write` AND `/resize` BELONG ON THIS ROUTE SET AND NOWHERE ELSE. The

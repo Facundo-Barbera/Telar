@@ -1,6 +1,5 @@
 // Tally — an example Telar plugin. One tool (tally_count), one setting (step)
-// and one panel (Counts). Speaks newline-delimited JSON-RPC 2.0 on stdio; see
-// docs/design/plugins-contract.md, "External plugins".
+// and one panel (Counts). Speaks newline-delimited JSON-RPC 2.0 on stdio.
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";

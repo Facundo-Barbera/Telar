@@ -369,8 +369,7 @@
      <Button> from 10px to 8px and every <Badge> from 16px to 8px — a visible
      change to every control in the app, made to enforce a hierarchy the
      shipped app already contradicts elsewhere (cards are drawn at 14px and
-     documented at 18px; see docs/investigations/design-system-2026-09-11.md
-     §(a)). Which way the radius doctrine should move is a taste call worth
+     documented at 18px). Which way the radius doctrine should move is a taste call worth
      seeing before committing, and shipping half of it inside a dead-token
      cleanup would have pre-empted it. Deleting the name changes no pixel. */
   --radius: 0.625rem;
