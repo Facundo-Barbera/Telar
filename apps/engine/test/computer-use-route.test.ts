@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ComputerUseGrant, ComputerUseStatus } from "@telar/engine-client";
 import { EngineClient } from "@telar/engine-client";
-import type { ComputerUseGate } from "../src/computer-use";
+import type { ComputerUseGate } from "../src/domains/computer-use";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
 

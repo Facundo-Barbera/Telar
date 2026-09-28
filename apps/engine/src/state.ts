@@ -220,7 +220,7 @@ import { dictationLanguages, isDictationLanguage, isDictationProviderId, type Di
 import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
 import type { DictationContext } from "./dictation/keyterms";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
-import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
+import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./domains/files";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
