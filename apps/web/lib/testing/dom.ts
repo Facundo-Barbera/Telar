@@ -9,7 +9,7 @@ const realFetch = globalThis.fetch;
 
 /** Call once at the top of a test file: registers a DOM for that file only,
  *  unmounts whatever each test mounted, and hands the DOM back at the end. */
-export function useTestDom() {
+export function installTestDom() {
   GlobalRegistrator.register({ url: "http://localhost/" });
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   afterEach(() => {

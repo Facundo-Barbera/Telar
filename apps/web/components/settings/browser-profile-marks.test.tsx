@@ -3,13 +3,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { IDENTITY_COLORS, TELAR_ICONS } from "@telar/engine-client";
 import type { BrowserProfile } from "@/lib/desktop-browser-profiles";
-import { flush, mount, press, useTestDom } from "@/lib/testing/dom";
+import { flush, mount, press, installTestDom } from "@/lib/testing/dom";
 import { IdentityIcon, identityColorVar, telarIconGlyph, NO_ICON_GLYPH } from "@/lib/telar-icons";
 import { DesktopBrowserSurface, type DesktopBrowserBridge, type DesktopBrowserPanelState } from "../browser-live";
 import { ProfileColorPicker, ProfileIconPicker } from "./browser-profile-marks";
 import { BrowserProfilesSection } from "./browser-profiles-section";
 
-useTestDom();
+installTestDom();
 
 afterEach(() => {
   delete (window as { telarDesktop?: unknown }).telarDesktop;

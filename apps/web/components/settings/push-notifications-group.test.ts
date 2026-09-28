@@ -1,12 +1,12 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
-import { click, flush, mount, stubFetch, useTestDom } from "@/lib/testing/dom";
+import { click, flush, mount, stubFetch, installTestDom } from "@/lib/testing/dom";
 import { detailLines, deviceLine, NOT_REGISTERED, NOTIFY_ON_LABELS, pausedLine, phoneSummary, PushNotificationsGroup, relayHeadline, testLine, type PushRelayStatus } from "./push-notifications-group";
 import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES, type NotifyOn } from "@/lib/mobile/desktop";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 
-useTestDom();
+installTestDom();
 
 async function mountPane(status: PushRelayStatus, notifyOn: NotifyOn = "both", saves = true) {
   const calls = stubFetch({

@@ -3,14 +3,14 @@ import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComputerUseStatus } from "@telar/engine-client";
-import { buttonLabelled as button, click, flush, mount, press, stubFetch, useTestDom, type Route } from "@/lib/testing/dom";
+import { buttonLabelled as button, click, flush, mount, press, stubFetch, installTestDom, type Route } from "@/lib/testing/dom";
 import { typeInto } from "@/lib/testing/type-into";
 import { BrowserLoginsSection } from "./browser-logins-section";
 import { McpSection } from "./mcp-section";
 import { OrientationSection } from "./orientation-section";
 import { ComputerUseProviders, computerUseHint, computerUseState, grantFollowUp, GRANT_POLL_MS, GRANT_WAIT_MS, PermissionsSection } from "./permissions-section";
 
-useTestDom();
+installTestDom();
 
 const probe = (over: Partial<ComputerUseStatus> = {}) =>
   ({ installed: true, hostRunning: true, backend: "cua", permission: "granted", ...over }) as unknown as ComputerUseStatus;
