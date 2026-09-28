@@ -31,17 +31,20 @@ describe("engine browser adapter", () => {
     expect(newRunId(() => "a-b-c")).toBe("run_abc");
   });
 
-  test("mints a run id on an origin the browser does not call secure", () => {
-    // `crypto.randomUUID` is absent off a secure context (plain HTTP, non-loopback).
+  test("mints ids and stops a session on an origin the browser does not call secure", async () => {
     const real = crypto.randomUUID;
     Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
     try {
-      expect(crypto.randomUUID).toBeUndefined();
       const id = newRunId();
-      expect(id).toMatch(/^run_[0-9a-f]{32}$/);
-      // Still a v4 UUID, from `getRandomValues`, which works in insecure contexts.
-      expect(id[16]).toBe("4");
+      expect(id).toMatch(/^run_[0-9a-f]{12}4[0-9a-f]{19}$/);
       expect(newRunId()).not.toBe(id);
+      const bodies: unknown[] = [];
+      const api = createEngineApi(async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ stopped: [] });
+      });
+      await api.stopSession("session_a");
+      expect(bodies).toEqual([{ scope: "session", commandId: expect.stringMatching(/^[0-9a-f-]{36}$/) }]);
     } finally {
       Object.defineProperty(crypto, "randomUUID", { value: real, configurable: true });
     }

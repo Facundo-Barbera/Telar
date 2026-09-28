@@ -5,6 +5,7 @@ SessionAssignment
 import { pathnameFetcher, type Fetcher } from "@/platform/engine/host-client";
 import { domainMethods } from "@telar/engine-client";
 import { apiTransport } from "./transport";
+import { randomUuid } from "@/platform/random-uuid";
 import { machineCalls, settingsCalls } from "./machine-calls";
 import { sessionCalls, turnCalls } from "./session-calls";
 import { integrationCalls, workspaceCalls } from "./workspace-calls";
@@ -47,17 +48,6 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     ...workspaceCalls(fetcher),
     ...integrationCalls(fetcher),
   };
-}
-
-// `crypto.randomUUID` is missing off a secure context (plain HTTP to a non-loopback host).
-// Not Math.random: this id is the idempotency key a retried submission is matched on.
-function randomUuid(): string {
-  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant 1
-  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /** Browser-generated ids are stable if the submission has to be retried. */

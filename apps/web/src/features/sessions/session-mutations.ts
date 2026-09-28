@@ -1,6 +1,7 @@
 import type { LiveSessionRow } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
 import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
+import { randomUuid } from "@/platform/random-uuid";
 import { sessionKey, toSidebarSession, type SidebarSession } from "./session-list";
 
 export type SessionRowChange =
@@ -68,7 +69,7 @@ export function withTitle(row: SidebarSession, title: string, at: number = Date.
 }
 
 export function newSessionId(): string {
-  return `session_${crypto.randomUUID().replaceAll("-", "")}`;
+  return `session_${randomUuid().replaceAll("-", "")}`;
 }
 
 const engineFor = (session: Pick<SidebarSession, "hostId">) => createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));

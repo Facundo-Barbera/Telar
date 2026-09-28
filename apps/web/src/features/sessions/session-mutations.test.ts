@@ -360,3 +360,13 @@ describe("the rail's side: one change, one row", () => {
     expect(applyRowChange([b], { row: a })).toEqual([b]);
   });
 });
+
+test("a new session gets an id on an origin the browser does not call secure", () => {
+  const real = crypto.randomUUID;
+  Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+  try {
+    expect(newSessionId()).toMatch(/^session_[0-9a-f]{32}$/);
+  } finally {
+    Object.defineProperty(crypto, "randomUUID", { value: real, configurable: true });
+  }
+});
