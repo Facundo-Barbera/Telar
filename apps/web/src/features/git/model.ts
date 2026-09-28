@@ -1,5 +1,5 @@
 import type { DiffBaseOption, FilePatchOptions, GitFileChange, GitFilePatch, GitPatchIncomplete, SessionDiff } from "@telar/engine-client";
-import { unreportedFiles, type SessionReview } from "@/lib/session-review";
+import { unreportedFiles, type SessionReview } from "./session-review";
 import type { DiffScopeKind } from "@/lib/diff-scope";
 import type { DiffTurn } from "@/lib/diff-turns";
 import type { LineSide } from "@/lib/drag-reference";

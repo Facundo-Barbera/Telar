@@ -10,7 +10,7 @@
 import { PackageIcon, SettingsIcon } from "lucide-react";
 import Link from "next/link";
 import type { KernelState } from "@/lib/ds";
-import { projectSettingsHref } from "@/lib/project-settings-link";
+import { projectSettingsHref } from "@/features/projects";
 import { PanelEmpty } from "@/components/ui/panel";
 import { PackagesPanel } from "@/components/settings/packages-panel";
 

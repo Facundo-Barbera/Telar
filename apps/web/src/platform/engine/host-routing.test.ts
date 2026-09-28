@@ -6,8 +6,8 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { createEngineApi, refusedBy, EngineApiError } from "./client";
 import { hostFetcher, hostFromPathname, hostName, hostPrefix, rememberHostName, rewriteApiPath, HOST_NAME_HEADER, LOCAL_HOST_ID } from "@/lib/hosts/client";
-import { HOST_ID_HEADER } from "@/lib/hosts/proxy";
-import { sessionHref, type SidebarSession } from "@/lib/session-list";
+import { HOST_ID_HEADER } from "@/features/hosts/server";
+import { sessionHref, type SidebarSession } from "@/features/sessions";
 
 /** Session ids are minted per engine, so both Macs may hold this one. */
 const SHARED = "session_shared";

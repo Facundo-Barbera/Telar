@@ -96,7 +96,7 @@ export async function mountRail() {
 
 /** Runs one more pass, as the poll's next tick would. */
 export async function nextPass() {
-  const { PROJECTS_CHANGED_EVENT } = await import("@/lib/projects");
+  const { PROJECTS_CHANGED_EVENT } = await import("@/features/projects/projects");
   await act(async () => window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT)));
   await flush();
   await flush();

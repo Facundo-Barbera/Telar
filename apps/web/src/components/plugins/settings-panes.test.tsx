@@ -20,7 +20,7 @@ const { DataScienceSection } = await import("@/components/settings/data-science-
 const { DataSciencePackagesRow } = await import("@/components/settings/data-science-machine-settings");
 const { LatexSection } = await import("@/components/settings/latex-section");
 const { LatexDistributionSettings } = await import("@/components/settings/latex-machine-settings");
-const { ProjectPluginPanes } = await import("@/components/settings/projects-page");
+const { ProjectPluginPanes } = await import("@/features/projects/components/projects-page");
 
 test("the two shipped features keep only what the generated pane cannot draw", () => {
   expect(projectPaneFor("data-science")).toBe(DataScienceSection);

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { GitFileChange, GitFilePatch } from "@telar/engine-client";
-import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "@/lib/session-review";
+import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "../session-review";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";

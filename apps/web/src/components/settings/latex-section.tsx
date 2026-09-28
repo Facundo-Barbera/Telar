@@ -43,7 +43,7 @@ import { Row, SettingsGroup } from "./settings-shell";
 import { JobLog, type JobHandle, type JobIo } from "./job-log";
 import { cn } from "@/lib/utils";
 import { writeDraft } from "@/features/composer";
-import { canvasHref } from "@/lib/session-list";
+import { canvasHref } from "@/features/sessions";
 
 const api = createEngineApi();
 

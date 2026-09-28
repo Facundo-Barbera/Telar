@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { buttonLabelled, click, flush, installTestDom, mount, stubFetch, type Route } from "@/lib/testing/dom";
-import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
+import { PROJECTS_CHANGED_EVENT } from "../projects";
 import { clearField, typeInto } from "@/lib/testing/type-into";
 import {
   cloneRequest,

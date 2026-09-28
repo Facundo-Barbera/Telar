@@ -61,26 +61,26 @@ import { useSectionFromUrl } from "./use-section-from-url";
  * lazy-loading.md). A table keyed by section id would compile and split nothing.
  */
 const AppearanceSection = dynamic(() => import("@/features/appearance/components/appearance-section").then((mod) => mod.AppearanceSection));
-const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
+const InboxSection = dynamic(() => import("@/features/sessions/components/inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
 const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
 const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
 const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
 const IntegrationsPage = dynamic(() => import("./integrations-page").then((mod) => mod.IntegrationsPage));
 const KeybindingsPage = dynamic(() => import("./keybindings-page").then((mod) => mod.KeybindingsPage));
-const ProjectsPage = dynamic(() => import("./projects-page").then((mod) => mod.ProjectsPage));
+const ProjectsPage = dynamic(() => import("@/features/projects/components/projects-page").then((mod) => mod.ProjectsPage));
 const PermissionsSection = dynamic(() => import("./permissions-section").then((mod) => mod.PermissionsSection));
 const ProvidersSection = dynamic(() => import("./providers-section").then((mod) => mod.ProvidersSection));
 const RemoteSection = dynamic(() => import("./remote-section").then((mod) => mod.RemoteSection));
 const SourceControlPage = dynamic(() => import("./source-control-page").then((mod) => mod.SourceControlPage));
-const OtherMacsSection = dynamic(() => import("./other-macs-section").then((mod) => mod.OtherMacsSection));
+const OtherMacsSection = dynamic(() => import("@/features/hosts/components/other-macs-section").then((mod) => mod.OtherMacsSection));
 const TextGenSection = dynamic(() => import("./textgen-section").then((mod) => mod.TextGenSection));
 const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.PluginsPage));
 const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
 const StoreSection = dynamic(() => import("./store-section").then((mod) => mod.StoreSection));
-const CleanupSection = dynamic(() => import("./cleanup-section").then((mod) => mod.CleanupSection));
+const CleanupSection = dynamic(() => import("@/features/worktrees/components/cleanup-section").then((mod) => mod.CleanupSection));
 const UsageProvidersSection = dynamic(() => import("@/features/usage").then((mod) => mod.UsageProvidersSection));
-const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
+const WorkspaceSection = dynamic(() => import("@/features/projects/components/workspace-section").then((mod) => mod.WorkspaceSection));
 
 const api = createEngineApi();
 

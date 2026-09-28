@@ -31,10 +31,10 @@
 import { useRouter } from "next/navigation";
 import { FolderGit2Icon } from "lucide-react";
 import { GREETING } from "@/lib/greetings";
-import { projectSettingsHref } from "@/lib/project-settings-link";
-import { useHostProjects } from "@/lib/hosts/host-projects";
+import { projectSettingsHref } from "@/features/projects";
+import { useHostProjects } from "@/features/hosts";
 import { LOCAL_HOST_ID } from "@/lib/hosts/client";
-import { canvasHref } from "@/lib/session-list";
+import { canvasHref } from "@/features/sessions";
 import {
   DropdownMenu,
   DropdownMenuContent,

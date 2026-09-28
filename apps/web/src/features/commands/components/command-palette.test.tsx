@@ -2,7 +2,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { act, createRef, useImperativeHandle, useState, type Ref } from "react";
 import { bindCommands, COMMANDS, type CommandId } from "../commands";
-import type { SidebarSession } from "@/lib/session-list";
+import type { SidebarSession } from "@/features/sessions";
 import { click, flush, installTestDom, mount, stubFetch } from "@/lib/testing/dom";
 import { clearField, typeInto } from "@/lib/testing/type-into";
 import { CommandPalette, type CommandPalettePage } from "./command-palette";

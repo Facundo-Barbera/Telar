@@ -1,7 +1,7 @@
 import type { GitHubCheck, GitHubIssueFilter, GitHubMergeMethod, GitHubPullFilter, GitOverview } from "@telar/engine-client";
 import { issueReference } from "@/lib/drag-reference";
 import type { ForgeFilterChip } from "@/lib/github-forge";
-import { canvasHref } from "@/lib/session-list";
+import { canvasHref } from "@/features/sessions";
 
 export type IssueSessionStart =
   | { ok: true; href: string; text: string; baseRef: string }

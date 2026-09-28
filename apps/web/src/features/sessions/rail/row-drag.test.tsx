@@ -7,7 +7,7 @@
  * project header avoids it by putting the trigger inside the draggable button,
  * and this row by wrapping the menu in a handle of its own. The rest of the
  * gesture — where a drop lands, which band it is confined to — is arithmetic,
- * and `lib/session-groups.test.ts` pins it as arithmetic.
+ * and `features/sessions/session-groups.test.ts` pins it as arithmetic.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, mock, test } from "bun:test";
@@ -24,7 +24,7 @@ mock.module("next/navigation", () => ({
 
 const { SessionRow } = await import("./session-row");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
-import type { SidebarSession } from "@/lib/session-list";
+import type { SidebarSession } from "../session-list";
 
 const session: SidebarSession = {
   id: "s1",

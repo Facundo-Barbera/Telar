@@ -41,7 +41,7 @@ import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, type FileTreeNode } from "@/lib/file-tree";
 import { directoryReference, fileReference, startReferenceDrag, type TelarReference } from "@/lib/drag-reference";
 import type { OpenIntent } from "@/lib/editor-workspace";
-import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "@/lib/session-review";
+import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "@/features/git";
 import { useWorkspaceFileMenu, workspaceFilePath, type WorkspaceFileMenu } from "@/lib/workspace-open";
 import { EDITOR_HEADER_ROW } from "@/components/session/editor-chrome";
 import { FileKindIcon } from "@/components/session/file-icon";

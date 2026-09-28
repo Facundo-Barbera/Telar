@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitFileChange, SessionDiff } from "@telar/engine-client";
-import { reconcileReview } from "@/lib/session-review";
+import { reconcileReview } from "./session-review";
 import { reviewUnderFilter, underDiffFilter } from "./model";
 import { describePanelTabInstance, type PanelTabItem } from "@/features/panel";
 

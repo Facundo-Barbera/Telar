@@ -4,7 +4,7 @@ import type { GitHubIssue, GitOverview } from "@telar/engine-client";
 import { readDraft, writeDraft } from "@/features/composer";
 import { insertReference } from "@/lib/drag-reference";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
-import { canvasHref } from "@/lib/session-list";
+import { canvasHref } from "@/features/sessions";
 import { issueSessionStart } from "../model";
 
 const api = createEngineApi();

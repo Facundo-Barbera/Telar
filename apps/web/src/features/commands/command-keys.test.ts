@@ -1,7 +1,6 @@
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { groupSessions, railJumpSlots, railRowsForCommandKeys } from "@/lib/session-groups";
-import { deriveSessionList, sessionHref, sessionKey, type SidebarSession } from "@/lib/session-list";
+import { groupSessions, railJumpSlots, railRowsForCommandKeys, deriveSessionList, sessionHref, sessionKey, type SidebarSession } from "@/features/sessions";
 
 const NOW = 1_800_000_000_000;
 

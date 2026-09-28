@@ -44,7 +44,7 @@ import Testing
     }
 
     /// THE HEADER BADGE ONLY WHEN EVERY MAC AGREES — the desktop's rule
-    /// (`groupAvailability`, apps/web/src/lib/session-groups.ts). A repository
+    /// (`groupAvailability`, apps/web/src/features/sessions/session-groups.ts). A repository
     /// checked out on two Macs is reachable if the drive is plugged into one of
     /// them, and a header saying otherwise is false for half its rows.
     private func row(host: UUID, id: String) throws -> HostedSession {

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { FolderIcon } from "lucide-react";
 import { isTelarIcon } from "@telar/engine-client";
-import { projectHue, projectIconUrl, projectInitial } from "@/lib/project-avatar";
+import { projectHue, projectIconUrl, projectInitial } from "../project-avatar";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
 

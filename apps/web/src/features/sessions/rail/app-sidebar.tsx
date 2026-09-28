@@ -5,9 +5,8 @@ import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import type { Project } from "@telar/engine-client";
 import { type CommandPalettePage, useCommandHandlers, useCommandKeys } from "@/features/commands";
-import type { NewConversationTarget } from "@/features/projects";
+import { type NewConversationTarget, projectSettingsHref } from "@/features/projects";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarRail, type SidebarResizableOptions, type SidebarWidthProposal, useSidebar } from "@/components/ui/sidebar";
-import { projectSettingsHref } from "@/lib/project-settings-link";
 import {
   activeSessionFromPathname,
   canvasHref,
@@ -17,7 +16,7 @@ import {
   sessionHref,
   sessionKey,
   type SidebarSession,
-} from "@/lib/session-list";
+} from "../session-list";
 import { APP_SIDEBAR_MAIN_MIN_WIDTH, APP_SIDEBAR_STORAGE_KEY, keepsRoomForMain, SIDEBAR_RESIZE_MIN_WIDTH } from "@/lib/sidebar-width";
 import { AppSidebarFooterRow } from "./app-sidebar-footer";
 import { RailDrafts } from "./rail-drafts";

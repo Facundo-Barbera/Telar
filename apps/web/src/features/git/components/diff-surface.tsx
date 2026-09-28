@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { GitBranchIcon, HardDriveIcon } from "lucide-react";
 import type { SessionDiff, TurnState } from "@telar/engine-client";
-import { describeReview, reconcileReview, reviewFraming } from "@/lib/session-review";
+import { describeReview, reconcileReview, reviewFraming } from "../session-review";
 import { diffBaseFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
 import { PanelEmpty } from "@/components/ui/panel";

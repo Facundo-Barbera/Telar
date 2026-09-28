@@ -62,9 +62,9 @@ class FakeObserver {
 
 const { SessionRow } = await import("./session-row");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
-const { PREFETCH_INTENT_MS, PREFETCH_MARGIN, resetPrefetch, warmedRows } = await import("@/lib/rail-prefetch");
+const { PREFETCH_INTENT_MS, PREFETCH_MARGIN, resetPrefetch, warmedRows } = await import("./rail-prefetch");
 import { renderToStaticMarkup } from "react-dom/server";
-import type { SidebarSession } from "@/lib/session-list";
+import type { SidebarSession } from "../session-list";
 
 /** No usage figures, so the row takes the plain branch rather than the hover
  *  card — see `hasFigures`. The prefetch decision is identical in both. */

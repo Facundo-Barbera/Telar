@@ -8,8 +8,7 @@ import type { JournalTask } from "@/platform/engine";
 import { startReferenceDrag, taskReference } from "@/lib/drag-reference";
 import { TranscriptItem } from "@/features/transcript";
 import { PanelDivider, PanelEmpty, PanelRow } from "@/components/ui/panel";
-import { RelatedConversations } from "@/components/session/related-conversations";
-import { HeldReports } from "@/components/session/held-reports";
+import { RelatedConversations, HeldReports } from "@/features/sessions";
 import { cn } from "@/lib/utils";
 import { isLiveTask, splitRoster, type TaskFocus } from "../folds";
 

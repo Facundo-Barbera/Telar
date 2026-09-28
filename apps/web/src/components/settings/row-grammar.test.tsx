@@ -19,7 +19,7 @@ mock.module("next/navigation", () => ({
 
 const { PackagesPanel } = await import("./packages-panel");
 const { Dropdown } = await import("./settings-shell");
-const { WorkspaceSection } = await import("./workspace-section");
+const { WorkspaceSection } = await import("@/features/projects/components/workspace-section");
 const { TextGenSection } = await import("./textgen-section");
 const { DataScienceSection } = await import("./data-science-section");
 const { LooksSection } = await import("@/features/appearance/components/looks-section");
