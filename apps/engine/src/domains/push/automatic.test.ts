@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { AUTOMATIC_ACTIVITY, parseRegistration, saveRegistration, readPushRecords, type PushRecord, type Delivery } from "./push";
 import { deliverRecord } from "./worker";
@@ -34,7 +33,6 @@ test("one host card aggregates work, gives attention precedence, and ends when i
 test("start failures retry, expired start tokens preserve notifications, disabled and old clients never start",async()=>{
   let r=(await deliverRecord(record(),[work],async()=>({status:503}),1000))!;
   expect(r.automaticStartedAt).toBeUndefined();expect(r.retryAt).toBeGreaterThan(1000);
-  // Past the 30s retry floor (#584), or the backoff would swallow this attempt.
   r=(await deliverRecord(r,[work],async()=>({status:410}),1040))!;
   expect(r.token).toBe(record().token);expect(r.pushToStartToken).toBeUndefined();
   let sent=0;
@@ -47,13 +45,10 @@ test("a start receipt survives a refresh of the same start token, dies with a ne
   try {
     saveRegistration("phone",record(),file);
     const r=readPushRecords(file)[0]!;r.automaticStartedAt=1000;r.automaticStarts=1;
-    // Persist the worker's completed start, then emulate the token callback registration.
     writeFileSync(file,JSON.stringify([r]));
     saveRegistration("phone",record(),file);
     expect(readPushRecords(file)[0]!.automaticStartedAt).toBe(1000);
     expect(readPushRecords(file)[0]!.automaticStarts).toBe(1);
-    // A reinstall mints a new start token: the receipt belongs to the old one, which this
-    // install never had, so it must not keep the gate shut on an activity it never ran.
     saveRegistration("phone",{...record(),pushToStartToken:"d".repeat(64)},file);
     const fresh=readPushRecords(file)[0]!;
     expect(fresh.automaticStartedAt).toBeUndefined();
@@ -70,12 +65,10 @@ test("a start the phone never ran is retried after five minutes, three times per
   const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return {status:200};};
   let r=(await deliverRecord(record(),[work],send,1000))!;
   expect(sent).toHaveLength(1);expect(r.automaticStarts).toBe(1);
-  // Inside the window the phone may still report the activity's token.
   r=(await deliverRecord(r,[work],send,1299))!;expect(sent).toHaveLength(1);
   r=(await deliverRecord(r,[work],send,1300))!;
   expect(sent).toHaveLength(2);expect(sent[1]!.payload.aps.event).toBe("start");expect(r.automaticStarts).toBe(2);
   r=(await deliverRecord(r,[work],send,1600))!;expect(sent).toHaveLength(3);expect(r.automaticStarts).toBe(3);
-  // Capped: a phone that cannot start activities at all is not pushed every five minutes forever.
   r=(await deliverRecord(r,[work],send,1900))!;expect(sent).toHaveLength(3);
   r=(await deliverRecord(r,[work],send,100000))!;expect(sent).toHaveLength(3);
   r=(await deliverRecord(r,[],send,100010))!;expect(r.automaticStarts).toBeUndefined();

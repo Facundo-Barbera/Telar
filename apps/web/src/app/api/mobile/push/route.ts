@@ -1,50 +1,58 @@
 import { readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller } from "@/lib/remote/gate";
 import { readRemote } from "@/lib/remote/store";
-import { activityReport, parseRegistration, pushConfigured, PushInputError, readPushRecords, saveRegistration } from "@/lib/mobile/push";
-import { sendRelayTest, startMobilePushWorker } from "@/lib/mobile/worker";
+import { engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineCall } from "@/lib/engine/forward";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+const REGISTRATION_MAX_BYTES = 32768;
+
 function caller(request: Request) {
   return identifyCaller({ authorization: request.headers.get("authorization"), deviceCookie: readDeviceCookie(request) }, readRemote());
 }
-/** What this Mac knows about the caller's automatic Live Activity, for the
- *  phone's Settings to say WHY a card has or has not appeared. */
-function activityFor(deviceId: string, topic?: string) {
-  const record = readPushRecords().find(r => r.deviceId === deviceId && (topic === undefined || r.topic === topic));
-  return record ? { activity: activityReport(record) } : {};
+
+const devicePath = (deviceId: string) => `/v2/push/devices/${encodeURIComponent(deviceId)}`;
+
+async function relay(method: string, path: string, body?: unknown): Promise<Response> {
+  try {
+    const answer = await engineCall(method, path, body);
+    return Response.json(answer.body, { status: answer.status });
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
 }
+
 export function GET(request: Request) {
   const device = caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
-  return Response.json({ configured: pushConfigured(), ...activityFor(device.id) });
+  return relay("GET", devicePath(device.id));
 }
+
 export async function PUT(request: Request) {
   const device = caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
   if (device.role !== "full") return Response.json({ error: { message: "Full access is required." } }, { status: 403 });
-  // Bound reads even when Content-Length is missing or untrusted.
   const reader = request.body?.getReader();
   if (!reader) return Response.json({ error: { message: "Missing registration." } }, { status: 400 });
-  const chunks: Uint8Array[] = []; let bytes = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read(); if (done) break;
-      bytes += value.byteLength;
-      if (bytes > 32768) { await reader.cancel(); return Response.json({ error: { message: "Registration too large." } }, { status: 413 }); }
-      chunks.push(value);
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > REGISTRATION_MAX_BYTES) {
+      await reader.cancel();
+      return Response.json({ error: { message: "Registration too large." } }, { status: 413 });
     }
-    const registration = parseRegistration(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-    saveRegistration(device.id, registration);
-    startMobilePushWorker();
-    // Not awaited: the phone is not kept waiting on APNs to hear it registered.
-    if (registration.relay) void sendRelayTest(device.id, registration.topic);
-    // A phone that brought a relay v2 credential needs nothing from this Mac.
-    return Response.json({ configured: registration.relay !== undefined || pushConfigured(), ...activityFor(device.id, registration.topic) });
-  } catch (error) {
-    if (error instanceof PushInputError || error instanceof SyntaxError) return Response.json({ error: { message: "Invalid push registration." } }, { status: 400 });
-    return Response.json({ error: { message: "Couldn't save push registration." } }, { status: 503 });
+    chunks.push(value);
   }
+  let registration: unknown;
+  try {
+    registration = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return Response.json({ error: { message: "Invalid push registration." } }, { status: 400 });
+  }
+  return relay("PUT", devicePath(device.id), registration);
 }

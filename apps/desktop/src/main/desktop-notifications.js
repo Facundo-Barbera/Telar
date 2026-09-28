@@ -1,6 +1,5 @@
 "use strict";
 
-const DESKTOP_NOTIFICATIONS_ENV = "TELAR_DESKTOP_NOTIFICATIONS";
 const DESKTOP_NOTICE = "telar:desktop-notification";
 const DESKTOP_APPROVE = "telar:desktop-notification:approve";
 const DESKTOP_APPROVED = "telar:desktop-notification:approved";
@@ -117,7 +116,6 @@ function createDesktopNotifier({ Notification, send, context, open }) {
 }
 
 module.exports = {
-  DESKTOP_NOTIFICATIONS_ENV,
   DESKTOP_NOTICE,
   DESKTOP_APPROVE,
   DESKTOP_APPROVED,

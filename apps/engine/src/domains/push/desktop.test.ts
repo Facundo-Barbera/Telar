@@ -1,17 +1,17 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES, type EngineClient, type NotifyOn } from "@telar/engine-client";
+import { matchRoute } from "../../platform/http/router";
 import {
-  DEFAULT_NOTIFY_ON, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_DISMISS, DESKTOP_NOTICE, DESKTOP_NOTIFICATIONS_ENV, DESKTOP_PRESENCE,
-  NOTIFY_ON_VALUES, PRESENCE_STALE_MS,
-  desktopAttached, desktopNotices, dismissDesktop, listenForDesktop, emptyDesktopState, handleDesktopMessage, macTookAlert, notifyDesktop, notifyRoute,
-  readNotifyOn, writeNotifyOn, type DesktopState, type NotifyOn, type Presence,
+  DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_DISMISS, DESKTOP_NOTICE, DESKTOP_PRESENCE, PRESENCE_STALE_MS,
+  createDesktopStream, desktopAttached, desktopNotices, dismissDesktop, emptyDesktopState, handleDesktopMessage, macTookAlert, notifyDesktop, notifyRoute,
+  readNotifyOn, writeNotifyOn, type DesktopState, type Presence,
 } from "./desktop";
 import { notification, signalKey, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
+import { pushRoutes } from "./routes";
 import { deliverRecord } from "./worker";
-import { emitSessionRead } from "../session-read-events";
 
 const working: SessionSignal = { id: "s1", title: "Private repository task", activity: "working", activityAt: 1000, projectId: "p1" };
 const blocked: SessionSignal = { ...working, activity: "blocked", activityAt: 2000 };
@@ -85,18 +85,27 @@ describe("which transitions reach the Mac", () => {
   });
 });
 
-describe("the fork channel", () => {
+describe("the desktop stream", () => {
   const channel = () => {
     const sent: unknown[] = [];
-    return { sent, on: () => undefined, connected: true, send: (message: unknown) => (sent.push(message), true) };
+    return { sent, connected: true, send: (message: unknown) => { sent.push(message); } };
   };
 
-  test("is attached only when the shell forked this process and said so", () => {
-    expect(desktopAttached(channel(), { [DESKTOP_NOTIFICATIONS_ENV]: "1" })).toBe(true);
-    // `next dev` has a process.send too — to Next's own CLI.
-    expect(desktopAttached(channel(), {})).toBe(false);
-    expect(desktopAttached({ on: () => undefined }, { [DESKTOP_NOTIFICATIONS_ENV]: "1" })).toBe(false);
-    expect(desktopAttached({ ...channel(), connected: false }, { [DESKTOP_NOTIFICATIONS_ENV]: "1" })).toBe(false);
+  test("is attached only while a shell is subscribed, and every subscriber gets each message as an event", () => {
+    const stream = createDesktopStream();
+    expect(desktopAttached(stream)).toBe(false);
+    const first: string[] = [], second: string[] = [];
+    const stopFirst = stream.subscribe({ write: (chunk) => first.push(chunk) });
+    const stopSecond = stream.subscribe({ write: (chunk) => second.push(chunk) });
+    expect(desktopAttached(stream)).toBe(true);
+    stream.send({ type: DESKTOP_DISMISS, sessionId: "s1" });
+    stopFirst();
+    stream.send({ type: DESKTOP_DISMISS, sessionId: "s2" });
+    stopSecond();
+    expect(desktopAttached(stream)).toBe(false);
+    expect(first).toEqual([`data: ${JSON.stringify({ type: DESKTOP_DISMISS, sessionId: "s1" })}\n\n`]);
+    expect(second).toHaveLength(2);
+    expect(desktopAttached({ ...channel(), connected: false })).toBe(false);
   });
 
   test("Approve resolves exactly the offered request, with accept, once", async () => {
@@ -107,7 +116,6 @@ describe("the fork channel", () => {
     await handleDesktopMessage({ type: DESKTOP_APPROVE, sessionId: "s1", requestId: "r1" }, resolve, wire, state);
     expect(resolved).toEqual([["s1", "r1", { decision: "accept" }]]);
     expect(wire.sent).toEqual([{ type: DESKTOP_APPROVED, sessionId: "s1", requestId: "r1", ok: true }]);
-    // The same press twice, or a request this process never offered, resolves nothing.
     await handleDesktopMessage({ type: DESKTOP_APPROVE, sessionId: "s1", requestId: "r1" }, resolve, wire, state);
     await handleDesktopMessage({ type: DESKTOP_APPROVE, sessionId: "s1", requestId: "r2" }, resolve, wire, { ...state, offered: { s1: "r1" } });
     expect(resolved).toHaveLength(1);
@@ -125,6 +133,19 @@ describe("the fork channel", () => {
       await handleDesktopMessage(junk, async () => { throw new Error("must not run"); }, wire, { seen: {}, baselined: true, offered: { s1: "r1" } });
     }
     expect(wire.sent).toHaveLength(1);
+  });
+
+  test("the shell's approve, posted to the engine, resolves through the engine client", async () => {
+    const resolved: unknown[] = [];
+    const client = { resolveRequest: async (...args: unknown[]) => { resolved.push(args); } } as unknown as EngineClient;
+    const { route, params } = matchRoute(pushRoutes({ client: () => client, pairedDevices: () => [] }), "POST", "/v2/push/desktop/messages")!;
+    const g = globalThis as { telarDesktopNotify?: DesktopState };
+    const before = g.telarDesktopNotify;
+    g.telarDesktopNotify = { seen: {}, baselined: true, offered: { s1: "r1" } };
+    try {
+      expect(await route.handle({ body: { type: DESKTOP_APPROVE, sessionId: "s1", requestId: "r1" }, params, query: new URLSearchParams() })).toEqual({ status: 200, body: { ok: true } });
+      expect(resolved).toEqual([["s1", "r1", { decision: "accept" }]]);
+    } finally { g.telarDesktopNotify = before; }
   });
 });
 
@@ -156,16 +177,13 @@ describe("notify on: one alert, one device", () => {
     expect(notifyRoute("mac", viewing, PATH, now)).toEqual({ desktop: false, phone: false });
     expect(notifyRoute("both", viewing, PATH, now)).toEqual({ desktop: false, phone: false });
     expect(notifyRoute("iphone", viewing, PATH, now)).toEqual(phoneOnly);
-    // Another session on screen is not this one.
     expect(notifyRoute("mac", presence({ viewingPath: "/projects/p1/sessions/s2" }), PATH, now)).toEqual({ desktop: true, phone: false });
   });
 
   test("a stale or idle 'viewing' never silences the phone: a window left open is not somebody looking", () => {
     expect(notifyRoute("mac", presence({ viewingPath: PATH, at: now - PRESENCE_STALE_MS - 1 }), PATH, now)).toEqual(phoneOnly);
     expect(notifyRoute("mac", presence({ viewingPath: PATH, active: false }), PATH, now)).toEqual(phoneOnly);
-    // A stamp from the future (a clock step) is not trusted either.
     expect(notifyRoute("mac", presence({ at: now + 60_000 }), PATH, now)).toEqual(phoneOnly);
-    // Right at the edge it still counts.
     expect(notifyRoute("mac", presence({ at: now - PRESENCE_STALE_MS }), PATH, now)).toEqual({ desktop: true, phone: false });
   });
 
@@ -175,9 +193,9 @@ describe("notify on: one alert, one device", () => {
 });
 
 const g = globalThis as { telarDesktopNotify?: DesktopState; telarDesktopPresence?: Presence; telarDesktopTook?: Record<string, string> };
-const recorder = () => ({ sent: [] as unknown[], on: () => undefined, connected: true, send(message: unknown) { this.sent.push(message); return true; } });
+const recorder = () => ({ sent: [] as unknown[], connected: true, send(message: unknown) { this.sent.push(message); } });
 
-describe("presence over the fork channel", () => {
+describe("presence from the shell", () => {
   const never = async () => { throw new Error("must not resolve"); };
 
   test("the shell's beat is kept, stamped with this process's clock, and answers nothing", async () => {
@@ -228,7 +246,6 @@ describe("the Mac takes an alert, and the phone's seen still advances", () => {
     const next = await deliverRecord(phone, [blocked], push.send, 11, { changed: moved, macTook: macTookAlert });
     expect(push.sent).toEqual([]);
     expect(next?.seen.s1).toBe(signalKey(blocked));
-    // The Mac goes idle with the session still blocked: the phone has nothing stale to say.
     delete g.telarDesktopPresence;
     const later = phoneSends();
     await deliverRecord(next!, [blocked], later.send, 100, { macTook: macTookAlert });
@@ -262,7 +279,6 @@ describe("the Mac takes an alert, and the phone's seen still advances", () => {
     notifyDesktop([blocked], moved, { channel: recorder(), notifyOn: "mac", now: 11_000 });
     expect(macTookAlert(blocked)).toBe(true);
     expect(macTookAlert(finished)).toBe(false);
-    // Idle by the time it finishes: the finish is the phone's, and the old claim is gone.
     g.telarDesktopPresence = { active: false, viewingPath: null, at: 12_000 };
     notifyDesktop([finished], moved, { channel: recorder(), notifyOn: "mac", now: 12_500 });
     expect(g.telarDesktopTook).toEqual({});
@@ -305,22 +321,15 @@ describe("where Notify on is kept", () => {
 });
 
 describe("read elsewhere takes the Mac's banner down", () => {
-  test("an accepted receipt sends the shell a dismiss for that session, ids only, and only when the shell is there", () => {
-    const old = process.env[DESKTOP_NOTIFICATIONS_ENV];
+  test("a read sends the shell a dismiss for that session, ids only, and only when the shell is there", () => {
     const sent: unknown[] = [];
-    const wire = { on: () => undefined, connected: true, send: (message: unknown) => (sent.push(message), true) };
-    try {
-      delete process.env[DESKTOP_NOTIFICATIONS_ENV];
-      dismissDesktop("s1", wire);
-      expect(sent).toEqual([]);
-      process.env[DESKTOP_NOTIFICATIONS_ENV] = "1";
-      dismissDesktop("x".repeat(300), wire);
-      expect(sent).toEqual([]);
-      listenForDesktop(async () => undefined, wire);
-      emitSessionRead("s1");
-      expect(sent).toEqual([{ type: DESKTOP_DISMISS, sessionId: "s1" }]);
-    } finally {
-      if (old === undefined) delete process.env[DESKTOP_NOTIFICATIONS_ENV]; else process.env[DESKTOP_NOTIFICATIONS_ENV] = old;
-    }
+    const wire = { connected: false, send: (message: unknown) => { sent.push(message); } };
+    dismissDesktop("s1", wire);
+    expect(sent).toEqual([]);
+    wire.connected = true;
+    dismissDesktop("x".repeat(300), wire);
+    expect(sent).toEqual([]);
+    dismissDesktop("s1", wire);
+    expect(sent).toEqual([{ type: DESKTOP_DISMISS, sessionId: "s1" }]);
   });
 });

@@ -1,18 +1,8 @@
-/**
- * WHY THE LIVE ACTIVITY "SOMETIMES REACTS A BIT SLOWLY", AND WHAT FIXED IT.
- *
- * Two delays on the Mac's side of the wire: a feed debounce that a busy
- * machine could push back indefinitely, and "Needs you" updates sent at APNs
- * priority 5, which iOS delivers when it pleases.
- */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { AUTOMATIC_ACTIVITY, apnsPriority, signalKey, type Delivery, type PushRecord, type SessionSignal } from "./push";
 import { v2Body } from "./relay-v2";
 import { deliverRecord, FEED_COALESCE_MS, frameAction } from "./worker";
 
-/** Replays frames through `frameAction` the way the worker does, and returns
- *  when the first pass runs. */
 function firstPass(frames: number[]): number | undefined {
   let dueAt: number | undefined;
   for (const at of frames) {
@@ -25,13 +15,11 @@ function firstPass(frames: number[]): number | undefined {
 describe("a busy feed cannot hold the pass back", () => {
   test("frames every 100 ms for ten seconds still get a pass after the first 250", () => {
     const frames = Array.from({ length: 100 }, (_, i) => i * 100);
-    // A pure debounce would not have run until 9,900 + 250.
     expect(firstPass(frames)).toBe(FEED_COALESCE_MS);
   });
 
   test("a frame during a pass asks for one more, and a long timer is cut short", () => {
     expect(frameAction(undefined, true, 0)).toBe("after-pass");
-    // The ten-minute reconcile timer is pending: a frame brings the pass forward.
     expect(frameAction(600_000, false, 0)).toBe("schedule");
     expect(frameAction(FEED_COALESCE_MS, false, 0)).toBe("join");
   });

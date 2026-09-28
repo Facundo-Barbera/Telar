@@ -115,14 +115,16 @@ export * from "./settings/schema";
 export * from "./storage/schema";
 export * from "./usage/schema";
 export * from "./worktrees/schema";
-
 export * from "./agent-tools/schema";
 export * from "./appearance/schema";
 export * from "./dictation/schema";
+export * from "./files/schema";
+export * from "./hosts/schema";
+export * from "./push/schema";
+export * from "./updates/schema";
 export * from "./git/schema";
 export * from "./github/query";
 export * from "./github/schema";
-
 export * from "./icons";
 
 /** `?turns=N[&before=runId]`, or nothing — spelled once for every caller. */
@@ -365,9 +367,6 @@ function runCursor(input: RunTargetInput & { after?: number } & RunOutputFilter)
 
 export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery, type DiffBaseOption, type FilePatchOptions } from "./git/diff-query";
 export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
-export type { DirectoryEntry, DirectoryListing } from "./files/schema";
-export { LOCAL_HOST_ID, type PublicHost } from "./hosts/schema";
-export type { BuildChannel } from "./updates/schema";
 
 export interface EngineClient
   extends Methods<typeof agentToolsClient>,

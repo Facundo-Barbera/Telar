@@ -4,7 +4,7 @@ type RouteInput = { body: Record<string, unknown>; params: string[]; query: URLS
 
 /** One `/v2` endpoint. `path` is exact, or a RegExp whose groups become `params`. */
 export type Route = {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string | RegExp;
   auth: "engine";
   handle(input: RouteInput): RouteAnswer | Promise<RouteAnswer>;

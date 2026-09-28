@@ -1,35 +1,22 @@
-/**
- * THE MAC'S HALF OF RELAY v2.
- *
- * What must not drift:
- *
- *   - a phone's relay credential is kept when well formed and DROPPED, not
- *     refused, when not, so the rest of the registration is still kept;
- *   - a send is signed over exactly the bytes sent, goes to the compiled-in
- *     relay and names WHAT to send, never a device token or a topic;
- *   - a new key earns one test alert, and its outcome is what Settings shows;
- *   - the status route never carries the send key or the handle;
- *   - a Mac with nothing provisioned still starts pushing for a v2 phone.
- */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, describe, expect, test } from "bun:test";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addDevice, mintDeviceToken } from "@/lib/testing/remote";
-import { PUT as pushPUT } from "../../app/api/mobile/push/route";
-import { GET as relayGET } from "../../app/api/mobile/relay/route";
+import type { EngineClient } from "@telar/engine-client";
+import { matchRoute } from "../../platform/http/router";
+import type { Route } from "../../platform/http/route";
 import { activityDelivery, automaticActivityDelivery, notification, parseRegistration, pushAvailable, readPushRecords, saveRegistration, type Delivery, type MobileRegistration } from "./push";
 import { nextStamp, parseRelayCredential, RELAY_V2_URL, relayV2Delivery } from "./relay-v2";
+import { pushRoutes } from "./routes";
 import { sendRelayTest } from "./worker";
 
-const old = { home: process.env.TELAR_HOME, cockpit: process.env.TELAR_COCKPIT, key: process.env.TELAR_APNS_KEY_ID };
+const old = { home: process.env.TELAR_HOME, key: process.env.TELAR_APNS_KEY_ID };
 const originalFetch = globalThis.fetch;
 let folder: string | undefined;
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  for (const [name, value] of [["TELAR_HOME", old.home], ["TELAR_COCKPIT", old.cockpit], ["TELAR_APNS_KEY_ID", old.key]] as const) {
+  for (const [name, value] of [["TELAR_HOME", old.home], ["TELAR_APNS_KEY_ID", old.key]] as const) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
@@ -40,8 +27,12 @@ afterEach(() => {
 function setup() {
   folder = fs.mkdtempSync(path.join(os.tmpdir(), "telar-relay-v2-"));
   process.env.TELAR_HOME = folder;
-  process.env.TELAR_COCKPIT = "1";
   delete process.env.TELAR_APNS_KEY_ID;
+}
+const phone = { id: "phone", name: "Phone", role: "full" };
+async function call(method: Route["method"], pathname: string, body: unknown = {}, devices = [phone]) {
+  const { route, params } = matchRoute(pushRoutes({ client: () => ({}) as EngineClient, pairedDevices: () => devices }), method, pathname)!;
+  return route.handle({ body: body as Record<string, unknown>, params, query: new URLSearchParams() });
 }
 
 const credential = { handle: "h".repeat(43), keyId: "k".repeat(22), sendKey: crypto.randomBytes(32).toString("base64url") };
@@ -52,7 +43,6 @@ const registration: MobileRegistration = {
 };
 const wire = { ...registration, relay: { url: "https://elsewhere.example", ...credential } };
 
-/** Records what reached the relay and answers as it would. */
 function relay(answer: () => Response = () => Response.json({ status: 200 })) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetchImpl = (async (url: string, init: RequestInit) => { calls.push({ url, init }); return answer(); }) as unknown as typeof fetch;
@@ -87,7 +77,6 @@ describe("a send", () => {
     const expected = crypto.createHmac("sha256", Buffer.from(credential.sendKey, "base64url")).update(`${headers["x-telar-timestamp"]}\nPOST\n${pathname}\n${init.body}`).digest("hex");
     expect(headers["x-telar-signature"]).toBe(expected);
     expect(headers["x-telar-key"]).toBe(credential.keyId);
-    // WHAT, never WHERE: no device token and no topic leave this Mac.
     const body = JSON.parse(String(init.body));
     expect(Object.keys(body).sort()).toEqual(["collapseId", "kind", "payload"]);
     expect(String(init.body)).not.toContain(registration.token);
@@ -137,7 +126,7 @@ describe("a send", () => {
 describe("the test alert after pairing", () => {
   test("is sent once per key, and its answer is what Settings shows", async () => {
     setup();
-    const device = addDevice("Phone", mintDeviceToken());
+    const device = phone;
     saveRegistration(device.id, registration);
     const sent: Delivery[] = [];
     const send = async (_: unknown, delivery: Delivery) => { sent.push(delivery); return { status: 200 }; };
@@ -146,7 +135,6 @@ describe("the test alert after pairing", () => {
     expect(sent.length).toBe(1);
     expect(readPushRecords()[0].relayTest).toMatchObject({ keyId: credential.keyId, status: 200 });
 
-    // A preference change keeps the key: no new test. A new key earns one.
     saveRegistration(device.id, { ...registration, previews: true });
     await sendRelayTest(device.id, registration.topic, send);
     expect(sent.length).toBe(1);
@@ -158,7 +146,7 @@ describe("the test alert after pairing", () => {
 
   test("waits until alerts are allowed", async () => {
     setup();
-    const device = addDevice("Phone", mintDeviceToken());
+    const device = phone;
     saveRegistration(device.id, { ...registration, enabled: false });
     let sends = 0;
     await sendRelayTest(device.id, registration.topic, async () => { sends++; return { status: 200 }; });
@@ -167,11 +155,11 @@ describe("the test alert after pairing", () => {
 
   test("Settings shows the outcome and the transport, and never the key or the handle", async () => {
     setup();
-    const device = addDevice("Phone", mintDeviceToken());
+    const device = phone;
     saveRegistration(device.id, registration);
     await sendRelayTest(device.id, registration.topic, async () => ({ status: 400, reason: "BadDeviceToken" }));
-    const text = await (await relayGET()).text();
-    const body = JSON.parse(text);
+    const { body } = await call("GET", "/v2/push/relay") as { body: { configured: boolean; devices: unknown[] } };
+    const text = JSON.stringify(body);
     expect(body.configured).toBe(true);
     expect(body.devices[0]).toMatchObject({ transport: "v2", test: { status: 400, reason: "BadDeviceToken", relay: false } });
     for (const secret of [credential.sendKey, credential.handle, credential.keyId, registration.token]) expect(text).not.toContain(secret);
@@ -181,17 +169,12 @@ describe("the test alert after pairing", () => {
 describe("a Mac with nothing provisioned", () => {
   test("is told a v2 phone can be reached, and starts pushing for it", async () => {
     setup();
-    const token = mintDeviceToken();
-    addDevice("Phone", token);
     expect(pushAvailable()).toBe(false);
-    // The registration's test alert must not reach the real relay from a test,
-    // and the worker it would start must not open a feed to a real engine: a
-    // timer already set is how `startMobilePushWorker` knows one is running.
     const { calls, fetchImpl } = relay();
     globalThis.fetch = fetchImpl;
     (globalThis as { telarMobilePushTimer?: unknown }).telarMobilePushTimer = setTimeout(() => {}, 0);
-    const answer = await pushPUT(new Request("http://localhost/api/mobile/push", { method: "PUT", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(wire) }));
-    expect(await answer.json()).toMatchObject({ configured: true });
+    const answer = await call("PUT", "/v2/push/devices/phone", wire);
+    expect(answer.body).toMatchObject({ configured: true });
     expect(pushAvailable()).toBe(true);
     await new Promise(resolve => setImmediate(resolve));
     expect(calls.every(call => call.url.startsWith(RELAY_V2_URL))).toBe(true);
