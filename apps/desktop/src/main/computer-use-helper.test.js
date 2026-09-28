@@ -34,7 +34,7 @@ describe("the pin", () => {
     expect(pin.bundleId).toBe("com.telar.desktop.computer-use");
     expect(pin.bundleId.startsWith(`${manifest.build.appId}.`)).toBe(false);
     expect(pin.displayName).toContain("cua");
-    const engine = fs.readFileSync(path.join(__dirname, "..", "..", "..", "engine", "src", "computer-use.ts"), "utf8");
+    const engine = fs.readFileSync(path.join(__dirname, "..", "..", "..", "engine", "src", "domains", "computer-use", "gate.ts"), "utf8");
     expect(engine).toContain(`"${pin.bundleId}"`);
   });
 });
