@@ -1,6 +1,8 @@
 import { agentToolsClient } from "./agent-tools/client";
 import { appearanceClient } from "./appearance/client";
 import { dictationClient } from "./dictation/client";
+import { gitClient } from "./git/client";
+import { githubClient } from "./github/client";
 import { notesClient } from "./notes/client";
 import type { EngineTransport } from "./platform/transport";
 import type { InboxPolicy, SidebarLayout } from "./settings/schema";
@@ -11,42 +13,17 @@ import { settingsClient } from "./settings/client";
 import { storageClient } from "./storage/client";
 import { usageClient } from "./usage/client";
 import { worktreesClient } from "./worktrees/client";
-import { diffBaseQuery, filePatchQuery } from "./protocol/diff-query";
-import type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
   type BrowserSnapshot,
   type EnvMode,
-  type GitCommitEntry,
-  forgeQuery,
-  type GitHubCheckLog,
-  type GitHubFacets,
-  type GitHubIssueFilter,
-  type GitHubIssueRead,
-  type GitHubMergeMethod,
-  type GitHubMergeResult,
-  type GitHubReactionContent,
-  type GitHubReactionResult,
-  type GitHubThreadReplyResult,
-  type GitHubThreadResolveResult,
-  type GitHubLineCommentInput,
-  type GitHubLineCommentResult,
-  type GitHubPullAnchor,
-  type GitHubPullCreateResult,
-  type GitHubPullFilter,
-  type GitHubPullRead,
-  type GitPushResult,
-  type GitHubSnapshot,
-  type GitignoreRemoval,
-  type GitignoreResult,
   type ComputerUseGrant,
   type ComputerUseStatus,
   type RememberedLogin,
   type WorkspaceConfig,
   type ProjectWorkspaceOverrides,
   type ProjectWorkspaceView,
-  type SessionDiff,
   type TurnAttachment,
   type TaskOutputPage,
   type TurnModelSelection,
@@ -74,8 +51,6 @@ import {
   type EngineHealth,
   type EventPage,
   type Item,
-  type GitFilePatch,
-  type GitOverview,
   type ModelSelection,
   type Project,
   type ProviderDriverKind,
@@ -144,6 +119,9 @@ export * from "./worktrees/schema";
 export * from "./agent-tools/schema";
 export * from "./appearance/schema";
 export * from "./dictation/schema";
+export * from "./git/schema";
+export * from "./github/query";
+export * from "./github/schema";
 
 export * from "./icons";
 
@@ -385,17 +363,18 @@ function runCursor(input: RunTargetInput & { after?: number } & RunOutputFilter)
   return query.size === 0 ? "" : `?${query.toString()}`;
 }
 
-export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery } from "./protocol/diff-query";
+export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery, type DiffBaseOption, type FilePatchOptions } from "./git/diff-query";
 export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
 export type { DirectoryEntry, DirectoryListing } from "./files/schema";
 export { LOCAL_HOST_ID, type PublicHost } from "./hosts/schema";
 export type { BuildChannel } from "./updates/schema";
-export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
 export interface EngineClient
   extends Methods<typeof agentToolsClient>,
     Methods<typeof appearanceClient>,
     Methods<typeof dictationClient>,
+    Methods<typeof gitClient>,
+    Methods<typeof githubClient>,
     Methods<typeof notesClient>,
     Methods<typeof promptsClient>,
     Methods<typeof providersClient>,
@@ -720,85 +699,6 @@ export class EngineClient implements EngineTransport {
     options: { signal?: AbortSignal } = {},
   ): Promise<{ result: Record<string, unknown> }> {
     return this.request("POST", "/v2/textgen/complete", input, options.signal);
-  }
-
-  /** A project's git state — branch, dirty count, divergence, worktrees.
-   *  Read fresh on every call: it describes a working tree that changes
-   *  underneath the engine, and a stale branch name is worse than a slow one. */
-  projectGit(projectId: string): Promise<{ git: GitOverview }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/git`);
-  }
-
-  /**
-   * A project's issues and pull requests, through the `gh` CLI the user
-   * authenticated on this machine. Cached for thirty seconds in the engine;
-   * `refresh` is what a human pressing the button sends.
-   */
-  projectGitHub(
-    projectId: string,
-    options: { refresh?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {},
-  ): Promise<{ github: GitHubSnapshot }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${forgeQuery(options)}`);
-  }
-
-  projectForgeFacets(projectId: string, options: { refresh?: boolean } = {}): Promise<{ facets: GitHubFacets }> {
-    const suffix = options.refresh ? "?refresh=1" : "";
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/facets${suffix}`);
-  }
-
-  projectCheckLog(projectId: string, jobId: string): Promise<{ log: GitHubCheckLog }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/checks/${encodeURIComponent(jobId)}/log`);
-  }
-
-  projectGitignore(projectId: string): Promise<{ gitignore: GitignoreResult }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/gitignore`, {});
-  }
-
-  undoProjectGitignore(projectId: string): Promise<{ gitignore: GitignoreRemoval }> {
-    return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/gitignore`);
-  }
-
-  projectIssue(projectId: string, number: number, options: { refresh?: boolean } = {}): Promise<GitHubIssueRead> {
-    const suffix = options.refresh ? "?refresh=1" : "";
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/issues/${number}${suffix}`);
-  }
-
-  projectPull(projectId: string, number: number, options: { refresh?: boolean } = {}): Promise<GitHubPullRead> {
-    const suffix = options.refresh ? "?refresh=1" : "";
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}${suffix}`);
-  }
-
-  mergeProjectPull(
-    projectId: string,
-    number: number,
-    input: { method: GitHubMergeMethod; expectedHeadOid: string },
-  ): Promise<GitHubMergeResult> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input);
-  }
-
-  reactOnProjectForge(
-    projectId: string,
-    kind: "issue" | "pull",
-    number: number,
-    input: { subjectId: string; content: GitHubReactionContent; react: boolean },
-  ): Promise<GitHubReactionResult> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/${kind === "issue" ? "issues" : "pulls"}/${number}/reactions`, input);
-  }
-
-  replyToProjectThread(projectId: string, number: number, threadId: string, body: string): Promise<GitHubThreadReplyResult> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/replies`, { body });
-  }
-
-  resolveProjectThread(projectId: string, number: number, threadId: string, resolved: boolean): Promise<GitHubThreadResolveResult> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/resolve`, { resolved });
-  }
-
-  projectDiff(projectId: string): Promise<{ diff: SessionDiff }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff`);
-  }
-
-  projectFilePatch(projectId: string, path: string, options: FilePatchOptions = {}): Promise<{ file: GitFilePatch }> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff?${filePatchQuery(path, options)}`);
   }
 
   projectFiles(projectId: string): Promise<{ listing: WorkspaceListing }> {
@@ -1238,39 +1138,6 @@ export class EngineClient implements EngineTransport {
     });
   }
 
-  sessionDiff(sessionId: string, options: DiffBaseOption = {}): Promise<{ diff: SessionDiff }> {
-    const query = diffBaseQuery(options);
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff${query ? `?${query}` : ""}`);
-  }
-
-  /** One file's patch. Separate from the review for the same reason a screenshot
-   *  is separate from the browser's tab list: size, and nobody reads all of it. */
-  sessionFilePatch(sessionId: string, path: string, options: FilePatchOptions = {}): Promise<{ file: GitFilePatch }> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff?${filePatchQuery(path, options)}`);
-  }
-
-  /** Snapshot the session's work as one commit. The engine's only git mutation —
-   *  additive, reversible, and never automatic. */
-  commitSessionWork(sessionId: string, message: string): Promise<{ committed: boolean; commit?: GitCommitEntry; reason?: string }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/git/commit`, { message });
-  }
-
-  pushSessionBranch(sessionId: string): Promise<GitPushResult> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/git/push`, {});
-  }
-
-  openSessionPullRequest(sessionId: string, input: { title: string; body?: string; base?: string }): Promise<GitHubPullCreateResult> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull`, input);
-  }
-
-  sessionPullAnchor(sessionId: string): Promise<GitHubPullAnchor> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull/anchor`);
-  }
-
-  commentOnSessionPullLine(sessionId: string, input: GitHubLineCommentInput): Promise<GitHubLineCommentResult> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull/comments`, input);
-  }
-
   browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<{ browser: BrowserSnapshot }> {
     const query = new URLSearchParams();
     if (options.screenshot) query.set("screenshot", "1");
@@ -1507,6 +1374,8 @@ Object.assign(
   agentToolsClient,
   appearanceClient,
   dictationClient,
+  gitClient,
+  githubClient,
   notesClient,
   promptsClient,
   providersClient,
