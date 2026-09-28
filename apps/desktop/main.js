@@ -234,37 +234,51 @@ function isPortFree(port) {
 // still free; only fall back to a new one (and persist that) on first run, a
 // busy port, or a corrupt/unreadable file. Smoke mode never reads or writes
 // this — it's isolated by design.
-function portFilePath() {
-  return path.join(app.getPath("userData"), "server-port.json");
+
+/**
+ * A small JSON file in userData, read through `validate` and written whole.
+ * Missing / corrupt / unreadable (or a `validate` that throws) reads as a copy
+ * of `defaults` — first run, never a crash. A failed write is logged, never
+ * thrown.
+ */
+function jsonPrefs(file, defaults, validate, label) {
+  const fs = require("node:fs");
+  const filePath = () => path.join(app.getPath("userData"), file);
+  return {
+    path: filePath,
+    read() {
+      try {
+        return validate(JSON.parse(fs.readFileSync(filePath(), "utf8")));
+      } catch {
+        return defaults && { ...defaults };
+      }
+    },
+    write(value) {
+      try {
+        fs.mkdirSync(app.getPath("userData"), { recursive: true });
+        fs.writeFileSync(filePath(), JSON.stringify(value), "utf8");
+      } catch (err) {
+        console.error(`[telar-desktop] failed to persist ${label}:`, err.message);
+      }
+    },
+  };
 }
 
-function readPersistedPort() {
-  const fs = require("node:fs");
-  try {
-    const data = JSON.parse(fs.readFileSync(portFilePath(), "utf8"));
+const portPrefs = jsonPrefs(
+  "server-port.json",
+  null,
+  (data) => {
     const port = Number(data.port);
     return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
-  } catch {
-    // Missing / corrupt / unreadable — treat as first run, never a crash.
-    return null;
-  }
-}
-
-function persistPort(port) {
-  const fs = require("node:fs");
-  try {
-    fs.mkdirSync(app.getPath("userData"), { recursive: true });
-    fs.writeFileSync(portFilePath(), JSON.stringify({ port }), "utf8");
-  } catch (err) {
-    console.error("[telar-desktop] failed to persist port:", err.message);
-  }
-}
+  },
+  "port",
+);
 
 async function getStablePort() {
-  const stored = readPersistedPort();
+  const stored = portPrefs.read();
   if (stored !== null && (await isPortFree(stored))) return stored;
   const fresh = await findFreePort();
-  persistPort(fresh);
+  portPrefs.write({ port: fresh });
   return fresh;
 }
 
@@ -2475,9 +2489,17 @@ function updateProxyKey() {
 const UPDATE_CHANNELS = ["beta", "nightly"];
 const DEFAULT_UPDATE_PREFS = { channel: "beta", installOnQuit: false };
 
-function updatePrefsPath() {
-  return path.join(app.getPath("userData"), "update-prefs.json");
-}
+// Validated, not trusted: this file is user-editable and a bad channel name
+// would point electron-updater at a feed that does not exist, which surfaces as
+// a permanent, mystifying update error rather than a default.
+const validUpdatePrefs = (raw) => ({
+  channel: UPDATE_CHANNELS.includes(raw.channel) ? raw.channel : DEFAULT_UPDATE_PREFS.channel,
+  installOnQuit: raw.installOnQuit === true,
+});
+
+const updatePrefs = jsonPrefs("update-prefs.json", DEFAULT_UPDATE_PREFS, validUpdatePrefs, "update prefs");
+const readUpdatePrefs = updatePrefs.read;
+const writeUpdatePrefs = updatePrefs.write;
 
 // The userData directory this app used before `productName` was set in
 // package.json. `build.productName` already named the BUNDLE "Telar", but
@@ -2509,17 +2531,13 @@ function adoptLegacyUpdatePrefs() {
   // is the INSTALLED app's — nothing of it belongs in the dev build's home.
   if (DEV_BUILD) return;
   try {
-    if (fs.existsSync(updatePrefsPath())) return;
+    if (fs.existsSync(updatePrefs.path())) return;
     const legacy = path.join(app.getPath("appData"), LEGACY_USER_DATA_NAME, "update-prefs.json");
     if (!fs.existsSync(legacy)) return;
     // Read through the validating reader rather than copying bytes: the old
     // file is as user-editable as the new one, and a bad channel name adopted
     // verbatim would point electron-updater at a feed that does not exist.
-    const raw = JSON.parse(fs.readFileSync(legacy, "utf8"));
-    const prefs = {
-      channel: UPDATE_CHANNELS.includes(raw.channel) ? raw.channel : DEFAULT_UPDATE_PREFS.channel,
-      installOnQuit: raw.installOnQuit === true,
-    };
+    const prefs = validUpdatePrefs(JSON.parse(fs.readFileSync(legacy, "utf8")));
     writeUpdatePrefs(prefs);
     console.log(`[telar-desktop] adopted update preferences from the previous install (channel ${prefs.channel})`);
   } catch (err) {
@@ -2527,33 +2545,6 @@ function adoptLegacyUpdatePrefs() {
     // crash. The default channel is a survivable wrong answer; failing to start
     // is not.
     console.error("[telar-desktop] could not adopt previous update preferences:", err.message);
-  }
-}
-
-function readUpdatePrefs() {
-  const fs = require("node:fs");
-  try {
-    const raw = JSON.parse(fs.readFileSync(updatePrefsPath(), "utf8"));
-    return {
-      // Validated, not trusted: this file is user-editable and a bad channel
-      // name would point electron-updater at a feed that does not exist, which
-      // surfaces as a permanent, mystifying update error rather than a default.
-      channel: UPDATE_CHANNELS.includes(raw.channel) ? raw.channel : DEFAULT_UPDATE_PREFS.channel,
-      installOnQuit: raw.installOnQuit === true,
-    };
-  } catch {
-    // Missing / corrupt / unreadable — first run, never a crash.
-    return { ...DEFAULT_UPDATE_PREFS };
-  }
-}
-
-function writeUpdatePrefs(prefs) {
-  const fs = require("node:fs");
-  try {
-    fs.mkdirSync(app.getPath("userData"), { recursive: true });
-    fs.writeFileSync(updatePrefsPath(), JSON.stringify(prefs), "utf8");
-  } catch (err) {
-    console.error("[telar-desktop] failed to persist update prefs:", err.message);
   }
 }
 
@@ -2571,32 +2562,14 @@ function writeUpdatePrefs(prefs) {
 // false and the cockpit hides the control.
 const DEFAULT_UI_PREFS = { translucent: false, frost: "blur" };
 
-function uiPrefsPath() {
-  return path.join(app.getPath("userData"), "ui-prefs.json");
-}
-
-function readUiPrefs() {
-  const fs = require("node:fs");
-  try {
-    const raw = JSON.parse(fs.readFileSync(uiPrefsPath(), "utf8"));
-    // "clear" drops the vibrancy layer: crisp desktop, tinted only by the
-    // page's own wash. "blur" is the frosted NSVisualEffectView.
-    return { translucent: raw.translucent === true, frost: raw.frost === "clear" ? "clear" : "blur" };
-  } catch {
-    // Missing / corrupt / unreadable — first run, never a crash.
-    return { ...DEFAULT_UI_PREFS };
-  }
-}
-
-function writeUiPrefs(prefs) {
-  const fs = require("node:fs");
-  try {
-    fs.mkdirSync(app.getPath("userData"), { recursive: true });
-    fs.writeFileSync(uiPrefsPath(), JSON.stringify(prefs), "utf8");
-  } catch (err) {
-    console.error("[telar-desktop] failed to persist ui prefs:", err.message);
-  }
-}
+const { read: readUiPrefs, write: writeUiPrefs } = jsonPrefs(
+  "ui-prefs.json",
+  DEFAULT_UI_PREFS,
+  // "clear" drops the vibrancy layer: crisp desktop, tinted only by the page's
+  // own wash. "blur" is the frosted NSVisualEffectView.
+  (raw) => ({ translucent: raw.translucent === true, frost: raw.frost === "clear" ? "clear" : "blur" }),
+  "ui prefs",
+);
 
 function supportsTranslucency() {
   return process.platform === "darwin";
@@ -2615,30 +2588,12 @@ function supportsTranslucency() {
 // default this app later improves still reaches somebody who opened the pane
 // once. `keymapOverrides(mergeKeymap(...))` is how a hand-edited or stale record
 // is normalised on the way in.
-function keybindingsPath() {
-  return path.join(app.getPath("userData"), "keybindings.json");
-}
-
-function readKeybindingOverrides() {
-  const fs = require("node:fs");
-  try {
-    const raw = JSON.parse(fs.readFileSync(keybindingsPath(), "utf8"));
-    return keymapOverrides(mergeKeymap(raw));
-  } catch {
-    // Missing / corrupt / unreadable — the defaults, never a crash.
-    return {};
-  }
-}
-
-function writeKeybindingOverrides(overrides) {
-  const fs = require("node:fs");
-  try {
-    fs.mkdirSync(app.getPath("userData"), { recursive: true });
-    fs.writeFileSync(keybindingsPath(), JSON.stringify(overrides), "utf8");
-  } catch (err) {
-    console.error("[telar-desktop] failed to persist keybindings:", err.message);
-  }
-}
+const { read: readKeybindingOverrides, write: writeKeybindingOverrides } = jsonPrefs(
+  "keybindings.json",
+  {},
+  (raw) => keymapOverrides(mergeKeymap(raw)),
+  "keybindings",
+);
 
 /** The live map every accelerator is read out of. */
 function readKeymap() {
