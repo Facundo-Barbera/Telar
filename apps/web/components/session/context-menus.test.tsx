@@ -1,209 +1,134 @@
-/**
- * THE RAIL'S RIGHT-CLICK MENUS — issue #273, the app's menu idiom applied to
- * the sessions list.
- *
- * THREE SURFACES, ONE PRIMITIVE, AND EXACTLY ONE OF THEM SHARES ITS LIST. The
- * session row's menu and the row's `⋯` render `lib/session-action-menu.ts` —
- * that file's own test pins what the list SAYS, and the scan below pins that
- * both surfaces read it rather than spelling items of their own. The project
- * header and the rail's empty space compose their own items, because they act
- * on a project and on the list rather than on a session, and a menu that
- * offered "Delete session" over a project header would be one list stretched
- * across two nouns.
- *
- * WHY SOURCE TEXT FOR THE ITEMS. Both menus are base-ui popups: their content
- * is portaled and mounts only once opened, so a server render carries the
- * TRIGGER and none of the rows. What a render can still prove is the one
- * structural rule this issue turns on — the project header's trigger wraps the
- * label and not the drag handle — so that is what the render test at the bottom
- * asserts, and the item lists are pinned as text above it.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { renderToStaticMarkup } from "react-dom/server";
-import { ProjectGroupSection } from "./project-group";
+import { afterEach, describe, expect, test } from "bun:test";
+import { act } from "react";
+import { click, flush, installTestDom, mount, press } from "@/lib/testing/dom";
+import { liveRow, mountRail, project, pushes, stubRail } from "@/lib/testing/rail";
+import { projectSettingsHref } from "@/lib/project-settings-link";
+import { canvasHref } from "@/lib/session-list";
 import type { ProjectGroup } from "@/lib/session-groups";
+import { readPreferredOpener } from "@/lib/workspace-opener-preference";
+import { ProjectGroupSection } from "./project-group";
 
-const dir = fileURLToPath(new URL(".", import.meta.url));
-const read = (name: string) => fs.readFileSync(path.join(dir, name), "utf8");
-const sidebar = () => fs.readFileSync(path.join(dir, "..", "app-sidebar.tsx"), "utf8");
-/** Comments stripped, for the reason `idiom.test.ts` gives: every absence here
- *  is documented where it happened, and a scan that read prose would fire on
- *  the explanation and teach the next person to delete it. */
-const code = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+installTestDom();
 
-describe("one primitive, imported and never re-declared", () => {
-  test("every new surface reaches for components/ui/context-menu.tsx", () => {
-    const files = [read("session-action-menu.tsx"), read("project-group.tsx"), sidebar()];
-    for (const source of files) {
-      expect(source).toContain('from "@/components/ui/context-menu"');
-      expect(code(source)).not.toMatch(/function ContextMenu\b/);
-    }
+async function rightClick(element: Element) {
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 5, clientY: 5, button: 2 }));
   });
+  await flush();
+}
 
-  test("the primitive is base-ui's dedicated ContextMenu module, not Menu wearing a name", () => {
-    const primitive = fs.readFileSync(path.join(dir, "..", "ui", "context-menu.tsx"), "utf8");
-    expect(primitive).toContain('import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu"');
-  });
+async function escape() {
+  await act(async () => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  await flush();
+}
+
+const menuItems = () => [...document.querySelectorAll<HTMLElement>('[role^="menuitem"]')];
+const labels = () => menuItems().map((node) => node.textContent);
+const item = (label: string) => menuItems().find((node) => node.textContent === label);
+const disabled = (label: string) => item(label)?.hasAttribute("data-disabled");
+
+const shell = window as unknown as { telarDesktop?: unknown };
+
+function installShell() {
+  const asked: string[] = [];
+  shell.telarDesktop = {
+    workspace: {
+      openers: async () => ({ openers: [{ id: "zed", label: "Zed", path: "/Applications/Zed.app" }] }),
+      open: async (path: string, opener?: string) => (asked.push(`open ${path} ${opener}`), { ok: true }),
+      reveal: async (path: string) => (asked.push(`reveal ${path}`), { ok: true }),
+    },
+  };
+  return asked;
+}
+
+afterEach(() => {
+  delete shell.telarDesktop;
+  window.localStorage.clear();
 });
+
+const HEADER_VERBS = ["Collapse others", "Move up", "Move down", "Reveal in Finder"];
+
+async function railWith(projects: ReturnType<typeof project>[], sessions: ReturnType<typeof liveRow>[]) {
+  stubRail(() => ({ body: { projects, sessions } }));
+  const host = await mountRail();
+  const header = (name: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>('button[id^="project-group-"]')].find((node) => node.textContent?.includes(name))!;
+  const trigger = (name: string) => header(name).querySelector('[data-slot="context-menu-trigger"]')!;
+  const expanded = () => [...host.querySelectorAll('button[id^="project-group-"]')].map((node) => node.getAttribute("aria-expanded"));
+  const order = () => [...host.querySelectorAll('button[id^="project-group-"]')].map((node) => (node.textContent?.includes("One") ? "One" : "Two"));
+  return { host, header, trigger, expanded, order };
+}
+
+function recordLayoutWrites() {
+  const writes: unknown[] = [];
+  const rail = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(String(input), "http://localhost").pathname === "/api/sidebar-layout" && init?.method && init.method !== "GET") {
+      writes.push({ method: init.method, body: JSON.parse(String(init.body)) });
+    }
+    return rail(input, init);
+  }) as typeof fetch;
+  return writes;
+}
+
+const TWO = [project("p1", "One"), project("p2", "Two")];
+const TWO_ROWS = [liveRow("a"), liveRow("b", { projectId: "p2" })];
 
 describe("the session row: the ⋯ and the right-click are one list", () => {
-  const source = code(read("session-inbox-menu.tsx"));
-
-  test("both surfaces call the SAME hook, and that hook is the file's only caller of the definition", () => {
-    // This is the invariant `lib/session-action-menu.ts` exists for, asserted
-    // where it could actually be broken: a second `buildSessionActionMenuItems`
-    // call in this file would be a second list, and it would drift.
-    expect(source.match(/buildSessionActionMenuItems\(/g)).toHaveLength(1);
-    expect(source).toContain("function useSessionRowMenu(");
-    const kebab = source.slice(source.indexOf("export function SessionInboxMenu"));
-    const contextMenu = source.slice(source.indexOf("export function SessionRowContextMenu"), source.indexOf("export function SessionInboxMenu"));
-    expect(kebab).toContain("useSessionRowMenu(props)");
-    expect(contextMenu).toContain("useSessionRowMenu(props)");
-  });
-
-  test("neither spells an item of its own — both hand `items` to the shared renderer", () => {
-    expect(source).toContain("<SessionActionMenuItems items={items} parts={dropdownSessionMenuParts} />");
-    expect(source).toContain("<SessionActionContextMenu items={items}>{children}</SessionActionContextMenu>");
-    // No literal menu row anywhere in this file: the labels live in the
-    // definition, which is what makes them checkable in one place.
-    expect(source).not.toContain("<DropdownMenuItem");
-    expect(source).not.toContain("<ContextMenuItem");
-  });
-
-  test("the row wires both from ONE props object, so the two cannot disagree about the row's state", () => {
-    const row = code(read("session-row.tsx"));
-    expect(row).toContain("const menuProps: SessionRowMenuProps = {");
-    expect(row).toContain("<SessionInboxMenu {...menuProps} />");
-    expect(row).toContain("<SessionRowContextMenu {...menuProps}>{row}</SessionRowContextMenu>");
+  test("both show the same items, and none of the project header's verbs", async () => {
+    const { host } = await railWith(TWO, TWO_ROWS);
+    const row = [...host.querySelectorAll("a")].find((node) => node.textContent?.includes("Title a"))!;
+    await rightClick(row);
+    const fromRow = labels();
+    expect(fromRow).toContain("Delete session");
+    await escape();
+    await press(row.closest("li")?.querySelector('[aria-label="Session actions"]') ?? host.querySelector('[aria-label="Session actions"]')!);
+    expect(labels()).toEqual(fromRow);
+    for (const verb of HEADER_VERBS) expect(fromRow).not.toContain(verb);
   });
 });
 
-describe("the project header composes its own list", () => {
-  const source = code(read("project-group.tsx"));
-
-  test("the seven verbs, in the order the issue names them", () => {
-    expect(source).toContain("New conversation here");
-    expect(source).toContain("Project settings");
-    expect(source).toContain("Reveal in Finder");
-    expect(source).toContain('{open ? "Collapse" : "Expand"}');
-    expect(source).toContain("Collapse others");
-    expect(source).toContain("Move up");
-    expect(source).toContain("Move down");
-    // The order on screen is the order in the file — `ContextMenuItem` is a
-    // flat list, so the source position IS the row position.
-    const at = (needle: string) => source.indexOf(needle);
-    expect(at("New conversation here")).toBeLessThan(at("Project settings"));
-    expect(at("Project settings")).toBeLessThan(at("Reveal in Finder"));
-    expect(at("Reveal in Finder")).toBeLessThan(at('{open ? "Collapse" : "Expand"}'));
-    expect(at('{open ? "Collapse" : "Expand"}')).toBeLessThan(at("Collapse others"));
-    expect(at("Collapse others")).toBeLessThan(at("Move up"));
-    expect(at("Move up")).toBeLessThan(at("Move down"));
+describe("the project header's menu", () => {
+  test("seven verbs in order, Move up disabled on the first group, and no session verbs", async () => {
+    const { trigger } = await railWith(TWO, TWO_ROWS);
+    await rightClick(trigger("One"));
+    expect(labels()).toEqual(["New conversation here", "Project settings", "Collapse", "Collapse others", "Move up", "Move down"]);
+    expect(disabled("Move up")).toBe(true);
+    expect(disabled("Move down")).toBe(false);
+    expect(labels()).not.toContain("Delete session");
   });
 
-  test("every row fires a callback the header was already given — no fetch, no router, no second write path", () => {
-    const menu = source.slice(source.indexOf("<ContextMenuContent"), source.indexOf("</ContextMenuContent>"));
-    expect(menu).not.toMatch(/fetch\(|router\.|api\./);
-    for (const handler of ["onNewConversation", "onProjectSettings", "onToggle", "onCollapseOthers", "onMoveUp", "onMoveDown"]) {
-      expect(menu, `${handler} is called by the menu`).toContain(handler);
-    }
-    // The fold row is literally the chevron's own `onToggle`, and the reorder
-    // rows are the drag's own write — see `moveProjectGroupStep`.
-    expect(menu).toContain("<ContextMenuItem onClick={onToggle}>");
+  test("New conversation here and Project settings go where the header's own controls go", async () => {
+    const { trigger } = await railWith(TWO, TWO_ROWS);
+    await rightClick(trigger("One"));
+    await click(item("New conversation here"));
+    await rightClick(trigger("Two"));
+    await click(item("Project settings"));
+    expect(pushes).toEqual([canvasHref("p1"), projectSettingsHref("p2")]);
   });
 
-  test("Reveal and Open reuse the existing directory bridge, and are ABSENT without it", () => {
-    // No new capability: the same `workspace.reveal`/`workspace.open` the
-    // cockpit's Open button calls, gated by the same blocker.
-    expect(source).toContain('from "@/lib/workspace-open"');
-    expect(source).toContain("workspaceOpenBlocker({");
-    expect(source).toContain("bridge.reveal(root)");
-    expect(source).toContain("bridge.open(root, entry.openerId)");
-    // Hidden rather than disabled, together.
-    expect(source).toContain("{folder.available && (");
-    // The remembered opener, not a second preference store.
-    expect(source).toContain('from "@/lib/workspace-opener-preference"');
-    // Keyed by the MAC whose folder is being opened — `place`, not the group,
-    // since a group can now span two of them (#283).
-    expect(source).toContain("writePreferredOpener(place.hostId, entry.id)");
+  test("Collapse others folds every other group and keeps this one open", async () => {
+    const { trigger, expanded } = await railWith(TWO, TWO_ROWS);
+    expect(expanded()).toEqual(["true", "true"]);
+    await rightClick(trigger("One"));
+    await click(item("Collapse others"));
+    expect(expanded()).toEqual(["true", "false"]);
   });
 
-  test("only this surface carries the header's own verbs — the session menu never grows them", () => {
-    // The distinguishing-item rule: a verb that identifies a surface must not
-    // appear in another's list.
-    const definition = fs.readFileSync(path.join(dir, "..", "..", "lib", "session-action-menu.ts"), "utf8");
-    for (const verb of ["Collapse others", "Move up", "Move down", "Reveal in Finder"]) {
-      expect(code(definition), `the session definition does not carry "${verb}"`).not.toContain(verb);
-    }
-    // And the header never grows the session's destructive one.
-    expect(source).not.toContain("Delete session");
+  test("Move down writes the order the drag would", async () => {
+    const { trigger } = await railWith(TWO, TWO_ROWS);
+    const writes = recordLayoutWrites();
+    await rightClick(trigger("One"));
+    await click(item("Move down"));
+    expect(writes).toEqual([{ method: "PATCH", body: { projectOrder: ["p2", "p1"] } }]);
   });
 });
 
-describe("the rail's empty space composes a third list", () => {
-  const source = code(sidebar());
-  const menu = source.slice(source.lastIndexOf("<ContextMenuTrigger"), source.lastIndexOf("</ContextMenu>"));
-
-  test("four rows: start something, add something, and the fold-all pair", () => {
-    expect(menu).toContain("New conversation");
-    expect(menu).toContain("Add project");
-    expect(menu).toContain("Collapse all projects");
-    expect(menu).toContain("Expand all");
-  });
-
-  test("each one is the control it duplicates, not a second implementation of it", () => {
-    // The New button's own `startSession` and its own project guess.
-    expect(menu).toContain("onClick={() => startSession()}");
-    expect(menu).toContain("disabled={!composerTarget}");
-    // The `+`'s own palette page — so `chooseDirectory` is still called from
-    // exactly one place in the app, and it is not this file.
-    expect(menu).toContain('onClick={() => openPalette("sources")}');
-    expect(source).toContain("const openPalette = (page: CommandPalettePage, seed = \"\")");
-    expect(source).not.toContain("chooseDirectory");
-    // The fold verbs act on the groups AS DRAWN, which is the rule
-    // `foldedAfter` states and `session-groups.test.ts` pins.
-    expect(menu).toContain("onClick={() => collapseAll(drawnGroupKeys)}");
-    expect(menu).toContain("onClick={() => expandAll(drawnGroupKeys)}");
-    expect(menu).toContain("disabled={drawnGroupKeys.length === 0}");
-  });
-
-  test("it wraps the scroll area and relies on the inner triggers to claim their own rows", () => {
-    // Base UI's trigger stops the `contextmenu` it handles, so a row's menu
-    // wins over this one.
-    expect(menu).toContain('<SidebarGroupContent id="sidebar-session-results"');
-  });
-
-  test("the trigger FILLS the group — a `contents` box would miss the empty space entirely", () => {
-    // The rows reach only as far as the last group; the space below them is
-    // this group's own box. A `display: contents` trigger paints nothing, is
-    // never an event target, and so covered exactly the strip that already had
-    // menus of its own and none of the strip that had none.
-    expect(source).toContain('<ContextMenuTrigger render={<div className="flex min-h-0 flex-1 flex-col" />}>');
-    expect(source).not.toContain('<ContextMenuTrigger render={<div className="contents" />}>');
-  });
-});
-
-/**
- * The one structural claim a server render CAN make, and the one this issue
- * turns on. The header button is `draggable` — it is the drag handle — so the
- * trigger has to live INSIDE it, around the label, rather than being the button
- * or wrapping it. Base UI's trigger renders an element of its own; one carrying
- * `draggable` would put a right-press and a grab on the same node.
- */
-describe("the project header menu, rendered", () => {
-  const group = (over: Partial<ProjectGroup> = {}): ProjectGroup => ({
-    key: "p1",
-    projectId: "p1",
-    name: "Telar",
-    sessions: [],
-    ...over,
-  });
-
-  const render = (over: Partial<ProjectGroup> = {}) =>
-    renderToStaticMarkup(
+describe("the project header, mounted alone", () => {
+  const group = (over: Partial<ProjectGroup> = {}): ProjectGroup => ({ key: "p1", projectId: "p1", name: "Telar", sessions: [], ...over });
+  const mountHeader = (over: Partial<ProjectGroup> = {}) =>
+    mount(
       <ProjectGroupSection
         group={group(over)}
         open={false}
@@ -211,8 +136,7 @@ describe("the project header menu, rendered", () => {
         onNavigate={() => {}}
         renderedAt={0}
         bandFor={() => "active"}
-        autoSettleAfterHours={null}
-        onRefresh={() => {}}
+        onRowChanged={() => {}}
         dragging={false}
         insert={null}
         onDragStart={() => {}}
@@ -220,15 +144,7 @@ describe("the project header menu, rendered", () => {
         onDragOver={() => {}}
         onDragLeave={() => {}}
         onDrop={() => {}}
-        rowDrag={() => ({
-          dragging: false,
-          insert: null,
-          onDragStart: () => {},
-          onDragEnd: () => {},
-          onDragOver: () => {},
-          onDragLeave: () => {},
-          onDrop: () => {},
-        })}
+        rowDrag={() => ({ dragging: false, insert: null, onDragStart: () => {}, onDragEnd: () => {}, onDragOver: () => {}, onDragLeave: () => {}, onDrop: () => {} })}
         root="/Users/someone/code/telar"
         onNewConversation={() => {}}
         onProjectSettings={() => {}}
@@ -236,54 +152,81 @@ describe("the project header menu, rendered", () => {
       />,
     );
 
-  test("the trigger is inside the draggable button, and is not itself draggable", () => {
-    const html = render();
-    const handle = html.indexOf("draggable");
-    const trigger = html.indexOf('data-slot="context-menu-trigger"');
-    expect(handle).toBeGreaterThanOrEqual(0);
-    expect(trigger).toBeGreaterThan(handle);
-    // The trigger element carries no drag attributes of its own.
-    const tag = html.slice(trigger - 200, trigger + 200);
-    expect(tag.slice(tag.indexOf('data-slot="context-menu-trigger"'))).not.toContain("draggable");
-    // And it closes before the button does, i.e. it wraps the label rather
-    // than the row.
-    expect(html.indexOf("</button>")).toBeGreaterThan(trigger);
+  test("the trigger sits inside the drag handle without being draggable itself", async () => {
+    const { host } = await mountHeader();
+    const trigger = host.querySelector('[data-slot="context-menu-trigger"]')!;
+    expect(trigger.closest("button")?.getAttribute("draggable")).toBe("true");
+    expect(trigger.hasAttribute("draggable")).toBe(false);
+    expect(trigger.textContent).toContain("Telar");
   });
 
-  test("the trigger PAINTS the row — a `contents` box would have no hit area of its own", () => {
-    // The bug a screenshot caught: `display: contents` generates no box and is
-    // never an event target, so a right-press in the header's padding or in a
-    // gap between the chevron and the name had the <button> as its target and
-    // opened the RAIL's menu instead. The trigger carries the row's layout and
-    // its padding, so the header has exactly one hit area.
-    const html = render();
-    const tag = html.slice(html.lastIndexOf("<span", html.indexOf('data-slot="context-menu-trigger"')));
-    const open = tag.slice(0, tag.indexOf(">"));
-    expect(open).not.toContain("contents");
-    for (const rule of ["flex", "items-center", "px-1", "py-1.5"]) {
-      expect(open, `the trigger carries ${rule}`).toContain(rule);
-    }
-    // The padding moved OFF the button rather than being duplicated onto both.
-    const button = html.slice(html.indexOf("<button"), html.indexOf(">", html.indexOf("<button")));
-    expect(button).not.toContain("px-1");
+  test("the + beside the header is outside the menu's reach", async () => {
+    const { host } = await mountHeader();
+    await rightClick(host.querySelector('[aria-label="New conversation in Telar"]')!);
+    expect(labels()).toEqual([]);
   });
 
-  test("the label is inside the trigger; the New-conversation link stays outside it", () => {
-    const html = render();
-    const trigger = html.indexOf('data-slot="context-menu-trigger"');
-    const closeButton = html.indexOf("</button>");
-    expect(html.indexOf("Telar")).toBeGreaterThan(trigger);
-    expect(html.indexOf("Telar")).toBeLessThan(closeButton);
-    // The `+` is a sibling of the handle, past the trigger's reach — a
-    // right-click there is the browser's business, not this menu's.
-    expect(html.indexOf("New conversation in Telar")).toBeGreaterThan(closeButton);
+  test("Reveal and Open are absent in a browser tab and reach the desktop bridge when it is there", async () => {
+    const plain = await mountHeader();
+    await rightClick(plain.host.querySelector('[data-slot="context-menu-trigger"]')!);
+    expect(labels()).not.toContain("Reveal in Finder");
+    await escape();
+    plain.unmount();
+
+    const asked = installShell();
+    const { host } = await mountHeader();
+    const trigger = host.querySelector('[data-slot="context-menu-trigger"]')!;
+    await rightClick(trigger);
+    await flush(() => Boolean(item("Open in Zed")));
+    await click(item("Reveal in Finder"));
+    await rightClick(trigger);
+    await flush(() => Boolean(item("Open in Zed")));
+    await click(item("Open in Zed"));
+    expect(asked).toEqual(["reveal /Users/someone/code/telar", "open /Users/someone/code/telar zed"]);
+    expect(readPreferredOpener(undefined)).toBe("zed");
   });
 
-  test("a paired Mac's header still renders — its host is named, and its folder rows simply are not there", () => {
-    // `workspaceOpener()` is absent on the server, so the two folder rows are
-    // out on every server render; this is the shape that must not throw.
-    const html = render({ hostId: "host_x", hostName: "mini" });
-    expect(html).toContain("mini");
-    expect(html).toContain('data-slot="context-menu-trigger"');
+  test("a paired Mac's header names its host and offers no folder rows", async () => {
+    installShell();
+    const { host } = await mountHeader({ hostId: "host_x", hostName: "mini" });
+    expect(host.textContent).toContain("mini");
+    await rightClick(host.querySelector('[data-slot="context-menu-trigger"]')!);
+    expect(labels()).toContain("Collapse others");
+    expect(labels()).not.toContain("Reveal in Finder");
+  });
+});
+
+describe("the rail's empty space", () => {
+  const empty = (host: HTMLElement) => host.querySelector("#sidebar-session-results")!;
+
+  test("offers New conversation, Add project and the fold-all pair", async () => {
+    const { host } = await railWith(TWO, TWO_ROWS);
+    await rightClick(empty(host));
+    expect(labels()).toEqual(["New conversation", "Add project", "Collapse all projects", "Expand all"]);
+  });
+
+  test("New conversation opens the sole project's canvas, like the header button", async () => {
+    const { host } = await railWith([project("p1", "One")], [liveRow("a")]);
+    await rightClick(empty(host));
+    await click(item("New conversation"));
+    expect(pushes).toEqual([canvasHref("p1")]);
+  });
+
+  test("Add project opens the palette's sources page", async () => {
+    const { host } = await railWith(TWO, TWO_ROWS);
+    await rightClick(empty(host));
+    await click(item("Add project"));
+    await flush(() => Boolean(document.querySelector('[role="dialog"]')));
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Add a project");
+  });
+
+  test("Collapse all projects and Expand all fold the groups on screen", async () => {
+    const { host, expanded } = await railWith(TWO, TWO_ROWS);
+    await rightClick(empty(host));
+    await click(item("Collapse all projects"));
+    expect(expanded()).toEqual(["false", "false"]);
+    await rightClick(empty(host));
+    await click(item("Expand all"));
+    expect(expanded()).toEqual(["true", "true"]);
   });
 });

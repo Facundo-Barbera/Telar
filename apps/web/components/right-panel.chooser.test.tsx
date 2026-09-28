@@ -174,3 +174,16 @@ describe("the surface chooser", () => {
     unmount();
   });
 });
+
+describe("filling the window", () => {
+  test("marks the panel while it fills the window, so the row can drop the conversation card's ring", async () => {
+    const { host, unmount } = mount();
+    const marked = () => host.querySelector("[data-panel-fullscreen]") !== null;
+    expect(marked()).toBe(false);
+    await keyboardPress(host.querySelector('[aria-label="Fill the window"]')!);
+    expect(marked()).toBe(true);
+    await keyboardPress(host.querySelector('[aria-label="Exit fullscreen"]')!);
+    expect(marked()).toBe(false);
+    unmount();
+  });
+});
