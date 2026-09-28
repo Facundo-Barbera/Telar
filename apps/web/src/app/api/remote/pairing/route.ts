@@ -1,5 +1,5 @@
-import { cockpitPort, listEndpoints } from "@/lib/remote/endpoints";
-import { encodeQr, type QrMatrix } from "@/lib/remote/qr";
+import { cockpitPort, listEndpoints } from "@/features/remote/server";
+import { encodeQr, type QrMatrix } from "@/features/remote";
 import { engineErrorResponse } from "@/platform/engine/server";
 import { engineCall, engineForward } from "@/platform/engine/server";
 

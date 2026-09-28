@@ -1,7 +1,17 @@
 import type { ProviderDriverKind, ProviderModel } from "@telar/engine-client";
-import { effortLabel, type ModelChoice } from "@/lib/models";
-import { defaultModelId } from "@/lib/model-generations";
-import { contextWindowOf, familyOf, groupFamilies, rowFor, rowOf, windowsOf, WINDOW_LABEL, type ContextWindow } from "@/lib/model-families";
+import {
+  effortLabel,
+  type ModelChoice,
+  defaultModelId,
+  contextWindowOf,
+  familyOf,
+  groupFamilies,
+  rowFor,
+  rowOf,
+  windowsOf,
+  WINDOW_LABEL,
+  type ContextWindow,
+} from "@/features/providers";
 
 export const PROVIDERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
 

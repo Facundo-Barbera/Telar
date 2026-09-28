@@ -1,11 +1,19 @@
-import { cockpitPort, listEndpoints } from "@/lib/remote/endpoints";
-import { deviceCookieHeader, readDeviceCookie } from "@/lib/remote/cookie";
-import { identifyCaller, isHostCaller } from "@/lib/remote/gate";
-import { readRemote } from "@/lib/remote/store";
-import { describeDevice, type DeviceIdentity } from "@/lib/remote/identity";
-import { machineName, observeIdentity } from "@/lib/remote/observe";
-import { HOST_TOKEN_ENV, readHostHeader } from "@/lib/remote/host-token";
-import { readServeError } from "@/lib/remote/tailscale-serve";
+import {
+  cockpitPort,
+  listEndpoints,
+  deviceCookieHeader,
+  readDeviceCookie,
+  identifyCaller,
+  isHostCaller,
+  readRemote,
+  describeDevice,
+  type DeviceIdentity,
+  machineName,
+  observeIdentity,
+  HOST_TOKEN_ENV,
+  readHostHeader,
+} from "@/features/remote/server";
+import { readServeError } from "@/features/remote";
 import { engineErrorResponse } from "@/platform/engine/server";
 import { engineCall } from "@/platform/engine/server";
 

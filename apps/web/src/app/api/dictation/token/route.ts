@@ -17,7 +17,7 @@ import { engineClient, engineErrorResponse } from "@/platform/engine/server";
  *
  * THE PHONE REACHES IT THROUGH THE HOST PROXY unchanged: `/api/hosts/:id/*`
  * forwards any path to that Mac's `/api/*` with its bearer (see
- * `features/hosts/proxy.ts`), so `/api/hosts/:id/dictation/token` is this route on
+ * `features/hosts/server/proxy.ts`), so `/api/hosts/:id/dictation/token` is this route on
  * the other Mac. Nothing had to be allowlisted — the proxy is path-agnostic on
  * purpose, and the timeout table only names the rail's polling reads.
  *

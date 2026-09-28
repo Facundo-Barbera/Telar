@@ -2,10 +2,7 @@
 
 import { useMemo } from "react";
 import type { ProviderDriverKind } from "@telar/engine-client";
-import type { ModelChoice } from "@/lib/models";
-import { splitGenerations } from "@/lib/model-generations";
-import { groupFamilies, pickInFamily, stripWindow, visibleModels } from "@/lib/model-families";
-import { useModelCatalogue } from "@/lib/model-catalogue-cache";
+import { type ModelChoice, splitGenerations, groupFamilies, pickInFamily, stripWindow, visibleModels, useModelCatalogue } from "@/features/providers";
 import { selectionOf } from "../model-options";
 
 /** The model and effort rows the `/` menu offers, from the same selection as the pills. Legacy generations are left out. */

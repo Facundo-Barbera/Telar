@@ -27,7 +27,7 @@ import {
   turnHasContent,
   workspacePath,
 } from "@telar/engine-client";
-import { splitImages } from "@/lib/prompt-stash";
+import { announcePromptShelfChanged, splitImages } from "@/features/prompts";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/platform/engine";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
 import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
@@ -44,10 +44,8 @@ import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { normaliseContextNoticePercent } from "@/lib/context-notice";
-import { useProviderInstance } from "@/lib/provider-instance-cache";
-import { announcePromptShelfChanged } from "@/lib/use-prompt-shelf";
 import { insertReference } from "@/lib/drag-reference";
-import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice } from "@/lib/models";
+import { choiceNamesAnything, choiceOf, projectDraftModel, sessionModelSelection, type ModelChoice, useProviderInstance } from "@/features/providers";
 import { sessionConnection } from "@/platform/engine";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows, tailIntervalMs } from "@/platform/engine";
 import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
@@ -67,7 +65,7 @@ import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
-import { SessionSchedules } from "./session/session-schedules";
+import { SessionSchedules } from "@/features/schedules";
 import { RunHeaderControl } from "@/features/terminal";
 import { OpenWorkspaceButton } from "./session/open-workspace-button";
 import { PromptText } from "./session/prompt-text";

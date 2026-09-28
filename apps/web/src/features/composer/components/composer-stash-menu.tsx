@@ -4,7 +4,7 @@
 // Keys are the composer's; every row prevents mousedown so a click never blurs the editor.
 
 import { FileTextIcon, SparklesIcon, XIcon } from "lucide-react";
-import type { ShelfRow } from "@/lib/prompt-shelf";
+import type { ShelfRow } from "@/features/prompts";
 import { fmtAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 

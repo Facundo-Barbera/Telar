@@ -2,12 +2,27 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ProviderDriverKind } from "@telar/engine-client";
-import { modelLabel, type ModelChoice } from "@/lib/models";
-import { keepStarredVisible, orderByFavorite } from "@/lib/model-favorites";
-import { splitGenerations } from "@/lib/model-generations";
-import { familyFavorites, groupFamilies, pickInFamily, toggleFamilyFavorite, visibleModels, type ModelFamily } from "@/lib/model-families";
-import { importLocalFavorites, patchModelOverlay, useModelCatalogues, useModelOverlays } from "@/lib/model-catalogue-cache";
-import { connectionLabel, familySearchText, routeOf, routedModelLabel } from "@/lib/model-connections";
+import {
+  modelLabel,
+  type ModelChoice,
+  keepStarredVisible,
+  orderByFavorite,
+  splitGenerations,
+  familyFavorites,
+  groupFamilies,
+  pickInFamily,
+  toggleFamilyFavorite,
+  visibleModels,
+  type ModelFamily,
+  importLocalFavorites,
+  patchModelOverlay,
+  useModelCatalogues,
+  useModelOverlays,
+  connectionLabel,
+  familySearchText,
+  routeOf,
+  routedModelLabel,
+} from "@/features/providers";
 import { PROVIDERS, searchScope, selectionOf, withModel } from "../model-options";
 
 /** One provider's models, or the starred ones across providers. */

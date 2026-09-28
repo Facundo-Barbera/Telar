@@ -23,7 +23,7 @@ import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "../session-activity";
 import { canvasHref, sessionHref, sessionKey, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "../session-list";
 import { claimPrefetch, PREFETCH_INTENT_MS, PREFETCH_MARGIN, releasePrefetch, warmConversation } from "./rail-prefetch";
-import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
+import { ProviderIcon, PROVIDER_LABEL } from "@/features/providers";
 import { SessionInboxMenu, SessionRowContextMenu, type SessionRowMenuProps } from "./session-inbox-menu";
 import { closeRowTerminals, mutateRow, patchSession, withSettling, withSnooze, withTitle, type SessionRowChanged } from "../session-mutations";
 import { canSettle, canSnooze, settleClosesText, settledTerminalsHint, snoozePresets, terminalsClosedHint, wakeLabel } from "../session-settling";

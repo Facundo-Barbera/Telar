@@ -1,7 +1,4 @@
-import { describeDevice } from "@/lib/remote/identity";
-import { observeIdentity } from "@/lib/remote/observe";
-import { deviceCookieHeader } from "@/lib/remote/cookie";
-import { dialableAddresses } from "@/lib/remote/endpoints";
+import { describeDevice, observeIdentity, deviceCookieHeader, dialableAddresses } from "@/features/remote/server";
 import { engineErrorResponse } from "@/platform/engine/server";
 import { engineCall } from "@/platform/engine/server";
 

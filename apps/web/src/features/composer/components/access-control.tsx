@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ShieldCheckIcon } from "lucide-react";
 import type { ProviderDriverKind, RuntimeMode } from "@telar/engine-client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS, RUNTIME_MODES } from "@/lib/runtime-modes";
+import { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS, RUNTIME_MODES } from "@/features/providers";
 import { ChoiceRow, ControlTrigger, MenuHeading } from "./control-primitives";
 
 export function AccessControl({
