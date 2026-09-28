@@ -2,13 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// WHAT REACHED THIS SESSION THAT NOBODY TYPED — issue #550, on the phone.
-///
-/// A peer's message, a wake and a parked request used to arrive as a turn whose
-/// `input` was engine-authored prose, and this screen drew two of the three as
-/// the reader's own right-aligned bubble. These pin the decode of the new item
-/// and turn field, and the one line the row shows for each kind — because a
-/// wrong label here is the same mistake in smaller type.
 @Suite struct NotificationRowTests {
     private func decodeItem(_ json: String) throws -> Item {
         try JSONDecoder().decode(Item.self, from: Data(json.utf8))
@@ -39,8 +32,6 @@ import Testing
     }
 
     @Test func anUnknownKindStillDrawsSomething() throws {
-        // A Mac on a newer engine may name a kind this build has never heard
-        // of. It must render as an unfamiliar notification, never blank a page.
         let item = try decodeItem(#"""
         {"id":"i1","runId":"r","sessionId":"s","status":"completed","startedAt":1,
          "detail":{"type":"notification","notification":{"kind":"something_new","summary":"s","body":"b"}}}
@@ -53,8 +44,6 @@ import Testing
     }
 
     @Test func aDetailThatWillNotDecodeBecomesUnknownRatherThanAHollowNotification() throws {
-        // ALL-OR-NOTHING, unlike `user_message`: there is no useful half of an
-        // announcement, so a broken payload is an unknown row.
         let item = try decodeItem(#"""
         {"id":"i1","runId":"r","sessionId":"s","status":"completed","startedAt":1,
          "detail":{"type":"notification","notification":{"kind":"wake"}}}
@@ -73,8 +62,7 @@ import Testing
         #expect(describeNotification(NotificationDetail(kind: "peer_message", intent: "blocker", summary: "s", body: "b")) == "A session reported a blocker")
         #expect(describeNotification(NotificationDetail(kind: "peer_message", intent: "result", summary: "s", body: "b")) == "A session sent a result")
         #expect(describeNotification(NotificationDetail(kind: "request", summary: "s", body: "b")) == "Session asked a question")
-        // A wake borrows `describeWake`, so a wake that opened its own turn and
-        // one that arrived merged cannot be given two different names.
+
         #expect(describeNotification(NotificationDetail(kind: "wake", wakeKind: "turn_failed", summary: "s", body: "b")).isEmpty == false)
     }
 
@@ -91,8 +79,7 @@ import Testing
         #expect(detail.kind == "wake")
         #expect(detail.wakeKind == "turn_completed")
         #expect(detail.deliveries == 1)
-        // `input` IS A MACHINE LABEL NOW. A client that drew this in a bubble
-        // would be drawing the engine's own bookkeeping as the person's words.
+
         #expect(turn.input.hasPrefix("[notification:"))
     }
 

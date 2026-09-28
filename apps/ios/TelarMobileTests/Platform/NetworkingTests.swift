@@ -2,7 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// URLProtocol stub: each test registers a handler keyed by path.
 final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
 
@@ -11,7 +10,7 @@ final class StubURLProtocol: URLProtocol {
 
     override func startLoading() {
         guard let handler = Self.handler else { return }
-        // httpBody is emptied by URLSession; the stream carries it.
+
         var request = self.request
         if request.httpBody == nil, let stream = request.httpBodyStream {
             stream.open()
@@ -120,7 +119,7 @@ private func stubAPI() -> HTTPEngineAPI {
             let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
             #expect(body?["runId"] as? String == "run_abc")
             #expect(body?["input"] as? String == "hi")
-            // 200 + replayed — the retry path is a SUCCESS, not an error.
+
             return (200, Data(turnJSON.utf8))
         }
         let result = try await stubAPI().submitTurn("s", runId: "run_abc", input: "hi")
@@ -169,18 +168,6 @@ private func stubAPI() -> HTTPEngineAPI {
     }
 
     @Test func versionSkewIsNamedNotBlamedOnTheURL() async {
-        // A 200 that doesn't decode proves the URL IS a cockpit — the two
-        // ends are just on different versions.
-        //
-        // NOT `{}` ANY MORE, AND THAT IS A REAL CHANGE RATHER THAN A TWEAK.
-        // `LiveSessions` decodes an absent `sessions`/`projects` to empty on
-        // purpose since #459 — it is how one type reads both the full answer and
-        // the conditional read's "unchanged" answer, and `SessionModels.swift`
-        // says so where the decoder is. So `{}` is now a VALID body and this
-        // probe stopped probing anything the day that landed; it went unnoticed
-        // because nothing executed this suite until #755. A wrongly TYPED
-        // `sessions` is undecodable under either shape, which is what this test
-        // has always been about.
         StubURLProtocol.handler = { _ in (200, Data(#"{"sessions":"not an array"}"#.utf8)) }
         do {
             _ = try await stubAPI().liveSessions()
@@ -213,13 +200,11 @@ private func stubAPI() -> HTTPEngineAPI {
     }
 
     @Test func resolveRequestEncodesMultiSelectAsAnArray() async throws {
-        // A `choice` field marked `multiple` answers with the chosen labels,
-        // in the question's own order — not a joined string.
         StubURLProtocol.handler = { request in
             let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
             let answers = body?["answers"] as? [String: Any]
             #expect(answers?["toppings"] as? [String] == ["a", "b"])
-            // The single-pick field beside it still goes as a bare string.
+
             #expect(answers?["size"] as? String == "large")
             return (200, Data("{}".utf8))
         }

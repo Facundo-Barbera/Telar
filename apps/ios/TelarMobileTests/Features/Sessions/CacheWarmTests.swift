@@ -2,24 +2,10 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// THE CACHE IS WARMED BY THE READ THAT EARNED IT (#499).
-///
-/// Both stores used to poll the Mac and then immediately read the same record
-/// AGAIN to have bytes to write with. The inbox re-pulled the whole live list —
-/// 318 KB on the owner's store, behind a poll that runs every three seconds
-/// while anything is live — and an open session re-pulled its UNWINDOWED
-/// history, up to 4.5 MB, behind a hydrate that had deliberately asked for ten
-/// turns. Both reads were of rows the store had just been handed.
-///
-/// THE DOUBLES REFUSE THE SECOND READ RATHER THAN COUNTING IT. `liveSessions()`
-/// and the unwindowed `session` are what the old warms called, so they trap
-/// here: a regression cannot pass this suite by being merely cheaper.
 private func tempCache() -> SnapshotCache {
     SnapshotCache(root: FileManager.default.temporaryDirectory.appending(path: "telar-warm-\(UUID().uuidString)"))
 }
 
-/// A live list with one active row, and the policy riding along so the store
-/// has no reason to make the once-a-minute policy read beside it.
 private func liveBody(_ title: String) -> Data {
     Data("""
     {"sessions":[{"id":"s","projectId":"p","title":"\(title)","state":"active","createdAt":1,"updatedAt":2,
@@ -28,18 +14,16 @@ private func liveBody(_ title: String) -> Data {
     """.utf8)
 }
 
-/// Answers the conditional live read and nothing else.
 private actor WarmingInboxAPI: EngineAPI {
     private(set) var reads = 0
     private(set) var sentTags: [String?] = []
-    /// What the next reads answer, in order; the last one repeats.
+
     private var answers: [LiveSessionsRead]
 
     init(answers: [LiveSessionsRead]) { self.answers = answers }
 
     func recorded() -> (reads: Int, tags: [String?]) { (reads, sentTags) }
 
-    /// THE SECOND READ THE OLD `remember` MADE. Nothing should reach this.
     func liveSessions() async throws -> LiveSessions {
         fatalError("the cache must not cost a second read of the live list")
     }
@@ -78,7 +62,6 @@ private actor WarmingInboxAPI: EngineAPI {
     func revokeOtherDevices() async throws -> Int { 0 }
 }
 
-/// Answers the windowed snapshot read, and traps the unwindowed one.
 private actor WarmingSessionAPI: EngineAPI {
     private(set) var windows: [Int?] = []
     let body: Data
@@ -87,7 +70,6 @@ private actor WarmingSessionAPI: EngineAPI {
 
     func recorded() -> [Int?] { windows }
 
-    /// WHAT THE OLD WARM CALLED, with no window at all — the whole run.
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {
         fatalError("the cache must not cost a second, unwindowed read of the history")
     }
@@ -149,14 +131,12 @@ private let sessionBody = Data("""
         await store.awaitPendingWork()
 
         #expect(store.sections.active.map(\.id) == ["s"])
-        // The bytes on disk are the poll's own, not a second read's.
+
         #expect(cache.readInbox(host: host)?.data == body)
-        // ONE request for the tick. The old warm made a second.
+
         #expect(await api.recorded().reads == 1)
     }
 
-    /// A 304 carries no body, so there is nothing new to record — and what is
-    /// already on disk is still the last thing this Mac actually said.
     @Test @MainActor func aNotModifiedTickKeepsTheCopyItAlreadyHas() async {
         let host = HostID()
         let cache = tempCache()
@@ -170,13 +150,11 @@ private let sessionBody = Data("""
         await store.awaitPendingWork()
 
         #expect(cache.readInbox(host: host)?.data == seeded)
-        // A tick that succeeded is a tick that succeeded.
+
         #expect(store.lastError == nil)
         #expect(store.loaded)
     }
 
-    /// The tag earned on one tick is what the next one asks with — otherwise
-    /// every poll is a full read and the 304 above never happens.
     @Test @MainActor func theTagEarnedIsTheTagSentNext() async {
         let host = HostID()
         let body = liveBody("Live")
@@ -194,8 +172,6 @@ private let sessionBody = Data("""
         #expect(await api.recorded().tags == [nil, "v1"])
     }
 
-    /// An `unchanged` answer carries no rows, so recording it would replace the
-    /// phone's copy with emptiness — the one thing the cache exists not to show.
     @Test @MainActor func anUnchangedAnswerIsNotRecordedOverTheRows() async {
         let host = HostID()
         let cache = tempCache()
@@ -214,8 +190,6 @@ private let sessionBody = Data("""
         #expect(cache.readInbox(host: host)?.data == seeded)
     }
 
-    /// The cached first frame is the frame the reader last saw: ten turns, not
-    /// the whole run. The double traps the unwindowed read outright.
     @Test @MainActor func aSessionRecordsTheWindowTheScreenOpenedOn() async {
         let host = HostID()
         let cache = tempCache()
@@ -228,7 +202,7 @@ private let sessionBody = Data("""
 
         #expect(engine.session?.title == "Windowed")
         #expect(cache.readSession(host: host, id: "s")?.data == sessionBody)
-        // One read, and it carried the window hydrate asked for.
+
         #expect(await api.recorded() == [initialTurns])
     }
 }
