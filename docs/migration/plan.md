@@ -45,3 +45,14 @@ We are not adopting Effect-TS or event sourcing.
 ## Log
 
 - 2026-09-27: audit done. Phase 1 started (web, engine, iOS+desktop).
+- 2026-09-27: phase 2 started (docs + AGENTS.md + guards; behaviour tests for web).
+- #1086 (web test hygiene: order-dependent leak fixed, tail-cadence 23s → 1s, 6 source tests deleted; −221 LOC).
+- #1087 (`telarWall`: one tool list; 3 bugs fixed, namely Claude without `prompt_*`, Codex/OpenCode without `display_*`, and sessions tools duplicated; −932 LOC).
+- #1084 (iOS: `InboxView` deleted, −334) and #1085 (desktop: `jsonPrefs`, −45; `shadcn` moved to devDependencies).
+- #1089 (web dead code: 6 modules, unused shadcn sidebar parts, `/api/sessions/stream`, dead CSS tokens, knip exports; −1347) and #1091 (fixtures + bench, report-cadence renamed to held-reports, Agent-era comments; −3700). Phase 1 web ✅.
+- Phase 3 web started (client migrations, redirects).
+- #1090 (engine leftovers: `report_window` cadence, subscribe knobs, one ETag, `stopTimers()` fixing leaked cohort/snooze/schedule timers; −544 net) is being rebased.
+- Decision: GET /report-window stays, answering only `{held}`, because the right panel polls it. The `run_*` aliases and `runId` are removed on or after 2026-10-09 (deprecated 2026-09-25).
+- Phase 3 engine: the JSON journal backend is removed (SQLite only, legacy import kept).
+- Desktop decomposition started (`browser-manager.js` → `browser/*`, `main.js` → `main/*`). Added to phase 4 so desktop also meets "no file over ~1.5k".
+- Decision: the orchestrator follows each builder with its own subscription, so each PR merges as soon as it is green. This plan is updated through small PRs at the end of each phase.
