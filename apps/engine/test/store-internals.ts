@@ -38,7 +38,7 @@ export function toLegacyHome(store: EngineStore, root: string, edit?: (key: stri
     if (lines.length) fs.writeFileSync(path.join(root, "sessions", sessionId, "events.ndjson"), `${lines.join("\n")}\n`);
   }
 }
-const openPrefixes = (store: EngineStore) => (store as unknown as { openPrefixes: Map<string, unknown> }).openPrefixes;
+const openPrefixes = (store: EngineStore) => (store as unknown as { prefixes: { clear(): void; size: number } }).prefixes;
 
 /** Drop every cached item prefix, as a restart would. */
 export function forgetOpenPrefixes(store: EngineStore): void {
