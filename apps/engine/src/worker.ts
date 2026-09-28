@@ -195,6 +195,12 @@ export function workerConcurrencyFromEnv(env: NodeJS.ProcessEnv = process.env): 
 export type EngineWorkerOptions = {
   client: WorkerClient;
   workerId: string;
+  /**
+   * Called when a claim names a plugin this worker has no wall for — one
+   * installed since it started. A worker in its own process re-reads the
+   * plugins folder here; the embedded one shares the daemon's list and omits it.
+   */
+  refreshPlugins?: () => void;
   driver: DriverSelector;
   /**
    * The browser, as the worker-hosted MCP socket both drivers are pointed at.
@@ -314,6 +320,8 @@ const QUIET_TICKS_BEFORE_BACKOFF = 5;
 
 /** A worker is an executor only: every observable lifecycle event travels back through the engine API. */
 export class EngineWorker {
+  /** Plugin ids a claim named that this worker has already re-read the folder for. */
+  private readonly pluginsLookedFor = new Set<string>();
   private readonly pollMs: number;
   private readonly idlePollMs: number;
   /** What `timer` is currently running at, so `retune` can leave it alone. */
@@ -1619,6 +1627,13 @@ export class EngineWorker {
        * absent, so an older worker against a newer daemon builds fewer walls
        * rather than crashing.
        */
+      // Each unknown id is looked for once: one a project still has on after it
+      // was removed would otherwise re-read the folder on every claim.
+      const unknown = (claim.plugins ?? []).filter((id) => !this.pluginsLookedFor.has(id) && !pluginToolModules().some((module) => module.meta.id === id));
+      if (unknown.length > 0) {
+        for (const id of unknown) this.pluginsLookedFor.add(id);
+        this.options.refreshPlugins?.();
+      }
       const pluginCapabilities = Object.fromEntries(
         pluginToolModules()
           .filter((module) => claim.plugins?.includes(module.meta.id))

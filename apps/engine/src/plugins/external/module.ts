@@ -22,6 +22,7 @@ import { err, json, type ToolFactory } from "../../tool-kit";
 import type { PluginEngineModule, PluginInitContext } from "../contract";
 import type { PluginMachineRoutes, PluginProjectRoutes, PluginRouteRequest } from "../routes";
 import type { PluginToolModule } from "../tool-module";
+import { isSymlink } from "./installer";
 import type { LoadedExternalPlugin } from "./manifest";
 import { ExternalPluginProcess, type ExternalProcessOptions } from "./process";
 
@@ -76,6 +77,12 @@ export type ExternalPluginDeps = {
   resolve: (sessionId: string) => { projectId: string; sessionId: string };
   /** Does any project on this Mac still have it on? When none does, it stops. */
   enabledAnywhere: () => boolean;
+  /**
+   * The settings in force: the Mac's defaults, with a project's own over them
+   * when there is a project. Sent with every call, so the plugin never has to
+   * ask and never holds a stale copy.
+   */
+  settings: (projectId: string | undefined) => Record<string, unknown>;
   /** Test seams for the process: spawn and timers. */
   process?: Pick<ExternalProcessOptions, "spawn" | "timers" | "requestTimeoutMs" | "startTimeoutMs">;
 };
@@ -96,14 +103,21 @@ export function externalPlugin(loaded: LoadedExternalPlugin, deps: ExternalPlugi
       ...(request.params ? { params: request.params } : {}),
       ...(typeof request.sessionId === "string" ? { sessionId: request.sessionId } : {}),
       ...(typeof request.projectId === "string" ? { projectId: request.projectId } : {}),
+      settings: deps.settings(typeof request.projectId === "string" ? request.projectId : undefined),
     });
 
   const sessionRoutes: NonNullable<PluginEngineModule["routes"]> = {
-    [TOOL_VERB]: async (input) => {
+    [TOOL_VERB]: async (input, capability) => {
       const name = String(input.name ?? "");
       // Only what the manifest declared, and so what the approval was about.
       if (!manifest.tools.some((tool) => tool.name === name)) throw new Error(`${manifest.id} has no tool ${name}`);
-      return running().request("tools/call", { name, arguments: input.arguments ?? {} });
+      const { sessionId, projectId } = capability as { sessionId: string; projectId: string };
+      // Where the call comes from and the settings in force, in MCP's `_meta`.
+      return running().request("tools/call", {
+        name,
+        arguments: input.arguments ?? {},
+        _meta: { telar: { sessionId, projectId, settings: deps.settings(projectId) } },
+      });
     },
     ...Object.fromEntries(
       manifest.routes.session.map((verb) => [
@@ -127,6 +141,7 @@ export function externalPlugin(loaded: LoadedExternalPlugin, deps: ExternalPlugi
     ...(machineSettingsSchema ? { machineSettingsSchema } : {}),
     ...(manifest.settingsSchema ? { publishedSettingsSchema: manifest.settingsSchema } : {}),
     ...(manifest.machineSettingsSchema ? { publishedMachineSettingsSchema: manifest.machineSettingsSchema } : {}),
+    installed: { linked: isSymlink(dir) },
     /**
      * NOTHING IS SPAWNED HERE. The process starts on first use — a tool call
      * or a route — so a plugin no project has turned on costs nothing, and a
@@ -160,8 +175,19 @@ export function externalPlugin(loaded: LoadedExternalPlugin, deps: ExternalPlugi
   };
 }
 
+const EXTERNAL_TOOL_MODULES = new WeakSet<PluginToolModule>();
+
+/** Was this wall built from an installed plugin's manifest (rather than bundled)? */
+export const isExternalToolModule = (module: PluginToolModule) => EXTERNAL_TOOL_MODULES.has(module);
+
 /** The worker's half: the declared tools, each a call through the session door. */
 export function externalToolModule(loaded: LoadedExternalPlugin): PluginToolModule {
+  const module = buildExternalToolModule(loaded);
+  EXTERNAL_TOOL_MODULES.add(module);
+  return module;
+}
+
+function buildExternalToolModule(loaded: LoadedExternalPlugin): PluginToolModule {
   const { manifest } = loaded;
   return {
     meta: externalMeta(manifest),

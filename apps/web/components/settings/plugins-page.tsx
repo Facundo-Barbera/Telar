@@ -38,11 +38,13 @@
  */
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { BlocksIcon, CircleAlertIcon } from "lucide-react";
+import { BlocksIcon, CircleAlertIcon, FolderPlusIcon } from "lucide-react";
 import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
 import { machineAllows } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { chooseDirectory } from "@/lib/choose-directory";
 import { Switch } from "@/components/ui/switch";
 import { machineBlocksFor } from "@/components/plugins/settings-panes";
 import { GeneratedSettingsRows } from "@/components/plugins/generated-settings";
@@ -67,6 +69,8 @@ export function PluginsPage() {
   const [machine, setMachine] = useState<ProjectPlugins>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
+  /** An install or removal that did not happen, and why. */
+  const [notice, setNotice] = useState<string>();
 
   const load = useCallback(async () => {
     try {
@@ -91,6 +95,43 @@ export function PluginsPage() {
       setMachine(answer.machine);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  /**
+   * ADD FROM A FOLDER. The engine checks the manifest before writing anything,
+   * so a folder that would be refused comes back as the reason, here.
+   */
+  const add = async (mode: "copy" | "link") => {
+    const chosen = await chooseDirectory({ title: "Choose a plugin folder" });
+    if (!("path" in chosen)) {
+      if ("unavailable" in chosen) setNotice(chosen.unavailable);
+      return;
+    }
+    setBusy("add");
+    setNotice(undefined);
+    try {
+      await api.installPlugin({ path: chosen.path, mode });
+      await load();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const remove = async (status: PluginStatus) => {
+    const what = status.installed?.linked ? "The link is removed; your folder stays where it is." : "Its folder is deleted.";
+    if (!window.confirm(`Remove ${status.meta.name}? ${what}`)) return;
+    setBusy(status.meta.id);
+    setNotice(undefined);
+    try {
+      await api.uninstallPlugin(status.meta.id);
+      await load();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(undefined);
     }
@@ -138,17 +179,39 @@ export function PluginsPage() {
                 // The tooltip, rather than a second hint sentence, because the
                 // hint slot belongs to the plugin's blurb and this sentence is
                 // identical on every row.
-                <Switch
-                  checked={allowed && !failed}
-                  disabled={busy === status.meta.id || failed}
-                  onCheckedChange={(next: boolean) => void toggle(status.meta.id, next)}
-                  title="Each project keeps its own setting, and running work finishes before anything is released."
-                  aria-label={`${status.meta.name} enabled on this Mac`}
-                />
+                <div className="flex items-center gap-2">
+                  {status.installed && (
+                    <Button size="sm" variant="ghost" disabled={busy !== undefined} onClick={() => void remove(status)}>
+                      Remove
+                    </Button>
+                  )}
+                  <Switch
+                    checked={allowed && !failed}
+                    disabled={busy === status.meta.id || failed}
+                    onCheckedChange={(next: boolean) => void toggle(status.meta.id, next)}
+                    title="Each project keeps its own setting, and running work finishes before anything is released."
+                    aria-label={`${status.meta.name} enabled on this Mac`}
+                  />
+                </div>
               }
             />
           );
         })}
+        <Row
+          icon={FolderPlusIcon}
+          label="Add plugin from folder"
+          hint={notice ?? "Copy it in, or link it to keep editing it where it is."}
+          control={
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" disabled={busy !== undefined} onClick={() => void add("copy")}>
+                Copy…
+              </Button>
+              <Button size="sm" variant="ghost" disabled={busy !== undefined} onClick={() => void add("link")}>
+                Link…
+              </Button>
+            </div>
+          }
+        />
       </SettingsGroup>
 
       {/* GLOBAL CONFIGURATION, per plugin. Driven by the manifest: a plugin

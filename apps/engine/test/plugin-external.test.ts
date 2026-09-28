@@ -16,12 +16,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { EngineClient } from "@telar/engine-client";
+import { EngineClient, parsePluginPanelView } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { requestKindForTool } from "../src/driver";
 import { loadInstalledPlugins } from "../src/plugins/external/manifest";
 import { externalMeta, externalToolModule } from "../src/plugins/external/module";
 import { ExternalPluginProcess, RESTART_BACKOFF_MS, type PluginChild, type PluginTimers } from "../src/plugins/external/process";
+import { pluginToolModules } from "../src/plugins/bundled";
 import { ratifiedReadTools } from "../src/plugins/policy";
 import { pluginCall } from "../src/plugins/tool-module";
 import type { ToolFactory } from "../src/tool-kit";
@@ -308,8 +309,124 @@ describe("the daemon", () => {
       sessionId,
       projectId: "project_one",
     });
+    // The settings in force travel with every call.
+    await client.updateProject("project_one", { plugins: { echo: { enabled: true, settings: { greeting: "hey" } } } });
+    await expect(registered[0]!.run({ text: "hi" })).resolves.toEqual({ content: [{ type: "text", text: "hey: hi" }] });
     // Only declared tools pass the door.
     await expect(client.plugin(sessionId, "echo", "tool", { name: "echo_other" })).rejects.toThrow("has no tool echo_other");
+  });
+});
+
+describe("install and remove", () => {
+  async function engine() {
+    const pluginsDir = path.join(tempDir(), "plugins");
+    const engineRoot = tempDir();
+    fs.writeFileSync(path.join(engineRoot, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+    const daemon = await startEngine({ models: stubModels, engineRoot, pluginsDir });
+    daemons.push(daemon);
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_one", name: "One", root: tempDir() });
+    await client.createSession({ id: "session_one", projectId: "project_one" });
+    return { client, pluginsDir };
+  }
+  const ids = async (client: EngineClient) => ((await client.machinePlugins()).plugins ?? []).map((status) => status.meta.id);
+
+  test("a copied plugin runs without a restart, and removing it stops it and deletes the copy", async () => {
+    const { client, pluginsDir } = await engine();
+    const source = writePlugin(tempDir(), "anything-named");
+    const { plugin } = await client.installPlugin({ path: source });
+    expect(plugin).toMatchObject({ meta: { id: "echo" }, state: "ready", installed: { linked: false } });
+    expect(fs.existsSync(path.join(pluginsDir, "echo", "plugin.json"))).toBe(true);
+    expect(pluginToolModules().some((module) => module.meta.id === "echo")).toBe(true);
+
+    await client.updateProject("project_one", { plugins: { echo: { enabled: true } } });
+    await expect(client.plugin("session_one", "echo", "tool", { name: "echo_say", arguments: { text: "hi" } })).resolves.toEqual({
+      content: [{ type: "text", text: "echo: hi" }],
+    });
+
+    await expect(client.uninstallPlugin("echo")).resolves.toEqual({ removed: true });
+    expect(fs.existsSync(path.join(pluginsDir, "echo"))).toBe(false);
+    expect(fs.existsSync(source)).toBe(true);
+    expect(await ids(client)).not.toContain("echo");
+    expect(pluginToolModules().some((module) => module.meta.id === "echo")).toBe(false);
+    await expect(client.plugin("session_one", "echo", "status", {})).rejects.toMatchObject({ status: 404 });
+  });
+
+  test("a linked plugin is only unlinked: the owner's folder stays", async () => {
+    const { client, pluginsDir } = await engine();
+    const source = writePlugin(tempDir(), "echo");
+    const { plugin } = await client.installPlugin({ path: source, mode: "link" });
+    expect(plugin.installed).toEqual({ linked: true });
+    expect(fs.lstatSync(path.join(pluginsDir, "echo")).isSymbolicLink()).toBe(true);
+    await client.uninstallPlugin("echo");
+    expect(fs.existsSync(path.join(pluginsDir, "echo"))).toBe(false);
+    expect(fs.existsSync(path.join(source, "plugin.json"))).toBe(true);
+  });
+
+  test("a folder that would be refused is not installed, and says why", async () => {
+    const { client, pluginsDir } = await engine();
+    await expect(client.installPlugin({ path: writePlugin(tempDir(), "bad", "{") })).rejects.toThrow("not valid JSON");
+    await expect(client.installPlugin({ path: writePlugin(tempDir(), "latex", { ...ECHO_MANIFEST, id: "latex" }) })).rejects.toThrow("already taken");
+    await expect(client.installPlugin({ path: writePlugin(tempDir(), "installed", { ...ECHO_MANIFEST, id: "installed" }) })).rejects.toThrow("already taken");
+    await expect(client.installPlugin({ path: "relative/path" })).rejects.toThrow("absolute");
+    expect(fs.existsSync(pluginsDir) ? fs.readdirSync(pluginsDir) : []).toEqual([]);
+
+    // Twice is refused too, and a second prefix owner with it.
+    await client.installPlugin({ path: writePlugin(tempDir(), "echo") });
+    await expect(client.installPlugin({ path: writePlugin(tempDir(), "echo") })).rejects.toThrow("already");
+    await expect(client.installPlugin({ path: writePlugin(tempDir(), "other", { ...ECHO_MANIFEST, id: "other" }) })).rejects.toThrow('tool prefix "echo"');
+  });
+
+  test("a broken folder found at start can be removed from Settings", async () => {
+    const pluginsDir = path.join(tempDir(), "plugins");
+    writePlugin(pluginsDir, "broken", "{");
+    const engineRoot = tempDir();
+    const daemon = await startEngine({ models: stubModels, engineRoot, pluginsDir });
+    daemons.push(daemon);
+    const client = new EngineClient(daemon.discovery);
+    const broken = (await client.machinePlugins()).plugins.find((status) => status.meta.id === "broken");
+    expect(broken).toMatchObject({ state: "failed", installed: { linked: false } });
+    await client.uninstallPlugin("broken");
+    expect(fs.existsSync(path.join(pluginsDir, "broken"))).toBe(false);
+    expect(await ids(client)).not.toContain("broken");
+    await expect(client.uninstallPlugin("latex")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("the example plugin", () => {
+  test("examples/plugins/tally installs, counts with its setting, draws its panel and resets", async () => {
+    const example = path.resolve(import.meta.dir, "../../../examples/plugins/tally");
+    const pluginsDir = path.join(tempDir(), "plugins");
+    const engineRoot = tempDir();
+    fs.writeFileSync(path.join(engineRoot, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+    const daemon = await startEngine({ models: stubModels, engineRoot, pluginsDir });
+    daemons.push(daemon);
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_one", name: "One", root: tempDir() });
+    await client.createSession({ id: "session_one", projectId: "project_one" });
+
+    const { plugin } = await client.installPlugin({ path: example });
+    expect(plugin).toMatchObject({ meta: { id: "tally", toolPrefixes: ["tally"], readTools: [], panels: [{ id: "counts" }] }, state: "ready" });
+    expect(plugin.settingsSchema).toMatchObject({ properties: { step: { type: "integer" } } });
+    // The copy is what runs; the example folder is never written to.
+    expect(fs.existsSync(path.join(pluginsDir, "tally", "server.mjs"))).toBe(true);
+
+    await client.updateProject("project_one", { plugins: { tally: { enabled: true, settings: { step: 2 } } } });
+    const count = (label: string) => client.plugin("session_one", "tally", "tool", { name: "tally_count", arguments: { label } });
+    await count("apples");
+    await expect(count("apples")).resolves.toEqual({ content: [{ type: "text", text: "apples: 4" }] });
+
+    const view = parsePluginPanelView(await client.plugin("session_one", "tally", "counts", {}));
+    expect(view.skipped).toBe(0);
+    expect(view.blocks.find((block) => block.type === "table")).toEqual({ type: "table", columns: ["Label", "Count"], rows: [["apples", 4]] });
+    expect(view.blocks.find((block) => block.type === "keyValue")).toEqual({ type: "keyValue", items: [{ key: "Step", value: 2 }] });
+    const reset = view.blocks.find((block) => block.type === "action");
+    expect(reset).toMatchObject({ verb: "reset" });
+
+    await client.plugin("session_one", "tally", "reset", {});
+    const after = parsePluginPanelView(await client.plugin("session_one", "tally", "counts", {}));
+    expect(after.blocks.some((block) => block.type === "table")).toBe(false);
+    await client.uninstallPlugin("tally");
   });
 });
 

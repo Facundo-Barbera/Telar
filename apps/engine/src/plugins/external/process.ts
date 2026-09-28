@@ -10,7 +10,9 @@
  *   initialize   MCP's handshake, once per start (`protocolVersion`, `clientInfo`)
  *   tools/call   MCP's, for the tools the manifest declares
  *   telar/route  Telar's, for a route verb: `{ scope, verb, input, query?,
- *                params?, sessionId?, projectId? }` → any JSON value
+ *                params?, sessionId?, projectId?, settings }` → any JSON value
+ *
+ * A `tools/call` carries `_meta.telar = { sessionId, projectId, settings }`.
  *
  * stderr is the plugin's log: captured, kept as a short tail in memory for
  * Settings, and appended to `<stateDir>/log.txt`.

@@ -34,18 +34,70 @@ function describe(error: { issues: readonly { path: readonly PropertyKey[]; mess
   return error.issues.map((issue) => `${issue.path.length ? `${issue.path.map(String).join(".")}: ` : ""}${issue.message}`).join("; ");
 }
 
-export function loadExternalPlugins(
-  dir: string,
-  reserved: { ids: ReadonlySet<string>; prefixes: ReadonlySet<string> },
-): { loaded: LoadedExternalPlugin[]; refused: RefusedExternalPlugin[] } {
+export type Reservations = { ids: ReadonlySet<string>; prefixes: ReadonlySet<string> };
+
+/** Ids the engine's own routes use under `/v2/plugins/`, so no plugin may take them. */
+const ROUTE_IDS = ["installed"];
+
+/**
+ * One folder's manifest, checked. `expectedId` is the name it will be
+ * installed under: the folder's own name when loading, the manifest's id when
+ * installing from somewhere else. Never throws.
+ */
+export function checkPluginFolder(
+  folder: string,
+  expectedId: string | undefined,
+  reserved: Reservations,
+): { manifest: ExternalPluginManifest } | { error: string; name?: string } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(path.join(folder, MANIFEST_FILE), "utf8"));
+  } catch (error) {
+    return { error: `${MANIFEST_FILE}: ${error instanceof SyntaxError ? `not valid JSON (${error.message})` : "missing"}` };
+  }
+  const parsed = ExternalPluginManifest.safeParse(raw);
+  if (!parsed.success) {
+    const named = (raw as { name?: unknown } | null)?.name;
+    return { error: `${MANIFEST_FILE}: ${describe(parsed.error)}`, ...(typeof named === "string" ? { name: named } : {}) };
+  }
+  const manifest = parsed.data;
+  const refuse = (error: string) => ({ error: `${MANIFEST_FILE}: ${error}`, name: manifest.name });
+  if (expectedId !== undefined && manifest.id !== expectedId) return refuse(`id "${manifest.id}" does not match its folder "${expectedId}"`);
+  if (reserved.ids.has(manifest.id) || ROUTE_IDS.includes(manifest.id)) return refuse(`id "${manifest.id}" is already taken`);
+  if (manifest.toolPrefix && reserved.prefixes.has(manifest.toolPrefix)) {
+    return refuse(`tool prefix "${manifest.toolPrefix}" is already owned by another plugin`);
+  }
+  const program = manifest.command[0]!;
+  if (program.startsWith("./") && !fs.existsSync(path.join(folder, program))) return refuse(`command "${program}" is not in the plugin's folder`);
+  return { manifest };
+}
+
+/** A folder name as a listing id: itself when it is one, a safe stand-in when not. */
+export function listedId(name: string): string {
+  return PluginId.safeParse(name).success ? name : `invalid-${name.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`.slice(0, 64);
+}
+
+export function refusedPlugin(folder: string, error: string, name?: string): RefusedExternalPlugin {
+  const folderName = path.basename(folder);
+  return { dir: folder, meta: refusedMeta(listedId(folderName), name ?? folderName), error };
+}
+
+export function loadExternalPlugins(dir: string, reserved: Reservations): { loaded: LoadedExternalPlugin[]; refused: RefusedExternalPlugin[] } {
   const loaded: LoadedExternalPlugin[] = [];
   const refused: RefusedExternalPlugin[] = [];
   let names: string[] = [];
   try {
     names = fs
-      .readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-      .map((entry) => entry.name)
+      .readdirSync(dir)
+      .filter((name) => !name.startsWith("."))
+      // A linked plugin is a symlink to a folder: follow it.
+      .filter((name) => {
+        try {
+          return fs.statSync(path.join(dir, name)).isDirectory();
+        } catch {
+          return false;
+        }
+      })
       .sort();
   } catch {
     // No folder yet is the normal case: nothing installed.
@@ -55,49 +107,14 @@ export function loadExternalPlugins(
   const prefixes = new Set(reserved.prefixes);
   for (const name of names) {
     const folder = path.join(dir, name);
-    // A folder name that is not an id cannot be listed under itself; it is
-    // listed under a safe stand-in so it is still visible.
-    const listedAs = PluginId.safeParse(name).success
-      ? name
-      : `invalid-${name.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`.slice(0, 64);
-    const refuse = (error: string, displayName?: string) => {
-      refused.push({ dir: folder, meta: refusedMeta(listedAs, displayName ?? name), error: `${MANIFEST_FILE}: ${error}` });
-    };
-
-    let raw: unknown;
-    try {
-      raw = JSON.parse(fs.readFileSync(path.join(folder, MANIFEST_FILE), "utf8"));
-    } catch (error) {
-      refuse(error instanceof SyntaxError ? `not valid JSON (${error.message})` : "missing");
+    const checked = checkPluginFolder(folder, name, { ids, prefixes });
+    if ("error" in checked) {
+      refused.push(refusedPlugin(folder, checked.error, checked.name));
       continue;
     }
-    const parsed = ExternalPluginManifest.safeParse(raw);
-    if (!parsed.success) {
-      const named = (raw as { name?: unknown } | null)?.name;
-      refuse(describe(parsed.error), typeof named === "string" ? named : undefined);
-      continue;
-    }
-    const manifest = parsed.data;
-    if (manifest.id !== name) {
-      refuse(`id "${manifest.id}" does not match its folder "${name}"`, manifest.name);
-      continue;
-    }
-    if (ids.has(manifest.id)) {
-      refuse(`id "${manifest.id}" is already taken`, manifest.name);
-      continue;
-    }
-    if (manifest.toolPrefix && prefixes.has(manifest.toolPrefix)) {
-      refuse(`tool prefix "${manifest.toolPrefix}" is already owned by another plugin`, manifest.name);
-      continue;
-    }
-    const program = manifest.command[0]!;
-    if (program.startsWith("./") && !fs.existsSync(path.join(folder, program))) {
-      refuse(`command "${program}" is not in the plugin's folder`, manifest.name);
-      continue;
-    }
-    ids.add(manifest.id);
-    if (manifest.toolPrefix) prefixes.add(manifest.toolPrefix);
-    loaded.push({ dir: folder, manifest });
+    ids.add(checked.manifest.id);
+    if (checked.manifest.toolPrefix) prefixes.add(checked.manifest.toolPrefix);
+    loaded.push({ dir: folder, manifest: checked.manifest });
   }
   return { loaded, refused };
 }
@@ -107,5 +124,7 @@ export function loadExternalPlugins(
  * the same reservations, so they agree on which plugins exist.
  */
 export function loadInstalledPlugins(dir: string) {
-  return loadExternalPlugins(dir, { ids: new Set(BUNDLED_PLUGIN_IDS), prefixes: new Set(BUNDLED_PLUGIN_TOOL_PREFIXES) });
+  return loadExternalPlugins(dir, BUNDLED_RESERVATIONS);
 }
+
+export const BUNDLED_RESERVATIONS: Reservations = { ids: new Set(BUNDLED_PLUGIN_IDS), prefixes: new Set(BUNDLED_PLUGIN_TOOL_PREFIXES) };

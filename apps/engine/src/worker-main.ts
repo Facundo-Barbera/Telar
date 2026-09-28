@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import path from "node:path";
+import { registerPluginToolPrefixes } from "@telar/engine-client";
 import { connectEngine } from "@telar/engine-client/node";
 import { BrowserRuntime } from "./browser";
 import { createBrowserToolSocket, createDefaultDrivers } from "./drivers";
@@ -30,11 +31,14 @@ if (!/^[A-Za-z0-9_-]+$/.test(workerId)) {
 }
 
 // The installed plugins' walls, from the same folder the daemon reads: a tool
-// the daemon routes must be one this worker offers.
-setPluginToolModules([
-  ...bundledPluginToolModules(),
-  ...loadInstalledPlugins(externalPluginsDir(root)).loaded.map(externalToolModule),
-]);
+// the daemon routes must be one this worker offers. Re-read when a claim names
+// a plugin installed since.
+const loadPluginTools = () => {
+  const installed = loadInstalledPlugins(externalPluginsDir(root)).loaded;
+  registerPluginToolPrefixes(installed.flatMap((loaded) => (loaded.manifest.toolPrefix ? [loaded.manifest.toolPrefix] : [])));
+  setPluginToolModules([...bundledPluginToolModules(), ...installed.map(externalToolModule)]);
+};
+loadPluginTools();
 
 let stopping = false;
 
@@ -86,6 +90,7 @@ const supervisor = new WorkerReconnectController({
       sessionsSocket,
       telarSocket,
       loginGrants,
+      refreshPlugins: loadPluginTools,
       ...(concurrency === undefined ? {} : { concurrency }),
       onConnectionLost,
     });
