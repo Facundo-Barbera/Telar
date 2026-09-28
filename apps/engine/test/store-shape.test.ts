@@ -64,7 +64,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore, statePaths } from "../src/state";
-import { DIRECTORY_CATEGORIES } from "../src/storage";
+import { DIRECTORY_CATEGORIES } from "../src/domains/storage";
 
 const scratch: string[] = [];
 const stores: EngineStore[] = [];

@@ -1,24 +1,7 @@
-/**
- * WHETHER A WORKTREE AND A PACKAGE-MANAGER CACHE CAN DEDUP — `src/package-caches.ts`.
- *
- * Every dedup case runs against a FAKE `stat`: a plain map from path to device
- * number, because the actual question ("do two paths share a filesystem") is a
- * `st_dev` comparison and nothing about a real disk is needed to exercise it —
- * see that module's header for why `du`, `stat.blocks` and a hardlink count are
- * all the wrong instrument here. Cache-root RESOLUTION is tested separately,
- * against an injected environment and home directory, never the real machine's
- * — a test that read `process.env` or `os.homedir()` would report differently
- * depending on whose machine ran it, which is exactly the bug class this module
- * exists to avoid one layer up.
- */
 import { expect, test } from "bun:test";
 import type { Stats } from "node:fs";
-import { detectCacheDedup, packageCaches, type PackageCache } from "../src/package-caches";
+import { detectCacheDedup, packageCaches, type PackageCache } from "./package-caches";
 
-/** A `stat` that knows a fixed device number for a fixed set of paths and
- *  throws for anything else. `errorCode` defaults to ENOENT — the ordinary
- *  "nothing there yet" case this module has to tell apart from "a different
- *  filesystem". */
 function fakeStat(devices: Record<string, number>, errorCode = "ENOENT") {
   return (target: string): Stats => {
     if (!(target in devices)) {
@@ -34,10 +17,6 @@ const CACHE: PackageCache = { name: "bun", path: "/cache/bun" };
 const OTHER: PackageCache = { name: "npm", path: "/cache/npm" };
 const WORKTREE = "/worktrees/one";
 
-/* ------------------------------------------------------------------ *
- * The two break-it-on-purpose cases from the issue
- * ------------------------------------------------------------------ */
-
 test("equal devices are the same filesystem, and a caller shows nothing for it", () => {
   const stat = fakeStat({ [WORKTREE]: 7, [CACHE.path]: 7 });
   const [verdict] = detectCacheDedup(WORKTREE, { stat }, [CACHE]);
@@ -45,15 +24,11 @@ test("equal devices are the same filesystem, and a caller shows nothing for it",
 });
 
 test("a cache root that ENOENTs is unreachable, never different-device", () => {
-  const stat = fakeStat({ [WORKTREE]: 7 }); // CACHE.path is absent -> ENOENT
+  const stat = fakeStat({ [WORKTREE]: 7 });
   const [verdict] = detectCacheDedup(WORKTREE, { stat }, [CACHE]);
   expect(verdict.dedup).toBe("unreachable");
   expect(verdict.dedup).not.toBe("different-device");
 });
-
-/* ------------------------------------------------------------------ *
- * The third outcome, and resilience across several caches
- * ------------------------------------------------------------------ */
 
 test("different devices means a real copy, not a clone", () => {
   const stat = fakeStat({ [WORKTREE]: 7, [CACHE.path]: 9 });
@@ -69,7 +44,7 @@ test("a non-ENOENT stat error is still unreachable, not a throw", () => {
 });
 
 test("one unreachable cache does not take the rest of the report down", () => {
-  const stat = fakeStat({ [WORKTREE]: 7, [OTHER.path]: 7 }); // CACHE.path absent
+  const stat = fakeStat({ [WORKTREE]: 7, [OTHER.path]: 7 });
   const verdicts = detectCacheDedup(WORKTREE, { stat }, [CACHE, OTHER]);
   expect(verdicts).toEqual([
     { ...CACHE, dedup: "unreachable" },
@@ -78,15 +53,11 @@ test("one unreachable cache does not take the rest of the report down", () => {
 });
 
 test("a worktree root that cannot itself be stat'd reports every cache unreachable", () => {
-  const stat = fakeStat({ [CACHE.path]: 7, [OTHER.path]: 9 }); // WORKTREE absent
+  const stat = fakeStat({ [CACHE.path]: 7, [OTHER.path]: 9 });
   const verdicts = detectCacheDedup(WORKTREE, { stat }, [CACHE, OTHER]);
   expect(verdicts).toHaveLength(2);
   expect(verdicts.map((v) => v.dedup)).toEqual(["unreachable", "unreachable"]);
 });
-
-/* ------------------------------------------------------------------ *
- * Resolving each package manager's cache root from an injected environment
- * ------------------------------------------------------------------ */
 
 const HOME_DARWIN = "/Users/fixture";
 const HOME_LINUX = "/home/fixture";
