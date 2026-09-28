@@ -241,6 +241,7 @@ function SessionTurnBody({
       {answerLane && (
       <Message from="assistant">
         <MessageContent from="assistant">
+          {turn.restartOrigin !== undefined && <Marker>continued after Telar restarted to update</Marker>}
           {requests.map((request) => (
             <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />
           ))}
@@ -266,7 +267,6 @@ function SessionTurnBody({
             />
           )}
           {turn.resumedAfterRateLimit !== undefined && <Marker>resumed after the usage limit reset</Marker>}
-          {turn.restartOrigin !== undefined && <Marker>continued after Telar restarted to update</Marker>}
           {turn.state === "stopped" && <Marker>stopped — kept what arrived</Marker>}
           {turn.state === "discarded" && <Marker>{describeTurnState(turn.state).label.toLowerCase()}</Marker>}
           {live && (
