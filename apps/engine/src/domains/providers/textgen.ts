@@ -96,13 +96,27 @@ async function runClaude(input: TextGenDriverInput, prompt: string, schema: obje
     "json",
     "--json-schema",
     JSON.stringify(schema),
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+    "--max-turns",
+    "1",
+    "--system-prompt",
+    "Answer with the requested JSON only.",
     ...(input.model ? ["--model", input.model] : []),
   ];
-  const stdout = await runToCompletion(executable, args, input, prompt);
-  if (stdout === undefined) return undefined;
-  const envelope = parseJson(stdout);
-  const structured = envelope?.["structured_output"];
-  return typeof structured === "object" && structured !== null ? (structured as Record<string, unknown>) : undefined;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "telar-textgen-"));
+  try {
+    const stdout = await runToCompletion(executable, args, { ...input, cwd: scratch }, prompt);
+    if (stdout === undefined) return undefined;
+    const envelope = parseJson(stdout);
+    const structured = envelope?.["structured_output"];
+    return typeof structured === "object" && structured !== null ? (structured as Record<string, unknown>) : undefined;
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 async function runCodex(input: TextGenDriverInput, prompt: string, schema: object): Promise<Record<string, unknown> | undefined> {

@@ -6,7 +6,7 @@ import path from "node:path";
 import { DEFAULT_TEXT_GEN_POLICY, type TextGenPolicy } from "@telar/engine-client";
 import { EngineStore } from "../../state";
 import { EngineStateError } from "../../platform/kernel";
-import { buildTitlePrompt, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "./textgen";
+import { buildTitlePrompt, generateSessionTitle, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "./textgen";
 import { worktreeReady } from "../../../test/worktree-ready";
 
 const roots: string[] = [];
@@ -122,6 +122,37 @@ describe("refreshWorktreeBranchFromTitle", () => {
     const { store, id } = await worktreeSession("same title");
     expect(await store.lifecycle.refreshWorktreeBranchFromTitle(id)).toBeUndefined();
   });
+});
+
+test("a Claude title is one bare model call, run outside the project", async () => {
+  const bin = tmp("telar-tg-bin-");
+  const record = path.join(bin, "record");
+  const claude = path.join(bin, "claude");
+  fs.writeFileSync(
+    claude,
+    `#!/bin/sh\n[ "$1" = "--version" ] && echo "2.1.270 (fake)" && exit 0\n{ pwd; echo "A=$A"; for a in "$@"; do echo "[$a]"; done; } > "${record}"\ncat > /dev/null\necho '{"structured_output":{"title":"Queue refill race"}}'\n`,
+  );
+  fs.chmodSync(claude, 0o755);
+  const project = repo();
+  const previous = process.env.TELAR_ALLOW_CLI;
+  process.env.TELAR_ALLOW_CLI = "1";
+  try {
+    expect(await generateSessionTitle({ driver: "claude", binaryPath: claude, env: { A: "b" }, cwd: project, model: "haiku", message: "fix the queue refill race" })).toBe("Queue refill race");
+  } finally {
+    if (previous === undefined) delete process.env.TELAR_ALLOW_CLI;
+    else process.env.TELAR_ALLOW_CLI = previous;
+  }
+  const [cwd, env, ...args] = fs.readFileSync(record, "utf8").trim().split("\n");
+  expect(cwd!.startsWith(fs.realpathSync(project))).toBe(false);
+  expect(fs.existsSync(cwd!)).toBe(false);
+  expect(env).toBe("A=b");
+  const joined = args.join(" ");
+  expect(joined).toContain("[--tools] []");
+  expect(joined).toContain("[--strict-mcp-config]");
+  expect(args).not.toContain("[--mcp-config]");
+  expect(joined).toContain("[--setting-sources] []");
+  expect(joined).toContain("[--max-turns] [1]");
+  expect(joined).toContain("[--model] [haiku]");
 });
 
 describe("maybeRetitleSession", () => {
