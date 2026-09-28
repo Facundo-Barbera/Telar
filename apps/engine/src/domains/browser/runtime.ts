@@ -2,6 +2,7 @@ import nodePath from "node:path";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import {
   browserErrorText,
+  browserOperation,
   headlessBrowserToolCall,
   imageDataUrlOf,
   isBrowserNotInstalled,
@@ -14,7 +15,6 @@ import { headlessCanvasCall } from "./canvas";
 import { ScopedRuntimePool, type ScopedRuntimeResource } from "./pool";
 import { installBrowser, PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
 import { BrowserToolResult, parseBrowserToolInput } from "./tools";
-
 
 const MAX_BROWSER_SCOPES = 6;
 
@@ -106,10 +106,10 @@ export class BrowserRuntime {
         isError: true,
       };
     }
-    const normalized = headlessBrowserToolCall(name, args);
-    const input = parseBrowserToolInput(normalized.name, normalized.args);
-    delete input.tabId;
-    const wire = headlessCanvasCall(normalized.name, input);
+    const parsed = browserOperation(name, parseBrowserToolInput(name, args));
+    const operation = headlessBrowserToolCall(parsed.name, parsed.args);
+    delete operation.args.tabId;
+    const wire = headlessCanvasCall(operation.name, operation.args);
     if ("refusal" in wire) return { content: [{ type: "text", text: wire.refusal }], isError: true };
 
     const resource = this.scopeFor(scope);
@@ -143,11 +143,11 @@ export class BrowserRuntime {
       };
     }
     try {
-      const tabsResult = await this.call(scopeKey, "browser_list_tabs");
+      const tabsResult = await this.call(scopeKey, "browser_tabs");
       const tabs = parseBrowserTabs(textOf(tabsResult));
       let screenshot: string | null = null;
       if (!tabsResult.isError && tabs.length > 0 && options.screenshot !== false) {
-        const shot = await this.call(scopeKey, "browser_take_screenshot", { type: "jpeg", scale: "css" });
+        const shot = await this.call(scopeKey, "browser_snapshot", { screenshot: true, type: "jpeg", scale: "css" });
         screenshot = imageDataUrlOf(shot);
       }
       return {
@@ -306,7 +306,7 @@ export class BrowserRouter implements EngineBrowser {
       }
       let screenshot: string | null = null;
       if (state.tabs.length > 0 && options.screenshot !== false) {
-        const shot = await this.desktop!.call(scopeKey, "browser_take_screenshot", { type: "jpeg", scale: "css" });
+        const shot = await this.desktop!.call(scopeKey, "browser_snapshot", { screenshot: true, type: "jpeg", scale: "css" });
         screenshot = shot.isError ? null : imageDataUrlOf(shot);
       }
       return { scopeKey, provider: "attached", running: state.running, tabs: state.tabs, screenshot, error: null };

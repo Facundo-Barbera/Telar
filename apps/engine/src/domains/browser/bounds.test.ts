@@ -201,13 +201,12 @@ describe("what the toolkit costs before a single page is opened", () => {
     expect(total).toBeLessThan(3_600);
   });
 
-  test("the three bounded tools say so, and name their narrowing argument", () => {
+  test("the two bounded tools say so, and name their narrowing arguments", () => {
     const byName = new Map(BROWSER_TOOLS.map((tool) => [tool.name, tool.description]));
     expect(byName.get("browser_snapshot")).toContain("16 KB");
     expect(byName.get("browser_snapshot")).toContain("depth");
-    expect(byName.get("browser_console_messages")).toContain("6 KB");
-    expect(byName.get("browser_console_messages")).toContain("level");
-    expect(byName.get("browser_network_requests")).toContain("6 KB");
-    expect(byName.get("browser_network_requests")).toContain("filter");
+    expect(byName.get("browser_logs")).toContain("6 KB");
+    expect(byName.get("browser_logs")).toContain("level");
+    expect(byName.get("browser_logs")).toContain("filter");
   });
 });

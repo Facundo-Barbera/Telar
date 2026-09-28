@@ -539,7 +539,7 @@ describe("every tool description is short enough to carry", () => {
    * teaches a dead tool is worse than no page.
    */
   test("what the cap displaced is in the skill, not deleted", () => {
-    for (const owed of ["sessions_send", "browser_list_tabs", "notes_write"]) {
+    for (const owed of ["sessions_send", "browser_tabs", "notes_write"]) {
       expect(TELAR_SKILL).toContain(owed);
     }
     for (const retired of ["warp", "export const meta", "pipeline(items, ...stages)", "parallel(thunks)", "agent(prompt, opts?)"]) {

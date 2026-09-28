@@ -218,16 +218,16 @@ they say "the browser" in Telar, this is what they mean.
 
 - **You get your own tab.** \`browser_tabs\` new/select moves YOU without moving
   what they are looking at, and every tool takes an optional \`tabId\`.
-  \`browser_list_tabs\` marks their tab \`(current)\` and yours \`(yours)\`.
+  \`browser_tabs\` list marks their tab \`(current)\` and yours \`(yours)\`.
 - **List tabs before acting** on a page they referred to.
 - Never substitute Chrome, Safari, another profile, or a headless browser.
 - \`browser_fill_secret\` fills a login from their 1Password without the value
   ever entering this conversation. Use it instead of asking them to paste one.
 - **No ref for what you can see?** A page drawn on a canvas (a spreadsheet, a
-  diagram) has none. Take \`browser_take_screenshot\` and act by coordinates:
-  \`browser_click\`, \`browser_hover\` and \`browser_drag\` take \`x\`,\`y\` in that
-  image's CSS pixels, and \`browser_type\` with no target types into whatever
-  then has focus. \`browser_press_key\` takes chords (\`Control+A\`, \`Meta+V\`).
+  diagram) has none. Take \`browser_snapshot\` with \`screenshot: true\` and act
+  by coordinates: \`browser_click\`, \`browser_hover\` and \`browser_drag\` take
+  \`x\`,\`y\` in that image's CSS pixels, and \`browser_type\` with no target types
+  into whatever then has focus; its \`key\` presses chords (\`Control+A\`, \`Meta+V\`).
 - In a spreadsheet drawn on a canvas, reach cells through its name box (type
   \`B7\`, Enter) and formula bar; \`browser_paste\` tab-separated rows to fill
   many cells at once, and \`browser_copy\` reads a selection back.

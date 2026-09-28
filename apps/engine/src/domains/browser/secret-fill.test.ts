@@ -72,7 +72,7 @@ function fakeDeps(options: {
       ...(options.grants ? { grants: options.grants } : {}),
       callBrowser: async (name, args) => {
         calls.push({ name, args });
-        if (name === "browser_list_tabs") {
+        if (name === "browser_tabs") {
           tabReads += 1;
           options.onTabRead?.(tabReads);
           return { content: [{ type: "text", text: options.rawTabs ?? tabLine(page) }] };
@@ -116,11 +116,11 @@ test("the happy path: origin from the tab, human-picked item, fill, prose result
   expect(asked[0]!.fields).toEqual([{ kind: "username" }, { kind: "password" }]);
 
   expect(calls.map((call) => call.name)).toEqual([
-    "browser_list_tabs",
-    "browser_list_tabs",
-    "browser_list_tabs",
+    "browser_tabs",
+    "browser_tabs",
+    "browser_tabs",
     "browser_fill_form",
-    "browser_list_tabs",
+    "browser_tabs",
     "browser_click",
   ]);
   const fill = calls.find((call) => call.name === "browser_fill_form")!.args as { fields: { target: string; value: string }[] };
@@ -176,7 +176,7 @@ test("a decline is a result, not a throw, and nothing is read from the vault", a
   expect(result.isError).toBe(true);
   expect(textOf(result)).toContain("declined");
   expect(reads).toBe(0);
-  expect(calls.map((call) => call.name)).toEqual(["browser_list_tabs"]);
+  expect(calls.map((call) => call.name)).toEqual(["browser_tabs"]);
 });
 
 test("the page navigating off-domain while parked aborts the fill — approval is for a page", async () => {

@@ -58,13 +58,37 @@ test("calls hit POST /tool with the bearer, normalized name and validated args",
     return { status: 200, payload: { content: [{ type: "text", text: "ok from host" }] } };
   });
   const client = new DesktopBrowserClient({ port, token: "tok" });
-  const listed = await client.call("session_one", "browser_list_tabs", {});
+  const listed = await client.call("session_one", "browser_tabs", {});
   expect(textOf(listed)).toBe("ok from host");
   expect(seen[0]).toEqual({ scopeKey: "session_one", name: "browser_tabs", args: { action: "list" } });
   await client.call("session_one", "browser_resize", { mode: "fit" });
   await client.call("session_one", "browser_resize", { preset: "phone" });
   expect(seen[1]).toEqual({ scopeKey: "session_one", name: "browser_resize", args: { mode: "fit" } });
   expect(seen[2]).toEqual({ scopeKey: "session_one", name: "browser_resize", args: { preset: "phone" } });
+});
+
+test("a merged tool's mode reaches the host as the operation it already runs", async () => {
+  const seen: { name: unknown; args: unknown }[] = [];
+  const port = await fakeHost(({ body }) => {
+    seen.push({ name: body.name, args: body.args });
+    return { status: 200, payload: { content: [{ type: "text", text: "ok" }] } };
+  });
+  const client = new DesktopBrowserClient({ port, token: "tok" });
+  await client.call("s", "browser_navigate", { url: "back", tabId: 1 });
+  await client.call("s", "browser_snapshot", { screenshot: true, fullPage: true });
+  await client.call("s", "browser_logs", { kind: "console", level: "error" });
+  await client.call("s", "browser_logs", { kind: "network", filter: "/api" });
+  await client.call("s", "browser_type", { key: "Meta+V" });
+  expect(seen).toEqual([
+    { name: "browser_navigate_back", args: { tabId: 1 } },
+    { name: "browser_take_screenshot", args: { type: "png", scale: "css", fullPage: true } },
+    { name: "browser_console_messages", args: { level: "error" } },
+    { name: "browser_network_requests", args: { static: false, filter: "/api" } },
+    { name: "browser_press_key", args: { key: "Meta+V" } },
+  ]);
+  const old = await client.call("s", "browser_list_tabs", {});
+  expect(old.isError).toBe(true);
+  expect(seen).toHaveLength(5);
 });
 
 test("invalid arguments are refused on THIS side of the wire, naming the field", async () => {

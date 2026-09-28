@@ -1,5 +1,5 @@
 import type { BrowserTab } from "@telar/engine-client";
-import { normalizeBrowserToolCall } from "./helpers";
+import { browserOperation } from "./helpers";
 import { BrowserToolInputError, BrowserToolResult, parseBrowserToolInput } from "./tools";
 
 export type DesktopBrowserConfig = {
@@ -76,8 +76,7 @@ export class DesktopBrowserClient {
     }
     let normalized: { name: string; args: Record<string, unknown> };
     try {
-      const call = normalizeBrowserToolCall(name, args);
-      normalized = { name: call.name, args: parseBrowserToolInput(call.name, call.args) };
+      normalized = browserOperation(name, parseBrowserToolInput(name, args));
     } catch (error) {
       if (error instanceof BrowserToolInputError) return errorResult(error.message);
       throw error;

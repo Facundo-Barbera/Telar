@@ -14,38 +14,47 @@ export type BrowserTabInfo = {
   tabUid?: string;
 };
 
-export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
-  "browser_navigate",
-  "browser_navigate_back",
-  "browser_click",
-  "browser_type",
-  "browser_fill_form",
-  "browser_press_key",
-  "browser_hover",
-  "browser_select_option",
-  "browser_tabs",
-  "browser_resize",
-  "browser_fill_secret",
-  "browser_drag",
-  "browser_paste",
-  "browser_copy",
+const READ_ONLY_OPERATIONS: ReadonlySet<string> = new Set([
+  "browser_snapshot",
+  "browser_take_screenshot",
+  "browser_console_messages",
+  "browser_network_requests",
 ]);
 
-export function normalizeBrowserToolCall(
-  name: string,
-  args: Record<string, unknown>,
-): { name: string; args: Record<string, unknown> } {
-  if (name === "browser_list_tabs") return { name: "browser_tabs", args: { action: "list" } };
-  return { name, args };
+type BrowserCall = { name: string; args: Record<string, unknown> };
+
+function defined(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined));
 }
 
-export function headlessBrowserToolCall(
-  name: string,
-  args: Record<string, unknown>,
-): { name: string; args: Record<string, unknown> } {
-  const call = normalizeBrowserToolCall(name, args);
-  if (call.name !== "browser_resize") return call;
-  const { preset, mode, orientation, ...rest } = call.args;
+export function browserOperation(name: string, args: Record<string, unknown>): BrowserCall {
+  const { tabId } = args;
+  switch (name) {
+    case "browser_tabs":
+      return { name, args: { ...args, action: args.action ?? "list" } };
+    case "browser_navigate":
+      return args.url === "back" ? { name: "browser_navigate_back", args: defined({ tabId }) } : { name, args };
+    case "browser_snapshot": {
+      const { screenshot, type, fullPage, scale, ...snapshot } = args;
+      if (screenshot !== true) return { name, args: snapshot };
+      return { name: "browser_take_screenshot", args: defined({ type, fullPage, scale, tabId }) };
+    }
+    case "browser_logs":
+      return args.kind === "network"
+        ? { name: "browser_network_requests", args: defined({ static: args.static, filter: args.filter, tabId }) }
+        : { name: "browser_console_messages", args: defined({ level: args.level, all: args.all, tabId }) };
+    case "browser_type": {
+      const { key, ...typed } = args;
+      return key === undefined ? { name, args: typed } : { name: "browser_press_key", args: defined({ key, tabId }) };
+    }
+    default:
+      return { name, args };
+  }
+}
+
+export function headlessBrowserToolCall(name: string, args: Record<string, unknown>): BrowserCall {
+  if (name !== "browser_resize") return { name, args };
+  const { preset, mode, orientation, ...rest } = args;
   const turn = orientation === "portrait" || orientation === "landscape" ? orientation : undefined;
   let size: { width: unknown; height: unknown } | undefined;
   const entry = typeof preset === "string" ? viewportPreset(preset) : undefined;
@@ -58,17 +67,18 @@ export function headlessBrowserToolCall(
     ...(preset !== undefined && !entry ? { preset } : {}),
     ...(orientation !== undefined && !turn ? { orientation } : {}),
   };
-  if (!size) return { name: call.name, args: leftover };
+  if (!size) return { name, args: leftover };
   if (turn && typeof size.width === "number" && typeof size.height === "number") {
     size = orient({ width: size.width, height: size.height }, turn);
   }
-  return { name: call.name, args: { ...leftover, ...size } };
+  return { name, args: { ...leftover, ...size } };
 }
 
 export function isReadOnlyBrowserCall(name: string, args: Record<string, unknown> = {}): boolean {
-  const call = normalizeBrowserToolCall(name, args);
-  if (call.name === "browser_tabs") return call.args.action === "list";
-  return BROWSER_TOOL_NAMES.has(call.name) && !MUTATING_TOOLS.has(call.name);
+  if (!BROWSER_TOOL_NAMES.has(name)) return false;
+  const operation = browserOperation(name, args);
+  if (operation.name === "browser_tabs") return operation.args.action === "list";
+  return READ_ONLY_OPERATIONS.has(operation.name);
 }
 
 export function fileUrlViolation(name: string, args: Record<string, unknown>, workspaceRoot?: string): string | null {

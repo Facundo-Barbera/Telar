@@ -264,7 +264,7 @@ test("the skill names every tool on the telar wall, so it cannot drift", () => {
   expect(TELAR_SKILL.toLowerCase()).not.toContain("warp");
   // The browser is a separate server with its own briefing, and the skill is
   // where its tab rules are written down in full.
-  expect(TELAR_SKILL).toContain("browser_list_tabs");
+  expect(TELAR_SKILL).toContain("browser_tabs");
 });
 
 test("the skill and the run briefing send long-running work to a terminal the person can see", () => {
