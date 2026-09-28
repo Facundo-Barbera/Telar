@@ -1,3 +1,5 @@
 # Mechanical re-indents and moves; see git blame --ignore-revs-file.
 # refactor(engine): make the 28 store commands wrap themselves explicitly
 ba6deab5283e2d15ed34143a8b67026f9dfe26dc
+# refactor(engine): extract the store kernel into platform/kernel
+3b13c4539f950588dab4ab4c5f5413176dbd12d3

@@ -7,7 +7,7 @@ import type { EngineStore } from "../src/state";
 type Row = Record<string, unknown> | undefined;
 type Statement = { get(...args: unknown[]): Row; all(...args: unknown[]): Array<Record<string, unknown>> };
 const db = (store: ExecutionStore) => (store as unknown as { db: { prepare(sql: string): Statement } }).db;
-const executionOf = (store: EngineStore) => (store as unknown as { executionStore: ExecutionStore }).executionStore;
+const executionOf = (store: EngineStore) => (store as unknown as { kernel: { executionStore: ExecutionStore } }).kernel.executionStore;
 
 /** The SQLite execution store behind an `EngineStore`. */
 export function executionStoreOf(store: EngineStore): ExecutionStore {

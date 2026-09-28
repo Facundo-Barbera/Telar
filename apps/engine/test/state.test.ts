@@ -40,7 +40,7 @@ function readyStore(): { store: EngineStore; root: string } {
   return { store, root: stateRoot };
 }
 
-const documents = (store: EngineStore) => (store as unknown as { executionStore: ExecutionStore }).executionStore;
+const documents = (store: EngineStore) => (store as unknown as { kernel: { executionStore: ExecutionStore } }).kernel.executionStore;
 
 // Rewrites a stored session_one document, as an older build left it.
 function editDocument(store: EngineStore, stateRoot: string, name: string, edit: (value: any) => void): void {
