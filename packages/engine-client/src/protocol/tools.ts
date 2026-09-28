@@ -143,13 +143,28 @@ export function qualifyTelarTool(tool: string, server: string = TELAR_MCP_SERVER
   return canonicalToolName(server, tool);
 }
 
+/**
+ * INSTALLED PLUGINS' PREFIXES, learned at run time. The bundled ones are data
+ * (`TELAR_CAPABILITIES`); a plugin installed from a folder is only known once
+ * the daemon has read it, so whoever holds the plugin list registers its
+ * prefixes here. Replaces the previous set: the list is the whole truth.
+ */
+let installedPrefixes: readonly string[] = [];
+
+export function registerPluginToolPrefixes(prefixes: readonly string[]): void {
+  installedPrefixes = prefixes.filter((prefix) => !(TELAR_CAPABILITIES as readonly string[]).includes(prefix));
+}
+
 export type ParsedToolName = {
   /** The MCP server, when the name is qualified at all. */
   server?: string;
   /** The tool as its server knows it — never the qualified form. */
   tool: string;
-  /** Set only for Telar's own tools whose prefix names a known capability. */
-  capability?: TelarCapability;
+  /**
+   * Set only for Telar's own tools whose prefix names a known capability — a
+   * core one, a bundled plugin's, or an installed plugin's registered prefix.
+   */
+  capability?: TelarCapability | (string & {});
 };
 
 /**
@@ -167,7 +182,7 @@ export function parseToolName(name: string): ParsedToolName {
   if (!server || rest.length === 0) return { tool: name };
   const tool = rest.join("__");
   if (!isTelarMcpServer(server)) return { server, tool };
-  const capability = TELAR_CAPABILITIES.find((known) => tool.startsWith(`${known}_`));
+  const capability = [...TELAR_CAPABILITIES, ...installedPrefixes].find((known) => tool.startsWith(`${known}_`));
   return { server, tool, ...(capability ? { capability } : {}) };
 }
 

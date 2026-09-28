@@ -38,6 +38,7 @@ export const ECHO_MANIFEST = {
   ],
   settingsSchema: { type: "object", properties: { greeting: { type: "string", title: "Greeting" } } },
   routes: { session: ["status"] },
+  panels: [{ id: "status", label: "Status", verb: "status" }],
 };
 
 /** Write a plugin folder under `pluginsDir`; `manifest` may be raw text to test a broken file. */

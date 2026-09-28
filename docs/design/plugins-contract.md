@@ -140,7 +140,7 @@ requires?: { id; label; probe: verb; install?: verb }[]
 | Manifest | `PluginMeta` literal in TS | `plugin.json` (`ExternalPluginManifest`), mapped to `PluginMeta` |
 | Engine code | in-process `PluginEngineModule` | supervised child process; MCP tools and routes share one stdio channel |
 | Tools | `PluginToolModule` on the `telar` key | declared in the manifest, walled on the `telar` key under the plugin's prefix, each call forwarded to the child |
-| UI | React components in the web registry | declarative UI only |
+| UI | React components in the web registry | declarative panel blocks, drawn by the cockpit |
 | Trust | same as the daemon (**not a sandbox**) | owner-authored at first; third-party sandboxing is a later, separate design |
 
 ### External plugins (P4)
@@ -152,6 +152,8 @@ requires?: { id; label; probe: verb; install?: verb }[]
 - **Lifecycle** (`plugins/external/process.ts`). Nothing is spawned at engine start; the child starts on first use. It restarts with backoff (1s doubling to 30s, reset after a minute up) while wanted, stops when the last project turns the plugin off (`releaseProject`), and on dispose. In-flight requests are refused when it dies.
 - **Tools.** The wall comes from the manifest, so it exists without the child running. A call goes through the generic session door as the reserved verb `tool`, so the host's gate (Mac, then project) applies, and only a declared name passes.
 - **Approval.** An external manifest has no `readTools` key, `externalMeta` always publishes `[]`, and `HOST_RATIFIED_READ_TOOLS` names no external id. Every external tool parks an approval card.
+- **Declarative UI.** A manifest's `panels` name a declared session verb that answers `{ blocks }`. The block kinds are `heading`, `text` (plain or `markdown`), `keyValue`, `table`, `log`, and `action`, a button that posts a session verb with `input` after an optional `confirm`, then redraws. Blocks are parsed one by one (`parsePluginPanelView`), so a kind the cockpit does not know is skipped. On the web, every enabled plugin's panels share one right-panel tab, "Plugins", which is offered only while one of them has a panel. The phone draws nothing for them yet. Settings come from the published JSON Schema through the P3 renderer.
+- **Tool rows.** The daemon and the cockpit call `registerPluginToolPrefixes` with the installed prefixes, so `parseToolName` types an installed plugin's tools like a bundled one's.
 - **Trust.** Owner-authored. The child gets a minimal environment (`PATH`, `HOME`, `TELAR_PLUGIN_ID`/`_DIR`/`_STATE`) with no engine token or provider keys, but it is **not a sandbox**.
 
 ## Migration order

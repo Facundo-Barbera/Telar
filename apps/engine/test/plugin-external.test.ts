@@ -271,6 +271,8 @@ describe("the daemon", () => {
     expect(byId.echo?.state).toBe("ready");
     expect(byId.echo?.meta.toolPrefixes).toEqual(["echo"]);
     expect(byId.echo?.meta.readTools).toEqual([]);
+    // Its panels, for the cockpit's "Plugins" tab.
+    expect(byId.echo?.meta.panels).toEqual([{ id: "status", label: "Status", verb: "status" }]);
     // Published as the manifest wrote it, for the generated settings pane.
     expect(byId.echo?.settingsSchema).toEqual(ECHO_MANIFEST.settingsSchema);
     expect(byId.broken?.state).toBe("failed");

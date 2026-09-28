@@ -77,6 +77,77 @@ export const PluginSettingsSection = z.object({
 });
 export type PluginSettingsSection = z.infer<typeof PluginSettingsSection>;
 
+/** A session verb, as the generic door spells it: `status`, `jobs-refresh`. */
+const PluginSessionVerb = z.string().regex(/^[a-z][a-z0-9-]*$/, "a verb is lowercase letters, digits and dashes");
+
+/**
+ * A PANEL SURFACE AN EXTERNAL PLUGIN DRAWS WITHOUT SHIPPING UI CODE. The
+ * cockpit asks the plugin's session verb `verb` and gets a `PluginPanelView`
+ * back: a list of blocks it knows how to draw. Declarative on purpose — an
+ * installed plugin brings data and a vocabulary, never a script into the
+ * cockpit.
+ */
+export const PluginPanel = z.strictObject({
+  /** Unique within the plugin. */
+  id: z.string().regex(/^[a-z][a-z0-9-]*$/).max(64),
+  label: z.string().min(1).max(40),
+  /** The session verb that answers with a `PluginPanelView`. */
+  verb: PluginSessionVerb,
+});
+export type PluginPanel = z.infer<typeof PluginPanel>;
+
+const Cell = z.union([z.string().max(2000), z.number(), z.boolean(), z.null()]);
+
+/**
+ * ONE BLOCK OF A PANEL. A closed vocabulary: the web and the phone draw each
+ * kind natively, and a kind this build does not know is skipped rather than
+ * failing the panel (`PluginPanelView` parses block by block).
+ */
+export const PluginPanelBlock = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("heading"), text: z.string().min(1).max(200) }),
+  /** Plain text, or Markdown when `markdown` is set. */
+  z.strictObject({ type: z.literal("text"), text: z.string().max(20_000), markdown: z.boolean().optional() }),
+  z.strictObject({
+    type: z.literal("keyValue"),
+    items: z.array(z.strictObject({ key: z.string().min(1).max(200), value: Cell })).max(100),
+  }),
+  z.strictObject({
+    type: z.literal("table"),
+    columns: z.array(z.string().max(200)).min(1).max(20),
+    rows: z.array(z.array(Cell).max(20)).max(500),
+  }),
+  /** The tail of something, oldest line first, drawn monospaced. */
+  z.strictObject({ type: z.literal("log"), lines: z.array(z.string().max(2000)).max(500) }),
+  /**
+   * A button that calls one of the plugin's session verbs with `input`, then
+   * redraws the panel. `confirm` is the sentence asked before it runs.
+   */
+  z.strictObject({
+    type: z.literal("action"),
+    label: z.string().min(1).max(40),
+    verb: PluginSessionVerb,
+    input: z.record(z.string(), z.unknown()).optional(),
+    confirm: z.string().min(1).max(200).optional(),
+  }),
+]);
+export type PluginPanelBlock = z.infer<typeof PluginPanelBlock>;
+
+/**
+ * What a panel verb answers. PARSED BLOCK BY BLOCK: one malformed or unknown
+ * block is dropped and counted, so a plugin a version ahead of the cockpit
+ * still draws everything the cockpit understands.
+ */
+export function parsePluginPanelView(value: unknown): { blocks: PluginPanelBlock[]; skipped: number } {
+  const raw = (value as { blocks?: unknown } | null)?.blocks;
+  if (!Array.isArray(raw)) return { blocks: [], skipped: 0 };
+  const blocks: PluginPanelBlock[] = [];
+  for (const candidate of raw.slice(0, 200)) {
+    const parsed = PluginPanelBlock.safeParse(candidate);
+    if (parsed.success) blocks.push(parsed.data);
+  }
+  return { blocks, skipped: raw.length - blocks.length };
+}
+
 /**
  * EVERYTHING THE HOST NEEDS TO KNOW ABOUT A PLUGIN WITHOUT RUNNING IT.
  *
@@ -133,6 +204,8 @@ export const PluginMeta = z.object({
     })
     .optional(),
   settings: z.array(PluginSettingsSection).default([]),
+  /** Panel surfaces drawn from blocks (external plugins). Absent for bundled ones, which ship components. */
+  panels: z.array(PluginPanel).optional(),
 });
 export type PluginMeta = z.infer<typeof PluginMeta>;
 
@@ -183,11 +256,13 @@ export const ExternalPluginManifest = z
     routes: z
       .strictObject({
         /** POST verbs a session calls, e.g. `"refresh"`. */
-        session: z.array(z.string().regex(/^[a-z][a-z0-9-]*$/)).default([]),
+        session: z.array(PluginSessionVerb).default([]),
         project: z.array(ExternalRouteKey).default([]),
         machine: z.array(ExternalRouteKey).default([]),
       })
       .default({ session: [], project: [], machine: [] }),
+    /** Panel surfaces, each drawn from a declared session verb. */
+    panels: z.array(PluginPanel).max(8).default([]),
   })
   .superRefine((manifest, context) => {
     if (manifest.tools.length > 0 && !manifest.toolPrefix) {
@@ -200,6 +275,18 @@ export const ExternalPluginManifest = z
     }
     if (new Set(manifest.tools.map((tool) => tool.name)).size !== manifest.tools.length) {
       context.addIssue({ code: "custom", path: ["tools"], message: "two tools share a name" });
+    }
+    // `tool` is the verb a tool call travels under; a route may not shadow it.
+    if (manifest.routes.session.includes("tool")) {
+      context.addIssue({ code: "custom", path: ["routes", "session"], message: '"tool" is reserved' });
+    }
+    for (const [index, panel] of manifest.panels.entries()) {
+      if (!manifest.routes.session.includes(panel.verb)) {
+        context.addIssue({ code: "custom", path: ["panels", index, "verb"], message: `"${panel.verb}" is not a declared session route` });
+      }
+    }
+    if (new Set(manifest.panels.map((panel) => panel.id)).size !== manifest.panels.length) {
+      context.addIssue({ code: "custom", path: ["panels"], message: "two panels share an id" });
     }
   });
 export type ExternalPluginManifest = z.infer<typeof ExternalPluginManifest>;
@@ -308,10 +395,9 @@ export type LegacyPlugin = keyof typeof LEGACY_PLUGIN_KEYS;
  * AGAINST IT at startup: a registered plugin whose prefix is missing here fails
  * loudly rather than quietly losing its typed display.
  *
- * WHAT THIS COSTS, said plainly: a plugin installed from a folder cannot appear
- * here, so its tools would render as generic MCP calls. That is a real limit of
- * the bundled milestone, not something the map solves, and closing it needs a
- * registration path from daemon to client that does not exist yet.
+ * A plugin installed from a folder cannot appear here. Its prefix reaches
+ * `parseToolName` through `registerPluginToolPrefixes` (tools.ts), which the
+ * daemon and a cockpit call once they have the plugin list.
  */
 export const BUNDLED_PLUGIN_TOOL_PREFIXES = ["ds", "notebook", "latex", "hello"] as const;
 
