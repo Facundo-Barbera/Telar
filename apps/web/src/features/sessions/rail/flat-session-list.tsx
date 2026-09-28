@@ -1,9 +1,9 @@
 "use client";
 
-import { ChevronRightIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import type { SidebarMode } from "@telar/engine-client";
 import { SessionRow } from "./session-row";
-import { summarizeChildren, type FlatEntry } from "./flat-rail";
+import { summarizeChildren, type ChildSummary, type FlatEntry } from "./flat-rail";
 import type { RailJumpSlot } from "../session-groups";
 import type { SessionRowChanged } from "../session-mutations";
 import { sessionKey, type SessionBand, type SidebarSession } from "../session-list";
@@ -17,7 +17,34 @@ type RowContext = {
   jumpSlot: (key: string) => RailJumpSlot | undefined;
 };
 
-function FlatRow({ session, variant, context }: { session: SidebarSession; variant: "card" | "slim"; context: RowContext }) {
+function ChildrenToggle({ summary, count, open, onToggle }: { summary: ChildSummary; count: number; open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-label={open ? `Hide ${summary.label}` : `Show ${summary.label}`}
+      title={summary.label}
+      onClick={onToggle}
+      className="absolute right-6 bottom-2 z-10 flex h-4 items-center gap-0.5 rounded px-1 text-2xs tabular-nums text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+    >
+      {summary.needsYou > 0 && <span aria-hidden className="size-1.5 rounded-full bg-destructive" />}
+      {count}
+      <ChevronDownIcon className={cn("size-3 transition-transform", !open && "-rotate-90")} />
+    </button>
+  );
+}
+
+function FlatRow({
+  session,
+  variant,
+  context,
+  disclosure,
+}: {
+  session: SidebarSession;
+  variant: "card" | "slim";
+  context: RowContext;
+  disclosure?: React.ReactNode;
+}) {
   const key = sessionKey(session);
   const slot = context.jumpSlot(key);
   return (
@@ -30,6 +57,7 @@ function FlatRow({ session, variant, context }: { session: SidebarSession; varia
       renderedAt={context.renderedAt}
       onRowChanged={context.onRowChanged}
       {...(slot === undefined ? {} : { jumpSlot: slot })}
+      {...(disclosure === undefined ? {} : { disclosure })}
     />
   );
 }
@@ -37,21 +65,12 @@ function FlatRow({ session, variant, context }: { session: SidebarSession; varia
 function FlatEntryItem({ entry, open, onToggle, context }: { entry: FlatEntry; open: boolean; onToggle: () => void; context: RowContext }) {
   const summary = entry.children.length > 0 ? summarizeChildren(entry.children, context.activeSessionId) : undefined;
   const shown = open ? entry.children : (summary?.surfaced ?? []);
+  const disclosure = summary && <ChildrenToggle summary={summary} count={entry.children.length} open={open} onToggle={onToggle} />;
   return (
     <div>
-      <FlatRow session={entry.session} variant="card" context={context} />
-      {summary && (
+      <FlatRow session={entry.session} variant="card" context={context} {...(disclosure ? { disclosure } : {})} />
+      {shown.length > 0 && (
         <div className="ml-3" role="group" aria-label={`Started from ${entry.session.title || "this session"}`}>
-          <button
-            type="button"
-            aria-expanded={open}
-            onClick={onToggle}
-            className="flex min-w-0 items-center gap-1 rounded px-2 py-0.5 text-left text-3xs text-sidebar-foreground/40 hover:text-sidebar-foreground/80"
-          >
-            <ChevronRightIcon className={cn("size-2.5 shrink-0 transition-transform", open && "rotate-90")} />
-            {summary.needsYou > 0 && <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-destructive" />}
-            <span className="min-w-0 truncate tabular-nums">{summary.label}</span>
-          </button>
           {shown.map((child) => (
             <FlatRow key={sessionKey(child)} session={child} variant="slim" context={context} />
           ))}
