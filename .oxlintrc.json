@@ -58,7 +58,7 @@
         "apps/engine/src/drivers/claude/runtime.ts",
         "apps/engine/src/platform/kernel/kernel.ts",
         "apps/engine/src/state.ts",
-        "apps/engine/src/worker.ts"
+        "apps/engine/src/worker/worker.ts"
       ],
       "rules": {
         "unicorn/no-useless-spread": "off"
