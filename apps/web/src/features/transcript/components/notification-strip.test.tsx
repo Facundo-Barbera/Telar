@@ -33,7 +33,7 @@ import { ActivityGroup } from "./activity";
 import { bareNotificationTurn, groupNotificationTurns } from "../model";
 import { NotificationRow } from "./notification-row";
 import { ROW } from "./transcript-fold";
-import type { JournalItem, JournalTurn } from "@/platform/engine";
+import type { JournalItem, JournalTurn } from "@/features/transcript";
 
 const WORKER = "session_worker123456";
 

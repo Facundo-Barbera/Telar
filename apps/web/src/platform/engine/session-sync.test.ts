@@ -14,7 +14,7 @@ import {
   tailIntervalMs,
   tailSession,
 } from "./session-sync";
-import { itemText, projectJournal } from "./journal";
+import { itemText, projectJournal } from "@/features/transcript";
 
 const session: Session = {
   id: "session_1",

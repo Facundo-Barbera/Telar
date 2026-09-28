@@ -4,7 +4,7 @@
  * known harness root and outside the session's workspace. Folded, never hidden.
  */
 
-import type { JournalItem } from "@/platform/engine";
+import type { JournalItem } from "@/features/transcript";
 
 type HarnessName = "claude" | "codex";
 

@@ -13,7 +13,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ClaudeConversation, ConversationImportDetail } from "@telar/engine-client";
-import type { JournalItem } from "@/platform/engine";
+import type { JournalItem } from "@/features/transcript";
 import { installTestDom, mount, flush } from "@/lib/testing/dom";
 import { ConversationRow, ResumePicker } from "./resume-picker";
 import { TranscriptItem } from "@/features/transcript";
