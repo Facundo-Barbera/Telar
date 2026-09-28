@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": { "correctness": "warn" },
+  "env": { "node": true, "browser": true, "es2024": true },
+  "ignorePatterns": ["**/node_modules/**", "**/dist/**", "**/out/**", "**/build/**", "**/test-fixtures/**"],
+  "rules": {
+    "max-lines": ["warn", { "max": 800 }],
+    "max-lines-per-function": ["warn", { "max": 150 }]
+  }
+}
