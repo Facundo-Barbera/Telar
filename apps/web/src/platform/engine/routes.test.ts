@@ -204,7 +204,7 @@ describe("engine route adapters", () => {
     await client.submitTurn("session_one", { runId: "uncertain_run", input: "Hello" });
     const claim = (await client.claimTurn("worker_one", 1)).claim!;
     await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
-    daemon.store.recover();
+    daemon.store.recovery.recover();
 
     const response = await discardPost(new Request("http://telar.local/api/sessions/session_one/turns/uncertain_run/discard", { method: "POST" }), {
       params: Promise.resolve({ sessionId: "session_one", runId: "uncertain_run" }),
