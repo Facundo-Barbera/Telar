@@ -3,27 +3,24 @@
  * `apps/desktop/viewport-presets.js`; this is the cockpit's only import of it.
  */
 import {
-  orient,
-  orientationOf,
   presetOf,
   viewportPreset,
   VIEWPORT_PRESET_GROUPS,
   VIEWPORT_PRESETS,
-  type ViewportOrientation,
   type ViewportPreset,
   type ViewportPresetEntryKey,
   type ViewportPresetGroup,
   type ViewportPresetKey,
 } from "../../desktop/src/browser/viewport-presets.js";
 
-export { orient, orientationOf, viewportPreset, VIEWPORT_PRESET_GROUPS, VIEWPORT_PRESETS };
-export type { ViewportOrientation, ViewportPreset, ViewportPresetEntryKey, ViewportPresetGroup, ViewportPresetKey };
+export { viewportPreset, VIEWPORT_PRESETS };
+export type { ViewportPreset, ViewportPresetEntryKey, ViewportPresetGroup, ViewportPresetKey };
 
 export type ViewportSize = { width: number; height: number };
 export type ViewportMode = "fixed" | "fit";
 
-export const VIEWPORT_MIN = 200;
-export const VIEWPORT_MAX = 5_000;
+const VIEWPORT_MIN = 200;
+const VIEWPORT_MAX = 5_000;
 
 /** The rail on each host edge; the native view gets only the stage inside it, so the handles stay uncovered DOM. */
 export const VIEWPORT_RAIL = 12;
@@ -43,7 +40,7 @@ export function describeViewport(size: ViewportSize, mode: ViewportMode = "fit")
   return preset ? `${preset.label} · ${size.width}×${size.height}` : `${size.width}×${size.height}`;
 }
 
-export function clampViewport(size: ViewportSize): ViewportSize {
+function clampViewport(size: ViewportSize): ViewportSize {
   const clamp = (value: number) => Math.min(VIEWPORT_MAX, Math.max(VIEWPORT_MIN, Math.round(value)));
   return { width: clamp(size.width), height: clamp(size.height) };
 }

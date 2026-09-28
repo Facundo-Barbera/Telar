@@ -95,7 +95,7 @@ export async function hydrateSession(
  */
 const MAX_PAGES = 100;
 
-export async function drainEvents(
+async function drainEvents(
   api: SessionSyncApi,
   sessionId: string,
   after: number,

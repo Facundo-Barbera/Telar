@@ -2,7 +2,7 @@
 // something stored beside it, so what the agent receives is the typed string.
 import type { ReferenceKind, TelarReference } from "./drag-reference";
 
-export type ComposerTriggerKind = "path" | "command" | "skill";
+type ComposerTriggerKind = "path" | "command" | "skill";
 
 export type ComposerTrigger = {
   kind: ComposerTriggerKind;

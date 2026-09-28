@@ -69,7 +69,7 @@ export function settingsRowId(parts: { page?: string; group?: string; label: str
 
 /** A Lucide-shaped glyph. Carried through the index untouched — nothing here
  *  renders it; the result list does. */
-export type SettingsSearchIcon = ComponentType<{ className?: string }>;
+type SettingsSearchIcon = ComponentType<{ className?: string }>;
 
 /**
  * WHAT THE REGISTRY DECLARES, row by row.
@@ -80,7 +80,7 @@ export type SettingsSearchIcon = ComponentType<{ className?: string }>;
  * `keywords` is for the word that is in neither: the old name of a thing, the
  * word another app uses for it.
  */
-export type SettingsRowSpec = {
+type SettingsRowSpec = {
   /** Only for rows whose label is not a plain string; otherwise derived. */
   id?: string;
   title: string;
@@ -95,7 +95,7 @@ export type SettingsRowSpec = {
   navigateOnly?: true;
 };
 
-export type SettingsGroupSpec = {
+type SettingsGroupSpec = {
   /** Matches the rendered `SettingsGroup` title, and is part of every id below it. */
   title?: string;
   rows: readonly SettingsRowSpec[];

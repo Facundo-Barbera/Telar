@@ -20,7 +20,7 @@ export type BrowserProfile = {
   projects?: string[];
 };
 
-export type ProfilesAnswer = {
+type ProfilesAnswer = {
   profiles: BrowserProfile[];
   active?: BrowserProfile | null;
   projectKey?: string | null;

@@ -37,7 +37,7 @@
 
 import { activeComposer, type ComposerKind } from "./composer-registry";
 
-export type DictateResult =
+type DictateResult =
   | {
       ok: true;
       /** The draft the box holds after the insertion — what a send would carry. */
@@ -50,9 +50,9 @@ export type DictateResult =
     }
   | { ok: false; reason: string };
 
-export type SubmitResult = { ok: true } | { ok: false; reason: string };
+type SubmitResult = { ok: true } | { ok: false; reason: string };
 
-export type ComposerReport = {
+type ComposerReport = {
   /** The editable root's DOM id. */
   id: string;
   kind: ComposerKind;

@@ -116,5 +116,3 @@ export function createRunApi(fetcher: Fetcher = pathnameFetcher) {
 }
 
 export type RunApi = ReturnType<typeof createRunApi>;
-
-export const runApi: RunApi = createRunApi();

@@ -62,7 +62,7 @@ const targetOf = (body: Record<string, unknown>): { terminalId?: string } => {
   return terminalId ? { terminalId } : {};
 };
 
-export const RUN_ROUTE_TABLE: readonly Entry[] = [
+const RUN_ROUTE_TABLE: readonly Entry[] = [
   { method: "GET", segments: ["configs"], call: (client, { sessionId }) => client.runConfigurations(sessionId) },
   {
     method: "POST",

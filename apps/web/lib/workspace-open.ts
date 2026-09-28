@@ -37,14 +37,14 @@ import {
  *  names the vendored vector mark the renderer falls back to
  *  (components/session/opener-icon.tsx); absent on an app we have no mark for,
  *  which draws the neutral glyph. */
-export type WorkspaceOpener = { id: string; label: string; path: string; icon?: string; iconDataUrl?: string };
+type WorkspaceOpener = { id: string; label: string; path: string; icon?: string; iconDataUrl?: string };
 
 /** What the shell answers when asked for the list. `revealIconDataUrl` is
  *  Finder's own icon: the reveal row is built by the renderer rather than by
  *  the opener table, so its bitmap arrives beside the list rather than in it. */
 export type WorkspaceOpenersAnswer = { openers: WorkspaceOpener[]; revealIconDataUrl?: string };
 
-export type WorkspaceOpenAnswer = { ok: boolean; error?: string };
+type WorkspaceOpenAnswer = { ok: boolean; error?: string };
 
 export type WorkspaceOpenBridge = {
   /** Absent on a shell too old to enumerate; the caller falls back to the
@@ -122,7 +122,7 @@ export function workspaceFilePath(root: string | undefined, relative: string): s
 /** Which of the shell's two guards the target has to pass. A directory row in
  *  the tree is still a directory to the shell, and sending it as a file would
  *  be refused by the stat that exists to catch exactly that mix-up. */
-export type WorkspaceEntryKind = "file" | "directory";
+type WorkspaceEntryKind = "file" | "directory";
 
 export type WorkspaceFileMenu = {
   /** Absent when this machine cannot act on the file — see the note above. */

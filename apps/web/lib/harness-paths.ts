@@ -6,7 +6,7 @@
 
 import type { JournalItem } from "@/lib/engine/journal";
 
-export type HarnessName = "claude" | "codex";
+type HarnessName = "claude" | "codex";
 
 /** `skill` is present when the path names one. */
 export type HarnessConsult = { harness: HarnessName; skill?: string };

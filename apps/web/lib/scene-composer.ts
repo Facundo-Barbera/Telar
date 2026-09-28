@@ -110,11 +110,6 @@ export {
   type SceneLayer,
 } from "@telar/engine-client";
 
-/** The Scene JSON. */
-export const SCENE_KEY = "telar-backdrop-scene";
-/** layerId → data URL, plus `orig:${layerId}` → the un-faded original. */
-export const SCENE_IMAGES_KEY = "telar-backdrop-scene-images";
-
 /** Layer images are compressed HARDER than the single-image backdrop: several
  *  of them share one quota, and each is drawn at a fraction of the window. */
 const SCENE_LAYER_EDGE = 1024;

@@ -16,12 +16,6 @@
  * immediately and nothing needs a poll.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import type { Project } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
-
-const api = createEngineApi();
-
 /** Same-window propagation. The event carries no payload on purpose: the
  *  registry is the engine's, so every listener re-reads the engine's own
  *  answer rather than trusting whatever a writer happened to hold. */
@@ -34,35 +28,3 @@ export function announceProjectsChanged(): void {
   window.dispatchEvent(new Event(CHANGED));
 }
 
-export type ProjectsHandle = {
-  projects: Project[];
-  /** True until the engine has answered once. */
-  loading: boolean;
-  reload: () => void;
-};
-
-export function useProjects(): ProjectsHandle {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const reload = useCallback(() => {
-    void api
-      .projects()
-      .then((result) => setProjects(result.projects))
-      .catch(() => undefined)
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    // Deferred a tick: setting state from an effect BODY is the cascade the
-    // lint rule forbids, and an async callback is not the effect body.
-    const task = window.setTimeout(reload, 0);
-    window.addEventListener(CHANGED, reload);
-    return () => {
-      window.clearTimeout(task);
-      window.removeEventListener(CHANGED, reload);
-    };
-  }, [reload]);
-
-  return { projects, loading, reload };
-}

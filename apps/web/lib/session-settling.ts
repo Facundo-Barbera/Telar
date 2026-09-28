@@ -25,7 +25,6 @@ export {
   isSettled,
   isShelved,
   isSnoozed,
-  isStale,
   raisedHandWhileSnoozed,
   settlingActivityOf,
   wokeAt,
@@ -42,7 +41,7 @@ const DAY_MS = 24 * HOUR_MS;
  * Snooze presets — the menu behind the clock on a row.
  * ------------------------------------------------------------------ */
 
-export type SnoozePresetId = "hour" | "three-hours" | "evening" | "tomorrow" | "next-week";
+type SnoozePresetId = "hour" | "three-hours" | "evening" | "tomorrow" | "next-week";
 
 export type SnoozePreset = {
   id: SnoozePresetId;

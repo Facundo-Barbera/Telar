@@ -17,7 +17,7 @@ export type UpdateStatus = {
 };
 
 /** Persisted in the shell's userData. */
-export type UpdatePrefs = {
+type UpdatePrefs = {
   channel: string;
   installOnQuit: boolean;
 };
@@ -133,10 +133,10 @@ export function updateToast(status: UpdateStatus): { key: string; message: strin
 }
 
 /** How long "Restarting…" may stand before the control reports a failed restart and offers the press again. */
-export const RESTART_TIMEOUT_MS = 10_000;
+const RESTART_TIMEOUT_MS = 10_000;
 
 /** Feed, the Dev build's local-checkout window, neither, or "could not ask" (retryable). */
-export type UpdatePath = "feed" | "local" | "none" | "unknown";
+type UpdatePath = "feed" | "local" | "none" | "unknown";
 
 export type DesktopUpdate = {
   /** False in a browser tab, where there is no shell bridge. */

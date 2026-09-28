@@ -1,7 +1,7 @@
 import { createRemoteStore } from "../../../engine/src/domains/remote";
 import { remoteHome } from "@/lib/remote/store";
 
-export { hashToken, mintDeviceToken } from "../../../engine/src/domains/remote/store";
+export { mintDeviceToken } from "../../../engine/src/domains/remote/store";
 
 const store = () => createRemoteStore(remoteHome());
 

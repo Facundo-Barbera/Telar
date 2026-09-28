@@ -127,7 +127,7 @@ export type Appearance = {
   frost: Frost;
 };
 
-export const FROSTS = ["blur", "clear"] as const;
+const FROSTS = ["blur", "clear"] as const;
 export type Frost = (typeof FROSTS)[number];
 
 /**

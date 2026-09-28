@@ -37,7 +37,7 @@ import { entrySummary, type StashedImage, type StashEntry } from "./prompt-stash
 
 /** Where a row came from. The composer reads this only to route a pick or a
  *  drop back to the right store — never to decide how a row looks. */
-export type ShelfSource = "stash" | "engine";
+type ShelfSource = "stash" | "engine";
 
 /**
  * One row, whichever store it came from.

@@ -48,7 +48,7 @@ export const REVEAL_OPENER_ID = "reveal";
  *  rather than imported so this module stays free of the desktop bridge. */
 export type OpenerLike = { id: string; label: string; path?: string; icon?: string; iconDataUrl?: string };
 
-export type WorkspaceOpenerEntryKind =
+type WorkspaceOpenerEntryKind =
   /** An installed app, launched by id through the shell. */
   | "opener"
   /** Show it in the file manager instead of opening it. In T3's list and in

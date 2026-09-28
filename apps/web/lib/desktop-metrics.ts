@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hostVisible, subscribeHostVisibility } from "@/lib/host-visibility";
 
-export type ProcessTypeTotal = {
+type ProcessTypeTotal = {
   /** Electron's own `ProcessMetric.type`. */
   type: string;
   label: string;
@@ -21,7 +21,7 @@ export type ProcessTypeTotal = {
   pagelessCount: number;
 };
 
-export type ProcessMetricRow = {
+type ProcessMetricRow = {
   pid: number;
   type: string;
   label: string;
@@ -76,10 +76,6 @@ export function desktopMetrics(): MetricsBridge | undefined {
   return (window as unknown as { telarDesktop?: { metrics?: MetricsBridge } }).telarDesktop?.metrics;
 }
 
-/** Mirrors the kill threshold in `apps/desktop/service-worker-watchdog.js`, which the
- *  cockpit cannot import; a test keeps them in step. */
-const RUNAWAY_CPU_PERCENT = 80;
-
 export async function readProcessMetrics(): Promise<ProcessMetricsSummary> {
   const bridge = desktopMetrics();
   if (bridge) return bridge.read();
@@ -100,17 +96,6 @@ export function formatCpu(percent: number): string {
   if (!Number.isFinite(percent) || percent <= 0) return "0%";
   if (percent < 1) return "<1%";
   return `${Math.round(percent)}%`;
-}
-
-/**
- * Processes over the threshold, hottest first: `runaway` hosts no page, `hot` does.
- * Nothing is flagged before a rate window exists, since every rate is zero until then.
- */
-export function concerning(summary: ProcessMetricsSummary | undefined, threshold = RUNAWAY_CPU_PERCENT): { row: ProcessMetricRow; kind: "runaway" | "hot" }[] {
-  if (!summary || summary.windowMs <= 0) return [];
-  return summary.busiest
-    .filter((row) => row.cpuPercent >= threshold)
-    .map((row) => ({ row, kind: row.hostsPage === false ? ("runaway" as const) : ("hot" as const) }));
 }
 
 type MetricsState = {

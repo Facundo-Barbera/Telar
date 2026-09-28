@@ -35,7 +35,7 @@ export function defaultHostName(baseUrl: string): string {
   }
 }
 
-export function looksLikePairingSecret(token: string): boolean {
+function looksLikePairingSecret(token: string): boolean {
   return /^tlr_[A-Za-z0-9_-]+$/.test(token) || /^\d{8}$/.test(token);
 }
 

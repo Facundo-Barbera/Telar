@@ -7,7 +7,7 @@
 export type ComposerKind = "session";
 
 /** A sentence, because an external client can only show it to a person. */
-export type ComposerRefusal = { ok: false; reason: string };
+type ComposerRefusal = { ok: false; reason: string };
 
 /** What a write answers: the committed draft, or why it would not. */
 export type ComposerWrite = { ok: true; draft: string } | ComposerRefusal;

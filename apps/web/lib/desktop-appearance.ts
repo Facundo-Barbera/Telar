@@ -1,4 +1,4 @@
-export type WindowAppearance = {
+type WindowAppearance = {
   translucent: boolean;
   /** "blur" is macOS vibrancy; "clear" is no effect view behind the page's own wash. */
   frost: "blur" | "clear";
