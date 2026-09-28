@@ -89,14 +89,27 @@ export class PluginToolchains {
    * Mac's absolute default. Nothing when off, or the file isn't there.
    */
   resolveDataScience(session: Session): { pythonPath: string } | undefined {
+    const outcome = this.dataScienceOutcome(session);
+    return "pythonPath" in outcome ? outcome : undefined;
+  }
+
+  dataScienceRefusal(session: Session): string {
+    const outcome = this.dataScienceOutcome(session);
+    return "refusal" in outcome ? outcome.refusal : "data science is available for this session";
+  }
+
+  private dataScienceOutcome(session: Session): { pythonPath: string } | { refusal: string } {
+    if (!machineAllows(this.machine(), "data-science")) return { refusal: "data science is turned off for this Mac" };
     const project = this.projectOf(session);
     const config = project && dataScienceBlock(project);
-    if (!config?.enabled || !machineAllows(this.machine(), "data-science")) return undefined;
+    if (!config?.enabled) return { refusal: "data science is not enabled for this session's project" };
     const machineDefault = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machine(), "data-science"));
     const chosen = config.python?.path ?? (machineDefault.success ? machineDefault.data.python : undefined);
-    if (!chosen) return undefined;
+    if (!chosen) {
+      return { refusal: "data science has no Python interpreter: choose one in the project's settings, or set a default Python for this Mac under Settings → Plugins" };
+    }
     const pythonPath = resolvePythonPath(workspaceRootOf(session), chosen);
-    if (!fs.existsSync(pythonPath)) return undefined;
+    if (!fs.existsSync(pythonPath)) return { refusal: `data science's Python interpreter is not on disk: ${pythonPath}` };
     return { pythonPath };
   }
 

@@ -381,6 +381,7 @@ export class EngineStore {
       requireSession: (sessionId) => this.records.require(sessionId),
       machinePlugins: () => this.toolchains.machine(),
       resolveDataScience: (session) => this.toolchains.resolveDataScience(session),
+      dataScienceRefusal: (session) => this.toolchains.dataScienceRefusal(session),
       resolveLatex: (session) => this.toolchains.resolveLatex(session),
       latexToolchain: () => this.latexOps.toolchain(),
       sessionDir: (sessionId) => sessionDir(this.paths, sessionId),

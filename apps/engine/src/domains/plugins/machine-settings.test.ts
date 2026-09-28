@@ -192,6 +192,7 @@ test("the MAC'S DEFAULT PYTHON runs a project that chose none", async () => {
   // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { dataScience: { enabled: true } });
   expect(store.toolchains.resolveDataScience(store.records.get("session_one"))).toBeUndefined();
+  expect(() => store.pluginDoors.dataScience("session_one")).toThrow(/has no Python interpreter/);
 
   await machine(daemon, { "data-science": { enabled: true, settings: { python: "/bin/echo" } } });
   expect(store.toolchains.resolveDataScience(store.records.get("session_one"))).toEqual({ pythonPath: "/bin/echo" });
@@ -210,6 +211,7 @@ test("a project's own interpreter still wins, and a Mac default that is gone res
   // @ts-expect-error deprecated alias the engine still accepts
   await client.updateProject("project_one", { dataScience: { enabled: true } });
   expect(store.toolchains.resolveDataScience(store.records.get("session_one"))).toBeUndefined();
+  expect(store.toolchains.dataScienceRefusal(store.records.get("session_one"))).toBe("data science's Python interpreter is not on disk: /nowhere/python3");
 });
 
 test("the machine ceiling still wins over a machine DEFAULT", async () => {
