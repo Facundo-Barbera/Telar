@@ -2,10 +2,10 @@ import path from "node:path";
 import { PluginInstallInput } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
 import { ok, type Route } from "../../platform/http/route";
-import { installPluginFolder, PluginInstallError, removePluginFolder } from "../../plugins/external/installer";
-import { BUNDLED_RESERVATIONS, type LoadedExternalPlugin } from "../../plugins/external/manifest";
-import type { PluginEngineModule } from "../../plugins/contract";
-import type { PluginHost } from "../../plugins/host";
+import { installPluginFolder, PluginInstallError, removePluginFolder } from "./external/installer";
+import { BUNDLED_RESERVATIONS, type LoadedExternalPlugin } from "./external/manifest";
+import type { PluginEngineModule } from "./contract";
+import type { PluginHost } from "./host";
 import type { EngineStore } from "../../state";
 import type { InstalledPlugins } from "./installed";
 

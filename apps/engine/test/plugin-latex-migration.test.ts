@@ -33,9 +33,9 @@ import {
   type EngineClientError,
 } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { latexMeta } from "../src/plugins/latex";
-import { bundledPluginToolModules } from "../src/plugins/bundled";
-import { ratifiedReadTools } from "../src/plugins/policy";
+import { latexMeta } from "../src/domains/plugins/latex/plugin";
+import { bundledPluginToolModules } from "../src/domains/plugins/bundled";
+import { ratifiedReadTools } from "../src/domains/plugins/policy";
 import { stubModels } from "./stub-models";
 
 const roots: string[] = [];

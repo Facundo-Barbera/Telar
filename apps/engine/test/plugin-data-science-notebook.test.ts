@@ -17,7 +17,7 @@
  * project and session, and `EngineClient.ds(...)` — the same call the worker
  * makes. Notebook create/read/edit are file operations and need no Python; the
  * one case that needs a kernel is skipped without `uv`, and live cell execution
- * against a real ipykernel is `src/ds/kernel-host.test.ts`.
+ * against a real ipykernel is `src/domains/plugins/data-science/kernel-host.test.ts`.
  */
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
@@ -26,7 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, type EngineClientError } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import { dataScienceMeta } from "../src/plugins/data-science";
+import { dataScienceMeta } from "../src/domains/plugins/data-science/plugin";
 import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
@@ -429,7 +429,7 @@ test("an unknown notebook verb is still an honest 404 about the method", async (
 /**
  * LIVE EXECUTION THROUGH THE DOOR, where the machine can run it: create a
  * notebook, insert a cell, run it, and read the output back out of the file.
- * Skipped without `uv`, exactly as `src/ds/kernel-host.test.ts` is.
+ * Skipped without `uv`, exactly as `src/domains/plugins/data-science/kernel-host.test.ts` is.
  */
 function hasUv(): boolean {
   try {

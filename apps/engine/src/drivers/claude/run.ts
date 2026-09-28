@@ -3,7 +3,7 @@ import { BROWSER_BRIEFING } from "../../domains/browser";
 import { RUN_BRIEFING } from "../../run/briefing";
 import { isBackgroundWork, claudeCompactionEnv, type ItemDetail, type TaskSeed } from "@telar/engine-client";
 import { claudeEffortFor, claudeWindowTokensOf, requireCli } from "../../domains/providers";
-import { pluginBriefings } from "../../plugins/bundled";
+import { pluginBriefings } from "../../domains/plugins";
 import { canonicalEnvPatch, canonicalJson, canonicalServers, changedFields, fieldDigest, fieldDigests, resolveChildEnv } from "./identity";
 import { ClaudeRuntimeStore, UNATTENDED_BACKGROUND_WORK_MS } from "./runtime";
 import { framedSteerText } from "../../domains/turns";

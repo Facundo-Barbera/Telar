@@ -3,7 +3,7 @@ import { TELAR_BROWSER_MCP_SERVER, TELAR_MCP_SERVER } from "@telar/engine-client
 import { RELAY_RULE } from "../../domains/turns";
 import { BROWSER_BRIEFING } from "../../domains/browser";
 import { claimHasComputerUse } from "../../domains/computer-use";
-import { pluginBriefings } from "../../plugins/bundled";
+import { pluginBriefings } from "../../domains/plugins";
 import type { DriverRun } from "../contract";
 import { RUN_BRIEFING } from "../../run/briefing";
 

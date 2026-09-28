@@ -22,8 +22,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
-import type { PluginEngineModule } from "../src/plugins/contract";
-import { PluginHost } from "../src/plugins/host";
+import type { PluginEngineModule } from "../src/domains/plugins/contract";
+import { PluginHost } from "../src/domains/plugins/host";
 
 const dirs: string[] = [];
 const hosts: PluginHost[] = [];

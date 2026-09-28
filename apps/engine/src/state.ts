@@ -179,8 +179,7 @@ import { providerProcessEnv } from "./domains/providers";
 import { adoptClaudeConversation, describeAdoption, listAdoptableConversations, type Adoption } from "./claude-adopt";
 import { describeImport, type ClaudeConversation, type ForkCut } from "./drivers/claude";
 import { BUNDLED_MANIFEST, legacyLongSpelling, type ModelManifest, readModelCatalogue } from "./domains/providers";
-import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
-import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
+import { adoptBinaryDir, type BootstrapRequest, canonicalName, type CompileStatus as LatexCompileMemory, type CreateEnvironmentRequest, DataScienceMachineSettings as DataScienceMachineSettingsSchema, declaredDependencies, discoverEnvironments, type DsCapability, DsFiles, environmentId, environmentRootOf, type EnvironmentRow, type EnvManager, findBinary, findLatexBinary, type InstallCommand, installCommandFor, installSteps, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, LatexMachineSettings as LatexMachineSettingsSchema, type LatexPackagesAnswer, type LatexToolchain, latexToolchainStatus, listPackages, listTexPackages, ManagedTectonic, type ManagedTectonicStatus, NOTEBOOK_MAX_BYTES, type PackageInfo, planBootstrap, planEnvironment, planLatexBootstrap, preflightPython, projectRequirements, type PythonEnvironment, type PythonPreflight, relativisePythonPath, removeSteps, removeTelarVenv, type RequirementsSource, requirementsStep, type ResolvedLatex, resolvePythonPath, storeDsCapability, storeLatexCapability, type TableWindow, TECTONIC_PACKAGES_NOTE, telarVenvDir, telarVenvPython, texInstallSteps, texRemoveSteps, type Toolchain, toolchainStatus, windowCsv } from "./domains/plugins";
 import { decideSchedule, nextOccurrence, usableZone, type ScheduleRule } from "./domains/schedules";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultWorktreeGitRunner, isGitWorkTree, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, removeUnregisteredCheckout, derivedBranchFor, type WorktreePlan, type WorktreeQueue } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
@@ -193,24 +192,6 @@ import { pipeLauncher } from "./run/launcher";
 import { processGroupFor } from "./run/platform";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./worktrees-move";
 import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
-import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
-import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
-import { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./ds/environments";
-import { adoptBinaryDir, findBinary, toolchainStatus, type Toolchain } from "./ds/toolchain";
-import { JobRunner, type JobRead } from "./ds/jobs";
-import { canonicalName, declaredDependencies, installCommandFor, installSteps, listPackages, projectRequirements, removeSteps, requirementsStep, type InstallCommand, type PackageInfo, type RequirementsSource } from "./ds/packages";
-import type { KernelHost } from "./ds/kernel-host";
-import type { DsCapability, EnvironmentRow } from "./ds/capability";
-import { DsFiles } from "./ds/state-files";
-import { NOTEBOOK_MAX_BYTES, storeDsCapability } from "./ds/store-capability";
-import { windowCsv, type TableWindow } from "./ds/table";
-import { findLatexBinary, latexToolchainStatus, type LatexToolchain } from "./latex/toolchain";
-import { ManagedTectonic, type ManagedTectonicStatus } from "./latex/managed";
-import { planLatexBootstrap, type LatexBootstrapRequest } from "./latex/bootstrap";
-import { listTexPackages, TECTONIC_PACKAGES_NOTE, texInstallSteps, texRemoveSteps, type LatexPackagesAnswer } from "./latex/packages";
-import type { LatexCapability, CompileStatus as LatexCompileMemory } from "./latex/capability";
-import { storeLatexCapability } from "./latex/store-capability";
-import type { ResolvedLatex } from "./latex/compile";
 
 /** The first line with anything on it, clamped for a cohort's member line. */
 /** A cohort member's `excerpt` and `chars` — see `CohortMember`. */

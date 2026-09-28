@@ -1,5 +1,5 @@
 import type http from "node:http";
-import type { PluginEngineModule } from "../../plugins/contract";
+import type { PluginEngineModule } from "./contract";
 import { body, HttpError } from "../../platform/http/http";
 import { ok, sessionRoute, type Route } from "../../platform/http/route";
 import { EngineStateError } from "../../platform/kernel";

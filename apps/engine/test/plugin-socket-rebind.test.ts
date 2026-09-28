@@ -28,9 +28,9 @@ import { EngineClient, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver } from "../src/drivers/claude";
 import type { DriverRun, TurnDriver } from "../src/drivers";
-import { bundledPluginToolModules, setPluginToolModules } from "../src/plugins/bundled";
-import { helloToolModule } from "../src/plugins/hello";
-import type { PluginToolModule } from "../src/plugins/tool-module";
+import { bundledPluginToolModules, setPluginToolModules } from "../src/domains/plugins/bundled";
+import { helloToolModule } from "../src/domains/plugins/hello";
+import type { PluginToolModule } from "../src/domains/plugins/tool-module";
 import { stubModels } from "./stub-models";
 import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
 

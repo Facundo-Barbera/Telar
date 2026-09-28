@@ -1,7 +1,7 @@
 import { registerPluginToolPrefixes } from "@telar/engine-client";
-import { pluginToolModules, setPluginToolModules } from "../../plugins/bundled";
-import type { LoadedExternalPlugin, RefusedExternalPlugin } from "../../plugins/external/manifest";
-import { externalToolModule, isExternalToolModule } from "../../plugins/external/module";
+import { pluginToolModules, setPluginToolModules } from "./bundled";
+import type { LoadedExternalPlugin, RefusedExternalPlugin } from "./external/manifest";
+import { externalToolModule, isExternalToolModule } from "./external/module";
 
 export type InstalledPlugins = ReturnType<typeof installedPlugins>;
 

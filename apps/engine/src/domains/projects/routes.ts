@@ -2,7 +2,7 @@ import { pluginEnabled, readProjectPlugins } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
 import { stringValue } from "../../platform/http/params";
 import { ok, type Route } from "../../platform/http/route";
-import type { PluginHost } from "../../plugins/host";
+import type { PluginHost } from "../plugins";
 import type { EngineStore } from "../../state";
 
 type ProjectPatch = Parameters<EngineStore["updateProject"]>[1];
