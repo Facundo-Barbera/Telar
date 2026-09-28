@@ -80,7 +80,7 @@ STEERED_ITEMS = [
     _item('sx_spawn', 'task', dict(taskId='task_probe')),
     _item('sx_cmd', 'command_execution', dict(command=dict(command='rg splitAtMessageBoundaries', exitCode=0))),
     _item('sx_steer', 'user_message', dict(text='Actually — check the iPad path too, that is the one I use.')),
-    _item('sx_edit', 'file_change', dict(change=dict(path='apps/ios/TelarMobile/Views/TranscriptViews.swift', kind='modify', linesAdded=120, linesRemoved=18))),
+    _item('sx_edit', 'file_change', dict(change=dict(path='apps/ios/TelarMobile/Features/Transcript/TranscriptViews.swift', kind='modify', linesAdded=120, linesRemoved=18))),
     _item('sx_done', 'assistant_message', dict(text='Ported. The iPad path was the one that needed it: a steer used to fold into the step tally.')),
 ]
 

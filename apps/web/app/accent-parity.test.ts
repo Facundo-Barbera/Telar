@@ -25,7 +25,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 const globals = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
-const theme = readFileSync(new URL("../../ios/TelarMobile/Views/Theme.swift", import.meta.url), "utf8");
+const theme = readFileSync(new URL("../../ios/TelarMobile/UI/Theme.swift", import.meta.url), "utf8");
 
 /**
  * `oklch()` to an sRGB hex, the transform a browser does: Oklab's inverse

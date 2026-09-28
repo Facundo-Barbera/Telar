@@ -28,7 +28,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const css = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
-const theme = readFileSync(new URL("../../ios/TelarMobile/Views/Theme.swift", import.meta.url), "utf8");
+const theme = readFileSync(new URL("../../ios/TelarMobile/UI/Theme.swift", import.meta.url), "utf8");
 
 /** The base the whole scale derives from, in px. */
 const BASE = Number(/--radius:\s*([\d.]+)rem;/.exec(css)?.[1]) * 16;
