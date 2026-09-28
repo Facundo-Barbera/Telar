@@ -38,6 +38,7 @@ import { newSessionId, withSnooze } from "@/lib/session-mutations";
 import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { usePluginPanels } from "@/components/plugins/use-plugin-panels";
 import { projectLabel } from "@/lib/hosts/host-projects";
 import { isSettled, isSnoozed, settleEndedText, settlingActivityOf, terminalsClosedHint, wakeLabel, type SettleableSession, type SettlingActivity } from "@/lib/session-settling";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
@@ -1729,6 +1730,7 @@ export function SessionCockpit({
   }
   /** The project's enabled plugin ids, read with its name. None until known. */
   const [enabledPlugins, setEnabledPlugins] = useState<readonly string[]>([]);
+  const pluginPanels = usePluginPanels(hostId, enabledPlugins);
   /**
    * THE TRANSCRIPT FOLD, WITH A MEMORY (#407).
    *
@@ -4463,6 +4465,7 @@ export function SessionCockpit({
           onEditorChange={updateEditor}
           hostId={hostId}
           enabledPlugins={enabledPlugins}
+          pluginPanels={pluginPanels}
         />
       )}
     </main>

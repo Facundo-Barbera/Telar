@@ -14,7 +14,7 @@
  *
  * See docs/design/plugins-contract.md, contribution point 3.
  */
-import { FlaskConicalIcon, SigmaIcon, type LucideIcon } from "lucide-react";
+import { FlaskConicalIcon, PuzzleIcon, SigmaIcon, type LucideIcon } from "lucide-react";
 import type { CommandId } from "@/lib/commands";
 
 /** A right-panel tab a plugin owns. `wide` asks for the wide default width. */
@@ -55,8 +55,20 @@ export const PLUGIN_WEB = {
   },
 } as const satisfies Record<string, PluginWebContribution>;
 
+/**
+ * THE ONE TAB EVERY INSTALLED PLUGIN'S PANELS SHARE (lib/plugins/panels.ts).
+ * Installed plugins are not in `PLUGIN_WEB`: they bring blocks, not
+ * components, so they need no entry — only a place to be drawn.
+ */
+export const PLUGIN_PANELS_SURFACE = {
+  id: "plugin-panels",
+  label: "Plugins",
+  icon: PuzzleIcon,
+  blurb: "Panels from the plugins you installed",
+} as const satisfies PluginSurface;
+
 /** The id of a surface some plugin contributes — part of `PanelTab`'s vocabulary. */
-export type PluginSurfaceId = (typeof PLUGIN_WEB)[keyof typeof PLUGIN_WEB]["surfaces"][number]["id"];
+export type PluginSurfaceId = (typeof PLUGIN_WEB)[keyof typeof PLUGIN_WEB]["surfaces"][number]["id"] | typeof PLUGIN_PANELS_SURFACE.id;
 
 const REGISTRY: Readonly<Record<string, PluginWebContribution>> = PLUGIN_WEB;
 
@@ -64,16 +76,21 @@ const contributions = (enabled: readonly string[]): PluginWebContribution[] =>
   enabled.flatMap((id) => (REGISTRY[id] ? [REGISTRY[id]] : []));
 
 /** Every surface any plugin could contribute — so a restored tab id still validates. */
-export const PLUGIN_SURFACES: readonly (PluginSurface & { id: PluginSurfaceId })[] = Object.values(REGISTRY).flatMap(
-  (entry) => (entry.surfaces ?? []) as readonly (PluginSurface & { id: PluginSurfaceId })[],
-);
+export const PLUGIN_SURFACES: readonly (PluginSurface & { id: PluginSurfaceId })[] = [
+  ...Object.values(REGISTRY).flatMap((entry) => (entry.surfaces ?? []) as readonly (PluginSurface & { id: PluginSurfaceId })[]),
+  PLUGIN_PANELS_SURFACE,
+];
 
-/** The surfaces the enabled plugins contribute, in registry order. */
-export function pluginSurfaces(enabled: readonly string[]): (PluginSurface & { id: PluginSurfaceId })[] {
+/** The surfaces the enabled plugins contribute, in registry order, then the
+ *  installed plugins' shared tab when one of them has a panel. */
+export function pluginSurfaces(enabled: readonly string[], hasPanels = false): (PluginSurface & { id: PluginSurfaceId })[] {
   const on = new Set(enabled);
-  return Object.entries(REGISTRY).flatMap(([id, entry]) =>
-    on.has(id) ? [...((entry.surfaces ?? []) as readonly (PluginSurface & { id: PluginSurfaceId })[])] : [],
-  );
+  return [
+    ...Object.entries(REGISTRY).flatMap(([id, entry]) =>
+      on.has(id) ? [...((entry.surfaces ?? []) as readonly (PluginSurface & { id: PluginSurfaceId })[])] : [],
+    ),
+    ...(hasPanels ? [PLUGIN_PANELS_SURFACE] : []),
+  ];
 }
 
 /** Does a plugin own this surface id (whether or not it is on)? */

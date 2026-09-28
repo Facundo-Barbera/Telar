@@ -41,6 +41,7 @@ export function externalMeta(manifest: ExternalPluginManifest): PluginMeta {
     readTools: [],
     ...(manifest.briefing ? { briefing: manifest.briefing } : {}),
     eventKinds: [],
+    ...(manifest.panels.length > 0 ? { panels: manifest.panels } : {}),
     // One section per scope it has settings for, so Projects and Plugins list it.
     settings: [
       { id: "settings", scope: "project" as const, label: manifest.name },

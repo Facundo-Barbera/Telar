@@ -16,6 +16,7 @@ import {
   GitHubReactionContent,
   GitHubSubjectId,
   parseForgeQuery,
+  registerPluginToolPrefixes,
   RequestOpenInput,
   AgentTurnInput,
   ProviderDriverKind,
@@ -1285,6 +1286,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   );
   // The embedded worker registers tools from this list; the out-of-process
   // worker loads the same manifests itself (worker-main.ts).
+  // …and its tool rows are typed like a bundled plugin's (`parseToolName`).
+  registerPluginToolPrefixes(external.loaded.flatMap((loaded) => (loaded.manifest.toolPrefix ? [loaded.manifest.toolPrefix] : [])));
   const externalIds = new Set(external.loaded.map((loaded) => loaded.manifest.id));
   setPluginToolModules([
     ...pluginToolModules().filter((module) => !externalIds.has(module.meta.id)),
