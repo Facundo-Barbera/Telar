@@ -4,7 +4,7 @@
 // or any other legacy mutation by accident.
 import crypto from "node:crypto";
 import { ExecutionStore, type ExecutionHousekeeping } from "./platform/db/execution-store";
-import type { ScheduleRow, SessionIndexRow } from "./platform/db/tables";
+import type { ScheduleRow } from "./platform/db/tables";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,15 +24,12 @@ import {
   // live list drops the rows a rail would shelve (#457), so an engine that
   // disagreed with a cockpit here would produce a conversation neither of them
   // shows. See `protocol/settling.ts`.
-  settlingActivityOf,
   // AND THE WAKE MOMENT, from the same file and for the same reason. It already
   // decides the scheduled expiry and the early wake together; `sweepSnoozeWakes`
   // records what it answers rather than deciding again (#490, #586).
-  wokeAt,
   type AssignmentTurn,
   type SessionAssignment,
   type LiveSessionRow,
-  type SessionSettledBy,
   type PluginPatch,
   type BrowserSnapshot,
   type GitCommitEntry,
@@ -104,7 +101,7 @@ import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, 
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { type AttachmentInput, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, newestAssignment, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, type OpenRequestInput, RequestGate, type ResolveRequestInput } from "./domains/sessions";
+import { type AttachmentInput, SessionQueries, SessionSettler, createSessionModules, SessionAttachments, workspaceRootOf, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, type OpenRequestInput, RequestGate, type ResolveRequestInput } from "./domains/sessions";
 import { TurnWakes, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
@@ -378,6 +375,7 @@ export class EngineStore {
   private readonly claims: TurnClaims;
   private readonly recovery: TurnRecovery;
   private readonly wakes: TurnWakes;
+  private readonly settler: SessionSettler;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1090,6 +1088,16 @@ export class EngineStore {
     this.intake = this.createIntake();
     this.turnLifecycle = this.createTurnLifecycle();
     this.claims = this.createClaims();
+    this.settler = new SessionSettler(this.kernel, {
+      records: this.records,
+      scanQueue: (id) => this.scanQueue(id),
+      settleDelegatedAfterHours: () => this.getInboxPolicy().settleDelegatedAfterHours,
+      reviewCohorts: () => this.subscriptions.reviewCohorts(),
+      // A shelf that just grew keeps its terminals (#883); enforced after the command, never inside it.
+      onShelfGrew: () => {
+        if (this.sessionTerminals.attached) void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
+      },
+    });
     this.wakes = new TurnWakes(this.kernel, {
       records: this.records,
       items: this.sessionItems,
@@ -2684,59 +2692,10 @@ export class EngineStore {
   }
 
 
-  /* ---------------------------------------------------------------- *
-   * DELEGATION SETTLING — issue #378. The rule is in
-   * `./delegation-settling.ts`; this is where the engine reads the facts and
-   * writes the answer.
-   *
-   * BESIDE `fireSubscriptions` BECAUSE IT READS THE SAME SIGNAL —
-   * `agentIntent === "result"` plus `agentSourceRunId`, "the coordinator
-   * already has this run's outcome", which is clause 2 of the settle. The wake
-   * above no longer folds that fact (#240: a result and a completion are two
-   * different facts to a coordinator); the settle still does, because "has this
-   * errand been reported on" is exactly the question it asks.
-   * ---------------------------------------------------------------- */
-
-  /**
-   * A TERMINAL TURN IS THE MOMENT TO ASK, on both sides of a delegation.
-   *
-   * The session that just ended a turn may be the DELEGATE whose errand this
-   * finished, and it may be the COORDINATOR whose turn just consumed a wake —
-   * an orchestrator is routinely both at once. Asking both questions here is
-   * what makes the two evaluation points the issue names one call site rather
-   * than a rule spelled twice.
-   *
-   * NEVER THROWS INTO THE TRANSITION. Same contract as the wake above it: the
-   * turn has already been written and journalled, and a shelf is not worth
-   * failing a completion for.
-   */
   private evaluateDelegationSettling(sessionId: string): void {
-    try {
-      this.settleDelegateIfDue(sessionId);
-      /**
-       * WHOSE DELEGATES, WITHOUT A SCAN. A coordinator's OWN queue names every
-       * session that could have just become delivered: a wake carries the
-       * child in `wakeReason.sessionId`, and a result carries it as the
-       * sender. Walking those is one queue read; the alternative — asking
-       * every session on disk who it works for — is the N+1 over whole
-       * transcripts that `liveSessions` exists to avoid, on every turn.
-       */
-      const delegates = new Set<string>();
-      for (const turn of this.scanQueue(sessionId).turns) {
-        if (turn.wakeReason?.sessionId) delegates.add(turn.wakeReason.sessionId);
-        if (turn.origin === "session" && turn.agentIntent === "result" && turn.sender?.sessionId) {
-          delegates.add(turn.sender.sessionId);
-        }
-      }
-      delegates.delete(sessionId);
-      for (const delegate of delegates) this.settleDelegateIfDue(delegate);
-    } catch (error) {
-      this.appendEvent(sessionId, {
-        type: "runtime.warning",
-        message: `delegation settling was skipped: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    }
+    this.settler.evaluate(sessionId);
   }
+
 
   /**
    * A PERSON SETTLED THIS SESSION: END WHAT IT LEFT RUNNING — issue #883.
@@ -2775,89 +2734,15 @@ export class EngineStore {
     return this.sessionTerminals.enforceLimit();
   }
 
-  /**
-   * EVERY ROW THE GRACE HAS COME DUE ON — the slow half of the rule.
-   *
-   * The two turn-completion points above catch the moment the FACTS change;
-   * neither of them fires when nothing more happens, which is precisely the
-   * common case: a coordinator takes delivery and then everybody goes quiet.
-   * So the grace needs something that ticks. Returns the sessions it settled,
-   * so a caller (and a test) can see the sweep's work without a timer.
-   *
-   * A WHOLE-STORE PASS, ON A SLOW TIMER, and the cost is bounded by the cheap
-   * refusals first: no grace configured is one document read for the entire
-   * sweep, and a session with no task turn costs one queue scan. There is no
-   * engine-side settling clock to ride — the quiet window is folded by each
-   * client — so this is the tick, and it is the daemon's only one besides the
-   * worker pruner.
-   */
   sweepDelegatedSettling(): string[] {
-    if (this.getInboxPolicy().settleDelegatedAfterHours === null) return [];
-    const settled: string[] = [];
-    for (const sessionId of this.records.ids()) {
-      try {
-        if (this.settleDelegateIfDue(sessionId)) settled.push(sessionId);
-      } catch {
-        // One unreadable session must not stop the sweep for the rest.
-      }
-    }
-    return settled;
+    return this.settler.sweepDelegated();
   }
 
-  /**
-   * ══ EVERY SNOOZE THAT HAS ENDED — issues #490, #586 ══
-   *
-   * THE THIRD OF THESE, AND THE ONE WITH THE STRONGEST CASE. `snoozedUntil` is a
-   * stored timestamp and nothing else: "is this snoozed?" is COMPUTED against
-   * `now`, and every reference to it across the engine stores it, reads it, or
-   * deletes it. Nothing scheduled anything at expiry, so there was no moment at
-   * which a conversation woke and nothing could announce one — the row simply
-   * reappeared whenever something happened to render after the deadline. The
-   * owner reported it as "nos faltó añadir un punto de notificación para mostrar
-   * que una conversación se despertó"; this is the point of notification.
-   *
-   * A DEADLINE PASSING IS NOT AN EVENT, which is the same thing
-   * `sessionsRevision` says about the same class of bug: *"no counter can move
-   * on an event that does not happen."* So the wake needs something that ticks,
-   * exactly as the grace above it did (#378) and the report window before it
-   * (#723).
-   *
-   * ══ WHY THE ENGINE AND NOT EACH COCKPIT ══
-   *
-   * A per-row client timer would light the dot. It would also fire
-   * INDEPENDENTLY IN EVERY COCKPIT, so two devices would disagree about when a
-   * conversation woke — the same class of bug as two disagreeing about whether a
-   * turn ended. "When did this conversation wake" is a server-side fact with
-   * exactly one correct answer, and computing it per device IS the defect rather
-   * than an implementation detail of it. `lastReadTurnSequence` is the precedent
-   * and it is in the same file as the rule: both numbers are the engine's, so
-   * they answer the same on every device and survive a reload.
-   *
-   * SO THIS IS ONE TIMER REPLACING N, not a timer added. #490 is removing
-   * timers, and the arithmetic runs the right way: one process-level tick
-   * instead of one per row per connected cockpit.
-   *
-   * ══ WHAT IT COSTS, AND WHY IT IS NOT A WHOLE-STORE PASS ══
-   *
-   * `dueSnoozeWakes` SEEKS: a session with no snooze, or with its wake already
-   * recorded, is not a row it returns. The two sweeps above walk `sessionIds()`
-   * because their predicates live in documents SQL cannot see; this one's are
-   * two columns, so copying their loop would reinstate the fold #493 removed.
-   *
-   * ══ AND THE DECISION IS NOT MADE HERE ══
-   *
-   * `wokeAt()` is the one implementation, shared with every client, and it
-   * already handles both branches — the scheduled expiry and the early wake a
-   * raised hand causes. This records what it answers. Writing a second rule here
-   * is how the engine and the cockpit come to disagree about the very thing this
-   * exists to make them agree on.
-   *
-   * Returns the sessions it woke, so a caller — and a test — can see the tick's
-   * work without waiting on a timer.
-   */
+
   sweepSchedules(): string[] {
     return this.schedules.sweep();
   }
+
 
   listSchedules(sessionId?: string): ScheduleRow[] {
     return this.schedules.list(sessionId);
@@ -2876,121 +2761,17 @@ export class EngineStore {
   }
 
   sweepSnoozeWakes(): string[] {
-    const now = this.now();
-    const woken: string[] = [];
-    for (const row of this.snoozeWakeCandidates()) {
-      try {
-        const at = wokeAt({ ...row }, settlingActivityOf(row), { now });
-        if (at === undefined) continue;
-        if (this.recordSnoozeWake(row.id, at)) woken.push(row.id);
-      } catch {
-        // One unreadable session must not stop the sweep for the rest.
-      }
-    }
-    return woken;
+    return this.settler.sweepSnoozeWakes();
   }
+
 
   sweepRequestDeadlines(): string[] {
     return this.requestGate.sweepDeadlines();
   }
 
-  /**
-   * The rows a wake could still be owed on.
-   *
-   * One indexed query.
-   */
-  private snoozeWakeCandidates(): SessionIndexRow[] {
-    return this.kernel.executionStore.dueSnoozeWakes();
-  }
 
-  /**
-   * Stamp one wake, once.
-   *
-   * RE-READ BEFORE WRITING, because the row that produced the candidate is a
-   * projection and the document is the truth — a snooze cancelled between the
-   * query and here must not be woken, and a wake already recorded must not be
-   * recorded twice. That second guard is what makes "exactly one signal" a
-   * property of the code rather than of the tick's timing.
-   *
-   * `updatedAt` IS DELIBERATELY NOT TOUCHED, for `applyDelegationSettle`'s
-   * reason and one of its own: `idleSince` (`settling.ts`) already counts a
-   * snooze's wake as the start of the inactivity window, so stamping here would
-   * both make an engine wake look like fresh work AND move the row to the top of
-   * a list the house rule says must not reorder itself while it is being read.
-   *
-   * TWO EVENTS, as the settle makes: `session.updated` is how a client's fold
-   * learns the new record, `session.woke` is the edge — the one thing anything
-   * acting on the wake can subscribe to without diffing two snapshots. It is
-   * #586's fifth frame, waiting for #586's feed.
-   */
-  private recordSnoozeWake(sessionId: string, at: number): boolean {
-    const session = this.records.get(sessionId);
-    if (session.wokeAt !== undefined || session.snoozedUntil === undefined) return false;
-    session.wokeAt = at;
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-    this.appendEvent(sessionId, { type: "session.woke", wokeAt: at });
-    this.appendEvent(sessionId, { type: "session.updated", session });
-    return true;
-  }
 
-  /** The whole rule for one session: gather, fold, and write if it says so. */
-  private settleDelegateIfDue(sessionId: string): boolean {
-    let session: Session;
-    try {
-      session = this.records.get(sessionId);
-    } catch {
-      return false;
-    }
-    // Cheap refusals before the policy read: an archived row is off every list
-    // already, and a standing human decision is not the engine's to revisit.
-    if (session.state === "archived" || session.settledOverride !== undefined) return false;
-    const assignments = assignmentsOf(this.scanQueue(sessionId).turns as unknown as AssignmentTurn[]);
-    const newest = newestAssignment(assignments);
-    // Not a delegate. The overwhelming majority of sessions stop here.
-    if (!newest) return false;
 
-    const outcome = delegationSettle({
-      now: this.now(),
-      graceHours: this.getInboxPolicy().settleDelegatedAfterHours,
-      delegateSessionId: sessionId,
-      assignments,
-      // A coordinator that no longer exists reads as an empty queue, which is
-      // "no delivery" — the honest answer, not a settle on an absence.
-      coordinatorTurns: this.scanQueue(newest.fromSessionId).turns as unknown as DeliveryTurn[],
-      activity: session.activity,
-      archived: false,
-      unsettledAssignments: session.unsettledAssignments ?? [],
-    });
-    if (!outcome.settle) return false;
-    this.applyDelegationSettle(sessionId, outcome.settle);
-    return true;
-  }
-
-  /**
-   * WRITE THE SHELF AND SAY WHY.
-   *
-   * `updatedAt` IS DELIBERATELY NOT TOUCHED, for `markSessionRead`'s reason:
-   * it dates the session's WORK, and the quiet clock is measured from it.
-   * Stamping it here would make an engine settle look like fresh activity to
-   * every rule downstream — including the one a person would meet if they
-   * pulled the row back off the shelf.
-   *
-   * TWO EVENTS, AND THEY ARE NOT THE SAME ROW. `session.updated` is how a
-   * client's fold learns the new record; `session.settled` is the one moment
-   * something acting on the settling (worktree removal, later) can subscribe to
-   * without diffing snapshots.
-   */
-  private applyDelegationSettle(sessionId: string, settledBy: SessionSettledBy): void {
-    const session = this.records.get(sessionId);
-    const next: Session = { ...session, settledOverride: "settled", settledAt: this.now(), settledBy };
-    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
-    this.appendEvent(sessionId, { type: "session.settled", settledBy });
-    this.appendEvent(sessionId, { type: "session.updated", session: next });
-    this.subscriptions.reviewCohorts();
-    // A shelf that just grew by a session keeping its terminals (#883). After
-    // the command that settled it, never inside it.
-    if (this.sessionTerminals.attached) void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
-  }
 
 
   private waitingNotificationTurn(sessionId: string): string | undefined {
