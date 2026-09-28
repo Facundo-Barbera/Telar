@@ -563,8 +563,9 @@ export function projectJournal(
   return inStartOrder([...byRun.values()]);
 }
 
-// A turn that never started but is over (a passive arrival) sits where it was accepted.
-const startKey = (turn: JournalTurn) => turn.startedAt ?? (isActiveTurn(turn.state) ? Infinity : (turn.acceptedAt ?? Infinity));
+// A turn with no start that is not waiting (a passive arrival) sits where it was accepted.
+const startKey = (turn: JournalTurn) =>
+  turn.startedAt ?? (turn.state === "queued" || turn.state === "claimed" ? Infinity : (turn.acceptedAt ?? Infinity));
 
 /** Turns in the order they started, the waiting ones last. Stable, so ties keep sequence order. */
 function inStartOrder(turns: JournalTurn[]): JournalTurn[] {
