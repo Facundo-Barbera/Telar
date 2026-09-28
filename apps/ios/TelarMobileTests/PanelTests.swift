@@ -47,14 +47,14 @@ import Testing
 
 @Suite struct PanelModelTests {
     @Test func viewDecisionMirrorsTheDesktop() {
-        #expect(panelView(for: "nb.ipynb", dataScience: true) == .notebook)
+        #expect(panelView(for: "nb.ipynb", enabled: [.dataScience]) == .notebook)
         // A notebook is still a notebook without the plugin — read-only, from
         // the file's own JSON, never the raw-JSON code view.
-        #expect(panelView(for: "nb.ipynb", dataScience: false) == .notebookReadOnly)
-        #expect(panelView(for: "data/rows.CSV", dataScience: true) == .table)
-        #expect(panelView(for: "data/rows.parquet", dataScience: false) == .code)
-        #expect(panelView(for: "out/report.pdf", dataScience: false) == .pdf)
-        #expect(panelView(for: "src/main.swift", dataScience: true) == .code)
+        #expect(panelView(for: "nb.ipynb", enabled: []) == .notebookReadOnly)
+        #expect(panelView(for: "data/rows.CSV", enabled: [.dataScience]) == .table)
+        #expect(panelView(for: "data/rows.parquet", enabled: []) == .code)
+        #expect(panelView(for: "out/report.pdf", enabled: []) == .pdf)
+        #expect(panelView(for: "src/main.swift", enabled: [.dataScience]) == .code)
     }
 
     @Test func previewSlotIsReplacedInPlaceAndPinsStay() {
@@ -139,9 +139,46 @@ import Testing
         defer { defaults.removePersistentDomain(forName: suite) }
         let panel = PanelModel(hostId: UUID(), sessionId: "s", defaults: defaults)
         panel.select(.data)
-        panel.setPlugins(dataScience: false, latex: true)
+        panel.setPlugins([.latex])
         #expect(panel.tabs == [.diff, .files, .agents, .latex])
         #expect(panel.active == .diff)
+    }
+
+    /// THE REGISTRY, NOT A CLOSED SET (P2b). A plugin id this build has never
+    /// heard of is carried, adds no tab and no viewer, and costs nothing else.
+    @Test @MainActor func anUnknownPluginDrawsNothingAndBreaksNothing() {
+        let suite = "telar.panel.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let panel = PanelModel(hostId: UUID(), sessionId: "s", defaults: defaults)
+        panel.setPlugins([PluginID("hello")])
+        #expect(panel.tabs == [.diff, .files, .agents])
+        #expect(panelView(for: "nb.ipynb", enabled: [PluginID("hello")]) == .notebookReadOnly)
+        #expect(panelView(for: "rows.csv", enabled: [PluginID("hello")]) == .code)
+        #expect(PluginUI.surfaces(enabled: [PluginID("hello")]).isEmpty)
+        // A saved tab the registry does not know restores, and falls back.
+        #expect(PanelTab(rawValue: "someday").label == "someday")
+        panel.select(PanelTab(rawValue: "someday"))
+        panel.setPlugins([PluginID("hello")])
+        #expect(panel.active == .diff)
+    }
+
+    /// The bundled two keep their tabs, labels, icons and viewers exactly.
+    @Test func theBundledPluginsContributeWhatTheyAlwaysDid() throws {
+        #expect(PluginUI.surfaces(enabled: [.latex, .dataScience]).map(\.tab) == [.data, .latex])
+        #expect(PanelTab.data.label == "Data" && PanelTab.data.icon == "flask")
+        #expect(PanelTab.latex.label == "LaTeX" && PanelTab.latex.icon == "function")
+        #expect(PluginUI.viewerAvailable(.table, enabled: [.dataScience]))
+        #expect(!PluginUI.viewerAvailable(.table, enabled: [.latex]))
+        // A tab saved while this was an enum decodes the same.
+        #expect(try JSONDecoder().decode(PanelTab.self, from: Data("\"data\"".utf8)) == .data)
+    }
+
+    /// ENABLED IDS COME FROM THE MAP — any id, not just the two this build names.
+    @Test func aProjectReportsEveryEnabledPlugin() throws {
+        let json = #"{"id":"p","name":"P","plugins":{"version":1,"entries":{"data-science":{"enabled":true},"hello":{"enabled":true},"latex":{"enabled":false}}}}"#
+        let project = try JSONDecoder().decode(Project.self, from: Data(json.utf8))
+        #expect(project.enabledPlugins == [.dataScience, PluginID("hello")])
     }
 
     /// AGENTS IS NOT A PLUGIN TAB — issue #390. Who is working for this
@@ -155,10 +192,10 @@ import Testing
         let panel = PanelModel(hostId: UUID(), sessionId: "s", defaults: defaults)
         #expect(panel.tabs == [.diff, .files, .agents])
         panel.select(.agents)
-        panel.setPlugins(dataScience: true, latex: true)
+        panel.setPlugins([.dataScience, .latex])
         #expect(panel.tabs == [.diff, .files, .agents, .data, .latex])
         #expect(panel.active == .agents)
-        panel.setPlugins(dataScience: false, latex: false)
+        panel.setPlugins([])
         #expect(panel.active == .agents)
     }
 

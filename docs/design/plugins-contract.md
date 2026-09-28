@@ -81,7 +81,12 @@ A plugin with no web contributions (for example `hello`) draws no tab, opener, c
 
 **Still on aliases (P2 follow-up).** Every browser-side DS/LaTeX call in `lib/engine/client.ts` (settings verbs, jobs and the session `/ds/*` and `/latex/*` verbs) still goes through its alias route. So do the matching `app/api/{data-science,latex,projects/[id]/…,sessions/[id]/{ds,latex}}` proxies. Moving a caller is a behaviour change, because the generic doors enforce the enablement gates and the aliases do not. The engine-client also needs `projectPlugin` / `machinePlugin` methods; the web currently reaches those doors through `enginePluginDoor`.
 
-P2b: the iOS `PluginID` becomes open, with the same registry shape.
+**P2b (iOS, done).**
+- `PluginID` is an open string type, and `Project.enabledPlugins` reads every enabled id from the map (or from the legacy blocks, for an older engine).
+- `PanelTab` is a raw-string type, so saved tabs such as `"data"` still decode.
+- `PluginUI` (`Stores/PluginUI.swift`) declares each bundled plugin's tabs and viewers. `PluginSurfaceView` binds each tab to its existing surface.
+- An unknown id adds nothing.
+- The phone still calls the Mac's `/api/sessions/:id/{ds,latex}/*` aliases rather than the generic plugin route. The Mac it is paired with may predate that web route (added in P2a), and the aliases keep a new phone working against it.
 
 ### 4. Settings schema (P3, *planned* beyond what exists)
 
@@ -127,6 +132,6 @@ requires?: { id; label; probe: verb; install?: verb }[]
    - `PATCH /v2/projects/:id` still accepts `dataScience` / `latex` as deprecated input aliases for one release. They write the map and are never stored.
    - The claim's dedicated fields are gone. `plugins` carries the two plugins when they resolve for the session.
    - **Rolling back to an engine older than the map is no longer supported.** Such an engine would see no Data Science or LaTeX settings.
-4. **P2**: UI registry covering panels, viewers, commands and event renderers. P2a (web) is done; P2b makes the iOS `PluginID` open.
+4. **P2**: UI registry covering panels, viewers, commands and event renderers. P2a (web) and P2b (iOS) are done.
 5. **P3**: settings generated from the schema, with one switch per scope.
 6. **P4**: external plugins, covering the folder loader, the supervised process, MCP tools and routes, declarative UI, and install/uninstall.
