@@ -257,7 +257,6 @@ export type SessionsCapability = {
 import { err, failure, fillWithin, json, type ToolFactory } from "../tool-kit";
 import { deferredQuery, sessionQueryTools, type SessionsQueryCapability } from "./query";
 export type { ToolFactory };
-export type { SessionsQueryCapability } from "./query";
 
 /**
  * THE SENTENCE THE WALL CANNOT ENFORCE, so it says it instead — in the prose of
