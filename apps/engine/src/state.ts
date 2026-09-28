@@ -97,7 +97,6 @@ import {
   Turn as TurnSchema,
   TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
-  TurnState as TurnStateSchema,
   WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
   type BrowserProvider,
   type BrowserSnapshot,
@@ -195,8 +194,8 @@ import {
   migrateClaudeCompaction,
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
-import { assertId, EngineStateError, ID, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
-import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
+import { assertId, assertStateVersion, EngineStateError, ID, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
+import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, SessionQueues, awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, type SessionQueue, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "./domains/turns";
 import { TELAR_ORIENTATION } from "./orientation";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
@@ -1027,10 +1026,8 @@ function assertAbsolutePath(value: unknown, label: string): asserts value is str
 }
 
 type ProjectRegistry = { version: typeof STATE_VERSION; projects: Project[] };
-type SessionQueue = { version: typeof STATE_VERSION; sessionId: string; nextSequence: number; turns: Turn[] };
 
 const emptyRegistry = (): ProjectRegistry => ({ version: STATE_VERSION, projects: [] });
-const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSION, sessionId, nextSequence: 1, turns: [] });
 
 /** "Nobody has arranged anything" — what an unreadable layout document costs.
  *  Spelled once so the three arrangements cannot fall back to different things. */
@@ -1193,18 +1190,6 @@ const cloneSidebarLayout = (layout: SidebarLayout): SidebarLayout => ({
   mode: layout.mode,
 });
 
-function assertStateVersion(value: unknown, document: string): void {
-  const version = (value as { version?: unknown } | null)?.version;
-  if (version === STATE_VERSION) return;
-  if (version === 1) {
-    throw new EngineStateError(
-      "invalid_request",
-      `this ${document} was written by protocol v1, which this engine no longer reads. ` +
-        `v2 is a deliberate hard break with no migration — clear the engine state root (TELAR_HOME/engine) and start fresh.`,
-    );
-  }
-  throw new EngineStateError("invalid_request", `invalid ${document}`);
-}
 
 /**
  * A PROJECT'S DATA SCIENCE / LATEX ENTRY, in the flat `{enabled, ...settings}`
@@ -1308,129 +1293,11 @@ function lastResultTurn(turns: readonly Turn[]): Turn | undefined {
   return latest;
 }
 
-/**
- * THE FOUR FIELDS EVERY READER OF A TURN KEYS ON — the queue's `isRequestRow`.
- *
- * A property test per row rather than a schema walk, and it is what stands
- * between a document written outside this process and an `undefined` surfacing
- * somewhere downstream as a blank rail pill or a turn nothing can claim. It
- * checks identity (`runId`, `sessionId`), order (`sequence`) and the state
- * machine's own alphabet — the four the fold, the window, the claim and the
- * index all read without asking whether they are there.
- *
- * `TurnState` RATHER THAN A LIST WRITTEN OUT HERE, so a tenth state added to
- * the protocol is accepted by this guard the moment it exists. `safeParse` on a
- * z.enum is a set lookup, not a walk of the turn.
- */
-function isTurnRow(row: unknown): row is Turn {
-  if (typeof row !== "object" || row === null) return false;
-  const candidate = row as Partial<Turn>;
-  return typeof candidate.runId === "string" && typeof candidate.sessionId === "string"
-    && Number.isSafeInteger(candidate.sequence) && TurnStateSchema.safeParse(candidate.state).success;
-}
 
-/**
- * The document, and how much of it is re-checked — issue #547.
- *
- * `trusted` says this came out of the execution store, which is the daemon's
- * own database under the daemon's own lock and is written by `writeQueue`
- * alone — and `writeQueue` now runs `TurnSchema.array()` over every turn before
- * it stores one. Re-running that walk per read re-checks a shape that cannot
- * have changed since, and it was 24.9% of a turn's write path on #547's
- * 400-turn fixture, because the queue is read nineteen times per turn and
- * written four.
- *
- * THE JSON BACKEND IS NOT TRUSTED, and the split is deliberate rather than
- * timid. `queue.json` is an ordinary file: a test rewrites it, an older engine
- * wrote it, a person can open it. It is also the reference implementation the
- * suite runs both ways against, so keeping the full walk there means every
- * behaviour the schema enforces still has a backend that enforces it.
- *
- * THE STRUCTURAL GUARD RUNS ON BOTH, because "trusted" is an argument about
- * which process wrote the bytes, not a promise that the bytes are there. A
- * sqlite document that predates a migration, or one a downgrade wrote, still
- * has to fail as "invalid session queue" rather than downstream.
- */
-function parseQueue(value: unknown, sessionId: string, trusted = false): SessionQueue {
-  assertStateVersion(value, "session queue");
-  const stored = value as { sessionId?: unknown; nextSequence?: unknown; turns?: unknown };
-  if (stored.sessionId !== sessionId || !Number.isSafeInteger(stored.nextSequence)) {
-    throw new EngineStateError("invalid_request", "invalid session queue");
-  }
-  let rows: Turn[];
-  if (trusted) {
-    if (!Array.isArray(stored.turns) || stored.turns.some((row) => !isTurnRow(row))) {
-      throw new EngineStateError("invalid_request", "invalid session queue");
-    }
-    rows = stored.turns as Turn[];
-  } else {
-    const turns = TurnSchema.array().safeParse(stored.turns);
-    if (!turns.success) throw new EngineStateError("invalid_request", "invalid session queue");
-    rows = turns.data;
-  }
-  const ids = new Set<string>();
-  for (const turn of rows) {
-    assertId(turn.runId, "run id");
-    if (ids.has(turn.runId)) throw new EngineStateError("invalid_request", "duplicate Telar turn id");
-    ids.add(turn.runId);
-  }
-  return { version: STATE_VERSION, sessionId, nextSequence: stored.nextSequence as number, turns: rows };
-}
 
-/**
- * Whether a worker could have any business with this queue — see
- * `liveQueueIndex`, whose membership this decides.
- *
- * THE UNION OF FIVE QUERIES, deliberately, so that one index serves all of
- * them and no query can be narrowed without someone noticing here. The first
- * four states are the unsettled ones a claim or a heartbeat acts on. The fifth
- * is the one that is easy to miss: a STOPPED turn keeps its claim (only a
- * discard or a recovery sweep clears it), and reading exactly those is how a
- * worker learns that a human pressed Stop.
- *
- * THE SIXTH IS A FAILED TURN, WHICH IS THE SURPRISING ONE. A turn that failed
- * `rate_limited` is terminal in every other sense, but the sweep has to find it
- * again once its `resumeAt` passes — and this predicate is what decides which
- * sessions the sweep ever looks at. Without it the requeue silently never fires:
- * the session drops out of the index the moment the turn fails, and nothing
- * walks it again until a human types.
- *
- * BOUNDED BY `resumeDecidedAt`. The sweep stamps every rate-limited failure it
- * considers, whether it requeued the turn or left it alone, so a session whose
- * setting is off falls out of the index on the next claim instead of being
- * re-examined for the life of the daemon.
- */
-function queueConcernsAWorker(queue: SessionQueue): boolean {
-  return queue.turns.some(
-    (turn) =>
-      turn.state === "queued" ||
-      turn.state === "claimed" ||
-      turn.state === "running" ||
-      turn.state === "steering" ||
-      (turn.state === "stopped" && turn.claim !== undefined) ||
-      awaitsRateLimitSweep(turn),
-  );
-}
 
-/** A failed turn the sweep has not yet decided about — see above, and
- *  `sweepRateLimited`, which is the only thing that clears the condition. */
-function awaitsRateLimitSweep(turn: Turn): boolean {
-  return (
-    turn.state === "failed" &&
-    turn.failure?.code === "rate_limited" &&
-    turn.failure.resumeAt !== undefined &&
-    turn.failure.resumeDecidedAt === undefined
-  );
-}
 
-function sessionQueueFile(paths: EngineStatePaths, sessionId: string): string {
-  return path.join(sessionDir(paths, sessionId), "queue.json");
-}
 
-/** Where each turn and each item sits in its document — see `document-window.ts`. */
-function sessionQueueIndexFile(paths: EngineStatePaths, sessionId: string): string {
-  return path.join(sessionDir(paths, sessionId), "queue.index.json");
-}
 
 /**
  * THE NOTIFICATION MAILBOX — what arrived while this session was working.
@@ -1600,6 +1467,7 @@ export class EngineStore {
   private readonly prefixes: OpenPrefixes;
   private readonly sessionRequests: SessionRequests;
   private readonly sessionTasks: SessionTasks;
+  private readonly sessionQueues: SessionQueues;
 
   private registerCacheHooks(): void {
     this.kernel.onWrite((file, write, written) => {
@@ -1608,11 +1476,9 @@ export class EngineStore {
       this.bumpRevisionFor(file, owner);
     });
     this.kernel.beforeCommit(() => this.flushSessionRows());
-    this.kernel.onRollback(() => { this.queueCache.clear(); this.liveQueueIndex = undefined; this.queueChangeAnnounced = false; });
-    this.kernel.onSessionDeleted((id) => { this.queueCache.delete(id); this.liveQueueIndex?.delete(id); });
     this.kernel.onRollback(() => this.kernel.runProgress.clear());
     this.kernel.onSessionDeleted((id) => this.kernel.runProgress.delete(id));
-    this.kernel.onRollback(() => { this.dirtySessionRows.clear(); this.foldedTurnStates.clear(); });
+    this.kernel.onRollback(() => this.dirtySessionRows.clear());
     this.kernel.onSessionDeleted((id) => { this.dirtySessionRows.delete(id); this.listRevision = this.nextRevision(); });
     this.kernel.onSessionDeleted((id) => this.dropSubscriptionsOf(id));
   }
@@ -1965,14 +1831,9 @@ export class EngineStore {
   /** Settings → Storage's automatic cleanup — see `cleanup.ts`. */
   readonly cleanup: CleanupStore;
   private cleanupRunning = false;
-  /** See the constructor: the daemon's in-process nudge to its embedded worker,
-   *  absent unless the daemon injected it. */
-  private readonly onQueueChanged?: () => void;
   /** See the constructor option: the claims a Stop just killed, handed to the
    *  in-process worker so the abort does not ride a poll. */
   private readonly onTurnsStopped?: (cancellations: StoppedClaim[]) => void;
-  /** One announcement per command, not one per `writeQueue` inside it. */
-  private queueChangeAnnounced = false;
   /** See the constructor: daemon-injected, absent means no computer use. */
   private readonly computerUse?: (() => ResolvedComputerUse | undefined) | undefined;
   /** See the constructor: the real subprocess handshake unless a test says
@@ -4271,7 +4132,6 @@ export class EngineStore {
       ambientEnv?: Record<string, string | undefined>;
     } = {},
   ) {
-    this.onQueueChanged = options.onQueueChanged;
     this.onTurnsStopped = options.onTurnsStopped;
     this.readModels = options.models ?? readModelCatalogue;
     this.cliVersion = options.cliVersion ?? installedCli;
@@ -4311,6 +4171,12 @@ export class EngineStore {
     this.sessionItems = new SessionItems(this.kernel);
     this.sessionRequests = new SessionRequests(this.kernel, () => this.records.ids());
     this.sessionTasks = new SessionTasks(this.kernel);
+    this.sessionQueues = new SessionQueues(this.kernel, {
+      sessionIds: () => this.records.ids(),
+      itemsForRuns: (sessionId, runs) => this.sessionItems.forRuns(sessionId, runs),
+      afterWrite: (sessionId, turns) => this.sessionRequests.trim(sessionId, turns),
+      onChanged: options.onQueueChanged,
+    });
     this.prefixes = new OpenPrefixes(this.kernel, (sessionId) => this.readEvents(sessionId));
     this.registerCacheHooks();
     // The backfill's writes go through one transaction rather than one per row.
@@ -4605,8 +4471,7 @@ export class EngineStore {
      * ordinary write path, so the first reconcile per session re-reads them.
      */
     this.sessionItems.clear();
-    this.queueCache.clear();
-    this.foldedTurnStates.clear();
+    this.sessionQueues.clear();
     return { sessions, turns };
   }
 
@@ -13950,263 +13815,27 @@ export class EngineStore {
     );
   }
 
-  /**
-   * THE SESSIONS A WORKER COULD POSSIBLY HAVE BUSINESS WITH — the index that
-   * makes the number of IDLE conversations cost nothing.
-   *
-   * Every worker heartbeat asks three questions (what was cancelled, what was
-   * answered, what was steered) and a claim asks a fourth, and each of them
-   * used to walk EVERY session on disk: at ten beats a second and fifty
-   * sessions that is thousands of file reads a second to discover, almost
-   * always, that nothing has changed. The daemon burned most of a core doing
-   * it, and the cost grew with every conversation ever started — so the
-   * machine got slower the longer it was used, which is the shape of the
-   * complaint that produced this index.
-   *
-   * MAINTAINED IN `writeQueue`, WHICH IS THE ONLY WRITER. Every turn
-   * transition in this store rewrites the whole queue through that one method,
-   * so there is exactly one place that can put a session in or out of this set
-   * — no transition can forget to. Built lazily on first use by the same scan
-   * it replaces, so a cold daemon pays it once instead of ten times a second.
-   *
-   * The membership test is deliberately the UNION of what the four queries
-   * need, so one index serves all of them: anything not yet settled, plus a
-   * stopped turn that still carries a claim (the worker learns of a stop by
-   * reading exactly those).
-   */
-  private liveQueueIndex: Set<string> | undefined;
 
-  /**
-   * THE INDEX SAYS WHICH QUEUES TO LOOK AT; THIS SAYS WHAT IS IN THEM.
-   *
-   * Narrowing the scan to the live sessions was only half the problem. Each of
-   * those queues was still fetched from sqlite, JSON-parsed and validated
-   * through zod on EVERY question — three per heartbeat, ten heartbeats a
-   * second — and a real conversation's queue is not small: on the machine that
-   * produced this, 45 live sessions held 3.3 MB over 1233 turns, so the daemon
-   * re-parsed about ten megabytes a second to conclude, every time, that
-   * nothing had changed. `readQueue` alone was 43.9% of a profile taken at
-   * rest, split between sqlite, `JSON.parse` and `TurnSchema`.
-   *
-   * VALID UNTIL `writeQueue` DROPS IT, which is sound for exactly the reason
-   * `liveQueueIndex` above is: one writer, in this process, and the store is
-   * the daemon's alone. Dropped rather than replaced on write — a caller
-   * mutates its queue in place and writes when it is done, and seeding the
-   * cache from that object would hand the next reader something the caller may
-   * still be editing. Re-reading once after a write is the cheap half.
-   */
-  private readonly queueCache = new Map<string, SessionQueue>();
 
-  /**
-   * A queue for READING ONLY — the shared parsed copy, not a caller's to edit.
-   *
-   * Every use is a scan that asks a question and keeps nothing: which sessions
-   * concern a worker, what was cancelled, answered or steered, which turn could
-   * be claimed next. Anything that intends to CHANGE a queue calls `readQueue`
-   * and gets an object of its own, so the two uses cannot be confused.
-   */
   private scanQueue(sessionId: string): SessionQueue {
-    const cached = this.queueCache.get(sessionId);
-    if (cached) return cached;
-    const queue = this.readQueue(sessionId);
-    this.queueCache.set(sessionId, queue);
-    return queue;
+    return this.sessionQueues.scan(sessionId);
   }
 
   private liveQueueSessionIds(): Set<string> {
-    if (this.liveQueueIndex) return this.liveQueueIndex;
-    const index = new Set<string>();
-    for (const sessionId of this.records.ids()) {
-      if (queueConcernsAWorker(this.scanQueue(sessionId))) index.add(sessionId);
-    }
-    this.liveQueueIndex = index;
-    /**
-     * AND THE COLD BUILD LETS GO OF WHAT IT READ TO GET HERE.
-     *
-     * This is the one scan that touches every session on disk, so without
-     * this the cache would hold every conversation ever started, in parsed
-     * form, for the life of the daemon — the same unbounded growth with age
-     * that the index itself was written to stop. Everything still in the
-     * cache afterwards is in the index, and `writeQueue` drops the two
-     * together from then on.
-     */
-    for (const sessionId of this.queueCache.keys()) {
-      if (!index.has(sessionId)) this.queueCache.delete(sessionId);
-    }
-    return index;
+    return this.sessionQueues.liveSessionIds();
   }
 
-  /**
-   * THE WHOLE QUEUE, PARSED — and accounted for, which it was not (#547).
-   *
-   * `accountWholeRead` here rather than at the forty-odd call sites: this is
-   * the one door every whole-queue read goes through, and an instrument a new
-   * caller can forget to reach for is the instrument that read 0 = 0 while the
-   * wall time doubled. `windowedTurns`' fallback used to account for itself and
-   * no longer does, because this would then count it twice.
-   */
   private readQueue(sessionId: string): SessionQueue {
-    const file = sessionQueueFile(this.paths, sessionId);
-    const stored = this.readDocument(file);
-    // An absent document is an empty queue, not a read: nothing was fetched and
-    // nothing parsed, and counting it would put a floor under every measurement
-    // taken on a session that has never been written to.
-    if (stored === undefined) return emptyQueue(sessionId);
-    this.kernel.accountWholeRead(file);
-    this.readAccounting.queueParses += 1;
-    return parseQueue(stored, sessionId, true);
+    return this.sessionQueues.read(sessionId);
   }
 
-  /** THE ONLY WRITER, which is what lets `liveQueueIndex` and `queueCache` be
-   *  maintained in one place rather than at each of the thirteen transitions
-   *  that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
-    /**
-     * VALIDATE ON WRITE, SO THE READ CAN TRUST — issue #547, and #545's clause
-     * for the queue at last.
-     *
-     * The schema walk runs HERE, once per write, instead of in `parseQueue`
-     * once per read. A turn is written four times a turn and read nineteen on
-     * the fixture #547's bench measures, so this moves zod off the hot side of
-     * a 5:1 ratio — and it moves the failure to the moment a bad turn is built,
-     * where the stack still names the transition that built it, rather than to
-     * whichever unlucky read finds it later.
-     *
-     * THE WHOLE ARRAY, not the turns that moved. Knowing which turn a
-     * transition touched means asking every transition to say so — thirteen
-     * places to keep right, and the one that forgets is a corrupt row that
-     * nothing catches. `parseQueue` keeps the structural guard for both
-     * backends regardless; see there for what a document written outside this
-     * process still has to satisfy.
-     */
-    if (!TurnSchema.array().safeParse(queue.turns).success) {
-      throw new EngineStateError("invalid_request", "invalid session queue");
-    }
-    this.writeIndexedDocument(
-      sessionQueueFile(this.paths, sessionId),
-      sessionQueueIndexFile(this.paths, sessionId),
-      queue,
-      "turns",
-      queue.turns.map((turn) => ({ key: turn.runId, tag: turn.state })),
-      // CARRIED TO THE ROW'S FOLD (#547): this is the document, parsed, and the
-      // fold at the end of this command would otherwise read it straight back.
-      queue,
-    );
-    // INSIDE `writeQueue` BECAUSE IT IS THE ONLY WRITER — the same reason the
-    // live index and the queue cache are maintained here rather than at each of
-    // the thirteen transitions. A projection maintained at the call sites would
-    // be a fourteenth thing to remember. See `reconcileTurnSummaries`.
-    this.reconcileTurnSummaries(sessionId, queue);
-    this.queueCache.delete(sessionId);
-    this.announceQueueChange();
-    /**
-     * AND THE INDEXED RESOLUTIONS FOLLOW THE QUEUE (#545). `resolutionsForWorker`
-     * trims them against the claims it holds, but it only ever visits sessions
-     * in the live index — so a session that leaves it would keep whatever was
-     * indexed at that moment for the life of the daemon. This is the same
-     * liveness test against the queue that has just been written; OPEN rows are
-     * deliberately untouched, because retiring one is `SessionRequests.closeOpen`'
-     * decision and a session that quietly stopped reporting `blocked` is the
-     * worse failure.
-     */
-    this.sessionRequests.trim(sessionId, queue.turns);
-    if (!this.liveQueueIndex) return;
-    if (queueConcernsAWorker(queue)) this.liveQueueIndex.add(sessionId);
-    else this.liveQueueIndex.delete(sessionId);
+    this.sessionQueues.write(sessionId, queue);
   }
 
-  /**
-   * WHICH TURN ROWS THIS PROCESS HAS ALREADY FOLDED — the reconcile's memo.
-   *
-   * Sound for exactly the reason `queueCache` and `liveQueueIndex` are: one
-   * writer, in this process, holding the daemon lock. Warmed from sqlite the
-   * first time a session is written to, and emptied by the rollback path, where
-   * the rows it names may no longer exist.
-   *
-   * WITHOUT IT THE RECONCILE IS A SELECT PER QUEUE WRITE, and a queue is written
-   * several times per turn — on the dogfood store's largest session that is 686
-   * rows read to discover that one of them moved. BOUNDED like `itemsCache` and
-   * for its reason: an entry per session ever written would grow with the age of
-   * the daemon. An evicted session simply pays the SELECT again.
-   */
-  private readonly foldedTurnStates = new Map<string, Map<string, Turn["state"]>>();
-  private static readonly FOLDED_TURNS_LIMIT = 8;
 
-  private knownTurnStates(sessionId: string): Map<string, Turn["state"]> {
-    const cached = this.foldedTurnStates.get(sessionId);
-    if (cached) return cached;
-    const known = new Map<string, Turn["state"]>(
-      this.kernel.executionStore.turnSummaryStates(sessionId).map((row) => [row.runId, row.state as Turn["state"]]),
-    );
-    if (this.foldedTurnStates.size >= EngineStore.FOLDED_TURNS_LIMIT) {
-      const oldest = this.foldedTurnStates.keys().next();
-      if (!oldest.done) this.foldedTurnStates.delete(oldest.value);
-    }
-    this.foldedTurnStates.set(sessionId, known);
-    return known;
-  }
 
-  /**
-   * THE TURN PROJECTION, BROUGHT LEVEL WITH THE QUEUE JUST WRITTEN — issue #516.
-   *
-   * IT COMPARES STATES, IT DOES NOT REBUILD. A turn's row is a function of the
-   * turn and its items, and both are settled by the transition that moved the
-   * turn's state — so a row whose stored state matches the queue's is a row that
-   * is already right. On an ordinary write that is zero rows re-folded; on the
-   * write that ends a turn it is one.
-   *
-   * WHICH IS ALSO WHY A TURN GETS A ROW WHEN IT IS ACCEPTED. `queued` is a state
-   * like any other, so the first write after a submit folds the turn and the
-   * input line is searchable from that instant — no second hook, and no turn
-   * that is invisible to `find` until it finishes.
-   *
-   * A ROW WHOSE TURN LEFT THE QUEUE GOES WITH IT. Nothing in the engine removes
-   * a settled turn today, but a projection that could outlive its subject would
-   * put a conversation in `find`'s answer that `outline` then cannot show.
-   */
-  private reconcileTurnSummaries(sessionId: string, queue: SessionQueue): void {
-    const store = this.kernel.executionStore;
-    const known = this.knownTurnStates(sessionId);
-    const stale = queue.turns.filter((turn) => known.get(turn.runId) !== turn.state);
-    const live = new Set(queue.turns.map((turn) => turn.runId));
-    const gone = [...known.keys()].filter((runId) => !live.has(runId));
-    if (stale.length === 0 && gone.length === 0) return;
-    // ONE ITEMS READ FOR THE WHOLE BATCH, by the index's own per-run spans —
-    // `windowedItems`' route, for `windowedItems`' reason.
-    const items = stale.length > 0 ? this.sessionItems.forRuns(sessionId, new Set(stale.map((turn) => turn.runId))) : [];
-    for (const turn of stale) {
-      store.writeTurnSummary(summariseTurn(turn, items));
-      known.set(turn.runId, turn.state);
-    }
-    for (const runId of gone) {
-      store.deleteTurnSummary(sessionId, runId);
-      known.delete(runId);
-    }
-  }
 
-  /**
-   * ONCE PER COMMAND, AND ONLY IF IT COMMITS.
-   *
-   * A single command rewrites several queues — a stop settles a turn and
-   * requeues the steers aimed at it — and the listener only needs to be told
-   * that SOMETHING moved, so the flag collapses them into one call. Deferred
-   * to `afterCommit` for the same reason the request notifier is: announcing a
-   * write the transaction then rolled back would wake a worker to look for
-   * work that does not exist.
-   */
-  private announceQueueChange(): void {
-    if (!this.onQueueChanged) return;
-    if (!this.kernel.inCommand) {
-      this.onQueueChanged();
-      return;
-    }
-    if (this.queueChangeAnnounced) return;
-    this.queueChangeAnnounced = true;
-    this.kernel.afterCommit(() => {
-      this.queueChangeAnnounced = false;
-      this.onQueueChanged?.();
-    });
-  }
 
   /**
    * AFTER THE COMMIT, FOR THE SAME REASON `announceQueueChange` DEFERS: telling

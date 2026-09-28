@@ -3,3 +3,4 @@ export { isResultTurn, latestProviderSessionId, SessionRecords } from "./records
 export { OpenPrefixes, SessionItems } from "./items";
 export { SessionRequests } from "./requests";
 export { SessionTasks } from "./tasks";
+export { awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, type SessionQueue } from "./queue";
